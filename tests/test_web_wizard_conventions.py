@@ -21,6 +21,7 @@ import textwrap
 import urllib.parse
 from contextlib import nullcontext
 from email.message import Message
+from http.server import BaseHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
 
@@ -228,7 +229,7 @@ class _WizardRequest:
         h.send_response_only = self._record_status
         h.send_header = lambda name, value: self.sent_headers.append((name, value))
         h.end_headers = lambda: None
-        h.send_error = self._record_status
+        h.send_error = functools.partial(BaseHTTPRequestHandler.send_error, h)
         h.address_string = lambda: "127.0.0.1"
         h.log_message = lambda *a, **k: None
         self._handler = h
@@ -237,9 +238,11 @@ class _WizardRequest:
         self.status = int(status)
 
     def do_GET(self):
+        self._handler.command = "GET"
         self._handler.do_GET()
 
     def do_POST(self):
+        self._handler.command = "POST"
         self._handler.do_POST()
 
 
@@ -514,8 +517,36 @@ def _route_table_paths(source_path: Path) -> dict[str, list[str]]:
     return tables
 
 
+def _resolve_samples(dispatch_fn) -> dict:
+    """`{sample path: route}` for each prefix family a dispatcher's `resolve=`
+    hook answers. `_common.resolve_samples` stamps the mapping on the hook,
+    and the hook is reachable from the dispatcher the same two ways a route
+    table is: a closure cell, or a module global it names."""
+    if dispatch_fn is None:
+        return {}
+    reachable = [cell.cell_contents for cell in dispatch_fn.__closure__ or ()]
+    reachable += [
+        dispatch_fn.__globals__[name]
+        for name in dispatch_fn.__code__.co_names
+        if name in dispatch_fn.__globals__
+    ]
+    for value in reachable:
+        samples = getattr(value, "resolve_samples", None)
+        if isinstance(samples, dict):
+            return samples
+    return {}
+
+
+def _sample_paths(handler_cls, dispatcher: str) -> list[str]:
+    return list(_resolve_samples(getattr(handler_cls, dispatcher, None)))
+
+
 def _tabled_wizards():
-    """(module name, handler class, GET paths, POST paths) per tabled wizard."""
+    """(module name, handler class, GET paths, POST paths) per tabled wizard.
+
+    Paths are the dict-literal keys plus one sample per prefix family the
+    dispatcher's `resolve=` hook declares, so `/layer/<name>` is covered by
+    the same generic pins an exact key is."""
     out = []
     for source_path in sorted(WEB_SETUP_FILES):
         tables = _route_table_paths(source_path)
@@ -527,9 +558,13 @@ def _tabled_wizards():
             f"{source_path} grew a route table with no entry in "
             "_TABLED_WIZARD_FACTORIES — add one so its routes are covered"
         )
-        out.append(
-            (module_name, factory(), tables["_GET_ROUTES"], tables["_POST_ROUTES"]),
-        )
+        handler_cls = factory()
+        out.append((
+            module_name,
+            handler_cls,
+            tables["_GET_ROUTES"] + _sample_paths(handler_cls, "do_GET"),
+            tables["_POST_ROUTES"] + _sample_paths(handler_cls, "do_POST"),
+        ))
     return out
 
 
@@ -565,14 +600,17 @@ _COERCES_MALFORMED_BODY = frozenset({"wifi_setup"})
 
 
 def _post_route_table(handler_cls) -> dict:
-    """The wizard's live POST table — a closure cell on `do_POST` when the
-    table is closure-local (it captures per-server cfg), else a module global.
-    Same reach the header-CSRF pins use to drive the real callables."""
+    """The wizard's live POST table plus its prefix-family samples — a
+    closure cell on `do_POST` when the table is closure-local (it captures
+    per-server cfg), else a module global. Same reach the header-CSRF pins
+    use to drive the real callables."""
     fn = handler_cls.do_POST
     freevars = fn.__code__.co_freevars
     if "_POST_ROUTES" in freevars:
-        return fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
-    return fn.__globals__["_POST_ROUTES"]
+        table = fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
+    else:
+        table = fn.__globals__["_POST_ROUTES"]
+    return {**table, **_resolve_samples(fn)}
 
 
 # `csrf_mode` per POST route — the marker `form_guarded` / `header_guarded` /
@@ -648,6 +686,12 @@ def test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token(
         )
         req.do_POST()
         assert req.status == int(http.HTTPStatus.NOT_FOUND)
+        # The seam 404s through the stdlib error page, so the miss carries a
+        # body and a content type rather than a bare status line.
+        assert any(
+            name == "Content-Type" and value.startswith("text/html")
+            for name, value in req.sent_headers
+        )
 
 
 @pytest.mark.parametrize(

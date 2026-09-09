@@ -1280,10 +1280,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             auth.code_challenge = challenge
             auth.get_access_token(code, check_cache=False)
 
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) because the entries reference
-    # `Handler`, which is defined here.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)

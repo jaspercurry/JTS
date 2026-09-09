@@ -24,15 +24,28 @@ dispatcher that hands them to the shared seam — nothing else:
     def do_POST(self):
         dispatch_post(self, _POST_ROUTES, guard="header")
 
+The tables live wherever their bodies reach the wizard's state: inside
+`_make_handler`'s closure when they close over `cfg` or the `Handler` class,
+at module level when they close over nothing. The pins drive real handler
+instances, so the two read the same.
+
 Unknown paths 404 before any guard, never revealing CSRF state. `route_path`
 makes `/save`, `/save/` and `/save?x=1` one key; a prefix family such as
-`/layer/<name>` passes `resolve=`, a `path -> callable or None` hook.
+`/layer/<name>` passes `resolve=`, a `path -> callable or None` hook that may
+only inspect the path string — no I/O, no state lookup — because it runs
+ahead of every guard on a request that has proved nothing. Wear
+`@resolve_samples({"/layer/raw": _post_layer})` on that hook: the generic
+route pins drive one sample path per prefix family exactly as they drive a
+table key, so a family that names no sample is pinned by nothing.
 `guard="header"` runs `guard_mutating_request` in the dispatcher, ahead of
 any body read, and those POST bodies wear `@json_body`. A wizard whose
 guard varies per route passes `guard="per-body"` and each body declares its
 own — `@form_guarded` (token in the form body), `@header_guarded` (token in
 the header), `@read_guarded` (read-only probe: no token, cross-site
-navigations refused).
+navigations refused). A GET that changes state is a table entry wrapped in
+`read_guarded(...)`: under the dispatcher's permissive read guard that
+composes to the strict one, refusing the cross-site navigation a plain GET
+route allows.
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
@@ -925,10 +938,29 @@ RouteTable = Mapping[str, RouteFn]
 Resolver = Callable[[str], RouteFn | None]
 
 
+def resolve_samples(samples: RouteTable) -> Callable[[Resolver], Resolver]:
+    """Name one concrete path per prefix family a `resolve=` hook answers.
+
+    `@resolve_samples({"/layer/raw": _post_layer})` stamps the mapping on the
+    hook the way `csrf_mode` rides on a guard wrapper: dispatch ignores it,
+    and the generic route pins read it so a `/layer/<name>` family is covered
+    by the same 403 / 404 / malformed-body pins an exact table key gets.
+    """
+    def mark(hook: Resolver) -> Resolver:
+        hook.resolve_samples = dict(samples)  # type: ignore[attr-defined]
+        return hook
+    return mark
+
+
 def _route_for(
     handler: Any, table: RouteTable, resolve: Resolver | None,
 ) -> RouteFn | None:
-    """Table lookup then the prefix-family hook; sends the 404 itself."""
+    """Table lookup then the prefix-family hook; sends the 404 itself.
+
+    `resolve` runs before every guard, on a request that has proved
+    nothing, so it may only inspect the path string — no I/O, no state
+    lookup.
+    """
     path = route_path(handler.path)
     route = table.get(path)
     if route is None and resolve is not None:

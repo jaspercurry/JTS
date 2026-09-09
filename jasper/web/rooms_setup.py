@@ -1208,8 +1208,6 @@ class _Handler(BaseHTTPRequestHandler):
         dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self):  # noqa: N802
-        # JSON fetch POSTs: the token rides in the X-CSRF-Token header, so
-        # the dispatcher guards them all. Mirrors system_setup.
         dispatch_post(self, _POST_ROUTES, guard="header")
 
 

@@ -105,6 +105,7 @@ from ._common import (
     proxy_get,
     proxy_post,
     read_json_body,
+    resolve_samples,
     restart_voice_daemon,
     route_path,
     send_html_response,
@@ -742,12 +743,7 @@ _VALID_PROFILES = valid_profile_ids()
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure so the bodies can close over `cfg`. The POST guard varies by
-    # route — /save's CSRF token rides in the form body, every JSON route's
-    # in the X-CSRF-Token header — so each body declares its own guard by
-    # decorator and the dispatcher does not guard.
+    # The POST guard varies per route, so each body declares its own.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         state = _load_state(cfg["state_path"])
         ctx = begin_request(handler)
@@ -977,6 +973,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         "/save": _post_save,
     }
 
+    @resolve_samples({"/layer/raw": _post_layer})
     def _resolve_layer(path: str) -> RouteFn | None:
         """`/layer/<name>` is prefix-matched, so it rides the seam's
         resolve hook rather than an exact table key."""
