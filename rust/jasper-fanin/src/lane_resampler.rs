@@ -61,7 +61,7 @@ use jasper_resampler::{
     clamp_i16, clamp_i32, spine_acc_to_i16, AudioRing, RateController, SincTable, RADIUS_FRAMES,
 };
 
-pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals};
+pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals, BUFFER_ADJUST_PPM};
 
 /// Observability counters for one armed lane resampler, cloned into the STATUS
 /// snapshot. Absence of this object means the resampler is disabled.

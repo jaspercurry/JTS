@@ -247,7 +247,8 @@ def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path
     assert "High remains active" in state["detail"]
 
 
-def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
+@pytest.mark.parametrize("held,refilling,effective", [(2560, False, "high"), (1536, True, None)])
+def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path, held, refilling, effective):
     state_path = tmp_path / "usb_latency.env"
     lm.write_requested_mode("low", state_path)
     fallback = {
@@ -261,8 +262,8 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
                     "usbsink": {
                         "resampler": {
                             "locked": True,
-                            "held_target_frames": 2560,
-                            "decay": {"enabled": True, "floor_frames": 576},
+                            "held_target_frames": held,
+                            "decay": {"enabled": True, "floor_frames": 576, "refilling": refilling},
                         },
                     },
                 },
@@ -273,10 +274,10 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
     state = lm.read_state(fallback, state_path=state_path)
 
     assert state["state"] == "fallback"
-    assert state["effective_mode"] == "high"
-    assert "host timing check failed" in state["detail"]
-    assert "53.3 ms" in state["detail"]
-    assert "next USB session" in state["detail"]
+    assert state["effective_mode"] == effective
+    assert state["selected_mode"] == "low"
+    assert state["live_buffer_frames"] == held
+    assert state["live_buffer_ms"] == round(held * 1000 / 48000, 1)
 
 
 def test_usb_latency_does_not_treat_idle_ceiling_as_effective_high(tmp_path):

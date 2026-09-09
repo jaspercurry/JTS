@@ -735,7 +735,7 @@ impl Config {
         // physical threshold.
         let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
             period_frames,
-            input_resampler_max_adjust_ppm as f64,
+            input_resampler_max_adjust_ppm as f64 + crate::lane_resampler::BUFFER_ADJUST_PPM,
         ) as u32;
         let cushion_decay_floor_min = (input_resampler_target_frames
             + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
@@ -889,10 +889,7 @@ impl Config {
         // 256 + 256 = 512 held) can trip it.
         let resampler_armed_on_a_lane = input_resampler_enabled || usb_direct_enabled;
         if resampler_armed_on_a_lane {
-            let min_safe = jasper_resampler::minimum_safe_fill_frames(
-                period_frames,
-                input_resampler_max_adjust_ppm as f64,
-            ) as u32;
+            let min_safe = cushion_decay_min_safe_fill;
             let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
             let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
             if held_target < required_held {
@@ -2111,32 +2108,24 @@ mod tests {
 
     #[test]
     fn cushion_decay_floor_default_respects_minimum_safe_fill() {
-        // The DEFAULT floor must never be churn-by-construction: it sits at or
-        // above `minimum_safe_fill + margin`. At target 200 / period 256 /
-        // max_ppm 500 → min_safe 274 → derived floor 306, and the validated 576
-        // clears it (576 > 306, 576 < ceiling 2248).
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                let min_safe = jasper_resampler::minimum_safe_fill_frames(256, 500.0) as u32;
-                assert!(
-                    cfg.input_resampler_cushion_decay_floor_frames
-                        >= min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                    "default floor for a small target must respect the physical floor"
-                );
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_floor_frames,
-                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
-                );
-            },
-        );
+        for (period, expected_floor) in [("256", 576), ("1024", 1076)] {
+            with_env(
+                &[
+                    ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                    ("JASPER_FANIN_PERIOD_FRAMES", Some(period)),
+                    ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                    ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
+                    ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+                ],
+                || {
+                    let cfg = Config::from_env().expect("defaults must parse");
+                    assert_eq!(
+                        cfg.input_resampler_cushion_decay_floor_frames,
+                        expected_floor
+                    );
+                },
+            );
+        }
     }
 
     #[test]

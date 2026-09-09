@@ -1,4 +1,4 @@
-# ADR-0270: USB buffer motion is separate from clock correction
+# ADR-0275: USB buffer motion is separate from clock correction
 
 - **Date:** 2026-09-09
 - **Status:** Accepted. Supersedes ADR-0208's decay-demand subtraction and
@@ -18,7 +18,7 @@
   stays in use for the connection instead of repeatedly trying the failed
   depth. A gap of at least 250 ms is treated as idle: the full acquisition
   buffer cannot bridge it.
-- **Consequences:** A normal first start reaches Low in roughly 45 seconds;
+- **Consequences:** A normal first start reaches Low in roughly 50 seconds;
   a warm resume starts at the previous working depth. A fresh daemon or USB
   connection starts conservatively. During buffer motion, pitch can change
   by up to 3.5 cents. STATUS exposes motion, working floor, resume count and

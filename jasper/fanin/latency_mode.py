@@ -304,7 +304,12 @@ def read_state(
         if runtime.phase == "fallback" and held_frames is not None:
             state = "fallback"
             live_ms = held_frames * 1000 / SAMPLE_RATE
-            if runtime.fallback_reason == "actuator_unavailable":
+            if (resampler.get("decay") or {}).get("refilling") is True:
+                detail = (
+                    f"Input buffer is increasing toward High ({live_ms:.1f} ms now). "
+                    f"{selected_preset.label} remains your choice."
+                )
+            elif runtime.fallback_reason == "actuator_unavailable":
                 detail = (
                     f"High ({live_ms:.1f} ms) is active because USB timing "
                     "control is temporarily unavailable. JTS will retry "
