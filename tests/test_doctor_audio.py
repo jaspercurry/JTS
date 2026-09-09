@@ -1140,7 +1140,7 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
     assert r.speaker_silent is True
 
 
-def test_check_camilla_ring_chunk_fails_a_target_over_the_ring_capacity(
+def test_check_camilla_ring_chunk_warns_on_a_target_over_the_ring_capacity(
     monkeypatch, tmp_path
 ):
     """A target the whole ring cannot hold is a fill the graph never reaches.

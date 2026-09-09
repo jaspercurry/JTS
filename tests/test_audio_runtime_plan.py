@@ -87,9 +87,10 @@ def test_plan_uses_dac_profile_floor_as_intended_source():
 def test_plan_reports_the_emitted_geometry_the_config_declares(tmp_path):
     """POLICY and EMITTED are two facts, and the plan reports both.
 
-    The settings answer what an emitter's fallback would read; camilla_emitted
-    is a read of the config the statefile names. They differ whenever a graph
-    passes its geometry explicitly or the ring's capacity clamps a floor.
+    The settings report the operator/default value for the two Camilla keys;
+    camilla_emitted is a read of the config the statefile names. They differ
+    whenever the emitter takes the ring geometry on a ring end rather than
+    those settings.
     """
     config = tmp_path / "sound_current.yml"
     config.write_text(

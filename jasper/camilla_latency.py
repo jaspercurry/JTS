@@ -27,7 +27,8 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 _OPERATOR_KNOBS = ("JASPER_CAMILLA_CHUNKSIZE", "JASPER_CAMILLA_TARGET_LEVEL")
-# CamillaDSP's own bound on chunksize; target_level shares it as a sanity cap.
+# A sanity cap on the operator knobs; CamillaDSP itself rejects an unusable
+# value at load.
 _KNOB_MAX = 1 << 20
 
 
