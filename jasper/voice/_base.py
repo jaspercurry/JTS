@@ -350,11 +350,10 @@ class BaseLiveConnection:
         # `_on_turn_released` so an in-flight reply is not cut off.
         self._deferred_reconnect = Deferred()
 
-        self._outage = OutageTracker()
+        clock = nudge_clock if nudge_clock is not None else _time.monotonic
+        self._outage = OutageTracker(clock=clock)
         # Rate gate for `request_reconnect_now`.
-        self._reconnect_nudge = ReconnectNudge(
-            clock=nudge_clock if nudge_clock is not None else _time.monotonic,
-        )
+        self._reconnect_nudge = ReconnectNudge(clock=clock)
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
