@@ -31,9 +31,8 @@ use jasper_tts_protocol::loudness::{
     HeldLoudnessReference, ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand,
-    TtsAudioSamples, TtsCommand, TtsServerCounters, TtsWireWidth, VolumeContext,
-    TTS_FRAME_DEADLINE,
+    command_name, serve_client, QueuedTtsCommand, TtsAudioSamples, TtsCommand, TtsCommandSink,
+    TtsServerCounters, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -73,7 +72,6 @@ pub struct TtsMetrics {
     pending_frames: Arc<AtomicU64>,
     max_pending_frames: Arc<AtomicU64>,
     budget_frames: Arc<AtomicU64>,
-    protocol_errors: Arc<AtomicU64>,
     pub(crate) counters: TtsServerCounters,
     stale_commands_dropped: Arc<AtomicU64>,
     program_duck_active: Arc<AtomicBool>,
@@ -115,7 +113,6 @@ impl Default for TtsMetrics {
             pending_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames: Arc::new(AtomicU64::new(0)),
             budget_frames: Arc::new(AtomicU64::new(0)),
-            protocol_errors: Arc::new(AtomicU64::new(0)),
             counters: TtsServerCounters::default(),
             stale_commands_dropped: Arc::new(AtomicU64::new(0)),
             program_duck_active: Arc::new(AtomicBool::new(false)),
@@ -180,7 +177,7 @@ impl TtsMetrics {
     }
 
     pub fn protocol_errors(&self) -> u64 {
-        self.protocol_errors.load(Ordering::Relaxed)
+        self.counters.protocol_errors()
     }
 
     pub fn stale_commands_dropped(&self) -> u64 {
@@ -321,10 +318,6 @@ impl TtsMetrics {
     fn mark_pending(&self, frames: u64) {
         self.pending_frames.store(frames, Ordering::Relaxed);
         fetch_max(&self.max_pending_frames, frames);
-    }
-
-    fn mark_protocol_error(&self) {
-        self.protocol_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     fn mark_stale_command_dropped(&self) {
@@ -1293,50 +1286,20 @@ fn handle_tts_client(
     metrics: TtsMetrics,
     frame_deadline: Duration,
 ) {
-    let mut reader = BufReader::new(stream);
-    loop {
-        match read_command_deadlined(&mut reader, frame_deadline) {
-            Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(TtsCommand::Flush)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, false) {
-                    return;
-                }
-            }
-            Ok(Some(TtsCommand::FlushSync)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, true) {
-                    return;
-                }
-            }
-            Ok(Some(command)) => {
-                let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_command(
-                    "fanin",
-                    &tx,
-                    QueuedTtsCommand {
-                        epoch: current_epoch,
-                        command,
-                    },
-                    &metrics.counters,
-                    |line| warn!("{line}"),
-                ) {
-                    return;
-                }
-            }
-            Err(e) if is_frame_timeout(&e) => {
-                metrics.counters.mark_frame_timeout();
-                warn!(
-                    "event=fanin.tts_socket.frame_timeout deadline_s={}",
-                    frame_deadline.as_secs()
-                );
-                return;
-            }
-            Err(e) => {
-                metrics.mark_protocol_error();
-                warn!("event=fanin.tts_socket.protocol_error detail={}", e);
-                return;
-            }
-        }
-    }
+    let sink = TtsCommandSink {
+        daemon: "fanin",
+        tx,
+        epoch,
+        counters: metrics.counters.clone(),
+    };
+    serve_client(
+        &sink,
+        stream,
+        frame_deadline,
+        |line| warn!("{line}"),
+        || {},
+        |reader, sync| queue_flush(reader, &flush_tx, &sink.epoch, sync),
+    );
 }
 
 fn queue_flush(
