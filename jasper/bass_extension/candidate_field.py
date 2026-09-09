@@ -313,13 +313,28 @@ def _protection(raw: Any, *, where: str, boost_headroom_db: float) -> dict[str, 
     return resolved
 
 
-def _sealed_filters(target: Mapping[str, Any], plant: Mapping[str, Any], where: str) -> None:
-    """A non-natural target IS its Linkwitz transform, recomputed here."""
-    # lazy: alignment carries the numpy response models, and this module sits on
-    # the emitter's and the runtime proof's import paths.
-    from jasper.bass_extension.alignment import linkwitz_transform_params
+def _sealed_filters(rung: Mapping[str, Any], plant: Mapping[str, Any], where: str) -> None:
+    """A non-natural rung IS its Linkwitz transform, recomputed here.
+
+    Its two declared costs are recomputed with it, because every downstream
+    bound is stated in them and none of their readers can check them: the proof
+    cap, the seat-SPL stop and the excitation-cap comparison all spend
+    ``boost_headroom_db``, so a field understating it would buy level nothing
+    measured.
+    """
+    # lazy (both): alignment carries the numpy response models, and this module
+    # sits on the emitter's and the runtime proof's import paths.
+    import numpy as np
+
+    from jasper.bass_extension.alignment import (
+        RESPONSE_GRID_HZ,
+        linkwitz_transform_params,
+        lt_boost_db,
+        lt_response_db,
+    )
 
     invalid = BassExtensionRefusal.TARGET_INVALID
+    target = rung["target"]
     filters = target["filters"]
     if len(filters) != 1 or filters[0]["type"] != "LinkwitzTransform":
         _refuse(invalid, f"{where} must carry exactly one LinkwitzTransform filter")
@@ -344,6 +359,23 @@ def _sealed_filters(target: Mapping[str, Any], plant: Mapping[str, Any], where: 
                 f"{where} transform {key} is {actual!r}, and this plant and "
                 f"corner compose {value!r}",
             )
+    asymptote = lt_boost_db(plant["f0_hz"], target["fp_hz"])
+    if not math.isclose(rung["lt_boost_db"], asymptote, rel_tol=_FILTER_REL_TOL):
+        _refuse(
+            invalid,
+            f"{where} states lt_boost_db {rung['lt_boost_db']!r}, and this "
+            f"transform's is {asymptote!r}",
+        )
+    realized = round(max(0.0, float(np.max(lt_response_db(
+        RESPONSE_GRID_HZ, plant["f0_hz"], plant["q0"], target["fp_hz"],
+        target["qp"],
+    )))), 2)
+    if round(float(target["boost_headroom_db"]), 2) < realized:
+        _refuse(
+            invalid,
+            f"{where} claims {target['boost_headroom_db']!r} dB of boost "
+            f"headroom, and this transform spends {realized!r} dB",
+        )
 
 
 def _rungs(raw: Any, *, plant: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -381,7 +413,7 @@ def _rungs(raw: Any, *, plant: Mapping[str, Any]) -> list[dict[str, Any]]:
     _check_order(rungs)
     _check_levels(rungs)
     for position, rung in enumerate(rungs[:-1]):
-        _sealed_filters(rung["target"], plant, f"rung {position}")
+        _sealed_filters(rung, plant, f"rung {position}")
     return rungs
 
 

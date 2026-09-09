@@ -32,6 +32,7 @@ from jasper.audio_measurement.program import (
     ProgramSegment,
     segment_emitted_band_hz,
 )
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
@@ -122,6 +123,11 @@ class ChannelFacts:
     session_volume_db: float
     declared_peak_dbfs: float
     true_peak_dbfs: float
+    #: What the emitted GRAPH adds in front of this driver that the rendered
+    #: file does not carry — today, a bass rung's LinkwitzTransform boost on
+    #: its owner's outputs. Folded into ``effective_true_peak_dbfs``; 0.0 on
+    #: every graph that boosts nothing.
+    graph_gain_db: float
     effective_true_peak_dbfs: float
     out_of_segment_rms_dbfs: float
     peak_within_cap: bool
@@ -136,6 +142,7 @@ class ChannelFacts:
             "session_volume_db": self.session_volume_db,
             "declared_peak_dbfs": self.declared_peak_dbfs,
             "true_peak_dbfs": self.true_peak_dbfs,
+            "graph_gain_db": self.graph_gain_db,
             "effective_true_peak_dbfs": self.effective_true_peak_dbfs,
             "out_of_segment_rms_dbfs": self.out_of_segment_rms_dbfs,
             "peak_within_cap": self.peak_within_cap,
@@ -337,9 +344,40 @@ def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> flo
     return max(peaks) if peaks else _dbfs(0.0)
 
 
+def _bass_graph_boost(
+    bass_profile_summary: Mapping[str, Any] | None,
+) -> tuple[float, frozenset[int]]:
+    """What a proved bass stage ADDS ahead of the driver, and on which outputs.
+
+    A rung's LinkwitzTransform lifts its owner's outputs in band by the whole
+    of the rung's ``boost_headroom_db``, and the rendered file does not carry
+    that gain — so the driver's declared excitation cap has to be compared
+    against it (ADR-0260 protection basis). ``(0.0, frozenset())`` for every
+    summary authorizing no stage, no boost, or no owner, which is what leaves
+    every other admission byte-identical.
+    """
+    if (
+        not isinstance(bass_profile_summary, Mapping)
+        or bass_profile_summary.get("runtime_block_required") is not True
+    ):
+        return 0.0, frozenset()
+    target = bass_profile_summary.get("natural")
+    owners = bass_profile_summary.get("bass_owner_channels")
+    if not isinstance(target, Mapping) or not isinstance(owners, (list, tuple)):
+        return 0.0, frozenset()
+    boost = finite_float(target.get("boost_headroom_db"))
+    if boost is None or boost <= 0.0:
+        return 0.0, frozenset()
+    channels = frozenset(
+        channel for channel in owners
+        if not isinstance(channel, bool) and isinstance(channel, int)
+    )
+    return (boost, channels) if channels else (0.0, frozenset())
+
+
 def _channel_facts(
     program: ExcitationProgram, pcm: Any, *, channel: int, role: str,
-    cap_dbfs: float, session_volume_db: float,
+    cap_dbfs: float, session_volume_db: float, graph_gain_db: float = 0.0,
 ) -> tuple[ChannelFacts, list[ProgramAdmissionRefusal]]:
     import numpy as np
 
@@ -347,7 +385,9 @@ def _channel_facts(
     column = np.asarray(pcm[:, channel], dtype=np.float32)
     true_peak = float(np.max(np.abs(column))) if column.size else 0.0
     true_peak_dbfs = _dbfs(true_peak)
-    effective_true_peak_dbfs = true_peak_dbfs + float(session_volume_db)
+    effective_true_peak_dbfs = (
+        true_peak_dbfs + float(session_volume_db) + float(graph_gain_db)
+    )
     mask = _out_of_segment_mask(program, channel, column.size)
     residual = column[mask]
     rms = (
@@ -372,6 +412,7 @@ def _channel_facts(
         session_volume_db=float(session_volume_db),
         declared_peak_dbfs=declared_peak_dbfs,
         true_peak_dbfs=true_peak_dbfs,
+        graph_gain_db=float(graph_gain_db),
         effective_true_peak_dbfs=effective_true_peak_dbfs,
         out_of_segment_rms_dbfs=out_of_segment_rms_dbfs,
         peak_within_cap=peak_within_cap,
@@ -719,7 +760,11 @@ def readmit_summed_program_from_wav(
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
-    caps: list[float] = []
+    # ``(cap_dbfs, graph_gain_db)`` per driven role: the summed file is MONO
+    # and reaches every output, so the binding driver is the one whose cap the
+    # graph leaves the least room under — not simply the lowest cap.
+    caps: list[tuple[float, float]] = []
+    boost_db, bass_owner_channels = _bass_graph_boost(bass_profile_summary)
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
     declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
@@ -732,8 +777,8 @@ def readmit_summed_program_from_wav(
             duration = effective_sweep_duration_limit_s(safety_profile, fingerprint)
         except ExcitationSafetyPlanError as exc:
             return _refused_program(program, session_volume_db, _map_safety_plan_error(exc))
-        caps.append(cap)
         output = physical[fingerprint]["output_index"]
+        caps.append((cap, boost_db if output in bass_owner_channels else 0.0))
         requirements = declared[fingerprint]["required_protection_filters"]
         if not all(protection_requirement_present(
             view, output_index=output, allowed_channels={output}, requirement=requirement,
@@ -762,9 +807,12 @@ def readmit_summed_program_from_wav(
             ))
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
+    binding_cap_dbfs, binding_gain_db = min(
+        caps, key=lambda entry: entry[0] - entry[1]
+    )
     facts, channel_refusals = _channel_facts(
-        program, pcm, channel=0, role="summed", cap_dbfs=min(caps),
-        session_volume_db=session_volume_db,
+        program, pcm, channel=0, role="summed", cap_dbfs=binding_cap_dbfs,
+        session_volume_db=session_volume_db, graph_gain_db=binding_gain_db,
     )
     refusals.extend(channel_refusals)
     admission = ProgramAdmission(

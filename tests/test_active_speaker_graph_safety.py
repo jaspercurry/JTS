@@ -295,12 +295,18 @@ def test_a_rung_is_proved_against_its_own_transform_and_the_identity_rule_stands
         ("boost_headroom_db", float("inf")),
         ("boost_cap_db", "6"),
         ("boost_cap_db", float("nan")),
+        # A transform disclosed with NO cap is an unbounded boost, not "no
+        # bound to check".
+        ("boost_cap_db", None),
     ],
 )
 def test_a_rung_summary_this_proof_cannot_read_refuses_the_block(key, value):
     summary = _rung_summary()
     if key == "boost_cap_db":
-        summary[key] = value
+        if value is None:
+            del summary[key]
+        else:
+            summary[key] = value
     else:
         summary["natural"][key] = value
 

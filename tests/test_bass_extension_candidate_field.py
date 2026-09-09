@@ -113,6 +113,32 @@ def test_a_natural_only_family_validates_and_costs_no_level():
     assert field["rungs"][-1]["max_level_db"] == 0.0
 
 
+@pytest.mark.parametrize("path, value", [
+    # Understated headroom: every downstream bound — the graph proof's cap, the
+    # seat-SPL stop, the excitation-cap comparison — is stated in this number.
+    (("rungs", 0, "target", "boost_headroom_db"), 1.0),
+    (("rungs", 0, "target", "boost_headroom_db"), 5.8),
+    # A cost that is not this transform's.
+    (("rungs", 0, "lt_boost_db"), 5.0),
+    (("rungs", 0, "lt_boost_db"), 0.0),
+])
+def test_a_rung_may_not_understate_what_its_own_transform_spends(path, value):
+    with pytest.raises(BassCandidateFieldError) as exc:
+        validate_bass_extension_field(
+            _mutate(bass_extension_field(boosted=True), path, value)
+        )
+
+    assert exc.value.reason is BassExtensionRefusal.TARGET_INVALID
+
+
+def test_the_adapters_own_family_states_both_costs_the_reader_recomputes():
+    """The generator and this reader land on one number, not two near it."""
+    field = validate_bass_extension_field(bass_extension_field(boosted=True))
+
+    assert field["rungs"][0]["target"]["boost_headroom_db"] > 0.0
+    assert field["rungs"][0]["lt_boost_db"] > 0.0
+
+
 def test_a_boosted_family_carries_the_level_its_ladder_measured():
     field = validate_bass_extension_field(bass_extension_field(boosted=True))
 

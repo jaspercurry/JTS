@@ -436,15 +436,16 @@ def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
     assert not set(room["filters"]) & sound_filter_slot_names()
 
 
-def _bass_candidate(tuning_profile, *, boosted=True, tune_match=True):
+def _bass_candidate(tuning_profile, *, boosted=True, tune_match=True, room=False):
     """A bass candidate whose speaker layer IS the fixture's applied tune."""
 
+    candidate = _room_candidate(
+        tuning_profile, linearization_gain=None if tune_match else -9.0,
+    )
     return replace(
-        _room_candidate(
-            tuning_profile, linearization_gain=None if tune_match else -9.0,
-        ),
+        candidate,
         program_id="bass-trial",
-        room_correction={},
+        room_correction=candidate.room_correction if room else {},
         bass_extension=bass_extension_field(
             boosted=boosted, owner={"role": "woofer", "channels": [0]},
         ),
@@ -474,6 +475,7 @@ def test_a_bass_candidate_graph_is_the_applied_tune_plus_one_named_rung(
         if not name.startswith("bass_ext_")
     } == tune["filters"]
     assert not any(name.startswith("bass_ext_") for name in tune["filters"])
+    assert extract_room_peqs_from_config_text(text) == []
     # Every other scope still emits no bass stage from the same candidate.
     assert not any(
         name.startswith("bass_ext_")
@@ -482,6 +484,35 @@ def test_a_bass_candidate_graph_is_the_applied_tune_plus_one_named_rung(
             candidate=_room_candidate(tuning_profile),
         ))["filters"]
     )
+
+
+def test_a_bass_rung_plays_through_the_room_set_the_same_candidate_carries(
+    tuning_profile,
+):
+    """The rung's in-room playback after apply includes that room layer."""
+
+    candidate = _bass_candidate(tuning_profile, room=True)
+    target_id = candidate.bass_extension["rungs"][0]["target"]["target_id"]
+    text = compile_tuning_graph(
+        tuning_profile, scope="bass_candidate", candidate=candidate,
+        bass_target_id=target_id,
+    )
+    room_only = compile_tuning_graph(
+        tuning_profile, scope="room_candidate",
+        candidate=_room_candidate(tuning_profile),
+    )
+
+    assert extract_room_peqs_from_config_text(text) == list(
+        candidate_room_peqs(candidate)
+    )
+    assert bass_extension_block_valid(
+        view_from_emitted_text(text),
+        graph_summary(candidate.bass_extension, target_id=target_id),
+    ).valid is True
+    assert {
+        name: entry for name, entry in yaml.safe_load(text)["filters"].items()
+        if not name.startswith("bass_ext_")
+    } == yaml.safe_load(room_only)["filters"]
 
 
 @pytest.mark.parametrize("candidate, target_id, reason", [

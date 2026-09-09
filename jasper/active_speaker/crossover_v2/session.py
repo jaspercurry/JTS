@@ -613,6 +613,10 @@ class TuningSession:
             "vertical_deg": spec.vertical_deg,
             "prompt": prompt,
             "candidate_id": spec.candidate_id,
+            # WHICH rung of that candidate's bass family played, so the ladder's
+            # own grading can key its rows on it. ``""`` on every scope that
+            # emits no bass stage.
+            "bass_target_id": spec.bass_target_id,
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,

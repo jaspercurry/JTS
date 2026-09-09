@@ -14,6 +14,7 @@ from scipy.optimize import least_squares
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.alignment import (
+    RESPONSE_GRID_HZ,
     boost_headroom_db,
     butterworth_highpass_db,
     linkwitz_transform_params,
@@ -223,7 +224,7 @@ class SealedAdapter:
             return (natural,)
 
         corners = np.geomspace(deepest, plant.f0_hz, n_targets)
-        grid = np.geomspace(10.0, 500.0, 960)
+        grid = RESPONSE_GRID_HZ
         natural_chain = second_order_highpass_db(grid, plant.f0_hz, plant.q0)
         natural_chain += butterworth_highpass_db(
             grid, float(subsonic["freq"]), int(subsonic["order"])

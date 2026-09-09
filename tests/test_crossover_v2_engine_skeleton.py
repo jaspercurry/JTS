@@ -623,18 +623,30 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
         MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="base", program_phase="entry_baseline"),
         MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
         MeasureSpec(kind=MEASURE_KIND_BASELINE),
+        MeasureSpec(
+            kind=MEASURE_KIND_VERIFY, graph_scope="bass_candidate",
+            candidate_id="fp-a", bass_target_id="t31.86",
+        ),
     ]
     async with session:
         for spec in specs:
             await session.measure(spec)
     assert parts["graph"].scopes == [
         ("base", "", ""), ("candidate", "fp-a", ""), ("candidate", "fp-a", ""),
-        ("drivers", "", ""),
+        ("drivers", "", ""), ("bass_candidate", "fp-a", "t31.86"),
     ]
     records = parts["records"].banked
-    assert [record["graph_scope"] for record in records] == ["base", "candidate", "candidate", "drivers"]
-    assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
-    assert len({record["graph_fingerprint"] for record in records}) == 3
+    assert [record["graph_scope"] for record in records] == [
+        "base", "candidate", "candidate", "drivers", "bass_candidate",
+    ]
+    # WHICH rung played rides the record beside the candidate that carried it.
+    assert [record["bass_target_id"] for record in records] == [
+        "", "", "", "", "t31.86",
+    ]
+    assert [record.get("program_phase") for record in records] == [
+        "entry_baseline", "verify", "verify", None, None,
+    ]
+    assert len({record["graph_fingerprint"] for record in records}) == 4
     assert all(record["measurement_status"] == "captured" for record in records)
 
 

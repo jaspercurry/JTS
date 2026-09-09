@@ -9,6 +9,13 @@ import math
 
 import numpy as np
 
+#: The grid every headroom figure in this program is measured on: 10 Hz to
+#: 500 Hz, 960 log-spaced points. Declared once so a family's generator and the
+#: readers that re-derive its headroom land on the same number, not a number
+#: near it. Read-only: every consumer only samples it.
+RESPONSE_GRID_HZ = np.geomspace(10.0, 500.0, 960)
+RESPONSE_GRID_HZ.setflags(write=False)
+
 
 def _positive_finite(name: str, value: float) -> float:
     value = float(value)

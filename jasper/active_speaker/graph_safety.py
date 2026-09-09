@@ -21,6 +21,15 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from jasper.camilla_emit import (
+    BASS_EXTENSION_FREQ_HZ_HI,
+    BASS_EXTENSION_FREQ_HZ_LO,
+    BASS_EXTENSION_Q_HI,
+    BASS_EXTENSION_Q_LO,
+    BASS_EXTENSION_SUBSONIC_ORDERS,
+)
+from jasper.json_fields import finite_float
+
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
 # --------------------------------------------------------------------------- #
@@ -812,51 +821,35 @@ _BASS_EXTENSION_LT_KEYS = ("freq_act", "q_act", "freq_target", "q_target")
 def _bass_extension_lt_values(raw: Any) -> tuple[float, ...] | None:
     """The four transform values a rung's summary discloses.
 
-    ``None`` where it discloses none — the natural target, whose transform is
-    the identity its own corner composes. ``()`` where it discloses something
-    this proof will not read: an unknown key set, a coercible type, or a value
-    outside the emitter's own bounds.
+    ``None`` for anything this proof will not read: an unknown key set, a
+    coercible type, or a value outside the emitter's own bounds. Callers ask
+    only when the summary discloses a transform at all.
     """
-    from jasper.camilla_emit import (
-        BASS_EXTENSION_FREQ_HZ_HI,
-        BASS_EXTENSION_FREQ_HZ_LO,
-        BASS_EXTENSION_Q_HI,
-        BASS_EXTENSION_Q_LO,
-    )
-
-    if raw is None:
-        return None
     if not isinstance(raw, Mapping) or set(raw) != set(_BASS_EXTENSION_LT_KEYS):
-        return ()
+        return None
     values: list[float] = []
     for key in _BASS_EXTENSION_LT_KEYS:
-        value = raw[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return ()
-        number = float(value)
+        number = finite_float(raw[key])
         lo, hi = (
             (BASS_EXTENSION_FREQ_HZ_LO, BASS_EXTENSION_FREQ_HZ_HI)
             if key.startswith("freq")
             else (BASS_EXTENSION_Q_LO, BASS_EXTENSION_Q_HI)
         )
-        if not math.isfinite(number) or not lo <= number <= hi:
-            return ()
+        if number is None or not lo <= number <= hi:
+            return None
         values.append(number)
     return tuple(values)
 
 
 def _bass_extension_boost_cap(raw: Any) -> float | None:
-    """The boost bound a summary states, ``inf`` where it states none.
+    """The boost bound a summary states, or ``None`` where it states none.
 
-    ``None`` for a stated bound this proof will not read: a cap nobody can
-    parse must not read as no cap at all.
+    A rung that discloses a transform must disclose the cap its margin policy
+    sets: an unstated or unparseable bound is not "no bound", and refuses the
+    block rather than admitting an unbounded boost.
     """
-    if raw is None:
-        return math.inf
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    cap = float(raw)
-    return cap if math.isfinite(cap) and cap >= 0.0 else None
+    cap = finite_float(raw)
+    return cap if cap is not None and cap >= 0.0 else None
 
 
 def bass_extension_block_valid(
@@ -879,14 +872,6 @@ def bass_extension_block_valid(
     summary's ``boost_cap_db`` where it states one. A rung reaches a graph
     only under the ladder's own protection; nothing here is that protection.
     """
-
-    from jasper.camilla_emit import (
-        BASS_EXTENSION_FREQ_HZ_HI,
-        BASS_EXTENSION_FREQ_HZ_LO,
-        BASS_EXTENSION_Q_HI,
-        BASS_EXTENSION_Q_LO,
-        BASS_EXTENSION_SUBSONIC_ORDERS,
-    )
 
     names = ("bass_ext_lt", "bass_ext_subsonic")
     definitions = tuple(sorted(name for name in view.filters if name.startswith("bass_ext")))
@@ -947,18 +932,20 @@ def bass_extension_block_valid(
         return BassExtensionBlockEvidence(
             False, True, definitions, (), "bass_extension_profile_evidence_invalid"
         )
-    lt_expected = _bass_extension_lt_values(natural.get("lt"))
-    if lt_expected is None:
+    lt_expected: tuple[float, ...]
+    if natural.get("lt") is None:
         lt_expected = (fp_hz, qp, fp_hz, qp)
         boost_ok = boost == 0.0
     else:
+        values = _bass_extension_lt_values(natural["lt"])
         cap = _bass_extension_boost_cap(profile_summary.get("boost_cap_db"))
-        boost_ok = (
-            lt_expected != ()
-            and cap is not None
-            and math.isfinite(boost)
-            and 0.0 <= boost <= cap
-        )
+        if values is None or cap is None:
+            return BassExtensionBlockEvidence(
+                False, True, definitions, tuple(sorted(channels)),
+                "bass_extension_natural_target_invalid",
+            )
+        lt_expected = values
+        boost_ok = math.isfinite(boost) and 0.0 <= boost <= cap
     if (
         not math.isfinite(fp_hz)
         or not BASS_EXTENSION_FREQ_HZ_LO <= fp_hz <= BASS_EXTENSION_FREQ_HZ_HI

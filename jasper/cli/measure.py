@@ -54,6 +54,12 @@ REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
 #: More than one ``--position`` in one invocation: this door has no mover seam,
 #: so N bearings would bank N ``position_deg`` values nothing moved to (S12).
 REFUSE_ONE_POSITION_PER_RUN = "measure_one_position_per_run"
+#: A bass rung named a candidate this box has not banked, so there is no
+#: family to resolve the rung's boost from.
+REFUSE_BASS_LADDER_CANDIDATE = "bass_ladder_candidate_unbanked"
+#: The named candidate authorizes no such rung — an unknown target id, or a
+#: family this box's own reader refuses. Never predicted as an unboosted take.
+REFUSE_BASS_LADDER_TARGET = "bass_ladder_target_unknown"
 #: A bass rung was requested on a box whose seat-level reference cannot predict
 #: an SPL: none banked, or banked with no stimulus provenance to solve against.
 REFUSE_BASS_LADDER_UNBANKED = "bass_ladder_reference_unbanked"
@@ -516,19 +522,51 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
     return {str(role): float(db) for role, db in trims.items()}
 
 
-def _bass_rung_summary(candidate_id: str, target_id: str) -> Mapping[str, Any]:
-    """The graph authority for one rung of one banked candidate's family."""
-    from jasper.active_speaker.candidate_bank import find_banked_candidate
+def _bass_rung_summaries(
+    specs: tuple[Any, ...],
+) -> dict[tuple[str, str], Mapping[str, Any]]:
+    """Every bass rung this batch plays, resolved ONCE from the bank.
+
+    Both readers of a rung — the seat-SPL stop before the door and admission
+    inside it — take the answer from here, so the level the request was judged
+    at and the authority each take is admitted against are one resolution of
+    one artifact rather than two reads that could disagree.
+    """
+    from jasper.active_speaker.candidate_bank import (
+        CandidateBankRefusal, find_banked_candidate,
+    )
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        GRAPH_SCOPE_BASS_CANDIDATE,
+    )
     from jasper.bass_extension.candidate_field import graph_summary
 
-    return graph_summary(
-        find_banked_candidate(candidate_id).candidate.bass_extension,
-        target_id=target_id,
-    )
+    summaries: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for spec in specs:
+        if spec.graph_scope != GRAPH_SCOPE_BASS_CANDIDATE:
+            continue
+        key = (spec.candidate_id, spec.bass_target_id)
+        if key in summaries:
+            continue
+        try:
+            candidate = find_banked_candidate(key[0]).candidate
+        except CandidateBankRefusal as exc:
+            raise BoxNotMeasurable(REFUSE_BASS_LADDER_CANDIDATE, str(exc)) from exc
+        summary = graph_summary(candidate.bass_extension, target_id=key[1])
+        if summary.get("runtime_block_required") is not True:
+            raise BoxNotMeasurable(
+                REFUSE_BASS_LADDER_TARGET,
+                f"candidate {key[0]} authorizes no rung {key[1]!r}: its bass "
+                "family does not carry that target, or does not read as a "
+                "family at all",
+            )
+        summaries[key] = summary
+    return summaries
 
 
 def _assert_bass_ladder_under_ceiling(
-    specs: tuple[Any, ...], box: BoxDeclaration,
+    specs: tuple[Any, ...],
+    box: BoxDeclaration,
+    summaries: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> None:
     """Refuse a bass-rung request whose ladder would reach the SPL stop.
 
@@ -562,12 +600,8 @@ def _assert_bass_ladder_under_ceiling(
         ) from exc
     reference = load_seat_level_reference()
     for spec in rungs:
-        summary = _bass_rung_summary(spec.candidate_id, spec.bass_target_id)
-        emitted = summary.get("natural")
-        boost_db = (
-            float(emitted.get("boost_headroom_db", 0.0))
-            if isinstance(emitted, Mapping) else 0.0
-        )
+        emitted = summaries[(spec.candidate_id, spec.bass_target_id)]["natural"]
+        boost_db = float(emitted["boost_headroom_db"])
         # An empty ladder is the one stimulus the program declares, and the
         # rung's own dBFS is a sweep PEAK where the reference banks an RMS.
         for peak_dbfs in spec.level_ladder_dbfs or (BASE_STIMULUS_PEAK_DBFS,):
@@ -597,6 +631,7 @@ def _assert_bass_ladder_under_ceiling(
 def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
     config_dir: str, graph: Any,
+    bass_summaries: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> Any:
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.measure_spec import (
@@ -623,22 +658,16 @@ def _bind_compose(
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
 
-    summaries: dict[tuple[str, str], Mapping[str, Any]] = {}
-
     def bass_profile_summary(spec: Any) -> Mapping[str, Any]:
         """The authority this take's graph is READMITTED against.
 
-        Resolved from the named candidate a second time rather than from the
-        graph the session installed, which is what keeps admission an
-        independent reader of the same evidence. Cached per rung: the lookup
-        is a bank scan and a batch plays one rung many times.
+        Read from the batch's own resolution rather than from the graph the
+        session installed, which is what keeps admission an independent reader
+        of the same evidence.
         """
         if spec.graph_scope != GRAPH_SCOPE_BASS_CANDIDATE:
             return NO_BASS_EXTENSION_PROFILE_SUMMARY
-        key = (spec.candidate_id, spec.bass_target_id)
-        if key not in summaries:
-            summaries[key] = _bass_rung_summary(*key)
-        return summaries[key]
+        return bass_summaries[(spec.candidate_id, spec.bass_target_id)]
 
     async def before_play(program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
@@ -727,7 +756,8 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             "this box has banked no per-driver level evidence, so a "
             "level-matched take would measure unmatched branches",
         )
-    _assert_bass_ladder_under_ceiling(specs, box)
+    bass_summaries = _bass_rung_summaries(specs)
+    _assert_bass_ladder_under_ceiling(specs, box, bass_summaries)
     try:
         device = require_wired_mic()
     except WiredMicMissing as exc:
@@ -793,6 +823,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     cam_factory=cam_factory,
                     config_dir=config_dir,
                     graph=door.graph,
+                    bass_summaries=bass_summaries,
                 ),
                 capture_stimulus=capture,
             )

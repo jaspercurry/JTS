@@ -740,6 +740,71 @@ def test_a_bass_stage_is_admitted_only_against_the_rung_that_authorized_it(tmp_p
         assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admit(refused).refusals
 
 
+@pytest.mark.parametrize("boosted, woofer_peak, owner_binds, over_cap", [
+    # The owner's own cap binds once the rung's boost sits in front of it: the
+    # same file this box admits at a -62 dBFS woofer cap is over that cap with
+    # the stage installed, and the rendered WAV carries none of that gain.
+    (True, -62.0, True, True),
+    # Same file, same caps, the natural rung: no boost, nothing moves.
+    (False, -62.0, False, False),
+    # Same boosted rung, but the binding driver is the TWEETER, which is not a
+    # bass owner — the graph adds nothing in front of it, so the comparison is
+    # the one it always was.
+    (True, -40.0, False, False),
+])
+def test_a_rung_boost_is_folded_into_the_cap_it_is_played_against(
+    tmp_path, boosted, woofer_peak, owner_binds, over_cap,
+):
+    """Non-negotiable #2: a driver's declared cap is compared against what the
+    DRIVER sees, which is the file's peak plus everything the graph adds."""
+    from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.bass_extension.candidate_field import graph_summary
+    from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
+    from tests.test_bass_extension_candidate_field import bass_extension_field
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=woofer_peak, woofer_floor=100, max_sweep_duration_s=4,
+    )
+    field = bass_extension_field(
+        boosted=boosted, owner={"role": "woofer", "channels": [0]},
+    )
+    rung = field["rungs"][0]["target"]
+    graph_yaml, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=_applied_profile(topology),
+        playback_device=ACTIVE_PCM, bass_extension=field,
+        bass_target_id=rung["target_id"],
+    )
+    assert graph_yaml and not issues
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        session_volume_db=-20.0, fc_hz=2000,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "summed.wav"
+    write_program_wav(wav, program)
+
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph_yaml, topology=topology,
+        safety_profile=profile, role_targets=targets, session_volume_db=-20.0,
+        bass_profile_summary=graph_summary(field, target_id=rung["target_id"]),
+    )
+    facts, = admission.channels
+
+    expected_gain = rung["boost_headroom_db"] if owner_binds else 0.0
+    assert facts.graph_gain_db == pytest.approx(expected_gain)
+    assert facts.effective_true_peak_dbfs == pytest.approx(
+        facts.true_peak_dbfs - 20.0 + facts.graph_gain_db
+    )
+    assert facts.to_dict()["graph_gain_db"] == pytest.approx(expected_gain)
+    if over_cap:
+        # ONLY the whole-file attestation refuses: the per-segment comparison
+        # reads the declared gain, which clears this cap on its own.
+        assert admission.refusals == (ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP,)
+    else:
+        assert admission.allowed, admission.to_dict()
+
+
 @pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
 @pytest.mark.parametrize("damage", [
     None, "missing", "wrong_output", "low_corner", "shallow_slope", "gain", "after_limiter",

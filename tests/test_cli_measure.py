@@ -27,7 +27,9 @@ from jasper.cli.measure import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
+    REFUSE_BASS_LADDER_CANDIDATE,
     REFUSE_BASS_LADDER_CEILING,
+    REFUSE_BASS_LADDER_TARGET,
     REFUSE_BASS_LADDER_UNBANKED,
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
@@ -315,6 +317,12 @@ def _bass_specs(*levels_dbfs: float):
     ),)
 
 
+#: The batch's one resolution of its one rung, as ``_bass_rung_summaries``
+#: hands it to both readers.
+def _bass_summaries(boost_db: float = 6.0):
+    return {("fp-a", "t31.86"): {"natural": {"boost_headroom_db": boost_db}}}
+
+
 @pytest.mark.parametrize("levels, reference, ceiling, reason", [
     # -6 dBFS peak is -9.01 dBFS RMS: 17.0 dB above the banked stimulus, plus
     # the rung's whole 6 dB of boost, lands at 100.5 dB SPL. The quiet first
@@ -338,10 +346,6 @@ def test_a_bass_rung_is_refused_whole_before_any_audio(
     from jasper.active_speaker import commission_wiring, seat_level_reference
 
     monkeypatch.setattr(
-        measure, "_bass_rung_summary",
-        lambda *_: {"natural": {"boost_headroom_db": 6.0}},
-    )
-    monkeypatch.setattr(
         commission_wiring, "commissioning_spl_ceiling_db", lambda _topology: ceiling
     )
     monkeypatch.setattr(
@@ -350,17 +354,15 @@ def test_a_bass_rung_is_refused_whole_before_any_audio(
     )
 
     with pytest.raises(measure.BoxNotMeasurable) as exc:
-        measure._assert_bass_ladder_under_ceiling(_bass_specs(*levels), _declaration())
+        measure._assert_bass_ladder_under_ceiling(
+            _bass_specs(*levels), _declaration(), _bass_summaries(),
+        )
     assert exc.value.reason == reason
 
 
 def test_a_ladder_under_the_stop_and_every_other_scope_pass_untouched(monkeypatch):
     from jasper.active_speaker import commission_wiring, seat_level_reference
 
-    monkeypatch.setattr(
-        measure, "_bass_rung_summary",
-        lambda *_: {"natural": {"boost_headroom_db": 6.0}},
-    )
     monkeypatch.setattr(
         commission_wiring, "commissioning_spl_ceiling_db", lambda _topology: 95.0
     )
@@ -370,15 +372,49 @@ def test_a_ladder_under_the_stop_and_every_other_scope_pass_untouched(monkeypatc
     )
     box = _declaration()
 
-    measure._assert_bass_ladder_under_ceiling(_bass_specs(-40.0, -30.0), box)
-    # No bass rung in the batch: nothing to predict, and no reference needed.
+    measure._assert_bass_ladder_under_ceiling(
+        _bass_specs(-40.0, -30.0), box, _bass_summaries(),
+    )
+    # No bass rung in the batch: nothing to resolve, nothing to predict, and no
+    # reference needed.
     monkeypatch.setattr(
         seat_level_reference, "load_seat_level_reference",
         lambda **_kwargs: None,
     )
-    measure._assert_bass_ladder_under_ceiling(
-        (spec_from_args(_args("--level-dbfs", "-6")),), box,
-    )
+    plain = (spec_from_args(_args("--level-dbfs", "-6")),)
+    assert measure._bass_rung_summaries(plain) == {}
+    measure._assert_bass_ladder_under_ceiling(plain, box, {})
+
+
+@pytest.mark.parametrize("problem, reason", [
+    ("unbanked", REFUSE_BASS_LADDER_CANDIDATE),
+    ("no_such_target", REFUSE_BASS_LADDER_TARGET),
+])
+def test_a_rung_nothing_can_resolve_refuses_rather_than_predicting_no_boost(
+    monkeypatch, problem, reason,
+):
+    """An unresolvable rung is not an unboosted one: the SPL stop would then
+    judge the request at a level nothing authorized."""
+    from types import SimpleNamespace
+
+    from jasper.active_speaker import candidate_bank
+    from tests.test_bass_extension_candidate_field import bass_extension_field
+
+    def _find(fingerprint, **_kwargs):
+        if problem == "unbanked":
+            raise candidate_bank.CandidateBankRefusal("not_found", fingerprint)
+        # A family carrying only its natural target: the requested rung is
+        # not in it, and no summary authorizes a stage for it.
+        return SimpleNamespace(candidate=SimpleNamespace(
+            bass_extension=bass_extension_field(
+                owner={"role": "woofer", "channels": [0]},
+            ),
+        ))
+
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate", _find)
+    with pytest.raises(measure.BoxNotMeasurable) as exc:
+        measure._bass_rung_summaries(_bass_specs(-40.0))
+    assert exc.value.reason == reason
 
 
 #: What the wired half's own minter puts on an answer, in its shape.

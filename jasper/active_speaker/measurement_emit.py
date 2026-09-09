@@ -123,9 +123,9 @@ def compile_tuning_graph(
     layer-3 capture of ``docs/measurement-loop-doctrine.md`` §1a, whose rule
     also keeps preference out of every scope here. ``bass_candidate`` is the
     one scope carrying a bass stage: the accepted speaker tune with the named
-    rung of that candidate's family, which is how a rung is played in room at
-    all. Callers must compare DSP readback with the emitted graph before
-    attributing a capture to it.
+    rung of that candidate's family over that candidate's own room set, which
+    is how a rung is played in room at all. Callers must compare DSP readback
+    with the emitted graph before attributing a capture to it.
     """
     if scope == GRAPH_SCOPE_DRIVERS or scope not in GRAPH_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
@@ -173,6 +173,10 @@ def compile_tuning_graph(
                 raise MeasurementGraphRefused(
                     "measurement_candidate_tune_mismatch", candidate.fingerprint,
                 )
+            # A rung plays under everything that will be in front of it once
+            # this candidate applies, its own room set included — the room
+            # branch's model, not the plain-candidate refusal's.
+            room_peqs = candidate_room_peqs(candidate)
         elif scope == "room_candidate":
             room_peqs = candidate_room_peqs(candidate)
             if not room_peqs:
