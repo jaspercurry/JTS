@@ -19,6 +19,7 @@ import math
 import os
 import re
 import time
+from calendar import timegm
 from dataclasses import dataclass
 from typing import Any, Collection, Mapping
 
@@ -26,6 +27,9 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 #: Read size for :func:`sha256_file` — bounded for the 415 MB Pi Zero 2 W.
 _HASH_CHUNK_BYTES = 1 << 16
+
+#: The one Zulu-stamp literal in the tree, shared by utc_now_iso/parse_utc_iso.
+_ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def finite_float(value: Any) -> float | None:
@@ -46,7 +50,15 @@ def finite_float(value: Any) -> float | None:
 
 def utc_now_iso() -> str:
     """The wall-clock stamp artifacts carry, e.g. ``2026-09-07T12:34:56Z``."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return time.strftime(_ISO_FORMAT, time.gmtime())
+
+
+def parse_utc_iso(text: str) -> int | None:
+    """Inverse of :func:`utc_now_iso`, or ``None`` when ``text`` isn't one."""
+    try:
+        return timegm(time.strptime(str(text), _ISO_FORMAT))
+    except (TypeError, ValueError):
+        return None
 
 
 def age_seconds(epoch: float) -> float:

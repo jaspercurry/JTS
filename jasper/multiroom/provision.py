@@ -28,9 +28,9 @@ function, not its caller, is what gates on "snapcast is missing" (the
 one-time apt work happens once per box rather than on every reconcile pass.
 The install refreshes a stale index + waits out the dpkg lock first (the two
 most common Pi apt failures); if it still fails — genuinely offline, a broken
-mirror — it is logged + recorded as a ``failed`` status (which
-``/state.grouping.provision`` and the doctor's
-``check_grouping_snapcast_installed`` surface) and NEVER raises. The reconcile
+mirror — it is logged + recorded as a ``failed`` status (which ``/grouping``'s
+``provision`` field and the doctor's ``check_grouping_snapcast_installed``
+surface) and NEVER raises. The reconcile
 continues, the snap units simply fail to start, and the box stays solo-safe (the
 same fail-closed posture the #965 active-leader gate guarantees). Offline, apt
 fails fast (no multi-minute boot hang); the next reconcile / boot retries.

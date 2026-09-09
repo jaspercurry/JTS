@@ -821,13 +821,50 @@ fn adopt_attach_outcome(outcome: RingAttachOutcome, input: &mut Input) -> RingCa
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     //! The renderer-ingress lane's PRESENCE model (absent ring, writer death,
     //! geometry shear, self-heal), exercised against a real `jasper_ring` writer
     //! on a real SHM file. Nothing here needs ALSA, a renderer, or a Pi.
 
     use super::*;
     use jasper_ring::{RingWriter, TestRingWriter, SAMPLE_FORMAT_S16LE};
+
+    /// A ring lane `Input` at an explicit path and geometry, bypassing `Config`.
+    /// The one test-side ring-lane constructor for this crate: `open_ring_input`
+    /// derives both from config, which a test cannot vary without mutating process
+    /// env.
+    pub(crate) fn test_ring_lane(label: &str, path: &str, geometry: Geometry) -> Input {
+        let obs = RingLaneObservability::new(path.to_string(), geometry);
+        let ring = match attach_ring(path, geometry) {
+            Ok(reader) => {
+                obs.attached.store(true, Ordering::Relaxed);
+                obs.attaches.fetch_add(1, Ordering::Relaxed);
+                RingCapture::Attached {
+                    reader: Box::new(reader),
+                    periods_until_check: RING_REATTACH_RETRY_PERIODS,
+                }
+            }
+            Err(reason) => {
+                obs.detach_reason.store(reason as u64, Ordering::Relaxed);
+                RingCapture::Detached {
+                    periods_until_retry: RING_REATTACH_RETRY_PERIODS,
+                }
+            }
+        };
+        // A REAL attacher thread, like production: stubbing the worker would test a
+        // lane shape no box ever runs.
+        let ring_attacher =
+            Some(RingAttacher::spawn(label, Arc::clone(&obs.attach_pending)).unwrap());
+        ring_lane_input(
+            label,
+            path.to_string(),
+            geometry,
+            ring,
+            ring_attacher,
+            None,
+            obs,
+        )
+    }
 
     /// A lane geometry small enough to keep the fixtures fast and legible, and
     /// still a legal ring (`n_slots` inside 2..=16, one slot per period).
@@ -864,36 +901,7 @@ mod tests {
     }
 
     fn ring_lane_at(path: &str, geometry: Geometry) -> Input {
-        let obs = RingLaneObservability::new(path.to_string(), geometry);
-        let ring = match attach_ring(path, geometry) {
-            Ok(reader) => {
-                obs.attached.store(true, Ordering::Relaxed);
-                obs.attaches.fetch_add(1, Ordering::Relaxed);
-                RingCapture::Attached {
-                    reader: Box::new(reader),
-                    periods_until_check: RING_REATTACH_RETRY_PERIODS,
-                }
-            }
-            Err(reason) => {
-                obs.detach_reason.store(reason as u64, Ordering::Relaxed);
-                RingCapture::Detached {
-                    periods_until_retry: RING_REATTACH_RETRY_PERIODS,
-                }
-            }
-        };
-        // A REAL attacher thread, like production: stubbing the worker would test
-        // a lane shape no box ever runs.
-        let ring_attacher =
-            Some(RingAttacher::spawn("spotify", Arc::clone(&obs.attach_pending)).unwrap());
-        ring_lane_input(
-            "spotify",
-            path.to_string(),
-            geometry,
-            ring,
-            ring_attacher,
-            None,
-            obs,
-        )
+        test_ring_lane("spotify", path, geometry)
     }
 
     fn cleanup(path: &str) {

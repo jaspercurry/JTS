@@ -18,6 +18,10 @@ from jasper.active_speaker.crossover_v2.frequency_view import (
 )
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
+from jasper.active_speaker.frequency_view import build_frequency_view as neutral_view
+from jasper.active_speaker.frequency_plot import render_frequency_view
+from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
 from jasper.web import correction_measurements
@@ -126,14 +130,59 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
 
     assert average["reference_db"] == -24.0
     assert baseline["reference_db"] == -34.0
-    assert [
-        magnitude - average["reference_db"]
-        for magnitude in average["magnitude_db"]
-    ] == [-1.0, 0.0, -2.0]
-    assert [
-        magnitude - baseline["reference_db"]
-        for magnitude in baseline["magnitude_db"]
-    ] == [-1.0, 0.0, -2.0]
+    assert average["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
+    assert baseline["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
+
+
+@pytest.mark.parametrize("reference", [-24, None])
+def test_saved_live_and_predicted_views_share_display_rules(reference):
+    raw = {"freqs_hz": [50, 150, 200, 500, 1000, 20000],
+           "magnitude_db": [-29, -25, -24, -23, -22, -21], "band_hz": [100, 10000]}
+    metadata = {"reference_db": reference, "validity_floor_hz": 143, "trusted_floor_hz": 357,
+                "excluded_bands_hz": [[400, 450], [440, 500]]}
+    series = frequency_series(series_id="take", label="Take", kind="measurement",
+                              reference_db=reference, **raw)
+    assert series is not None
+    saved = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata=metadata))
+    pipeline = {**metadata, "available": True, "curve": raw, "spec": {"reference_db": reference},
+                "merged_excluded_bands_hz": metadata["excluded_bands_hz"]}
+    shifted = {**pipeline, "curve": {**raw, "magnitude_db": [db - 10 for db in raw["magnitude_db"]]},
+               "spec": {"reference_db": reference - 10 if reference is not None else None}}
+    live = chart_cloud_status({"cloud_verify": {"pipeline": pipeline}, "cloud_measure": {"pipeline": shifted}})
+    predicted = prediction_status({"verify_priors": {"predicted_sum": raw, "predicted_spec": {
+        **metadata, "excluded_intervals": metadata["excluded_bands_hz"],
+    }}})
+    display = saved["runs"][0]["series"][0]["display"]
+    assert live["cloud_verify"]["curve"]["display"] == predicted["curve"]["display"] == display
+    assert live["cloud_measure"]["curve"]["display"] == display
+    assert display == {
+        "deviation_db": [None, -1, 0, 1, 2, None] if reference is not None else [None] * 6,
+        "valid_band_hz": [143, 10000],
+        "untrusted_intervals_hz": [[0, 357], [400, 500]],
+    }
+    assert saved["runs"][0]["series"][0]["magnitude_db"] == raw["magnitude_db"]
+    json.dumps(saved, allow_nan=False)
+
+
+def test_image_uses_shared_trust_markings_and_keeps_untrusted_data(tmp_path, monkeypatch):
+    figure = pytest.importorskip("matplotlib.figure")
+    series = frequency_series(
+        series_id="take", label="Take", kind="measurement", reference_db=-24,
+        freqs_hz=[50, 150, 200, 500, 1000], magnitude_db=[-29, -25, -24, -23, -22],
+        validity_floor_hz=143, trusted_floor_hz=357, excluded_intervals_hz=[[440, 500], [900, 900]],
+    )
+    view = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata={
+        "trusted_floor_hz": 200, "excluded_bands_hz": [[400, 450]],
+    }))
+    figures = []
+    monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+    render_frequency_view(view, tmp_path / "response.png", band_hz=(50, 1000))
+    ax = figures[0].axes[0]
+    assert list(ax.lines[0].get_ydata()) == view["runs"][0]["series"][0]["display"]["deviation_db"]
+    spans = [patch.get_path().transformed(patch.get_patch_transform()).vertices[:, 0]
+             for patch in ax.patches]
+    assert [(min(xs), max(xs)) for xs in spans] == [(50, 357), (400, 500)]
+    assert list(ax.lines[-1].get_xdata()) == [900, 900]
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
@@ -431,3 +480,18 @@ def test_archive_keeps_old_packet_positions_when_a_record_has_only_a_baseline(
     ]
     assert run.metadata["position_count"] == 2
     assert run.metadata["angles_deg"] == [-7, 0]
+
+
+def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, monkeypatch):
+    from jasper.active_speaker.crossover_v2 import evidence_packet
+    docs = [{"take_id": take, "candidate_id": candidate, "graph_fingerprint": "entry",
+             "provenance": {"graph": {"fingerprint": graph}}, "position_deg": 0,
+             "curves": [{"role": "summed", "freqs_hz": [500, 1000, 2000],
+                         "magnitude_db": [-20, -20, -21], "reference_db": -20}]}
+            for take, candidate, graph in (("a", "candidate-a", "played-a"), ("b", "candidate-b", "played-b"))]
+    monkeypatch.setattr(measurement_archive, "_measurement_documents", lambda _: docs)
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", lambda _: _packet("saved"))
+    run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
+    assert len(run.series) == 2
+    assert {r.details["take_id"] for r in run.series} == {"a", "b"}
+    assert {r.details["graph_fingerprint"] for r in run.series} == {"played-a", "played-b"}

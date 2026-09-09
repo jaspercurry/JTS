@@ -49,6 +49,7 @@ function buildUsbLatency(handlers) {
   const effective = h("dd", null, "—");
   const live = h("dd", null, "—");
   const status = h("p.info-card__note", {
+    id: "usb-latency-status",
     "attr:role": "status", "attr:aria-live": "polite",
   });
   const buttons = ["low", "medium", "high"].map((mode) => ({
@@ -56,17 +57,18 @@ function buildUsbLatency(handlers) {
     el: h("button.segmented__btn", {
       type: "button",
       "attr:aria-pressed": "false",
+      "attr:aria-describedby": "usb-latency-status",
       onclick: () => handlers.setLatencyMode(mode),
     }, mode[0].toUpperCase() + mode.slice(1)),
   }));
   const card = titledCard("USB latency");
   card.body.append(
     h("dl.deflist", null,
-      h("dt", null, "Preference"), preference,
-      h("dt", null, "Effective"), effective,
-      h("dt", null, "Live input buffer"), live),
+      h("dt", null, "Your choice"), preference,
+      h("dt", null, "In use"), effective,
+      h("dt", null, "Input delay"), live),
     h("p.info-card__note", null,
-      "Lower settings reduce delay. A busy computer can cause clicks or brief gaps."),
+      "Your choice stays selected while the input buffer adjusts."),
     h("div.segmented", { "attr:role": "group", "attr:aria-label": "USB latency" },
       buttons.map((button) => button.el)),
     status,

@@ -14,7 +14,7 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.alignment import boost_headroom_db
 from .base import (CabinetInfo, CaptureRole, FitRefusal, MagnitudeCurve,
-                   TargetSpec, _curve_arrays)
+                   TargetSpec, _curve_arrays, woofer_curve)
 from .ported import (PortedPlantFit, _filters_response_db,
                      fit_ported_plant, generate_ported_family,
                      ported_predicted_response)
@@ -81,13 +81,14 @@ class PassiveRadiatorAdapter:
         cabinet: CabinetInfo,
     ) -> PassiveRadiatorPlantFit | FitRefusal:
         pr_curve = captures.get(CaptureRole.PR_NEARFIELD)
-        if pr_curve is None:
+        woofer = woofer_curve(captures)
+        if pr_curve is None or woofer is None:
             return FitRefusal("bass_extension_pr_notch_not_located",
-                              "passive-radiator nearfield capture is required")
+                              "woofer and passive-radiator captures are required")
         ported = fit_ported_plant(captures)
         if isinstance(ported, FitRefusal):
             return ported
-        woofer_freqs, woofer_db = _curve_arrays(captures[CaptureRole.WOOFER_NEARFIELD])
+        woofer_freqs, woofer_db = _curve_arrays(woofer)
         pr_freqs, pr_db = _curve_arrays(pr_curve)
         woofer_db = smooth_fractional_octave(woofer_freqs, woofer_db, fraction=24)
         pr_db = smooth_fractional_octave(pr_freqs, pr_db, fraction=24)

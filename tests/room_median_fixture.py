@@ -4,9 +4,9 @@
 
 """One seat-cube median document, as lane B's ``room_median.json`` carries it.
 
-A fixture library rather than a builder inside a test module, because two
-suites read it — the room grade and the exit vocabulary — and a shared builder
-living in a collected module makes that module undeletable.
+A fixture library rather than a builder inside a test module, because several
+suites read it — the room grade, the bass fit and the exit vocabulary — and a
+shared builder living in a collected module makes that module undeletable.
 
 The shape is arithmetic a reader can do: one ripple amplitude per band, one
 mode and one dip in the lowest band, and a deviation above the ceiling that no
@@ -48,6 +48,35 @@ INCUMBENT: dict[str, Any] = {
 }
 
 
+def median_document(
+    freqs_hz: Sequence[float],
+    median_db: Sequence[float],
+    *,
+    ceiling_hz: float = CEILING_HZ,
+    ceiling_source: str = "applied_candidate",
+) -> dict[str, Any]:
+    """That document around ANY curve, for a suite whose median is its own.
+
+    The deviations are a fixed fan about the median rather than a model of
+    seat-to-seat spread: no reader of this fixture grades them.
+    """
+    bins = len(freqs_hz)
+    fan = np.where(np.arange(bins) % 2 == 0, 1.0, -1.0)
+    return {
+        "freqs_hz": list(freqs_hz),
+        "median_db": list(median_db),
+        "spread_db": [SPREAD_DB] * bins,
+        "n_positions": N_POSITIONS,
+        "positions": [
+            {"id": f"seat-{index}", "deviation_db": (fan * index).tolist()}
+            for index in range(N_POSITIONS)
+        ],
+        "ceiling_hz": ceiling_hz,
+        "ceiling_source": ceiling_source,
+        "window": "ungated",
+    }
+
+
 def room_median_document(
     *,
     ceiling_hz: float = CEILING_HZ,
@@ -65,19 +94,10 @@ def room_median_document(
         median_db[in_band] = ripple * alternating[in_band]
     median_db[int(np.argmin(np.abs(grid - MODE_HZ)))] = mode_db
     median_db[int(np.argmin(np.abs(grid - DIP_HZ)))] = dip_db
-    return {
-        "freqs_hz": grid.tolist(),
-        "median_db": median_db.tolist(),
-        "spread_db": [SPREAD_DB] * grid.size,
-        "n_positions": N_POSITIONS,
-        "positions": [
-            {"id": f"seat-{index}", "deviation_db": (alternating * index).tolist()}
-            for index in range(N_POSITIONS)
-        ],
-        "ceiling_hz": ceiling_hz,
-        "ceiling_source": ceiling_source,
-        "window": "ungated",
-    }
+    return median_document(
+        grid.tolist(), median_db.tolist(),
+        ceiling_hz=ceiling_hz, ceiling_source=ceiling_source,
+    )
 
 
 def write_room_median(round_dir: Path, **kwargs: Any) -> Path:

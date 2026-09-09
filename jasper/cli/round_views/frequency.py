@@ -16,7 +16,8 @@ import json
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
-from jasper.active_speaker.frequency_view import build_frequency_view
+from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
+from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker.measurement_archive import (
     ArchivedMeasurement,
     load_measurement,
@@ -58,6 +59,22 @@ def _frequency_source(path: Path):
         document = json.loads(path.read_text())
         if not isinstance(document, dict):
             raise ValueError(f"{path}: expected one JSON object")
+        if document.get("schema") == "jts_frequency_view/1":
+            if len(document["runs"]) != 1:
+                raise ValueError("as an input, a frequency view must contain one run")
+            raw = document["runs"][0]
+            curves = []
+            for item in raw["series"]:
+                fields = dict(item)
+                fields["series_id"] = fields.pop("id")
+                curve = frequency_series(**fields)
+                if curve is not None:
+                    curves.append(curve)
+            return FrequencyRun(
+                id=raw["id"], label=raw.get("label", ""),
+                measurement_family=raw["measurement_family"], series=tuple(curves),
+                metadata=raw.get("metadata", {}),
+            )
         run = frequency_run_from_documents(
             run_id=path.stem, documents=(document,),
         )
@@ -72,7 +89,12 @@ def _frequency_source(path: Path):
             state=str(info.get("state") or "") or None,
         ))
     else:
-        run = frequency_run(_load_round(path).packet)
+        banked = _load_round(path)
+        direct = load_measurement(ArchivedMeasurement(
+            id=path.name, bundle_dir=banked.session_dir, started_at=None, state=None,
+        ))
+        run = direct if any(curve.details.get("phase") == "lateral" and curve.details.get("candidate_id")
+                            for curve in direct.series) else frequency_run(banked.packet)
     if not run.series:
         raise ValueError(f"{path}: no usable frequency-response curves")
     return run
@@ -92,13 +114,28 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     )
     payload = build_frequency_view(run_a, run_b)
     written = _write(payload, args.out, _frequency_default_out(source_a))
+    image = render_image(args, payload)
     return answer(
-        args.command, out=written, runs=[run["id"] for run in payload["runs"]],
+        args.command, out=written, image=image, runs=[run["id"] for run in payload["runs"]],
         line=(
             f"frequency: {len(payload['runs'])} run(s)"
             f"{f' -> {written}' if written else ''}"
         ),
     )
+
+
+def add_image_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--image", type=Path, help="render PNG/SVG/PDF from this view (laptop: matplotlib)")
+    parser.add_argument("--series", nargs="+", default=(), metavar="SLOT:ID",
+                        help="image curves by exact slot:id; omit to show all")
+    parser.add_argument("--plot-band-hz", type=float, nargs=2, metavar=("LOW", "HIGH"), help="image frequency range; saved numerical data stays complete")
+
+
+def render_image(args: argparse.Namespace, payload: dict) -> str | None:
+    if args.image is None:
+        return None
+    render_frequency_view(payload, args.image, selected=args.series, band_hz=args.plot_band_hz)
+    return str(args.image)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -112,4 +149,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="optional banked round, session bundle, or JSON document for B",
     )
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    add_image_args(frequency)
     frequency.set_defaults(func=_cmd_frequency)

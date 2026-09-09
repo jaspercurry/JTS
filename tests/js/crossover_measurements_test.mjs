@@ -74,6 +74,7 @@ const responseSeries = (id, kind, visible, extra = {}) => ({
   freqs_hz: [100, 1000, 10000],
   magnitude_db: [-25, -24, -26],
   reference_db: -24,
+  display: { deviation_db: [-1, 0, -2], untrusted_intervals_hz: [[0, 200], [900, 1100]] },
   smoothing_fractional_octave: kind === "position" ? 6 : 3,
   visible_by_default: visible,
   ...extra,
@@ -211,8 +212,7 @@ check(
   "each detail control shows the same distinct style used on the chart",
 );
 check(
-  chart.excludedIntervals.some((band) => band.f_lo_hz === 20 && band.f_hi_hz === 200) &&
-  chart.excludedIntervals.some((band) => band.f_lo_hz === 900 && band.f_hi_hz === 1100),
+  JSON.stringify(chart.series[0].curve.display.untrusted_intervals_hz) === "[[0,200],[900,1100]]",
   "the trusted floor and stored exclusions reach the chart",
 );
 
@@ -222,8 +222,8 @@ await inputs[1].dispatch("change");
 chart = chartPayloads.at(-1);
 check(
   chart.series[1].draw === true &&
-  chart.excludedIntervals.some((band) => band.f_lo_hz === 20 && band.f_hi_hz === 250),
-  "revealing a position updates its trace and its own validity shading",
+  chart.series[1].curve.display.deviation_db[0] === -1,
+  "revealing a position preserves its prepared display values",
 );
 
 elements.get("measurement-run-b").value = "round:r3";

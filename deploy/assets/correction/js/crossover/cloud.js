@@ -2,21 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Before/after visualization + anomaly callouts (flat-linearization plan
-// PR-7). Renders the compact `env.cloud` verdict (geometry guidance,
-// provenance, spec bands, carve-out disclosure — all server-owned copy, see
-// jasper/active_speaker/crossover_envelope_v2.py's `compact_cloud_status`
-// and
-// jasper/active_speaker/crossover_v2_flow.py's `carve_outs_by_band`) plus
-// `env.cloud_chart`'s decimated curves. This module never invents copy or a
-// spec-facing number of its own — it reads server strings verbatim into
-// text nodes (via `textContent`, never `innerHTML`) and turns already-
-// disclosed numbers (frequencies, reference_db, tolerance_db) into screen
-// coordinates. Callout markup is built with plain `document.createElement` +
-// `textContent` (mirrors main.js's own local `el()` helper's shape) rather
-// than the shared `h()` builder — every string here is untrusted-safe by the
-// same `textContent`-only argument either way, and staying off `h()` keeps
-// this module's only import a same-directory relative one (`./chart.js`).
 import { drawCloudChart } from './chart.js';
 
 const PHASE_CLOUD_MEASURE = 'cloud_measure';
@@ -90,66 +75,15 @@ function specSourceFor(cloud, tier, prediction) {
 }
 
 function chartPayloadFor(cloud, cloudChart, tier, prediction) {
-  const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
-  const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
-  const specSource = specSourceFor(cloud, tier, prediction);
-  const chartMeasure = (cloudChart && cloudChart[PHASE_CLOUD_MEASURE]) || null;
-  const chartVerify = (cloudChart && cloudChart[PHASE_CLOUD_VERIFY]) || null;
-  const measureCurve = (chartMeasure && chartMeasure.curve) || null;
-  const verifyCurve = (chartVerify && chartVerify.curve) || null;
-  // The PREDICTED response (two-stage commission D3's "what we predict"). The
-  // envelope sends `prediction` on the review screen only, so this module
-  // needs no screen test of its own — the presence of the data IS the
-  // instruction, the same rule every other series here already follows.
-  const predictedCurve = (prediction && prediction.curve) || null;
+  const measureCurve = cloudChart?.[PHASE_CLOUD_MEASURE]?.curve || null;
+  const verifyCurve = cloudChart?.[PHASE_CLOUD_VERIFY]?.curve || null;
+  const predictedCurve = prediction?.curve || null;
   if (!measureCurve && !verifyCurve && !predictedCurve) return null;
-
-  // Excluded intervals come from the spec source's own carve-out disclosure
-  // (the current, graded truth for Full; the ONLY cloud Express ever
-  // produces, framed as the before-tuning state by the envelope's own
-  // expert_details — carve-outs themselves render VERBATIM here, since they
-  // are a post-apply-persistent fact ("EQ cannot fill these") regardless of
-  // which cloud measured them, owner decision 1).
-  const excludedIntervals = [];
-  const carveOuts = Array.isArray(specSource && specSource.carve_outs)
-    ? specSource.carve_outs : [];
-  carveOuts.forEach((band) => {
-    const intervals = Array.isArray(band && band.intervals) ? band.intervals : [];
-    intervals.forEach((interval) => {
-      excludedIntervals.push({
-        f_lo_hz: interval && interval.f_lo_hz,
-        f_hi_hz: interval && interval.f_hi_hz,
-      });
-    });
-  });
-
   return {
     measureCurve,
     verifyCurve,
     predictedCurve,
-    // The predicted curve's OWN reference, from the stored spec report that
-    // graded it — same per-curve rule as the two below (review B-1). `null`
-    // for an ungradeable prediction, which the chart then draws no points for
-    // rather than borrowing another phase's reference frame.
-    predictedReferenceDb: prediction ? prediction.reference_db : null,
-    // Review B-1 (PR-7): each curve is plotted relative to its OWN
-    // reference — a fit moves VERIFY's reference off MEASURE's (below it on
-    // a cut-only fit, and either way since the boost ruling #2106), and a
-    // single shared reference displaced the whole "Before" curve by a level
-    // change the spec never grades. Per-curve holds whichever way it moved;
-    // the old wording assumed one direction (#2603's sweep trued it up).
-    // Both reference_db values already ride the compact block
-    // (every phase entry carries its own), so no new server data is needed.
-    measureReferenceDb: measure ? measure.reference_db : null,
-    verifyReferenceDb: verify ? verify.reference_db : null,
-    // Spec bands (and therefore the corridor) come from the spec source:
-    // VERIFY's for Full (the current, graded truth — MEASURE exists to be
-    // out of spec there, so it never gets a corridor); MEASURE's for
-    // Express, drawn against the BEFORE curve — express has no after curve
-    // to grade, and showing the corridor there is what makes its carve-outs
-    // legible on the chart at all (B1).
-    specBands: (specSource && specSource.spec_bands) || [],
-    excludedIntervals,
+    specBands: specSourceFor(cloud, tier, prediction)?.spec_bands || [],
   };
 }
 
@@ -274,16 +208,12 @@ function updateSectionFraming(els, payload) {
 // broken rather than in-progress. Each swatch is shown only once its own
 // series is actually on the canvas.
 function updateLegend(els, payload, tier) {
-  const hasMeasure = Boolean(payload.measureCurve);
-  const hasVerify = Boolean(payload.verifyCurve);
-  // The swatch tracks what is actually ON the canvas, not merely what was
-  // sent: an ungradeable prediction has a curve but no reference to plot it
-  // against, draws nothing, and must not advertise a series that is not there.
-  const hasPredicted = Boolean(
-    payload.predictedCurve && typeof payload.predictedReferenceDb === 'number',
+  const curves = [payload.measureCurve, payload.verifyCurve, payload.predictedCurve];
+  const [hasMeasure, hasVerify, hasPredicted] = curves.map(
+    (curve) => curve?.display?.deviation_db.some((db) => db != null),
   );
   const hasCorridor = payload.specBands.length > 0;
-  const hasExcluded = payload.excludedIntervals.length > 0;
+  const hasExcluded = curves.some((curve) => curve?.display?.untrusted_intervals_hz.length);
   els.legendMeasure.hidden = !hasMeasure;
   els.legendVerify.hidden = !hasVerify;
   if (els.legendPredicted) els.legendPredicted.hidden = !hasPredicted;

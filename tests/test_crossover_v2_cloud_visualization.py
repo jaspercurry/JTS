@@ -148,13 +148,9 @@ def test_page_shell_carries_every_element_id_the_renderer_reads():
     # The chart canvas and its wrapper.
     assert "<canvas" in html
     assert "crossover-chart-wrap" in html
-    # The legend enumerates all four series the chart draws (measure, verify,
-    # corridor, excluded) — a chart with an undocumented fifth color would be
-    # exactly the kind of "trust me" UI this program's honesty stance argues
-    # against.
     for label in (
         "Before correction", "After correction", "Spec tolerance",
-        "Excluded (interference)",
+        "Untrusted",
     ):
         assert label in html, label
     # The section starts hidden — cloud.js's renderCloud() is what reveals

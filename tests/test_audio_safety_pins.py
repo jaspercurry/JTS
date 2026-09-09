@@ -19,7 +19,7 @@ Two hardware-safety claims had no test asserting the actual literals:
    missing or positive ``volume_limit``.
 
 Rust literals are grep-pinned (cargo is not available in every dev
-environment — same technique as ``tests/test_outputd_wiring.py``).
+environment).
 """
 from __future__ import annotations
 

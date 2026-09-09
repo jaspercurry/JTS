@@ -28,7 +28,8 @@ from .base import (
     MagnitudeCurve,
     TargetSpec,
     _curve_arrays,
-    _passband_normalize,
+    passband_normalize,
+    woofer_curve,
 )
 
 if TYPE_CHECKING:
@@ -86,6 +87,21 @@ class SealedPlantFit:
         )
 
 
+def declared_plant(f0_hz: float, q0: float) -> SealedPlantFit | FitRefusal:
+    """The operator's datasheet pair as a sealed plant, admitted by this
+    module's own domain rule rather than a second copy of its bounds.
+
+    The ``0.0`` residual is the schema's; the ``declared`` note is what says no
+    fit ran.
+    """
+    try:
+        return SealedPlantFit.from_dict({
+            "f0_hz": f0_hz, "q0": q0, "fit_rms_db": 0.0, "notes": ["declared"],
+        })
+    except ValueError as exc:
+        return FitRefusal("bass_extension_fit_quality_insufficient", str(exc))
+
+
 def _minus_six_estimate(freqs: np.ndarray, magnitude: np.ndarray) -> float:
     candidates = np.flatnonzero((magnitude[:-1] <= -6.0) & (magnitude[1:] > -6.0))
     if candidates.size:
@@ -131,26 +147,32 @@ def _fit_model(
 class SealedAdapter:
     adapter_id = "sealed_v1"
     adapter_version = 1
-    required_captures = (CaptureRole.WOOFER_NEARFIELD,)
+    required_captures = (CaptureRole.SEAT_MEDIAN,)
 
     def fit_plant(
         self,
         captures: Mapping[CaptureRole, MagnitudeCurve],
         cabinet: CabinetInfo,
     ) -> SealedPlantFit | FitRefusal:
-        curve = captures.get(CaptureRole.WOOFER_NEARFIELD)
+        curve = woofer_curve(captures)
         if curve is None:
             return FitRefusal(
                 "bass_extension_fit_quality_insufficient",
-                "woofer nearfield capture is required",
+                "seat median capture is required",
             )
         freqs, magnitude = _curve_arrays(curve)
-        normalized = _passband_normalize(freqs, magnitude)
+        normalized = passband_normalize(freqs, magnitude)
         smoothed = smooth_fractional_octave(freqs, normalized)
         estimate = _minus_six_estimate(freqs, smoothed)
-        first, _ = _fit_model(freqs, smoothed, estimate, order=2)
-        second, rms = _fit_model(freqs, smoothed, float(first[0]), order=2)
-        _, third_rms = _fit_model(freqs, smoothed, float(second[0]), order=3)
+        try:
+            first, _ = _fit_model(freqs, smoothed, estimate, order=2)
+            second, rms = _fit_model(freqs, smoothed, float(first[0]), order=2)
+            _, third_rms = _fit_model(freqs, smoothed, float(second[0]), order=3)
+        except ValueError:
+            return FitRefusal(
+                "bass_extension_fit_quality_insufficient",
+                "fit window has insufficient support",
+            )
         if third_rms + 0.5 < rms:
             return FitRefusal(
                 "bass_extension_fit_quality_insufficient",

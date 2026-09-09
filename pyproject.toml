@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+plots = ["matplotlib>=3.8,<4"]
 streambox = [
     # Streambox = local renderers, CamillaDSP, and the assistant reached only
     # through a paired remote's mic (push-to-talk, no wake word). Exactly

@@ -20,7 +20,7 @@ coherent state: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring`` (fanin.env) AND
 NO FALLBACK. A pass writes the ring state and, when something moved, converges
 the daemons in the order :func:`_converge_ring` documents. A step that fails
 reports ``ok=False`` and the box PARKS visibly through
-:mod:`jasper.control.transport_park`; recovery from a bad deploy is
+:mod:`jasper.control.transport_eligibility`; recovery from a bad deploy is
 ``git revert`` + redeploy (ADR-0100).
 
 SINGLE WRITER of the topology keys it owns: ``JASPER_FANIN_CAMILLA_COUPLING``
@@ -1126,7 +1126,7 @@ def reconcile_auto(
        the same inputs writes nothing.
     2. Delegate the ring convergence to :func:`reconcile_coupling`. The ring is
        the only transport (ADR-0100), and a box it cannot serve parks under its
-       own name (:mod:`jasper.control.transport_park`) rather than resolving a
+       own name (:mod:`jasper.control.transport_eligibility`) rather than resolving a
        second route. A combo-only change that took the no-bounce path issues one
        extra CamillaDSP-coordinated fan-in restart
        (:func:`_restart_fanin_coordinated`), so it cannot RTTIME-SIGKILL camilla.
