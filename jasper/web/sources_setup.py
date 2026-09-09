@@ -45,7 +45,6 @@ URL surface (after nginx strips /sources/):
 from __future__ import annotations
 
 import logging
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -56,13 +55,11 @@ from ..source_intent import request_source_intent, source_intent_enabled
 from ._common import (
     JsonBodyError,
     begin_request,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
     read_json_object,
-    route_path,
     send_html_response,
     send_json_response,
-    guard_read_request,
-    guard_mutating_request,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page, toggle_html
 
@@ -236,23 +233,10 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self) -> None:  # noqa: N802
-        handler_fn = _GET_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_read_request(self):
-            return
-        handler_fn(self)
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self) -> None:  # noqa: N802
-        handler_fn = _POST_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
-        handler_fn(self)
+        dispatch_post(self, _POST_ROUTES, guard="header")
 
 
 def _get_index(handler: _Handler) -> None:

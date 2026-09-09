@@ -21,6 +21,7 @@ import textwrap
 import urllib.parse
 from contextlib import nullcontext
 from email.message import Message
+from http.server import BaseHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
 
@@ -228,7 +229,7 @@ class _WizardRequest:
         h.send_response_only = self._record_status
         h.send_header = lambda name, value: self.sent_headers.append((name, value))
         h.end_headers = lambda: None
-        h.send_error = self._record_status
+        h.send_error = functools.partial(BaseHTTPRequestHandler.send_error, h)
         h.address_string = lambda: "127.0.0.1"
         h.log_message = lambda *a, **k: None
         self._handler = h
@@ -237,9 +238,11 @@ class _WizardRequest:
         self.status = int(status)
 
     def do_GET(self):
+        self._handler.command = "GET"
         self._handler.do_GET()
 
     def do_POST(self):
+        self._handler.command = "POST"
         self._handler.do_POST()
 
 
@@ -514,8 +517,36 @@ def _route_table_paths(source_path: Path) -> dict[str, list[str]]:
     return tables
 
 
+def _resolve_samples(dispatch_fn) -> dict:
+    """`{sample path: route}` for each prefix family a dispatcher's `resolve=`
+    hook answers. `_common.resolve_samples` stamps the mapping on the hook,
+    and the hook is reachable from the dispatcher the same two ways a route
+    table is: a closure cell, or a module global it names."""
+    if dispatch_fn is None:
+        return {}
+    reachable = [cell.cell_contents for cell in dispatch_fn.__closure__ or ()]
+    reachable += [
+        dispatch_fn.__globals__[name]
+        for name in dispatch_fn.__code__.co_names
+        if name in dispatch_fn.__globals__
+    ]
+    for value in reachable:
+        samples = getattr(value, "resolve_samples", None)
+        if isinstance(samples, dict):
+            return samples
+    return {}
+
+
+def _sample_paths(handler_cls, dispatcher: str) -> list[str]:
+    return list(_resolve_samples(getattr(handler_cls, dispatcher, None)))
+
+
 def _tabled_wizards():
-    """(module name, handler class, GET paths, POST paths) per tabled wizard."""
+    """(module name, handler class, GET paths, POST paths) per tabled wizard.
+
+    Paths are the dict-literal keys plus one sample per prefix family the
+    dispatcher's `resolve=` hook declares, so `/layer/<name>` is covered by
+    the same generic pins an exact key is."""
     out = []
     for source_path in sorted(WEB_SETUP_FILES):
         tables = _route_table_paths(source_path)
@@ -527,9 +558,13 @@ def _tabled_wizards():
             f"{source_path} grew a route table with no entry in "
             "_TABLED_WIZARD_FACTORIES — add one so its routes are covered"
         )
-        out.append(
-            (module_name, factory(), tables["_GET_ROUTES"], tables["_POST_ROUTES"]),
-        )
+        handler_cls = factory()
+        out.append((
+            module_name,
+            handler_cls,
+            tables["_GET_ROUTES"] + _sample_paths(handler_cls, "do_GET"),
+            tables["_POST_ROUTES"] + _sample_paths(handler_cls, "do_POST"),
+        ))
     return out
 
 
@@ -565,14 +600,17 @@ _COERCES_MALFORMED_BODY = frozenset({"wifi_setup"})
 
 
 def _post_route_table(handler_cls) -> dict:
-    """The wizard's live POST table — a closure cell on `do_POST` when the
-    table is closure-local (it captures per-server cfg), else a module global.
-    Same reach the header-CSRF pins use to drive the real callables."""
+    """The wizard's live POST table plus its prefix-family samples — a
+    closure cell on `do_POST` when the table is closure-local (it captures
+    per-server cfg), else a module global. Same reach the header-CSRF pins
+    use to drive the real callables."""
     fn = handler_cls.do_POST
     freevars = fn.__code__.co_freevars
     if "_POST_ROUTES" in freevars:
-        return fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
-    return fn.__globals__["_POST_ROUTES"]
+        table = fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
+    else:
+        table = fn.__globals__["_POST_ROUTES"]
+    return {**table, **_resolve_samples(fn)}
 
 
 # `csrf_mode` per POST route — the marker `form_guarded` / `header_guarded` /
@@ -648,6 +686,12 @@ def test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token(
         )
         req.do_POST()
         assert req.status == int(http.HTTPStatus.NOT_FOUND)
+        # The seam 404s through the stdlib error page, so the miss carries a
+        # body and a content type rather than a bare status line.
+        assert any(
+            name == "Content-Type" and value.startswith("text/html")
+            for name, value in req.sent_headers
+        )
 
 
 @pytest.mark.parametrize(
@@ -769,10 +813,62 @@ def test_untabled_wizard_dispatchers_guard_reads_and_guard_before_work(path):
     )
 
 
+def test_bespoke_csrf_scheme_guards_the_host_before_the_token_compare():
+    """The sanctioned bespoke scheme is exempt from the shared
+    double-submit chokepoint, not from the Host/Origin allowlist axis
+    `guard_mutating_request` also applies."""
+    for file_name in _BESPOKE_CSRF_WIZARDS:
+        path = next(p for p in WEB_PY_FILES if p.name == file_name)
+        source = path.read_text()
+        check_csrf_defs = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
+        ]
+        assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
+        csrf_calls = [
+            node for node in ast.walk(check_csrf_defs[0])
+            if isinstance(node, ast.Call)
+        ]
+        # AST-walk for a real Call node, not a regex over the source
+        # text — a docstring/comment reading "guard_mutating_host(handler)"
+        # must not satisfy this.
+        guard_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "guard_mutating_host"
+        ]
+        assert guard_calls, (
+            f"{path}::_check_csrf must call guard_mutating_host() first — "
+            "the shared Host/Origin allowlist axis is not part of the "
+            "bespoke-CSRF-scheme exception"
+        )
+        compare_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "compare_digest"
+        ]
+        assert compare_calls, (
+            f"{path}::_check_csrf must compare the token with "
+            "secrets.compare_digest()"
+        )
+        # Ordering invariant guard_mutating_request's docstring documents
+        # (_common.py): the host/Origin guard runs before the token
+        # compare. AST line positions, not string indexes.
+        assert (
+            min(c.lineno for c in guard_calls)
+            < min(c.lineno for c in compare_calls)
+        ), (
+            f"{path}::_check_csrf must call guard_mutating_host() before "
+            "the compare_digest() token compare"
+        )
+
+
+# The chokepoint reach a do_POST may have: the guard called in the
+# dispatcher, the shared `dispatch_post` seam that calls it there, or
+# wake_corpus_setup's sanctioned bespoke scheme (pinned above).
+_CHOKEPOINT_CALLS = ("guard_mutating_request", "dispatch_post", "_check_csrf")
+
+
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
     """A form wizard's guard lives in the route body — it must read the
     body to find the token — so it is pinned behaviourally above instead.
-    Every other do_POST still calls the chokepoint itself."""
+    Every other do_POST still reaches the chokepoint itself."""
     handlers = list(_mutating_handlers())
     assert handlers, "expected wizard do_POST handlers to scan"
     body_guarded = {
@@ -792,81 +888,39 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
                 "guard_mutating_request() itself"
             )
             continue
-        if path.name in _BESPOKE_CSRF_WIZARDS:
-            # Call syntax, not just a docstring/comment mention: match the
-            # invocation shape, same as _CSRF_GUARD_CALL_RE above.
-            assert re.search(r"\b_check_csrf\s*\(", seg), (
-                f"{path}::{name} lost its bespoke _check_csrf() call"
-            )
-            source = path.read_text()
-            check_csrf_defs = [
-                node for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
-            ]
-            assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
-            csrf_def = check_csrf_defs[0]
-            csrf_calls = [
-                node for node in ast.walk(csrf_def) if isinstance(node, ast.Call)
-            ]
-            # AST-walk for a real Call node, not a regex over the source
-            # text — a docstring/comment reading "guard_mutating_host(handler)"
-            # must not satisfy this.
-            guard_calls = [
-                c for c in csrf_calls
-                if _call_target_name(c) == "guard_mutating_host"
-            ]
-            assert guard_calls, (
-                f"{path}::_check_csrf must call guard_mutating_host() first — "
-                "the shared Host/Origin allowlist axis is not part of the "
-                "bespoke-CSRF-scheme exception"
-            )
-            compare_calls = [
-                c for c in csrf_calls if _call_target_name(c) == "compare_digest"
-            ]
-            assert compare_calls, (
-                f"{path}::_check_csrf must compare the token with "
-                "secrets.compare_digest()"
-            )
-            # Ordering invariant guard_mutating_request's docstring documents
-            # (_common.py): the host/Origin guard runs before the token
-            # compare. AST line positions, not string indexes.
-            assert (
-                min(c.lineno for c in guard_calls)
-                < min(c.lineno for c in compare_calls)
-            ), (
-                f"{path}::_check_csrf must call guard_mutating_host() before "
-                "the compare_digest() token compare"
-            )
-            continue
         # AST Call, not a substring — a comment naming the guard must not
-        # satisfy the chokepoint, same rule as the bespoke branch above.
+        # satisfy the chokepoint.
         handler_fn = ast.parse(textwrap.dedent(seg)).body[0]
         if not any(
             isinstance(node, ast.Call)
-            and _call_target_name(node) == "guard_mutating_request"
+            and _call_target_name(node) in _CHOKEPOINT_CALLS
             for node in ast.walk(handler_fn)
         ):
             offenders.append(f"{path}::{name}")
     assert offenders == [], (
-        "wizard mutating handlers that never call guard_mutating_request() "
+        "wizard mutating handlers that never reach guard_mutating_request() "
         "(the shared Host/Origin + CSRF chokepoint in jasper/web/_common.py):\n"
         + "\n".join(offenders)
     )
 
 
 def test_mutating_handlers_route_check_before_csrf_guard():
-    """The first conditional in a do_POST/do_DELETE must be routing, never
-    the CSRF guard: 'Route-check unknown POST paths before
+    """The first conditional in a hand-rolled do_POST/do_DELETE must be
+    routing, never the CSRF guard: 'Route-check unknown POST paths before
     guard_mutating_request() so bogus paths return 404 without revealing
     CSRF state' (AGENTS.md / jasper/web/_common.py). In every compliant
     handler the first `if` tests the request path or a route-table lookup
     of it; a handler whose first branch is the guard 403s on bogus paths
-    instead."""
+    instead. A dispatcher on the shared `dispatch_post` seam has no branch
+    of its own — the seam looks the route up first, pinned behaviourally by
+    test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token."""
     branch_re = re.compile(r"^\s*(?:if|elif)\b")
     offenders = []
     for path, name, seg in _mutating_handlers():
         if path.name == "__main__.py":
             continue  # pure delegator, asserted above
+        if "dispatch_post(" in seg:
+            continue  # on the seam; ordering is the seam's, pinned there
         for line in seg.splitlines():
             if not branch_re.match(line):
                 continue

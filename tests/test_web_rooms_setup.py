@@ -41,7 +41,7 @@ import pytest
 
 from jasper.control import household_credential
 from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS
-from jasper.web import rooms_peers, rooms_setup
+from jasper.web import _common, rooms_peers, rooms_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
@@ -125,7 +125,7 @@ def test_patching_rooms_peers_intercepts_the_calls_rooms_setup_makes(monkeypatch
             return result
         return call
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(
         rooms_setup, "read_grouping_state",
         lambda *a, **k: {"enabled": True, "role": "leader", "channel": "left",
@@ -849,8 +849,8 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
     """Drive do_POST with the CSRF guard stubbed and the daemon restarts
     captured. Returns (handler, restarts_dict)."""
     restarts = {"voice": 0, "control": 0}
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "restart_voice_daemon",
                         lambda: restarts.__setitem__("voice", restarts["voice"] + 1))
@@ -885,7 +885,7 @@ def test_post_unknown_path_404s_before_csrf(monkeypatch, path):
     def _boom(*_a, **_k):
         raise AssertionError("CSRF guard must not run on an unknown POST path")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
+    monkeypatch.setattr(_common, "guard_mutating_request", _boom)
     h, _ = make_real_handler(rooms_setup._make_handler(), path, body=b"{}", content_type=None)
     h.do_POST()
     assert h.status == 404
@@ -899,7 +899,7 @@ def test_post_bond_route_matches_regardless_of_slash_or_query(monkeypatch, path)
     monkeypatch.setitem(
         rooms_setup._POST_ROUTES, "/bond", lambda h: reached.append(h.path),
     )
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     h, _ = make_real_handler(
         rooms_setup._make_handler(), path, body=b"{}", content_type=None,
     )
@@ -934,7 +934,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
     expected_error,
     expected_reads,
 ):
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
         "write_env_file",
@@ -962,7 +962,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
 
 
 def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
         "write_env_file",
@@ -1001,7 +1001,7 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
     """
     effects: list[str] = []
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup.household_credential,
         "ensure",
@@ -1339,8 +1339,8 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
         return (True, "HTTP 200")
 
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member", fake_member_post)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_peers, "_self_address", lambda known=None: "192.168.1.5")
     # Hermetic self-address set (the fan-out computes it once for the SSRF
@@ -1368,7 +1368,7 @@ def test_bond_forwards_browser_control_token_to_members(monkeypatch):
         return (True, "HTTP 200")
 
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
@@ -1394,7 +1394,7 @@ def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
         return (True, "HTTP 200")
 
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
@@ -1711,7 +1711,7 @@ def test_save_bond_mints_household_credential(monkeypatch):
         return (True, "HTTP 200")
 
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
@@ -1734,7 +1734,7 @@ def test_unbond_reads_household_once_and_passes_it_to_fanout(monkeypatch):
         seen_household.append(household)
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: {"enabled": True, "role": "leader",
                                          "bond_id": "bond-1", "peer_addr": "192.168.1.9"})
@@ -2305,8 +2305,8 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     def fake_get_grouping(addr, known=None):
         return (peer_grouping or {}).get(addr)
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
@@ -2508,7 +2508,7 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     def fake_get_grouping(addr, known=None):
         return (peer_grouping or {}).get(addr)
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
     monkeypatch.setattr(rooms_peers, "discover_speakers_cached",
@@ -2654,7 +2654,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
 
     import jasper.web.rooms_setup as rooms_setup_mod
     monkeypatch.setattr(
-        rooms_setup_mod, "guard_mutating_request", lambda *a, **k: True
+        _common, "guard_mutating_request", lambda *a, **k: True
     )
     monkeypatch.setattr(
         rooms_setup_mod,
@@ -2739,7 +2739,7 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
             return outcomes.pop(0)
         return True, "HTTP 200"
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
     monkeypatch.setattr(rooms_peers, "discover_speakers_cached",
@@ -2963,7 +2963,7 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
         posts.append((addr, body))
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+    monkeypatch.setattr(_common, "guard_mutating_request",
                         lambda *a, **k: True)
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member",
                         fake_member_post)
@@ -2994,7 +2994,7 @@ def _drive_bond(members, monkeypatch):
         posts.append((addr, body))
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+    monkeypatch.setattr(_common, "guard_mutating_request",
                         lambda *a, **k: True)
     monkeypatch.setattr(rooms_peers, "post_grouping_to_member",
                         fake_member_post)

@@ -13,26 +13,39 @@ What's NOT shared: per-wizard route handlers, page layouts, form bodies.
 ## Conventions for new wizards
 
 A wizard is two route tables of bare `handler_fn(handler)` callables and a
-dispatcher that routes, guards, and calls — nothing else:
+dispatcher that hands them to the shared seam — nothing else:
 
     _GET_ROUTES = {"/": _get_index, "/state": _get_state}
     _POST_ROUTES = {"/save": _post_save, "/clear": _post_clear}
 
-    def do_POST(self):
-        # Unknown paths 404 before any guard, never revealing CSRF state.
-        handler_fn = _POST_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND); return
-        if not guard_mutating_request(self):
-            reject_csrf(self); return
-        handler_fn(self)
+    def do_GET(self):
+        dispatch_get(self, _GET_ROUTES)
 
-`do_GET` is the same shape with `guard_read_request(self)`. `route_path`
-makes `/save`, `/save/` and `/save?x=1` one key. Dispatcher-guarded POST
-bodies wear `@json_body`. A wizard whose guard varies per route guards no
-POST in `do_POST`; each body declares its own — `@form_guarded` (token in
-the form body), `@header_guarded` (token in the header), `@read_guarded`
-(read-only probe: no token, cross-site navigations refused).
+    def do_POST(self):
+        dispatch_post(self, _POST_ROUTES, guard="header")
+
+The tables live wherever their bodies reach the wizard's state: inside
+`_make_handler`'s closure when they close over `cfg` or the `Handler` class,
+at module level when they close over nothing. The pins drive real handler
+instances, so the two read the same.
+
+Unknown paths 404 before any guard, never revealing CSRF state. `route_path`
+makes `/save`, `/save/` and `/save?x=1` one key; a prefix family such as
+`/layer/<name>` passes `resolve=`, a `path -> callable or None` hook that may
+only inspect the path string — no I/O, no state lookup — because it runs
+ahead of every guard on a request that has proved nothing. Wear
+`@resolve_samples({"/layer/raw": _post_layer})` on that hook: the generic
+route pins drive one sample path per prefix family exactly as they drive a
+table key, so a family that names no sample is pinned by nothing.
+`guard="header"` runs `guard_mutating_request` in the dispatcher, ahead of
+any body read, and those POST bodies wear `@json_body`. A wizard whose
+guard varies per route passes `guard="per-body"` and each body declares its
+own — `@form_guarded` (token in the form body), `@header_guarded` (token in
+the header), `@read_guarded` (read-only probe: no token, cross-site
+navigations refused). A GET that changes state is a table entry wrapped in
+`read_guarded(...)`: under the dispatcher's permissive read guard that
+composes to the strict one, refusing the cross-site navigation a plain GET
+route allows.
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
@@ -73,10 +86,10 @@ import re
 import secrets
 import subprocess
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
-from typing import Any
+from typing import Any, Literal
 
 from ..atomic_io import atomic_write_text
 from ..platform import control_client as control
@@ -916,6 +929,74 @@ def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None
         fn(handler, body)
     route.reads_json_body = True  # type: ignore[attr-defined]
     return route
+
+
+# The handler is `Any`: a table typed against `BaseHTTPRequestHandler` fails
+# contravariance against each wizard's own narrower `_Handler`.
+RouteFn = Callable[[Any], None]
+RouteTable = Mapping[str, RouteFn]
+Resolver = Callable[[str], RouteFn | None]
+
+
+def resolve_samples(samples: RouteTable) -> Callable[[Resolver], Resolver]:
+    """Name one concrete path per prefix family a `resolve=` hook answers.
+
+    `@resolve_samples({"/layer/raw": _post_layer})` stamps the mapping on the
+    hook the way `csrf_mode` rides on a guard wrapper: dispatch ignores it,
+    and the generic route pins read it so a `/layer/<name>` family is covered
+    by the same 403 / 404 / malformed-body pins an exact table key gets.
+    """
+    def mark(hook: Resolver) -> Resolver:
+        hook.resolve_samples = dict(samples)  # type: ignore[attr-defined]
+        return hook
+    return mark
+
+
+def _route_for(
+    handler: Any, table: RouteTable, resolve: Resolver | None,
+) -> RouteFn | None:
+    """Table lookup then the prefix-family hook; sends the 404 itself.
+
+    `resolve` runs before every guard, on a request that has proved
+    nothing, so it may only inspect the path string — no I/O, no state
+    lookup.
+    """
+    path = route_path(handler.path)
+    route = table.get(path)
+    if route is None and resolve is not None:
+        route = resolve(path)
+    if route is None:
+        handler.send_error(http.HTTPStatus.NOT_FOUND)
+    return route
+
+
+def dispatch_get(
+    handler: Any, table: RouteTable, *, resolve: Resolver | None = None,
+) -> None:
+    """Route a wizard GET. Unknown paths 404 before the read guard runs."""
+    route = _route_for(handler, table, resolve)
+    if route is not None and guard_read_request(handler):
+        route(handler)
+
+
+def dispatch_post(
+    handler: Any,
+    table: RouteTable,
+    *,
+    guard: Literal["header", "per-body"] = "header",
+    resolve: Resolver | None = None,
+) -> None:
+    """Route a wizard POST. Unknown paths 404 before any guard, never
+    revealing CSRF state. `guard="header"` runs the mutating chokepoint
+    here, ahead of any body read; `guard="per-body"` guards nothing — each
+    route body wears `@form_guarded` / `@header_guarded` / `@read_guarded`."""
+    route = _route_for(handler, table, resolve)
+    if route is None:
+        return
+    if guard == "header" and not guard_mutating_request(handler):
+        reject_csrf(handler)
+        return
+    route(handler)
 
 
 # ---------------------------------------------------------------------------

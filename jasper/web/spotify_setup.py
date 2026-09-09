@@ -75,7 +75,6 @@ import re
 import secrets
 import time
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -107,11 +106,11 @@ from ._common import (
     SECRET_ENV_MODE,
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     flash_error,
     form_guarded,
-    guard_read_request,
     redirect_with_legacy_msg,
-    route_path,
     restart_systemd_units,
     send_html_response,
     send_json_response,
@@ -940,31 +939,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = route_path(self.path)
-            if path == "/oauth-callback":
-                if not guard_read_request(self, allow_cross_site_navigation=True):
-                    return
-                # OAuth callback from Spotify (or the bounce page) —
-                # protected by the OAuth `state` nonce, not by CSRF. Its
-                # guard variant differs from every other GET route here,
-                # so it stays a special case ahead of the table.
-                self._handle_oauth_callback_get(urllib.parse.parse_qs(url.query))
-                return
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
         # --- route bodies ---
 
@@ -1302,10 +1280,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             auth.code_challenge = challenge
             auth.get_access_token(code, check_cache=False)
 
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) because the entries reference
-    # `Handler`, which is defined here.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
@@ -1319,9 +1293,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
         handler._handle_playlist_preview(qs)
 
+    def _get_oauth_callback(handler: BaseHTTPRequestHandler) -> None:
+        # Callback from Spotify (or the bounce page) — protected by the
+        # OAuth `state` nonce, not by CSRF. The read guard it needs is the
+        # table's own, which allows the redirect-follow navigation.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        handler._handle_oauth_callback_get(qs)
+
     _GET_ROUTES = {
         "/": _get_index,
         "/playlist-preview": _get_playlist_preview,
+        "/oauth-callback": _get_oauth_callback,
     }
     _POST_ROUTES = {
         "/setup-credentials": Handler._handle_setup_credentials,

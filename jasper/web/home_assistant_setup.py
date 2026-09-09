@@ -60,7 +60,6 @@ import html
 import json
 import logging
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -70,16 +69,16 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     form_guarded,
     header_guarded,
     read_guarded,
     mask_secret,
     restart_voice_daemon,
-    route_path,
     send_html_response,
     send_json_response,
     send_see_other,
-    guard_read_request,
     SECRET_ENV_MODE,
 )
 from .chrome import (
@@ -948,12 +947,7 @@ to this Home Assistant instance.</p>
 # ---- Handler ----------------------------------------------------------------
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable), local to this closure so the bodies
-    # can close over `cfg`. Three POST guards live side by side here — the
-    # read guard on the probes, header CSRF on /credentials-for-copy, form
-    # CSRF on /save and /disconnect — so each body declares its own and the
-    # dispatcher guards no POST.
+    # Three POST guards side by side here, so each body declares its own.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
         state = read_env_file(cfg["state_path"])
@@ -966,8 +960,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         ))
 
     def _get_reset(handler: BaseHTTPRequestHandler) -> None:
-        # Clear URL + token + agent (keep recent URLs) and go back
-        # to state 1. Equivalent to "Use a different URL" link.
+        # A GET that mutates — hence read_guarded on its table entry. Clears
+        # URL + token + agent (keeps recent URLs); the "different URL" link.
         state = read_env_file(cfg["state_path"])
         recent = _recent_urls(state)
         values: dict[str, str] = {}
@@ -983,7 +977,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             delete_env_file(cfg["state_path"])
         send_see_other(handler, "./")
 
-    _GET_ROUTES = {"/": _get_index}
+    _GET_ROUTES = {"/": _get_index, "/reset": read_guarded(_get_reset)}
 
     @read_guarded
     def _post_discover(handler: BaseHTTPRequestHandler) -> None:
@@ -1234,29 +1228,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            path = route_path(self.path)
-            if path == "/reset":
-                # A GET that mutates: it must not be reachable by a
-                # cross-site top-level navigation, so its guard variant
-                # differs from the table's and it stays a special case.
-                if not guard_read_request(self, allow_cross_site_navigation=False):
-                    return
-                _get_reset(self)
-                return
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 
