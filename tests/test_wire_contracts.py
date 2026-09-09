@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import mux as mux_module
 from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
 
 REPO = Path(__file__).resolve().parents[1]
@@ -483,21 +484,57 @@ def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
     assert capacity.group(1) == fixture.group(1)
 
 
-def test_fanin_control_command_vocabulary_matches_mux():
-    """mux drives fan-in's source gate over the UDS with a one-line text
-    command. Pin the verbs on both sides, plus the error-shape key mux
-    raises on."""
-    state_rs = FANIN_STATE_RS.read_text()
-    mux_py = (REPO / "jasper" / "mux.py").read_text()
-    control_py = (REPO / "jasper" / "fanin" / "control.py").read_text()
-    for verb in ('"STATUS"', '"NONE"', '"SELECT '):
-        assert verb in state_rs, f"fanin state.rs no longer handles {verb}"
-    assert 'socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'f"SELECT {label}"' in mux_py
-    assert '"NONE"' in mux_py
-    # state.rs error responses carry {"error": ...}; mux raises on it.
-    assert '"error":' in state_rs
-    assert '"error" in payload' in control_py
+#: fan-in's one-line control dispatch, in both spellings its match uses:
+#: an exact-match arm (``"STATUS" =>``) and a prefix arm
+#: (``cmd.starts_with("SELECT ")``).
+_FANIN_VERB_RE = re.compile(
+    r'^\s*"([A-Z_]+)" =>|starts_with\("([A-Z_]+) "\)', re.MULTILINE,
+)
+
+
+def _fanin_dispatch_verbs() -> set[str]:
+    """The verb vocabulary fan-in's control dispatch actually handles."""
+    verbs = {
+        exact or prefixed
+        for exact, prefixed in _FANIN_VERB_RE.findall(FANIN_STATE_RS.read_text())
+    }
+    assert "STATUS" in verbs, (
+        f"no control verbs extracted from {FANIN_STATE_RS} — extractor broke?"
+    )
+    return verbs
+
+
+async def test_fanin_control_command_vocabulary_matches_mux(monkeypatch, tmp_path):
+    """Every verb mux puts on fan-in's control UDS is one fan-in dispatches.
+
+    The mux half is OBSERVED — a real `Mux` drives the real gate transitions
+    against a recording transport — so this compares the two owners rather
+    than a substring of either. `tests/test_fanin_control.py` owns the
+    client's own wire behaviour (one bounded exchange, raise on an
+    ``{"error": ...}`` body); fan-in's `state_server_wire_contract_returns_
+    valid_json_for_status_trim_and_errors` owns the responses.
+    """
+    sent: list[str] = []
+
+    async def record(command: str, **_kwargs) -> dict:
+        sent.append(command)
+        return {}
+
+    monkeypatch.setattr(mux_module, "fanin_command", record)
+    m = mux_module.Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
+
+    await m._fanin_select(mux_module.Source.AIRPLAY, reason="test")
+    await m._fanin_select_label("correction", reason="test")
+    await m._fanin_none(reason="test")
+    await m._fanin_lane_mute("usbsink", True)
+    await m._fanin_lane_mute("usbsink", False)
+
+    verbs = {line.split(" ", 1)[0] for line in sent}
+    assert verbs == {"SELECT", "NONE", "MUTE", "UNMUTE"}
+    assert verbs <= _fanin_dispatch_verbs(), (
+        f"mux sends {sorted(verbs - _fanin_dispatch_verbs())} that "
+        f"{FANIN_STATE_RS.relative_to(REPO)} does not dispatch"
+    )
 
 
 def test_control_socket_paths_agree_across_processes(monkeypatch):

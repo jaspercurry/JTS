@@ -1131,8 +1131,7 @@ impl ChipRefDownsampler {
     /// alone here.
     ///
     /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
-    /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
-    /// no-allocation guard cannot cover. It costs a ~107-sample allocation per
+    /// the writer thread). It costs a ~107-sample allocation per
     /// period, and ONLY on boxes with the chip-reference leg armed
     /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
     /// second thread for it. Fixing it means giving the writer a pool or a
