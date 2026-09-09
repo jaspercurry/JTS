@@ -238,8 +238,10 @@ ol.steps li {
 }
 
 /* Step 4's redirect-URI widget (copy row when interactive, plain text when
-   read-only inside the management page's setup-guide disclosure). */
-.step4-redirect {
+   read-only inside the management page's setup-guide disclosure). Scoped
+   under .step-body so it outranks .step-body p's margin for the read-only
+   <p> variant. */
+.step-body .step4-redirect {
   margin-top: 0.3em;
 }
 
