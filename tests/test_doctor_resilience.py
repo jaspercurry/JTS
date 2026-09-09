@@ -524,19 +524,61 @@ def test_supervisor_snapshots_quiet_is_ok():
     assert res.status == "ok"
 
 
-def test_supervisor_snapshots_ok_when_counters_recently_reset():
-    res = _classify_supervisor_snapshots(
-        {
-            "shairport": {
-                "enabled": True,
-                "restart_count": 12,
-                "counters_since": time.time() - 5,
+@pytest.mark.parametrize(
+    "uptime_sec, resilience_state, expected_status, expected_reason",
+    [
+        (
+            5.0,
+            {"shairport": {"enabled": True, "restart_count": 12}},
+            "ok",
+            resilience.REASON_SUPERVISOR_COUNTERS_RESET,
+        ),
+        (
+            3600.0,
+            {"shairport": {"enabled": True, "restart_count": 12}},
+            "warn",
+            resilience.REASON_SUPERVISOR_ISSUES,
+        ),
+        (
+            5.0,
+            {"shairport": {"enabled": True, "consecutive_failures": 3}},
+            "warn",
+            resilience.REASON_SUPERVISOR_ISSUES,
+        ),
+        (
+            None,
+            {"shairport": {"enabled": True, "restart_count": 12}},
+            "warn",
+            resilience.REASON_SUPERVISOR_ISSUES,
+        ),
+    ],
+    ids=["counters-reset-recent", "counters-settled", "live-flag-stays-warn", "uptime-unavailable"],
+)
+def test_supervisor_snapshots_check_uses_control_uptime_for_counter_reset(
+    monkeypatch, uptime_sec, resilience_state, expected_status, expected_reason,
+):
+    """A jasper-control restart zeroes every supervisor counter with no
+    marker of its own; the check reads jasper-control's own unit uptime
+    (`ActiveEnterTimestampMonotonic`, in the doctor's shared unit-state
+    batch) to tell a freshly-reset counter from settled history. A live
+    flag (still-failing, still-starved) stays `warn` regardless of uptime,
+    and an unreadable uptime falls back to today's `warn`."""
+    monkeypatch.setattr(resilience, "_read_resilience_state", lambda: resilience_state)
+    overrides = {}
+    if uptime_sec is not None:
+        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+        started_us = int(now_us - uptime_sec * 1e6)
+        overrides = {
+            "jasper-control.service": {
+                "active_enter_timestamp_monotonic": started_us,
             },
-        },
-    )
+        }
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(overrides))
 
-    assert res.status == "ok"
-    assert res.reason == resilience.REASON_SUPERVISOR_COUNTERS_RESET
+    res = check_supervisor_runtime_snapshots()
+
+    assert res.status == expected_status
+    assert res.reason == expected_reason
 
 
 @pytest.mark.parametrize(

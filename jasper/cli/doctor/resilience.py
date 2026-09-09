@@ -46,11 +46,14 @@ REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
 REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
 
-# A jasper-control restart zeroes every supervisor's counters with no other
-# marker. Within this many seconds of that reset (per snapshot's
-# `counters_since`), a nonzero count is freshly-accumulated, not settled
-# history, so the row reads `ok` with a reason instead of `warn`.
+# A jasper-control restart zeroes every supervisor's in-memory counters with
+# no marker of its own. Within this many seconds of jasper-control's own
+# unit uptime, a nonzero counter is freshly-accumulated, not settled
+# history, so the row reads `ok` with a reason instead of `warn` — but only
+# for accumulated-counter issues; a live flag (still-starved, still-failing)
+# stays `warn` regardless of uptime.
 _SUPERVISOR_COUNTERS_RESET_WINDOW_SEC = 300.0
+_CONTROL_UNIT = "jasper-control.service"
 
 REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
 REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
@@ -277,11 +280,14 @@ def _int_field(snapshot: dict[str, Any], key: str) -> int:
         return 0
 
 
-def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
+def _classify_supervisor_snapshots(
+    resilience: dict[str, Any], *, control_uptime_sec: float | None = None,
+) -> CheckResult:
     """Classify ``/state.resilience`` supervisor snapshots, so a
     non-converging repair loop is visible during one-shot diagnostics too.
     """
     issues: list[str] = []
+    live_issue = False
 
     shairport = resilience.get("shairport")
     if isinstance(shairport, dict) and shairport.get("enabled") is not False:
@@ -290,6 +296,7 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
         suppressed = _int_field(shairport, "suppressed_count")
         if consecutive:
             issues.append(f"shairport probe failing consecutive={consecutive}")
+            live_issue = True
         if restarts:
             issues.append(f"shairport supervisor restarts={restarts}")
         if suppressed:
@@ -300,6 +307,7 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
         consecutive = _int_field(grouping, "consecutive_starved")
         if grouping.get("last_poll_starved") is True or consecutive:
             issues.append(f"grouping lane starved consecutive={consecutive}")
+            live_issue = True
         kicks = _int_field(grouping, "kick_count")
         rate_limited = _int_field(grouping, "rate_limited_count")
         if kicks:
@@ -319,6 +327,7 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
             if reassert.get("last_ok") is False:
                 detail = str(reassert.get("last_detail") or "failed")
                 issues.append(f"grouping peer reassert last failed: {detail}")
+                live_issue = True
 
     system = resilience.get("system_supervisor")
     if isinstance(system, dict) and system.get("enabled") is not False:
@@ -329,26 +338,26 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
         if consecutive:
             suffix = f" last_failed={failed_probe}" if failed_probe else ""
             issues.append(f"system supervisor probe failing consecutive={consecutive}{suffix}")
+            live_issue = True
         if reboots:
             issues.append(f"system supervisor reboots={reboots}")
         if suppressed:
             issues.append(f"system supervisor reboot suppressed={suppressed}")
 
     if issues:
-        since = None
-        for key in ("shairport", "grouping_supervisor", "system_supervisor"):
-            snap = resilience.get(key)
-            candidate = snap.get("counters_since") if isinstance(snap, dict) else None
-            if isinstance(candidate, (int, float)):
-                since = candidate
-                break
-        age = None if since is None else time.time() - since
-        if age is not None and age < _SUPERVISOR_COUNTERS_RESET_WINDOW_SEC:
+        # A negative/unreadable uptime is untrusted, same as
+        # _classify_reboot_state's future-dated skew guard: fall through to
+        # warn rather than trust a clock that has not settled.
+        if (
+            not live_issue
+            and control_uptime_sec is not None
+            and 0 <= control_uptime_sec < _SUPERVISOR_COUNTERS_RESET_WINDOW_SEC
+        ):
             return CheckResult(
                 "supervisor runtime snapshots", "ok",
-                f"supervisor counters reset {age:.0f}s ago (jasper-control "
-                "restart) — history predating the reset is gone; check "
-                "journalctl for recurring failures",
+                f"jasper-control up {control_uptime_sec:.0f}s — counters "
+                "reset by that restart, not settled history: "
+                + "; ".join(issues),
                 reason=REASON_SUPERVISOR_COUNTERS_RESET,
             )
         return CheckResult(
@@ -368,6 +377,22 @@ def _read_resilience_state() -> dict[str, Any] | None:
     return _nested_dict(evidence.control_state().payload, "resilience")
 
 
+def _control_uptime_sec() -> float | None:
+    """Seconds since jasper-control's current run started, from the
+    ``ActiveEnterTimestampMonotonic`` the doctor's unit-state batch already
+    carries. None when the unit state or the timestamp is unavailable.
+    """
+    state = evidence.unit_state(_CONTROL_UNIT)
+    started_us = state.get("active_enter_timestamp_monotonic") if state else None
+    if not isinstance(started_us, int) or started_us <= 0:
+        return None
+    try:
+        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    except (OSError, AttributeError):
+        return None
+    return (now_us - started_us) / 1e6
+
+
 @doctor_check()
 def check_supervisor_runtime_snapshots() -> CheckResult:
     """Surface supervisor state that otherwise only appears in ``/state``."""
@@ -379,7 +404,9 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
             "jasper-control /state unavailable",
             reason=REASON_CONTROL_UNAVAILABLE,
         )
-    return _classify_supervisor_snapshots(resilience)
+    return _classify_supervisor_snapshots(
+        resilience, control_uptime_sec=_control_uptime_sec(),
+    )
 
 
 # vcgencmd get_throttled bit layout (Pi firmware): raw bit 0 = under-voltage

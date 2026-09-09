@@ -83,7 +83,7 @@ DOCTOR_UNIT_ROSTER: tuple[str, ...] = (
 SHOW_PROPERTIES = (
     "Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "Result",
     "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent", "CPUUsageNSec",
-    "ControlGroup",
+    "ControlGroup", "ActiveEnterTimestampMonotonic",
 )
 
 # Bound on ONE `systemctl` invocation a reconciler makes to CHANGE unit state
@@ -237,6 +237,9 @@ def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
             "memory_current_bytes": systemd_int(record.get("MemoryCurrent")),
             "cpu_usage_nsec": systemd_int(record.get("CPUUsageNSec")),
             "control_group": record.get("ControlGroup") or "",
+            "active_enter_timestamp_monotonic": systemd_int(
+                record.get("ActiveEnterTimestampMonotonic")
+            ),
         }
     return out
 
