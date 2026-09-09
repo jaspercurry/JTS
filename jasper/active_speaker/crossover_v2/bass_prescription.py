@@ -12,10 +12,10 @@ figure comes from the fit, never from the document — and the admission is
 
 The hard stop is not the prescriber's to move: a target with
 ``boost_headroom_db > 0`` is admissible only with BOTH protection evidences
-attached (row 3.4's ladder evidence for its level, and the limiter-evidence
-bundle). Neither artifact exists yet, so a boosted target refuses today — the
-intended state — and the natural target, which spends nothing, is always
-adopted. The prescriber never chooses how loud a target may play: every
+attached (the bass/ladder program's evidence for its level, and the limiter
+bench's bundle). Neither artifact exists yet, so a boosted target refuses
+today — the intended state — and the natural target, which spends nothing, is
+always adopted. The prescriber never chooses how loud a target may play: every
 ``max_level_db`` here is read off the ladder evidence, never off the document.
 
 Shape and posture are :mod:`.blend_prescription`'s, and what the doors share

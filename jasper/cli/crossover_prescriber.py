@@ -402,10 +402,10 @@ def _composed_room(
     )
 
 
-#: Row 3.4's per-target protection artifacts, banked beside the fit they
-#: protect. Only the READER's contract is defined here: an object naming the
-#: ``target_id`` it measured, its ``verdict`` and the ``max_level_db`` that
-#: verdict bounds it to.
+#: The bass/ladder program's per-target protection artifacts, banked beside
+#: the fit they protect. Only the READER's contract is defined here: an object
+#: naming the ``target_id`` it measured, its ``verdict`` and the
+#: ``max_level_db`` that verdict bounds it to.
 BASS_LADDER_DIRNAME = "bass_ladder"
 
 
@@ -473,11 +473,12 @@ def _bass_gate(
         drivers.get("bass_owner_role") if isinstance(drivers, Mapping) else None
     )
     requested = document.get("targets")
-    # Row 4.3's bundle does not exist, so today every boosted target refuses
-    # on `bass_prescription_protection_missing` -- the intended state, not a
-    # gap: only the natural target is admissible until the limiter evidence a
-    # boost rides on can be shown. The seam is banked beside the ladder's so
-    # the take re-gates from exactly what the stage saw.
+    # No limiter-evidence bundle exists yet (the supervised bench campaign of
+    # issue #4502 has not run), so today every boosted target refuses on
+    # `bass_prescription_protection_missing` -- the intended state, not a gap:
+    # only the natural target is admissible until the limiter evidence a boost
+    # rides on can be shown. The seam is banked beside the ladder's so the take
+    # re-gates from exactly what the stage saw.
     limiter: Mapping[str, Any] | None = None
     ladder_evidence = _bass_ladder_evidence(
         path.parent,

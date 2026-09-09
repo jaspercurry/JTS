@@ -21,19 +21,15 @@ class BassExtensionRefusal(StrEnum):
     BASELINE_NOT_APPLIED = "bass_extension_baseline_not_applied"
     TOPOLOGY_MISMATCH = "bass_extension_topology_mismatch"
     BASS_OWNER_AMBIGUOUS = "bass_extension_bass_owner_ambiguous"
-    BONDED_BASS_OWNER_REMOTE = "bass_extension_bonded_bass_owner_remote"
     ENCLOSURE_UNKNOWN = "bass_extension_enclosure_unknown"
     ENCLOSURE_UNSUPPORTED = "bass_extension_enclosure_unsupported"
-    MEDIAN_UNREADABLE = "bass_extension_median_unreadable"
     PLANT_UNRESOLVED = "bass_extension_plant_unresolved"
     TUNING_NOT_LOCATED = "bass_extension_tuning_not_located"
     PR_NOTCH_NOT_LOCATED = "bass_extension_pr_notch_not_located"
     FIT_QUALITY_INSUFFICIENT = "bass_extension_fit_quality_insufficient"
-    CAPTURE_QUALITY_REFUSED = "bass_extension_capture_quality_refused"
-    CAPTURE_SNR_INSUFFICIENT = "bass_extension_capture_snr_insufficient"
-    MIC_MOVED_BETWEEN_RUNGS = "bass_extension_mic_moved_between_rungs"
+    # The bass/ladder program's own refusal: its producer lands with that
+    # program. Delete this only if that program is abandoned.
     LADDER_INCOMPLETE = "bass_extension_ladder_incomplete"
-    BOOST_LIMIT_EXCEEDED = "bass_extension_boost_limit_exceeded"
     PROFILE_STALE = "bass_extension_profile_stale"
     # The candidate field's own refusals (:mod:`.candidate_field`): ONE
     # vocabulary for the layer, so the prescription door and the persistence

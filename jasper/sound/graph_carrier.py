@@ -617,12 +617,8 @@ def recompose_active_baseline_for_bass_extension(
     their own persisted models. The loaded YAML is never spliced.
 
     ``desired_profile`` is the bass candidate field to emit, or ``None`` for the
-    un-extended graph. Its only caller,
-    :func:`jasper.bass_extension.apply_bass_extension` (lane A), still hands it a
-    ``BassExtensionProfile`` record, which the recompose refuses as a type error,
-    so this seam fails closed with ``bass_extension_recompose_unavailable`` until
-    that applier retires. The parameter keeps its record-era name only because
-    that caller binds it by keyword.
+    un-extended graph; anything else is refused with
+    ``bass_extension_recompose_unavailable``.
     """
 
     from jasper.active_speaker.baseline_profile import (

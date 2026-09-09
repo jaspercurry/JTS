@@ -71,9 +71,6 @@ from jasper.active_speaker.runtime_contract import (
     classify_active_bass_extension_graph,
     classify_bass_extension_graph,
 )
-from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
-from jasper.bass_extension.apply_intent import _intent_payload
-from jasper.bass_extension.profile import save_bass_extension_profile
 from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
@@ -349,7 +346,6 @@ def _persisted_boundary(
     *,
     topology: OutputTopology,
     graph_text: str,
-    profile=None,
     field=None,
 ) -> dict[str, object]:
     config = tmp_path / "active-speaker-baseline.yml"
@@ -361,8 +357,6 @@ def _persisted_boundary(
     applied_path = tmp_path / "applied-baseline.json"
     applied_path.write_text(json.dumps(applied), encoding="utf-8")
     profile_path = tmp_path / "bass-profile.json"
-    if profile is not None:
-        save_bass_extension_profile(profile, profile_path)
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(
         f"config_path: {config}\nvolume: -18.0\nmute: false\n",
@@ -380,13 +374,6 @@ def _persisted_boundary(
         "staged_metadata_path": staged_path,
         "statefile_path": statefile,
     }
-
-
-def _sealed_profile(topology: OutputTopology, applied: dict):
-    return replace(
-        _profile(topology=topology, applied_baseline=applied),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
 
 
 def _sealed_field(*, channels=(0,)) -> dict:
@@ -626,17 +613,9 @@ def test_desired_boundary_distinguishes_explicit_no_family_from_omission() -> No
         applied_baseline_state=applied,
         desired_bass_extension=object(),
     )
-    two_authorities = classify_bass_extension_graph(
-        topology,
-        evidence_source="desired",
-        graph_text=text,
-        applied_baseline_state=applied,
-        desired_bass_extension=None,
-        desired_profile=None,
-    )
 
     assert explicit_none.allowed is True
-    for refusal in (omitted, invalid, two_authorities):
+    for refusal in (omitted, invalid):
         assert refusal.allowed is False
         assert refusal.issues[0]["code"] == "bass_extension_source_invalid"
 
@@ -670,7 +649,7 @@ def test_persisted_boundaries_reject_explicit_desired_evidence(
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
         staged_metadata_path=authority["staged_metadata_path"],
-        desired_profile=None,
+        desired_bass_extension=None,
     )
 
     assert boot.allowed is False
@@ -1496,116 +1475,22 @@ async def test_live_boundary_propagates_canonicalizer_cancellation(
         )
 
 
-def test_pending_intent_authorizes_only_recorded_graph_profile_pair(
-    tmp_path: Path,
-) -> None:
+def test_a_pending_intent_file_authorizes_no_bass_stage(tmp_path: Path) -> None:
+    """The applied candidate's field is the ONE authority for a persisted host.
+
+    An apply interrupted mid-flight leaves an intent file behind and an applied
+    candidate that names no family. The graph it selected may already carry the
+    bass stage; without a family to prove it against, that host is refused.
+    """
+
     topology = _active_topology("mono", "active_2_way")
-    applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
-    predecessor = _active_baseline_yaml("mono", 2).encode()
-    desired = _active_baseline_yaml(
-        "mono", 2, bass_extension=_sealed_field()
-    ).encode()
     authority = _persisted_boundary(
         tmp_path,
         topology=topology,
-        graph_text=desired.decode(),
-        profile=profile,
+        graph_text=_active_baseline_yaml("mono", 2, bass_extension=_sealed_field()),
+        field=None,
     )
-    authority["applied_baseline_path"].write_text(
-        json.dumps({**applied, "status": "applied", "config": {"path": str(authority["config"])}}),
-        encoding="utf-8",
-    )
-    profile_bytes = authority["profile_path"].read_bytes()
-    intent = _intent_payload(
-        predecessor_identity=ExactDspStateIdentity(
-            {"config_path": str(authority["config"]), "graph": "predecessor"}
-        ),
-        predecessor_profile_bytes=None,
-        desired_profile_bytes=profile_bytes,
-        selected_path=authority["config"],
-        selected_mode=0o640,
-        predecessor_graph_bytes=predecessor,
-        desired_graph_bytes=desired,
-        selector_target=authority["config"],
-    )
-    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
-
-    accepted = classify_bass_extension_graph(
-        topology,
-        evidence_source="persisted_boot",
-        statefile_path=authority["statefile_path"],
-        applied_baseline_path=authority["applied_baseline_path"],
-        profile_path=authority["profile_path"],
-        intent_path=authority["intent_path"],
-        staged_metadata_path=authority["staged_metadata_path"],
-    )
-    intent["graphs"]["desired"] = "0" * 64
-    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
-    refused = classify_bass_extension_graph(
-        topology,
-        evidence_source="persisted_boot",
-        statefile_path=authority["statefile_path"],
-        applied_baseline_path=authority["applied_baseline_path"],
-        profile_path=authority["profile_path"],
-        intent_path=authority["intent_path"],
-        staged_metadata_path=authority["staged_metadata_path"],
-    )
-
-    assert accepted.allowed is True
-    assert refused.allowed is False
-    assert "bass_extension_authority_invalid" in {
-        issue["code"] for issue in refused.issues
-    }
-
-
-@pytest.mark.parametrize(
-    "malformed_field",
-    ["desired_profile_bytes", "desired_graph_bytes"],
-)
-def test_pending_intent_refuses_unpaired_surrogate_without_raising(
-    tmp_path: Path,
-    malformed_field: str,
-) -> None:
-    topology = _active_topology("mono", "active_2_way")
-    applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
-    predecessor = _active_baseline_yaml("mono", 2).encode()
-    desired = _active_baseline_yaml(
-        "mono", 2, bass_extension=_sealed_field()
-    ).encode()
-    authority = _persisted_boundary(
-        tmp_path,
-        topology=topology,
-        graph_text=desired.decode(),
-        profile=profile,
-    )
-    authority["applied_baseline_path"].write_text(
-        json.dumps({
-            **applied,
-            "status": "applied",
-            "config": {"path": str(authority["config"])},
-        }),
-        encoding="utf-8",
-    )
-    profile_bytes = authority["profile_path"].read_bytes()
-    intent = _intent_payload(
-        predecessor_identity=ExactDspStateIdentity(
-            {"config_path": str(authority["config"]), "graph": "predecessor"}
-        ),
-        predecessor_profile_bytes=None,
-        desired_profile_bytes=profile_bytes,
-        selected_path=authority["config"],
-        selected_mode=0o640,
-        predecessor_graph_bytes=predecessor,
-        desired_graph_bytes=desired,
-        selector_target=authority["config"],
-    )
-    if malformed_field == "desired_profile_bytes":
-        intent["profiles"]["desired"]["bytes"] = "\ud800"
-    else:
-        intent["config"]["desired_bytes"] = "\ud800"
-    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
+    authority["intent_path"].write_text("{}\n", encoding="utf-8")
 
     graph = classify_bass_extension_graph(
         topology,
@@ -1618,9 +1503,9 @@ def test_pending_intent_refuses_unpaired_surrogate_without_raising(
     )
 
     assert graph.allowed is False
-    assert "bass_extension_authority_invalid" in {
-        issue["code"] for issue in graph.issues
-    }
+    assert graph.details["bass_extension_profile_summary"] == dict(
+        NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
 
 
 def test_no_topology_refuses_flat_outputd_cutover() -> None:

@@ -2450,7 +2450,7 @@ def _derived_marker(graph_yaml, topology, *, cap=8):
         evidence_source="desired",
         graph_text=graph_yaml,
         applied_baseline_state={},
-        desired_profile=None,
+        desired_bass_extension=None,
     )
     _width, _problem, device = _outputd_endpoint_width(graph, cap)
     return device

@@ -27,14 +27,13 @@ import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
+    Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
 )
 
 import yaml
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
-from jasper.bass_extension.apply_intent import decode_apply_intent
 from jasper.bass_extension.candidate_field import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY as NO_BASS_EXTENSION_PROFILE_SUMMARY,
     applied_bass_extension_field,
@@ -43,9 +42,6 @@ from jasper.bass_extension.candidate_field import (
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
-
-if TYPE_CHECKING:
-    from jasper.bass_extension.profile import BassExtensionProfile
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.output_topology import (
     SUB_CROSSOVER_HZ_HI,
@@ -3765,120 +3761,15 @@ def _normalized_graph_fingerprint(text: str) -> str | None:
         return None
 
 
-def _evaluated_profile_summary(
-    *,
-    topology: OutputTopology,
-    applied_baseline_state: Mapping[str, Any] | None,
-    profile_bytes: bytes | None,
-) -> dict[str, Any]:
-    """Translate exact profile bytes into disk-free graph evidence.
-
-    The legacy record's path: retired with ``apply_bass_extension`` (lane A),
-    the only writer left that persists one.
-    """
-
-    if profile_bytes is None:
-        return {"authority_valid": True, "runtime_block_required": False}
-    raw = _json_mapping(profile_bytes)
-    if raw is None:
-        return {"authority_valid": True, "runtime_block_required": False}
-    try:
-        from jasper.bass_extension.profile import (
-            BassExtensionProfile,
-            evaluate_loaded_bass_extension_profile,
-        )
-
-        profile = BassExtensionProfile.from_dict(raw)
-        evaluation = evaluate_loaded_bass_extension_profile(
-            profile,
-            topology=topology,
-            applied_baseline_state=applied_baseline_state,
-        )
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return {"authority_valid": True, "runtime_block_required": False}
-    if evaluation.status != "accepted":
-        return {"authority_valid": True, "runtime_block_required": False}
-    adapter_id = str(profile.enclosure["adapter_id"])
-    if adapter_id != "sealed_v1":
-        return {"authority_valid": True, "runtime_block_required": False}
-    natural = profile.targets[-1]
-    protected = all(target.subsonic is not None for target in profile.targets)
-    return {
-        "authority_valid": protected,
-        "runtime_block_required": True,
-        "bass_owner_channels": list(profile.bass_owner["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": (
-                dict(natural.subsonic) if natural.subsonic is not None else None
-            ),
-        },
-    }
-
-
-def _snapshot_profile_summary(
-    *,
-    topology: OutputTopology,
-    graph_text: str,
-    applied_baseline_state: Mapping[str, Any] | None,
-    profile_bytes: bytes | None,
-    intent_bytes: bytes,
-    selected_config_path: str | None,
-) -> dict[str, Any]:
-    """The apply-intent path's evidence: retired with lane A's applier."""
-
-    try:
-        intent = decode_apply_intent(_json_mapping(intent_bytes))
-    except ValueError:
-        return {"authority_valid": False, "runtime_block_required": False}
-    graph_fingerprint = _normalized_graph_fingerprint(graph_text)
-    if graph_fingerprint is None or selected_config_path != intent.config_path:
-        return {"authority_valid": False, "runtime_block_required": False}
-    matching_profiles = []
-    if intent.predecessor_graph_fingerprint == graph_fingerprint:
-        matching_profiles.append(intent.predecessor_profile_bytes)
-    if intent.desired_graph_fingerprint == graph_fingerprint:
-        matching_profiles.append(intent.desired_profile_bytes)
-    # A no-block replacement can legitimately have identical predecessor and
-    # desired graph fingerprints.  The exact persisted profile bytes select
-    # the corresponding evaluation without widening authority to a third pair.
-    if profile_bytes not in matching_profiles:
-        return {"authority_valid": False, "runtime_block_required": False}
-    return _evaluated_profile_summary(
-        topology=topology,
-        applied_baseline_state=applied_baseline_state,
-        profile_bytes=profile_bytes,
-    )
-
-
-def _persisted_bass_summary(
-    *,
-    topology: OutputTopology,
-    graph_text: str,
-    config_path: str | None,
-    applied_baseline_bytes: bytes | None,
-    profile_bytes: bytes | None,
-    intent_bytes: bytes | None,
-) -> dict[str, Any]:
+def _persisted_bass_summary(applied_baseline_bytes: bytes | None) -> dict[str, Any]:
     """Graph authority for one persisted host: the applied candidate's field.
 
-    While lane A's intent file exists the profile bytes it names are the
-    authority instead, so an interrupted apply still recovers until
-    ``apply_bass_extension`` retires.
+    The one authority. A host whose graph carries a bass stage its applied
+    candidate does not name is refused, never trusted.
     """
 
-    applied = _json_mapping(applied_baseline_bytes)
-    if intent_bytes is None:
-        return graph_summary(applied_bass_extension_field(applied))
-    return _snapshot_profile_summary(
-        topology=topology,
-        graph_text=graph_text,
-        applied_baseline_state=applied,
-        profile_bytes=profile_bytes,
-        intent_bytes=intent_bytes,
-        selected_config_path=config_path,
+    return graph_summary(
+        applied_bass_extension_field(_json_mapping(applied_baseline_bytes))
     )
 
 
@@ -3952,25 +3843,16 @@ def classify_bass_extension_graph(
     desired_bass_extension: "Mapping[str, Any] | None | object" = (
         _BASS_PROFILE_EVIDENCE_OMITTED
     ),
-    desired_profile: "BassExtensionProfile | None | object" = (
-        _BASS_PROFILE_EVIDENCE_OMITTED
-    ),
 ) -> GraphSafety:
     """Canonical synchronous graph/evidence boundary.
 
-    ``desired_bass_extension`` is the applied candidate's own field and the
-    only desired evidence a production caller passes. ``desired_profile`` is
-    the legacy record, retired with ``apply_bass_extension`` (lane A); naming
-    both is a refusal, since one graph has one authority.
+    ``desired_bass_extension`` is the applied candidate's own field: the one
+    desired authority. Omitting it on a ``"desired"`` classification is a
+    refusal, since a graph proved against no named authority is not proved.
     """
 
     if evidence_source == "desired":
-        from jasper.bass_extension.profile import BassExtensionProfile
-
-        field_given = desired_bass_extension is not _BASS_PROFILE_EVIDENCE_OMITTED
-        record_given = desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
-        desired = desired_bass_extension if field_given else desired_profile
-        wanted = Mapping if field_given else BassExtensionProfile
+        desired = desired_bass_extension
         if (
             any(path is not None for path in (
                 statefile_path, candidate_path, applied_baseline_path,
@@ -3979,26 +3861,13 @@ def classify_bass_extension_graph(
             or candidate_kind is not None
             or not isinstance(graph_text, str)
             or not isinstance(applied_baseline_state, Mapping)
-            or field_given == record_given
-            or not (desired is None or isinstance(desired, wanted))
+            or desired is _BASS_PROFILE_EVIDENCE_OMITTED
+            or not (desired is None or isinstance(desired, Mapping))
         ):
             return _unsafe_boundary("bass_extension_source_invalid", "desired evidence is incomplete")
-        if field_given:
-            bass_summary: Mapping[str, Any] = graph_summary(
-                desired if isinstance(desired, Mapping) else None
-            )
-        else:
-            bass_summary = _evaluated_profile_summary(
-                topology=topology,
-                applied_baseline_state=applied_baseline_state,
-                profile_bytes=(
-                    None
-                    if desired is None
-                    else (
-                        json.dumps(desired.to_dict(), indent=2, sort_keys=True) + "\n"
-                    ).encode("utf-8")
-                ),
-            )
+        bass_summary: Mapping[str, Any] = graph_summary(
+            desired if isinstance(desired, Mapping) else None
+        )
         return _classify_bass_extension_snapshot(
             topology,
             graph_text=graph_text,
@@ -4011,7 +3880,6 @@ def classify_bass_extension_graph(
         graph_text is not None
         or applied_baseline_state is not None
         or desired_bass_extension is not _BASS_PROFILE_EVIDENCE_OMITTED
-        or desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
         or applied_baseline_path is None
         or profile_path is None
         or intent_path is None
@@ -4093,14 +3961,7 @@ def classify_bass_extension_graph(
             topology,
             graph_text=selected_text,
             config_path=str(selected_path),
-            bass_summary=_persisted_bass_summary(
-                topology=topology,
-                graph_text=selected_text,
-                config_path=str(selected_path),
-                applied_baseline_bytes=applied1,
-                profile_bytes=profile1,
-                intent_bytes=intent1,
-            ),
+            bass_summary=_persisted_bass_summary(applied1),
             staged_metadata_bytes=staged1,
         )
     return _unsafe_boundary("bass_extension_snapshot_unstable", "graph authority changed while it was read")
@@ -4229,14 +4090,7 @@ async def classify_active_bass_extension_graph(
             topology,
             graph_text=selected_text,
             config_path=str(selected_path),
-            bass_summary=_persisted_bass_summary(
-                topology=topology,
-                graph_text=selected_text,
-                config_path=str(selected_path),
-                applied_baseline_bytes=applied1,
-                profile_bytes=profile1,
-                intent_bytes=intent1,
-            ),
+            bass_summary=_persisted_bass_summary(applied1),
             staged_metadata_bytes=staged1,
         )
     return _unsafe_boundary("bass_extension_active_snapshot_unstable", reason)

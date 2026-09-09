@@ -5,7 +5,7 @@
 """Contract: every adapter-emitted ``FitRefusal`` code is registered vocabulary.
 
 The enclosure adapters build ``FitRefusal(<code>, <detail>)`` for a fit refusal,
-while ``BassExtensionRefusal`` (``jasper/bass_extension/profile.py``) is the
+while ``BassExtensionRefusal`` (``jasper/bass_extension/refusals.py``) is the
 canonical refusal vocabulary. Those are two sources of truth for the same codes.
 This static test links them so a typo'd or newly-added adapter refusal code that
 is not a registered member fails CI instead of drifting apart from the enum.
@@ -22,7 +22,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from jasper.bass_extension.profile import BassExtensionRefusal
+from jasper.bass_extension.refusals import BassExtensionRefusal
 
 ADAPTERS_DIR = (
     Path(__file__).resolve().parents[1] / "jasper" / "bass_extension" / "adapters"

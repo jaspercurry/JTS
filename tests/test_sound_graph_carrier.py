@@ -61,7 +61,6 @@ from tests.test_active_speaker_runtime_contract import (
     _active_topology,
     _flat_yaml,
     _full_range_stereo,
-    _sealed_profile,
 )
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
