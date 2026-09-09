@@ -62,8 +62,14 @@ from ._shared import (
 
 
 # Verdict order for the table: worst first. Module grouping (roster order)
-# is kept within a band via Python's stable sort.
+# is kept within a band via Python's stable sort. The one sort both the ANSI
+# report and the /system dashboard's JSON payload use, so the dashboard (fed
+# entirely by _json_payload()) never needs its own copy.
 _STATUS_BAND = {"fail": 0, "warn": 1, "skipped": 2, "ok": 3}
+
+
+def _worst_first(results: list[CheckResult]) -> list[CheckResult]:
+    return sorted(results, key=lambda r: _STATUS_BAND.get(r.status, 4))
 
 
 def render(
@@ -102,7 +108,7 @@ def render(
         [r for r in results if r.status in ("fail", "warn")]
         if failing else results
     )
-    for r in sorted(rows, key=lambda r: _STATUS_BAND.get(r.status, 4)):
+    for r in _worst_first(rows):
         if r.status == "ok":
             color, mark = GREEN, "✓"
         elif r.status == "skipped":
@@ -120,11 +126,11 @@ def _json_payload(
     *,
     duration_sec: float | None = None,
 ) -> dict:
-    """The flat /system-dashboard schema — one row per check."""
+    """The flat /system-dashboard schema — one row per check, worst first."""
     payload = {
         **summarize(results),
         "generated_at_epoch": time.time(),
-        "results": [check_row(r) for r in results],
+        "results": [check_row(r) for r in _worst_first(results)],
     }
     if duration_sec is not None:
         payload["duration_sec"] = round(duration_sec, 3)

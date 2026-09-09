@@ -110,10 +110,6 @@ export async function setLatencyMode(refs, mode, onApplied) {
   }
 }
 
-// Verdict order for the table: worst first. Fetch order (module roster) is
-// kept within a band since Array.prototype.sort is stable.
-const STATUS_BAND = { fail: 0, warn: 1, skipped: 2, ok: 3 };
-
 function renderDiagnostics(out, body) {
   const mark = (s) =>
     (s === "fail" ? "✗" : s === "warn" ? "!" : s === "skipped" ? "–" : "✓");
@@ -122,9 +118,9 @@ function renderDiagnostics(out, body) {
     (s === "skipped"
       ? "var(--muted-faint)"
       : "var(--status-" + (s === "fail" ? "danger" : s === "warn" ? "warn" : "ok") + ")");
-  const sorted = [...(body.results || [])].sort(
-    (a, b) => (STATUS_BAND[a.status] ?? 4) - (STATUS_BAND[b.status] ?? 4));
-  const rows = sorted.map((c) =>
+  // Worst-first is the doctor's own order (jasper/cli/doctor/_cli.py) — the
+  // payload arrives pre-sorted, so this renders it as given.
+  const rows = (body.results || []).map((c) =>
     h("tr", null,
       h("td.diag-mark", { style: { color: tone(c.status) } }, mark(c.status)),
       h(c.status === "skipped" ? "td.muted" : "td", null, c.name),
