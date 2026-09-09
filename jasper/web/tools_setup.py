@@ -70,10 +70,12 @@ from ._common import (
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    json_body,
     json_island,
     read_active_provider,
     reject_csrf,
     restart_voice_daemon,
+    route_path,
     send_html_response,
     send_proxy_json,
 )
@@ -392,144 +394,229 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
+        # nginx strips the /assistant/tools/ prefix so we see paths like "/"
+        # and "/catalog.json".
         def do_GET(self) -> None:  # noqa: N802
-            # nginx strips the /assistant/tools/ prefix so we see paths like "/" and
-            # "/catalog.json".
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
+            path = route_path(self.path)
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is not None:
+                if not guard_read_request(self):
+                    return
+                handler_fn(self)
+                return
             pack_id = _pack_id_from_path(path)
-            detail_name = _tool_name_from_path(path)
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(self, _index_html(ctx["csrf_token"]))
-                return
-            if path == "/catalog.json":
-                if not guard_read_request(self):
-                    return
-                view = catalog_view(
-                    cfg["catalog_path"],
-                    cfg["state_path"],
-                    cfg["prompt_overrides_path"],
-                )
-                send_proxy_json(self, json.dumps(view).encode(), status=200)
-                return
-            if path == "/guide":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(self, _guide_html(ctx["csrf_token"]))
-                return
             if pack_id is not None:
                 if not guard_read_request(self):
                     return
                 ctx = begin_request(self)
                 send_html_response(self, _detail_html(pack_id, ctx["csrf_token"]))
                 return
+            detail_name = _tool_name_from_path(path)
             if detail_name is not None:
                 if not guard_read_request(self):
                     return
                 ctx = begin_request(self)
                 # Backward-compatible fallback for old /tool/<name> links.
-                send_html_response(self, _detail_html("tool:" + detail_name, ctx["csrf_token"]))
+                send_html_response(
+                    self, _detail_html("tool:" + detail_name, ctx["csrf_token"]),
+                )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path not in (
-                "/toggle", "/toggle-pack", "/prompt", "/prompt-reset", "/apply",
-            ):  # route BEFORE guard (404)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            if path == "/toggle":
-                self._handle_toggle()
-            elif path == "/toggle-pack":
-                self._handle_toggle_pack()
-            elif path == "/prompt":
-                self._handle_prompt()
-            elif path == "/prompt-reset":
-                self._handle_prompt_reset()
-            else:
-                self._handle_apply()
+            handler_fn(self)
 
-        def _read_json_body(self) -> tuple[dict[str, Any] | None, bool]:
-            """Parse the request body as a JSON object. Returns (obj, ok);
-            on any framing/JSON error it has already sent the 400 and
-            returns (None, False)."""
+        def _read_json(self) -> dict[str, Any] | None:
+            """Parse the request body as a JSON object. On any framing/JSON
+            error it has already sent the 400 and returns None, so `json_body`
+            never dispatches a malformed body to a route."""
             try:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:
                 send_proxy_json(
                     self, b'{"error":"invalid body length"}', status=400,
                 )
-                return None, False
+                return None
             if length < 0 or length > _JSON_BODY_LIMIT:
                 send_proxy_json(
                     self, b'{"error":"invalid body length"}', status=400,
                 )
-                return None, False
+                return None
             raw = self.rfile.read(length) if length else b""
             try:
-                body = json.loads(raw.decode("utf-8")) if raw else {}
+                parsed = json.loads(raw.decode("utf-8")) if raw else {}
             except (UnicodeDecodeError, json.JSONDecodeError):
                 send_proxy_json(
                     self, b'{"error":"invalid JSON body"}', status=400,
                 )
-                return None, False
-            return (body if isinstance(body, dict) else {}), True
+                return None
+            return parsed if isinstance(parsed, dict) else {}
 
-        def _handle_toggle(self) -> None:
-            body, ok = self._read_json_body()
-            if not ok:
-                return
-            name = body.get("name")
-            enabled = body.get("enabled")
-            if not isinstance(name, str) or not isinstance(enabled, bool):
-                send_proxy_json(
-                    self,
-                    b'{"error":"name (str) and enabled (bool) required"}',
-                    status=400,
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        ctx = begin_request(handler)
+        send_html_response(handler, _index_html(ctx["csrf_token"]))
+
+    def _get_catalog(handler: BaseHTTPRequestHandler) -> None:
+        view = catalog_view(
+            cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
+        )
+        send_proxy_json(handler, json.dumps(view).encode(), status=200)
+
+    def _get_guide(handler: BaseHTTPRequestHandler) -> None:
+        ctx = begin_request(handler)
+        send_html_response(handler, _guide_html(ctx["csrf_token"]))
+
+    @json_body
+    def _post_toggle(handler, body: dict[str, Any]) -> None:
+        name = body.get("name")
+        enabled = body.get("enabled")
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            send_proxy_json(
+                handler,
+                b'{"error":"name (str) and enabled (bool) required"}',
+                status=400,
+            )
+            return
+        # Only configured tools (active/off in the overlaid catalog) are
+        # toggleable: reject unknown names (a crafted POST can't poison
+        # the disabled-set with garbage) AND needs_setup tools (no UI
+        # control — toggling one just writes a meaningless entry).
+        index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
+        entry = index.get(name)
+        if entry is None:
+            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            return
+        if entry.get("disabled_by_pack") is True:
+            send_proxy_json(
+                handler, b'{"error":"pack disabled"}', status=400,
+            )
+            return
+        if entry.get("status") not in ("active", "off"):
+            send_proxy_json(
+                handler, b'{"error":"tool not configured"}', status=400,
+            )
+            return
+        with _STATE_LOCK:
+            state = read_tool_state(cfg["state_path"])
+            disabled = set(state.disabled_tools)
+            updated = set(disabled)
+            if enabled:
+                updated.discard(name)
+            else:
+                updated.add(name)
+            if updated != disabled:
+                try:
+                    write_tool_state(
+                        cfg["state_path"],
+                        ToolState(
+                            disabled_tools=frozenset(updated),
+                            disabled_packs=state.disabled_packs,
+                            setup_enabled_packs=state.setup_enabled_packs,
+                        ),
+                    )
+                except OSError as e:
+                    logger.exception("could not write tool_state.env")
+                    send_proxy_json(
+                        handler,
+                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        status=500,
+                    )
+                    return
+                log_event(
+                    logger, "tools.toggle",
+                    name=name, enabled=enabled,
+                    client=handler.address_string(),
                 )
-                return
-            # Only configured tools (active/off in the overlaid catalog) are
-            # toggleable: reject unknown names (a crafted POST can't poison
-            # the disabled-set with garbage) AND needs_setup tools (no UI
-            # control — toggling one just writes a meaningless entry).
-            index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
-            entry = index.get(name)
-            if entry is None:
-                send_proxy_json(self, b'{"error":"unknown tool"}', status=400)
-                return
-            if entry.get("disabled_by_pack") is True:
-                send_proxy_json(
-                    self, b'{"error":"pack disabled"}', status=400,
-                )
-                return
-            if entry.get("status") not in ("active", "off"):
-                send_proxy_json(
-                    self, b'{"error":"tool not configured"}', status=400,
-                )
-                return
-            with _STATE_LOCK:
-                state = read_tool_state(cfg["state_path"])
-                disabled = set(state.disabled_tools)
-                updated = set(disabled)
+        # Staged only — no restart. The page re-reads the overlay so the
+        # UI converges immediately; `pending` tells it to offer Apply.
+        pending = bool(
+            catalog_view(
+                cfg["catalog_path"],
+                cfg["state_path"],
+                cfg["prompt_overrides_path"],
+            ).get("pending")
+        )
+        send_proxy_json(
+            handler,
+            json.dumps(
+                {"ok": True, "name": name, "enabled": enabled,
+                 "pending": pending},
+            ).encode(),
+            status=200,
+        )
+
+    @json_body
+    def _post_toggle_pack(handler, body: dict[str, Any]) -> None:
+        pack_id = body.get("id")
+        enabled = body.get("enabled")
+        if not isinstance(pack_id, str) or not isinstance(enabled, bool):
+            send_proxy_json(
+                handler,
+                b'{"error":"id (str) and enabled (bool) required"}',
+                status=400,
+            )
+            return
+        index = _pack_index(cfg["catalog_path"], cfg["state_path"])
+        entry = index.get(pack_id)
+        if entry is None:
+            send_proxy_json(handler, b'{"error":"unknown pack"}', status=400)
+            return
+        singleton_tool = entry.get("singleton_tool_name")
+        setup_only = (
+            int(entry.get("setup_required_count") or 0)
+            >= int(entry.get("tool_count") or 0)
+            and int(entry.get("tool_count") or 0) > 0
+        )
+        changed = False
+        with _STATE_LOCK:
+            state = read_tool_state(cfg["state_path"])
+            if setup_only:
+                enabled_setup = set(state.setup_enabled_packs)
+                updated_setup = set(enabled_setup)
                 if enabled:
-                    updated.discard(name)
+                    updated_setup.add(pack_id)
                 else:
-                    updated.add(name)
-                if updated != disabled:
+                    updated_setup.discard(pack_id)
+                changed = updated_setup != enabled_setup
+                if changed:
                     try:
                         write_tool_state(
                             cfg["state_path"],
                             ToolState(
-                                disabled_tools=frozenset(updated),
+                                disabled_tools=state.disabled_tools,
+                                disabled_packs=state.disabled_packs,
+                                setup_enabled_packs=frozenset(updated_setup),
+                            ),
+                        )
+                    except OSError as e:
+                        logger.exception("could not write tool_state.env")
+                        send_proxy_json(
+                            handler,
+                            json.dumps({"error": f"save failed: {e}"}).encode(),
+                            status=500,
+                        )
+                        return
+            elif isinstance(singleton_tool, str):
+                disabled_tools = set(state.disabled_tools)
+                updated_tools = set(disabled_tools)
+                if enabled:
+                    updated_tools.discard(singleton_tool)
+                else:
+                    updated_tools.add(singleton_tool)
+                changed = updated_tools != disabled_tools
+                if changed:
+                    try:
+                        write_tool_state(
+                            cfg["state_path"],
+                            ToolState(
+                                disabled_tools=frozenset(updated_tools),
                                 disabled_packs=state.disabled_packs,
                                 setup_enabled_packs=state.setup_enabled_packs,
                             ),
@@ -537,320 +624,234 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except OSError as e:
                         logger.exception("could not write tool_state.env")
                         send_proxy_json(
-                            self,
+                            handler,
                             json.dumps({"error": f"save failed: {e}"}).encode(),
                             status=500,
                         )
                         return
-                    log_event(
-                        logger, "tools.toggle",
-                        name=name, enabled=enabled,
-                        client=self.address_string(),
-                    )
-            # Staged only — no restart. The page re-reads the overlay so the
-            # UI converges immediately; `pending` tells it to offer Apply.
-            pending = bool(
-                catalog_view(
-                    cfg["catalog_path"],
-                    cfg["state_path"],
-                    cfg["prompt_overrides_path"],
-                ).get("pending")
-            )
-            send_proxy_json(
-                self,
-                json.dumps(
-                    {"ok": True, "name": name, "enabled": enabled,
-                     "pending": pending},
-                ).encode(),
-                status=200,
-            )
-
-        def _handle_toggle_pack(self) -> None:
-            body, ok = self._read_json_body()
-            if not ok:
-                return
-            pack_id = body.get("id")
-            enabled = body.get("enabled")
-            if not isinstance(pack_id, str) or not isinstance(enabled, bool):
-                send_proxy_json(
-                    self,
-                    b'{"error":"id (str) and enabled (bool) required"}',
-                    status=400,
-                )
-                return
-            index = _pack_index(cfg["catalog_path"], cfg["state_path"])
-            entry = index.get(pack_id)
-            if entry is None:
-                send_proxy_json(self, b'{"error":"unknown pack"}', status=400)
-                return
-            singleton_tool = entry.get("singleton_tool_name")
-            setup_only = (
-                int(entry.get("setup_required_count") or 0)
-                >= int(entry.get("tool_count") or 0)
-                and int(entry.get("tool_count") or 0) > 0
-            )
-            changed = False
-            with _STATE_LOCK:
-                state = read_tool_state(cfg["state_path"])
-                if setup_only:
-                    enabled_setup = set(state.setup_enabled_packs)
-                    updated_setup = set(enabled_setup)
-                    if enabled:
-                        updated_setup.add(pack_id)
-                    else:
-                        updated_setup.discard(pack_id)
-                    changed = updated_setup != enabled_setup
-                    if changed:
-                        try:
-                            write_tool_state(
-                                cfg["state_path"],
-                                ToolState(
-                                    disabled_tools=state.disabled_tools,
-                                    disabled_packs=state.disabled_packs,
-                                    setup_enabled_packs=frozenset(updated_setup),
-                                ),
-                            )
-                        except OSError as e:
-                            logger.exception("could not write tool_state.env")
-                            send_proxy_json(
-                                self,
-                                json.dumps({"error": f"save failed: {e}"}).encode(),
-                                status=500,
-                            )
-                            return
-                elif isinstance(singleton_tool, str):
-                    disabled_tools = set(state.disabled_tools)
-                    updated_tools = set(disabled_tools)
-                    if enabled:
-                        updated_tools.discard(singleton_tool)
-                    else:
-                        updated_tools.add(singleton_tool)
-                    changed = updated_tools != disabled_tools
-                    if changed:
-                        try:
-                            write_tool_state(
-                                cfg["state_path"],
-                                ToolState(
-                                    disabled_tools=frozenset(updated_tools),
-                                    disabled_packs=state.disabled_packs,
-                                    setup_enabled_packs=state.setup_enabled_packs,
-                                ),
-                            )
-                        except OSError as e:
-                            logger.exception("could not write tool_state.env")
-                            send_proxy_json(
-                                self,
-                                json.dumps({"error": f"save failed: {e}"}).encode(),
-                                status=500,
-                            )
-                            return
+            else:
+                disabled_packs = set(state.disabled_packs)
+                updated_packs = set(disabled_packs)
+                if enabled:
+                    updated_packs.discard(pack_id)
                 else:
-                    disabled_packs = set(state.disabled_packs)
-                    updated_packs = set(disabled_packs)
-                    if enabled:
-                        updated_packs.discard(pack_id)
-                    else:
-                        updated_packs.add(pack_id)
-                    changed = updated_packs != disabled_packs
-                    if changed:
-                        try:
-                            write_tool_state(
-                                cfg["state_path"],
-                                ToolState(
-                                    disabled_tools=state.disabled_tools,
-                                    disabled_packs=frozenset(updated_packs),
-                                    setup_enabled_packs=state.setup_enabled_packs,
-                                ),
-                            )
-                        except OSError as e:
-                            logger.exception("could not write tool_state.env")
-                            send_proxy_json(
-                                self,
-                                json.dumps({"error": f"save failed: {e}"}).encode(),
-                                status=500,
-                            )
-                            return
-                if changed:
-                    log_event(
-                        logger, "tools.toggle_pack",
-                        pack=pack_id, enabled=enabled,
-                        singleton_tool=(
-                            singleton_tool
-                            if isinstance(singleton_tool, str)
-                            else None
-                        ),
-                        client=self.address_string(),
-                    )
-            pending = bool(
-                catalog_view(
-                    cfg["catalog_path"],
-                    cfg["state_path"],
-                    cfg["prompt_overrides_path"],
-                ).get("pending")
-            )
-            send_proxy_json(
-                self,
-                json.dumps(
-                    {"ok": True, "id": pack_id, "enabled": enabled,
-                     "pending": pending, "setup_required": setup_only},
-                ).encode(),
-                status=200,
-            )
-
-        def _handle_prompt(self) -> None:
-            body, ok = self._read_json_body()
-            if not ok:
-                return
-            name = body.get("name")
-            prompt = body.get("prompt")
-            if not isinstance(name, str) or not isinstance(prompt, str):
-                send_proxy_json(
-                    self,
-                    b'{"error":"name (str) and prompt (str) required"}',
-                    status=400,
-                )
-                return
-            if not prompt.strip():
-                send_proxy_json(self, b'{"error":"prompt cannot be blank"}', status=400)
-                return
-            if len(prompt) > MAX_PROMPT_OVERRIDE_CHARS:
-                send_proxy_json(
-                    self,
-                    json.dumps({
-                        "error": (
-                            f"prompt too long (max {MAX_PROMPT_OVERRIDE_CHARS} "
-                            "characters)"
-                        ),
-                    }).encode(),
-                    status=400,
-                )
-                return
-            index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
-            if name not in index:
-                send_proxy_json(self, b'{"error":"unknown tool"}', status=400)
-                return
-            # Editing a prompt back to the exact code default is a reset, not a
-            # customization: storing it would leave prompt_customized() true
-            # forever (the "customized" badge would never clear without an
-            # explicit Reset). Treat an equal-to-default save as deleting the
-            # override. default_description rides the overlaid catalog entry.
-            default_text = (index[name].get("default_description") or "").strip()
-            reset_to_default = prompt.strip() == default_text
-            with _STATE_LOCK:
-                overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
-                if reset_to_default:
-                    changed = overrides.pop(name, None) is not None
-                else:
-                    changed = overrides.get(name) != prompt
-                    if changed:
-                        overrides[name] = prompt
+                    updated_packs.add(pack_id)
+                changed = updated_packs != disabled_packs
                 if changed:
                     try:
-                        write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
+                        write_tool_state(
+                            cfg["state_path"],
+                            ToolState(
+                                disabled_tools=state.disabled_tools,
+                                disabled_packs=frozenset(updated_packs),
+                                setup_enabled_packs=state.setup_enabled_packs,
+                            ),
+                        )
                     except OSError as e:
-                        logger.exception("could not write tool prompt overrides")
+                        logger.exception("could not write tool_state.env")
                         send_proxy_json(
-                            self,
+                            handler,
                             json.dumps({"error": f"save failed: {e}"}).encode(),
                             status=500,
                         )
                         return
-                    log_event(
-                        logger, "tools.prompt_override_saved",
-                        name=name, reset=reset_to_default,
-                        client=self.address_string(),
-                    )
-            pending = bool(catalog_view(
-                cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
-            ).get("pending"))
-            send_proxy_json(
-                self,
-                json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
-                status=200,
-            )
+            if changed:
+                log_event(
+                    logger, "tools.toggle_pack",
+                    pack=pack_id, enabled=enabled,
+                    singleton_tool=(
+                        singleton_tool
+                        if isinstance(singleton_tool, str)
+                        else None
+                    ),
+                    client=handler.address_string(),
+                )
+        pending = bool(
+            catalog_view(
+                cfg["catalog_path"],
+                cfg["state_path"],
+                cfg["prompt_overrides_path"],
+            ).get("pending")
+        )
+        send_proxy_json(
+            handler,
+            json.dumps(
+                {"ok": True, "id": pack_id, "enabled": enabled,
+                 "pending": pending, "setup_required": setup_only},
+            ).encode(),
+            status=200,
+        )
 
-        def _handle_prompt_reset(self) -> None:
-            body, ok = self._read_json_body()
-            if not ok:
-                return
-            name = body.get("name")
-            if not isinstance(name, str):
-                send_proxy_json(self, b'{"error":"name (str) required"}', status=400)
-                return
-            index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
-            if name not in index:
-                send_proxy_json(self, b'{"error":"unknown tool"}', status=400)
-                return
-            with _STATE_LOCK:
-                overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
-                if name in overrides:
-                    del overrides[name]
-                    try:
-                        write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
-                    except OSError as e:
-                        logger.exception("could not write tool prompt overrides")
-                        send_proxy_json(
-                            self,
-                            json.dumps({"error": f"save failed: {e}"}).encode(),
-                            status=500,
-                        )
-                        return
-                    log_event(
-                        logger, "tools.prompt_override_reset",
-                        name=name, client=self.address_string(),
-                    )
-            pending = bool(catalog_view(
-                cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
-            ).get("pending"))
+    @json_body
+    def _post_prompt(handler, body: dict[str, Any]) -> None:
+        name = body.get("name")
+        prompt = body.get("prompt")
+        if not isinstance(name, str) or not isinstance(prompt, str):
             send_proxy_json(
-                self,
-                json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
-                status=200,
+                handler,
+                b'{"error":"name (str) and prompt (str) required"}',
+                status=400,
             )
-
-        def _handle_apply(self) -> None:
-            # Mirror restart_voice_daemon's skip conditions so the response is
-            # HONEST about whether a restart will actually happen — never an
-            # ok-banner promising an effect the server knowingly won't deliver.
-            if not read_active_provider():
-                send_proxy_json(self, json.dumps({
-                    "restarted": False, "reason": "no_provider",
-                    "message": "Saved. Choose a voice provider at "
-                               "/assistant/voice/ to start the assistant.",
-                }).encode(), status=200)
-                return
-            if bonded_follower_active():
-                send_proxy_json(self, json.dumps({
-                    "restarted": False, "reason": "bonded",
-                    "message": "Saved. Changes apply when this speaker "
-                               "leaves the stereo pair.",
-                }).encode(), status=200)
-                return
-            now = time.time()
-            with _STATE_LOCK:
-                # max(persisted, in-memory) so a failed ts write can't open
-                # the throttle within this process (fail-closed floor).
-                last = max(_read_apply_ts(cfg["apply_ts_path"]), _LAST_APPLY[0])
-                remaining = _APPLY_MIN_INTERVAL_SEC - (now - last)
-                if remaining > 0:
-                    send_proxy_json(self, json.dumps({
-                        "restarted": False, "reason": "throttled",
-                        "retry_after": int(remaining) + 1,
-                        "message": "The assistant is already restarting — "
-                                   "your changes are saved and will apply "
-                                   "shortly.",
-                    }).encode(), status=200)
+            return
+        if not prompt.strip():
+            send_proxy_json(handler, b'{"error":"prompt cannot be blank"}', status=400)
+            return
+        if len(prompt) > MAX_PROMPT_OVERRIDE_CHARS:
+            send_proxy_json(
+                handler,
+                json.dumps({
+                    "error": (
+                        f"prompt too long (max {MAX_PROMPT_OVERRIDE_CHARS} "
+                        "characters)"
+                    ),
+                }).encode(),
+                status=400,
+            )
+            return
+        index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
+        if name not in index:
+            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            return
+        # Editing a prompt back to the exact code default is a reset, not a
+        # customization: storing it would leave prompt_customized() true
+        # forever (the "customized" badge would never clear without an
+        # explicit Reset). Treat an equal-to-default save as deleting the
+        # override. default_description rides the overlaid catalog entry.
+        default_text = (index[name].get("default_description") or "").strip()
+        reset_to_default = prompt.strip() == default_text
+        with _STATE_LOCK:
+            overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
+            if reset_to_default:
+                changed = overrides.pop(name, None) is not None
+            else:
+                changed = overrides.get(name) != prompt
+                if changed:
+                    overrides[name] = prompt
+            if changed:
+                try:
+                    write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
+                except OSError as e:
+                    logger.exception("could not write tool prompt overrides")
+                    send_proxy_json(
+                        handler,
+                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        status=500,
+                    )
                     return
-                _LAST_APPLY[0] = now
-                _write_apply_ts(cfg["apply_ts_path"], now)
-            log_event(logger, "tools.apply", client=self.address_string())
-            # jasper-voice re-filters the registry against tool_state.env on
-            # restart (and re-writes the catalog JSON).
-            restart_voice_daemon()
-            send_proxy_json(self, json.dumps({
-                "restarted": True,
-                "message": "Restarting the assistant to apply your changes…",
+                log_event(
+                    logger, "tools.prompt_override_saved",
+                    name=name, reset=reset_to_default,
+                    client=handler.address_string(),
+                )
+        pending = bool(catalog_view(
+            cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
+        ).get("pending"))
+        send_proxy_json(
+            handler,
+            json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
+            status=200,
+        )
+
+    @json_body
+    def _post_prompt_reset(handler, body: dict[str, Any]) -> None:
+        name = body.get("name")
+        if not isinstance(name, str):
+            send_proxy_json(handler, b'{"error":"name (str) required"}', status=400)
+            return
+        index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
+        if name not in index:
+            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            return
+        with _STATE_LOCK:
+            overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
+            if name in overrides:
+                del overrides[name]
+                try:
+                    write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
+                except OSError as e:
+                    logger.exception("could not write tool prompt overrides")
+                    send_proxy_json(
+                        handler,
+                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        status=500,
+                    )
+                    return
+                log_event(
+                    logger, "tools.prompt_override_reset",
+                    name=name, client=handler.address_string(),
+                )
+        pending = bool(catalog_view(
+            cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
+        ).get("pending"))
+        send_proxy_json(
+            handler,
+            json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
+            status=200,
+        )
+
+    def _post_apply(handler) -> None:
+        # Mirror restart_voice_daemon's skip conditions so the response is
+        # HONEST about whether a restart will actually happen — never an
+        # ok-banner promising an effect the server knowingly won't deliver.
+        if not read_active_provider():
+            send_proxy_json(handler, json.dumps({
+                "restarted": False, "reason": "no_provider",
+                "message": "Saved. Choose a voice provider at "
+                           "/assistant/voice/ to start the assistant.",
             }).encode(), status=200)
+            return
+        if bonded_follower_active():
+            send_proxy_json(handler, json.dumps({
+                "restarted": False, "reason": "bonded",
+                "message": "Saved. Changes apply when this speaker "
+                           "leaves the stereo pair.",
+            }).encode(), status=200)
+            return
+        now = time.time()
+        with _STATE_LOCK:
+            # max(persisted, in-memory) so a failed ts write can't open
+            # the throttle within this process (fail-closed floor).
+            last = max(_read_apply_ts(cfg["apply_ts_path"]), _LAST_APPLY[0])
+            remaining = _APPLY_MIN_INTERVAL_SEC - (now - last)
+            if remaining > 0:
+                send_proxy_json(handler, json.dumps({
+                    "restarted": False, "reason": "throttled",
+                    "retry_after": int(remaining) + 1,
+                    "message": "The assistant is already restarting — "
+                               "your changes are saved and will apply "
+                               "shortly.",
+                }).encode(), status=200)
+                return
+            _LAST_APPLY[0] = now
+            _write_apply_ts(cfg["apply_ts_path"], now)
+        log_event(logger, "tools.apply", client=handler.address_string())
+        # jasper-voice re-filters the registry against tool_state.env on
+        # restart (and re-writes the catalog JSON).
+        restart_voice_daemon()
+        send_proxy_json(handler, json.dumps({
+            "restarted": True,
+            "message": "Restarting the assistant to apply your changes…",
+        }).encode(), status=200)
+
+    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+    # (exact path -> handler callable). The tables stay local to this closure
+    # because every route body reads `cfg`. GET's two detail routes
+    # (/pack/<id>, /tool/<name>) carry a path parameter, so they stay outside
+    # the table as prefix fallbacks in do_GET. ORDERING IS LOAD-BEARING: each
+    # method resolves the route first, so an unknown path 404s before the
+    # read/CSRF guard runs.
+    _GET_ROUTES = {
+        "/": _get_index,
+        "/catalog.json": _get_catalog,
+        "/guide": _get_guide,
+    }
+    _POST_ROUTES = {
+        "/toggle": _post_toggle,
+        "/toggle-pack": _post_toggle_pack,
+        "/prompt": _post_prompt,
+        "/prompt-reset": _post_prompt_reset,
+        "/apply": _post_apply,
+    }
 
     return Handler
 

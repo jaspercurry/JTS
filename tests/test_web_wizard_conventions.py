@@ -38,6 +38,7 @@ from jasper.web import (
     speaker_setup,
     spotify_setup,
     system_setup,
+    tools_setup,
     wake_corpus_setup,
     wifi_setup,
 )
@@ -458,6 +459,10 @@ _TABLED_WIZARD_FACTORIES = {
     ),
     "spotify_setup": _spotify_handler_cls,
     "system_setup": system_setup._make_handler,
+    "tools_setup": lambda: tools_setup._make_handler({
+        "catalog_path": "/tmp/jts-test-tools-catalog.json",
+        "state_path": "/tmp/jts-test-tool-state.env",
+    }),
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
     ),
@@ -473,6 +478,7 @@ _HEADER_CSRF_WIZARDS = frozenset({
     "rooms_setup",
     "sources_setup",
     "system_setup",
+    "tools_setup",
     "wake_corpus_setup",
 })
 
