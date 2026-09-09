@@ -437,6 +437,7 @@ _TABLED_WIZARD_FACTORIES = {
     "correction_setup": lambda: correction_setup._make_handler_class(
         hostname="jts.local", idle_hold=nullcontext,
     ),
+    "google_setup": _google_handler_cls,
     "rooms_setup": rooms_setup._make_handler,
     "sources_setup": sources_setup._make_handler,
     "speaker_setup": lambda: speaker_setup._make_handler(
