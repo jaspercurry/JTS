@@ -31,7 +31,6 @@ from ..assistant_loudness import (
 from ..audio_io import (
     TtsPlayout,
     tts_wire_is_wide as _tts_wire_is_wide,
-    wait_tts_drained_owned,
 )
 from ..camilla import CueDuck
 from ..config import Config
@@ -40,6 +39,7 @@ from ..cues.manager import (
     REASON_BUSY,
     REASON_OUTPUT_ACTIVE,
     REASON_UNKNOWN_SLUG,
+    wait_tts_drained_owned,
 )
 from ..tts_routing import (
     tts_socket_feeds_post_dsp_outputd,
