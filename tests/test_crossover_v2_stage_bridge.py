@@ -59,8 +59,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import math
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -394,7 +396,7 @@ def _production_host_seams(monkeypatch, tmp_path):
 _MINTED_CAPTURE_SESSION_ID = "cap_minted_by_this_stage"
 
 
-def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
+def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str, Any]]:
     """Run a prepared session's real ``_open`` and return its conductor + state.
 
     ``_open`` is where BOTH preparers do the work this module is about: it
@@ -417,7 +419,7 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
         async def _run(_client, _pi_session):
             return None
 
-        return _run
+        return run or _run
 
     monkeypatch.setattr(v2host, "_mint_wired_session", _fake_mint)
     monkeypatch.setattr(v2host, "_build_wired_run", _fake_runner)
@@ -425,6 +427,62 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
     prepared.open()
 
     return captured["conductor"], (v2host.load_v2_state() or {})
+
+
+@pytest.mark.parametrize(
+    "restore, failure, write_failed, expected_state",
+    [
+        ("exact_restored", None, False, "closed"),
+        ("exact_restored", asyncio.CancelledError, False, "closed"),
+        ("exact_restored", RuntimeError, False, "closed"),
+        ("failed", RuntimeError, False, "open"),
+        ("deferred", None, False, "open"),
+        ("exact_restored", None, True, "open"),
+    ],
+)
+async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
+    monkeypatch, tmp_path, restore, failure, write_failed, expected_state,
+):
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
+
+    info = open_bundle(_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
+    bundle = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda topology: (store, store.session_id))
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=asyncio.run, camilla_factory=None,
+    )
+    cleanup_started, cleanup_finished = asyncio.Event(), asyncio.Event()
+    error = failure() if failure else None
+    artifacts = []
+
+    async def worker(session):
+        artifacts.append(store.publish_json_artifact("completed_take.json", {"accepted": True}))
+        cleanup_started.set()
+        await cleanup_finished.wait()
+        v2host._persist_execution_result(session.session_id, volume_restore=restore)
+        if error is not None:
+            raise error
+
+    _open_prepared(monkeypatch, prepared, run=worker)
+    task = asyncio.create_task(prepared.run_and_consume(
+        SimpleNamespace(session_id=_MINTED_CAPTURE_SESSION_ID),
+    ))
+    await wait_signalled(cleanup_started, "measurement cleanup started", producer=task)
+    assert json.loads((bundle / "info.json").read_text())["state"] == "open"
+    if write_failed:
+        monkeypatch.setattr(v2host, "mark_state", lambda *args: None)
+    cleanup_finished.set()
+    if error is not None or write_failed:
+        with pytest.raises(type(error) if error is not None else OSError) as caught:
+            await task
+        if error is not None:
+            assert caught.value is error
+    else:
+        await task
+    assert json.loads((bundle / "info.json").read_text())["state"] == expected_state
+    assert store.reopen_json_artifact(artifacts[0])["accepted"] is True
 
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
@@ -1604,6 +1662,8 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "gain_plan_db",
     "kind",
     "measure",
+    "measure_gain_ceiling_db",
+    "measure_gain_retry_used",
     # Deliberate widening (#2923). Banked in the SAME state write as
     # `gain_plan_db` beside it, on the same terms: the round's realized
     # per-role MEASURE sweep length, possibly shortened by #2921's duration

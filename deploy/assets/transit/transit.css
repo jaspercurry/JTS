@@ -2,7 +2,7 @@
    /assistant/transit/ — page-specific styles for the transit configuration wizard.
 
    Loaded by canonical_page(page_css_href="/assets/transit/transit.css") from
-   jasper/web/transit_setup.py, on top of the shared /assets/app.css. Only
+   jasper/web/transit_page.py, on top of the shared /assets/app.css. Only
    visuals app.css does NOT already provide live here: the stop/station picker
    rows, the bus-stop cluster headings, the locked-bus-card callout, the
    geocode result panel, and the no-coverage card. Everything else (cards,

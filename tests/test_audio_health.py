@@ -718,7 +718,7 @@ def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> Non
     detail = health["signal_path"]["detail"]
     assert health["signal_path"]["code"] == "transport_parked"
     assert "InnoMaker HiFi AMP Pro" in detail
-    assert "/sound/setup/" in detail
+    assert "/sound/speaker/" in detail
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. The
     # consequence has to travel with the advice.
@@ -884,7 +884,7 @@ def test_undeclared_ready_hardware_surfaces_a_setup_hint() -> None:
     assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
     detail = health["overall"]["detail"]
     assert "Dual Apple USB-C DAC 4-channel pair" in detail
-    assert "/sound/setup/" in detail
+    assert "/sound/speaker/" in detail
 
 
 def test_setup_hint_fires_when_no_topology_was_ever_saved(monkeypatch, tmp_path) -> None:
@@ -1037,7 +1037,7 @@ def test_missing_output_topology_leaves_the_generic_message() -> None:
 def test_unready_output_hardware_record_has_no_setup_hint() -> None:
     """A degraded/ambiguous detection blocked from adoption must not tell the
     household hardware is ready when it is not — this reuses the exact gate
-    ``/sound/setup/``'s "Use detected hardware" button already applies.
+    ``/sound/speaker/``'s "Use detected hardware" button already applies.
     """
     blocked = _output_hardware(
         status="partial",

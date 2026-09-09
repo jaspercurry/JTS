@@ -25,6 +25,7 @@ from ._shared import (
 from ...identity import identity_state
 from ...active_speaker.environment import (
     camilla_statefile_path,
+    jts_emitter_source,
     read_camilla_statefile_config_path,
 )
 from ...active_speaker.seat_level_reference import (
@@ -73,12 +74,6 @@ REASON_CURRENT_CONFIG_MANAGED = "current_config_managed"
 REASON_CURRENT_CONFIG_UNCLASSIFIED = "current_config_unclassified"
 REASON_CURRENT_CONFIG_ROOM_CORRECTION = "current_config_room_correction"
 
-REASON_LATEST_BUNDLE_NONE = "latest_bundle_none"
-REASON_LATEST_BUNDLE_INVALID = "latest_bundle_invalid"
-REASON_LATEST_BUNDLE_ISSUES = "latest_bundle_issues"
-REASON_LATEST_BUNDLE_UNCALIBRATED_MIC = "latest_bundle_uncalibrated_mic"
-REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED = "latest_bundle_summary_truncated"
-
 REASON_CERT_NOT_INSTALLED = "cert_not_installed"
 REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
 REASON_CERT_HOSTNAME_UNKNOWN = "cert_hostname_unknown"
@@ -119,7 +114,7 @@ def _correction_root() -> Path:
 
 @doctor_check()
 def check_correction_web_service() -> CheckResult:
-    """Socket activation is the liveness contract for /sound/room/.
+    """Socket activation is the liveness contract for the /sound/ pages.
 
     The service itself is expected to be inactive after its idle
     timeout; the socket must remain active so nginx can spawn the
@@ -140,7 +135,7 @@ def check_correction_web_service() -> CheckResult:
         return CheckResult(
             "correction web", "warn",
             "service active but socket inactive — current session may work, "
-            "but /sound/room/ will not restart after idle exit",
+            "but the /sound/ measurement pages will not restart after idle exit",
             reason=REASON_WEB_SOCKET_INACTIVE,
         )
     return CheckResult(
@@ -187,7 +182,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
     ``platform/systemd.py`` escalates its "idle-exit deferred" line to WARNING past
     ``HOLD_LEAK_WARN_AFTER_SEC``; this reads that escalation back. Read-only:
     nothing may release a hold out from under a possibly-still-mutating
-    measurement (``correction_capture._run_async``'s fail-closed invariant).
+    measurement (``correction_runtime.run_async``'s fail-closed invariant).
 
     Scoped to ``jasper-correction-web.service``, the only wizard that threads a
     real hold — the others pass ``_systemd.no_hold`` at every call site. See
@@ -275,8 +270,8 @@ def _probe_https_status(
 def check_correction_https_assets() -> CheckResult:
     """nginx's 443 block must serve ``/assets/``, not redirect it to HTTP.
 
-    ``/sound/room/`` is the one wizard served over HTTPS (getUserMedia needs a
-    secure context) and links its CSS/ES module by absolute path, so a 443
+    The measurement pages are served over HTTPS (browser mic capture needs a
+    secure context) and link their CSS/ES modules by absolute path, so a 443
     block that does not serve ``/assets/`` leaves them mixed-content-blocked.
     ``check_web_design_assets`` covers the files existing on disk; this covers
     them being *reachable over HTTPS*."""
@@ -302,8 +297,8 @@ def check_correction_https_assets() -> CheckResult:
     if status in (301, 302, 307, 308) and location.startswith("http://"):
         return CheckResult(
             "correction HTTPS assets", "warn",
-            f"/assets over HTTPS → {status} → {location}: the /sound/room/ UI's "
-            "CSS/JS will be mixed-content-blocked. Add an `/assets/` location to "
+            f"/assets over HTTPS → {status} → {location}: the measurement "
+            "pages' CSS/JS will be mixed-content-blocked. Add an `/assets/` location to "
             "the nginx 443 server block and redeploy.",
             reason=REASON_HTTPS_ASSETS_HTTP_REDIRECT,
         )
@@ -348,10 +343,8 @@ def check_correction_state_dirs() -> CheckResult:
     root = _correction_root()
     expected = [
         root,
-        root / "sweeps",
-        root / "captures",
-        root / "sessions",
         root / "calibration_mics",
+        root / "tones",
     ]
     missing = [str(p) for p in expected if not p.exists()]
     not_dirs = [str(p) for p in expected if p.exists() and not p.is_dir()]
@@ -425,8 +418,8 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
         f"{len(flagged)} uploaded calibration(s) stored as a correction to add: "
         + ", ".join(flagged[:3])
         + (" …" if len(flagged) > 3 else "")
-        + " — review at /sound/room/; files from the REW ecosystem "
-        "(miniDSP, Dayton, Cross-Spectrum) are response curves",
+        + " — re-upload them with the response convention; files from the "
+        "REW ecosystem (miniDSP, Dayton, Cross-Spectrum) are response curves",
         reason=REASON_UPLOADED_CALIBRATION_SIGN_REVIEW,
     )
 
@@ -454,7 +447,12 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
 
 @doctor_check()
 def check_correction_current_config() -> CheckResult:
-    from jasper.correction.status import describe_current_config
+    from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
+    from jasper.sound.camilla_yaml import (
+        extract_room_peqs_from_config_text,
+        is_base_config,
+        is_jts_generated_config,
+    )
 
     statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
@@ -470,139 +468,50 @@ def check_correction_current_config() -> CheckResult:
             f"CamillaDSP statefile points at missing config {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
-
-    descriptor = describe_current_config(str(path), config_dir=path.parent)
-    parsed = descriptor.get("current_correction")
-    if not isinstance(parsed, dict):
-        if descriptor.get("kind") == "base":
-            return CheckResult(
-                "current correction", "ok", "flat base config",
-                reason=REASON_CURRENT_CONFIG_FLAT_BASE,
-            )
-        if descriptor.get("managed") is True:
-            return CheckResult(
-                "current correction", "ok",
-                f"{descriptor.get('label', 'JTS-managed config')}: "
-                f"{descriptor.get('message', 'No room correction is applied.')} "
-                f"({config_path})",
-                reason=REASON_CURRENT_CONFIG_MANAGED,
-            )
+    if is_base_config(path):
+        return CheckResult(
+            "current correction", "ok", "flat base config",
+            reason=REASON_CURRENT_CONFIG_FLAT_BASE,
+        )
+    try:
+        text = path.read_text()
+    except OSError as e:
+        return CheckResult(
+            "current correction", "warn",
+            f"could not read the loaded config {config_path}: {e}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
+        )
+    # Provenance is a JTS name in the canonical config dir, or a `# Source:`
+    # marker naming a JTS emitter — the marker is what an active-speaker graph
+    # carries instead, being named for its role. A playback device JTS also
+    # uses is NOT provenance: an operator config can name the same ring.
+    if not (
+        is_jts_generated_config(path, config_dir=CANONICAL_CAMILLA_CONFIG_DIR)
+        or jts_emitter_source(text)
+    ):
         return CheckResult(
             "current correction", "warn",
             f"custom/non-JTS config loaded: {config_path}; "
-            f"{descriptor.get('message', 'JTS cannot classify this config.')}",
+            "JTS cannot classify this config.",
             reason=REASON_CURRENT_CONFIG_UNCLASSIFIED,
+        )
+    peqs = extract_room_peqs_from_config_text(text)
+    if peqs:
+        return CheckResult(
+            "current correction", "ok",
+            f"room correction applied: peqs={len(peqs)} ({config_path})",
+            reason=REASON_CURRENT_CONFIG_ROOM_CORRECTION,
         )
     return CheckResult(
         "current correction", "ok",
-        f"session={parsed['session_id']} peqs={parsed['peq_count']} "
-        f"({config_path})",
-        reason=REASON_CURRENT_CONFIG_ROOM_CORRECTION,
+        f"JTS-generated config with no room correction ({config_path})",
+        reason=REASON_CURRENT_CONFIG_MANAGED,
     )
-
-def _format_byte_count(value: object) -> str:
-    try:
-        size = float(value)
-    except (TypeError, ValueError):
-        size = 0.0
-    units = ("B", "KiB", "MiB", "GiB")
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GiB"
-
-def _correction_evidence_status(bundle: dict[str, object]) -> str:
-    missing: list[str] = []
-    if not bundle.get("has_artifact_manifest"):
-        missing.append("manifest")
-    if not bundle.get("has_runtime_integrity_json"):
-        missing.append("runtime")
-    if not bundle.get("has_acoustic_quality_json"):
-        missing.append("acoustic")
-    if missing:
-        return "missing:" + ",".join(missing)
-    artifact_count = bundle.get("artifact_count")
-    if isinstance(artifact_count, int):
-        return f"complete({artifact_count} artifacts)"
-    return "complete"
-
-@doctor_check()
-def check_correction_latest_bundle() -> CheckResult:
-    from jasper.correction import bundles
-
-    sessions_dir = Path(
-        os.environ.get(
-            "JASPER_CORRECTION_SESSIONS_DIR",
-            str(_correction_root() / "sessions"),
-        )
-    )
-    collection = bundles.summarize_bundle_collection(sessions_dir)
-    latest = collection.get("latest_bundle")
-    if latest is None:
-        return CheckResult(
-            "latest correction bundle", "ok",
-            f"no bundles under {sessions_dir} yet",
-            reason=REASON_LATEST_BUNDLE_NONE,
-        )
-    bundle_dir = Path(str(latest["bundle_dir"]))
-    issues = bundles.validate_bundle(bundle_dir)
-    fail_issues = [i for i in issues if i.severity == "fail"]
-    warn_issues = [i for i in issues if i.severity == "warn"]
-    summary = (
-        f"session={latest.get('session_id')} state={latest.get('state')} "
-        f"schema={latest.get('bundle_schema_version')}"
-    )
-    truncated = bool(collection.get("truncated"))
-    collection_summary = (
-        f"; bundles={collection.get('bundle_count', 0)} "
-        f"storage={'≥' if truncated else ''}"
-        f"{_format_byte_count(collection.get('total_bundle_size_bytes'))} "
-        f"private_raw={collection.get('private_raw_audio_count', 0)}/"
-        f"{_format_byte_count(collection.get('private_raw_audio_bytes'))} "
-        f"evidence={_correction_evidence_status(latest)}"
-    )
-    if collection.get("old_private_raw_audio_count"):
-        collection_summary += (
-            "; old raw recordings present "
-            f"({collection.get('old_private_raw_audio_count')} files)"
-        )
-    summary += collection_summary
-    if fail_issues:
-        return CheckResult(
-            "latest correction bundle", "fail",
-            summary + "; " + "; ".join(i.message for i in fail_issues[:3]),
-            reason=REASON_LATEST_BUNDLE_INVALID,
-        )
-    if warn_issues:
-        return CheckResult(
-            "latest correction bundle", "warn",
-            summary + "; " + "; ".join(i.message for i in warn_issues[:3]),
-            reason=REASON_LATEST_BUNDLE_ISSUES,
-        )
-    if not latest.get("mic_calibration"):
-        return CheckResult(
-            "latest correction bundle", "warn",
-            summary + "; last completed measurement used no calibrated mic — "
-            "calibrate one under Microphone on /sound/room/ (enter the "
-            "serial number and Fetch calibration)",
-            reason=REASON_LATEST_BUNDLE_UNCALIBRATED_MIC,
-        )
-    if truncated:
-        return CheckResult(
-            "latest correction bundle", "warn",
-            summary + f"; bundle walk hit the {bundles.BUNDLE_WALK_MAX_ENTRIES}"
-            " entry cap — storage totals are a lower bound",
-            reason=REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED,
-        )
-    return CheckResult("latest correction bundle", "ok", summary)
 
 
 @doctor_check()
 def check_correction_cert_hostname() -> CheckResult:
-    """The /sound/room/ TLS cert's SAN must cover the name the LAN actually
+    """The measurement pages' TLS cert SAN must cover the name the LAN actually
     resolves for this speaker.
 
     install.sh issues the leaf cert for JASPER_HOSTNAME at deploy time, so a
@@ -651,7 +560,7 @@ def check_correction_cert_hostname() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"cert SAN does not include the advertised name {effective} — "
-        "https://" + effective + "/sound/room/ will show a browser "
+        "https://" + effective + "/sound/speaker/crossover/ will show a browser "
         "warning. Redeploy (bash scripts/deploy-to-pi.sh) to regenerate "
         "the leaf cert after converging the hostname.",
         reason=REASON_CERT_SAN_MISMATCH,
@@ -794,7 +703,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 f"applied and graded, but the spatial grade word {spatial!r} "
                 "is not one this build recognizes — treating it as unproven "
                 f"rather than guessing ({verify_text}); check for a "
-                "jasper-doctor update, or re-measure at /sound/room/",
+                "jasper-doctor update, or re-measure at /sound/speaker/crossover/",
                 reason=REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED,
             )
         if spatial == GRADE_SPATIAL_FAILED:
@@ -811,7 +720,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 label, "ok",
                 f"applied and graded, and the spatial grade missed the "
                 f"target{worst_text} — the tune stays on the speaker "
-                f"({verify_text}); re-measure at /sound/room/ or undo to "
+                f"({verify_text}); re-measure at /sound/speaker/crossover/ or undo to "
                 "restore the previous sound",
                 reason=REASON_APPLIED_GRADE_SPATIAL_FAILED,
             )
@@ -820,7 +729,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 label, "ok",
                 f"applied; the post-apply group closed but its spatial grade "
                 f"could not be measured ({verify_text}) — re-measure at "
-                "/sound/room/ in a quieter room, or undo",
+                "/sound/speaker/crossover/ in a quieter room, or undo",
                 reason=REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
             )
         if grade.get("complete") is False:
@@ -829,7 +738,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 f"applied and verified at the mark, but no "
                 f"{block.get('tier') or 'this'}-tier spatial grade exists "
                 f"for this session, so it is unproven away from the mark "
-                f"({verify_text}) — finish the measurement at /sound/room/, "
+                f"({verify_text}) — finish the measurement at /sound/speaker/crossover/, "
                 "or undo",
                 reason=REASON_APPLIED_GRADE_MARK_ONLY,
             )
@@ -841,7 +750,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         detail = (
             f"applied but the post-apply check came back {state} "
-            f"({verify_text}) — re-verify at /sound/room/ or undo to restore "
+            f"({verify_text}) — re-verify at /sound/speaker/crossover/ or undo to restore "
             "the previous sound"
         )
         if state == GRADE_INCONCLUSIVE:
@@ -856,7 +765,7 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     return CheckResult(
         label, "ok",
         "applied but never graded: no post-apply check completed for this "
-        "correction — re-verify at /sound/room/ to confirm it, or undo",
+        "correction — re-verify at /sound/speaker/crossover/ to confirm it, or undo",
         reason=REASON_APPLIED_GRADE_NEVER_GRADED,
     )
 

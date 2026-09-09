@@ -148,12 +148,12 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
 ):
     """THE PIN for ADR-0100's capture seam: the answer is UNCONDITIONAL.
 
-    The emitters that reach this — jasper-web `/sound/`, jasper-correction-web
-    `/sound/room/`, and the correction session's mid-EQ-apply re-emit — do not
-    `EnvironmentFile=` fanin.env. With the ring the only transport, a `{}`
-    fallthrough would emit a graph whose capture names a lane nothing writes — a
-    dead-lane CamillaDSP config, applied silently in the middle of an EQ save.
-    So: no env, no file, the full ring topology.
+    The emitters that reach this — jasper-web `/sound/` and the measurement
+    daemon's crossover apply — do not `EnvironmentFile=` fanin.env. With the
+    ring the only transport, a `{}` fallthrough would emit a graph whose capture
+    names a lane nothing writes — a dead-lane CamillaDSP config, applied
+    silently in the middle of an EQ save. So: no env, no file, the full ring
+    topology.
     """
     from jasper import fanin_coupling
 

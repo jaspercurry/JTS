@@ -1453,10 +1453,9 @@ _stage_full_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.socket" \
         "${SYSTEMD_DIR}/jasper-web.socket"
-    # /sound/room/ wizard. Phase 0 = mic-permission verify only;
-    # future phases pull in heavy deps (numpy / scipy / pyfar) so
-    # this lives in its own process rather than colocating with
-    # jasper-web (Spotify + voice settings).
+    # The /sound/ measurement pages. They pull in heavy deps
+    # (numpy / scipy / pyfar), so this lives in its own process
+    # rather than colocating with jasper-web (Spotify + voice settings).
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-correction-web.service" \
         "${SYSTEMD_DIR}/jasper-correction-web.service"
