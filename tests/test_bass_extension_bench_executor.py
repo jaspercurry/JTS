@@ -263,6 +263,7 @@ def _target_plan() -> TargetPlan:
         owner_channels=OWNER_CHANNELS,
         profile_summary={"runtime_block_required": True},
         baseline_clip_limit_dbfs=-1.0,
+        boost_headroom_db=6.0,
     )
 
 
@@ -370,7 +371,7 @@ def _played_stimulus(
 
 
 class RecordingPlayAndCapture:
-    """Records every ``stimulus_path`` it is handed (B3) and returns canned
+    """Records every artifact it is handed (B3) and returns canned
     PlayedStimulus objects, one per call, in the order supplied."""
 
     def __init__(self, responses: list[executor.PlayedStimulus]) -> None:
@@ -384,7 +385,9 @@ class RecordingPlayAndCapture:
         role: str,
         request: StimulusRequest,
         stop: Stop,
-        stimulus_path: Path,
+        stimulus: Any,
+        artifact: Any,
+        tag: str,
         reference: Any = None,
     ) -> executor.PlayedStimulus:
         self.calls.append(
@@ -392,7 +395,9 @@ class RecordingPlayAndCapture:
                 "target": target,
                 "role": role,
                 "request": request,
-                "stimulus_path": stimulus_path,
+                "stimulus": stimulus,
+                "artifact": artifact,
+                "tag": tag,
                 "reference": reference,
             }
         )
@@ -617,7 +622,9 @@ async def test_prepare_and_play_pads_before_handing_the_artifact_to_play_and_cap
 
     assert played is not None
     assert len(play_and_capture.calls) == 1
-    received_path = play_and_capture.calls[0]["stimulus_path"]
+    received_path = (
+        sink.bundle_dir / play_and_capture.calls[0]["artifact"].relative_path
+    )
     assert received_path.is_file()
     received_bytes = received_path.read_bytes()
 
@@ -665,7 +672,9 @@ async def test_run_discovery_records_the_padded_identity_as_the_capture_stimulus
 
     assert len(captures) == 2
     for capture, call in zip(captures, play_and_capture.calls):
-        played_path_bytes = call["stimulus_path"].read_bytes()
+        played_path_bytes = (
+            sink.bundle_dir / call["artifact"].relative_path
+        ).read_bytes()
         assert capture.stimulus.sha256 == hashlib.sha256(played_path_bytes).hexdigest()
 
 
@@ -1259,6 +1268,9 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
             pass
 
         async def assert_at_floor(self) -> None:
+            pass
+
+        async def raise_to_level(self) -> None:
             pass
 
     deps = BenchDeps(

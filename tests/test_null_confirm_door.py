@@ -1073,7 +1073,7 @@ def test_a_lossy_take_is_still_graded_with_its_faults_disclosed(
     A take the recorder says was not whole is still read for a depth, and the
     row says so — the integrity report, ``capture_intact: false`` and the
     fault list — so a grader can tell it from a clean one. Promotion condition
-    lives beside ``null_door._capture_faults``.
+    lives beside ``frame_ledger.capture_faults``.
     """
     _hardware_free_walk(monkeypatch, depth_db=-18.5, integrity=report)
     _install_door(monkeypatch)

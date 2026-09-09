@@ -16,6 +16,7 @@ so a restart or ``kill -9`` restores the applied graph by doing nothing
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -40,6 +41,7 @@ __all__ = [
     "OpenMeasurementDoor",
     "measurement_door",
     "bind_measurement_graph",
+    "give_back",
 ]
 
 #: Another measurement holds the speaker, or a previous one left its volume
@@ -210,32 +212,32 @@ async def measurement_door(
             # flag rather than an ``except``, because a ``CancelledError`` is not
             # an ``Exception``. SHIELDED: a cancel inside the give-back would
             # strand the fader at measurement level with nothing latched.
+            reason = (
+                "measurement_door_closed" if volume_open
+                else "measurement_door_open_failed"
+            )
             await resilient_restore(
-                _give_back(
-                    graph, claim, plan, volume_door,
-                    reason=(
-                        "measurement_door_closed" if volume_open
-                        else "measurement_door_open_failed"
+                give_back(
+                    (
+                        graph.restore,
+                        claim.release,
+                        lambda: plan.close(volume_door, reason=reason),
                     ),
                     body_error=body_error,
                 )
             )
 
 
-async def _give_back(
-    graph: Any,
-    claim: Any,
-    plan: Any,
-    volume_door: Any,
+async def give_back(
+    steps: Sequence[Callable[[], Awaitable[Any]]],
     *,
-    reason: str,
     body_error: BaseException | None = None,
 ) -> None:
-    """Graph, then claim, then the plan's snapshot — reverse order of taking.
+    """Run every give-back step, in reverse order of taking.
 
     Every step runs even when an earlier one raises: a graph that will not come
-    back must not strand the fader at measurement level. All three are
-    idempotent and safe against nothing-held.
+    back must not strand the fader at measurement level. Each step is expected
+    to be idempotent and safe against nothing-held.
 
     ``body_error`` is the exception already in flight, if any. A cleanup failure
     is ATTACHED to it rather than raised over it, because an ``__aexit__`` that
@@ -244,11 +246,7 @@ async def _give_back(
     propagates.
     """
     first: BaseException | None = None
-    for step in (
-        graph.restore,
-        claim.release,
-        lambda: plan.close(volume_door, reason=reason),
-    ):
+    for step in steps:
         try:
             await step()
         except BaseException as failure:  # noqa: BLE001 - see the docstring

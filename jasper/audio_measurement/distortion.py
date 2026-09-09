@@ -620,6 +620,8 @@ def read_segment_distortion(
     tail_s: float = 0.5,
     level_notes: Mapping[str, object] | None = None,
     n_fft: int | None = None,
+    reference: np.ndarray | None = None,
+    measured_pre_roll_s: float | None = None,
 ) -> HarmonicReading:
     """Deconvolve one scheduled sweep at a harmonic-safe pre-guard and read it.
 
@@ -628,6 +630,11 @@ def read_segment_distortion(
     measured clock drift, divided out of the reference before inversion so a
     drifted capture does not smear the images. The ONLY function here that
     windows a capture; production behaviour is untouched.
+
+    ``reference`` deconvolves against the bytes that were actually played rather
+    than the schedule's reconstruction of them. ``measured_pre_roll_s`` records
+    a pre-roll MEASURED off the capture instead of the one the schedule
+    declares.
     """
     from .program_analysis import _deconvolve_window
 
@@ -643,6 +650,7 @@ def read_segment_distortion(
         epsilon=epsilon,
         pre_guard_s=needed,
         tail_s=tail_s,
+        stimulus=reference,
     )
     # Compared in SAMPLES against the window's own rounding of the same request,
     # not in seconds: `_deconvolve_window` takes `int(round(...))`, so a
@@ -676,6 +684,10 @@ def read_segment_distortion(
         calibration=calibration,
         smoothing_fraction=smoothing_fraction,
         pre_guard_s=pre_guard_got_s,
-        preceding_silence_s=preceding_silence_s(program, segment),
+        preceding_silence_s=(
+            preceding_silence_s(program, segment)
+            if measured_pre_roll_s is None
+            else float(measured_pre_roll_s)
+        ),
         n_fft=n_fft,
     )

@@ -26,6 +26,7 @@ __all__ = [
     "REPORT_KEY_FRAMES",
     "REPORT_KEY_RENDER_GAPS",
     "REPORT_KEY_RENDER_GAP_FRAMES",
+    "capture_faults",
     "reconcile_capture_frames",
 ]
 
@@ -127,3 +128,24 @@ def reconcile_capture_frames(
         render_gaps=_count(report.get(REPORT_KEY_RENDER_GAPS)),
         render_gap_frames=_count(report.get(REPORT_KEY_RENDER_GAP_FRAMES)),
     )
+
+
+def capture_faults(report: Mapping[str, Any]) -> list[str]:
+    """What the recorder itself says was NOT whole about this take.
+
+    The ledger half is the wizard's own rule read here
+    (``program_analysis.verify_integrity._frame_accounting_checks``): any
+    nonzero discrepancy is a fault, because one missing quantum is a phase
+    discontinuity through the deconvolution a reading is taken from. The
+    zero-run half is the #2557 dropout signature, which that screen also
+    treats as disclosure.
+    """
+    ledger = reconcile_capture_frames(
+        report, received_frames=int(report.get(REPORT_KEY_ENCODED_FRAMES) or 0),
+    )
+    faults = list(ledger.lost_at)
+    if int(report.get("zero_run_count") or 0):
+        faults.append("zero_fill_runs")
+    if report.get("truncated"):
+        faults.append("truncated")
+    return faults

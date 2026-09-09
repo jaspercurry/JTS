@@ -158,3 +158,19 @@ def low_shelf_response_db(freqs_hz, f0_hz, q, gain_db) -> np.ndarray:
         + damping * damping
     )
     return 20.0 * np.log10(np.maximum(numerator / denominator, 1e-300))
+
+
+def minus_six_corner_hz(freqs: np.ndarray, magnitude_db: np.ndarray) -> float:
+    """Log-interpolated last upward -6 dB crossing of a passband-normalized
+    curve, or the nearest bin to -6 dB when the curve never crosses."""
+
+    candidates = np.flatnonzero(
+        (magnitude_db[:-1] <= -6.0) & (magnitude_db[1:] > -6.0)
+    )
+    if candidates.size:
+        i = int(candidates[-1])
+        fraction = (-6.0 - magnitude_db[i]) / (magnitude_db[i + 1] - magnitude_db[i])
+        return float(np.exp(
+            np.log(freqs[i]) + fraction * (np.log(freqs[i + 1]) - np.log(freqs[i]))
+        ))
+    return float(freqs[int(np.argmin(np.abs(magnitude_db + 6.0)))])
