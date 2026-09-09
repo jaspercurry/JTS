@@ -49,7 +49,9 @@ MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
 CAMILLA_OPERATION_TIMEOUT_S = 2.0
 CAMILLA_ATTEMPT_BUDGET_S = 5.0
 # Seconds after a failed call during which the transport is presumed still
-# wedged, so the zero-delay reconnect retry is skipped.
+# wedged, so the zero-delay reconnect retry is skipped. Remove this memory if
+# event=camilla.call_abandoned stops appearing in a month of jts3/jts4 logs
+# after the outputd-side camilla recovery lands.
 CAMILLA_FAILURE_MEMORY_S = 1.0
 _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
 
@@ -228,27 +230,13 @@ class CamillaConfigRejected(CamillaUnavailable):
     """
 
 
-def _is_config_validation_error(exc: BaseException) -> bool:
-    """True iff ``exc`` is pycamilladsp's ``ConfigValidationError``.
-
-    Lazy, defensive import mirroring ``CamillaController._ensure``'s own
-    lazy ``camilladsp`` import: by the time this runs, a call reached
-    ``fn(client)`` (or failed inside ``_ensure`` after already importing
-    ``camilladsp``), so the module is already loaded in every real failure
-    path. The ``ImportError`` guard only protects a dev machine without
-    ``camilladsp`` installed at all, where ``exc`` could never legitimately be
-    this type anyway.
-    """
-    try:
-        from camilladsp.exceptions import ConfigValidationError
-    except ImportError:
-        return False
-    return isinstance(exc, ConfigValidationError)
-
-
 def _transport_error(exc: BaseException) -> CamillaUnavailable:
     """Classify a failed call: config rejected by a live daemon, or unreachable."""
-    if _is_config_validation_error(exc):
+    try:
+        from camilladsp.exceptions import ConfigValidationError  # lazy: camilladsp is optional on dev machines
+    except ImportError:
+        return CamillaUnavailable(str(exc))
+    if isinstance(exc, ConfigValidationError):
         return CamillaConfigRejected(str(exc))
     return CamillaUnavailable(str(exc))
 
@@ -460,13 +448,18 @@ class CamillaController:
 
     async def _call(self, fn: Callable[[CamillaClient], _T]) -> _T:
         async with self._lock:
+            started = time.monotonic()
             try:
                 result = await self._run_attempt(fn)
             except Exception as e:  # noqa: BLE001
                 self._client = None
-                failed_at = self._failed_at
-                age_s = math.inf if failed_at is None else time.monotonic() - failed_at
+                error = _transport_error(e)
+                # Age from before the attempt: a timeout-class failure needs
+                # CAMILLA_OPERATION_TIMEOUT_S to surface, outliving the window.
+                armed_at = None if isinstance(error, CamillaConfigRejected) else self._failed_at
+                age_s = math.inf if armed_at is None else started - armed_at
                 if age_s < CAMILLA_FAILURE_MEMORY_S:
+                    self._failed_at = time.monotonic()
                     if not self._abandon_logged:
                         self._abandon_logged = True
                         log_event(
@@ -478,7 +471,7 @@ class CamillaController:
                             failure_age_s=round(age_s, 3),
                             operation=getattr(fn, "__qualname__", "?"),
                         )
-                    raise _transport_error(e) from e
+                    raise error from e
                 # Retry once: a first-attempt failure is usually a camilla
                 # restart blip. DEBUG, not WARNING — best_effort call sites
                 # log the action-level warning, and a sustained camilla-down
@@ -496,8 +489,8 @@ class CamillaController:
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
                     error = _transport_error(e2)
-                    if not isinstance(error, CamillaConfigRejected):
-                        self._failed_at = time.monotonic()
+                    rejected = isinstance(error, CamillaConfigRejected)
+                    self._failed_at = None if rejected else time.monotonic()
                     raise error from e2
             self._failed_at, self._abandon_logged = None, False
             return result

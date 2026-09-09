@@ -19,6 +19,7 @@ import pytest
 import jasper.camilla as camilla_module
 from jasper.camilla import (
     CAMILLA_ATTEMPT_BUDGET_S,
+    CAMILLA_FAILURE_MEMORY_S,
     CAMILLA_OPERATION_TIMEOUT_S,
     CamillaController,
     CamillaUnavailable,
@@ -802,10 +803,21 @@ async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     assert controller._client is None
 
 
-async def test_wedged_transport_skips_the_retry_inside_the_failure_window(monkeypatch):
-    """A wedged websocket must not charge every caller two connect timeouts:
-    within CAMILLA_FAILURE_MEMORY_S of a failed call the zero-delay retry is
-    skipped, and the caller still sees CamillaUnavailable."""
+@pytest.mark.parametrize(
+    ("gap_s", "recovers", "clients_after"),
+    [
+        (0.0, False, 3),
+        (CAMILLA_FAILURE_MEMORY_S + 1.0, False, 4),
+        (0.0, True, 4),
+    ],
+)
+async def test_failure_memory_skips_the_retry_only_inside_the_window(
+    monkeypatch, gap_s: float, recovers: bool, clients_after: int,
+):
+    """A wedged websocket must not charge every caller two connect timeouts.
+    Each attempt burns CAMILLA_OPERATION_TIMEOUT_S, so the window is judged
+    from before the attempt; a reachable daemon disarms the memory."""
+    clock = types.SimpleNamespace(now=0.0, healthy=False)
     clients: list[object] = []
 
     class Client:
@@ -814,18 +826,34 @@ async def test_wedged_transport_skips_the_retry_inside_the_failure_window(monkey
             clients.append(self)
 
         def connect(self) -> None:
-            raise TimeoutError("wedged handshake")
+            clock.now += CAMILLA_OPERATION_TIMEOUT_S
+            if not clock.healthy:
+                raise TimeoutError("wedged handshake")
+
+        def main_volume(self) -> float:
+            if not clock.healthy:
+                raise TimeoutError("wedged read")
+            return -20.0
 
     _install_transport_fakes(monkeypatch, Client)
+    monkeypatch.setattr(
+        camilla_module, "time", types.SimpleNamespace(monotonic=lambda: clock.now),
+    )
     controller = CamillaController("127.0.0.1", 1234)
+    call = lambda: controller._call(lambda client: client.main_volume())
 
     with pytest.raises(CamillaUnavailable):
-        await controller._call(lambda client: client.main_volume())
+        await call()
     assert len(clients) == 2
 
+    clock.now += gap_s
+    if recovers:
+        clock.healthy = True
+        await call()
+        clock.healthy = False
     with pytest.raises(CamillaUnavailable):
-        await controller._call(lambda client: client.main_volume())
-    assert len(clients) == 3
+        await call()
+    assert len(clients) == clients_after
 
 
 async def test_call_classifies_config_validation_error_as_config_rejected(monkeypatch):
