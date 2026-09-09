@@ -4,11 +4,10 @@
 
 """Tests for the active-speaker commissioning bundle (jasper/active_speaker/bundles.py).
 
-Modeled on tests/test_correction_bundles.py, the room-correction sibling this
-module ports its pattern from. Covers: info.json's required fields, artifact
-manifest mechanics (reused verbatim from jasper.correction.bundles), the
-capture/apply write paths, retention, and the fail-soft contract — a bundle
-write failure must never block the capture/apply path recording it.
+Covers: info.json's required fields, artifact manifest mechanics (owned by
+jasper.audio_measurement.bundles), the capture/apply write paths, retention,
+and the fail-soft contract — a bundle write failure must never block the
+capture/apply path recording it.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     AdmissionArtifactErrorCode,
     create_admission_authority,
 )
-from jasper.correction.bundles import read_artifact_manifest
+from jasper.audio_measurement.bundles import read_artifact_manifest
 from tests.active_speaker_fixtures import mono_output_topology
 
 
@@ -778,7 +777,7 @@ def test_summarize_bundle_reports_counts_and_size(tmp_path: Path) -> None:
 
 
 def test_summarize_bundle_raises_for_non_directory(tmp_path: Path) -> None:
-    from jasper.correction.bundles import BundleError
+    from jasper.audio_measurement.bundles import BundleError
 
     with pytest.raises(BundleError):
         bundles.summarize_bundle(tmp_path / "nope")

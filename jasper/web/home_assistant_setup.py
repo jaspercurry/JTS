@@ -60,7 +60,6 @@ import html
 import json
 import logging
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -69,22 +68,25 @@ from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
-    json_island,
+    dispatch_get,
+    dispatch_post,
+    form_guarded,
+    header_guarded,
+    read_guarded,
     mask_secret,
-    read_form,
-    reject_csrf,
     restart_voice_daemon,
-    safe_back_href,
     send_html_response,
     send_json_response,
     send_see_other,
-    guard_read_request,
-    guard_mutating_request,
     SECRET_ENV_MODE,
+)
+from .chrome import (
+    canonical_banner,
+    canonical_header,
+    canonical_page,
+    json_island,
+    safe_back_href,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
@@ -401,7 +403,7 @@ def _render_index(
     csrf_token: str = "",
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     machine = _state_machine(state)
     if machine == "connected":
@@ -422,7 +424,7 @@ def _wrap(
     *,
     csrf_token: str = "",
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     """Wrap a state's body fragment in the canonical document shell.
 
@@ -924,7 +926,7 @@ to this Home Assistant instance.</p>
   </div>
 </details>
 
-<div class="info-card" style="--tone: var(--status-danger)">
+<div class="info-card">
   <p class="form-hint"><strong>Disconnect.</strong> Removes the URL and token from this
   speaker. Smart-home commands will stop working until you reconnect.
   Doesn't change anything in Home Assistant itself.</p>
@@ -945,314 +947,291 @@ to this Home Assistant instance.</p>
 # ---- Handler ----------------------------------------------------------------
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    # Three POST guards side by side here, so each body declares its own.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        state = read_env_file(cfg["state_path"])
+        ctx = begin_request(handler)
+        send_html_response(handler, _render_index(
+            state, ctx["csrf_token"], status_msg=ctx["flash"],
+            back_href=safe_back_href(
+                (qs.get("return_to") or [""])[0], default="/assistant/",
+            ),
+        ))
+
+    def _get_reset(handler: BaseHTTPRequestHandler) -> None:
+        # A GET that mutates — hence read_guarded on its table entry. Clears
+        # URL + token + agent (keeps recent URLs); the "different URL" link.
+        state = read_env_file(cfg["state_path"])
+        recent = _recent_urls(state)
+        values: dict[str, str] = {}
+        if recent:
+            values[ENV_RECENT_URLS] = json.dumps(recent)
+        if values:
+            try:
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+            except OSError as e:
+                send_see_other(handler, "./", flash=f"Could not reset: {e}")
+                return
+        else:
+            delete_env_file(cfg["state_path"])
+        send_see_other(handler, "./")
+
+    _GET_ROUTES = {"/": _get_index, "/reset": read_guarded(_get_reset)}
+
+    @read_guarded
+    def _post_discover(handler: BaseHTTPRequestHandler) -> None:
+        # Read-only network probe — no CSRF. `@read_guarded` still refuses a
+        # DNS-rebinding or cross-site origin, so neither can trigger the LAN
+        # scan.
+        instances = discover_sync(
+            cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC),
+        )
+        send_json_response(handler, {"instances": instances})
+
+    @read_guarded
+    def _post_ready(handler: BaseHTTPRequestHandler) -> None:
+        # Lightweight readiness — one HA call. Used by the connected-state
+        # JS to poll for "is the daemon back up + HA still reachable"
+        # without re-fetching the agent list on every iteration. Read-only;
+        # `@read_guarded` keeps a DNS-rebinding or cross-site origin from
+        # probing HA state.
+        state = read_env_file(cfg["state_path"])
+        send_json_response(handler, ready_sync(
+            state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
+            verify_ssl=_verify_ssl_from_state(state),
+        ))
+
+    @read_guarded
+    def _post_verify(handler: BaseHTTPRequestHandler) -> None:
+        # /verify uses whatever URL+token are saved (no form body) — the
+        # "Test connection" button and the agent picker's on-load fetch
+        # both call this against the persisted state. Read-only, so no CSRF
+        # token; the response leaks the configured HA URL, instance name,
+        # version, and agent list, so `@read_guarded` is what keeps a
+        # DNS-rebinding or cross-site origin from fetching it.
+        state = read_env_file(cfg["state_path"])
+        send_json_response(handler, verify_sync(
+            state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
+            verify_ssl=_verify_ssl_from_state(state),
+        ))
+
+    @header_guarded
+    def _post_credentials_for_copy(handler: BaseHTTPRequestHandler) -> None:
+        # Returns the live HA URL + token to the page's JS so the
+        # "📋 Copy with HA credentials" button can substitute them into
+        # the voice-pack prompt template and put the result on the
+        # clipboard.
+        #
+        # Why a separate endpoint instead of inlining the values into the
+        # page (the old design): inlining renders the raw token into the
+        # connected-state HTML body, where any browser extension can read
+        # it, screenshots capture it, "view source" / "save page as"
+        # persist it, and a stale tab keeps it in memory indefinitely. The
+        # new shape fetches lazily on the user's click, holds the token in
+        # a local const for one event-loop turn, copies, and lets it fall
+        # out of scope. Cross-origin reads are SOP-blocked by the browser;
+        # same-origin abuse is gated by the CSRF header.
+        #
+        # CSRF: required (the response leaks credentials). The
+        # connected-state page already renders the token in a hidden input
+        # for the Disconnect form, so the JS reads it from there and
+        # forwards it as the X-CSRF-Token header.
+        state = read_env_file(cfg["state_path"])
+        url_val = state.get(ENV_URL, "")
+        token_val = state.get(ENV_TOKEN, "")
+        if not (url_val and token_val):
+            # Defensive — shouldn't happen if the connected-state page
+            # even rendered (it only does when both are set).
+            send_json_response(
+                handler, {"error": "credentials not set"}, status=400,
+            )
+            return
+        send_json_response(handler, {"url": url_val, "token": token_val})
+
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        raw_url = (form.get("url") or "").strip()
+        raw_token = (form.get("token") or "").strip()
+        agent_id = (form.get("agent_id") or "").strip()
+        # Read existing state once, reuse below for both the
+        # ssl-flag-preservation case and the token-preservation
+        # case.
+        existing = read_env_file(cfg["state_path"])
+        # The "Accept self-signed certificate" checkbox renders in
+        # state 2 (the token-paste page) when the URL is https://.
+        # Browser convention: absent = unchecked, "on" or any
+        # non-empty value = checked. Semantics: checked means the
+        # user opted into accepting a self-signed cert (i.e.
+        # relax TLS verification → verify_ssl=False). Inverted
+        # because the field is named after the user's action, not
+        # the resulting verify_ssl value. When the form omits the
+        # marker entirely (e.g. state 1's URL-only submit),
+        # preserve whatever the env file already says — don't
+        # silently re-enable verification.
+        if "accept_self_signed_present" in form:
+            verify_ssl = not bool(form.get("accept_self_signed"))
+        else:
+            verify_ssl = _verify_ssl_from_state(existing)
+
+        normalized_url = _normalize_url(raw_url)
+        if not normalized_url:
+            send_see_other(
+                handler, "./",
+                flash=(
+                    "Couldn't parse that URL. Try "
+                    "'http://homeassistant.local:8123' or "
+                    "'http://192.168.1.42:8123'."
+                ),
+            )
+            return
+
+        existing_token = existing.get(ENV_TOKEN, "").strip()
+        # When the URL changes, drop the prior token — it belongs to a
+        # different HA instance. The user has to re-paste.
+        if existing_token and existing.get(ENV_URL, "") != normalized_url and not raw_token:
+            values = {ENV_URL: normalized_url}
+            # Keep recent URLs around
+            recent = _recent_urls(existing)
+            if recent:
+                values[ENV_RECENT_URLS] = json.dumps(recent)
+            try:
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+            except OSError as e:
+                send_see_other(handler, "./", flash=f"Could not save: {e}")
+                return
+            send_see_other(handler, "./")
+            return
+
+        # When the user submitted state-1's form (URL only, token field
+        # is empty hidden input), just persist the URL and bounce to
+        # state 2 for the token paste.
+        if not raw_token and not existing_token:
+            values = {ENV_URL: normalized_url}
+            recent = _recent_urls(existing)
+            if recent:
+                values[ENV_RECENT_URLS] = json.dumps(recent)
+            try:
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+            except OSError as e:
+                send_see_other(handler, "./", flash=f"Could not save: {e}")
+                return
+            send_see_other(handler, "./")
+            return
+
+        token = raw_token or existing_token
+        # We have URL + token. Validate against the live HA before
+        # persisting so we never write a broken config that would
+        # leave the daemon talking to a dead URL.
+        result = verify_sync(normalized_url, token, verify_ssl=verify_ssl)
+        if not result.get("ok"):
+            # Keep the URL in the env file so the user lands in state
+            # 2 with a still-valid URL on the next render — only the
+            # token gets dropped.
+            values = {ENV_URL: normalized_url}
+            # Persist verify_ssl so state-2's hint is accurate.
+            if not verify_ssl:
+                values[ENV_VERIFY_SSL] = "0"
+            recent = _recent_urls(existing)
+            if recent:
+                values[ENV_RECENT_URLS] = json.dumps(recent)
+            try:
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+            except OSError as e:
+                send_see_other(handler, "./", flash=f"Could not save: {e}")
+                return
+            send_see_other(
+                handler, "./",
+                flash=result.get("error", "Connection failed."),
+            )
+            return
+
+        # Validation passed. Persist URL + token + agent + verify_ssl +
+        # bump recent URLs.
+        recent = _push_recent_url(_recent_urls(existing), normalized_url)
+        values = {
+            ENV_URL: normalized_url,
+            ENV_TOKEN: token,
+            ENV_AGENT_ID: agent_id,
+            ENV_RECENT_URLS: json.dumps(recent),
+        }
+        # Only write the flag when explicitly off — keeps the env
+        # file small and matches "absent = default safe value".
+        if not verify_ssl:
+            values[ENV_VERIFY_SSL] = "0"
+        try:
+            write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+        except OSError as e:
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+
+        restart_voice_daemon()
+        # URL + token were validated against the live HA above; log the
+        # connect. No URL/token in the line — the token is a secret and the
+        # URL is mild network topology.
+        log_event(logger, "ha.connect", client=handler.address_string())
+        instance = result.get("instance_name") or "Home Assistant"
+        version = result.get("version")
+        label = f"{instance}" + (f" ({version})" if version else "")
+        # restarting=1 is read by the connected-state page's JS — it
+        # shows a "Configuring…" banner that auto-clears once /verify
+        # returns OK (daemon back up + HA still reachable). The flash
+        # text travels in the cookie now, not the URL.
+        send_see_other(
+            handler, "./?restarting=1",
+            flash=(
+                f"Connected to {label}. The speaker is restarting "
+                f"to pick up the change."
+            ),
+        )
+
+    @form_guarded
+    def _post_disconnect(
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
+    ) -> None:
+        # Keep recent URLs so the user can quickly reconnect from
+        # state 1 — same as wifi_setup's "Forget but remember".
+        existing = read_env_file(cfg["state_path"])
+        recent = _recent_urls(existing)
+        if recent:
+            try:
+                write_env_file(
+                    cfg["state_path"],
+                    {ENV_RECENT_URLS: json.dumps(recent)},
+                    mode=SECRET_ENV_MODE,
+                )
+            except OSError as e:
+                send_see_other(handler, "./", flash=f"Could not disconnect: {e}")
+                return
+        else:
+            delete_env_file(cfg["state_path"])
+        restart_voice_daemon()
+        log_event(logger, "ha.disconnect", client=handler.address_string())
+        send_see_other(
+            handler, "./",
+            flash="Disconnected. The speaker is restarting.",
+        )
+
+    _POST_ROUTES = {
+        "/discover": _post_discover,
+        "/ready": _post_ready,
+        "/verify": _post_verify,
+        "/credentials-for-copy": _post_credentials_for_copy,
+        "/save": _post_save,
+        "/disconnect": _post_disconnect,
+    }
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            # Kept as a thin compat layer for callsites that don't carry
-            # a flash message. New code paths use send_see_other from
-            # _common with `flash=` instead.
-            send_see_other(self, location)
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            send_html_response(self, body, status=status)
-
-        def _send_json(self, payload: Any, *, status: int = 200) -> None:
-            send_json_response(self, payload, status=status)
-
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                state = read_env_file(cfg["state_path"])
-                ctx = begin_request(self)
-                self._send_html(_render_index(
-                    state, ctx["csrf_token"], status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
-                ))
-                return
-            if path == "/reset":
-                if not guard_read_request(self, allow_cross_site_navigation=False):
-                    return
-                # Clear URL + token + agent (keep recent URLs) and go back
-                # to state 1. Equivalent to "Use a different URL" link.
-                state = read_env_file(cfg["state_path"])
-                recent = _recent_urls(state)
-                values: dict[str, str] = {}
-                if recent:
-                    values[ENV_RECENT_URLS] = json.dumps(recent)
-                if values:
-                    try:
-                        write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
-                    except OSError as e:
-                        send_see_other(self, "./", flash=f"Could not reset: {e}")
-                        return
-                else:
-                    delete_env_file(cfg["state_path"])
-                send_see_other(self, "./")
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path == "/discover":
-                # Read-only network probe — no state change, no CSRF. Still
-                # guard the read: without it a DNS-rebinding origin could
-                # trigger the LAN scan. (Mirrors spotify_setup's read-only
-                # /playlist-preview POST, which also guard_read_request()s.)
-                if not guard_read_request(self):
-                    return
-                instances = discover_sync(cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC))
-                self._send_json({"instances": instances})
-                return
-            if path == "/ready":
-                # Lightweight readiness — one HA call. Used by the
-                # connected-state JS to poll for "is the daemon back
-                # up + HA still reachable" without re-fetching the
-                # agent list on every iteration. Read-only; guard the
-                # read so a DNS-rebinding origin can't probe HA state.
-                if not guard_read_request(self):
-                    return
-                state = read_env_file(cfg["state_path"])
-                self._send_json(ready_sync(
-                    state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
-                    verify_ssl=_verify_ssl_from_state(state),
-                ))
-                return
-            if path == "/verify":
-                # /verify uses whatever URL+token are saved (no form
-                # body) — the "Test connection" button and the agent
-                # picker's on-load fetch both call this against the
-                # persisted state. Read-only; no CSRF needed, but guard
-                # the read: the response leaks the configured HA URL,
-                # instance name, version, and agent list, so a
-                # DNS-rebinding origin must not be able to fetch it.
-                if not guard_read_request(self):
-                    return
-                state = read_env_file(cfg["state_path"])
-                result = verify_sync(
-                    state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
-                    verify_ssl=_verify_ssl_from_state(state),
-                )
-                self._send_json(result)
-                return
-            if path == "/credentials-for-copy":
-                # Returns the live HA URL + token to the page's JS so
-                # the "📋 Copy with HA credentials" button can substitute
-                # them into the voice-pack prompt template and put the
-                # result on the clipboard.
-                #
-                # Why a separate endpoint instead of inlining the values
-                # into the page (the old design): inlining renders the
-                # raw token into the connected-state HTML body, where
-                # any browser extension can read it, screenshots capture
-                # it, "view source" / "save page as" persist it, and a
-                # stale tab keeps it in memory indefinitely. The new
-                # shape fetches lazily on the user's click, holds the
-                # token in a local const for one event-loop turn, copies,
-                # and lets it fall out of scope. Cross-origin reads are
-                # SOP-blocked by the browser; same-origin abuse is
-                # gated by the CSRF header.
-                #
-                # CSRF: required (the response leaks credentials). The
-                # connected-state page already renders the token in a
-                # hidden input for the Disconnect form, so the JS reads
-                # it from there and forwards as the X-CSRF-Token header.
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                state = read_env_file(cfg["state_path"])
-                url_val = state.get(ENV_URL, "")
-                token_val = state.get(ENV_TOKEN, "")
-                if not (url_val and token_val):
-                    # Defensive — shouldn't happen if the connected-state
-                    # page even rendered (it only does when both are set).
-                    self._send_json(
-                        {"error": "credentials not set"}, status=400,
-                    )
-                    return
-                self._send_json({"url": url_val, "token": token_val})
-                return
-            if path not in ("/save", "/disconnect"):
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            if path == "/save":
-                self._handle_save(form)
-                return
-            if path == "/disconnect":
-                self._handle_disconnect()
-                return
-
-        def _handle_save(self, form: dict[str, str]) -> None:
-            # form is pre-read by the POST router so it can verify CSRF
-            # before we consume the body. All previous control flow
-            # remains the same below.
-            raw_url = (form.get("url") or "").strip()
-            raw_token = (form.get("token") or "").strip()
-            agent_id = (form.get("agent_id") or "").strip()
-            # Read existing state once, reuse below for both the
-            # ssl-flag-preservation case and the token-preservation
-            # case.
-            existing = read_env_file(cfg["state_path"])
-            # The "Accept self-signed certificate" checkbox renders in
-            # state 2 (the token-paste page) when the URL is https://.
-            # Browser convention: absent = unchecked, "on" or any
-            # non-empty value = checked. Semantics: checked means the
-            # user opted into accepting a self-signed cert (i.e.
-            # relax TLS verification → verify_ssl=False). Inverted
-            # because the field is named after the user's action, not
-            # the resulting verify_ssl value. When the form omits the
-            # marker entirely (e.g. state 1's URL-only submit),
-            # preserve whatever the env file already says — don't
-            # silently re-enable verification.
-            if "accept_self_signed_present" in form:
-                verify_ssl = not bool(form.get("accept_self_signed"))
-            else:
-                verify_ssl = _verify_ssl_from_state(existing)
-
-            normalized_url = _normalize_url(raw_url)
-            if not normalized_url:
-                send_see_other(
-                    self, "./",
-                    flash=(
-                        "Couldn't parse that URL. Try "
-                        "'http://homeassistant.local:8123' or "
-                        "'http://192.168.1.42:8123'."
-                    ),
-                )
-                return
-
-            existing_token = existing.get(ENV_TOKEN, "").strip()
-            # When the URL changes, drop the prior token — it belongs to a
-            # different HA instance. The user has to re-paste.
-            if existing_token and existing.get(ENV_URL, "") != normalized_url and not raw_token:
-                values = {ENV_URL: normalized_url}
-                # Keep recent URLs around
-                recent = _recent_urls(existing)
-                if recent:
-                    values[ENV_RECENT_URLS] = json.dumps(recent)
-                try:
-                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
-                except OSError as e:
-                    send_see_other(self, "./", flash=f"Could not save: {e}")
-                    return
-                send_see_other(self, "./")
-                return
-
-            # When the user submitted state-1's form (URL only, token field
-            # is empty hidden input), just persist the URL and bounce to
-            # state 2 for the token paste.
-            if not raw_token and not existing_token:
-                values = {ENV_URL: normalized_url}
-                recent = _recent_urls(existing)
-                if recent:
-                    values[ENV_RECENT_URLS] = json.dumps(recent)
-                try:
-                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
-                except OSError as e:
-                    send_see_other(self, "./", flash=f"Could not save: {e}")
-                    return
-                send_see_other(self, "./")
-                return
-
-            token = raw_token or existing_token
-            # We have URL + token. Validate against the live HA before
-            # persisting so we never write a broken config that would
-            # leave the daemon talking to a dead URL.
-            result = verify_sync(normalized_url, token, verify_ssl=verify_ssl)
-            if not result.get("ok"):
-                # Keep the URL in the env file so the user lands in state
-                # 2 with a still-valid URL on the next render — only the
-                # token gets dropped.
-                values = {ENV_URL: normalized_url}
-                # Persist verify_ssl so state-2's hint is accurate.
-                if not verify_ssl:
-                    values[ENV_VERIFY_SSL] = "0"
-                recent = _recent_urls(existing)
-                if recent:
-                    values[ENV_RECENT_URLS] = json.dumps(recent)
-                try:
-                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
-                except OSError as e:
-                    send_see_other(self, "./", flash=f"Could not save: {e}")
-                    return
-                send_see_other(
-                    self, "./",
-                    flash=result.get("error", "Connection failed."),
-                )
-                return
-
-            # Validation passed. Persist URL + token + agent + verify_ssl +
-            # bump recent URLs.
-            recent = _push_recent_url(_recent_urls(existing), normalized_url)
-            values = {
-                ENV_URL: normalized_url,
-                ENV_TOKEN: token,
-                ENV_AGENT_ID: agent_id,
-                ENV_RECENT_URLS: json.dumps(recent),
-            }
-            # Only write the flag when explicitly off — keeps the env
-            # file small and matches "absent = default safe value".
-            if not verify_ssl:
-                values[ENV_VERIFY_SSL] = "0"
-            try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
-            except OSError as e:
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-
-            restart_voice_daemon()
-            # URL + token were validated against the live HA above; log the
-            # connect. No URL/token in the line — the token is a secret and the
-            # URL is mild network topology.
-            log_event(logger, "ha.connect", client=self.address_string())
-            instance = result.get("instance_name") or "Home Assistant"
-            version = result.get("version")
-            label = f"{instance}" + (f" ({version})" if version else "")
-            # restarting=1 is read by the connected-state page's JS — it
-            # shows a "Configuring…" banner that auto-clears once /verify
-            # returns OK (daemon back up + HA still reachable). The flash
-            # text travels in the cookie now, not the URL.
-            send_see_other(
-                self, "./?restarting=1",
-                flash=(
-                    f"Connected to {label}. The speaker is restarting "
-                    f"to pick up the change."
-                ),
-            )
-
-        def _handle_disconnect(self) -> None:
-            # Keep recent URLs so the user can quickly reconnect from
-            # state 1 — same as wifi_setup's "Forget but remember".
-            existing = read_env_file(cfg["state_path"])
-            recent = _recent_urls(existing)
-            if recent:
-                try:
-                    write_env_file(
-                        cfg["state_path"],
-                        {ENV_RECENT_URLS: json.dumps(recent)},
-                        mode=SECRET_ENV_MODE,
-                    )
-                except OSError as e:
-                    send_see_other(self, "./", flash=f"Could not disconnect: {e}")
-                    return
-            else:
-                delete_env_file(cfg["state_path"])
-            restart_voice_daemon()
-            log_event(logger, "ha.disconnect", client=self.address_string())
-            send_see_other(
-                self, "./",
-                flash="Disconnected. The speaker is restarting.",
-            )
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 

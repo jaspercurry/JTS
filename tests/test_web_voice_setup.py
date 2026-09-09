@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 
 from jasper.voice.catalog import PROVIDERS
-from jasper.web import _common, voice_setup
+from jasper.web import chrome, voice_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
@@ -59,8 +59,9 @@ def test_voice_page_links_page_css():
 def test_voice_page_has_shared_app_header():
     out = _render()
     assert_canonical_page(out)
-    assert '<h1 class="app-header__title">Voice provider</h1>' in out
+    assert '<h1 class="app-header__title">Voice</h1>' in out
     assert '<use href="#icon-back">' in out
+    assert 'href="/assistant/" aria-label="Assistant"' in out
 
 
 def test_voice_page_embeds_csrf_meta():
@@ -140,7 +141,7 @@ def test_voice_flash_is_routed_through_canonical_banner():
         "Could not refresh OpenAI models: connection failed",
         "Cleared Gemini Live credentials.",
     ):
-        assert _common.canonical_banner(flash) in _render(flash=flash)
+        assert chrome.canonical_banner(flash) in _render(flash=flash)
 
 
 def _handler_cls(tmp_path):

@@ -23,7 +23,7 @@ import urllib.parse
 
 import pytest
 
-from jasper.web import transit_setup
+from jasper.web import transit_page, transit_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
@@ -275,7 +275,7 @@ def test_get_root_rejects_off_origin_return_link(tmp_path):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert 'href="/"' in out
+    assert 'href="/assistant/"' in out
     assert "evil.test" not in out
 
 
@@ -485,22 +485,22 @@ def _fake_bus_provider(exc: Exception) -> SimpleNamespace:
 def test_bus_card_scrubs_key_from_error_banner():
     provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
     state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
-    html_out = transit_setup._bus_card_html(provider, state)
+    html_out = transit_page._bus_card_html(provider, state)
     assert _SECRET_KEY not in html_out
-    assert html.escape(transit_setup.redact_secrets(_LEAKY_URL)) in html_out
+    assert html.escape(transit_page.redact_secrets(_LEAKY_URL)) in html_out
 
 
-def _assert_one_scrubbed_warning(caplog) -> None:
+def _assert_one_scrubbed_warning(caplog, logger_name: str) -> None:
     # Positive pin: the warning IS emitted, carrying the masked URL, so a
     # silently dropped log line cannot pass this as "nothing leaked".
     records = [
         r
         for r in caplog.records
-        if r.name == transit_setup.logger.name and r.levelno == logging.WARNING
+        if r.name == logger_name and r.levelno == logging.WARNING
     ]
     (record,) = records
     message = record.getMessage()
-    assert transit_setup.redact_secrets(_LEAKY_URL) in message
+    assert transit_page.redact_secrets(_LEAKY_URL) in message
     assert _SECRET_KEY not in message
 
 
@@ -508,8 +508,8 @@ def test_bus_card_scrubs_key_from_log(caplog):
     provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
     state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
     with caplog.at_level("WARNING"):
-        transit_setup._bus_card_html(provider, state)
-    _assert_one_scrubbed_warning(caplog)
+        transit_page._bus_card_html(provider, state)
+    _assert_one_scrubbed_warning(caplog, transit_page.logger.name)
 
 
 def test_apply_save_scrubs_key_from_probe_log(caplog):
@@ -517,7 +517,7 @@ def test_apply_save_scrubs_key_from_probe_log(caplog):
     form = {"nyc_bus_key": _SECRET_KEY}
     with caplog.at_level("WARNING"):
         _current, error = transit_setup._apply_save(form, {}, bus_provider=provider)
-    _assert_one_scrubbed_warning(caplog)
+    _assert_one_scrubbed_warning(caplog, transit_setup.logger.name)
     # The user-facing error is a generic "probe failed", never the raw key.
     assert error and _SECRET_KEY not in error
 
@@ -533,6 +533,6 @@ def test_citibike_card_scrubs_url_from_error_banner(monkeypatch):
         credentials=[],
         find_stops_near=_raise,
     )
-    html_out = transit_setup._citibike_card_html(provider, NYC_STATE)
+    html_out = transit_page._citibike_card_html(provider, NYC_STATE)
     assert _SECRET_KEY not in html_out
-    assert html.escape(transit_setup.redact_secrets(_LEAKY_URL)) in html_out
+    assert html.escape(transit_page.redact_secrets(_LEAKY_URL)) in html_out

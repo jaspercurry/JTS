@@ -153,8 +153,9 @@ def test_deliberately_unlogged_allowlist_is_not_stale():
 
 def test_correction_event_literals_use_dotted_domain_names():
     flat = []
-    for stem in ("correction_setup.py", "correction_handlers.py", "correction_capture.py"):
-        tree = ast.parse((WEB_DIR / stem).read_text())
+    # Every correction_* module, so a future one is covered the day it lands.
+    for path in sorted(WEB_DIR.glob("correction_*.py")):
+        tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -165,5 +166,5 @@ def test_correction_event_literals_use_dotted_domain_names():
             event = node.args[1]
             if isinstance(event, ast.Constant) and isinstance(event.value, str):
                 if "." not in event.value:
-                    flat.append(f"{stem}:{node.lineno}:{event.value}")
+                    flat.append(f"{path.name}:{node.lineno}:{event.value}")
     assert flat == []

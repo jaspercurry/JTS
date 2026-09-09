@@ -49,8 +49,8 @@ CamillaFactory = Callable[[], Any]
 
 
 if TYPE_CHECKING:
+    from jasper.audio_measurement.level_match import LevelMatchOutcome, LevelMatchSession
     from jasper.audio_measurement.ramp import MeasurementRamp
-    from jasper.correction.level_match import LevelMatchOutcome, LevelMatchSession
 
 
 class UnresolvedVolumeRecoveryResult(str, Enum):
@@ -144,7 +144,7 @@ class CrossoverLevelLease:
         level_run_state_path: str | Path | None = None,
     ) -> None:
         from jasper.active_speaker.crossover_level_run import CrossoverLevelRunStore
-        from jasper.correction.level_match import LevelLockStore
+        from jasper.audio_measurement.level_match import LevelLockStore
 
         self.session_id = "active-crossover"
         self.level_lock_store = LevelLockStore()
@@ -423,7 +423,7 @@ class CrossoverLevelLease:
         """Drop a prior lock/setup before a newly acquired level run begins."""
 
         self.assert_volume_safety_resolved()
-        from jasper.correction.level_match import LevelLockStore
+        from jasper.audio_measurement.level_match import LevelLockStore
 
         with self._level_result_lock:
             if self._running is not None:

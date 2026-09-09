@@ -4,7 +4,7 @@
    Single source of truth for the look shared by the landing page
    and every wizard. Served static by nginx from
    /usr/share/jasper-web/assets/app.css and linked (cache-busted by
-   build SHA) via jasper.web._common.canonical_page().
+   build SHA) via jasper.web.chrome.canonical_page().
 
    Layering contract:
      * THIS file = design TOKENS + base reset + fonts + shared
@@ -812,7 +812,7 @@ svg { display: block; }
 .status-line--boot { padding: 3rem 1.5rem; text-align: center; }
 
 /* ---------------- flash banner ---------------- */
-/* Flash banner markup is built by jasper.web._common.canonical_banner().
+/* Flash banner markup is built by jasper.web.chrome.canonical_banner().
    Severity is the only variant:
    ok (saved/cleared), info (neutral), danger (error/fail). Tone reuses the
    status token vocabulary so the banner re-skins with the rest of the UI. */

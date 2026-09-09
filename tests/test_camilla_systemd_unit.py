@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.reconcile_fixtures import fake_systemctl
+from tests.test_audio_hardware_reconcile import APPLE_LISTING, _run_reconcile
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -262,32 +264,25 @@ def test_install_sh_routes_outputd_statefile_through_runtime_contract():
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
 
 
-def test_flat_cutover_has_exactly_one_writer():
-    """install, the root reconciler, and the reset all go through one entry.
-
-    The flat cutover graph is width-matched to the saved output topology, so
-    three different components write it at three different times (deploy, boot /
-    udev / topology-save, reset). If any of them emits its own copy, the graph a
-    box boots depends on which ran last — and one of them would inevitably ship
-    a different file mode or skip the width match. `jasper-sound
-    render-flat-cutover` is the single entry; this fails if a second writer
-    (an inline heredoc, a direct emitter call) reappears in the shell layer.
-    """
-    reconcile = (
-        Path(__file__).resolve().parent.parent
-        / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
-    ).read_text()
-    install = INSTALL_SH.read_text()
-
-    for name, body in (("install.sh", install), ("reconciler", reconcile)):
-        assert "render-flat-cutover" in body, name
-        # The emitter is reached through the CLI, never spelled directly in bash.
-        assert "emit_flat_outputd_cutover_config" not in body, name
-
-    # The reconciler renders BEFORE it can restart the audio graph, so a restart
-    # loads this pass's graph rather than the previous topology's.
-    render = reconcile.index("render_flat_cutover_if_needed\n")
-    assert render < reconcile.index("restart_audio_if_needed 1")
+def test_flat_cutover_is_published_before_the_audio_restart(tmp_path):
+    cutover = tmp_path / "camilladsp" / "outputd-cutover.yml"
+    systemctl, transcript = fake_systemctl(
+        tmp_path, name="witness-systemctl", witness="CUTOVER_WITNESS"
+    )
+    result = _run_reconcile(
+        tmp_path, APPLE_LISTING,
+        extra_env={
+            "JASPER_SYSTEMCTL": str(systemctl),
+            "JASPER_SYSTEMCTL_LOG": str(transcript),
+            "CUTOVER_WITNESS": str(cutover),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    restarts = [
+        line for line in transcript.read_text().splitlines()
+        if "restart" in line.split() and "jasper-outputd.service" in line.split()
+    ]
+    assert restarts == ["present=1 --no-block restart jasper-outputd.service"]
 
 
 def test_unit_documents_no_config_recovery_path():

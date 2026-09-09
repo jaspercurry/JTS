@@ -34,8 +34,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.room_boundary import (
+    CEILING_SOURCE_APPLIED,
+    CEILING_SOURCE_FALLBACK,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
+    ROOM_FLOOR_HZ,
+    ROOM_MEDIAN_WINDOW,
     room_ceiling_hz,
 )
 
@@ -47,9 +51,6 @@ from .record_index import bundle_measurements
 from .round_captures import doc_pose_key
 from .round_views import RoundViewsError, local_features
 from .spatial import cloud_trusted_floor_hz
-
-#: The room layer's floor: below it a seat take says little a cabinet can act on.
-ROOM_FLOOR_HZ = 20.0
 
 #: A feature is a local excursion at least this deep against the local level,
 #: at least this wide between its half-depth edges; positions agree on it
@@ -63,8 +64,29 @@ FEATURE_AGREEMENT_DB = 3.0
 #: baseline the way a power mean would nor hides in a dip.
 TREND_HALF_WIDTH_OCTAVES = 0.5
 
-CEILING_SOURCE_APPLIED = "applied_candidate"
-CEILING_SOURCE_FALLBACK = "fallback"
+#: Where the room band splits: modes below 60 Hz, the modal-to-transition
+#: region to 120 Hz, the rest to the ceiling.
+ROOM_BAND_SPLITS_HZ = (60.0, 120.0)
+
+
+def band_edges(ceiling_hz: float) -> tuple[tuple[float, float], ...]:
+    """The room bands, :data:`ROOM_FLOOR_HZ` to ``ceiling_hz``; the ceiling tops the last."""
+    lows = (ROOM_FLOOR_HZ, *ROOM_BAND_SPLITS_HZ)
+    highs = (*ROOM_BAND_SPLITS_HZ, ceiling_hz)
+    return tuple(zip(lows, highs))
+
+
+def band_masks(
+    freqs_hz: Any, ceiling_hz: float,
+) -> tuple[tuple[float, float, np.ndarray], ...]:
+    """Each band's bins on ``freqs_hz``: half-open below a split and closed at
+    the ceiling, so a bin sitting on a split is counted once."""
+    freqs = np.asarray(freqs_hz, dtype=float)
+    edges = band_edges(ceiling_hz)
+    return tuple(
+        (lo, hi, (freqs >= lo) & ((freqs <= hi) if index == len(edges) - 1 else (freqs < hi)))
+        for index, (lo, hi) in enumerate(edges)
+    )
 
 
 @dataclass(frozen=True)
@@ -174,7 +196,7 @@ def _window(takes: Sequence[SeatTake]) -> str:
     """What the takes say about their own window, never assumed."""
     applied = {take.gating_applied for take in takes}
     if applied == {False}:
-        return "ungated"
+        return ROOM_MEDIAN_WINDOW
     return "gated" if applied == {True} else "mixed"
 
 

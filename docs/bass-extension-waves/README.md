@@ -5,8 +5,8 @@ wave of the Bass Extension program. The architecture plan of record
 is [`docs/HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md);
 these prompts are the execution contracts derived from it.
 **Resumed per [ADR-0257](../adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) (2026-09-08):**
-the relay-based transport in waves 4, 6 and 7 is stale; each is rewritten
-onto the wired capture kernel when it is taken up.
+the relay-based transport in wave 7 is stale; it is rewritten onto the
+wired capture kernel when it is taken up.
 
 **Operator usage:** start a fresh Codex session per wave and say
 "Read `docs/bass-extension-waves/wave-N-….md` and execute it." Do not
@@ -17,12 +17,9 @@ preflight/stop audit; it is not implementation authority while Wave 4's
 bench limiter evidence remains unresolved. The pure total-refusal producer
 skeleton authorized by the
 [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md) amendment is not
-Wave 4 production authority. Wave 4 contract Revision 9 additionally authorizes
-one hardware-free commissioning slice (the pure state machine to an in-memory
-`review`, an injected synthetic dry run, and synthetic evidence intake through
-that producer); hardware playback, live CamillaDSP mutation, persistence, the
-real bench runner, and all production wiring remain blocked pending Jasper's
-accepted bench bundle and a later reviewed revision.
+Wave 4 production authority. Hardware playback, live CamillaDSP mutation,
+persistence, the real bench runner, and all production wiring remain blocked
+pending Jasper's accepted bench bundle and a later reviewed revision.
 Across the frozen contracts, bond entry may preserve and re-prove an
 already-accepted sealed profile's natural pair on the existing local
 active-speaker driver-domain graph, but profile mutation and Wave 5
@@ -43,9 +40,9 @@ supervised on-device pass gate any hardware playback) is
 | 1 | `wave-1-numerics.md` | Codex | none |
 | 2 | `wave-2-profile-observability.md` | Codex | Wave 1 merged |
 | 3 | `wave-3-graph-emission.md` | Codex | Waves 1–2 merged + Wave 0 memo |
-| 4 | `wave-4-commissioning-backend.md` | Codex | Waves 1–3 merged + crossover-program hardware burn-in (met); contract rev 9 authorizes only the hardware-free commissioning slice; production wiring still requires accepted limiter bench evidence |
+| 4 | — | — | retired — ADR-0259 §3; the engine's candidate apply supersedes it (§5) |
 | 5 | `wave-5-runtime-scheduler.md` | Codex | Waves 2–3 merged + Wave 0 memo for the mandatory stop audit; implementation additionally requires merged Wave 4 limiter producer + replacement Wave 5 prompt |
-| 6 | `wave-6-ui.md` | Codex | Wave 4 merged (Wave 5 for live status) |
+| 6 | — | — | retired — ADR-0259 §3; the engine's candidate apply supersedes it (§5) |
 | 7 | `wave-7-hardware-validation.md` | Operator, Codex assists | everything |
 
 **Where "what's authorized right now" lives (single source of truth).** The
@@ -70,14 +67,6 @@ read this file completely before your wave file.
 session — its master prompt, merge-gate duties, sequencing rules, and
 escalation boundaries live in [`coordinator.md`](coordinator.md). The
 coordinator launches the wave sessions; it never implements.
-
-**Reconciled UX design input for Wave 6.**
-[`bass-commissioning-ux.md`](bass-commissioning-ux.md) reconciles an
-external UX/UI research report against the frozen `/bassext/*` contract
-(wave-4) and the plan's honesty/status-vocabulary sections. It is design
-intent, not an authorization amendment — it does not move Wave 6 off "not
-started," and wave-6-ui.md's own Revision 1 note records what it adopts
-and rejects.
 
 ---
 

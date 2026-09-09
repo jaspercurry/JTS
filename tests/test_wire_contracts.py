@@ -198,12 +198,6 @@ def _emits_path(tree: dict, path: tuple[str, ...]) -> bool:
 # ---------------------------------------------------------------------------
 
 FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
-    # _fanin_summary / _read_fanin_status
-    "jasper/correction/runtime_integrity.py": {
-        "selected_input", "selection_mode", "input_buffer_frames",
-        "output", "frames_written", "xrun_count",
-        "inputs", "label", "frames_read",
-    },
     # AirPlayHealthSampler._sample_fanin
     "jasper/control/airplay_health.py": {
         "inputs", "label", "frames_read", "xrun_count",
@@ -525,8 +519,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     the VALUE each process will connect to is asserted here: if either daemon
     moves its socket, every consumer moves with it in the same PR.
 
-    Two are deliberately absent. ``jasper.correction.runtime_integrity`` still
-    spells the outputd path itself (measurement corner). ``jasper.mux`` resolves
+    One is deliberately absent. ``jasper.mux`` resolves
     ``JASPER_FANIN_CONTROL_SOCKET`` at import time, so an operator exercising
     that documented override would redden this; its default IS the shared
     constant by construction, and ``tests/test_mux.py`` owns the override.
@@ -535,7 +528,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
     from jasper.control import audio_health, grouping_supervisor
-    from jasper.correction import runtime_integrity
     from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
     from jasper.platform import status_socket, uds
@@ -555,14 +547,12 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     assert {
         status_socket.FANIN_STATUS_SOCKET,
         fanin_status.FANIN_STATUS_SOCKET,
-        runtime_integrity.FANIN_CONTROL_SOCKET,
         tap_client.FANIN_CONTROL_SOCKET,
         audio_runtime_fanin.FANIN_STATUS_SOCKET,
         system_soak.STATUS_SOCKETS["fanin"],
     } == {fanin_sock}
     assert {
         status_socket.OUTPUTD_STATUS_SOCKET,
-        runtime_integrity.OUTPUTD_CONTROL_SOCKET,
         grouping_supervisor.OUTPUTD_CONTROL_SOCKET,
         audio_runtime_outputd.OUTPUTD_STATUS_SOCKET,
         str(audio_validation.DEFAULT_OUTPUTD_STATUS_SOCKET),

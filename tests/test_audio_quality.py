@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import stat
 import subprocess
 from pathlib import Path
 
@@ -183,3 +184,31 @@ def test_render_script_rejects_empty_env_value(tmp_path):
     assert proc.returncode == 64
     assert "invalid converter" in proc.stderr
     assert not output_path.exists()
+
+
+def test_render_script_publishes_world_readable_asound(tmp_path):
+    """Non-root renderers (shairport-sync, librespot as `pi`) must be able to
+    read the published config to resolve its user-space PCM names.
+
+    Run under a restrictive umask: without the script's explicit chmod the
+    temp file it moves into place would inherit 0600 and every renderer
+    would go silent.
+    """
+    template_path = tmp_path / "asound.template"
+    output_path = tmp_path / "asound.conf"
+    template_path.write_text(
+        'defaults.pcm.rate_converter "__RATE_CONVERTER__"\n',
+    )
+
+    subprocess.run(
+        ["bash", "-c", 'umask 0077; exec bash "$1"', "bash", str(SCRIPT)],
+        check=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "JASPER_AUDIO_QUALITY_FILE": str(tmp_path / "missing.env"),
+            "JASPER_ASOUND_TEMPLATE": str(template_path),
+            "JASPER_ASOUND_CONF": str(output_path),
+        },
+    )
+
+    assert stat.S_IMODE(output_path.stat().st_mode) == 0o644

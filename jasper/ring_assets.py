@@ -26,13 +26,20 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from jasper.audio_hardware.dac import latency_floor_for
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_SLOT_FRAMES,
     RingWire,
+    resolve_ring_wire,
 )
 from jasper.json_fields import sha256_file
+
+# lazy: import cost — keep ring asset readers import-cheap.
+if TYPE_CHECKING:
+    from jasper.output_topology import OutputTopology
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into. Canonical home
 # for the value — do not re-spell it as a literal elsewhere. Build and install
@@ -513,7 +520,12 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
 # ALSA's own ``hint { … }`` convention is the obvious one — would truncate the
 # body and hide every field after it. Quoted values are skipped so a brace
 # inside ``path "…"`` cannot unbalance the scan.
-_RING_CONF_BLOCK_OPEN_RE_TEMPLATE = r"pcm\.{name}[^\S\n]*\{{"
+_RING_CONF_BLOCK_OPEN_RE_TEMPLATE = r"(?m)^[^\S\n]*pcm\.{name}[^\S\n]*\{{"
+
+
+_CONF_TOKEN = re.compile(
+    r'''\#[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[{}]|[^\s{}\#"']+|["']'''
+)
 
 
 def _ring_conf_block_body_span(text: str, pcm_name: str) -> tuple[int, int] | None:
@@ -529,31 +541,44 @@ def _ring_conf_block_body_span(text: str, pcm_name: str) -> tuple[int, int] | No
         return None
     start = m.end()
     depth = 1
-    i = start
-    quote: str | None = None
-    while i < len(text):
-        ch = text[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch == "{":
+    for match in _CONF_TOKEN.finditer(text, start):
+        token = match.group()
+        if token in ("\"", "'"):
+            return None
+        if token == "{":
             depth += 1
-        elif ch == "}":
+        elif token == "}":
             depth -= 1
             if depth == 0:
-                return start, i
-        i += 1
+                return start, match.start()
+
     return None
 
 
-def _ring_conf_block_body(text: str, pcm_name: str) -> str | None:
+def conf_block_body(text: str, pcm_name: str) -> str | None:
     span = _ring_conf_block_body_span(text, pcm_name)
     return None if span is None else text[span[0] : span[1]]
+
+
+def conf_pcm_type(text: str, pcm_name: str) -> str | None:
+    body = conf_block_body(text, pcm_name)
+    if body is None:
+        return None
+    depth = 0
+    type_next = False
+    for match in _CONF_TOKEN.finditer(body):
+        token = match.group()
+        if token.startswith("#"):
+            continue
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+        elif depth == 0:
+            if type_next:
+                return token[1:-1] if token[0] in "\"'" else token
+            type_next = token == "type"
+    return None
 
 
 def _read_conf_text(conf_d: str | None) -> str | None:
@@ -608,7 +633,7 @@ def _single_block_value(
     text = _read_conf_text(conf_d)
     if text is None:
         return None
-    body = _ring_conf_block_body(text, pcm_name)
+    body = conf_block_body(text, pcm_name)
     if body is None:
         return None
     values = {m.group("value") for m in pattern.finditer(body)}
@@ -735,6 +760,61 @@ def _render_block_field(
     return (
         body[: anchor.end()] + f"\n{indent}{key} {value}" + body[anchor.end() :]
     )
+
+
+def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
+    """Unreadable topology keeps the shipped stereo wire; arm preflights reject it."""
+    from jasper.output_topology import (  # lazy: keep ring asset readers import-cheap
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    try:
+        return load_output_topology_strict(path), "loaded"
+    except (OutputTopologyError, OSError, ValueError):
+        return None, "topology_unreadable"
+
+
+def ring_conf_wire_report(
+    *,
+    profile_id: str,
+    conf_d: str = "",
+    output_topology: str | None = None,
+    topology: OutputTopology | None = None,
+) -> dict[str, str]:
+    """Render only declared floors matching Ring A's fixed slot (issue #2147)."""
+    resolved_conf_d = conf_d or RING_CONF_D
+    floor = latency_floor_for(profile_id) if profile_id else None
+    if floor is None:
+        return {
+            "result": "skipped",
+            "reason": "no_declared_floor",
+            "conf": str(resolved_conf_d),
+        }
+    if floor.outputd_period_frames != RING_SLOT_FRAMES:
+        return {
+            "result": "skipped",
+            "reason": f"ring_slot_fixed_{RING_SLOT_FRAMES}",
+            "period_frames": str(floor.outputd_period_frames),
+            "conf": str(resolved_conf_d),
+        }
+    topology_reason = "loaded"
+    if topology is None:
+        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
+    outcome = render_ring_conf_wire(resolve_ring_wire(topology), conf_d=resolved_conf_d)
+    report = {
+        "result": "rendered" if outcome.changed else "unchanged",
+        "period_frames": str(outcome.period_frames),
+    }
+    if outcome.previous_period_frames is not None:
+        report["previous_period_frames"] = str(outcome.previous_period_frames)
+    report["sample_format"] = str(outcome.sample_format)
+    report["ring_a_channels"] = str(outcome.ring_a_channels)
+    report["ring_b_channels"] = str(outcome.ring_b_channels)
+    report["ring_active_channels"] = str(outcome.ring_active_channels)
+    report["topology"] = topology_reason
+    report["conf"] = str(outcome.conf_d)
+    return report
 
 
 def render_ring_conf_wire(

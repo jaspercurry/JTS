@@ -338,7 +338,6 @@ jasper/bass_extension/
     passive_radiator.py# ported + PR-notch guard
   targets.py           # family generation, anchors, margins — pure
   profile.py           # BassExtensionProfile schema v1, refusals, staleness
-  ladder.py            # commissioning ladder state machine (no I/O)
   scheduler.py         # listening_level → target index, hysteresis — pure
   runtime.py           # transition executor (patch/crossfade per Wave 0)
 ```
@@ -681,8 +680,8 @@ calibration selected (recommended, not mandatory — an uncalibrated
 mic gets `mic_uncalibrated` WARN and blocks nothing, since the fit is
 shape-relative; calibration mostly improves the 20–40 Hz tail).
 
-### 7.2 State machine (`jasper/bass_extension/ladder.py` — pure; the
-web backend owns I/O, mirroring `commissioning_service.py`)
+### 7.2 State machine (retired under ADR-0259 §3 — the engine's candidate
+apply supersedes the wizard ladder; kept for the rung vocabulary)
 
 ```
 idle
@@ -1551,10 +1550,10 @@ wave keeps out of the god-files. Every implementation PR runs
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](tuning-operator-runbook.md)). Merged on main: the pure producer (#1611); the reviewed bench runner/temporary activation owner + measured-context builder (#1630); and the rev-9 hardware-free commissioning slice itself, `jasper/bass_extension/ladder.py` (the pure state machine to in-memory `review` with synthetic producer intake). The runner's live pre/post-limiter tap executor is not built — its CLI fails closed rather than pretend to measure — and its tap-realization contract amendment is now **accepted** (see the tap-realization row below); an accepted on-device bundle and the later production-wiring revision remain outstanding |
+| 4 | wave-4 | **retired under ADR-0259 §3** — previously: **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](tuning-operator-runbook.md)). Merged on main: the pure producer (#1611); the reviewed bench runner/temporary activation owner + measured-context builder (#1630); and the rev-9 hardware-free commissioning slice itself, `jasper/bass_extension/ladder.py` (the pure state machine to in-memory `review` with synthetic producer intake). The runner's live pre/post-limiter tap executor is not built — its CLI fails closed rather than pretend to measure — and its tap-realization contract amendment is now **accepted** (see the tap-realization row below); an accepted on-device bundle and the later production-wiring revision remain outstanding |
 | 4-taps | [limiter-tap-realization](bass-extension-waves/limiter-tap-realization.md) | **accepted 2026-07-24 (revision 6; revision 7 (errata) 2026-07-25)** — the offline-render realization of the bench campaign's pre/post-limiter taps (proof-carrying truncated configs through the deployed binary, rules R1–R10 incl. the render-vs-live cross-check), six revisions / five independent adversarial rounds to 0 Blockers / 0 Should-fixes; revision 7 is an errata pass (no rule-text changes) recording the fader-application-point/precision/`WavFile`/`queuelimit`-`target_level` citations gate-2 of the executor-binding PR independently confirmed. Scope: any bass owner whose recorded `owner_channels` are valid playback indexes — mono and stereo layouts alike (per-channel cross-check via `get_playback_peak_all`, #1735; revision 6, maintainer-directed per #1723). The executor-binding PR (gate 2 of [limiter-bench-runner-protocol](bass-extension-waves/limiter-bench-runner-protocol.md)) **passed and merged as [#1740](https://github.com/jaspercurry/JTS/pull/1740)**, so `bench/executor.py` cross-checks every owner channel through `bench/cross_check.py`. Next gated step: the operator's supervised bench campaign — which is what [#1723](https://github.com/jaspercurry/JTS/issues/1723) still tracks, its two named code unlocks (the full-channel accessor, #1735; the amendment's revision 6) both having landed |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at its own contract rev 9** (distinct from Wave 4's rev 9 above) — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
-| 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
+| 6 | wave-6 | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
 
 ### Wave 0 — Hardware prototypes (decision spikes, lab box; ~2 days; NOT Codex — needs hardware)
@@ -1647,7 +1646,7 @@ of revision 8's production-uncallable pure producer skeleton.** Merged on
 main: the pure producer (#1611); the reviewed bench runner, temporary
 target/candidate activation owner, and measured-context builder (#1630); and
 the rev-9 hardware-free commissioning slice itself,
-`jasper/bass_extension/ladder.py` — the pure state machine to in-memory
+`jasper/bass_extension/ladder.py` (since retired under ADR-0259 §3) — the pure state machine to in-memory
 `review`, the pure analysis/fit/propose/rung-verdict/ceiling/sustain-result/
 anchor decisions, strict manifest validation, silent preflight, and the
 fully injected synthetic dry run. Not yet built: the bench runner's live

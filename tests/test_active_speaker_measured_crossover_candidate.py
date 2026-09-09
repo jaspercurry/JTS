@@ -26,6 +26,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
+    candidate_room_peqs,
     compile_candidate_config,
     driver_corrections,
     effective_preset,
@@ -33,6 +34,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
+from jasper.camilla_config_contract import PeqFilter
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
@@ -55,6 +57,7 @@ def _candidate(
     linearization_outcome: str | None = None,
     trim_decision: dict | None = None,
     exclusion_evidence: dict | None = None,
+    room_correction: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -69,6 +72,8 @@ def _candidate(
         kwargs["trim_decision"] = trim_decision
     if exclusion_evidence is not None:
         kwargs["exclusion_evidence"] = exclusion_evidence
+    if room_correction is not None:
+        kwargs["room_correction"] = room_correction
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -733,6 +738,172 @@ def test_from_mapping_rejects_non_mapping_linearization():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
     assert excinfo.value.code == "linearization_malformed"
+
+
+# --- room_correction --------------------------------------------------------
+
+
+def _room_basis(**overrides: object) -> dict:
+    return {
+        "round_id": "round-7",
+        "room_median_sha256": "a" * 64,
+        "admitted_boosts_hz": [45.0],
+        **overrides,
+    }
+
+
+def _mono_side(*filters: dict) -> dict:
+    return {"mono": list(filters)}
+
+
+def _room_correction(**overrides: object) -> dict:
+    """A valid mono room set: two cuts, no boost, ceiling inside the clamp."""
+    return {
+        "sides": _mono_side(
+            {"freq": 45.0, "q": 3.0, "gain": -4.0},
+            {"freq": 120.0, "q": 2.0, "gain": -2.0},
+        ),
+        "ceiling_hz": 300.0,
+        "ceiling_source": "applied_candidate",
+        "basis": _room_basis(),
+        "boost_db_total": 0.0,
+        "level_cost_db": 0.0,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize(
+    "layout, overrides",
+    [
+        pytest.param("mono", {"sides": {"left": [], "right": []}}, id="side_key_mismatch"),
+        pytest.param(
+            "mono",
+            {"sides": _mono_side({"freq": 400.0, "q": 3.0, "gain": -4.0})},
+            id="freq_above_ceiling",
+        ),
+        pytest.param(
+            "mono",
+            {"sides": _mono_side({"freq": 15.0, "q": 3.0, "gain": -4.0})},
+            id="freq_below_band_floor",
+        ),
+        pytest.param(
+            "mono",
+            {"sides": _mono_side({"freq": 45.0, "q": 0.5, "gain": -4.0})},
+            id="q_out_of_range",
+        ),
+        pytest.param(
+            "mono",
+            {
+                "sides": _mono_side({"freq": 120.0, "q": 2.0, "gain": 2.0}),
+                "boost_db_total": 2.0,
+                "level_cost_db": 2.0,
+            },
+            id="boost_not_admitted",
+        ),
+        pytest.param(
+            "mono",
+            {
+                "sides": _mono_side({"freq": 45.0, "q": 3.0, "gain": 7.0}),
+                "boost_db_total": 7.0,
+                "level_cost_db": 7.0,
+            },
+            id="boost_over_filter_cap",
+        ),
+        pytest.param(
+            "mono",
+            {
+                "basis": _room_basis(admitted_boosts_hz=[45.0, 60.0]),
+                "sides": _mono_side(
+                    {"freq": 45.0, "q": 3.0, "gain": 4.0},
+                    {"freq": 60.0, "q": 2.0, "gain": 3.0},
+                ),
+                "boost_db_total": 7.0,
+                "level_cost_db": 7.0,
+            },
+            id="side_total_boost_over_cap",
+        ),
+        pytest.param(
+            "mono",
+            {
+                "sides": _mono_side(
+                    *({"freq": 40.0 + i, "q": 2.0, "gain": -1.0} for i in range(9))
+                )
+            },
+            id="too_many_filters_per_side",
+        ),
+        pytest.param("mono", {"ceiling_hz": 600.0}, id="ceiling_outside_clamp"),
+        pytest.param(
+            "mono",
+            {"basis": _room_basis(room_median_sha256="not-a-digest")},
+            id="malformed_sha",
+        ),
+        pytest.param(
+            "mono",
+            {"boost_db_total": 1.0, "level_cost_db": 1.0},
+            id="boost_db_total_disagrees_with_sides",
+        ),
+        pytest.param("mono", {"level_cost_db": 1.0}, id="level_cost_disagrees_with_boost"),
+        pytest.param("mono", {"window": "ungated"}, id="unknown_top_level_key"),
+        pytest.param(
+            "stereo",
+            {"sides": {
+                "left": [{"freq": 45.0, "q": 3.0, "gain": -4.0}],
+                "right": [{"freq": 45.0, "q": 3.0, "gain": -4.0}],
+            }},
+            id="a_layout_with_more_than_one_side",
+        ),
+    ],
+)
+def test_room_correction_refuses_a_set_outside_the_room_limits(layout, overrides):
+    """The persistence-boundary second check on the door's output: every room
+    limit is re-derived here, so a set that never went through the door — or
+    one edited after it did — cannot reach an apply. The stereo row is a set
+    the layout DOES declare, refused because only one side is emitted."""
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        _candidate(
+            preset=_preset(layout), room_correction=_room_correction(**overrides),
+        )
+    assert excinfo.value.code == "room_correction_invalid"
+
+
+def test_non_empty_room_correction_is_fingerprinted_and_tamper_protected():
+    preset = _preset()
+    without = _candidate(preset=preset)
+    corrected = _candidate(preset=preset, room_correction=_room_correction())
+    assert corrected.fingerprint != without.fingerprint
+
+    raw = corrected.to_dict()
+    reopened = MeasuredCrossoverCandidate.from_mapping(raw)
+    assert reopened.room_correction == _room_correction()
+    assert reopened.fingerprint == corrected.fingerprint
+
+    # Dropping one filter leaves a set that still passes every limit, so what
+    # refuses is the fingerprint, not the validator.
+    trimmed = {
+        **raw,
+        "room_correction": _room_correction(
+            sides=_mono_side({"freq": 45.0, "q": 3.0, "gain": -4.0})
+        ),
+    }
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(trimmed)
+    assert excinfo.value.code == "candidate_tampered"
+
+
+def test_candidate_room_peqs_are_the_first_declared_sides_filters():
+    candidate = _candidate(room_correction=_room_correction())
+    assert candidate_room_peqs(candidate) == (
+        PeqFilter(freq=45.0, q=3.0, gain=-4.0),
+        PeqFilter(freq=120.0, q=2.0, gain=-2.0),
+    )
+    assert candidate_room_peqs(_candidate()) == ()
+
+
+def test_from_mapping_rejects_non_mapping_room_correction():
+    raw = {**_candidate().to_dict(), "room_correction": "not-a-mapping"}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "room_correction_malformed"
 
 
 # --- effective_preset / driver_corrections: backward-compat trims-only ------

@@ -44,6 +44,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     cloud_capture_target,
 )
 from jasper.audio_measurement import gating
+from jasper.audio_measurement import snr_policy
+from jasper.audio_measurement.program_analysis.model import DRIVER_SNR_ALIGNMENT_KEY
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -60,6 +63,7 @@ from tests.crossover_v2_fixtures import (
     STAGE2_MAP,
     VERIFY_INDEX,
     _check_analysis,
+    _check_analysis_with_solves,
     _cloud_conductor,
     _conductor,
     _lock,
@@ -78,6 +82,96 @@ from tests.crossover_v2_fixtures import (
 # everyone who can ask for one; exhaustion attributes and degrades rather than
 # killing the session with copy that says "try again".
 # ===========================================================================
+
+
+@pytest.mark.parametrize("case", ["improved", "still_weak", "resume", "driver_cap", "partial_cap", "flat_ceiling", "clipped"])
+def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
+    fakes = FakeSeams()
+
+    def check(program):
+        result = _check_analysis_with_solves(program)
+        if case == "flat_ceiling":
+            plan = result.gain_plan
+            result = replace(result, gain_plan=replace(plan, role_solves={
+                role: replace(solve, flat_target_gain_db=solve.gain_db)
+                for role, solve in plan.role_solves.items()
+            }))
+        return result
+
+    def measure(program, tweeter_snr=33.7):
+        result = _measure_analysis(program)
+        responses = []
+        for response in result.driver_responses:
+            snr_db = tweeter_snr if response.role == "tweeter" else 44.2
+            block = snr_policy.band_snr_verdicts(
+                decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+                capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -70 + snr_db}],
+                noise_bands=[{"band_id": "mid", "level_dbfs": -70}],
+                noise_floor_dbfs_scalar=None, relevant_hz=(1600, 4000), model=DRIVER,
+            )
+            responses.append(replace(response, snr={DRIVER_SNR_ALIGNMENT_KEY: block}))
+        return replace(result, driver_responses=tuple(responses))
+
+    fakes.check, fakes.measure = check, measure
+    caps = {"woofer": 0.0, "tweeter": {"driver_cap": -65.0, "partial_cap": -48.0}.get(case, 0.0)}
+    banked = []
+
+    def bank(result, record):
+        if record["phase"] == PHASE_MEASURE:
+            banked.append((record, c.program_for_phase(PHASE_MEASURE).program_id))
+        return record["take_id"]
+
+    seams = replace(fakes.seams(), bank_take=bank)
+    c = _cloud_conductor(fakes, driver_caps_dbfs=caps, seams=seams)
+    assert _run_phase(c, 1, 1)["accepted"]
+    original = c.program_for_phase(PHASE_MEASURE)
+    if case == "clipped":
+        fakes.measure = lambda program: _measure_analysis(program, clipped=True)
+        clipped = _run_phase(c, 2, 2)
+        assert clipped["code"] == refusal_copy.REASON_CLIPPED
+        fakes.measure = measure
+        quieter = c.program_for_phase(PHASE_MEASURE)
+        assert quieter.segment("sweep_t").gain_db < original.segment("sweep_t").gain_db
+        assert _run_phase(c, 2, 3)["accepted"]
+        assert c.program_for_phase(PHASE_MEASURE).program_id == quieter.program_id
+        assert not c.snapshot().measure_gain_retry_used
+        return
+
+    first = _run_phase(c, 2, 2)
+    if case in {"driver_cap", "flat_ceiling"}:
+        assert first["accepted"]
+        assert c.program_for_phase(PHASE_MEASURE).program_id == original.program_id
+        assert not c.snapshot().measure_gain_retry_used
+        return
+
+    assert not first["accepted"] and first["auto_retry"] and first["kept_measurement"]
+    assert first["code"] == refusal_copy.REASON_MEASURE_GAIN_ADJUSTED
+    assert first["gain_adjustment"]["source_program_id"] == original.program_id
+    assert banked[0][1] == original.program_id and len(banked[0][0]["curves"]) == 2
+    assert not fakes.published_candidates and PHASE_MEASURE not in c.accepted_phases
+    retry = c.program_for_phase(PHASE_MEASURE)
+    assert retry.program_id != original.program_id
+    assert retry.segment("sweep_w").gain_db == original.segment("sweep_w").gain_db
+    expected_gain = -28.01 if case == "partial_cap" else -23.7
+    assert retry.segment("sweep_t").gain_db == pytest.approx(expected_gain)
+    assert first["gain_adjustment"]["next_program_id"] == retry.program_id
+    snapshot = c.snapshot()
+    assert snapshot.measure_gain_retry_used and snapshot.gain_plan_db["tweeter"] == pytest.approx(expected_gain)
+    if case == "resume":
+        c = CrossoverV2Session.hydrate(
+            snapshot, session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+            fc_hz=FC_HZ, driver_caps_dbfs=caps, session_volume_db=SESSION_VOLUME_DB,
+            seams=seams, index_phase_map=CLOUD_MAP,
+        )
+        assert c.program_for_phase(PHASE_MEASURE).program_id == retry.program_id
+    elif case == "improved":
+        fakes.measure = lambda program: measure(program, 41.0)
+    second = _run_phase(c, 2, 3)
+    assert second["accepted"] and "auto_retry" not in second
+    assert c.program_for_phase(PHASE_MEASURE).program_id == retry.program_id
+    assert len(banked) == 2 and banked[1][1] == retry.program_id
+    if case != "resume":
+        assert second["attempts"]["by_speaker"] == 1
 
 
 def test_every_retriable_reason_has_one_structured_diagnosis_source():
@@ -1195,5 +1289,3 @@ def test_capture_plan_index_phase_map_matches_the_emitted_entries():
     for entry in plan.entries:
         # Entry indexes are 0-based; the capture's own index space is 1-based.
         assert entry.kind_label == kind_for_phase[index_phase[entry.index + 1]]
-
-

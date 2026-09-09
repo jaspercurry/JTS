@@ -27,9 +27,10 @@ module's.
 """
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from typing import Mapping, Sequence
+
+from jasper.shell_env import render_shell_assignments as _render_shell_assignments
 
 from .alignment import PER_UNIT_IDENTITY_FIELDS
 
@@ -107,9 +108,8 @@ def render_shell_assignments(values: Mapping[str, str]) -> str:
     """One `KEY=quoted-value` line per pair; free text whitespace-collapsed
     onto one line here so no writer has to do it itself."""
 
-    return "".join(
-        f"{key}={shlex.quote(' '.join(value.split()))}\n"
-        for key, value in values.items()
+    return _render_shell_assignments(
+        {key: " ".join(value.split()) for key, value in values.items()}
     )
 
 

@@ -135,7 +135,7 @@ read in the tree, not inferred from a name.
   `crossover/{main,chart,cloud}.js`. A review screen is a **new envelope
   branch with new actions — zero new JS screen logic.** **Narrow claim,
   and the trap is a grep away:** the ROOM-CORRECTION wizard
-  [`deploy/assets/correction/js/main.js`](../../deploy/assets/correction/js/main.js)
+  `deploy/assets/correction/js/main.js`
   — a different page in the same directory — branches on `env.screen`
   seven times (`=== 'idle'` ×2, `!== 'idle'`, `=== 'review'`,
   `!== 'review'`, `=== 'result'` ×2) behind a `KNOWN_ENVELOPE_SCREENS`

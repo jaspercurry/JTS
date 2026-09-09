@@ -38,7 +38,7 @@ import pytest
 from jasper import env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
-from jasper.web import _common, voice_setup
+from jasper.web import _common, voice_page, voice_setup
 
 
 # ---------- Save logic -----------------------------------------------------
@@ -360,7 +360,7 @@ def _usage_db_with_cost(
 
 def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path):
     db = _usage_db_with_cost(tmp_path, 0.81)
-    status = voice_setup._read_spend_cap_status({
+    status = voice_page._read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.25",
@@ -397,7 +397,7 @@ def test_read_spend_cap_status_tuning_only_ledger_shows_dollars(tmp_path: Path):
     'Turns today' stays VOICE-only, so it reads 0 here."""
     usage_db = tmp_path / "usage.db"  # never created
     _usage_db_with_cost(tmp_path, 0.40, name="usage-tuning.db")
-    status = voice_setup._read_spend_cap_status({
+    status = voice_page._read_spend_cap_status({
         "JASPER_USAGE_DB": str(usage_db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -414,7 +414,7 @@ def test_read_spend_cap_status_turns_today_counts_voice_only(tmp_path: Path):
     figure counts only voice sessions."""
     db = _usage_db_with_cost(tmp_path, 0.10)  # 1 voice session
     _usage_db_with_cost(tmp_path, 0.05, name="usage-tuning.db")  # 1 tuning tap
-    status = voice_setup._read_spend_cap_status({
+    status = voice_page._read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -466,7 +466,7 @@ def test_index_renders_active_radio_checked_for_active_provider():
     nearby = page[idx - 200: idx + 200]
     assert "checked" in nearby
     # Title element is present so the page renders cleanly.
-    assert "<title>Voice provider</title>" in page
+    assert "<title>Voice</title>" in page
 
 
 def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
@@ -1176,7 +1176,7 @@ def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
 
 # ---------- Pricing research prompt + import (Phase 3) ----------------------
 def test_research_prompt_lists_current_models_and_schema():
-    prompt = voice_setup._pricing_research_prompt({})
+    prompt = voice_page._pricing_research_prompt({})
     assert "gpt-realtime-2" in prompt
     assert "gemini-3.1-flash-live-preview" in prompt
     assert "grok-voice-think-fast-1.0" in prompt
@@ -1191,7 +1191,7 @@ def test_research_prompt_includes_discovered_models():
         fetched_at="2026-05-30T00:00:00Z",
         models=("gpt-realtime-3",),
     )
-    prompt = voice_setup._pricing_research_prompt({"openai": snap})
+    prompt = voice_page._pricing_research_prompt({"openai": snap})
     assert "gpt-realtime-3" in prompt
 
 

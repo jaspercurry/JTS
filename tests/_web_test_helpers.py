@@ -266,7 +266,7 @@ def json_post_with_csrf(
 
 
 def assert_canonical_page(html: str) -> None:
-    """A wizard page rendered through ``_common.canonical_page`` +
+    """A wizard page rendered through ``chrome.canonical_page`` +
     ``canonical_header``: doctype, the cache-busted shared stylesheet link,
     and the shared ``.app-header`` top bar. Callers keep asserting their own
     page-specific markers (title, page CSS, body content) alongside this.
