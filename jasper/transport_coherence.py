@@ -14,7 +14,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     POST_DSP_PLAYBACK_DEVICES,
 )
-from jasper.fanin.ring_health import load_topology_for_wire, resolve_wire_for_gate
+from jasper.fanin.ring_readiness import load_topology_for_wire, resolve_wire_for_gate
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
@@ -30,19 +30,17 @@ from jasper.fanin_coupling import (
     TRANSPORT_OFF_RING,
     TRANSPORT_SHM_RING_ACTIVE,
     TransportTopology,
-    coupling_value_removed,
     dac_content_marker_contradicted,
     dac_content_ring_served,
     outputd_content_is_central_ring,
-    resolve_coupling,
     resolve_outputd_ring_path,
     resolve_ring_path,
     ring_active_endpoint_armed,
 )
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 
 
 def transport_topology_for_coupling(
-    coupling: str | None = None,
     *,
     fanin_env: Mapping[str, str] | None = None,
     outputd_env: Mapping[str, str] | None = None,
@@ -56,15 +54,11 @@ def transport_topology_for_coupling(
     constants for why the observed playback device is not the discriminator.
 
     THE FAN-IN -> CAMILLADSP HOP DOES NOT BRANCH. Since ADR-0100 it is Ring A on
-    every box: fan-in serves the ring for a ``shm_ring``, unset or empty token
-    and PARKS on anything else.
-
-    BOTH ENDS ANSWER FOR THEMSELVES, each through the predicate that owns its
-    daemon's accept set: :func:`coupling_value_removed` for fan-in and
-    :func:`outputd_bridge_is_ring` for outputd. Either one off the ring gives
-    :data:`TRANSPORT_OFF_RING`. UNDECLARED IS THE RING on both axes, so a box
-    the reconciler has not written yet resolves the ring rather than a route
-    this repo deleted.
+    every box, so only the POST-DSP end can be off the ring; outputd answers for
+    itself through :func:`outputd_content_is_central_ring`, and off-ring there
+    gives :data:`TRANSPORT_OFF_RING`. UNDECLARED IS THE RING, so a box the
+    reconciler has not written yet resolves the ring rather than a route this
+    repo deleted.
 
     ``read_saved_topology`` replaces the saved-topology read the ACTIVE width
     needs, so one pass's consumers can share a single memoized read.
@@ -76,9 +70,7 @@ def transport_topology_for_coupling(
     # declared beside a bridge is the pair outputd refuses at startup, and
     # resolving it as the healthy central ring would let /state and the doctor
     # describe a daemon that cannot run.
-    on_ring = not coupling_value_removed(coupling) and outputd_content_is_central_ring(
-        outputd_values
-    )
+    on_ring = outputd_content_is_central_ring(outputd_values)
     # The MARKER, not the observed device, selects the post-DSP shape. On an
     # armed active endpoint the post-DSP hop is the ACTIVE ring: a different
     # device, a different file, and a per-driver width the topology decides,
@@ -86,7 +78,7 @@ def transport_topology_for_coupling(
     active_endpoint = ring_active_endpoint_armed(outputd_values)
     # SERVED, not merely armed: the marker beside a DECLARED bridge is the pair
     # outputd refuses at startup, so it is not this shape. It resolves off-ring
-    # and `jasper.control.transport_park` names it under its own class.
+    # and `jasper.control.transport_eligibility` names it under its own class.
     dac_content_lane = dac_content_ring_served(outputd_values)
     # Read the saved topology ONLY where an axis actually depends on it: the
     # ACTIVE ring's width, which only the ring arm publishes. Every other axis —
@@ -219,10 +211,10 @@ class TransportCoherenceReport:
 
 def transport_coherence_report(
     *,
-    coupling: str | None = None,
     outputd_env: Mapping[str, str] | None = None,
     camilla_devices: Mapping[str, Any] | None = None,
     read_saved_topology: Callable[[], Any] | None = None,
+    allow_grouping_capture: bool = False,
 ) -> TransportCoherenceReport:
     """Return contradictions across the complete Camilla/outputd transport.
 
@@ -230,6 +222,9 @@ def transport_coherence_report(
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
     contradiction is.
+
+    ``allow_grouping_capture`` admits the paired crossover's Snapcast input.
+    Other capture devices must still match the fan-in program ring.
 
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
@@ -248,7 +243,6 @@ def transport_coherence_report(
     playback_device = str(devices.get("playback_device") or "") or None
     capture_device = str(devices.get("capture_device") or "") or None
     topology = transport_topology_for_coupling(
-        coupling,
         outputd_env=outputd_values,
         read_saved_topology=read_saved_topology,
     )
@@ -290,26 +284,11 @@ def transport_coherence_report(
             "jasper-grouping-reconcile"
         )
     elif normalized == TRANSPORT_OFF_RING:
-        # OFF-RING. Reached when either end is off the one transport, so the
-        # ring comparisons below have no ring to compare against.
-        #
-        # NO BRIDGE-VS-PLAN ERROR FOR AN UNDECLARED PAIR. Both terms answer
-        # absence with the ring, so together they say nothing about a box the
-        # reconciler has not written yet — that box is not on a second route, it
-        # is on the ring with nothing written down. Only a coupling that
-        # EXPLICITLY names the ring while outputd's bridge does not is a split,
-        # and doctor's `check_content_transport_coherence` is its evidence-based owner
-        # (it compares the LOADED GRAPH against the bridge). Reaching this shape
-        # under such a coupling already means outputd is the end that is off, so
-        # the bridge predicate is not re-run here.
-        if resolve_coupling(coupling) == COUPLING_SHM_RING:
-            errors.append(
-                f"transport plan is shm_ring but {OUTPUTD_CONTENT_BRIDGE_ENV_VAR}="
-                f"{bridge_label}; Ring A and the post-DSP ring must move together"
-            )
+        # OFF-RING. Reached when the post-DSP end is off the one transport, so
+        # the ring comparisons below have no ring to compare against.
         if playback_device == RING_ACTIVE_PLAYBACK_DEVICE:
             # BY NAME, and BEFORE the membership test below. The ACTIVE ring
-            # under an off-ring plan is the arm ladder's own step-1 state, so a
+            # under an off-ring bridge is the arm ladder's own step-1 state, so a
             # note: an error here refuses the state the next rung consumes
             # (#2285).
             #
@@ -318,12 +297,10 @@ def transport_coherence_report(
             # produced the defect.
             notes.append(
                 f"Camilla playback={playback_device!r} while this box is off the "
-                "ring is the ACTIVE-ring arm waypoint: the "
-                "graph on disk names the active ring (and Ring A on its capture "
-                "side — the coupling is end-to-end, so the re-emit moves both "
-                "halves) while outputd is still attached to the ring its "
-                "unconverged path key names. The running CamillaDSP may still be on the "
-                "previously-loaded graph, so this box goes silent at the next "
+                "ring is the ACTIVE-ring arm waypoint: the graph on disk names "
+                "the active ring while outputd is still attached to the ring its "
+                "unconverged env names. The running CamillaDSP may still be on "
+                "the previously-loaded graph, so this box goes silent at the next "
                 "CamillaDSP load and stays silent until the ladder finishes. "
                 "Complete it with `systemctl start "
                 "jasper-audio-hardware-reconcile` then "
@@ -343,22 +320,16 @@ def transport_coherence_report(
                 f"Camilla playback={playback_device!r}"
             )
     elif normalized in RING_TRANSPORT_SHAPES or normalized == TRANSPORT_DAC_CONTENT_RING:
-        # RING A, COMMON TO EVERY SHAPE THAT HAS ONE. Since ADR-0100 the fan-in
-        # hop is the same ring on the two central-ring shapes and on a bonded
-        # member, so its comparison is hoisted out of them: a graph still
-        # sourcing the snd-aloop tap reads a device nobody is writing, which is
-        # digital silence with every env and every daemon reading clean, and
-        # invisible on the channels axis because Ring A and the tap are both
-        # stereo.
-        expected_capture = str(
-            topology.fanin_to_camilla.get("camilla_capture_device") or ""
-        )
-        if capture_device and capture_device != expected_capture:
-            errors.append(
-                f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
-                f"expected {expected_capture!r}"
+        if not (allow_grouping_capture and capture_device == GROUPING_RING_PCM):
+            expected_capture = str(
+                topology.fanin_to_camilla.get("camilla_capture_device") or ""
             )
-        _compare_lane_channels(topology.fanin_to_camilla, "capture")
+            if capture_device and capture_device != expected_capture:
+                errors.append(
+                    f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
+                    f"expected {expected_capture!r}"
+                )
+            _compare_lane_channels(topology.fanin_to_camilla, "capture")
 
         # A DUMB BONDED MEMBER (:data:`TRANSPORT_DAC_CONTENT_RING`) contributes
         # only the Ring A pair above. CamillaDSP does not drive its post-DSP hop
@@ -416,7 +387,7 @@ def transport_coherence_report(
                 )
             # D5 belt-and-suspenders (wide-output-path program): an ARMED ring's
             # DECLARING ENDS must agree with the wire the resolver resolved.
-            # jasper.fanin.coupling_reconcile's ring_edge_width_ready gate
+            # jasper.fanin.ring_readiness's ring_edge_width_ready gate
             # refuses to ARM when the emitter's override path is broken; this is
             # the standing coherence check for a box already armed, and it asks
             # a different question — not "does the emitter still force the
@@ -448,7 +419,7 @@ def transport_coherence_report(
                     f"but {OUTPUTD_CONTENT_FORMAT_ENV_VAR}={outputd_format!r}; outputd "
                     "attaches Ring B demanding its own declared format, so the ends "
                     "shear and the attach fails — see ring_edge_width_ready "
-                    "(jasper.fanin.coupling_reconcile)"
+                    "(jasper.fanin.ring_readiness)"
                 )
             _compare_lane_channels(topology.camilla_to_outputd, "playback")
     return TransportCoherenceReport(errors=tuple(errors), notes=tuple(notes))

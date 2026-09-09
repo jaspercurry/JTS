@@ -667,16 +667,6 @@ impl StateServer {
                     r.held_target_frames.load(Ordering::Relaxed),
                 );
                 buf.push(',');
-                // Post-lock cushion-decay state (all inert while decay is off):
-                // enabled = startup config; active = actively decaying;
-                // demand_ppm = the live drain demand (the decontamination term
-                // subtracted from the host-clock observable, #3466);
-                // floor = the configured decay floor;
-                // frozen_reason = why decay is paused ("" while actively decaying,
-                // else unlocked / not_l0 / cascade / warmup / at_floor);
-                // refilling = the declared refill window (ADR-0214) — while it is
-                // true a railed ratio_ppm and a growing clamp_count are expected;
-                // refill_force_clears = windows the hard cap ended.
                 buf.push_str(r#""decay":{"#);
                 push_kv_bool(buf, "enabled", r.decay_enabled);
                 buf.push(',');
@@ -684,16 +674,20 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(buf, "refilling", r.decay_refilling.load(Ordering::Relaxed));
                 buf.push(',');
-                push_kv_u64(
-                    buf,
-                    "refill_force_clears",
-                    r.decay_refill_force_clears.load(Ordering::Relaxed),
-                );
-                buf.push(',');
                 let demand_ppm = r.decay_demand_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0;
                 push_kv_f64(buf, "demand_ppm", demand_ppm, 2);
                 buf.push(',');
                 push_kv_u64(buf, "floor_frames", r.decay_floor_frames);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "learned_floor_frames",
+                    r.learned_floor_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "warm_resumes", r.warm_resumes.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "backoffs", r.latency_backoffs.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_str(
                     buf,
@@ -874,6 +868,12 @@ impl StateServer {
         let ring = &self.ring;
         buf.push(',');
         buf.push_str(r#""ring":{"#);
+        push_kv_bool(
+            buf,
+            "nominal_clock",
+            ring.nominal_clock.load(Ordering::Relaxed),
+        );
+        buf.push(',');
         push_kv_str(buf, "path", &ring.path);
         buf.push(',');
         push_kv_u64(buf, "slots", ring.slots as u64);
@@ -1107,10 +1107,12 @@ mod tests {
                         decay_enabled: false,
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
+                        learned_floor_frames: Arc::new(AtomicU64::new(0)),
+                        warm_resumes: Arc::new(AtomicU64::new(0)),
+                        latency_backoffs: Arc::new(AtomicU64::new(0)),
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                         decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
                         decay_refilling: Arc::new(AtomicBool::new(false)),
-                        decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
                     muted: Arc::new(AtomicBool::new(false)),
                 },
@@ -1182,11 +1184,13 @@ mod tests {
                         decay_enabled: true,
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
+                        learned_floor_frames: Arc::new(AtomicU64::new(544)),
+                        warm_resumes: Arc::new(AtomicU64::new(0)),
+                        latency_backoffs: Arc::new(AtomicU64::new(0)),
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                         decay_demand_milli_ppm: Arc::new(AtomicI64::new(125_330)),
                         // Mid-descent, ring at the setpoint: NOT refilling.
                         decay_refilling: Arc::new(AtomicBool::new(false)),
-                        decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path
                     // tests flip this fixture's flag or drive it via mute_input_json.
@@ -1196,6 +1200,7 @@ mod tests {
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             sched_policy: libc::SCHED_FIFO,
             ring: RingObservability {
+                nominal_clock: Arc::new(AtomicBool::new(false)),
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
                 channels: 2,
@@ -1389,7 +1394,7 @@ mod tests {
         // frozen_reason.
         assert!(
             j.contains(
-                r#""decay":{"enabled":false,"active":false,"refilling":false,"refill_force_clears":0,"demand_ppm":0.00,"floor_frames":0,"frozen_reason":""}"#
+                r#""decay":{"enabled":false,"active":false,"refilling":false,"demand_ppm":0.00,"floor_frames":0,"learned_floor_frames":0,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
             ),
             "missing inactive decay block on the airplay fixture: {j}"
         );
@@ -1408,7 +1413,7 @@ mod tests {
         // an operator can see the decontamination magnitude on /state.
         assert!(
             j.contains(
-                r#""decay":{"enabled":true,"active":true,"refilling":false,"refill_force_clears":0,"demand_ppm":125.33,"floor_frames":544,"frozen_reason":""}"#
+                r#""decay":{"enabled":true,"active":true,"refilling":false,"demand_ppm":125.33,"floor_frames":544,"learned_floor_frames":544,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
             ),
             "missing active decay block (with live demand) on the direct fixture: {j}"
         );

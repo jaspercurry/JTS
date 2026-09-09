@@ -105,11 +105,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     """Report the graph selected for saved speaker intent, fail closed if unsafe.
 
     "Is the speaker parked" is answered by ``active_graph_is_parked`` and the
-    way out by ``parked_muted_exits`` — the readers ``/state`` and
+    way out by ``parked_muted_exits`` — the readers this check and
     ``jasper.control.audio_health`` consume (ADR-0233 rule 1). Asked of the
     file the safety proof classified, not of a second statefile resolution, so
-    one row never mixes two views of the disk. Deliberately narrower than those
-    two reporting surfaces in one direction: bytes carrying the parked
+    one row never mixes two views of the disk. Deliberately narrower than the
+    audio-health surface in one direction: bytes carrying the parked
     provenance marker that FAIL the structural all-muted proof are reported
     here as unsafe, never as a healthy park.
 
@@ -184,8 +184,9 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     if graph.allowed and active_graph_is_parked(graph.config_path):
         # A parked graph is intentional silence, not a broken runtime — both a
         # zero-group topology (the household must choose a layout) and an
-        # incomplete roleful layout. Either way the proof above establishes that
-        # every output is muted, so both arms below carry `speaker_silent`.
+        # incomplete roleful layout. Both arms flag `speaker_silent`
+        # without consulting jasper-control: a muted graph keeps filling
+        # periods, so no signal-path code names this silence.
         if contract.classification == CONTRACT_UNCONFIGURED or (
             contract.requires_roleful_graph
         ):
@@ -611,6 +612,8 @@ def check_active_speaker_startup_hold() -> CheckResult:
            f"not the anchor it staged ({anchor or 'unknown'}), so the hold "
            "silences nothing and /run empties at the next boot.")
         + " Roll the startup load back from http://jts.local/sound/.",
+        # Not gated on jasper-control: the held anchor graph keeps filling
+        # periods, so no signal-path code names this silence.
         speaker_silent=on_anchor,
         reason=REASON_STARTUP_HOLD_STALE,
     )

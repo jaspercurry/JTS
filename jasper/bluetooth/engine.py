@@ -32,6 +32,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
+from .adapter import BLUEZ_ERRORS
 from .handlers import pick
 from .models import (
     BluetoothActionResult,
@@ -46,15 +47,7 @@ BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
 SCAN_DBUS_TIMEOUT_SEC = 5.0
 CONNECT_TIMEOUT_S = 30.0
-SCAN_OPERATION_ERRORS = (
-    AttributeError,
-    DBusError,
-    EOFError,
-    OSError,
-    RuntimeError,
-    TypeError,
-    ValueError,
-)
+SCAN_OPERATION_ERRORS = (*BLUEZ_ERRORS, RuntimeError)
 AccessoryReconciler = Callable[[str], Awaitable[object]]
 ACCESSORY_RECONCILE_ERRORS = (OSError,)
 

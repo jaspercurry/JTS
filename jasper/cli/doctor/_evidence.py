@@ -296,8 +296,8 @@ class Evidence:
         return self.get("grouping_config", load_config)
 
     def saved_topology_for_wire(self) -> Any:
-        """Fail-soft to None; see ``fanin.ring_health.load_topology_for_wire``."""
-        from ...fanin.ring_health import load_topology_for_wire
+        """Fail-soft to None; see ``fanin.ring_readiness.load_topology_for_wire``."""
+        from ...fanin.ring_readiness import load_topology_for_wire
 
         return self.get("saved_topology_for_wire", load_topology_for_wire)
 

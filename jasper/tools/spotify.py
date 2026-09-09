@@ -605,7 +605,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         uri, resolved_kind, name = pick
 
         if stops:
-            await stop_renderers(renderer, stops)
+            await stop_renderers(stops)
         if resolved_kind == "track":
             await asyncio.to_thread(
                 sp.start_playback, device_id=device_id, uris=[uri]
@@ -779,7 +779,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             return {"error": _NOT_UNDERSTOOD}
 
         if stops:
-            await stop_renderers(renderer, stops)
+            await stop_renderers(stops)
         await asyncio.to_thread(
             sp.start_playback, device_id=device_id, context_uri=uri
         )

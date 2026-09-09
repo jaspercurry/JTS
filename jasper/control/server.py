@@ -26,18 +26,14 @@ import argparse
 import asyncio
 import concurrent.futures
 import json
-import urllib.request
 import logging
-import math
 import os
 import signal
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
@@ -49,7 +45,6 @@ if TYPE_CHECKING:
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..platform.control_client import CONTROL_PORT
-from ..atomic_io import locked_update_env_file
 from ..fanin.latency_mode import (
     options as _usb_latency_options,
     read_state as _read_usb_latency_state,
@@ -57,22 +52,13 @@ from ..fanin.latency_mode import (
 from . import (
     debug_control,
     grouping_supervisor,
+    heal_supervisor,
     shairport_supervisor,
     system_supervisor,
 )
-from ..env_load import GROUPING_ENV_FILE
-from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
-from ..service_units import read_unit_states
 from ..local_sources import local_source_audio_refresh_units
-from ..transit.state import read_state as read_transit_state
 from ..active_speaker.setup_status import read_active_speaker_setup_status
-from ..doctor_contract import (
-    REASON_REFRESH_FAILED,
-    CheckResult,
-    check_row,
-    summarize,
-)
 from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_profile_allows_voice_brain,
@@ -95,21 +81,8 @@ from ..platform.uds import (
 
 logger = logging.getLogger(__name__)
 SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
-_peering_lock = threading.Lock()
-_peering_loop: asyncio.AbstractEventLoop | None = None
-_peering_stop_requested = threading.Event()
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
-_DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
-# Ceiling on how long a start can be treated as in flight. Sized to
-# `TimeoutStartSec=600` in deploy/systemd/jasper-doctor-json.service: systemd
-# cannot leave the oneshot activating longer, so an older start is over
-# whatever became of it. Within the ceiling the authority is systemd itself
-# (`_diagnostics_unit_in_flight`), and a run that lands clears the window
-# early — see `_start_diagnostics_refresh`.
-_DIAGNOSTICS_REFRESH_WINDOW_SECONDS = 600.0
-_diagnostics_refresh_lock = threading.Lock()
-_diagnostics_refresh_started_at: float | None = None
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
 _USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
@@ -119,134 +92,6 @@ _usb_mic_leg_apply_pending: tuple[str, float] | None = None
 # ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
 # probe before either start lands.
 _aec_commission_start_lock = threading.Lock()
-
-
-def _diagnostics_unit_in_flight() -> bool:
-    """Is the doctor oneshot still running? Asked of systemd, not inferred from
-    the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
-    crashed) reopens the window on the next request instead of holding it for
-    the whole `_DIAGNOSTICS_REFRESH_WINDOW_SECONDS`.
-
-    Unreadable answers hold the window: not knowing must not become a restart
-    per request. A `oneshot` reads `activating` while it runs.
-    """
-    try:
-        proc = _run_unit_systemctl(
-            "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
-        )
-    except (subprocess.SubprocessError, OSError):
-        return True
-    if proc.returncode != 0:
-        return True
-    return (proc.stdout or "").strip() in ("activating", "active", "deactivating")
-
-
-def _start_diagnostics_refresh(
-    *,
-    snapshot_age_seconds: float | None,
-) -> tuple[bool, str]:
-    """Start the root doctor oneshot unless one this process started is
-    still running. Returns ``(refreshing, error)``, where `refreshing` is
-    true only when a start is genuinely in flight."""
-    global _diagnostics_refresh_started_at
-    now = time.monotonic()
-    with _diagnostics_refresh_lock:
-        started_at = _diagnostics_refresh_started_at
-    # A snapshot younger than the elapsed run is that run's own output: it
-    # landed, so the window is over. Systemd is asked only when the cheap
-    # checks still allow a run to be in flight, and outside the lock — the
-    # probe is a subprocess.
-    if started_at is not None:
-        elapsed = now - started_at
-        if (
-            elapsed < _DIAGNOSTICS_REFRESH_WINDOW_SECONDS
-            and (snapshot_age_seconds is None or snapshot_age_seconds > elapsed)
-            and _diagnostics_unit_in_flight()
-        ):
-            return True, ""
-    with _diagnostics_refresh_lock:
-        _diagnostics_refresh_started_at = now
-    try:
-        proc = _run_unit_systemctl(
-            "--no-block", "start", "jasper-doctor-json.service",
-        )
-        error = "" if proc.returncode == 0 else (
-            "diagnostics refresh unavailable: "
-            + (proc.stderr or "").strip()[:300]
-        )
-    except (subprocess.SubprocessError, OSError) as e:
-        error = f"diagnostics refresh failed: {e}"
-    if error:
-        with _diagnostics_refresh_lock:
-            _diagnostics_refresh_started_at = None
-    return not error, error
-
-
-def _diagnostics_placeholder_result(
-    *,
-    detail: str,
-    status: str,
-    reason: str,
-    refreshing: bool,
-) -> dict[str, Any]:
-    result = CheckResult("jasper-doctor", status, detail, reason=reason)
-    counts = summarize([result])
-    return {
-        "fails": counts["fails"],
-        "warns": counts["warns"],
-        "generated_at_epoch": None,
-        "duration_sec": None,
-        "cache_age_seconds": None,
-        "stale": True,
-        "refreshing": refreshing,
-        "results": [check_row(result)],
-    }
-
-
-def _append_diagnostics_refresh_failure(
-    body: dict[str, Any],
-    refresh_error: str,
-) -> None:
-    row = check_row(CheckResult(
-        "jasper-doctor refresh",
-        "fail",
-        refresh_error,
-        reason=REASON_REFRESH_FAILED,
-    ))
-    results = body.get("results")
-    if isinstance(results, list):
-        results.append(row)
-    else:
-        body["results"] = [row]
-    try:
-        body["fails"] = int(body.get("fails", 0)) + 1
-    except (TypeError, ValueError):
-        body["fails"] = 1
-    body["refresh_error"] = refresh_error
-
-
-def _read_diagnostics_snapshot(
-    result_path: str,
-    *,
-    ttl_seconds: float,
-) -> tuple[dict[str, Any] | None, str]:
-    try:
-        stat = os.stat(result_path)
-        with open(result_path, encoding="utf-8") as f:
-            body = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        return None, str(e)
-    if not isinstance(body, dict):
-        return None, "diagnostics result was not a JSON object"
-    generated_at = body.get("generated_at_epoch")
-    if not isinstance(generated_at, (int, float)):
-        generated_at = stat.st_mtime
-        body["generated_at_epoch"] = generated_at
-    age = max(0.0, time.time() - generated_at)
-    body["cache_age_seconds"] = round(age, 3)
-    body["stale"] = age > ttl_seconds
-    body.setdefault("refreshing", False)
-    return body, ""
 
 
 # Streambox is the restricted profile: these are the management + audio
@@ -616,19 +461,10 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
-    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
-    transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
-    service_states_snapshot: (
-        Callable[[], dict[str, dict[str, Any]]] | None
-    ) = None,
 ) -> dict[str, Any]:
-    extra: dict[str, Any] = {}
-    if transport_park_snapshot is not None:
-        extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
-        service_states_snapshot=service_states_snapshot,
         airplay_playing_snapshot=airplay_playing_snapshot,
         audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,
@@ -637,10 +473,6 @@ async def _get_state(
         voice_socket_command=_voice_socket_command,
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
-        aec_full_status=_aec_endpoints._aec_full_status,
-        read_transit_state_func=read_transit_state,
-        ha_status_snapshot=ha_status_snapshot,
-        **extra,
     )
 
 
@@ -675,556 +507,6 @@ async def _dispatch_transport(action: str) -> dict:
     )
 
 
-# ---------- peering daemon supervisor ----------
-
-# The peering daemon runs an asyncio event loop; jasper-control is stdlib
-# threaded HTTP. One background daemon thread owns that loop.
-_peering_thread: threading.Thread | None = None
-
-
-def _run_peering_loop() -> None:
-    """Background thread target: own an asyncio loop and run the PeeringDaemon."""
-    global _peering_loop, _peering_thread
-    # lazy: import cost — these load on this thread rather than on
-    # jasper-control's startup import path.
-    from ..peering import load_config
-    from ..peering.daemon import PeeringDaemon
-
-    cfg = load_config()
-    if not cfg.enabled:
-        log_event(
-            logger,
-            "peering.thread.exit",
-            mode=cfg.mode.value,
-            note="daemon will not start",
-        )
-        with _peering_lock:
-            if _peering_thread is threading.current_thread():
-                _peering_thread = None
-        return
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    daemon = PeeringDaemon(cfg)
-    with _peering_lock:
-        _peering_loop = loop
-    try:
-        loop.run_until_complete(daemon.start())
-        if _peering_stop_requested.is_set():
-            loop.call_soon(loop.stop)
-        loop.run_forever()
-    except Exception:  # noqa: BLE001
-        logger.exception("peering daemon thread crashed")
-    finally:
-        try:
-            loop.run_until_complete(daemon.stop())
-        except Exception:  # noqa: BLE001
-            logger.exception("peering daemon stop failed")
-        try:
-            loop.close()
-        except Exception:  # noqa: BLE001
-            pass
-        with _peering_lock:
-            if _peering_loop is loop:
-                _peering_loop = None
-            if _peering_thread is threading.current_thread():
-                _peering_thread = None
-            _peering_stop_requested.clear()
-
-
-def start_peering_daemon_if_enabled() -> None:
-    """Start the background thread that runs the peering daemon. Idempotent.
-
-    The thread starts unconditionally; it reads
-    /var/lib/jasper/peering.env and exits immediately when peering is
-    disabled.
-    """
-    global _peering_thread
-    if _peering_thread is not None:
-        return
-    _peering_stop_requested.clear()
-    _peering_thread = threading.Thread(
-        target=_run_peering_loop,
-        name="peering-daemon",
-        daemon=True,
-    )
-    _peering_thread.start()
-
-
-def stop_peering_daemon(*, timeout: float = 5.0) -> None:
-    """Stop the background peering loop so daemon.stop() can unpublish mDNS."""
-    with _peering_lock:
-        thread = _peering_thread
-        loop = _peering_loop
-    if thread is None:
-        return
-    _peering_stop_requested.set()
-    if loop is not None and not loop.is_closed():
-        loop.call_soon_threadsafe(loop.stop)
-    if thread is threading.current_thread():
-        return
-    thread.join(timeout=timeout)
-    if thread.is_alive():
-        log_event(
-            logger,
-            "peering.thread.stop_timeout",
-            timeout=f"{timeout:.1f}",
-            level=logging.WARNING,
-        )
-
-
-# Forwarded pair action requests carry this header; its presence stops a
-# second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
-_PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
-_GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
-    "/run/jasper-control/grouping-reconcile-trailing-delay"
-)
-_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS = 60.0
-_VOICE_UNIT = "jasper-voice.service"
-_VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
-    "activating",
-    "deactivating",
-    "reloading",
-})
-# Bounds the /mic request this read sits on; a wedged systemd must not hold it.
-_VOICE_UNIT_SHOW_TIMEOUT_SECONDS = 1.0
-
-# Patch seam scoping a test double to the forward's ONE network call;
-# patching stdlib urllib.request.urlopen would also intercept the test
-# driver's own HTTP client.
-_pair_urlopen = urllib.request.urlopen
-
-
-def _pair_follower_leader_addr() -> str | None:
-    """The leader's handle when THIS speaker is an active bonded follower,
-    else None. One tiny env-file read per call (multiroom.config.load_config
-    — never the runtime derive with its systemctl/RPC probes: this gates
-    every /volume request). The predicate is the shared effective-role
-    reader, so a refused bond that safely landed solo does not forward local
-    controls to the requested leader."""
-    from ..multiroom.config import load_config
-    from ..multiroom.effective_role import effective_follower_leader_addr
-
-    return effective_follower_leader_addr(load_config())
-
-
-def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
-    return {
-        "status": "parked",
-        "reason": "bonded_follower",
-        "available": False,
-        "muted": True,
-        "pair_leader": leader,
-        "message": "Paired — the assistant listens on the pair leader",
-    }
-
-
-def _voice_starting_mic_payload() -> dict[str, Any] | None:
-    """Return a first-class /mic payload while jasper-voice is in flight.
-
-    The voice daemon creates its UDS socket late in startup, so during a
-    restart/provider switch/unbond a missing socket means "not ready yet",
-    not "offline". The distinction is drawn here so the landing page stays a
-    dumb renderer of /mic state.
-    """
-    states = read_unit_states((_VOICE_UNIT,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS)
-    record = (states or {}).get(_VOICE_UNIT) or {}
-    active_state = str(record.get("active_state") or "")
-    if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
-        return None
-    return {
-        "status": "starting",
-        "reason": "voice_daemon_starting",
-        "available": False,
-        "muted": True,
-        "message": "Voice control is restarting",
-        "unit": {
-            "name": _VOICE_UNIT,
-            "active_state": active_state,
-            "sub_state": record.get("sub_state"),
-            "result": record.get("result"),
-        },
-    }
-
-
-def _voice_offline_mic_payload(error: str) -> dict[str, Any]:
-    return {
-        "status": "offline",
-        "reason": "voice_daemon_unreachable",
-        "available": False,
-        "muted": True,
-        "message": "Voice control offline",
-        "error": error,
-    }
-
-
-def _launch_grouping_reconciler_kick(reason: str) -> None:
-    log_event(
-        logger,
-        "grouping.reconciler_kick",
-        reason=reason,
-    )
-    subprocess.Popen(
-        [grouping_supervisor.RECONCILE_KICK_HELPER],
-    )
-
-
-def _cancel_grouping_reconciler_trailing_service() -> None:
-    try:
-        subprocess.Popen(
-            [
-                "systemctl",
-                "stop",
-                "--no-block",
-                _GROUPING_RECONCILE_TRAILING_UNIT,
-            ],
-        )
-    except OSError:
-        logger.debug("grouping reconciler trailing service cancel failed", exc_info=True)
-
-
-def _write_grouping_reconciler_trailing_delay(delay_s: float) -> None:
-    delay_seconds = max(
-        0,
-        min(
-            math.ceil(delay_s),
-            math.ceil(_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS),
-        ),
-    )
-    path = Path(_GROUPING_RECONCILE_TRAILING_DELAY_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{delay_seconds}\n", encoding="ascii")
-
-
-def _arm_grouping_reconciler_trailing_service(delay_s: float) -> None:
-    _write_grouping_reconciler_trailing_delay(delay_s)
-    subprocess.run(
-        [
-            "systemctl",
-            "restart",
-            "--no-block",
-            _GROUPING_RECONCILE_TRAILING_UNIT,
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-class _ThreadingTrailingKickHandle:
-    def __init__(
-        self,
-        delay_s: float,
-        callback: Callable[[], None],
-        timer_factory: Callable[[float, Callable[[], None]], Any],
-    ) -> None:
-        self._timer = timer_factory(delay_s, callback)
-        self._timer.daemon = True
-        self._timer.start()
-
-    def cancel(self) -> None:
-        self._timer.cancel()
-
-
-class _SystemdServiceTrailingKickHandle:
-    def __init__(
-        self,
-        delay_s: float,
-        mark_applied: Callable[[], None],
-        timer_factory: Callable[[float, Callable[[], None]], Any],
-    ) -> None:
-        _arm_grouping_reconciler_trailing_service(delay_s)
-        mark_timer = timer_factory(delay_s, mark_applied)
-        mark_timer.daemon = True
-        mark_timer.start()
-        self._mark_timer = mark_timer
-
-    def cancel(self) -> None:
-        self._mark_timer.cancel()
-        _cancel_grouping_reconciler_trailing_service()
-
-
-def _schedule_grouping_reconciler_trailing_kick(
-    delay_s: float,
-    run_trailing: Callable[[], None],
-    mark_applied: Callable[[], None],
-    *,
-    timer_factory: Callable[[float, Callable[[], None]], Any] = threading.Timer,
-) -> _SystemdServiceTrailingKickHandle | _ThreadingTrailingKickHandle:
-    try:
-        handle = _SystemdServiceTrailingKickHandle(
-            delay_s,
-            mark_applied,
-            timer_factory,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        log_event(
-            logger,
-            "grouping.reconciler_trailing_schedule_fallback",
-            delay_s=f"{delay_s:.3f}",
-            scheduler="threading.Timer",
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return _ThreadingTrailingKickHandle(delay_s, run_trailing, timer_factory)
-
-    log_event(
-        logger,
-        "grouping.reconciler_trailing_scheduled",
-        delay_s=f"{delay_s:.3f}",
-        scheduler="systemd-service",
-        unit=_GROUPING_RECONCILE_TRAILING_UNIT,
-    )
-    return handle
-
-
-class _GroupingReconcilerKickCoalescer:
-    """Leading-edge rate limit with a trailing guarantee for /grouping/set.
-
-    The HTTP handler writes grouping.env before calling this, and the oneshot
-    reconciler re-reads grouping.env when it finally runs, so the last write
-    wins without restarting outputd for every trim/delay sweep step.
-    The packaged trailing service survives a jasper-control restart.
-    """
-
-    def __init__(
-        self,
-        *,
-        cooldown_s: float,
-        launch: Callable[[str], None],
-        clock: Callable[[], float] = time.monotonic,
-        trailing_scheduler: Callable[
-            [float, Callable[[], None], Callable[[], None]],
-            Any,
-        ] = _schedule_grouping_reconciler_trailing_kick,
-        cancel_external_trailing: Callable[
-            [], None
-        ] = _cancel_grouping_reconciler_trailing_service,
-    ) -> None:
-        self._cooldown_s = float(cooldown_s)
-        self._launch = launch
-        self._clock = clock
-        self._trailing_scheduler = trailing_scheduler
-        self._cancel_external_trailing = cancel_external_trailing
-        self._lock = threading.Lock()
-        self._last_kick_at: float | None = None
-        self._trailing_handle: Any | None = None
-
-    def reset_for_tests(self) -> None:
-        with self._lock:
-            if self._trailing_handle is not None:
-                self._trailing_handle.cancel()
-            self._trailing_handle = None
-            self._last_kick_at = None
-
-    def kick(self) -> None:
-        """Kick now if the cooldown is clear, else arm one trailing kick."""
-        reason: str | None = None
-        launched_at: float | None = None
-        with self._lock:
-            now = self._clock()
-            elapsed = (
-                None if self._last_kick_at is None else now - self._last_kick_at
-            )
-            if elapsed is None or elapsed >= self._cooldown_s:
-                if self._trailing_handle is not None:
-                    self._trailing_handle.cancel()
-                    self._trailing_handle = None
-                else:
-                    self._cancel_external_trailing()
-                self._last_kick_at = now
-                launched_at = now
-                reason = "leading"
-            else:
-                remaining = max(0.0, self._cooldown_s - elapsed)
-                if self._trailing_handle is None:
-                    self._trailing_handle = self._trailing_scheduler(
-                        remaining,
-                        self._run_trailing,
-                        self._mark_trailing_applied,
-                    )
-                    log_event(
-                        logger,
-                        "grouping.reconciler_kick_coalesced",
-                        delay_s=f"{remaining:.3f}",
-                        cooldown_s=f"{self._cooldown_s:.3f}",
-                    )
-                else:
-                    log_event(
-                        logger,
-                        "grouping.reconciler_kick_already_pending",
-                        cooldown_s=f"{self._cooldown_s:.3f}",
-                        level=logging.DEBUG,
-                    )
-                return
-        assert reason is not None
-        try:
-            self._launch(reason)
-        except OSError:
-            with self._lock:
-                if (
-                    launched_at is not None
-                    and self._last_kick_at == launched_at
-                    and self._trailing_handle is None
-                ):
-                    self._last_kick_at = None
-            raise
-
-    def _run_trailing(self) -> None:
-        with self._lock:
-            self._trailing_handle = None
-            self._last_kick_at = self._clock()
-        try:
-            self._launch("trailing")
-        except OSError:
-            logger.exception("grouping reconciler trailing kick failed")
-
-    def _mark_trailing_applied(self) -> None:
-        with self._lock:
-            self._trailing_handle = None
-            self._last_kick_at = self._clock()
-
-
-_grouping_reconciler_kick_coalescer = _GroupingReconcilerKickCoalescer(
-    cooldown_s=_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS,
-    launch=_launch_grouping_reconciler_kick,
-)
-
-
-def _reset_grouping_reconciler_kick_coalescer_for_tests() -> None:
-    _grouping_reconciler_kick_coalescer.reset_for_tests()
-
-
-def _kick_grouping_reconciler() -> None:
-    """Apply a persisted grouping change through jasper-grouping-reconcile.
-
-    The reconciler is the single applier of snapcast state and outputd grouping
-    env. A fixed helper performs a blocking ``systemctl start`` so an active
-    Type=oneshot pass drains before one fresh pass launches. Rapid
-    /grouping/set bursts coalesce, and a skipped kick always arms one trailing
-    retry, so the final grouping.env write is always applied.
-    """
-    _grouping_reconciler_kick_coalescer.kick()
-
-
-def _is_trim_only_grouping_change(before: GroupingConfig, after: GroupingConfig) -> bool:
-    """True when the persisted grouping diff is only pair-balance trim."""
-    return (
-        before.enabled
-        and after.enabled
-        and before.error is None
-        and after.error is None
-        and before.role == after.role
-        and before.channel == after.channel
-        and before.bond_id == after.bond_id
-        and before.leader_addr == after.leader_addr
-        and before.buffer_ms == after.buffer_ms
-        and before.codec == after.codec
-        and before.client_latency_ms == after.client_latency_ms
-        and math.isclose(before.left_delay_ms, after.left_delay_ms, abs_tol=0.0005)
-        and math.isclose(before.right_delay_ms, after.right_delay_ms, abs_tol=0.0005)
-        and before.peer_addr == after.peer_addr
-        and before.peer_name == after.peer_name
-        and before.roster == after.roster
-        and not math.isclose(before.trim_db, after.trim_db, abs_tol=0.0005)
-    )
-
-
-@dataclass(frozen=True)
-class _GroupingOptionalFields:
-    trim_db: float | None
-    client_latency_ms: int | None
-    left_delay_ms: float | None
-    right_delay_ms: float | None
-
-
-def _parse_grouping_optional_fields(
-    body: dict[str, Any],
-) -> tuple[_GroupingOptionalFields | None, str | None]:
-    """Parse optional ``/grouping/set`` scalars without HTTP side effects.
-
-    Fields intentionally retain Python ``int``/``float`` coercion.
-    """
-    parsed: dict[str, Any] = {}
-    for key, caster, error in (
-        ("trim_db", float, "trim_db must be a number"),
-        (
-            "client_latency_ms",
-            int,
-            "client_latency_ms must be an integer",
-        ),
-        ("left_delay_ms", float, "left_delay_ms must be a number"),
-        ("right_delay_ms", float, "right_delay_ms must be a number"),
-    ):
-        if key not in body:
-            continue
-        try:
-            parsed[key] = caster(body[key])
-        except (TypeError, ValueError):
-            return None, error
-
-    return _GroupingOptionalFields(
-        trim_db=parsed.get("trim_db"),
-        client_latency_ms=parsed.get("client_latency_ms"),
-        left_delay_ms=parsed.get("left_delay_ms"),
-        right_delay_ms=parsed.get("right_delay_ms"),
-    ), None
-
-
-def _write_grouping(
-    *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
-    trim_db: "float | None" = None,
-    client_latency_ms: "int | None" = None,
-    left_delay_ms: "float | None" = None,
-    right_delay_ms: "float | None" = None,
-    peer_addr: "str | None" = None,
-    peer_name: "str | None" = None,
-    roster: "str | None" = None,
-) -> None:
-    """Persist a grouping role into the wizard-owned grouping.env.
-
-    Read-modify-write (via locked_update_env_file) so operator-tuned
-    JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
-    single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
-    the single READER->action. The endpoint that calls this (/grouping/set) is
-    token-gated; the cross-device bond-forming flow — one speaker POSTing to
-    another's :PORT/grouping/set — authenticates with the household
-    credential.
-    """
-    updates = {
-        "JASPER_GROUPING": "on" if enabled else "off",
-        "JASPER_GROUPING_ROLE": role,
-        "JASPER_GROUPING_CHANNEL": channel,
-        "JASPER_GROUPING_BOND_ID": bond_id,
-        "JASPER_GROUPING_LEADER_ADDR": leader_addr,
-    }
-    if trim_db is not None:
-        # Settable like the role fields, preserved like codec when the
-        # caller omits it. Existing-bond structural edits omit trim so a
-        # calibrated balance survives role/channel changes; fresh bond and
-        # unbond flows send trim=0 to clear stale balance state.
-        updates["JASPER_GROUPING_TRIM_DB"] = f"{trim_db:.1f}"
-    if client_latency_ms is not None:
-        updates["JASPER_GROUPING_CLIENT_LATENCY_MS"] = str(int(client_latency_ms))
-    if left_delay_ms is not None:
-        updates["JASPER_GROUPING_LEFT_DELAY_MS"] = f"{left_delay_ms:.3f}"
-    if right_delay_ms is not None:
-        updates["JASPER_GROUPING_RIGHT_DELAY_MS"] = f"{right_delay_ms:.3f}"
-    # Peer and roster (leader only): same preserved-when-omitted contract as
-    # trim, and an EXPLICIT empty string clears — the bond flow clears both on
-    # non-leader members so a role flip can't leave a stale roster behind.
-    if peer_addr is not None:
-        updates["JASPER_GROUPING_PEER_ADDR"] = peer_addr
-    if peer_name is not None:
-        updates["JASPER_GROUPING_PEER_NAME"] = peer_name
-    # `roster` is the already SERIALIZED env string (callers build it via
-    # config.format_roster).
-    if roster is not None:
-        updates["JASPER_GROUPING_ROSTER"] = roster
-    locked_update_env_file(GROUPING_ENV_FILE, updates, mode=0o644)
-
-
-
 def _make_handler(
     camilla_host: str,
     camilla_port: int,
@@ -1240,6 +522,7 @@ def _make_handler(
         AecRoutes,
         GroupingRoutes,
         MeasurementRoutes,
+        PeeringRoutes,
         SystemRoutes,
         VoiceRoutes,
         VolumeRoutes,
@@ -1352,6 +635,7 @@ def _make_handler(
         AecRoutes,
         GroupingRoutes,
         MeasurementRoutes,
+        PeeringRoutes,
         SystemRoutes,
     ):
         _adjust_op = staticmethod(handler_adjust_op)
@@ -1554,106 +838,6 @@ def _make_handler(
                 "muted": bool(state.muted),
                 "restore_percent": state.restore_percent,
             }
-
-        def _maybe_forward_pair_action_to_leader(self) -> bool:
-            """Bonded-follower pair-action proxy. Returns True when the request
-            was handled (forwarded or rejected) and the caller must stop.
-
-            Used by the four /volume* handlers, /transport/*, and
-            /source/select — every surface where a bonded follower's local
-            action must target the PAIR. While this speaker is an ACTIVE
-            bonded follower its local volume knobs are INERT: bonded content
-            bypasses the local CamillaDSP entirely (the leader's one Camilla
-            bakes the program). So those requests are forwarded verbatim to
-            the leader's control API and its answer relayed, and every
-            member's volume surface controls the PAIR volume. Solo and leader
-            requests never enter this path; the grouping read is one tiny
-            env-file parse (load_config), NOT the heavy runtime derive — this
-            sits on every volume call.
-            """
-            leader = _pair_follower_leader_addr()
-            if leader is None:
-                return False
-            # Loop breaker: a forwarded request never re-forwards. Two
-            # speakers misconfigured as each other's follower would
-            # otherwise ping-pong until a timeout stack built up.
-            if self.headers.get(_PAIR_FORWARD_HEADER):
-                # Drain any body before responding so connection state stays
-                # sane if keep-alive is ever enabled (HTTP/1.0 today).
-                try:
-                    stale = int(self.headers.get("Content-Length", "0"))
-                except ValueError:
-                    stale = 0
-                if self.command == "POST" and stale > 0:
-                    self.rfile.read(stale)
-                self._send_json(
-                    {"error": "pair forward loop (both speakers are "
-                              "followers?)", "pair_leader": leader},
-                    status=502,
-                )
-                return True
-            body: bytes | None = None
-            if self.command == "POST":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                except ValueError:
-                    length = 0
-                body = self.rfile.read(length) if length > 0 else b"{}"
-            url = "http://{}:{}{}".format(
-                leader, self.server.server_address[1], self.path,
-            )
-            req = urllib.request.Request(
-                url,
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    _PAIR_FORWARD_HEADER: "1",
-                },
-                method=self.command,
-            )
-            try:
-                with _pair_urlopen(req, timeout=2.5) as resp:
-                    payload = json.loads(resp.read().decode())
-            except urllib.error.HTTPError as e:
-                # The leader ANSWERED — relay its status + JSON body verbatim.
-                # Collapsing a 400 invalid-body reject into "unreachable"
-                # would report a responding speaker as offline.
-                try:
-                    relayed = json.loads(e.read().decode())
-                except Exception:  # noqa: BLE001 — non-JSON error body
-                    relayed = {"error": f"pair leader error: {e}"}
-                if isinstance(relayed, dict):
-                    relayed.setdefault("pair_leader", leader)
-                log_event(
-                    logger,
-                    "pair.action_forward_rejected",
-                    leader=leader,
-                    path=self.path,
-                    status=e.code,
-                    level=logging.WARNING,
-                )
-                self._send_json(relayed, status=e.code)
-                return True
-            except Exception as e:  # noqa: BLE001 — transport failure: 502
-                log_event(
-                    logger,
-                    "pair.action_forward_failed",
-                    leader=leader,
-                    path=self.path,
-                    error=str(e),
-                    level=logging.WARNING,
-                )
-                self._send_json(
-                    {"error": f"pair leader unreachable: {e}",
-                     "pair_leader": leader},
-                    status=502,
-                )
-                return True
-            if isinstance(payload, dict):
-                # Additive marker so UIs can label the slider "pair volume".
-                payload.setdefault("pair_leader", leader)
-            self._send_json(payload)
-            return True
 
         # --- routes ---
         #
@@ -2061,11 +1245,14 @@ def main(argv: list[str] | None = None) -> int:
     # non-fatal (logged): callers fall back to their fail-soft "restart didn't
     # happen, logged" behaviour.
     restart_broker_server = restart_broker.start_broker()
-    # Multi-device peering daemon. The worker thread always starts; it
-    # reads /var/lib/jasper/peering.env and returns immediately (no
-    # asyncio loop, no multicast socket) when JASPER_PEERING=off
-    # — the default. The /sound/pair/ Speakers page writes that env file and
-    # restarts jasper-control to pick up the new mode.
+    # Multi-device peering daemon. The coroutine always starts; it reads
+    # /var/lib/jasper/peering.env and returns immediately (no multicast
+    # socket) when JASPER_PEERING=off — the default. The /sound/pair/
+    # Speakers page writes that env file and restarts jasper-control to
+    # pick up the new mode.
+    # lazy: import cost — handlers/ loads every route mixin
+    from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
+
     start_peering_daemon_if_enabled()
     # Protocol-level liveness probe so a wedged shairport-sync AP2 control
     # plane recovers without manual intervention. Off via
@@ -2083,12 +1270,13 @@ def main(argv: list[str] | None = None) -> int:
     # Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
-    # Multiroom cascade timeline: scans structured journal events into a small
-    # /state ring so restart chains are reconstructable without fetching raw
-    # logs first. Solo-gated (no journalctl scan when no bond is configured)
-    # and off via JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
-    from ..multiroom import cascade_timeline
-    cascade_timeline.start_sampler()
+    # The two silences every unit state calls healthy: a dead audio path with
+    # every unit active, and a reachable voice daemon that has heard no wake
+    # word in a day. It observes only — it logs `event=heal.would_act` and
+    # calls nothing (ADR-0271).
+    heal_supervisor.start_supervisor(
+        audio_health_sampler, voice_socket_path=args.voice_socket,
+    )
     # Runtime debug toggle: clear an expired session left on disk, or re-arm
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.

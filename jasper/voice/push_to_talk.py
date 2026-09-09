@@ -20,7 +20,7 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from ..audio_io import MicCapture
+from ..mic_capture import MicCapture
 
 logger = logging.getLogger("jasper.voice_daemon")
 

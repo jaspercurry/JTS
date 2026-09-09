@@ -283,7 +283,6 @@ safety = "voice-runtime"
 code = [
   "jasper/conversation_history.py",
   "jasper/web/chat_setup.py",
-  "jasper/control/state_aggregate.py",
   "jasper/cli/doctor/web.py",
   "deploy/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
@@ -306,7 +305,8 @@ id = "voice-runtime-and-providers"
 title = "Voice runtime, provider switching, prompts, and tools"
 safety = "voice-runtime"
 code = [
-  "jasper/audio_io.py",
+  "jasper/mic_capture.py",
+  "jasper/tts_playout.py",
   "jasper/tts_routing.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
@@ -328,7 +328,7 @@ code = [
 docs = [
   # Cross-cutting extensibility lens (the Tool + Feature contracts live here):
   "docs/extensibility.md",
-  # Mic presence-gate: a jasper-voice.service / audio_io / daemon_main change
+  # Mic presence-gate: a jasper-voice.service / mic_capture / daemon_main change
   # near the no-mic park path must route here (ConditionPathExists marker +
   # exit-66 park + the cross-component convergence model).
   # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
@@ -512,7 +512,7 @@ requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
-  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py tests/test_dsp_apply.py",
+  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_tts_playout.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py tests/test_dsp_apply.py",
 ]
 
 [[subsystem]]
@@ -666,13 +666,11 @@ code = [
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
-  # The composite gadget adds a small additive `usb_network` /state block to
-  # that file, but the file is a multi-block aggregator already owned by
-  # conversation-history (/state.chat), volume-and-sound (/state.audio), and
-  # resilience-and-system-dashboard (/state.resilience). Routing the whole
-  # aggregator here too would spuriously flag AGENTS.md on every
-  # unrelated /state change; a real change to the usb_network block co-occurs
-  # with the gadget scripts/units/doctor globs above and still routes here.
+  # The file is a multi-block aggregator already owned by volume-and-sound
+  # (/state.audio) and resilience-and-system-dashboard (/state.resilience).
+  # Routing the whole aggregator here too would spuriously flag AGENTS.md on
+  # every unrelated /state change; a real usb-network change still routes
+  # here via the gadget scripts/units/doctor globs above.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
 ]
 docs = [
@@ -682,7 +680,7 @@ requires_docs_when = [
   "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
-  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_state_usb_network.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
+  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
 ]
 
 [[subsystem]]

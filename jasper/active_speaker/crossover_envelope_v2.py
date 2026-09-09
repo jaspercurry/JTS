@@ -40,6 +40,7 @@ from typing import Any, Mapping
 
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
+from .frequency_display import prepare_frequency_curve
 from .angle_capture import AngleCaptureRequest, walk_price
 from .angle_capture_spool import peek_staged_angle_request
 from .attempts_loop import (
@@ -3203,37 +3204,7 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
 
 
 def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
-    """PR-7's chart-feed projection of the durable ``cloud`` block — the ONE
-    thing :func:`compact_cloud_status` deliberately withholds: the decimated
-    combined curve a before/after chart draws. Everything else the chart
-    needs (the tolerance corridor's ``reference_db``/``tolerance_db``, the
-    carve-out disclosure) already rides the compact block, so duplicating it
-    here would be a second, driftable copy of the same numbers — this key
-    carries only what genuinely has no other home.
-
-    **What the key-level separation from ``compact_cloud_status`` does and
-    does not buy (review S-1 correction, 2026-07-27).** Both projections ride
-    the SAME returned dict (the adapter's) and therefore
-    the same HTTP response — ``/sound/speaker/crossover/status`` and this
-    module's envelope both carry ``cloud`` AND ``cloud_chart`` together, so
-    splitting the KEY does **not** shrink that response's byte count (an
-    earlier version of this and two sibling comments overclaimed exactly
-    that — "never pay" was wrong for this endpoint, which does carry both).
-    What the split buys is narrower: a consumer that reads ONLY ``cloud`` —
-    the doctor (:func:`~jasper.cli.doctor.correction.check_crossover_v2_cloud_pipeline`),
-    and any future reader of the compact projection alone — never has to
-    parse or skip over curve-shaped data mixed into that key's own shape.
-    See :data:`CHART_CURVE_MAX_JSON_POINTS` above for the actual byte-cost
-    mitigation (halving this key's own resolution), which is the fix that
-    matters for the endpoint's total size.
-
-    Same per-phase presence and ``None``-means-unavailable rules as
-    :func:`compact_cloud_status` (mirrored rather than shared because the two
-    projections serve different consumers and have no other logic in common):
-    a phase key is present whenever the durable block has one, ``curve`` is
-    ``None`` until the pipeline becomes available, and it is never a
-    fabricated empty curve.
-    """
+    """Bounded live curves using the shared display projection; absent curves stay None."""
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
@@ -3249,6 +3220,13 @@ def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                 curve = decimate_curve_for_chart(
                     raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"),
                 )
+                spec = pipeline.get("spec")
+                if curve is not None:
+                    curve = prepare_frequency_curve({**curve, "band_hz": raw_curve.get("band_hz")}, {
+                        **pipeline,
+                        "reference_db": spec.get("reference_db") if isinstance(spec, Mapping) else None,
+                        "excluded_bands_hz": pipeline.get("merged_excluded_bands_hz"),
+                    })
         out[str(phase)] = {"curve": curve}
     return out or None
 
@@ -3306,15 +3284,16 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
     if not isinstance(priors, Mapping):
         return None
     raw_curve = priors.get("predicted_sum")
-    curve = (
-        decimate_curve_for_chart(
-            raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"),
-        )
-        if isinstance(raw_curve, Mapping)
-        else None
-    )
     spec = priors.get("predicted_spec")
     spec = spec if isinstance(spec, Mapping) else {}
+    curve = None
+    if isinstance(raw_curve, Mapping):
+        curve = decimate_curve_for_chart(raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"))
+        if curve is not None:
+            curve = prepare_frequency_curve(
+                {**curve, "band_hz": raw_curve.get("band_hz")},
+                {**spec, "excluded_bands_hz": spec.get("excluded_intervals")},
+            )
     if curve is None and not spec:
         return None
     bands = spec.get("bands")

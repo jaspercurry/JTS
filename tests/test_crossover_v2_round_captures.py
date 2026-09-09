@@ -13,17 +13,21 @@ answers; what is pinned here is the loader.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import round_captures
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     discover_captures,
     doc_pose_key,
+    select_capture,
 )
+from jasper.audio_measurement.bundles import sha256_file
 from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
 
 PEAK_IDX = 480
@@ -46,15 +50,53 @@ def _write_round(root: Path, *, poses: int = 2, curves: bool = True, **kwargs) -
     )
 
 
-def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path) -> None:
-    """#3504: every sidecar's declared stimulus PHASE points at the wrong WAV."""
-    captures = discover_captures(_write_round(tmp_path))
+@pytest.mark.parametrize("metadata", [
+    "legacy", "canonical", "capture_hash_mismatch", "program_hash_mismatch", "two_rounds",
+])
+def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path, metadata: str) -> None:
+    root = _write_round(tmp_path)
+    bundle = root / "bundle" / "b0"
+    sidecar = bundle / "summed" / "summed_cloud_verify_00.json"
+    wav = sidecar.with_suffix(".wav")
+    if metadata != "legacy":
+        doc = json.loads(sidecar.read_text())
+        doc.update({
+            "kind": POSITION_EVIDENCE_KIND, "session_id": "wired-test",
+            "candidate_id": "reviewed-candidate", "graph_scope": "speaker_tune",
+            "take_id": "cloud_verify_00_a02", "wav_sha256": sha256_file(wav),
+        })
+        if metadata == "capture_hash_mismatch":
+            doc["wav_sha256"] = "0" * 64
+        elif metadata == "program_hash_mismatch":
+            doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
+        positions = bundle / "evidence/v1/artifacts/crossover_v2/wired-test/positions"
+        positions.mkdir(parents=True)
+        (positions / "take-00.json").write_text(json.dumps(doc))
+        sidecar.write_text(json.dumps({"phase": "verify", "measurement_status": "captured"}))
+        if metadata == "two_rounds":
+            (positions.parent.parent / "other-candidate-round").mkdir()
+    refusal = {
+        "capture_hash_mismatch": round_captures.REFUSE_CAPTURE_UNREADABLE,
+        "program_hash_mismatch": round_captures.REFUSE_PROGRAM_UNMATCHED,
+        "two_rounds": round_captures.REFUSE_CAPTURE_UNREADABLE,
+    }.get(metadata)
+    if refusal:
+        with pytest.raises(RoundCapturesRefused) as excinfo:
+            discover_captures(root)
+        assert excinfo.value.reason == refusal
+        return
+    captures = discover_captures(root)
 
+    first_id = "cloud_verify_00" if metadata == "legacy" else "cloud_verify_00_a02"
+    assert [capture.capture_id for capture in captures] == [first_id, "cloud_verify_01"]
     assert {capture.program.name for capture in captures} == {PLAYED_PROGRAM}
-    # The deconvolution is against the program the hash named, so the recovered
-    # peak sits where the synthesized IR put it.
     assert all(abs(capture.peak_idx - PEAK_IDX) <= 1 for capture in captures)
     assert all(capture.sample_rate == RATE for capture in captures)
+    assert select_capture(bundle, capture_id=wav.stem).capture_id == first_id
+    assert select_capture(bundle, capture_id=first_id).capture_id == first_id
+    if metadata == "canonical":
+        selected = discover_captures(root, select=lambda doc: doc.get("candidate_id") == "reviewed-candidate")
+        assert [capture.capture_id for capture in selected] == [first_id]
 
 
 def test_one_capture_is_a_round(tmp_path: Path) -> None:
@@ -186,3 +228,22 @@ def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
 ) -> None:
     """A kind prefixes the key; a bearing's stays byte-identical (#3503)."""
     assert doc_pose_key(doc) == key
+
+
+def test_window_view_keeps_one_capture_reference_and_exact_window_math(tmp_path):
+    from jasper.active_speaker.crossover_v2 import gate_sweep
+    from jasper.active_speaker.crossover_v2.window_view import window_view
+    root = _write_round(tmp_path)
+    cap = select_capture(root, capture_id="cloud_verify_00")
+    result = window_view(root, capture_id=cap.capture_id, rungs_ms=(2, 7))
+    run, = result["runs"]
+    assert run["metadata"]["direct_peak_sample"] == cap.peak_idx
+    assert run["metadata"]["stimulus_wav_sha256"] == cap.program_sha256
+    expected, = gate_sweep._read_curves((cap,), gate_sweep.analysis_grid(), (2, 7))
+    assert len({r["reference_db"] for r in run["series"]}) == 1
+    for curve in run["series"]:
+        np.testing.assert_allclose(np.array(curve["magnitude_db"]) - curve["reference_db"], expected.curves[curve["window_ms"]])
+        assert curve["capture_id"] == cap.capture_id
+        assert curve["validity_floor_hz"] == 1000 / curve["window_ms"]
+    with pytest.raises(RoundCapturesRefused):
+        window_view(root, capture_id=cap.capture_id, rungs_ms=(2, 7), role="woofer")

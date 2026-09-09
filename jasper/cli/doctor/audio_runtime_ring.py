@@ -226,9 +226,9 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
 
 def _transport_park_snapshot() -> dict[str, Any]:
     """The park verdict this run, read once through the evidence cache."""
-    from ...control import transport_park
+    from ...control import transport_eligibility
 
-    return evidence.get("transport_park", transport_park.snapshot)
+    return evidence.get("transport_park", transport_eligibility.snapshot)
 
 
 def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResult:
@@ -258,7 +258,6 @@ def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResu
         "fail",
         f"CROSSED TRANSPORT PAIR: {stranded} — this speaker is SILENT while "
         f"every daemon looks healthy. {remedy}",
-        speaker_silent=True,
         reason=reason,
     )
 
@@ -494,12 +493,12 @@ def _resolved_ring_wire():
     """The ring wire an arm would render into the conf.d, or ``None``.
 
     The same two calls the arm's own capability gate makes
-    (:func:`jasper.fanin.coupling_reconcile.ring_wire_caps_ready`). ``None`` when
+    (:func:`jasper.fanin.ring_readiness.ring_wire_caps_ready`). ``None`` when
     the box declares a wire neither language recognizes; that refusal is
     ``resolve_wire_for_gate``'s to report.
     """
     try:
-        from ...fanin.ring_health import resolve_wire_for_gate
+        from ...fanin.ring_readiness import resolve_wire_for_gate
 
         wire, _problem = resolve_wire_for_gate(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
@@ -936,7 +935,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.ring_health import resolve_effective_fanin_ring_slots
+        from jasper.fanin.ring_readiness import resolve_effective_fanin_ring_slots
         from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
@@ -1174,8 +1173,8 @@ def check_ring_transport_park() -> CheckResult:
     four shapes it cannot carry and the tracked issue each waits on. A parked box
     emits NOTHING and no automatic path recovers it, hence ``fail``. The
     classification, issue numbers and remedy text all come from
-    ``jasper.control.transport_park``, the reader
-    ``/state.resilience.transport_park`` and the household audio card also use.
+    ``jasper.control.transport_eligibility``, the reader ``/system/snapshot``'s
+    ``transport_park`` and the household audio card also use.
 
     Three shapes land between ``ok`` and a park — the ADR-0184 coverage seam, a
     converge refusal, and ADR-0189's mirror of the seam. All three are operator
@@ -1274,6 +1273,5 @@ def check_ring_transport_park() -> CheckResult:
         "fail",
         "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
-        speaker_silent=True,
         reason=REASON_TRANSPORT_PARKED,
     )

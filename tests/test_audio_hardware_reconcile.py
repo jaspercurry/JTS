@@ -642,8 +642,6 @@ _APPLE_STEADY_OUTPUTD_ENV: tuple[tuple[str, str], ...] = (
     ("JASPER_OUTPUTD_ACTIVE_CHANNELS", "''"),
     ("JASPER_OUTPUTD_ACTIVE_LANE", "''"),
     ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", "''"),
-    ("JASPER_CAMILLA_CHUNKSIZE", "256"),
-    ("JASPER_CAMILLA_TARGET_LEVEL", "1536"),
     ("JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
     ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
 )
@@ -2733,7 +2731,6 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in _jasper_env(tmp_path)
     # The floor delta really was coincident with the DAC change.
     outputd_env = _outputd_env(tmp_path)
-    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
     commands = _systemctl_log(tmp_path)
     assert "stop jasper-voice.service" in commands
@@ -3015,11 +3012,13 @@ def test_an_unspawnable_asound_renderer_refuses_the_same_way_a_failing_one_does(
 # --- the per-DAC latency floor emit -------------------------------------------
 
 _FLOOR_KEYS = (
-    ("JASPER_CAMILLA_CHUNKSIZE", "256"),
-    ("JASPER_CAMILLA_TARGET_LEVEL", "1536"),
     ("JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
     ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
 )
+
+# CamillaDSP's buffering belongs to the RING, not to the fitted DAC, so no
+# profile declares it and the writer drops these on every pass.
+_DROPPED_CAMILLA_KEYS = ("JASPER_CAMILLA_CHUNKSIZE", "JASPER_CAMILLA_TARGET_LEVEL")
 
 _FLOOR_PLAN_PROBE_FAILS = {
     "jasper.audio_runtime_plan.outputd_floor_plan": _raises(RuntimeError("gone"))
@@ -3037,21 +3036,26 @@ def test_reconcile_emits_the_declared_latency_floor(
     tmp_path: Path, listing: str, dac_id: str
 ):
     """The declared floor reaches the wizard-owned outputd.env verbatim,
-    through the same bash plumbing for every profile, and the retired
-    content-buffer key is never emitted."""
+    through the same bash plumbing for every profile; the retired
+    content-buffer key and the ring-owned Camilla pair are never emitted."""
+    from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
+
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     outputd_env = _outputd_env(tmp_path)
     for key, value in _FLOOR_KEYS:
         assert f"{key}={value}" in outputd_env, (key, outputd_env)
+    for key in _DROPPED_CAMILLA_KEYS:
+        assert not _outputd_env_key_present(outputd_env, key), (key, outputd_env)
     assert not _outputd_env_key_present(
         outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
     )
     floor = stderr_event(result.stderr, "audio_hardware_reconcile.latency_floor")
     assert {
         "pass_reason": "test", "output_dac_id": dac_id,
-        "camilla_chunksize": "256", "camilla_target_level": "1536",
+        "camilla_chunksize": str(DEFAULT_CHUNKSIZE),
+        "camilla_target_level": str(DEFAULT_TARGET_LEVEL),
         "outputd_period_frames": "128", "outputd_dac_buffer_frames": "256",
     }.items() <= floor.items()
 
@@ -3077,7 +3081,7 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     outputd_env = _outputd_env(tmp_path)
-    for key, _value in _FLOOR_KEYS:
+    for key in [k for k, _ in _FLOOR_KEYS] + list(_DROPPED_CAMILLA_KEYS):
         assert not _outputd_env_key_present(outputd_env, key), key
 
 
@@ -3148,7 +3152,6 @@ def test_reconcile_operator_env_override_survives_reconciler(
     outputd_env = _outputd_env(tmp_path)
     assert not _outputd_env_key_present(outputd_env, "JASPER_CAMILLA_CHUNKSIZE")
     assert not _outputd_env_key_present(outputd_env, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES")
-    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
 
 
@@ -3274,8 +3277,8 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
             _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE
         ),
         topology=_active_topology("mono", "active_2_way"),
-        coupling="loopback",
         marker=None,
+        content_bridge="direct",
     )
 
     assert rc == 0, out
@@ -3679,23 +3682,21 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("initial_fanin_env", "initial_outputd_env"),
+    "initial_outputd_env",
     [
-        pytest.param(None, None, id="loopback-the-unset-default"),
-        # Ring A and Ring B move together; without Ring B's bridge the
-        # reconciler's own transport-coherence validator rejects the stage
-        # (correctly) before the format axis is reachable.
+        pytest.param(None, id="unwritten-box"),
+        # Without Ring B's bridge the reconciler's own transport-coherence
+        # validator rejects the stage (correctly) before the format axis is
+        # reachable.
         pytest.param(
-            "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n",
-            id="armed-shm-ring",
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", id="reconciled-box"
         ),
     ],
 )
 def test_reconcile_emits_the_wide_content_format(
-    tmp_path: Path, initial_fanin_env: str | None, initial_outputd_env: str | None
+    tmp_path: Path, initial_outputd_env: str | None
 ):
-    """Both couplings carry the wide program lane, plumbed verbatim from
+    """Both boxes carry the wide program lane, plumbed verbatim from
     content_lane_format_for_coupling.
 
     An operator narrow pin (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) is not
@@ -3710,7 +3711,6 @@ def test_reconcile_emits_the_wide_content_format(
         APPLE_LISTING,
         "--reason",
         "test",
-        initial_fanin_env=initial_fanin_env,
         initial_outputd_env=initial_outputd_env,
     )
 

@@ -751,7 +751,7 @@ def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
                 "classification": "jts_outputd_stereo",
                 "path": "/etc/camilladsp/outputd-cutover.yml",
                 "label": "JTS outputd stereo config",
-                "playback_device": "outputd_content_playback",
+                "playback_device": "jts_ring_playback",
                 "playback_channels": 2,
                 "volume_limit_db": 0.0,
             },
@@ -871,8 +871,6 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
             str(statefile),
             "--flat-config",
             str(flat),
-            "--coupling",
-            "loopback",
             "--no-applied-baseline",
             "--write-statefile",
             "--json",
@@ -881,7 +879,7 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert calls == [("select_flat", {"topology": topology, "coupling": "loopback"})]
+    assert calls == [("select_flat", {"topology": topology})]
     assert payload["statefile_written"] is True
 
 

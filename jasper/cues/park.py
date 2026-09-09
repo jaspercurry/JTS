@@ -18,7 +18,7 @@ import asyncio
 import logging
 import os
 
-from ..audio_io import TtsPlayout
+from ..tts_playout import TtsPlayout
 from ..tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .factory import build_env_cue_manager
 

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""fan-in → CamillaDSP coupling vocabulary (``JASPER_FANIN_CAMILLA_COUPLING``).
+"""fan-in → CamillaDSP coupling vocabulary (ring devices, wire, emit kwargs).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
 CamillaDSP's capture. ONE transport: ``shm_ring``, the end-to-end SHM-ring path
@@ -10,7 +10,7 @@ CamillaDSP's capture. ONE transport: ``shm_ring``, the end-to-end SHM-ring path
 via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B (or
 to the ACTIVE ring on an armed roleful box). See ADR-0100 — a topology the ring
 cannot serve parks under its own name
-(:mod:`jasper.control.transport_park`); it never falls back.
+(:mod:`jasper.control.transport_eligibility`); it never falls back.
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the ring without pulling in NumPy/SciPy.
@@ -23,19 +23,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, TypedDict, cast
 
-# Environment selector. Read at config-emit time and at fan-in daemon startup.
-COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
-
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
 # contract v1 as Ring B; roles flipped. The Rust ``Coupling::ShmRing``
 # normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
-# THE transport, spelled once. Public so other planners (e.g.
-# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token.
-# ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
-VALID_COUPLINGS = frozenset({COUPLING_SHM_RING})
-_VALID_COUPLINGS = VALID_COUPLINGS
 
 # Ring A (``shm_ring``) SHM ring file + slot-count env vars. fan-in creates the
 # ring at ``JASPER_FANIN_RING_PATH`` with ``JASPER_FANIN_RING_SLOTS`` slots; the
@@ -81,15 +73,6 @@ def ring_capacity_frames() -> int:
     THIS FUNCTION IS ISSUE #2147's SEAM: landing it makes the slot size derive
     from the DAC floor across all four components (fan-in, the ioplug, the
     conf.d render, the Camilla emitter) instead of the constant product below.
-    It does not remove the clamp in
-    ``camilla_latency.resolve_camilla_latency_for_devices`` — it makes
-    the clamp stop biting, because a board that earns a bigger ring would then
-    report one here and its floor would fit.
-
-    The two are the same defect on different axes: #2147 is the PERIOD axis
-    (a DAC's declared ``outputd_period_frames`` cannot reach the ring), and the
-    clamp is the CHUNK axis (a DAC's declared ``camilla_chunksize`` reached the
-    ring when it could not fit).
     """
 
     return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
@@ -110,16 +93,13 @@ class RingCamillaGeometry(TypedDict):
     enable_rate_adjust: bool
 
 
-# The geometry a graph built END-TO-END on the ring passes EXPLICITLY: the
-# ACTIVE ring's per-driver graph (``active_emit_devices``) and the flat boot
-# graph (``emit_flat_outputd_cutover_config``). Certified together — chunk 128
-# is one ring slot and queuelimit 1 makes the slot handshake blocking, which is
-# also why rate_adjust is off (nothing for the rate controller to steer).
-#
-# NOT the fallback for an ordinary sound/correction graph. Those carry the box's
-# own floor clamped to the ring's capacity
-# (``camilla_latency.resolve_camilla_latency_for_devices``), so moving
-# them onto this pair is a retune with a listening test, not a refactor.
+# The one geometry of every ring-ended graph: passed explicitly by the ACTIVE
+# ring's per-driver graph (``active_emit_devices``) and the flat boot graph
+# (``emit_flat_outputd_cutover_config``), resolved for every other graph by
+# ``camilla_latency.resolve_camilla_latency_for_devices``. Certified together —
+# chunk 128 is one ring slot and queuelimit 1 makes the slot handshake
+# blocking, which is also why rate_adjust is off (nothing for the rate
+# controller to steer).
 #
 # ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
 # the cast is what keeps ``**RING_CAMILLA_GEOMETRY`` per-key typed at the two
@@ -315,7 +295,7 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # correct.
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
 # One END of the box is off the one transport (ADR-0100): a coupling or bridge
-# declaration a daemon parks on. Not a second route: jasper.control.transport_park
+# declaration a daemon parks on. Not a second route: jasper.control.transport_eligibility
 # is what names such a box. The ring MARKER's shape is NOT this one — see
 # TRANSPORT_DAC_CONTENT_RING below, which is served.
 TRANSPORT_OFF_RING = "off_ring"
@@ -517,11 +497,7 @@ def read_declared_ring_wire_format() -> str:
     return RING_WIRE_FORMAT_WIDE
 
 
-def assistant_wire_is_wide(
-    *,
-    wire_format: str | None = None,
-    coupling: str | None = None,
-) -> bool:
+def assistant_wire_is_wide(*, wire_format: str | None = None) -> bool:
     """Whether THIS BOX's ASSISTANT IPC wire is wide (S32 at the i32 spine scale).
 
     THE SENDER'S OWN RULE. `jasper-fanin` accepts both assistant verbs (`AUDIO`
@@ -529,46 +505,15 @@ def assistant_wire_is_wide(
     side resolves a per-box assistant width: this predicate decides only which
     verb Python's playout spells.
 
-    **BOTH halves.** A wide wire needs the resolved ``S32_LE`` ring wire format
-    AND a coupling that leaves fan-in on the ring.
-
-    UNDECLARED IS THE RING on the transport half, which is why it asks
-    :func:`coupling_value_removed` rather than the ``shm_ring`` token: ADR-0100
-    left one transport and ``jasper-fanin`` serves an absent key, an empty
-    value and the token alike.
-    Requiring the literal token here resolved NARROW on every box the reconciler
-    had not written while the daemon on that same box ran WIDE — the two-language
-    shear this predicate exists to prevent (#3655). Only a value the daemon
-    REFUSES (exit 78, the unit parks) answers narrow, which is also what
-    ``jasper-voice`` resolves in that situation.
-
-    Both inputs default to a FILE-FRESH read of the same SSOT files the daemons
-    read — :func:`read_declared_ring_wire_format` for the format and
-    :func:`jasper.fanin.ring_health.persisted_coupling_feeds_ring` for the
-    transport — because the callers that need this answer are long-lived daemons
-    and socket-activated wizards that never loaded ``fanin.env``. Passing either
-    explicitly is authoritative for that half, with no file fallback, for a
-    caller that means the value it hands in — and the coupling must be handed in
-    RAW, not resolved: a resolver answering "the ring or nothing" cannot spell
-    the refused value this half turns on.
+    ``wire_format`` defaults to a FILE-FRESH read of the same SSOT the daemons
+    read (:func:`read_declared_ring_wire_format`), because the callers that need
+    this answer are long-lived daemons and socket-activated wizards that never
+    loaded ``fanin.env``. Passing it explicitly is authoritative, with no file
+    fallback, for a caller that means the value it hands in.
     """
     if wire_format is None:
         wire_format = read_declared_ring_wire_format()
-    if coupling is None:
-        # Lazy import: jasper.fanin.ring_health imports THIS module, so a
-        # top-level import would be circular (mirrors every other in-tree caller).
-        from jasper.fanin.ring_health import (
-            FANIN_ENV_PATH,
-            persisted_coupling_feeds_ring,
-        )
-
-        # Passed explicitly: the predicate's own default is bound at def time,
-        # so a caller (or a test) repointing the module constant would not move
-        # a no-argument call.
-        on_ring = persisted_coupling_feeds_ring(FANIN_ENV_PATH)
-    else:
-        on_ring = not coupling_value_removed(coupling)
-    return wire_format == RING_WIRE_FORMAT_WIDE and on_ring
+    return wire_format == RING_WIRE_FORMAT_WIDE
 
 
 def resolve_ring_wire(topology: Any = None) -> RingWire:
@@ -652,7 +597,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
 # set a caller tests membership against when it has a device name in hand and
 # needs to know "is this end of the graph a ring end?" — the emitter side
 # (``jasper.active_speaker.camilla_yaml.active_emit_devices``) and the arm gate
-# (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) both read it, so
+# (``jasper.fanin.ring_readiness.ring_edge_width_ready``) both read it, so
 # neither carries its own list of the three names.
 RING_PCM_DEVICES = (
     RING_CAPTURE_DEVICE,
@@ -668,41 +613,6 @@ RING_PCM_DEVICES = (
 # surfaces now answer this token or nothing, and "is this device a ring end?" is
 # membership in :data:`RING_PCM_DEVICES`.
 TRANSPORT_RING = "ring"
-
-
-def resolve_coupling(raw: str | None) -> str | None:
-    """The transport a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value NAMES, if any.
-
-    :data:`COUPLING_SHM_RING` for the ring token (case-insensitive, whitespace
-    ignored); ``None`` for everything else — unset, empty, or a value outside
-    :data:`VALID_COUPLINGS`. ``None`` is "this file names no transport", NOT a
-    second transport: since ADR-0100 there is only one, and a caller that needs
-    to tell an absent key from a retired token asks
-    :func:`coupling_value_removed`.
-
-    THIS IS NOT THE DAEMON'S RULE, and nothing may derive a runtime expectation
-    from it. The Rust daemon serves ``None`` / ``""`` / ``shm_ring`` alike and
-    refuses anything else as a config-class fault (exit 78, the unit parks), so
-    a running fan-in is on the ring whatever this returns.
-    """
-    value = (raw or "").strip().lower()
-    return value if value in _VALID_COUPLINGS else None
-
-
-def coupling_value_removed(raw: str | None) -> bool:
-    """True iff a persisted coupling value is present but NOT in
-    :data:`VALID_COUPLINGS`.
-
-    Catches a typo and — since ADR-0100 — the retired ``loopback`` token on a
-    box that has not yet run a reconcile. The doctor surfaces it; the next
-    reconcile pass rewrites the file. An unset / empty value is NOT "removed":
-    an absent key is the ordinary state of a box the reconciler has not written
-    yet.
-    """
-    if raw is None:
-        return False
-    value = raw.strip().lower()
-    return bool(value) and value not in _VALID_COUPLINGS
 
 
 def resolve_ring_path(raw_path: str | None) -> str:
@@ -924,12 +834,10 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
     NO topology — the shipped geometry — because nothing this function emits is
     per-topology: the devices are fixed and the format is one per box.
 
-    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
-    transport devices: it is resolved per graph by
-    ``camilla_latency.resolve_camilla_latency_for_devices`` (the box's
-    floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
-    graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
-    instead.
+    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is resolved per graph
+    by ``camilla_latency.resolve_camilla_latency_for_devices`` (a ring end
+    takes :data:`RING_CAMILLA_GEOMETRY`); the two graphs built end-to-end on
+    the ring pass it explicitly.
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its

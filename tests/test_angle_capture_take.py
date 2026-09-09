@@ -550,7 +550,7 @@ def _played_measure_spec(measure_spec, monkeypatch):
     return one
 
 
-def _banked(monkeypatch, **alignment):
+def _banked(monkeypatch, *, room_correction=None, **alignment):
     """A banked candidate whose corner is the preset ``_take`` is handed."""
     region = SimpleNamespace(
         fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
@@ -561,6 +561,7 @@ def _banked(monkeypatch, **alignment):
         candidate_bank, "find_banked_candidate",
         lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
             fingerprint=fingerprint, linearization={}, source_preset=preset,
+            room_correction=room_correction or {},
             alignment=SimpleNamespace(**alignment),
         )),
     )
@@ -683,18 +684,16 @@ def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
     ]
 
 
-def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(slot):
-    """The room stays in the read, and the banked take says where it was.
-
-    The exemption reaches the analyze seam for the WALK's captures only — the
-    session's own CHECK and MEASURE are gated as ever. Each pose banks its
-    category, the offset from the head it was stated from, no mark distance,
-    and whether its own analysis gated — so seven-of-these at one bearing key
-    apart instead of collapsing onto each other.
-    """
-    program = mp.program("seat", "express")
-    spool.stage_angle_request(ac.request_for_program(program))
-    prompts, consumer, specs, _trims, claims = _take()
+@pytest.mark.parametrize("program_id,coverage", [("seat", "express"), ("seat", "cube"), ("seat", "cloud"), ("room", "quick")])
+@pytest.mark.parametrize("room_candidate", [False, True])
+def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
+    slot, monkeypatch, program_id, coverage, room_candidate,
+):
+    program = mp.program(program_id, coverage)
+    preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
+    candidate_ids = ("room-fp",) if room_candidate else ()
+    spool.stage_angle_request(ac.request_for_program(program, candidates=candidate_ids))
+    prompts, consumer, specs, _trims, claims = _take(preset=preset)
     index_phases = _seat_index_phases(prompts)
     fakes = FakeSeams()
     records, analyses = [], []
@@ -725,15 +724,23 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(slot):
         [None, None] + [gating.SEAT_EXEMPT] * len(lateral_indexes)
     )
     assert [
-        (record["pose_kind"], record["seat_offset_m"], record["mark_distance_m"],
+        (record.get("pose_kind", mp.POSE_KIND_BEARING), record.get("seat_offset_m"), record["mark_distance_m"],
          record["gating_applied"])
         for record in records
     ] == [
-        (mp.POSE_KIND_SEAT, list(pose.seat_offset_m), None,
+        (pose.kind, list(pose.seat_offset_m) if pose.seat_offset_m is not None else None,
+         None if pose.kind == mp.POSE_KIND_SEAT else flow.MARK_DISTANCE_M,
          bool(analysis.summed_response.gating["applied"]))
         for pose, analysis in zip(program.poses, analyses[-len(records):])
     ]
+    assert {record["measurement_purpose"] for record in records} == {mp.PURPOSE_ROOM}
     assert len({doc_pose_key(record) for record in records}) == len(records)
+    assert [specs[index].graph_scope for index in lateral_indexes] == [
+        "room_candidate" if room_candidate else "speaker_tune"
+    ] * len(program.poses)
+    assert [record["candidate_id"] for record in records] == [
+        "room-fp" if room_candidate else ""
+    ] * len(program.poses)
 
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])
@@ -1189,3 +1196,58 @@ def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
         spool.SPOOL_TOO_MANY_STOPS,
         spool.SESSION_ALREADY_LIVE,
     })
+
+
+def test_complete_branch_batch_reaches_browser_and_banks_all_three_curves(slot, monkeypatch):
+    from jasper.audio_measurement.branch_program import is_branch_program
+    from jasper.audio_measurement.program_analysis import MeasurementPriors, analyze_program_capture
+    from tests.test_audio_measurement_program_analysis import SR, _band_impulse, _synthesize
+
+    preset = _banked(monkeypatch)
+    request = ac.request_for_program(mp.program("branches", "express"), candidates=("fp-a",))
+    spool.stage_angle_request(request)
+    prompts, consumer, specs, trims, claims = _take(preset=preset)
+    assert len(prompts) == 1 and not trims
+    index_phases = _seat_index_phases(prompts)
+    index, = [i for i, phase in index_phases.items() if phase == PHASE_LATERAL]
+    assert specs[index].graph_scope == "candidate_branches"
+    fakes, records = FakeSeams(), []
+    seams = fakes.seams()
+
+    def analyze(program, *args, **kwargs):
+        if not is_branch_program(program):
+            return seams.analyze(program, *args, **kwargs)
+        capture = _synthesize(program, woofer_ir=_band_impulse(200, 150, 20000, 1),
+                              tweeter_ir=_band_impulse(212, 150, 20000, .7), noise=1e-8)
+        return analyze_program_capture(program, capture, SR, priors=MeasurementPriors(crossover_fc_hz=2000))
+
+    conductor = _conductor(fakes, index_phase_map=index_phases, lateral_prompts=prompts,
+                          lateral_consumer=consumer, lateral_claims=claims, measure_specs_by_index=specs,
+                          seams=replace(seams, analyze=analyze, bank_take=bank_into(records, phase=PHASE_LATERAL)))
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 1)
+    program = conductor.program_for_phase(PHASE_LATERAL)
+    assert is_branch_program(program)
+    plan = flow.build_v2_capture_plan(_ROLES_BANDS, 2000, plan_shape=_hand_shape(),
+                                     include_cloud_measure=False, include_lateral=True,
+                                     lateral_prompts=prompts, lateral_candidate_ids=("fp-a",),
+                                     branch_diagnostic=True)
+    entry = next(e for e in plan.entries if e.index == index - 1)
+    assert entry.duration_ms >= program.total_samples * 1000 / program.sample_rate_hz
+    assert _run_phase(conductor, index, 1)["accepted"]
+    record, = records
+    assert {r["role"] for r in record["curves"]} == {"woofer", "tweeter", "summed"}
+    assert record["candidate_id"] == "fp-a"
+    assert record["phase_composition"] == "complete_tune_measured"
+    assert record["branch_diagnostic"]["sample_rate_hz"] == SR
+
+
+def test_arm_room_plan_uses_speaker_tune_without_changing_its_positions(slot):
+    request = ac.request_for_program(mp.program("room", "quick"), mover=ac.MOVER_ARM)
+    spool.stage_angle_request(request)
+    prompts, _, specs, _, claims = _take(shape=_arm_shape())
+    assert [flow.position_angle_deg(p) for p in prompts] == [0, -20, 20]
+    assert {p.kind for p in prompts} == {mp.POSE_KIND_BEARING}
+    assert {p.purpose for p in prompts} == {mp.PURPOSE_ROOM}
+    assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {"speaker_tune"}
+    assert {claim.measurement_purpose for claim in claims} == {mp.PURPOSE_ROOM}

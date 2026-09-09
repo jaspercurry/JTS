@@ -43,7 +43,7 @@ __all__ = [
     "emit_measurement_graph",
 ]
 
-TuningGraphScope = Literal["base", "speaker_tune", "candidate", "room_candidate"]
+TuningGraphScope = Literal["base", "speaker_tune", "candidate", "room_candidate", "candidate_branches"]
 
 
 @dataclass(frozen=True)
@@ -167,6 +167,15 @@ def compile_tuning_graph(
                 protection_sections_by_role=profile.protection_sections_by_role,
             )
             prove_candidate_config(candidate, candidate_text)
+            if scope == "candidate_branches":
+                if set(profile.role_channels) != {"woofer", "tweeter"} or set(profile.role_channels.values()) != {0, 1}:
+                    raise MeasurementGraphRefused("measurement_branch_channels", profile.role_channels)
+                prefix, rest = candidate_text.split("\nmixers:\n", 1)
+                _, pipeline = rest.split("\npipeline:\n", 1)
+                mixer = camilla_yaml._emit_role_routed_mixer(
+                    profile.preset, dict(profile.role_channels), apply_region_polarity=False,
+                )
+                return prefix + "\nmixers:\n" + mixer + "\npipeline:\n" + pipeline
             return candidate_text
     corrections = snapshot.get("corrections")
     if (

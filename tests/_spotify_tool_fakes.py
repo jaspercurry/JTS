@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 
 class FakeRenderer:
@@ -21,7 +21,6 @@ class FakeRenderer:
         self._currentsong = currentsong or {}
         self._selected_source = selected_source
         self._selected_source_error = selected_source_error
-        self.pause_airplay = AsyncMock()
 
     async def active_renderers(self) -> dict:
         return self._renderers

@@ -766,6 +766,7 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
             id="grouping-supervisor",
         ),
         pytest.param("jasper.cli.usb_mic", ("dbus_next",), id="jasper-usbmic"),
+        pytest.param("jasper.mux", ("dbus_next",), id="jasper-mux"),
         pytest.param(
             "jasper.cli.aec_bridge", ("dbus_next", "scipy", "sounddevice"),
             id="jasper-aec-bridge",
@@ -773,6 +774,7 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
         pytest.param(
             "jasper.voice_daemon",
             (
+                "dbus_next",
                 "yaml",
                 "jasper.audio_measurement",
                 "jasper.active_speaker.baseline_profile",

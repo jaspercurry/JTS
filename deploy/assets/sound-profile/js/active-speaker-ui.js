@@ -436,14 +436,7 @@ function commissionIssueReason(codes) {
   // something the household cannot fix by retrying. Each names the state and
   // where to look WITHOUT the operator's shell command — those remedies live on
   // the CLI and journal surfaces, never here (#2344, #2412).
-  //
-  // The two arming codes share one sentence because the household ACTION is the
-  // same for both; the two operator remedies are what differ, and they belong
-  // to two different reconcilers.
-  if (
-    codes.indexOf('commissioning_ring_feed_unarmed') >= 0 ||
-    codes.indexOf('commissioning_active_endpoint_unarmed') >= 0
-  ) {
+  if (codes.indexOf('commissioning_active_endpoint_unarmed') >= 0) {
     return 'This speaker’s output path isn’t finished setting up, so driver ' +
       'tests can’t run yet. Open System status.';
   }

@@ -531,7 +531,7 @@ def _bind_compose(
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
 
-    async def before_play(program: Any, artifact: Any, phase: str) -> None:
+    async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
         try:
             await hold_fader_at(
@@ -947,7 +947,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
-    parser.add_argument("--graph-scope", choices=GRAPH_SCOPES, default=GRAPH_SCOPE_DRIVERS)
+    parser.add_argument("--graph-scope", choices=[scope for scope in GRAPH_SCOPES if scope != "candidate_branches"], default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here
         # and can be refused by name; taking the last one silently would let an

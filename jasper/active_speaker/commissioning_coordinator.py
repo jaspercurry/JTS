@@ -99,7 +99,6 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         (
             "commissioning_transport_ends_disagree",
-            "commissioning_ring_feed_unarmed",
             "commissioning_active_endpoint_unarmed",
             "ring_wire_declaration_invalid",
         ),

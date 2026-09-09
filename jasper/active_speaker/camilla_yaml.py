@@ -145,12 +145,6 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jts_ring_playback",
 )
 
-# The emitters' PARAMETER default for a lab emit that names no queue. Production
-# composes :func:`active_emit_devices`, which passes
-# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`` whole. Rate adjust needs no
-# default: every emitter resolves it from its sink when not told (ADR-0218).
-DEFAULT_ACTIVE_QUEUELIMIT = 4
-
 # The active-LEADER's camilla#1 program-domain bake: ONLY the program domain
 # (Layer B + Layer C + program headroom) to a ``File`` sink writing the
 # snapserver pipe; Layer A lives in camilla#2. The runtime verifier keys on this
@@ -325,8 +319,8 @@ class ActiveEmitDevices:
     Every field maps 1:1 onto an ``emit_active_speaker_baseline_config``
     parameter of the same name.
 
-    ``chunksize``/``target_level`` are ``None`` for a sink with no opinion —
-    the emitter's "resolve the env/floor value at emit time" contract.
+    ``chunksize``/``target_level``/``queuelimit`` are ``None`` for a sink with
+    no opinion — the emitter's "resolve it at emit time" contract.
     """
 
     capture_device: str
@@ -334,7 +328,7 @@ class ActiveEmitDevices:
     playback_format: str
     chunksize: int | None
     target_level: int | None
-    queuelimit: int
+    queuelimit: int | None
     enable_rate_adjust: bool
 
 
@@ -376,7 +370,7 @@ def active_emit_devices(
     The CHANNEL axis is deliberately absent: the ACTIVE ring's width is
     structural (the pipeline's output count, from the same saved topology the
     resolver reads), so there is nothing for a device helper to adopt.
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves the two ends
+    ``jasper.fanin.ring_readiness.ring_edge_width_ready`` proves the two ends
     agree per ring at the arm.
     """
     from jasper.fanin_coupling import (
@@ -392,7 +386,7 @@ def active_emit_devices(
             playback_format=DEFAULT_PLAYBACK_FORMAT,
             chunksize=None,
             target_level=None,
-            queuelimit=DEFAULT_ACTIVE_QUEUELIMIT,
+            queuelimit=None,
             enable_rate_adjust=resolve_enable_rate_adjust(playback_device),
         )
     wire_format = resolve_ring_wire(topology).sample_format
@@ -430,6 +424,29 @@ def _positive_int(value: int, field_name: str) -> int:
     if out <= 0:
         raise ActiveSpeakerConfigError(f"{field_name} must be positive")
     return out
+
+def _camilla_latency(
+    capture_device: str,
+    playback_device: str | None,
+    chunksize: int | None,
+    target_level: int | None,
+    queuelimit: int | None,
+) -> tuple[int, int, int]:
+    """Resolve the three latency knobs, then coerce them like every other
+    integer knob: each reaches the YAML through an f-string."""
+    chunksize, target_level, queuelimit = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+        queuelimit=queuelimit,
+    )
+    return (
+        _positive_int(chunksize, "chunksize"),
+        _positive_int(target_level, "target_level"),
+        _positive_int(queuelimit, "queuelimit"),
+    )
+
 
 
 def _emit_delay_filter(name: str, delay_ms: float = 0.0) -> list[str]:
@@ -2122,7 +2139,7 @@ def emit_active_speaker_startup_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
-    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
@@ -2146,16 +2163,9 @@ def emit_active_speaker_startup_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
-    # emitted devices decide the fallback.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=playback_device,
-        chunksize=chunksize,
-        target_level=target_level,
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
     limiter_clip_limit_db = _finite_float(
@@ -2170,10 +2180,6 @@ def emit_active_speaker_startup_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    # queuelimit reaches the YAML through an f-string, so an unvalidated value
-    # is the one emitter input that can put arbitrary text into a CamillaDSP
-    # field; coerce it like every other integer knob here.
-    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see
@@ -2321,16 +2327,11 @@ def emit_active_speaker_parked_config(
     sample_rate = _positive_int(sample_rate, "sample_rate")
     output_count = _positive_int(output_count, "output_count")
     # playback_device=None because this sink is a clockless /dev/null File: it
-    # declares no ALSA buffer, so the CAPTURE end is what the floor must fit
-    # through. See resolve_camilla_latency_for_devices.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=None,
-        chunksize=chunksize,
-        target_level=target_level,
+    # declares no ALSA buffer, so the CAPTURE end owns the geometry. See
+    # resolve_camilla_latency_for_devices.
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, None, chunksize, target_level, None
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     _assert_volume_limit(volume_limit_db)
 
@@ -2386,7 +2387,7 @@ def emit_active_speaker_parked_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
   enable_rate_adjust: false
@@ -2684,7 +2685,7 @@ def emit_active_speaker_commissioning_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
-    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
@@ -2720,16 +2721,9 @@ def emit_active_speaker_commissioning_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
-    # emitted devices decide the fallback.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=playback_device,
-        chunksize=chunksize,
-        target_level=target_level,
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
     limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
@@ -2749,10 +2743,6 @@ def emit_active_speaker_commissioning_config(
             f"audible_gain_db must be between {STARTUP_MUTE_GAIN_DB:.0f} and 0 dB"
         )
 
-    # queuelimit reaches the YAML through an f-string, so an unvalidated value
-    # is the one emitter input that can put arbitrary text into a CamillaDSP
-    # field; coerce it like every other integer knob here.
-    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see
@@ -3274,7 +3264,7 @@ def emit_active_speaker_program_config(
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
-    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     inverted_roles: Sequence[str] = (),
     measurement_delays_us: Mapping[str, float] | None = None,
@@ -3338,14 +3328,9 @@ def emit_active_speaker_program_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=playback_device,
-        chunksize=chunksize,
-        target_level=target_level,
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
     protective_hp_min_corner_hz = _finite_float(
@@ -3397,10 +3382,6 @@ def emit_active_speaker_program_config(
                 raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
             tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
-    # queuelimit reaches the YAML through an f-string, so an unvalidated value
-    # is the one emitter input that can put arbitrary text into a CamillaDSP
-    # field; coerce it like every other integer knob here.
-    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see
@@ -3564,7 +3545,7 @@ def emit_active_speaker_baseline_config(
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
-    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
@@ -3627,16 +3608,9 @@ def emit_active_speaker_baseline_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
-    # emitted devices decide the fallback.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=playback_device,
-        chunksize=chunksize,
-        target_level=target_level,
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
     limiter_clip_limit_db = _finite_float(
@@ -3663,10 +3637,6 @@ def emit_active_speaker_baseline_config(
     emitted_preference_filters = tuple(preference_filters)
     room_peqs = tuple(room_peqs)
 
-    # queuelimit reaches the YAML through an f-string, so an unvalidated value
-    # is the one emitter input that can put arbitrary text into a CamillaDSP
-    # field; coerce it like every other integer knob here.
-    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see
@@ -3806,7 +3776,7 @@ def emit_active_speaker_driver_domain_config(
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
-    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
@@ -3857,16 +3827,9 @@ def emit_active_speaker_driver_domain_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
-    # emitted devices decide the fallback.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
-        capture_device=capture_device,
-        playback_device=playback_device,
-        chunksize=chunksize,
-        target_level=target_level,
+    chunksize, target_level, queuelimit = _camilla_latency(
+        capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     limiter_clip_limit_db = _finite_float(
         limiter_clip_limit_db,
@@ -3881,10 +3844,6 @@ def emit_active_speaker_driver_domain_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
-    # queuelimit reaches the YAML through an f-string, so an unvalidated value
-    # is the one emitter input that can put arbitrary text into a CamillaDSP
-    # field; coerce it like every other integer knob here.
-    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see

@@ -2,128 +2,153 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""bluetooth.avrcp — bluealsa-cli probe goes through the shared backoff.
+"""bluetooth.avrcp — the A2DP-sink probe and AVRCP control over BlueZ D-Bus.
 
-bluetooth_active_device_path runs in jasper-mux on every BT transport
-command. It must reuse jasper.bluealsa_probe so a D-Bus permission denial
-backs off process-wide instead of hammering the system bus once per
-command. These tests fail if the helper reverts to its own raw
-`bluealsa-cli list-pcms` subprocess.
+One ObjectManager read answers both "does a phone have an A2DP transport to
+us" (the mux source-state probe) and "which MediaPlayer1 to drive". The
+probe must fail soft: an unreachable bus is None, never a raise.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
+from dbus_next import Message, Variant  # type: ignore
+from dbus_next.errors import DBusError  # type: ignore
 
-from jasper import bluealsa_probe
-from jasper.bluetooth import avrcp
+from jasper.bluetooth import adapter, avrcp
 
-
-@pytest.fixture(autouse=True)
-def _reset_bluealsa_probe_state():
-    bluealsa_probe._reset_for_tests()
-    yield
-    bluealsa_probe._reset_for_tests()
+DEVICE = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+OTHER_DEVICE = "/org/bluez/hci0/dev_11_22_33_44_55_66"
+TRANSPORT = f"{DEVICE}/fd0"
 
 
-async def test_active_device_path_translates_bluealsa_to_bluez(monkeypatch):
-    line = (
-        b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source PCM ...\n"
-    )
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self):
-            return line, b""
-
-    async def fake_exec(*args, **kwargs):
-        return _Proc()
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-
-    assert await avrcp.bluetooth_active_device_path() == (
-        "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
-    )
+A2DP_SINK_UUID = "0000110B-0000-1000-8000-00805F9B34FB"
+A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
+HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
 
 
-async def test_active_device_path_none_when_no_a2dp_sink(monkeypatch):
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self):
-            return b"/org/bluealsa/hci0/dev_AA/a2dpsrc/sink PCM ...\n", b""
-
-    async def fake_exec(*args, **kwargs):
-        return _Proc()
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-
-    assert await avrcp.bluetooth_active_device_path() is None
+def _transport(state: str, device: str = DEVICE, uuid: str = A2DP_SINK_UUID) -> dict:
+    return {
+        avrcp.BLUEZ_TRANSPORT_IFACE: {
+            "State": Variant("s", state),
+            "Device": Variant("o", device),
+            "UUID": Variant("s", uuid),
+        },
+    }
 
 
-async def test_active_device_path_none_on_cli_failure(monkeypatch):
-    class _Proc:
-        returncode = 1
-
-        async def communicate(self):
-            return b"", b"permission denied"
-
-    async def fake_exec(*args, **kwargs):
-        return _Proc()
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-
-    assert await avrcp.bluetooth_active_device_path() is None
+def _player(status: str) -> dict:
+    return {avrcp.BLUEZ_PLAYER_IFACE: {"Status": Variant("s", status)}}
 
 
-async def test_active_device_path_suppresses_after_cli_failure(monkeypatch):
-    """A rejection (rc!=0) must trip the shared backoff so the second
-    probe is short-circuited and does NOT spawn a subprocess. Only true
-    if the helper routes through bluealsa_probe.list_pcms."""
-    class _Proc:
-        returncode = 1
+def _install_objects(monkeypatch, objects=None, error: Exception | None = None):
+    async def fake_managed_objects(session=None):
+        if error is not None:
+            raise error
+        return objects
 
-        async def communicate(self):
-            return b"", b"permission denied"
-
-    calls = {"n": 0}
-
-    async def fake_exec(*args, **kwargs):
-        calls["n"] += 1
-        return _Proc()
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-
-    assert await avrcp.bluetooth_active_device_path() is None
-    assert await avrcp.bluetooth_active_device_path() is None
-    assert calls["n"] == 1
+    monkeypatch.setattr(adapter, "managed_objects", fake_managed_objects)
 
 
-async def test_active_device_path_shares_backoff_with_other_probes(monkeypatch):
-    """The backoff is process-wide: a failure recorded by any
-    bluealsa_probe consumer suppresses this helper's next probe without
-    spawning. Pins the 'shared module', not a per-caller, contract."""
-    calls = {"n": 0}
+class _Session:
+    """A BluezSession stand-in recording the method calls it is asked for."""
 
-    async def fake_exec(*args, **kwargs):
-        calls["n"] += 1
-        raise AssertionError("should not spawn while suppressed")
+    def __init__(self, error: DBusError | None = None) -> None:
+        self.calls: list[Message] = []
+        self._error = error
 
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-    # Pre-trip the shared backoff as if another consumer just failed.
-    bluealsa_probe.note_probe_failure("rc=1", avrcp.logger)
-
-    assert await avrcp.bluetooth_active_device_path() is None
-    assert calls["n"] == 0
+    async def call(self, msg: Message):
+        self.calls.append(msg)
+        if self._error is not None:
+            raise self._error
+        return []
 
 
-async def test_active_device_path_handles_spawn_oserror(monkeypatch):
-    """avrcp keeps its never-raise contract: a spawn-time OSError that
-    bluealsa_probe.list_pcms does not swallow (it only catches
-    FileNotFoundError/timeout) is caught locally and returns None."""
-    async def fake_exec(*args, **kwargs):
-        raise OSError("EMFILE: too many open files")
+@pytest.mark.parametrize(
+    ("objects", "playing"),
+    [
+        ({TRANSPORT: _transport("active")}, True),
+        ({TRANSPORT: _transport("idle")}, True),
+        # Only the A2DP SINK role is "a phone playing to us": bluez-alsa also
+        # runs an a2dp-source endpoint and HFP/SCO uses the same interface.
+        ({TRANSPORT: _transport("active", uuid=A2DP_SOURCE_UUID)}, False),
+        ({TRANSPORT: _transport("active", uuid=HFP_AG_UUID)}, False),
+        ({TRANSPORT: {avrcp.BLUEZ_TRANSPORT_IFACE: {"Device": Variant("o", DEVICE)}}}, False),
+        ({DEVICE: {"org.bluez.Device1": {}}}, False),
+        ({}, False),
+    ],
+)
+async def test_probe_reports_a_connected_a2dp_transport(monkeypatch, objects, playing):
+    _install_objects(monkeypatch, objects)
+    assert await avrcp.a2dp_sink_playing() is playing
 
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-    assert await avrcp.bluetooth_active_device_path() is None
+@pytest.mark.parametrize(
+    "error",
+    [OSError("no bus"), EOFError(), TimeoutError(), AttributeError(), DBusError("org.bluez.Error.Failed", "y")],
+)
+async def test_unreachable_bus_is_none_not_a_raise(monkeypatch, error):
+    _install_objects(monkeypatch, error=error)
+    assert await avrcp.a2dp_sink_playing() is None
+    assert await avrcp.bluetooth_player_path() is None
+
+
+async def test_a_missing_dbus_next_fails_soft_like_an_unreachable_bus(monkeypatch):
+    """The probe is gathered with return_exceptions=False (mux arbitration),
+    so an ImportError from the lazy import must not escape the module."""
+    monkeypatch.setitem(sys.modules, "jasper.bluetooth.adapter", None)
+    assert await avrcp.a2dp_sink_playing() is None
+    with pytest.raises(RuntimeError):
+        await avrcp.bluetooth_avrcp_call("Pause", _Session())
+
+
+@pytest.mark.parametrize(
+    ("objects", "expected"),
+    [
+        # The active A2DP device's player wins over an earlier-sorted one.
+        (
+            {
+                TRANSPORT: _transport("active"),
+                f"{OTHER_DEVICE}/player0": _player("playing"),
+                f"{DEVICE}/player0": _player("paused"),
+            },
+            f"{DEVICE}/player0",
+        ),
+        # No transport: the first player.
+        ({f"{OTHER_DEVICE}/player0": _player("playing")}, f"{OTHER_DEVICE}/player0"),
+        ({TRANSPORT: _transport("active")}, None),
+    ],
+)
+async def test_player_path_prefers_the_active_a2dp_device(monkeypatch, objects, expected):
+    _install_objects(monkeypatch, objects)
+    assert await avrcp.bluetooth_player_path() == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "member"), [("playing", "Pause"), ("paused", "Play"), (None, "Play")],
+)
+async def test_playpause_resolves_from_player_status(monkeypatch, status, member):
+    player = {} if status is None else _player(status)
+    _install_objects(monkeypatch, {f"{DEVICE}/player0": player or {avrcp.BLUEZ_PLAYER_IFACE: {}}})
+    session = _Session()
+    await avrcp.bluetooth_avrcp_call("PlayPause", session)
+    assert [(m.path, m.interface, m.member) for m in session.calls] == [
+        (f"{DEVICE}/player0", avrcp.BLUEZ_PLAYER_IFACE, member),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("objects", "error"),
+    [
+        (None, None),
+        ({}, None),
+        ({f"{DEVICE}/player0": _player("playing")}, DBusError("org.bluez.Error.Failed", "nope")),
+    ],
+)
+async def test_avrcp_call_raises_runtime_error_when_it_cannot_drive_a_player(
+    monkeypatch, objects, error,
+):
+    _install_objects(monkeypatch, objects, error=OSError() if objects is None else None)
+    with pytest.raises(RuntimeError):
+        await avrcp.bluetooth_avrcp_call("Next", _Session(error))

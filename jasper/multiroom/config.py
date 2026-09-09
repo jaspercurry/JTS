@@ -279,7 +279,8 @@ def format_roster(members) -> str:
     for JASPER_GROUPING_ROSTER: ``addr|name|channel`` entries joined by ",".
 
     PUBLIC (mirrors :func:`validate_grouping`): the cross-package write contract
-    used by jasper.control.server to build the env string — not a private detail.
+    used by jasper.control.handlers.grouping to build the env string — not a
+    private detail.
 
     Members with an empty addr are skipped (a roster slot with no address is
     meaningless). ALL THREE fields are sanitized via :func:`_scrub_roster_field`
@@ -427,8 +428,9 @@ def validate_roster(roster: tuple[BondMember, ...]) -> str | None:
     Returns an error naming the bad field on the FIRST bad member, or None. An
     empty roster is valid.
 
-    PUBLIC and standalone (NOT gated on enabled): jasper.control.server calls this
-    whenever a roster key is present — including a `disabled` /grouping/set, whose
+    PUBLIC and standalone (NOT gated on enabled):
+    jasper.control.handlers.grouping calls this whenever a roster key is
+    present — including a `disabled` /grouping/set, whose
     full validate_grouping is skipped — so a roster member with an injected foreign
     addr or a malformed channel can never be persisted (it would otherwise become an
     _unbond disable target, or — if a delimiter split it — an orphaned member)."""

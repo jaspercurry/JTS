@@ -261,17 +261,11 @@ FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER: FlatProgramGraphBlockCode = (
     "flat_graph_protected_tweeter"
 )
 
-# The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint, and absent
-# from the legal set below, so no graph naming it can be a legal outputd
-# endpoint. It has zero production readers; the name survives because the suite
-# pins that a graph persisted before the retirement is refused BY NAME, and a
-# bare literal there would be worse than one named constant.
-OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
 # Every playback device a legal outputd ENDPOINT graph may name. ONE member: the
 # ACTIVE RING is the only transport carrying POST-crossover per-driver channels
 # to outputd. A frozenset rather than a single `==` because membership is the
 # seam the endpoint width probe reads — it must reject everything outside the
-# set, notably the STEREO ring and the retired lane above.
+# set, notably the STEREO ring and the retired snd-aloop lane (ADR-0100).
 #
 # Redeclared rather than imported from jasper.fanin_coupling: this module is the
 # runtime VERIFIER's independent copy of the endpoint vocabulary, and a contract
@@ -995,7 +989,7 @@ def _flat_output_terminally_muted(
 
     The three-fact proof itself was PROMOTED to ``graph_safety`` when a second
     caller appeared — the ring arm's anchor acceptance
-    (``jasper.fanin.coupling_reconcile._anchor_is_all_muted``) needs the same
+    (``jasper.fanin.ring_readiness._anchor_is_all_muted``) needs the same
     three facts about the same shape of graph, and a mirrored copy would be a
     drift site on a hearing-safety path. What stays here is the binding this
     module owns: the flat graph's commission-mute NAME for ``index`` and the
@@ -4562,7 +4556,6 @@ def safe_graph_for_current_topology(
     preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     parked_config_path: str | Path | None = None,
-    coupling: str | None = None,
     applied_baseline_path: str | Path | None = None,
     profile_path: str | Path | None = None,
     intent_path: str | Path | None = None,

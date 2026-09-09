@@ -422,11 +422,6 @@ class _ActiveGraphCarrier:
         # and these STEREO kwargs would stomp a per-driver box. Keyword accepted
         # for uniformity only.
         del fanin_coupling_capture_kwargs
-        room_peqs = (
-            extract_room_peqs_from_config(self._current_path)
-            if room_peqs is None
-            else list(room_peqs)
-        )
         # By here the carrier has proven this is a SOLO active baseline (bonded
         # members refused above).
         yaml = _recompose_active_baseline_with_eq(
@@ -435,7 +430,12 @@ class _ActiveGraphCarrier:
             output_trim_db=output_trim_db,
             out_path=out_path,
         )
-        return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
+        room_peq_count = (
+            len(room_peqs)
+            if room_peqs is not None
+            else len(extract_room_peqs_from_config_text(yaml))
+        )
+        return ReemitResult(yaml=yaml, room_peq_count=room_peq_count)
 
 
 class _UnknownCarrier:
@@ -563,7 +563,7 @@ def _recompose_active_baseline_with_eq(
         yaml, issues = recompose_applied_baseline_yaml(
             topology,
             applied_profile=applied_profile,
-            room_peqs=room_peqs or [],
+            room_peqs=room_peqs,
             preference_filters=preference_filters,
             output_trim_db=output_trim_db,
             out_path=None,
@@ -680,7 +680,6 @@ def recompose_active_baseline_for_bass_extension(
             "JTS could not read the selected active-speaker graph; its current "
             "DSP state is unchanged.",
         ) from exc
-    room_peqs = extract_room_peqs_from_config_text(current_text)
     current_program = _active_program_overlay_projection(current_text)
     # Same rule as the preference-EQ recompose above: the endpoint is transport
     # state and comes from the box, not from the immutable snapshot. This seam
@@ -703,7 +702,6 @@ def recompose_active_baseline_for_bass_extension(
         yaml, issues = recompose_applied_baseline_yaml(
             topology,
             applied_profile=applied_profile,
-            room_peqs=room_peqs,
             preference_filters=build_sound_filter_slots(preference),
             output_trim_db=output_trim_db(preference, settings),
             out_path=None,

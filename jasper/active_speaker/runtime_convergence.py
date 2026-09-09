@@ -28,7 +28,6 @@ from jasper.active_speaker.runtime_contract import (
     safe_graph_for_current_topology,
 )
 from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.fanin.ring_health import read_persisted_coupling
 from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
@@ -87,7 +86,6 @@ def converge_boot_statefile(
     topology: OutputTopology | None = None,
     current_config_path: "str | Path | None" = None,
     flat_config_path: "str | Path | None" = None,
-    coupling: str | None = None,
     applied_baseline_path: "str | Path | None" = None,
     staged_metadata_path: "str | Path | None" = None,
     consider_applied_baseline: bool = True,
@@ -97,21 +95,17 @@ def converge_boot_statefile(
 
     Never touches a live CamillaDSP: the callers that own an ordered live
     transition are :func:`park_and_commit_topology` and the coupling
-    reconciler. ``coupling`` defaults to the persisted fan-in intent, so a bare
-    caller seeds the graph the box will actually boot. ``topology`` skips the
+    reconciler. ``topology`` skips the
     load for a caller that already parsed it (``topology_path`` is then unused);
     ``None`` reads the path here, so a caller whose own read failed still gets
     this function's fail-closed reason rather than a silent empty draft.
     """
 
-    if coupling is None:
-        coupling = read_persisted_coupling()
     if topology is None:
         topology = load_output_topology_strict(topology_path)
     kwargs: dict[str, Any] = {
         "statefile_path": statefile_path,
         "current_config_path": current_config_path,
-        "coupling": coupling,
         "applied_baseline_path": baseline_profile_state_path(applied_baseline_path),
         "staged_metadata_path": staged_metadata_path,
         "consider_applied_baseline": consider_applied_baseline,
@@ -122,9 +116,7 @@ def converge_boot_statefile(
     if not (write_statefile and decision.ok):
         return StatefileConvergenceResult(decision, topology, False)
     try:
-        decision = compose_selected_flat_graph(
-            decision, topology=topology, coupling=coupling
-        )
+        decision = compose_selected_flat_graph(decision, topology=topology)
         wrote = apply_safe_graph_decision_to_statefile(
             decision,
             statefile_path=statefile_path,
@@ -192,7 +184,6 @@ def compose_selected_flat_graph(
     decision: SafeGraphDecision,
     *,
     topology: OutputTopology,
-    coupling: str | None,
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
 ) -> SafeGraphDecision:
@@ -208,7 +199,7 @@ def compose_selected_flat_graph(
 
     from jasper.sound.runtime import materialise_saved_dsp_on_carrier
 
-    kwargs: dict[str, Any] = {"coupling": coupling}
+    kwargs: dict[str, Any] = {}
     if profile_path is not None:
         kwargs["profile_path"] = profile_path
     if config_dir is not None:
@@ -220,7 +211,6 @@ def compose_selected_flat_graph(
     reproved = safe_graph_for_current_topology(
         topology,
         current_config_path=str(composed),
-        coupling=coupling,
     )
     try:
         composed_matches = (
@@ -241,7 +231,6 @@ async def _converge_committed_topology(
     prior_config_path: str | None,
     profile_path: str | Path | None,
     config_dir: str | Path | None,
-    coupling: str | None,
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> RuntimeConvergenceResult:
@@ -265,13 +254,11 @@ async def _converge_committed_topology(
         decision = safe_graph_for_current_topology(
             topology,
             current_config_path=prior_config_path,
-            coupling=coupling,
         )
         try:
             decision = compose_selected_flat_graph(
                 decision,
                 topology=topology,
-                coupling=coupling,
                 profile_path=profile_path,
                 config_dir=config_dir,
             )
@@ -328,7 +315,6 @@ def park_and_commit_topology(
     controller_factory: Callable[[], Any] | None = None,
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
-    coupling: str | None = None,
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
@@ -355,7 +341,6 @@ def park_and_commit_topology(
             controller_factory=controller_factory,
             profile_path=profile_path,
             config_dir=config_dir,
-            coupling=coupling,
             stay_parked=stay_parked,
             parked_reason=parked_reason,
         )
@@ -369,7 +354,6 @@ async def _park_and_commit_topology(
     controller_factory: Callable[[], Any] | None,
     profile_path: str | Path | None,
     config_dir: str | Path | None,
-    coupling: str | None,
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
@@ -377,7 +361,6 @@ async def _park_and_commit_topology(
         CANONICAL_DSP_WRITER_LOCK_PATH,
         camilla_graph_mutation,
     )
-    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.control.restart_broker import manage_units
 
     controller = _controller(controller_factory)
@@ -399,9 +382,6 @@ async def _park_and_commit_topology(
             raise RuntimeError(
                 str(outputd_stop.get("error") or "could not stop outputd safely")
             )
-        resolved_coupling = (
-            coupling if coupling is not None else read_persisted_coupling()
-        )
         try:
             prior_path = await controller.get_config_file_path(best_effort=True)
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
@@ -423,7 +403,6 @@ async def _park_and_commit_topology(
             prior_config_path=prior_path,
             profile_path=profile_path,
             config_dir=config_dir,
-            coupling=resolved_coupling,
             stay_parked=stay_parked,
             parked_reason=parked_reason,
         )

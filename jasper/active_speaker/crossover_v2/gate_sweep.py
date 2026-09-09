@@ -58,7 +58,7 @@ from .feature_optics import (
     detrend,
     feature_q,
 )
-from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures
+from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures, played_graph_fingerprint
 
 SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
@@ -1036,6 +1036,12 @@ def _prepare(
     can grow a window shape, a grid or a normalisation the other does not
     have.
     """
+    identities = {(cap.candidate_id, cap.graph_fingerprint) for cap in captures}
+    if len(identities) > 1:
+        raise RoundCapturesRefused("gate_sweep_mixed_graphs", {
+            "graphs": sorted(identities),
+            "action": "Select one candidate/graph, or use windows with an exact capture ID.",
+        })
     if len(captures) < 2:
         raise RoundCapturesRefused(
             REFUSE_SINGLE_POSE,
@@ -1088,6 +1094,8 @@ def sweep_round(
     *,
     rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS,
     at_hz: Sequence[float] = (),
+    candidate_id: str | None = None,
+    graph_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Sweep one banked round's gate and report what moved with the window.
 
@@ -1099,7 +1107,10 @@ def sweep_round(
     Raises :class:`RoundCapturesRefused` naming the missing input.
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
-    captures = discover_captures(Path(round_dir))
+    captures = discover_captures(Path(round_dir), select=lambda doc: (
+        (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
+        and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
+    ))
     grid, reads, sigma, axes = _prepare(captures, rungs)
     cache: HostCurves = {}
     return {
@@ -1109,6 +1120,9 @@ def sweep_round(
         "frame": frame_descriptor(rungs, grid),
         "poses": [
             {
+                "candidate_id": read.capture.candidate_id,
+                "graph_fingerprint": read.capture.graph_fingerprint,
+                "capture_wav_sha256": read.capture.capture_sha256,
                 "pose_key": read.capture.pose_key,
                 "capture_id": read.capture.capture_id,
                 "phase": read.capture.phase,

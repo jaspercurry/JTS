@@ -468,11 +468,9 @@ LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
 
 @dataclass(frozen=True)
 class LateralPoseCurve:
-    """One driver's NEUTRAL response at one pose, on the shared log basis.
+    """One branch's response at one pose, on the shared log basis.
 
-    ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
-    configured-crossover composition applied; ``S_c = sign_c * M * C_c / P`` is
-    the consumer's step, once per candidate.
+    The take's ``phase_composition`` states whether this includes a complete tune.
 
     Values are SAMPLED at the nearest native bin, never interpolated or
     averaged: a phase interpolated across a wrap is simply wrong. The
@@ -493,6 +491,7 @@ class LateralPoseCurve:
     #: was resolved", never 0 Hz.
     validity_floor_hz: float | None = None
     repeat_curves: tuple["LateralPoseCurve", ...] = ()
+    gate_window_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -588,6 +587,7 @@ def lateral_pose_curve(
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
         validity_floor_hz=response.validity_floor_hz,
+        gate_window_ms=(response.gating or {}).get("window_ms"),
         repeat_curves=tuple(
             lateral_pose_curve(occurrence, band_hz)
             for occurrence in response.repeat_responses
@@ -674,24 +674,14 @@ class PositionGeometry:
 def pose_kind_fields(
     geometry: PositionGeometry, *, gating_applied: bool | None = None,
 ) -> dict[str, Any]:
-    """The take-record keys a categorized pose adds (ADR-0260).
-
-    Empty for a bearing at the mark, so every record banked before poses had
-    a kind is byte-identical; a reader takes absence as that bearing. A seat
-    or close take says its kind, where it was stated from, and — from the
-    one caller that analyzed it — whether its response was gated; a caller
-    that does not know says nothing, so a merge over the record keeps it.
-    """
-    if geometry.kind == POSE_KIND_BEARING:
-        return {}
+    """Measured geometry and analysis facts shared by retained takes."""
     return {
-        "pose_kind": geometry.kind,
-        "seat_offset_m": (
-            [float(v) for v in geometry.seat_offset_m]
-            if geometry.seat_offset_m is not None else None
-        ),
         "mark_distance_m": geometry.mark_distance_m,
         **({"gating_applied": gating_applied} if gating_applied is not None else {}),
+        **({
+            "pose_kind": geometry.kind,
+            "seat_offset_m": list(geometry.seat_offset_m) if geometry.seat_offset_m is not None else None,
+        } if geometry.kind != POSE_KIND_BEARING else {}),
     }
 
 
@@ -776,6 +766,8 @@ def phase_composition(analysis: Any, *, protection_emitted: bool) -> str:
     carried a protective high-pass at all — and is not derivable from the
     analysis, which sees only whether it was handed priors to divide out.
     """
+    if getattr(analysis, "branch_diagnostic", None):
+        return "complete_tune_measured"
     if analysis.phase != PROGRAM_PHASE_MEASURE:
         return ""
     if analysis.configured_path_composed:
@@ -824,6 +816,7 @@ class TakeClaim:
     #: ``""`` where it says neither, and ABSENT from the record there: an
     #: unstated composition must not read as either one.
     phase_composition: str = ""
+    measurement_purpose: str = ""
 
 
 def _take_identity(
@@ -870,6 +863,7 @@ def _take_identity(
         "graph_fingerprint": graph_fingerprint,
         "baseline_record_id": claim.baseline_record_id,
         "candidate_id": claim.candidate_id,
+        **({"measurement_purpose": claim.measurement_purpose} if claim.measurement_purpose else {}),
         "polarity": claim.polarity,
         "level_matched": claim.level_matched,
         # The numbers only when there ARE numbers: an absent key reads as an
@@ -982,7 +976,6 @@ def cloud_position_record(
         "position_deg": geometry.degrees,
         "position_axis": geometry.axis,
         "vertical_deg": geometry.vertical_deg,
-        "mark_distance_m": geometry.mark_distance_m,
         "captured_at": captured_at,
         "gate_window_ms": gate_window_ms,
         "gate_floor_source": gate_floor_source,
@@ -992,7 +985,6 @@ def cloud_position_record(
         "gate_entanglement_floor_hz": gate_entanglement_floor_hz,
         "gate_entanglement_floor_source": gate_entanglement_floor_source,
         "validity_floor_hz": validity_floor_hz,
-        "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
         "curves": [dict(curve) for curve in curves],
@@ -1047,6 +1039,8 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # without these two cannot be re-fitted offline. Additive: a round
         # banked before this carries neither key.
         "validity_floor_hz": curve.validity_floor_hz,
+        "gate_window_ms": curve.gate_window_ms,
+        "smoothing_fractional_octave": 0,
         "repeat_curves": [
             pose_curve_record(repeat) for repeat in curve.repeat_curves
         ],
@@ -1097,40 +1091,7 @@ def lateral_pose_record(
     claim: TakeClaim = TakeClaim(),
     gating_applied: bool | None = None,
 ) -> dict[str, Any]:
-    """One retained lateral pose, as the evidence bundle's sidecar carries it.
-
-    ``geometry`` is WHERE the microphone was, derived by
-    ``capture_plan.position_geometry`` and stated rather than re-derived; its
-    ``degrees`` is the SIGNED whole-degree bearing (negative LEFT of the design
-    axis). ``lateral_consumer`` is one of :data:`~.journey.LATERAL_CONSUMERS`.
-    ``gating_applied`` rides only on a categorized pose
-    (:func:`pose_kind_fields`): a seat take keeps its reflections.
-
-    ``graph_fingerprint`` is WHICH CANDIDATE WAS APPLIED while this pose was
-    taken, in :func:`~.coordinator.entry_graph_fingerprint`'s namespace —
-    deliberately NOT the running-config hash, because a pose plays through the
-    transient routing graph that omits crossover, delay and linearization, so
-    that hash is the same before and after an apply and cannot tell two walks
-    apart. :func:`take_kind` is the classification that buys, stamped here.
-
-    ``position_axis`` is horizontal by construction, even for a RAISED pose:
-    :data:`POSITION_AXIS_VERTICAL` is the pose commanding no horizontal bearing,
-    and every pose reaching this builder commands one. ``vertical_deg`` is the
-    signed elevation above mark height against the same :data:`MARK_DISTANCE_M`;
-    0 is true of a pose nobody raised. ``captured_at`` is minted at retention
-    because a :class:`LateralPose` holds no clock.
-
-    Refuses nothing. ``curves`` is empty only for a directly constructed pose —
-    :func:`lateral_curves_sufficient` rejects a thin capture before any record
-    is built. A curve inside ``curves`` carries its OWN ``validity_floor_hz``,
-    per role and per occurrence; a take-level field of that name is one
-    response's floor for the whole take, so the two must not be flattened
-    together.
-
-    Separate from :func:`cloud_position_record` rather than a widened one: a
-    cloud position is a summed sweep judged by gating and ripple, and those
-    columns are never meaningful for a pose.
-    """
+    """One lateral capture with its actual pose, purpose and analyzed curves."""
     if geometry.degrees is None:
         raise ValueError("a lateral pose commands a horizontal bearing; this geometry declares none")
     return {

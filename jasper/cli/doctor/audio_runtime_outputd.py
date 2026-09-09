@@ -23,6 +23,7 @@ deliberately not renderable).
 from __future__ import annotations
 
 import os
+import re
 
 from ...audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from ...platform.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
@@ -33,7 +34,12 @@ from ._shared import (
     _service_state_failure,
     _systemctl_unavailable_result,
 )
-from .audio_runtime_fanin import _assistant_gain_fault
+from .audio_runtime_fanin import (
+    _ASOUND_CONF_PATH,
+    _asound_non_comment_text,
+    _asound_pcm_block,
+    _assistant_gain_fault,
+)
 
 REASON_OUTPUTD_UNIT_MISSING = "outputd_unit_missing"
 REASON_OUTPUTD_UNIT_NOT_ENABLED = "outputd_unit_not_enabled"
@@ -72,6 +78,9 @@ REASON_OUTPUTD_DUAL_APPLE_DELAY_EXCEEDED = "outputd_dual_apple_delay_exceeded"
 REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED = "outputd_dual_apple_not_linked"
 REASON_OUTPUTD_ASSISTANT_GAIN_NOT_NUMERIC = "outputd_assistant_gain_not_numeric"
 REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT = "outputd_assistant_gain_off_contract"
+REASON_OUTPUTD_DAC_RENDERED_NULL = "outputd_dac_rendered_null"
+REASON_OUTPUTD_DAC_RENDER_NOT_OPENED = "outputd_dac_render_not_opened"
+REASON_OUTPUTD_DAC_RENDER_UNRESOLVED = "outputd_dac_render_unresolved"
 
 REASON_AEC_CLOCK_OUTPUTD_NOT_ENABLED = "aec_clock_outputd_not_enabled"
 REASON_AEC_CLOCK_OUTPUTD_INACTIVE = "aec_clock_outputd_inactive"
@@ -83,6 +92,10 @@ REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE = "aec_clock_chip_ref_unavailable"
 REASON_AEC_CLOCK_UNTRUSTED = "aec_clock_untrusted"
 
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
+
+#: The `type` of a rendered top-level ALSA block: our own blocks state it first,
+#: ahead of any nested slave.
+_ASOUND_BLOCK_TYPE_RE = re.compile(r"^[ \t]*type[ \t]+(\S+)", re.MULTILINE)
 
 def _outputd_reconciled_env() -> dict[str, str]:
     """outputd's env as its own unit layers it, read once per doctor run.
@@ -248,7 +261,7 @@ def _outputd_status_payload() -> dict[str, object] | CheckResult:
             f"active but STATUS probe at {OUTPUTD_STATUS_SOCKET} failed: "
             f"{status.error}. Without STATUS doctor cannot verify DAC "
             "ownership, buffers, xruns, or work-loop progress.",
-            reason=REASON_OUTPUTD_STATUS_UNREACHABLE, speaker_silent=True,
+            reason=REASON_OUTPUTD_STATUS_UNREACHABLE,
         )
     if status.payload is None:
         return CheckResult(
@@ -594,6 +607,7 @@ def _outputd_transport_health(
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
             read_saved_topology=evidence.saved_topology_for_wire,
+            allow_grouping_capture=True,
         )
         if transport_report.errors:
             return CheckResult(
@@ -678,7 +692,7 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"active but backend={data.get('backend')!r}; expected 'alsa'",
-            reason=REASON_OUTPUTD_BACKEND_NOT_ALSA, speaker_silent=True,
+            reason=REASON_OUTPUTD_BACKEND_NOT_ALSA,
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
     outputd_env = _outputd_reconciled_env()
@@ -877,6 +891,68 @@ def check_outputd_service() -> CheckResult:
         f"{transport_detail}",
         reason=evidence_reason,
     )
+
+
+@doctor_check(core=True)
+def check_outputd_dac_render() -> CheckResult:
+    """Fail a `type null` pcm.outputd_dac while outputd opens it over ALSA.
+
+    A null-rendered DAC PCM opens and negotiates like the real card, so
+    outputd's own STATUS (pcm name, 48 kHz, period, buffer) cannot tell the
+    two apart and outputd spins on it until systemd reboots the box; only the
+    rendered ALSA config can. See issue #4605.
+    """
+    label = "outputd DAC render"
+    env = _outputd_reconciled_env()
+    # Both keys default as the unit's own Environment= lines do
+    # (deploy/systemd/jasper-outputd.service): a box with no outputd.env runs
+    # alsa on outputd_dac. The reconciler writes the DAC PCM on every branch
+    # (the composite sink opens the dual-Apple PCM, never outputd_dac).
+    backend = str(env.get("JASPER_OUTPUTD_BACKEND") or "alsa").strip()
+    dac_pcm = (
+        str(env.get("JASPER_OUTPUTD_DAC_PCM") or "").strip()
+        or _OUTPUTD_EXPECTED_DAC_PCM
+    )
+    if backend != "alsa" or dac_pcm != _OUTPUTD_EXPECTED_DAC_PCM:
+        return CheckResult(
+            label,
+            "skipped",
+            f"outputd does not open pcm.{_OUTPUTD_EXPECTED_DAC_PCM}: "
+            f"backend={backend!r}, dac_pcm={dac_pcm!r}",
+            reason=REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
+        )
+    try:
+        text = _ASOUND_CONF_PATH.read_text()
+    except OSError as e:
+        return CheckResult(
+            label,
+            "skipped",
+            f"can't read {_ASOUND_CONF_PATH}: {e}",
+            reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
+        )
+    block = _asound_pcm_block(_asound_non_comment_text(text), dac_pcm)
+    rendered = _ASOUND_BLOCK_TYPE_RE.search(block) if block is not None else None
+    if rendered is None:
+        return CheckResult(
+            label,
+            "skipped",
+            f"{_ASOUND_CONF_PATH} declares no pcm.{dac_pcm} type",
+            reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
+        )
+    if rendered.group(1) == "null":
+        return CheckResult(
+            label,
+            "fail",
+            f"{_ASOUND_CONF_PATH} renders pcm.{dac_pcm} as `type null` while "
+            f"outputd opens it as the DAC (JASPER_OUTPUTD_BACKEND={backend}): "
+            "playback is discarded. Re-run jasper-audio-hardware-reconcile "
+            "with the DAC attached.",
+            reason=REASON_OUTPUTD_DAC_RENDERED_NULL,
+            # Not gated on jasper-control: outputd keeps writing periods
+            # into `type null`, so no signal-path code names this silence.
+            speaker_silent=True,
+        )
+    return CheckResult(label, "ok", f"pcm.{dac_pcm} type {rendered.group(1)}")
 
 
 @doctor_check()

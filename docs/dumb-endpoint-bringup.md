@@ -474,7 +474,7 @@ source is allowed on JTS4-style hardware for powered-splitter validation;
 the hardware result decides whether it remains part of the Zero-class
 streambox default. A streambox runs the same ring transport as every other
 box; a shape the ring cannot serve parks under its own name rather than
-playing degraded (`/state.resilience.transport_park`). Check `jasper-doctor`
+playing degraded (`/system/snapshot.transport_park`). Check `jasper-doctor`
 after the first boot.
 
 **Open question: active-crossover topology.** Any role that drives

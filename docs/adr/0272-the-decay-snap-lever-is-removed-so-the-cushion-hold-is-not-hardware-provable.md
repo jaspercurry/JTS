@@ -15,8 +15,8 @@
   orphan control paths. An operator lever with no sender and no proof
   procedure is not a lever; it is code that has to be kept correct for free.
 - **Consequences:** ADR-0214's window itself stands — the hold, its gauges
-  (`resampler.decay.refilling`, `refill_force_clears`, `host_clock.hold`) and
-  its `event=fanin.decay_refill` edges are unchanged, and the sole live
+  (`resampler.decay.refilling`) and its `event=fanin.decay_refill` edges are
+  unchanged, and the sole live
   trigger is still a ladder demotion out of L0. What no longer holds is the
   hardware-provability consequence: there is now no way to open a refill
   window on demand, so the window is exercised on hardware only when a real
