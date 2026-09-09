@@ -466,6 +466,7 @@ _TABLED_WIZARD_FACTORIES = {
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
     ),
+    "wifi_setup": wifi_setup._make_handler,
 }
 
 # Wizards whose CSRF token rides in a header, so the guard runs before any
@@ -480,6 +481,7 @@ _HEADER_CSRF_WIZARDS = frozenset({
     "system_setup",
     "tools_setup",
     "wake_corpus_setup",
+    "wifi_setup",
 })
 
 

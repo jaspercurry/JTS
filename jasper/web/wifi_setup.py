@@ -59,7 +59,6 @@ import re
 import shlex
 import subprocess
 import time
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -73,8 +72,10 @@ from ._common import (
     begin_request,
     canonical_header,
     canonical_page,
+    json_body,
     reject_csrf,
     read_json_object,
+    route_path,
     send_html_response,
     send_json_response,
     guard_read_request,
@@ -1294,172 +1295,178 @@ def _landing_html(csrf_token: str = "") -> bytes:
 # ============================================================
 
 
+class _Handler(BaseHTTPRequestHandler):
+    # Write-once latch for the POST failure fallback below: a route that has
+    # already answered must never have a second body appended to it. Reset
+    # per request (the handler instance is reused across keep-alive).
+    _json_response_started = False
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+        logger.info("%s - %s", self.address_string(), fmt % args)
+
+    def _send_html(self, body: bytes, *, status: int = 200) -> None:
+        send_html_response(self, body, status=status)
+
+    def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+        if self._json_response_started:
+            raise RuntimeError("response already committed")
+        self._json_response_started = True
+        send_json_response(self, payload, status=status)
+
+    def _read_json(self) -> dict[str, Any]:
+        try:
+            return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+        except (JsonBodyError, OSError):
+            return {}
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._json_response_started = False
+        handler_fn = _GET_ROUTES.get(route_path(self.path))
+        if handler_fn is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not guard_read_request(self):
+            return
+        handler_fn(self)
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._json_response_started = False
+        path = route_path(self.path)
+        handler_fn = _POST_ROUTES.get(path)
+        if handler_fn is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not guard_mutating_request(self):
+            reject_csrf(self)
+            return
+        try:
+            handler_fn(self)
+        except Exception as e:  # noqa: BLE001
+            # A failure after the route answered is a transport failure on a
+            # response already on the wire; re-raise rather than write a
+            # second body over it.
+            if self._json_response_started:
+                raise
+            log_event(
+                logger,
+                "wifi.post_dispatch_failed",
+                action=path.removeprefix("/"),
+                error=type(e).__name__,
+                ok=False,
+                client=self.address_string(),
+                level=logging.ERROR,
+            )
+            self._send_json(
+                {"ok": False, "message": "Wi-Fi action failed"}, status=502,
+            )
+
+
+def _get_index(handler: _Handler) -> None:
+    ctx = begin_request(handler)
+    handler._send_html(_landing_html(ctx["csrf_token"]))
+
+
+def _get_state(handler: _Handler) -> None:
+    try:
+        payload = gather_state()
+        status = 200
+    except Exception as e:  # noqa: BLE001
+        logger.exception("/state failed")
+        payload = {"error": str(e)}
+        status = 502
+    handler._send_json(payload, status=status)
+
+
+# Decorated even though it ignores the body: /scan is body-agnostic, but the
+# request body still has to be drained off the socket.
+@json_body
+def _post_scan(handler: _Handler, _body: dict[str, Any]) -> None:
+    handler._send_json(scan_networks_report())
+
+
+@json_body
+def _post_connect(handler: _Handler, body: dict[str, Any]) -> None:
+    ssid = (body.get("ssid") or "").strip()
+    name = (body.get("name") or "").strip()
+    password = body.get("password")
+    hidden = bool(body.get("hidden"))
+    if ssid:
+        ok, msg = connect_new(ssid, password or None, hidden=hidden)
+    elif name:
+        ok, msg = connect_saved(name)
+    else:
+        handler._send_json(
+            {"ok": False, "message": "ssid or name required"}, status=400,
+        )
+        return
+    log_event(
+        logger,
+        "wifi.connect",
+        fields=(
+            {"mode": "new", "ssid": ssid}
+            if ssid
+            else {"mode": "saved", "profile": name}
+        ),
+        ok=ok,
+        client=handler.address_string(),
+        level=logging.INFO if ok else logging.WARNING,
+    )
+    handler._send_json({"ok": ok, "message": msg}, status=200 if ok else 502)
+
+
+@json_body
+def _post_forget(handler: _Handler, body: dict[str, Any]) -> None:
+    name = (body.get("name") or "").strip()
+    if not name:
+        handler._send_json({"ok": False, "message": "name required"}, status=400)
+        return
+    ok, msg = forget(name)
+    log_event(
+        logger,
+        "wifi.forget",
+        profile=name,
+        ok=ok,
+        client=handler.address_string(),
+        level=logging.INFO if ok else logging.WARNING,
+    )
+    handler._send_json({"ok": ok, "message": msg}, status=200 if ok else 502)
+
+
+@json_body
+def _post_radio(handler: _Handler, body: dict[str, Any]) -> None:
+    if type(body.get("on")) is not bool:
+        handler._send_json(
+            {"ok": False, "message": "on must be a boolean"}, status=400,
+        )
+        return
+    on = body["on"]
+    ok, msg = set_radio(on)
+    log_event(
+        logger,
+        "wifi.radio",
+        enabled=on,
+        ok=ok,
+        client=handler.address_string(),
+        level=logging.INFO if ok else logging.WARNING,
+    )
+    handler._send_json({"ok": ok, "message": msg}, status=200 if ok else 502)
+
+
+# do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables (exact
+# path -> handler callable) — module-level, since no per-server state is
+# captured here. ORDERING IS LOAD-BEARING: each method looks the route up
+# first, so an unknown path 404s before the read/CSRF guard runs.
+_GET_ROUTES = {"/": _get_index, "/state": _get_state}
+_POST_ROUTES = {
+    "/scan": _post_scan,
+    "/connect": _post_connect,
+    "/forget": _post_forget,
+    "/radio": _post_radio,
+}
+
+
 def _make_handler() -> type[BaseHTTPRequestHandler]:
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            send_html_response(self, body, status=status)
-
-        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            send_json_response(self, payload, status=status)
-
-        def _read_json(self) -> dict[str, Any]:
-            try:
-                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
-            except (JsonBodyError, OSError):
-                return {}
-
-        def do_GET(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                self._send_html(_landing_html(ctx["csrf_token"]))
-                return
-            if path == "/state":
-                if not guard_read_request(self):
-                    return
-                try:
-                    payload = gather_state()
-                    status = 200
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/state failed")
-                    payload = {"error": str(e)}
-                    status = 502
-                self._send_json(payload, status=status)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def do_POST(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path not in {"/scan", "/connect", "/forget", "/radio"}:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            body = self._read_json()
-            response_committed = False
-
-            def commit_json_response(
-                payload: dict[str, Any], *, status: int = 200,
-            ) -> None:
-                nonlocal response_committed
-                if response_committed:
-                    raise RuntimeError("response already committed")
-                response_committed = True
-                self._send_json(payload, status=status)
-
-            try:
-                if path == "/scan":
-                    commit_json_response(scan_networks_report())
-                    return
-                if path == "/connect":
-                    ssid = (body.get("ssid") or "").strip()
-                    name = (body.get("name") or "").strip()
-                    password = body.get("password")
-                    hidden = bool(body.get("hidden"))
-                    if ssid:
-                        ok, msg = connect_new(
-                            ssid, password or None, hidden=hidden,
-                        )
-                    elif name:
-                        ok, msg = connect_saved(name)
-                    else:
-                        commit_json_response(
-                            {"ok": False, "message": "ssid or name required"},
-                            status=400,
-                        )
-                        return
-                    connect_fields = (
-                        {"mode": "new", "ssid": ssid}
-                        if ssid
-                        else {"mode": "saved", "profile": name}
-                    )
-                    log_event(
-                        logger,
-                        "wifi.connect",
-                        fields=connect_fields,
-                        ok=ok,
-                        client=self.address_string(),
-                        level=logging.INFO if ok else logging.WARNING,
-                    )
-                    commit_json_response(
-                        {"ok": ok, "message": msg},
-                        status=200 if ok else 502,
-                    )
-                    return
-                if path == "/forget":
-                    name = (body.get("name") or "").strip()
-                    if not name:
-                        commit_json_response(
-                            {"ok": False, "message": "name required"},
-                            status=400,
-                        )
-                        return
-                    ok, msg = forget(name)
-                    log_event(
-                        logger,
-                        "wifi.forget",
-                        profile=name,
-                        ok=ok,
-                        client=self.address_string(),
-                        level=logging.INFO if ok else logging.WARNING,
-                    )
-                    commit_json_response(
-                        {"ok": ok, "message": msg},
-                        status=200 if ok else 502,
-                    )
-                    return
-                if path == "/radio":
-                    if (
-                        not isinstance(body, dict)
-                        or type(body.get("on")) is not bool
-                    ):
-                        commit_json_response(
-                            {"ok": False, "message": "on must be a boolean"},
-                            status=400,
-                        )
-                        return
-                    on = body["on"]
-                    ok, msg = set_radio(on)
-                    log_event(
-                        logger,
-                        "wifi.radio",
-                        enabled=on,
-                        ok=ok,
-                        client=self.address_string(),
-                        level=logging.INFO if ok else logging.WARNING,
-                    )
-                    commit_json_response(
-                        {"ok": ok, "message": msg},
-                        status=200 if ok else 502,
-                    )
-                    return
-            except Exception as e:  # noqa: BLE001
-                if response_committed:
-                    raise
-                log_event(
-                    logger,
-                    "wifi.post_dispatch_failed",
-                    action=path.removeprefix("/"),
-                    error=type(e).__name__,
-                    ok=False,
-                    client=self.address_string(),
-                    level=logging.ERROR,
-                )
-                commit_json_response(
-                    {"ok": False, "message": "Wi-Fi action failed"},
-                    status=502,
-                )
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-    return Handler
+    return _Handler
 
 
 def make_server(target) -> ThreadingHTTPServer:
