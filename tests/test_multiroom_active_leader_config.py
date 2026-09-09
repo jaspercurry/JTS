@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
@@ -43,6 +42,7 @@ from tests.test_bass_extension_candidate_field import bass_extension_field
 # solo apply + the follower arm use (the leader is its own receiver — the
 # driver-domain build is identical, only the config/state paths differ).
 from tests.test_active_speaker_baseline_profile import (
+    _applied_with_bass_family,
     _draft,
     _dual_apple_topology,
     _measurements,
@@ -152,15 +152,6 @@ def _fake_apply_dsp_config():
 
 
 # --- the fail-closed GATE: build + RE-PROVE both instances --------------------
-
-
-def _applied_with_bass_family(monkeypatch, field):
-    """The applied box a bonded follower/leader compiles its Layer A from."""
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "load_applied_baseline_profile_state",
-        lambda *_a, **_k: {"recomposition_snapshot": {"bass_extension": field}},
-    )
 
 
 def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:

@@ -21,7 +21,6 @@ import yaml
 
 from jasper.log_event import log_event
 
-import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
@@ -36,6 +35,7 @@ from jasper.multiroom.config import GroupingConfig
 # the follower arm is exercised against the SAME evidence shape the solo apply
 # uses (the only difference is driver_domain + the loopback capture).
 from tests.test_active_speaker_baseline_profile import (
+    _applied_with_bass_family,
     _draft,
     _dual_apple_topology,
     _measurements,
@@ -145,15 +145,6 @@ def _fake_apply_dsp_config():
         return SimpleNamespace(to_dict=lambda: {"result": "applied"})
 
     return _apply
-
-
-def _applied_with_bass_family(monkeypatch, field):
-    """The applied box a bonded follower/leader compiles its Layer A from."""
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "load_applied_baseline_profile_state",
-        lambda *_a, **_k: {"recomposition_snapshot": {"bass_extension": field}},
-    )
 
 
 def test_program_channel_for_fail_closed() -> None:

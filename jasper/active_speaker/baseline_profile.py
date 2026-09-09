@@ -3157,13 +3157,18 @@ def recompose_applied_baseline_yaml(
     Callers that WRITE a graph leave it False: a reduced graph is something to
     listen to, never something to boot from.
     """
+    if bass_extension is _APPLIED_BASS_EXTENSION:
+        bass_extension = applied_bass_extension_field(applied_profile)
+    if bass_extension is not None and not isinstance(bass_extension, Mapping):
+        raise ActiveSpeakerConfigError(
+            "bass_extension must be a bass candidate field or None, not "
+            f"{type(bass_extension).__name__}"
+        )
     snapshot, hardware_issues = applied_baseline_hardware_match(
         topology, applied_profile=applied_profile
     )
     if snapshot is None:
         return None, hardware_issues
-    if bass_extension is _APPLIED_BASS_EXTENSION:
-        bass_extension = applied_bass_extension_field(applied_profile)
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
@@ -3286,7 +3291,7 @@ def recompose_applied_baseline_yaml(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
-        bass_extension=bass_extension if isinstance(bass_extension, Mapping) else None,
+        bass_extension=bass_extension,
         linearization=linearization,
         blend_correction=blend_correction,
         protection_sections_by_role=(
