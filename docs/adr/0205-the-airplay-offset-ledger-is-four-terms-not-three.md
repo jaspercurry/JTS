@@ -37,7 +37,8 @@ The ledger is four terms:
   above that baseline.
 - `ring_a_frames` / `ring_b_frames` each prefer live daemon STATUS (fan-in's
   `output.snd_pcm_delay_frames` ALSA delay, correct on a loopback box; else
-  `output.ring.occupancy * output.period_frames`, the ring's live fill;
+  `output.ring.occupancy * RING_SLOT_FRAMES` (128 — `occupancy` counts SLOTS,
+  and fan-in publishes no slot-size field), the ring's live fill;
   outputd's `shm_ring.occupancy * shm_ring.slot_frames` for Ring B), then a
   `jasper.ring_assets` parse of the shipped
   `deploy/alsa/conf.d/60-jts-ring.conf` (the production authority for that
