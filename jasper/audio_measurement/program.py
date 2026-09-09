@@ -400,9 +400,12 @@ def _program_id(
     return hashlib.sha256(blob).hexdigest()
 
 
-def _finalize(
+def finalize_program(
     phase: str, channels: int, segments: Sequence[ProgramSegment], total: int
 ) -> ExcitationProgram:
+    """Seal a segment schedule into an :class:`ExcitationProgram`: the one
+    builder that stamps ``program_id``, so a caller DESCRIBING an
+    already-rendered WAV gets an identity the admission gate can attest."""
     seg_tuple = tuple(segments)
     program_id = _program_id(
         phase, PROGRAM_SAMPLE_RATE_HZ, channels, seg_tuple, total
@@ -451,7 +454,8 @@ def _sweep_meta(
     )
 
 
-def _silence(segment_id: str, start: int, n_samples: int) -> ProgramSegment:
+def silence_segment(segment_id: str, start: int, n_samples: int) -> ProgramSegment:
+    """One scheduled span of digital silence."""
     return ProgramSegment(
         segment_id=segment_id,
         kind=KIND_SILENCE,
@@ -500,7 +504,7 @@ def _append_pilot_ambient_window(
     """Append the pre-pilot ambient window (:data:`AMBIENT_SEGMENT_ID`, issue
     #1810); return the cursor."""
     n = _seconds_to_samples(PILOT_AMBIENT_WINDOW_S, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence(AMBIENT_SEGMENT_ID, cursor, n))
+    segments.append(silence_segment(AMBIENT_SEGMENT_ID, cursor, n))
     return cursor + n
 
 
@@ -539,7 +543,7 @@ def _append_leading_pilot_pair(
         )
         segments.append(seg)
         cursor += seg.n_samples
-        segments.append(_silence(f"pilot_gap_{role}_{suffix}", cursor, gap_n))
+        segments.append(silence_segment(f"pilot_gap_{role}_{suffix}", cursor, gap_n))
         cursor += gap_n
     return cursor
 
@@ -677,7 +681,7 @@ def _insert_courtesy_prelude(
             effective_peak_dbfs=gain_db + downstream_gain_db,
         ))
     gap_n = _seconds_to_samples(COURTESY_TONE_TRAILING_SILENCE_S, PROGRAM_SAMPLE_RATE_HZ)
-    gap_seg = _silence("courtesy_gap", at + tone_n, gap_n)
+    gap_seg = silence_segment("courtesy_gap", at + tone_n, gap_n)
     prelude_n = tone_n + gap_n
     head = [seg for seg in segments if seg.start_sample < at]
     tail = [
@@ -717,7 +721,7 @@ def build_check_program(
     segments: list[ProgramSegment] = []
     cursor = 0
     ambient_n = _seconds_to_samples(ambient_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence(AMBIENT_SEGMENT_ID, cursor, ambient_n))
+    segments.append(silence_segment(AMBIENT_SEGMENT_ID, cursor, ambient_n))
     cursor += ambient_n
     # The ambient window is silent, so it may sit between the beeps and the pilots.
     prelude_at = cursor
@@ -748,7 +752,7 @@ def build_check_program(
             )
             segments.append(seg)
             cursor += seg.n_samples
-            segments.append(_silence(f"gap_{rb.role}_{suffix}", cursor, gap_n))
+            segments.append(silence_segment(f"gap_{rb.role}_{suffix}", cursor, gap_n))
             cursor += gap_n
 
     if courtesy_prelude:
@@ -756,7 +760,7 @@ def build_check_program(
             segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PROGRAM_PHASE_CHECK, channels, segments, cursor)
+    return finalize_program(PROGRAM_PHASE_CHECK, channels, segments, cursor)
 
 
 def _occurrence_suffix(index: int) -> str:
@@ -910,7 +914,7 @@ def build_measure_program(
             downstream_gain_db=downstream_gain_db,
         )
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("guard", cursor, guard_n))
+    segments.append(silence_segment("guard", cursor, guard_n))
     cursor += guard_n
     if prelude_at is None:
         # No leading pilot pair: beeps land directly in front of the sweep.
@@ -939,10 +943,10 @@ def build_measure_program(
         if tweeter is None or t_band is None:
             # One declared driver: only silence between cycles is the MESM settle.
             if cycle < repeat_count - 1:
-                segments.append(_silence(f"gap_w_w{suffix}", cursor, gap_w_n))
+                segments.append(silence_segment(f"gap_w_w{suffix}", cursor, gap_w_n))
                 cursor += gap_w_n
             continue
-        segments.append(_silence(f"gap_w_t{suffix}", cursor, gap_w_n))
+        segments.append(silence_segment(f"gap_w_t{suffix}", cursor, gap_w_n))
         cursor += gap_w_n
 
         sweep_t = _sweep(
@@ -951,11 +955,11 @@ def build_measure_program(
         segments.append(sweep_t)
         cursor += sweep_t.n_samples
         if cycle < repeat_count - 1:
-            segments.append(_silence(f"gap_t_w{suffix}", cursor, gap_t_n))
+            segments.append(silence_segment(f"gap_t_w{suffix}", cursor, gap_t_n))
             cursor += gap_t_n
 
     tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("tail", cursor, tail_n))
+    segments.append(silence_segment("tail", cursor, tail_n))
     cursor += tail_n
 
     if courtesy_prelude:
@@ -963,7 +967,7 @@ def build_measure_program(
             segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor)
+    return finalize_program(PROGRAM_PHASE_MEASURE, channels, segments, cursor)
 
 
 VERIFY_PILOT_ROLE = "summed"
@@ -1050,7 +1054,7 @@ def build_verify_program(
             downstream_gain_db=downstream_gain_db,
         )
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("guard", cursor, guard_n))
+    segments.append(silence_segment("guard", cursor, guard_n))
     cursor += guard_n
     if prelude_at is None:
         prelude_at = cursor
@@ -1071,7 +1075,7 @@ def build_verify_program(
     cursor += sweep.n_samples
 
     tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("tail", cursor, tail_n))
+    segments.append(silence_segment("tail", cursor, tail_n))
     cursor += tail_n
 
     if courtesy_prelude:
@@ -1079,7 +1083,7 @@ def build_verify_program(
             segments, cursor, at_sample=prelude_at, channels=1,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
+    return finalize_program(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
 
 
 #: Why a null confirm could not be composed. ``reason`` is the contract a
@@ -1302,7 +1306,7 @@ def build_null_confirm_program(
 
     segments: list[ProgramSegment] = []
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("guard", 0, guard_n))
+    segments.append(silence_segment("guard", 0, guard_n))
     cursor = guard_n
 
     sweep_at = cursor
@@ -1333,11 +1337,11 @@ def build_null_confirm_program(
     cursor = sweep_at + sweep_n
 
     tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("tail", cursor, tail_n))
+    segments.append(silence_segment("tail", cursor, tail_n))
     cursor += tail_n
 
     channels = 1 + max(rb.channel for rb in role_bands)
-    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor), plan
+    return finalize_program(PROGRAM_PHASE_MEASURE, channels, segments, cursor), plan
 
 
 def segment_stimulus(segment: ProgramSegment):

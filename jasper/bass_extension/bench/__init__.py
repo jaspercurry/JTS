@@ -30,6 +30,8 @@ Module map:
   schema via ``bundles.py`` / ``evidence_identity.py``.
 * :mod:`~jasper.bass_extension.bench.runner` — the orchestrator that runs the
   discovery + candidate passes and emits the bundle.
+* :mod:`~jasper.bass_extension.bench.wired_play` — the one hardware seam: admit,
+  play and near-field capture one already-padded stimulus, then read it.
 """
 
 from __future__ import annotations

@@ -54,6 +54,17 @@ class BenchAborted(Exception):
     """The operator pressed Stop or a protocol abort condition fired."""
 
 
+class BenchRefused(Exception):
+    """A fail-closed refusal before or during a pass — admission, fader,
+    recorder, capture placement. The target ends through the ``refused`` arm.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}")
+
+
 class Stop:
     """Cooperative Stop control (mirrors the bench-experiment stop flag)."""
 
@@ -73,11 +84,14 @@ class Stop:
 
 
 class FloorControl(Protocol):
-    """Fade the speaker to the safe floor and confirm it is there."""
+    """Fade the speaker to the safe floor, confirm it is there, and let it back
+    up to the campaign's measurement level."""
 
     async def to_floor(self) -> None: ...
 
     async def assert_at_floor(self) -> None: ...
+
+    async def raise_to_level(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +105,7 @@ class TargetPlan:
     owner_channels: tuple[int, ...]
     profile_summary: Mapping[str, Any]
     baseline_clip_limit_dbfs: float
+    boost_headroom_db: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +151,7 @@ class ReferenceSweepCapture:
     reference_stimulus: ArtifactIdentity
     reference_admission: ArtifactIdentity
     reference_acoustic_capture: ArtifactIdentity
+    reference_signal_analysis: ArtifactIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,10 +353,16 @@ async def _run_target(
 
     partials: list[ArtifactIdentity] = []
 
-    def _stop_result(reason: str, disposition: str = "aborted") -> dict[str, object]:
+    def _stop_result(
+        reason: str, disposition: str = "aborted", *, detail: str | None = None
+    ) -> dict[str, object]:
         receipt = sink.write_json(
             f"{target.target_id}/stop.json",
-            {"target_id": target.target_id, "reason": reason},
+            {
+                "target_id": target.target_id,
+                "reason": reason,
+                "detail": detail,
+            },
             kind="jts_bass_extension_bench_stop",
         )
         return bundle.build_stopped_result(
@@ -588,6 +610,8 @@ async def _run_target(
         )
     except BenchAborted as exc:
         return _stop_result(str(exc), "aborted")
+    except BenchRefused as exc:
+        return _stop_result(exc.reason, "refused", detail=exc.detail)
 
 
 async def run_campaign(

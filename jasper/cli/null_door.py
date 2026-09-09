@@ -137,8 +137,6 @@ class NullDoorRefused(RuntimeError):
         self.detail = detail
 
 
-
-
 def _context() -> Any:
     """The applied profile's own answer to every measurement input.
 
@@ -416,34 +414,6 @@ async def _play_and_capture(
     )
 
 
-def _capture_faults(report: Mapping[str, Any]) -> list[str]:
-    """What the recorder itself says was NOT whole about this take.
-
-    The ledger half is the wizard's own rule read here
-    (``program_analysis.verify_integrity._frame_accounting_checks``): any
-    nonzero discrepancy is a fault, because one missing quantum is a phase
-    discontinuity through the deconvolution this depth is read from. The
-    zero-run half is the #2557 dropout signature, which that screen also
-    treats as disclosure.
-
-    DISCLOSURE ONLY: a lossy take is still graded, and the row carries
-    ``capture_intact`` plus this list so a grader can tell the two apart.
-    Promote to a refusal once the first wired seat-cube session on hardware
-    shows a clean take reports zero zero-runs and zero block gaps.
-    """
-    from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
-
-    ledger = reconcile_capture_frames(
-        report, received_frames=int(report.get("encoded_frames") or 0),
-    )
-    faults = list(ledger.lost_at)
-    if int(report.get("zero_run_count") or 0):
-        faults.append("zero_fill_runs")
-    if report.get("truncated"):
-        faults.append("truncated")
-    return faults
-
-
 def _depth(
     captured_wav: Path, program: Any, plan: Any, fc_hz: float,
 ) -> tuple[float, Any]:
@@ -548,9 +518,11 @@ def _row(
         # not be read still says what the recorder heard.
         "capture_integrity": dict(capture_integrity) if capture_integrity else None,
         "capture_device": dict(capture_device) if capture_device else None,
-        # DISCLOSED, not decided (see `_capture_faults`): a lossy take is
-        # still graded, and these two say so on the row rather than the depth
+        # DISCLOSURE ONLY, this walk's own policy: a lossy take is still
+        # graded, and these two say so on the row rather than the depth
         # arriving with nothing to qualify it. `None` where no take exists.
+        # Promote to a refusal once the first wired session on hardware shows
+        # a clean take reports zero zero-runs and zero block gaps.
         "capture_intact": None if not capture_integrity else not capture_faults,
         "capture_faults": list(capture_faults),
         # DISCLOSED, not decided. The depth is read off an UNCALIBRATED capture
@@ -602,6 +574,7 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
 async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+    from jasper.audio_measurement.frame_ledger import capture_faults
     from jasper.audio_measurement.program import NullConfirmUnavailable
     from jasper.audio_measurement.wired_capture import require_wired_mic
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
@@ -750,7 +723,7 @@ async def _run(args: argparse.Namespace) -> int:
                         wav_sha256=artifact.sha256,
                         capture_integrity=report,
                         capture_device=answer.device,
-                        capture_faults=_capture_faults(report),
+                        capture_faults=capture_faults(report),
                         **outcome,
                     )
             except tuple(mid_run) as exc:
