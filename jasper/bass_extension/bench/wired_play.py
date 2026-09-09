@@ -827,12 +827,6 @@ class WiredPlayAndCapture:
         budget_s = (
             program_s + pre_guard_s + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
         )
-        recorder = self._recorder_factory(rate, budget_s)
-        try:
-            await asyncio.to_thread(recorder.start)
-        except (WiredCaptureError, OSError, ValueError) as exc:
-            raise BenchRefused(REFUSE_RECORDER, str(exc)) from exc
-
         poll: asyncio.Task[list[tuple[float, ...]]] | None = None
 
         async def _before_play(_program: Any, _artifact: Any, _phase: str) -> None:
@@ -851,23 +845,36 @@ class WiredPlayAndCapture:
             await self._hold_fader(role)
             poll = asyncio.create_task(self._poll_peaks(request))
 
-        seams = bind_program_playback_seams(
-            self._controller,
-            bundle_dir=str(self._sink.bundle_dir),
-            artifact=prepared.artifact,
-            config_dir=str(self._config_dir),
-            program=prepared.program,
-            wav_path=str(self._sink.bundle_dir / prepared.artifact.relative_path),
-            topology=self._admission.topology,
-            safety_profile=self._admission.safety_profile,
-            role_targets=self._admission.role_targets,
-            session_volume_db=prepared.commanded_db,
-            declared_sensitivities=self._admission.declared_sensitivities,
-            timeout_s=program_s + PLAYBACK_TIMEOUT_MARGIN_S,
-            graph_yaml=graph_yaml,
-            before_play=_before_play,
-            lock_source=BENCH_LOCK_SOURCE,
-        )
+        try:
+            # Bound BEFORE the recorder is armed: the binder refuses an empty
+            # graph, and that refusal must not strand a live ALSA device.
+            seams = bind_program_playback_seams(
+                self._controller,
+                bundle_dir=str(self._sink.bundle_dir),
+                artifact=prepared.artifact,
+                config_dir=str(self._config_dir),
+                program=prepared.program,
+                wav_path=str(
+                    self._sink.bundle_dir / prepared.artifact.relative_path
+                ),
+                topology=self._admission.topology,
+                safety_profile=self._admission.safety_profile,
+                role_targets=self._admission.role_targets,
+                session_volume_db=prepared.commanded_db,
+                declared_sensitivities=self._admission.declared_sensitivities,
+                timeout_s=program_s + PLAYBACK_TIMEOUT_MARGIN_S,
+                graph_yaml=graph_yaml,
+                before_play=_before_play,
+                lock_source=BENCH_LOCK_SOURCE,
+            )
+        except ValueError as exc:
+            raise BenchRefused(REFUSE_PLAYBACK, str(exc)) from exc
+
+        recorder = self._recorder_factory(rate, budget_s)
+        try:
+            await asyncio.to_thread(recorder.start)
+        except (WiredCaptureError, OSError, ValueError) as exc:
+            raise BenchRefused(REFUSE_RECORDER, str(exc)) from exc
 
         finished = False
         try:

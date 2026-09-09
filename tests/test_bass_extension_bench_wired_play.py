@@ -453,7 +453,9 @@ async def _play(
             stimulus=padded,
             artifact=identity,
             tag=role,
-            graph_yaml=graph_yaml or pieces.controller.raw,
+            graph_yaml=(
+                pieces.controller.raw if graph_yaml is None else graph_yaml
+            ),
             reference=reference,
         )
 
@@ -962,6 +964,14 @@ async def test_play_refuses_a_graph_that_is_not_the_one_running(
     assert raised.value.reason == wired_play.REFUSE_PLAYBACK
     assert pieces.rig.played == []
     assert pieces.rig.pcm is not None and pieces.rig.pcm.closed is True
+
+    # An empty graph refuses BEFORE the recorder is armed, so no live ALSA
+    # device is stranded by the binder's own precondition.
+    empty = _seam(tmp_path / "empty")
+    with pytest.raises(BenchRefused) as refused:
+        await _play(empty, graph_yaml="")
+    assert refused.value.reason == wired_play.REFUSE_PLAYBACK
+    assert empty.rig.pcm is None
 
 
 async def test_play_proves_the_fader_where_the_audio_is_emitted(
