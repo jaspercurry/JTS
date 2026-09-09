@@ -18,7 +18,7 @@ only unfinished lane and is mid-landing.**
 | Row | State |
 |---|---|
 | 3.2 `bass-fit` view | **LANDED** — PR #4641 squash-merged at `4157a6030` |
-| 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE.** Head `2d409cdb3`, 9 commits, **conflicted against main**. 4 must-fixes + 2 adversarial blockers; a fix agent's round was in flight at handoff, so re-read the head before judging |
+| 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE on CI alone.** 4 must-fixes + 2 adversarial blockers; a fix agent was still pushing at handoff (its head moved five times in the last half hour, latest seen `af3e7a79a`, main merged in and the conflict resolved). **Read the current head — do not trust any SHA in this file for that branch** — and verify each finding in §3 against it |
 | 3.2b adapters honour the margin policy | **not started; gates 3.3** |
 | 3.3 candidate kind + emission | branch `claude/seat-w3-3-3-bass-candidate-kind` at `732cfd388`, 13 ahead, **no PR**, conflicted; see §1a. **NN** |
 | 3.4a rung graph | unopened branch `claude/seat-w3-3-4a-rung-graph` (`628432b2b`); **NN** |
@@ -105,6 +105,15 @@ the container is gone) as describing the *older* 3.3a/3.3b branches only.
   as one of three legs and that leg cannot carry a number today; the in-room
   ladder and the limiter evidence carry it alone. Owner should decide whether
   that amends the ADR.
+
+### 3a. A CI artifact that will mislead you on #4643
+
+Every CI "failure" on that PR's intermediate heads on 2026-09-09 was a run
+**cancellation** caused by the fix agent's own next push — verified from the job
+logs, which read `pytest matrix result: cancelled`, not a failing test. The
+aggregate `ci` and `pytest` checks report a cancelled matrix as a failure. Judge
+that PR only on a run that completes undisturbed on a head nobody is still
+pushing to.
 
 ## 4. What the reviews are for — the evidence they produced
 
