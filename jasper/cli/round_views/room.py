@@ -35,8 +35,9 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
     room_median,
     room_persistence,
-    seat_takes,
 )
+from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -95,13 +96,19 @@ def _seat_view(
 ) -> int:
     """One view over the round's seat takes below its ceiling, written and answered."""
     inputs = _inputs(args)
-    takes = seat_takes(inputs.session_dir)
+    try:
+        selection = select_seat_takes(inputs.session_dir, capture_id=args.capture_id)
+    except RoundCapturesRefused as exc:
+        return refused_by_name(exc.reason, exc.detail)
+    takes = selection.takes
     if not takes:
         return refused_by_name(
             REFUSE_NO_SEAT_TAKES,
-            {"round_dir": str(inputs.session_dir), "looked_for": "lateral takes with pose_kind=seat"},
+            {"round_dir": str(inputs.session_dir), "looked_for": "lateral takes with pose_kind=seat",
+             "evidence": selection.evidence},
         )
     payload = compute(takes, room_ceiling(inputs.applied_profile_path))
+    payload["evidence"] = dict(selection.evidence)
     return answer_of(args, payload, _write(payload, args.out, _out(args, inputs)))
 
 
@@ -119,6 +126,7 @@ def _median_answer(args: argparse.Namespace, payload: dict[str, Any], written: P
         args.command, out=written, ceiling_hz=payload["ceiling_hz"],
         ceiling_source=payload["ceiling_source"], n_positions=payload["n_positions"],
         window=payload["window"], mean_spread_db=spread,
+        evidence=payload["evidence"], coverage_hz=payload["coverage_hz"],
         line=(
             f"room-median: {payload['n_positions']} position(s), ceiling "
             f"{payload['ceiling_hz']:g} Hz ({payload['ceiling_source']}), {payload['window']}; "
@@ -145,6 +153,7 @@ def _persistence_answer(
         args.command, out=written, ceiling_hz=payload["ceiling_hz"],
         n_positions=payload["n_positions"], features=len(features),
         persistent=persistent, persistent_fraction=PERSISTENT_FRACTION, top=top,
+        evidence=payload["evidence"], coverage_hz=payload["coverage_hz"],
         line=(
             f"room-persistence: {persistent} of {len(features)} feature(s) at >= "
             f"{PERSISTENT_FRACTION:g} presence over {payload['n_positions']} position(s)"
@@ -176,5 +185,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "--applied-profile", default=None, metavar="PATH",
             help="read the ceiling from this applied profile instead of the round's own",
         )
+        if name != "room-ceiling":
+            parser.add_argument("--capture-id", help="select the compatible seat set containing this take")
         parser.add_argument("--out", default=None, help="write the result here (- for stdout)")
         parser.set_defaults(func=func)

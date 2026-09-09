@@ -34,10 +34,10 @@ from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
     room_median,
-    seat_takes,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
@@ -297,6 +297,23 @@ def test_an_accepted_set_becomes_the_candidates_room_peqs():
     assert candidate.room_correction["ceiling_hz"] == CEILING_HZ
 
 
+@pytest.mark.parametrize("gain", [-2.0, 2.0])
+def test_narrow_measurement_coverage_keeps_the_room_ceiling_taper(gain):
+    raw = _room_median()
+    freqs = np.geomspace(50.0, 200.0, 121)
+    raw.update(
+        freqs_hz=freqs.tolist(), coverage_hz=[50.0, 200.0],
+        median_db=(-8.0 * np.exp(-(np.log2(freqs / 180.0) / 0.3) ** 2)).tolist(),
+        spread_db=[0.0] * len(freqs),
+    )
+    for position in raw["positions"]:
+        position["deviation_db"] = [0.0] * len(freqs)
+    with pytest.raises(RoomPrescriptionRefused) as excinfo:
+        _read(_document(filters=[{"freq": 180.0, "q": 1.0, "gain": gain}]), raw)
+    assert excinfo.value.reason == TAPER_VIOLATED
+    assert excinfo.value.evidence["freq_hz"] > raw["coverage_hz"][1]
+
+
 # --- the CLI ----------------------------------------------------------------
 
 
@@ -432,7 +449,7 @@ def test_compose_refuses_half_the_room_evidence(evidence, bank, capsys):
 def test_the_producers_median_reads_through_the_door(tmp_path):
     """The seat cube's own artifact, not a hand-built one, is what the door reads."""
     round_dir = bank_seat_round(tmp_path)
-    document = room_median(seat_takes(round_inputs(round_dir).session_dir), room_ceiling(None))
+    document = room_median(select_seat_takes(round_inputs(round_dir).session_dir).takes, room_ceiling(None))
 
     median = read_room_median(document)
 
