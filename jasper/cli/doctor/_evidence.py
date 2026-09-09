@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from ...env_load import parse_env_mapping
 from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -102,34 +103,13 @@ def _loopback_substreams() -> dict[int, str]:
 
 
 def _read_env_mapping(path: str) -> dict[str, str] | None:
-    """One env file's parsed mapping, or None when it could not be read.
-
-    Every consuming check already folds missing and unreadable together (a
-    broad ``except OSError`` around its own ``Path(...).read_text()``), so
-    this collapses the same way rather than tracking a three-way status.
-    """
-    from ...env_load import parse_env_mapping
-
+    """One env file's parsed mapping, or None when it could not be read
+    (missing or unreadable)."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
     return parse_env_mapping(text)
-
-
-def env_text_for_keys(mapping: dict[str, str] | None, *keys: str) -> str:
-    """Reconstruct ``keys``' assignments as env-file text from an
-    evidence-cached mapping (e.g. :meth:`Evidence.fanin_env`).
-
-    Bridges the parsed-mapping evidence keys into helpers that still parse
-    raw env-file text for one or two keys (``resolve_effective_fanin_ring_slots``,
-    ``combo_armed_from_env``, ``outputd_ring_path_for``) — those own real
-    fallback/validation logic beyond a single lookup and stay as they are;
-    this only avoids a second file read to feed them.
-    """
-    if not mapping:
-        return ""
-    return "".join(f"{key}={mapping[key]}\n" for key in keys if key in mapping)
 
 
 class Evidence:
@@ -264,11 +244,9 @@ class Evidence:
         return self.get("loopback_substreams", _loopback_substreams)
 
     def fanin_env(self) -> dict[str, str] | None:
-        """``fanin.env``'s parsed mapping, read once per run — the coupling,
-        ring-geometry, and USB-combo checks each used to open this file
-        themselves. None when it could not be read (missing or unreadable);
-        every consuming check already treats those alike."""
-        from ...env_load import FANIN_ENV_PATH
+        """``fanin.env``'s parsed mapping, read once per run. None when it
+        could not be read (missing or unreadable)."""
+        from ...env_load import FANIN_ENV_PATH  # lazy: tests patch env_load.FANIN_ENV_PATH at call time
 
         return self.get("fanin_env", lambda: _read_env_mapping(FANIN_ENV_PATH))
 
@@ -277,7 +255,7 @@ class Evidence:
         file's text, NOT the merged ``outputd_reconciled_env`` three-layer
         stack (see ``audio_runtime_outputd._outputd_reconciled_env``). None
         when it could not be read."""
-        from ...env_load import OUTPUTD_ENV_PATH
+        from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
 
         return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 
@@ -416,6 +394,5 @@ __all__ = [
     "DOCTOR_MAX_CONCURRENCY",
     "Evidence",
     "StatusRead",
-    "env_text_for_keys",
     "evidence",
 ]

@@ -27,7 +27,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from jasper.env_file import read_value
+from jasper.env_file import env_value, read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -235,7 +235,7 @@ def saved_topology_reader() -> Callable[[], Any]:
 
 
 def _effective_env_value(
-    later_text: str, key: str, *, later_path: str
+    later: str | Mapping[str, str], key: str, *, later_path: str
 ) -> tuple[str | None, str]:
     """What a two-file ``EnvironmentFile=`` chain resolves for ``key``, and from where.
 
@@ -247,18 +247,19 @@ def _effective_env_value(
     key from the later file precisely so the earlier one is the only
     declaration left.
 
-    ``later_text`` is the caller's already-read snapshot of the later file (the
-    arm path holds one it may have just written); ``jasper.env`` is read here.
-    Returns the RAW string and its source path, applying no emptiness or parse
-    policy — each caller's own vocabulary for "declared but empty" differs, and
-    collapsing them here would make one of them wrong. ``source`` is meaningful
-    only when the value is not ``None``.
+    ``later`` is the caller's already-read snapshot of the later file — raw
+    text or an equivalent parsed mapping (the arm path holds one it may have
+    just written); ``jasper.env`` is read here. Returns the RAW string and its
+    source path, applying no emptiness or parse policy — each caller's own
+    vocabulary for "declared but empty" differs, and collapsing them here
+    would make one of them wrong. ``source`` is meaningful only when the
+    value is not ``None``.
 
     ONE chain, read by :func:`resolve_effective_fanin_ring_slots` and
     :func:`resolve_effective_fanin_wire_format` rather than each hand-rolling
     the fallback.
     """
-    raw = read_value(later_text, key)
+    raw = env_value(later, key)
     if raw is not None:
         return raw, later_path
     return read_value(_read_snapshot(BASE_ENV_PATH).text, key), BASE_ENV_PATH
@@ -1403,19 +1404,22 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     )
 
 
-def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolution:
+def resolve_effective_fanin_ring_slots(
+    fanin_env: str | Mapping[str, str],
+) -> FaninRingSlotsResolution:
     """Resolve Ring-A slots from the same env-file order ``jasper-fanin`` uses.
 
     ``jasper-fanin.service`` reads ``/etc/jasper/jasper.env`` first and
     ``/var/lib/jasper/fanin.env`` last, so the reconciler and doctor must model the
     same chain (:func:`_effective_env_value`). Looking only at ``fanin.env`` can
     report the new default while an old ``JASPER_FANIN_RING_SLOTS=8`` in the
-    earlier system env still controls the next daemon start.
+    earlier system env still controls the next daemon start. ``fanin_env`` is
+    raw ``fanin.env`` text or an equivalent already-parsed mapping.
     """
     from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
 
     raw, source = _effective_env_value(
-        fanin_text, RING_SLOTS_ENV_VAR, later_path=FANIN_ENV_PATH
+        fanin_env, RING_SLOTS_ENV_VAR, later_path=FANIN_ENV_PATH
     )
     if raw is None:
         source = "default"

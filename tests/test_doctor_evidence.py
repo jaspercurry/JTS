@@ -151,15 +151,6 @@ def test_env_file_readers_are_memoized_and_fail_soft_to_none(
     assert getattr(Evidence(), method_name)() is None
 
 
-def test_env_text_for_keys_reconstructs_only_the_requested_assignments():
-    mapping = {"A": "1", "B": "2"}
-    assert _evidence.env_text_for_keys(mapping, "A") == "A=1\n"
-    assert _evidence.env_text_for_keys(mapping, "A", "C") == "A=1\n"
-    assert _evidence.env_text_for_keys(mapping) == ""
-    assert _evidence.env_text_for_keys(None, "A") == ""
-    assert _evidence.env_text_for_keys({}, "A") == ""
-
-
 def test_daemon_status_is_fail_soft_and_classifies_unreachable(monkeypatch):
     def unreachable(path, *, timeout):
         raise ConnectionRefusedError(path)

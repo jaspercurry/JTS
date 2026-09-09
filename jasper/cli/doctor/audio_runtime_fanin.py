@@ -820,8 +820,9 @@ def check_fanin_coupling_value() -> CheckResult:
             label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
             reason=REASON_COUPLING_FILE_ABSENT,
         )
-    # The raw token is read for the MESSAGE only; the verdict is the shared
-    # predicate's, so this surface cannot drift from what fan-in serves.
+    # `coupling_value_removed` is the same predicate `persisted_coupling_feeds_ring`
+    # applies to fanin.env's own read, so this verdict cannot drift from what
+    # fan-in serves.
     raw = env.get(COUPLING_ENV_VAR)
     if coupling_value_removed(raw):
         return CheckResult(

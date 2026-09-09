@@ -60,7 +60,7 @@ from jasper.usb_mic import (
     relay_audio_issue,
 )
 
-from ._evidence import env_text_for_keys, evidence
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
@@ -836,7 +836,6 @@ def check_usb_combo_consistency() -> CheckResult:
     Skip-if-not-applicable: a box whose resolved USB role cannot carry a gadget
     reports ok with a skip note (check_usb_data_role owns the reason)."""
     from jasper.fanin.coupling_auto import (
-        USB_DIRECT_ENV_VAR,
         combo_armed_from_env,
         read_usb_gadget_available,
     )
@@ -864,8 +863,7 @@ def check_usb_combo_consistency() -> CheckResult:
             reason=REASON_SOURCE_INTENT_INVALID,
         )
     # Off the per-run memo instead of a second fanin.env read (ADR-0233 rule 4).
-    fanin_text = env_text_for_keys(evidence.fanin_env(), USB_DIRECT_ENV_VAR)
-    armed = combo_armed_from_env(fanin_text)
+    armed = combo_armed_from_env(evidence.fanin_env() or {})
 
     if not gadget:
         return CheckResult(

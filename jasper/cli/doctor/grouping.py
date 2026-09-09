@@ -633,25 +633,26 @@ def check_grouping_leader_pipe() -> CheckResult:
     return CheckResult(label, "ok", f"leader CamillaDSP writes {SNAPFIFO}")
 
 
-def _outputd_grouping_env_or_error() -> tuple[dict[str, str], OSError | None]:
+def _outputd_grouping_env_or_error() -> tuple[dict[str, str] | None, OSError | None]:
     """``grouping-outputd.env``'s parsed mapping, read once per run — the
     channel-pick and TTS-lane checks both consume it (ADR-0233 rule 4).
 
-    Missing file -> ``({}, None)``: absence is the ordinary state for a solo
-    box, not a fault. An existing-but-unreadable file -> ``({}, the
-    OSError)`` so a caller can still report the fault rather than treating
-    it as silently absent.
+    Tri-state so a caller never needs a second ``exists()`` to tell missing
+    from present-but-empty: ``(None, None)`` — the file does not exist, the
+    ordinary state for a solo box, not a fault. ``(None, the OSError)`` — it
+    exists but could not be read. ``(mapping, None)`` — parsed, possibly
+    empty.
     """
-    from ...env_load import OUTPUTD_GROUPING_ENV_FILE
+    from ...env_load import OUTPUTD_GROUPING_ENV_FILE  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
 
-    def read() -> tuple[dict[str, str], OSError | None]:
+    def read() -> tuple[dict[str, str] | None, OSError | None]:
         path = Path(OUTPUTD_GROUPING_ENV_FILE)
         if not path.exists():
-            return {}, None
+            return None, None
         try:
             return parse_env_mapping(path.read_text()), None
         except OSError as e:
-            return {}, e
+            return None, e
 
     return evidence.get("outputd_grouping_env", read)
 
@@ -699,7 +700,9 @@ def check_grouping_channel_pick() -> CheckResult:
     is gone). A missing or drifted env is SILENT (the speaker plays the
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
-    from ...env_load import OUTPUTD_GROUPING_ENV_FILE
+    from ...env_load import (  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
+        OUTPUTD_GROUPING_ENV_FILE,
+    )
     from ...fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.config import is_active_member
     from ...multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
@@ -750,7 +753,7 @@ def check_grouping_channel_pick() -> CheckResult:
             label, "skipped", f"could not read {OUTPUTD_GROUPING_ENV_FILE}: {env_err}",
             reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
         )
-    if not env and not Path(OUTPUTD_GROUPING_ENV_FILE).exists():
+    if env is None:
         if active_endpoint:
             return CheckResult(
                 label, "ok",
@@ -830,6 +833,7 @@ def check_grouping_tts_lane() -> CheckResult:
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
     PR-2 closed that gap.)"""
+    # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
     from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
     from ...multiroom.reconcile import is_active_speaker_box
@@ -907,7 +911,7 @@ def check_grouping_tts_lane() -> CheckResult:
             f"could not read {OUTPUTD_GROUPING_ENV_FILE}: {outputd_err}",
             reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
         )
-    outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")
+    outputd_socket = (outputd_env or {}).get(OUTPUTD_TTS_SOCKET_ENV, "")
     lane_armed = bool(outputd_socket)
 
     if route.voice_parked and not voice_parked:

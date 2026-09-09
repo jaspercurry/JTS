@@ -32,7 +32,7 @@ from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
-from ._evidence import env_text_for_keys, evidence
+from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 from .audio_runtime_camilla import _camilla_statefile
@@ -345,7 +345,6 @@ def check_content_transport_coherence() -> CheckResult:
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
@@ -441,16 +440,11 @@ def check_content_transport_coherence() -> CheckResult:
         )
     # The SUBJECT stays outputd.env's own keys: the marker and the ring path are
     # single-writer keys of that file, and `outputd_ring_path_for` is contracted
-    # on one snapshot of the file being reconciled. Off the per-run memo instead
+    # on one snapshot of the file being reconciled — the per-run memo instead
     # of a second read (ADR-0233 rule 4).
-    own_outputd_env = evidence.outputd_env()
-    carried = resolve_outputd_ring_path(
-        (own_outputd_env or {}).get(OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    outputd_text = env_text_for_keys(
-        own_outputd_env, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR, OUTPUTD_RING_PATH_ENV_VAR
-    )
-    derived = outputd_ring_path_for(outputd_text)
+    own_outputd_env = evidence.outputd_env() or {}
+    carried = resolve_outputd_ring_path(own_outputd_env.get(OUTPUTD_RING_PATH_ENV_VAR))
+    derived = outputd_ring_path_for(own_outputd_env)
     if carried != derived:
         return _crossed_transport_pair(
             label,
@@ -1002,8 +996,7 @@ def check_ring_geometry_coherence() -> CheckResult:
 
     # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).
     # Off the per-run memo instead of re-opening fanin.env (ADR-0233 rule 4).
-    fanin_text = env_text_for_keys(evidence.fanin_env(), RING_SLOTS_ENV_VAR)
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
+    resolution = resolve_effective_fanin_ring_slots(evidence.fanin_env() or {})
     if resolution.value is None:
         return CheckResult(
             label, "fail",

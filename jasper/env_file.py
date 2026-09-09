@@ -90,6 +90,18 @@ def parse_env_mapping(text: str) -> dict[str, str]:
     return {k: _unquoted(v) for k, v in parse_env_lines(text) if v is not None}
 
 
+def env_value(source: str | Mapping[str, str], key: str) -> str | None:
+    """``key``'s value from ``source`` — raw env-file text via
+    :func:`read_value`, or an already-parsed mapping's own entry.
+
+    One lookup for callers that may hold either shape of the same snapshot
+    (e.g. a cached mapping standing in for a file they'd otherwise re-read).
+    """
+    if isinstance(source, str):
+        return read_value(source, key)
+    return source.get(key)
+
+
 def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
     """Set ``key=value``, replacing the first assignment in place or appending.
 
