@@ -351,7 +351,10 @@ _jasper_env_file_upsert() {
     dir="$(dirname "$file")"
     _jasper_env_file_ensure_dir "$dir" "$dir_mode"
     _jasper_env_lock_acquire "$dir" "$file" || return 1
-    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    if ! tmp="$(mktemp "${dir}/.${key}.XXXXXX")"; then
+        exec 9>&-
+        return 1
+    fi
     quoted="$(jasper_env_quote_value "$value")"
 
     if [[ -f "$file" ]]; then
@@ -422,7 +425,10 @@ jasper_env_file_unset() {
         exec 9>&-
         return 0
     fi
-    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    if ! tmp="$(mktemp "${dir}/.${key}.XXXXXX")"; then
+        exec 9>&-
+        return 1
+    fi
     awk -v key="$key" '
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
         { print }

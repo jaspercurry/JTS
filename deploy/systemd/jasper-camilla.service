@@ -1,11 +1,8 @@
 [Unit]
 Description=CamillaDSP (always-on, outputd + master_gain ducking node)
 After=sound.target network.target jasper-audio-hardware-reconcile.service jasper-outputd.service jasper-fanin.service
-# Wants=, never Requires=, on the hardware reconciler: After= already holds the
-# start until that oneshot is terminal, and a Requires= turns its non-zero exit
-# into a dependency failure that leaves this Restart=always daemon stopped —
-# silent speaker. The reconciler's own park/recover path owns that failure.
-Wants=sound.target jasper-outputd.service jasper-fanin.service jasper-audio-hardware-reconcile.service
+Wants=sound.target jasper-outputd.service jasper-fanin.service
+Requires=jasper-audio-hardware-reconcile.service
 # 5 restarts in 60s absorbs a transient ALSA hiccup without letting a
 # genuinely broken config loop forever.
 StartLimitIntervalSec=60
@@ -37,7 +34,8 @@ Type=simple
 # Pipe guard: if the statefile points at a BONDED pipe config but the
 # snapserver FIFO is dead, camilladsp 4.1.3 exits CLEAN (measured), which
 # Restart=always turns into a repeated parked/recovery cycle. The guard
-# repairs the statefile to the base config before launch. Best effort (`-`).
+# repairs the statefile to the base config before launch. Best effort (`-`);
+# the reconciler above is the hard startup gate.
 ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \

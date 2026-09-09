@@ -1565,8 +1565,10 @@ install_systemd_units() {
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition
     # skips cleanly when the resolved role cannot provide management transport
-    # or no UDC exists yet. The relay is enabled FIRST so the gadget's own
-    # `enable --now` pulls it through the [Install] wants link this creates.
+    # or no UDC exists yet. enable_usbmic_relay only PLANTS the relay's wants
+    # links; jasper-usbgadget is RemainAfterExit=yes, so its `enable --now`
+    # starts nothing on an already-composed box. The boot-time WantedBy pull and
+    # jasper-usbgadget-compose.sh's try-restart are what run the relay.
     enable_usbmic_relay
     enable_usbgadget
 

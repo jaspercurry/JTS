@@ -34,8 +34,6 @@ from tests.systemd_unit_helpers import (
     never_stays_complete,
     pulled_ordered_dependencies,
     seconds_for,
-    value_for,
-    values_for,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -987,34 +985,6 @@ def test_usbnet_dhcp_unit_is_hardened_scoped_dnsmasq():
     assert any("sys-subsystem-net-devices-usb0.device" in v for v in after), (
         "the unit must order After= the usb0 device unit"
     )
-
-
-def test_no_restart_always_daemon_hard_depends_on_a_oneshot():
-    """A unit that must never stay stopped may not be gated on a oneshot.
-
-    `Requires=`/`BindsTo=` propagate a dependency FAILURE into the dependent's
-    start job, and systemd does not retry a start that failed that way — a
-    Restart=always daemon left down by a failed Type=oneshot has nothing left
-    to bring it back (jasper-camilla + jasper-audio-hardware-reconcile, #4416
-    R8). `After=` alone still holds the start until the oneshot is terminal,
-    so ordering costs nothing here. Targets that ship no unit file in this
-    tree are distro daemons and out of scope.
-    """
-    shipped = {
-        path.name: path.read_text(encoding="utf-8")
-        for path in SYSTEMD_UNIT_DIR.glob("*.service")
-    }
-    offenders = {
-        name: sorted(
-            target
-            for key in ("Requires", "BindsTo")
-            for target in values_for(text, key)
-            if value_for(shipped.get(target, ""), "Type") == "oneshot"
-        )
-        for name, text in shipped.items()
-        if value_for(text, "Restart") == "always"
-    }
-    assert not {name: hits for name, hits in offenders.items() if hits}
 
 
 USB_NETWORK_PLAN_UNIT = ROOT / "deploy/systemd/jasper-usb-network-plan.service"

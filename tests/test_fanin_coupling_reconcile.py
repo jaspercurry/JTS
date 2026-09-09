@@ -1564,23 +1564,18 @@ def _unit_directives(name: str) -> list[tuple[str, str]]:
 def test_camilla_start_requeues_the_hardware_reconciler_by_construction():
     """The dependency that dominates the start bound is structural, not a fluke.
 
-    jasper-camilla pulls the hardware reconciler AND is After= it, and that
+    jasper-camilla Requires= AND is After= the hardware reconciler, and that
     reconciler is a Type=oneshot whose RemainAfterExit is unset — so it is
-    inactive between runs and every camilla start re-queues it in full. The
-    pull is Wants=, not Requires= (#4416 R8): a Wants= is still queued and
-    still awaited through After=, so the bound is unchanged.
+    inactive between runs and every camilla start re-queues it in full.
     """
     import jasper.fanin.coupling_reconcile as cr
 
     camilla = _unit_directives("jasper-camilla.service")
-    pulled = {
-        unit
-        for key, value in camilla
-        if key in {"Requires", "Wants"}
-        for unit in value.split()
+    requires = {
+        unit for key, value in camilla if key == "Requires" for unit in value.split()
     }
     after = {unit for key, value in camilla if key == "After" for unit in value.split()}
-    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in pulled
+    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in requires
     assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in after
 
     reconciler = dict(_unit_directives(cr.AUDIO_HARDWARE_RECONCILE_UNIT))

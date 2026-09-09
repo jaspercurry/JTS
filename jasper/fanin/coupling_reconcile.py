@@ -304,10 +304,9 @@ def _assistant_width_token(env_path: str | Path) -> str:
 
 # How long a blocking START of jasper-camilla may take.
 #
-# jasper-camilla.service is Type=simple, but it declares Wants= AND After=
+# jasper-camilla.service is Type=simple, but it declares Requires= AND After=
 # jasper-audio-hardware-reconcile.service, a Type=oneshot whose RemainAfterExit
-# is unset. Wants= is queued and awaited exactly like Requires= here; only the
-# failure propagation differs (#4416 R8), so the bound below is unchanged. That reconciler is therefore inactive between runs and RE-RUNS IN
+# is unset. That reconciler is therefore inactive between runs and RE-RUNS IN
 # FULL on every camilla start, with PID 1 holding camilla's start job until the
 # oneshot reports terminal. On a Pi Zero 2 W a camilla restart measures ~30 s,
 # of which the re-queued reconciler is ~26 s; on a Pi 5, ~4 s.
@@ -384,7 +383,7 @@ def _start_camilla(reason: str) -> tuple[bool, str]:
     so this runs AFTER the ``Type=notify`` fan-in restart has returned.
 
     Bounded by :data:`_CAMILLA_START_TIMEOUT_SEC`, which carries the re-queued
-    hardware-reconciler oneshot camilla ``Wants=``; see that constant.
+    hardware-reconciler oneshot camilla ``Requires=``; see that constant.
     """
     return _restart_unit(
         CAMILLA_UNIT, verb="start", reason=reason,
