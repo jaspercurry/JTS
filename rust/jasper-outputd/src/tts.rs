@@ -721,11 +721,11 @@ mod tests {
         assert!(bridge.open_segment.is_some());
     }
 
-    /// The volume context is now a first-class INPUT to outputd's gain, not a
-    /// dropped command. With MixStage::PostDsp the engine zeroes Camilla's
-    /// downstream_db, so a first-use reply targets the envelope directly:
-    /// source_lufs -25, envelope -41 → gain -16 dB (the -30 downstream is
-    /// ignored, which is exactly the double-compensation this fix prevents).
+    /// The volume context is a first-class INPUT to outputd's gain. With
+    /// MixStage::PostDsp the engine zeroes Camilla's downstream_db, so a
+    /// first-use reply targets the envelope directly: source_lufs -25,
+    /// envelope -41 → gain -16 dB (the -30 downstream is ignored, avoiding
+    /// double-compensation).
     fn post_dsp_bridge_inputs(
         tx: &SyncSender<QueuedTtsCommand>,
         source_lufs: f32,

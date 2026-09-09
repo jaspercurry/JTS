@@ -27,9 +27,9 @@ pub mod config;
 // detector over whichever content source is live (#3458).
 pub mod content_fill;
 pub mod core;
-// outputd's multi-room role: the `dac_content` reader (Increment 3) — the
-// round-trip lane a grouping member's snapclient feeds. The canonical design
-// has CamillaDSP feed the snapserver pipe, not outputd.
+// outputd's multi-room role: the `dac_content` reader — the round-trip lane
+// a grouping member's snapclient feeds. The canonical design has CamillaDSP
+// feed the snapserver pipe, not outputd.
 pub mod dac_content;
 pub mod fake;
 pub mod ledger;

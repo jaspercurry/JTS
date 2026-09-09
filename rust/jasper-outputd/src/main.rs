@@ -457,7 +457,7 @@ fn run_alsa(
     };
     let on_dac_content = matches!(content, ContentSource::DacContent(_));
 
-    // Bonded-member TTS (Increment 5 PR-2): constructed ONLY when the
+    // Bonded-member TTS: constructed ONLY when the
     // reconciler set the socket env — solo keeps fanin-owned TTS and
     // this loop stays byte-identical. The OutputCore engine (assistant
     // segments, loudness, saturating mix, the DAC-true PlayoutLedger)
@@ -661,10 +661,9 @@ fn run_alsa(
                     sink.dac_negotiated().buffer_frames as u64
                 }
             };
-            // Real clip accounting (replaces the hardwired 0): the passthrough
-            // never clips, so a full-scale sample means CamillaDSP hit the
-            // ceiling upstream — the honest signal the Stage-6 no-clip gate
-            // needs (it was vacuously green against a hardwired 0).
+            // Real clip accounting: the passthrough never clips, so a
+            // full-scale sample means CamillaDSP hit the ceiling upstream —
+            // the honest signal the no-clip gate needs.
             let clipped = count_full_scale_samples(&content_buf);
             let next_reference_sequence = reference_sequence.saturating_add(1);
             if content_channels == CHANNELS as usize {
@@ -787,15 +786,14 @@ const SPINE_S16_LSB: ProgramSample = 1 << 16;
 /// the ceiling upstream.
 ///
 /// "Full scale" is a band one S16 LSB wide at each rail, NOT equality with the
-/// i32 rails, and that is the whole subtlety of moving this to the spine. A
-/// widened S16 full-scale sample is `0x7FFF_0000` — one S16 LSB BELOW `i32::MAX`
-/// — so an `s == i32::MAX` test would report 0 forever on every S16-content box
-/// and quietly restore the vacuously-green Stage-6 no-clip gate this function was
-/// written to fix. The band is symmetric by construction
+/// i32 rails. A widened S16 full-scale sample is `0x7FFF_0000` — one S16 LSB
+/// BELOW `i32::MAX` — so an `s == i32::MAX` test would report 0 forever on
+/// every S16-content box and quietly leave the no-clip gate vacuously green.
+/// The band is symmetric by construction
 /// (`[i32::MAX - 65535, i32::MAX]` and `[i32::MIN, i32::MIN + 65535]`) and
-/// contains both the widened-S16 rails and the native-S32 rails, so the count is
-/// unchanged on today's fleet and correct once the lane goes wide. The nearest
-/// non-clipping S16 value, widened, is 65536 below the band and is not counted.
+/// contains both the widened-S16 rails and the native-S32 rails, so the count
+/// is correct on both. The nearest non-clipping S16 value, widened, is 65536
+/// below the band and is not counted.
 fn count_full_scale_samples(samples: &[ProgramSample]) -> u32 {
     samples
         .iter()
@@ -815,9 +813,8 @@ fn count_full_scale_samples(samples: &[ProgramSample]) -> u32 {
 /// wide spine was introduced to keep, and it would lose it on the two paths a
 /// grouped member uses constantly. f64 represents every i32 exactly.
 ///
-/// Rounds rather than truncating (the old i16 version's `as i16` cast truncated
-/// toward zero). At duck depths either is inaudible; rounding is chosen because
-/// the whole point of this change is that resolution is given up in exactly one
+/// Rounds rather than truncating toward zero. At duck depths either is
+/// inaudible; rounding is chosen so resolution is given up in exactly one
 /// place, and this is not that place. The clamp is belt: with gain <= 1.0 the
 /// product's magnitude cannot exceed the input's.
 fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
@@ -1130,8 +1127,8 @@ impl ChipRefDownsampler {
         })
     }
 
-    /// KNOWN ALLOCATION EXCEPTION on the playout thread — pre-existing, unchanged
-    /// by the i32 spine, and deliberately left alone here.
+    /// KNOWN ALLOCATION EXCEPTION on the playout thread, deliberately left
+    /// alone here.
     ///
     /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
     /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
@@ -1139,8 +1136,7 @@ impl ChipRefDownsampler {
     /// period, and ONLY on boxes with the chip-reference leg armed
     /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
     /// second thread for it. Fixing it means giving the writer a pool or a
-    /// pre-sized ring, which changes the queue's ownership model: out of scope for
-    /// the spine widening, and it must not be silently folded in.
+    /// pre-sized ring, which changes the queue's ownership model.
     fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
         let input_frames = stereo_samples.len() / (CHANNELS as usize);
         let output_frames =
@@ -1164,13 +1160,11 @@ impl ChipRefDownsampler {
 
 /// Reinterpret an S16 slice as its little-endian wire bytes.
 ///
-/// **Deliberately monomorphic in `i16`, and that is the point.** It replaces a
-/// type-adaptive `bytemuck_i16<T>`-shaped helper whose name promised i16 while
-/// its body would happily accept `&[i32]` and emit TWICE the bytes — with the
-/// program spine now i32, calling that helper on a spine slice would have sent
-/// 2x-length datagrams to `jasper-aec-bridge` and written 2x bytes to the
-/// chip-ref tee, silently, with every counter still reporting success. The
-/// signature is the guard: a spine slice does not compile here.
+/// **Deliberately monomorphic in `i16`, and that is the point.** A
+/// type-adaptive helper whose body accepted `&[i32]` would emit TWICE the
+/// bytes — sending 2x-length datagrams to `jasper-aec-bridge` and writing 2x
+/// bytes to the chip-ref tee, silently, with every counter still reporting
+/// success. The signature is the guard: a spine slice does not compile here.
 /// `the_reference_datagram_is_exactly_one_s16_stereo_period` pins the resulting
 /// wire length.
 fn i16_bytes(samples: &[i16]) -> &[u8] {
@@ -1621,9 +1615,8 @@ fn watchdog_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the test `Config` literal names it now that the run loop's ring
-    // staging moved into `ShmRingSource`; importing it at module scope would
-    // be an unused import in a non-test build.
+    // Only the test `Config` literal names this type; importing it at
+    // module scope would be an unused import in a non-test build.
     use jasper_outputd::config::ContentBridgeMode;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1642,8 +1635,8 @@ mod tests {
 
     /// A ring WIRE mismatch parks the unit; it does not restart-loop it.
     ///
-    /// Ring v2 gave the ring geometry two per-box axes (format, channels), so a
-    /// writer and this reader can now disagree on a field that no slot/period
+    /// The ring v2 geometry has two per-box axes (format, channels), so a
+    /// writer and this reader can disagree on a field that no slot/period
     /// check would notice. This walks a REAL such disagreement — an S16 ring
     /// file against an S32 declaration — through the SAME
     /// `classify_shm_ring_attach_error` the run loop applies to it, and pins the
@@ -2126,9 +2119,8 @@ mod tests {
             &mut out,
         );
 
-        // Same monitor contract as before the spine widened — the pairwise child
-        // averages, now exact at the spine's resolution instead of rounded onto
-        // the S16 grid (these particular averages are whole numbers either way).
+        // The pairwise child averages, exact at the spine's resolution (these
+        // particular averages are whole numbers either way).
         assert_eq!(out, wv(&[200, 2000, -200, -2000]));
     }
 
@@ -2233,7 +2225,7 @@ mod tests {
         assert_ne!(w(i16::MAX), ProgramSample::MAX, "the trap must be real");
         assert_eq!(count_full_scale_samples(&[w(i16::MAX)]), 1);
         assert_eq!(count_full_scale_samples(&[w(i16::MIN)]), 1);
-        // A native S32 lane's own rails count too (what PR-6 will feed it).
+        // A native S32 lane's own rails count too.
         assert_eq!(count_full_scale_samples(&[ProgramSample::MAX]), 1);
         assert_eq!(count_full_scale_samples(&[ProgramSample::MIN]), 1);
 
