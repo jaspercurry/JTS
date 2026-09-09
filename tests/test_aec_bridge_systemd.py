@@ -124,3 +124,11 @@ def test_bridge_parks_on_the_permanent_fault_exit_codes() -> None:
         assert code in success, success
         assert code in prevent, prevent
     assert "1" not in success, success
+
+
+def test_restart_sec_matches_controls_reboot_ladder() -> None:
+    """RestartSec must not narrow back to 2 s: with StartLimitBurst=4 that
+    made the bridge the tightest restart ladder on the box (~8 s to reboot).
+    """
+    unit = UNIT_PATH.read_text()
+    assert _value_for(unit, "RestartSec") == "5", _value_for(unit, "RestartSec")

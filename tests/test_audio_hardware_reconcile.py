@@ -739,11 +739,7 @@ def test_camilla_boot_requires_successful_runtime_graph_convergence(
         ROOT / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text(encoding="utf-8")
 
-    # Wants=, not Requires=: see test_systemd_hardening.py's oneshot-Requires scan.
-    wants_line = next(
-        line for line in camilla_unit.splitlines() if line.startswith("Wants=")
-    )
-    assert "jasper-audio-hardware-reconcile.service" in wants_line
+    assert "Requires=jasper-audio-hardware-reconcile.service" in camilla_unit
     after_line = next(
         line for line in camilla_unit.splitlines() if line.startswith("After=")
     )

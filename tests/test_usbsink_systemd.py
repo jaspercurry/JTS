@@ -67,6 +67,7 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
     assert _value_for(body, "Type") == "oneshot"
     assert _value_for(body, "RemainAfterExit") == "yes"
     assert _assignments_for(body, "ExecStart") == ("/bin/true",)
+    assert "jasper-usbgadget.service" in _values_for(body, "Requires")
     assert "jasper-usbgadget.service" in _values_for(body, "PartOf")
     assert "jasper-usbsink-volume.service" in _values_for(body, "Wants")
 

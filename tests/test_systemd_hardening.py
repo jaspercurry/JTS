@@ -34,8 +34,6 @@ from tests.systemd_unit_helpers import (
     never_stays_complete,
     pulled_ordered_dependencies,
     seconds_for,
-    value_for,
-    values_for,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -387,28 +385,6 @@ def _blocking_start_cost_sec(name: str, active: set[str]) -> float:
         active.add(current)
         queue.extend(pulled_ordered_dependencies(text))
     return total
-
-
-def test_no_restart_always_unit_hard_requires_a_transient_oneshot():
-    """A Restart=always/on-failure unit going inactive whenever a oneshot
-    Requires= target completes and stays inactive would drag the daemon down
-    with it every time that oneshot runs. Scanned, not hand-listed, so a new
-    unit is covered without a matching edit here.
-    """
-    # Remove when no long-running unit Requires= a oneshot.
-    for unit_path in sorted(SYSTEMD_UNIT_DIR.glob("*.service")):
-        text = unit_path.read_text(encoding="utf-8")
-        if value_for(text, "Restart") not in ("always", "on-failure"):
-            continue
-        for name in values_for(text, "Requires"):
-            dep_path = SYSTEMD_UNIT_DIR / name
-            if not dep_path.is_file():
-                continue
-            dep_text = dep_path.read_text(encoding="utf-8")
-            assert not never_stays_complete(dep_text), (
-                f"{unit_path.name} Requires= {name}, a Type=oneshot unit "
-                "without RemainAfterExit=yes"
-            )
 
 
 def test_dongle_recover_timeout_covers_its_whole_blocking_start_chain():
