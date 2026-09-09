@@ -5,7 +5,7 @@
 """Unit tests for jasper.net.mdns — the ONE one-shot mDNS-SD browse primitive.
 
 ``browse_once`` is the shared, fail-soft browse+resolve+parse moved out of
-``rooms_setup._discover_speakers``. These tests are strictly hardware-free:
+``rooms_peers._discover_speakers``. These tests are strictly hardware-free:
 they never stand up a real multicast listener. Two seams are exercised:
 
   1. **Fail-soft.** If zeroconf is unavailable (the lazy import inside

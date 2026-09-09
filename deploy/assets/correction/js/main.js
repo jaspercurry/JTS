@@ -37,7 +37,7 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
 (function () {
   'use strict';
 
-  var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_setup.py
+  var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_capture.py
 
   var pageRoot = document.querySelector('main.correction-stack');
   // The shared measurement kernel owns this trust margin. If the server ever
@@ -588,7 +588,7 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
 
   // This is the UX-side mirror of the authoritative server gate
   // (_BUILTIN_MIC_LABEL_RE / _calibration_device_mismatch in
-  // jasper/web/correction_setup.py). Keep the two patterns in sync; the
+  // jasper/web/correction_capture.py). Keep the two patterns in sync; the
   // backend is the one that actually blocks a wrong-mic measurement.
   function looksLikeBuiltInMic(label) {
     return /iphone|ipad|ipod|macbook|built[- ]?in|^\s*default/i.test(label || '');

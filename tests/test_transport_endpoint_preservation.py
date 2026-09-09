@@ -364,7 +364,7 @@ async def test_a_sound_save_preserves_the_boxs_endpoint(
 ):
     """A household EQ save changes the EQ, never the transport (#2337).
 
-    ``/sound/eq/`` and ``/sound/setup/`` both land on ``load_profile_config``; pre-fix
+    ``/sound/eq/`` and ``/sound/speaker/`` both land on ``load_profile_config``; pre-fix
     a taste-EQ save disarmed the box and the reconcilers converged it to
     loopback."""
     from jasper.sound.runtime import load_profile_config

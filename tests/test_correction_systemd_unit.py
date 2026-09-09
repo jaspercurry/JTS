@@ -52,7 +52,7 @@ def test_correction_location_allows_large_capture_upload():
     assert m, "/sound/room/ location must set client_max_body_size (Nm)"
     nginx_bytes = int(m.group(1)) * 1024 * 1024
 
-    from jasper.web.correction_capture import MAX_WAV_BODY_BYTES
+    from jasper.web.correction_runtime import MAX_WAV_BODY_BYTES
     assert nginx_bytes >= MAX_WAV_BODY_BYTES, (
         "nginx client_max_body_size must be >= backend MAX_WAV_BODY_BYTES"
     )

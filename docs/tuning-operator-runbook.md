@@ -190,6 +190,13 @@ After cancellation, a lost answer, or a physical interruption:
   evidence, and reusable parts. A restore failure needs its recorded recovery
   action; do not claim playback was restored without readback.
 
+CHECK sets each driver's initial test gain. If MEASURE then finds weak timing
+SNR, JTS keeps that take and can make one stronger retake for the weak driver.
+The increase stays within the CHECK capture ceiling and the driver caps. The
+retry state and actual gains survive a resume. If no headroom remains, or the
+retake is still weak, the flow continues with the measured SNR disclosed; it
+does not keep raising the level or discard the earlier evidence.
+
 ## The tool menu
 
 This block is generated from CLI help. Offline tools can write files.

@@ -4,10 +4,11 @@
 
 // Sound profile — the page's shared records and its boot island.
 //
-// The /sound/eq/ and /sound/setup/ views share these records by reference:
-// callers mutate their properties, never the bindings, so this module stays
-// the one owner of each. `pageData` reads the JSON island at evaluation time,
-// which is safe because the page loads main.js as a deferred module script.
+// The /sound/eq/, /sound/speaker/ and /sound/output/ views share these records
+// by reference: callers mutate their properties, never the bindings, so this
+// module stays the one owner of each. `pageData` reads the JSON island at
+// evaluation time, which is safe because the page loads main.js as a deferred
+// module script.
 
 var ACTIVE_GAIN_EPSILON_DB = 0.05;
 
@@ -69,7 +70,8 @@ function crossoverVocabularyFromIsland(raw) {
   };
 }
 // nginx selects one renderer mode on the same backend. EQ owns profiles and
-// Match Loudness; Setup owns output controls and local commissioning.
+// Match Loudness; Speaker owns the layout, drivers and local commissioning;
+// Output owns the I2S HAT and volume shaping.
 var pageData = (function() {
   var node = document.getElementById('sound-page-data');
   var text = node && node.textContent ? node.textContent.trim() : '';
@@ -85,15 +87,16 @@ var pageData = (function() {
   }
   try {
     var parsed = JSON.parse(text);
+    var mode = parsed.mode === 'speaker' || parsed.mode === 'output' ? parsed.mode : 'eq';
     return {
-      mode: parsed.mode === 'setup' || legacyFollowerIsland ? 'setup' : 'eq',
+      mode: legacyFollowerIsland ? 'speaker' : mode,
       follower: parsed.follower === true,
       crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
     };
   } catch (e) {
-    // Split pages without EQ chrome must stay on the local-setup side if the
+    // Split pages without EQ chrome must stay on the local-speaker side if the
     // tiny island is damaged; attempting EQ would dereference absent tabs.
-    return {mode: 'setup', follower: true, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
+    return {mode: 'speaker', follower: true, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
   }
 })();
 var pageMode = pageData.mode;

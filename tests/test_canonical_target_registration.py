@@ -123,7 +123,6 @@ _GRAPH_SWAP_MODULES = {
     "jasper/active_speaker/crossover_v2/session_graph.py",
     "jasper/active_speaker/runtime_convergence.py",
     "jasper/active_speaker/web_commissioning.py",
-    "jasper/bass_extension/__init__.py",
     "jasper/bass_extension/bench/activation.py",
     "jasper/camilla.py",
     "jasper/multiroom/active_leader_config.py",

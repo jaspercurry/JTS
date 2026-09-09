@@ -388,7 +388,7 @@ def test_unconfigured_speaker_is_not_passive_or_room_eligible(
         "allowed": False,
         "reason": "output_topology_unconfigured",
         "detail": "Choose and save a speaker layout before room correction.",
-        "setup_href": "/sound/setup/",
+        "setup_href": "/sound/speaker/",
     }
 
 
@@ -431,7 +431,7 @@ def test_zero_active_layout_requires_flat_dac_authority(
     assert status["reason"] == "output_topology_not_ready"
     assert status["acoustic_commissioning"]["authority"] is None
     assert status["acoustic_commissioning"]["allowed"] is False
-    assert status["acoustic_commissioning"]["setup_href"] == "/sound/setup/"
+    assert status["acoustic_commissioning"]["setup_href"] == "/sound/speaker/"
     issue_codes = {item["code"] for item in status["issues"]}
     assert "output_topology_not_ready" in issue_codes
     if contract_issue is not None:
