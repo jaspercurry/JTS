@@ -14,6 +14,7 @@ import pytest
 
 from jasper.control import (
     grouping_supervisor,
+    heal_supervisor,
     shairport_supervisor,
     system_supervisor,
 )
@@ -100,6 +101,17 @@ _RUN_CASES: list[
             "cold_start": "61s",
         },
     ),
+    (
+        heal_supervisor,
+        lambda _path: heal_supervisor.HealSupervisor(
+            interval_sec=31.0,
+            jitter_sec=4.0,
+            cold_start_sec=61.0,
+        ),
+        "heal.start",
+        "heal.tick_crash",
+        {"interval": "31s"},
+    ),
 ]
 
 
@@ -137,7 +149,7 @@ async def test_run_wrapper_preserves_local_runtime_contract(
 
 
 @pytest.mark.parametrize(
-    ("module", "class_name", "env_name", "disabled_event", "thread_name", "crash_event"),
+    ("module", "class_name", "env_name", "disabled_event", "task_name", "crash_event"),
     _CASES,
 )
 def test_disabled_mode_preserves_local_event_and_does_not_construct(
@@ -146,22 +158,21 @@ def test_disabled_mode_preserves_local_event_and_does_not_construct(
     class_name: str,
     env_name: str,
     disabled_event: str,
-    thread_name: str,
+    task_name: str,
     crash_event: str,
 ) -> None:
-    del thread_name, crash_event
+    del task_name, crash_event
     events: list[str] = []
 
     def fail_construct() -> None:
         raise AssertionError("disabled supervisor must not be constructed")
 
-    def fail_start(**_kwargs: object) -> None:
-        raise AssertionError("disabled supervisor must not start a thread")
+    def fail_spawn(**_kwargs: object) -> None:
+        raise AssertionError("disabled supervisor must not reach the loop")
 
     monkeypatch.setattr(module, "_supervisor", None)
-    monkeypatch.setattr(module, "_supervisor_thread", None)
     monkeypatch.setattr(module, class_name, fail_construct)
-    monkeypatch.setattr(module, "build_asyncio_thread", fail_start)
+    monkeypatch.setattr(module, "spawn_on_control_loop", fail_spawn)
     monkeypatch.setattr(
         module,
         "log_event",
@@ -169,14 +180,14 @@ def test_disabled_mode_preserves_local_event_and_does_not_construct(
     )
     monkeypatch.setenv(env_name, "DiSaBlEd")
 
-    assert module.start_supervisor() is None
+    module.start_supervisor()
+
     assert module._supervisor is None
-    assert module._supervisor_thread is None
     assert events == [disabled_event]
 
 
 @pytest.mark.parametrize(
-    ("module", "class_name", "env_name", "disabled_event", "thread_name", "crash_event"),
+    ("module", "class_name", "env_name", "disabled_event", "task_name", "crash_event"),
     _CASES,
 )
 def test_auto_mode_starts_once_with_local_runtime_identity(
@@ -185,21 +196,12 @@ def test_auto_mode_starts_once_with_local_runtime_identity(
     class_name: str,
     env_name: str,
     disabled_event: str,
-    thread_name: str,
+    task_name: str,
     crash_event: str,
 ) -> None:
     del disabled_event
     constructed: list[object] = []
     starts: list[dict[str, object]] = []
-    class FakeThread:
-        def __init__(self) -> None:
-            self.start_calls = 0
-
-        def start(self) -> None:
-            assert module._supervisor_thread is self
-            self.start_calls += 1
-
-    thread = FakeThread()
 
     class FakeSupervisor:
         def __init__(self) -> None:
@@ -211,32 +213,27 @@ def test_auto_mode_starts_once_with_local_runtime_identity(
         def snapshot(self) -> dict[str, Any]:
             return {"enabled": True}
 
-    def fake_build_asyncio_thread(**kwargs: object) -> object:
+    def fake_spawn_on_control_loop(**kwargs: object) -> None:
         starts.append(kwargs)
-        return thread
 
     monkeypatch.setattr(module, "_supervisor", None)
-    monkeypatch.setattr(module, "_supervisor_thread", None)
     monkeypatch.setattr(module, class_name, FakeSupervisor)
-    monkeypatch.setattr(module, "build_asyncio_thread", fake_build_asyncio_thread)
+    monkeypatch.setattr(module, "spawn_on_control_loop", fake_spawn_on_control_loop)
     monkeypatch.setenv(env_name, "AUTO")
 
-    first = module.start_supervisor()
-    second = module.start_supervisor()
+    module.start_supervisor()
+    module.start_supervisor()
 
-    assert first is thread
-    assert second is thread
-    assert thread.start_calls == 1
     assert constructed == [module._supervisor]
     assert len(starts) == 1
     assert starts[0]["target"].__self__ is module._supervisor
-    assert starts[0]["name"] == thread_name
+    assert starts[0]["name"] == task_name
     assert starts[0]["logger"] is module.logger
     assert starts[0]["crash_event"] == crash_event
 
 
 @pytest.mark.parametrize(
-    ("module", "class_name", "env_name", "disabled_event", "thread_name", "crash_event"),
+    ("module", "class_name", "env_name", "disabled_event", "task_name", "crash_event"),
     _CASES,
 )
 def test_unrecognized_mode_warns_exactly_and_stays_enabled(
@@ -246,29 +243,24 @@ def test_unrecognized_mode_warns_exactly_and_stays_enabled(
     class_name: str,
     env_name: str,
     disabled_event: str,
-    thread_name: str,
+    task_name: str,
     crash_event: str,
 ) -> None:
-    del disabled_event, thread_name, crash_event
+    del disabled_event, task_name, crash_event
 
     class FakeSupervisor:
         async def run(self) -> None:
             return None
 
-    class FakeThread:
-        def start(self) -> None:
-            return None
-
     monkeypatch.setattr(module, "_supervisor", None)
-    monkeypatch.setattr(module, "_supervisor_thread", None)
     monkeypatch.setattr(module, class_name, FakeSupervisor)
-    monkeypatch.setattr(module, "build_asyncio_thread", lambda **_kwargs: FakeThread())
+    monkeypatch.setattr(module, "spawn_on_control_loop", lambda **_kwargs: None)
     monkeypatch.setenv(env_name, "ON")
 
     with caplog.at_level(logging.WARNING, logger=module.__name__):
-        thread = module.start_supervisor()
+        module.start_supervisor()
 
-    assert thread is not None
+    assert module._supervisor is not None
     assert caplog.messages == [
         f"{env_name}='on' unrecognized; treating as 'auto'. "
         "Use 'disabled' to turn the supervisor off.",
@@ -276,7 +268,7 @@ def test_unrecognized_mode_warns_exactly_and_stays_enabled(
 
 
 @pytest.mark.parametrize(
-    ("module", "class_name", "env_name", "disabled_event", "thread_name", "crash_event"),
+    ("module", "class_name", "env_name", "disabled_event", "task_name", "crash_event"),
     _CASES,
 )
 def test_snapshot_wrapper_preserves_common_disabled_and_live_shapes(
@@ -285,10 +277,10 @@ def test_snapshot_wrapper_preserves_common_disabled_and_live_shapes(
     class_name: str,
     env_name: str,
     disabled_event: str,
-    thread_name: str,
+    task_name: str,
     crash_event: str,
 ) -> None:
-    del class_name, env_name, disabled_event, thread_name, crash_event
+    del class_name, env_name, disabled_event, task_name, crash_event
     state = {"enabled": True, "sentinel": module.__name__}
 
     class FakeSupervisor:

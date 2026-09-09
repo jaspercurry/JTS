@@ -24,7 +24,7 @@ from ...audio_hardware.i2s_hat import (
     i2s_hat_managed,
     managed_i2s_hat_block_present,
 )
-from ...control.transport_park import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
+from ...control.transport_eligibility import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
 from ...output_topology import OutputTopologyError
 from ._evidence import evidence
 from ._registry import doctor_check

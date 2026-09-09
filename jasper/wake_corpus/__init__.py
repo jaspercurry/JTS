@@ -23,7 +23,7 @@ imports and re-exports everything here):
     handler threads.
 
 Nothing is re-exported at the package root on purpose: the modules import
-NumPy (and lazily ``jasper.audio_io``), so importers reach for the
+NumPy (and lazily ``jasper.mic_capture``), so importers reach for the
 specific submodule (or the thin ``jasper.web.wake_corpus_setup`` shim)
 only when the recorder is actually needed. Keeping the package root empty
 preserves the lazy-import contract that

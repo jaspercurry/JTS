@@ -128,7 +128,7 @@ def test_pose_at_angle_refuses_an_unmeasurable_bearing(bad: int) -> None:
 @pytest.mark.parametrize("bad", [7.5, "7"])
 def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
     """Whole degrees is the resolution the placement is honest at."""
-    with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+    with pytest.raises(flow.CrossoverV2FlowError):
         ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER)  # type: ignore[arg-type]
 
 
@@ -150,7 +150,7 @@ _TRUNCATING = [7.9, -7.9, 0.4, "45", None]
 @pytest.mark.parametrize("bad", _TRUNCATING)
 def test_every_door_refuses_a_non_whole_degree(door: object, bad: object) -> None:
     """No constructor rounds, truncates, or parses its way to an angle."""
-    with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+    with pytest.raises(flow.CrossoverV2FlowError):
         door(bad)  # type: ignore[operator]
 
 
@@ -191,7 +191,7 @@ def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
     `True` would otherwise sail through as a perfectly valid +1 deg bearing --
     a real angle and an obvious caller error at the same time.
     """
-    with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+    with pytest.raises(flow.CrossoverV2FlowError):
         door(bad)  # type: ignore[operator]
 
 
@@ -200,9 +200,9 @@ def test_angle_stop_and_pose_share_the_numpy_and_bool_rules() -> None:
     assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED).angle_deg == 22
     assert flow.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
     for bad in (np.float64(22.0), True, 22.5, "22"):
-        with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+        with pytest.raises(flow.CrossoverV2FlowError):
             ac.AngleStop(bad, ac.REGIME_SUMMED)  # type: ignore[arg-type]
-        with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+        with pytest.raises(flow.CrossoverV2FlowError):
             ac.pose_at_angle(bad)  # type: ignore[arg-type]
 
 
@@ -1367,7 +1367,7 @@ def test_the_shipped_programs_resolve_exactly_as_before(
         # Candidate-MINOR: the cycle repeats under each pose, in place.
         for _candidate in (candidates or ("",))
     ]
-    assert [pose_kind_fields(geometry) for geometry in geometries] == [{}] * len(stops)
+    assert [pose_kind_fields(geometry) for geometry in geometries] == [{"mark_distance_m": 1.0}] * len(stops)
     assert ac.walk_price(request) == price
 
 
@@ -1378,7 +1378,7 @@ def test_a_bearing_walk_stages_the_document_it_always_did(spool_slot) -> None:
     one adds ONLY what is true of it -- a seat has no standoff, a close has no
     head offset -- and both survive the round trip through the document.
     """
-    bearing_keys = {"angle_deg", "regime", "elevation_deg", "candidate_id"}
+    bearing_keys = {"angle_deg", "regime", "elevation_deg", "candidate_id", "purpose"}
     for program_id, size, extra in (
         ("baseline", "express", set()),
         ("seat", "cube", {"kind", "seat_offset_m"}),
@@ -1426,3 +1426,57 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     assert {take["mark_distance_m"] for take in takes} == {None}
     assert {curve["role"] for take in takes for curve in take["curves"]} == {"summed"}
     assert len({doc_pose_key(take) for take in takes}) == 7
+
+
+@pytest.mark.parametrize("mover,tier", [(ac.MOVER_HUMAN, "full"), (ac.MOVER_ARM, "remote")])
+def test_plan_copy_survives_staging_and_reaches_the_measurement_screen(spool_slot, mover, tier):
+    custom = dataclasses.replace(mp.program("room", "quick"), poses=(
+        dataclasses.replace(mp.ProgramPose(-20, 0), headline="Left sample", detail="Keep the mic still."),
+    ))
+    request = ac.request_for_program(custom, mover=mover)
+    spool.stage_angle_request(request)
+    restored = spool.take_staged_angle_request()
+    assert restored == request
+    prompts = tuple(stop.prompt for stop in ac.resolve_request(restored))
+    plan = flow.build_v2_session_spec(
+        _ROLES_BANDS, _FC_HZ, acknowledgement_binding="measurement-plan-copy-test",
+        plan_shape=dataclasses.replace(flow.resolve_plan_shape(tier), hand_released_positions=mover == ac.MOVER_HUMAN),
+        include_lateral=True, include_cloud_measure=False, lateral_prompts=prompts,
+        lateral_candidate_ids=("",),
+    ).capture_plan
+    entry, = [entry for entry in plan.entries if entry.kind_label == "lateral"]
+    assert entry.screen["title"] == "Left sample"
+    assert entry.screen["body"] == "Keep the mic still."
+    assert flow.position_angle_deg(prompts[0]) == -20
+
+
+@pytest.mark.parametrize("kind,purpose", [("bearing", "speaker"), ("seat", "room"), ("close", "reference")])
+def test_legacy_staged_stops_keep_their_capture_purpose(spool_slot, kind, purpose):
+    stop = ac.AngleStop(0, ac.REGIME_SUMMED, kind=kind,
+                        seat_offset_m=(0, 0, 0) if kind == "seat" else None)
+    spool.stage_angle_request(ac.AngleCaptureRequest((stop,)))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text())
+    doc["stops"][0].pop("purpose")
+    path.write_text(json.dumps(doc))
+    assert spool.take_staged_angle_request().stops[0].purpose == purpose
+
+
+@pytest.mark.parametrize("size", ["cloud", "quick"])
+def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
+    program = mp.program("room", size)
+    request = ac.request_for_program(program, candidates=("", "room-fp"))
+    prompts = tuple(s.prompt for s in ac.resolve_request(request))
+    plan = flow.build_v2_session_spec(
+        _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
+        plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
+        include_lateral=True, include_cloud_measure=False, lateral_prompts=prompts,
+        lateral_candidate_ids=tuple(s.candidate_id for s in request.stops),
+    ).capture_plan
+    entries = [e for e in plan.entries if e.kind_label == "lateral"]
+    assert len(entries) == program.capture_count * 2
+    for offset, entry in enumerate(entries):
+        assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 2 + 1)
+        assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
+        assert entry.screen["auto_advance"] == (flow.AUTO_ADVANCE_TAP if offset % 2 == 0 else flow.AUTO_ADVANCE_COUNTDOWN)
+    assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count

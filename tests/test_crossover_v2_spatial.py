@@ -843,7 +843,7 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     [
         (
             spatial.PositionGeometry(spatial.POSITION_AXIS_HORIZONTAL, 7, spatial.MARK_DISTANCE_M),
-            {},
+            {"mark_distance_m": 1.0, "gating_applied": False},
         ),
         (
             spatial.PositionGeometry(
@@ -865,9 +865,7 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     ],
     ids=["bearing", "seat", "close"],
 )
-def test_a_categorized_pose_adds_its_keys_and_a_bearing_adds_none(geometry, fields):
-    """The take-record keys a kind carries (ADR-0260): none for the
-    bearing every earlier record was, so those stay byte-identical."""
+def test_pose_records_keep_distance_and_gating_for_each_coordinate_kind(geometry, fields):
     assert spatial.pose_kind_fields(geometry, gating_applied=False) == fields
 
 

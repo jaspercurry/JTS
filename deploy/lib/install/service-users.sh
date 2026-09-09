@@ -85,15 +85,26 @@ create_jasper_service_users() {
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
     fi
-    # `bluetooth` for the accessory mic adapter task this process runs
-    # (ADR-0225): BlueZ's D-Bus policy grants that group the GATT access the
-    # adapter needs. Guarded rather than hard-listed for the same reason as
-    # jasper-web's below — bluez is apt-installed after this function runs, so
-    # a hard `-G bluetooth` would exit 6 on a base image without it and abort
-    # the install. Idempotent, and also the upgrade path (useradd is skipped
-    # when the user already exists).
+    # `bluetooth` is the BlueZ D-Bus policy grant (`send_destination="org.bluez"`
+    # for that group; bluez denies the default context). jasper-input needs it
+    # for the accessory mic adapter task this process runs (ADR-0225);
+    # jasper-mux and jasper-voice need it for the A2DP-sink presence probe and
+    # the AVRCP pause on preempt (jasper/bluetooth/avrcp.py), which call
+    # ObjectManager and MediaPlayer1 on org.bluez.
+    #
+    # A user-database membership, NOT a unit `SupplementaryGroups=`: dbus-daemon
+    # resolves a `<policy group=>` from the connecting uid's groups in the user
+    # database, and an unresolvable group name in a unit fails it 216/GROUP —
+    # for the arbiter and the wake loop that would trade a Bluetooth probe for a
+    # box that does not start. Guarded for the same reason as jasper-web's
+    # below: bluez is apt-installed after this function runs, so a hard
+    # `-G bluetooth` would exit 6 on a base image without it and abort the
+    # install. Idempotent, and also the upgrade path (useradd is skipped when
+    # the user already exists).
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-input 2>/dev/null || true
+        usermod -aG bluetooth jasper-mux 2>/dev/null || true
+        usermod -aG bluetooth jasper-voice 2>/dev/null || true
     fi
     # Optional Pi-to-host USB microphone relay. Keep this separate from
     # jasper-input: the relay needs ALSA playback plus group-readable Jasper

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.audio_io import confirmed_tts_flush
+from jasper.tts_playout import confirmed_tts_flush
 from jasper.voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 
 PASS_K = 1

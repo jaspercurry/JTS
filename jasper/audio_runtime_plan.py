@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, Typ
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
-    camilla_floor_for,
     latency_floor_for,
 )
 from jasper.audio_runtime_overrides import (
@@ -51,18 +50,15 @@ from jasper.env_load import (
     env_file_path,
     read_env_file_state,
 )
-from jasper.fanin.ring_health import saved_topology_reader
+from jasper.fanin.ring_readiness import saved_topology_reader
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
     TransportTopology,
     capture_half,
-    coupling_value_removed,
     dac_content_lane_marker_armed,
     outputd_content_is_central_ring,
-    resolve_coupling,
 )
 from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.transport_coherence import (
@@ -119,7 +115,7 @@ ROUTE_CORRECTED_48K = "corrected_48k"
 ROUTE_USB_LOW_LATENCY_48K = "usb_low_latency_48k"
 ROUTE_BITPERFECT_DECLARED = "bitperfect_passthrough_declared"
 USB_LOW_LATENCY_SOURCE_ID = "usbsink"
-ROUTE_CONFIG_HASH_SCHEMA_VERSION = 4
+ROUTE_CONFIG_HASH_SCHEMA_VERSION = 5
 UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
     "c_sync": "async",
     "req_number": "2",
@@ -140,7 +136,6 @@ BASE_ENV_PROCESS_FALLBACK_KEYS = frozenset(
     AUDIO_RUNTIME_OVERRIDE_KEYS
     | {
         AUDIO_ROUTE_PROFILE_KEY,
-        COUPLING_ENV_VAR,
         FANIN_USB_DIRECT_PERIOD_KEY,
     }
 )
@@ -169,10 +164,6 @@ _VALID_ROUTE_MODES = {
     "unknown",
 }
 
-# Reuse fanin_coupling's SSOT so the plan recognizes every coupling the
-# resolver does — including the Ring A ``shm_ring`` product transport. The plan
-# does not keep an independent coupling set (that would drift from the resolver
-# and false-warn on a new transport).
 _VALID_AUDIO_ROUTE_PROFILES = {
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
@@ -327,10 +318,10 @@ class EmittedCamillaGeometry:
     """What the LOADED CamillaDSP config declares — read, never derived.
 
     A DIFFERENT fact from the plan's ``JASPER_CAMILLA_*`` settings, which answer
-    what an emitter's fallback WOULD resolve. The two legitimately differ: a
-    graph built end-to-end on the ring passes
-    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` explicitly, and an
-    ordinary graph's chunk is clamped to the ring's capacity by
+    what an emitter's fallback WOULD resolve. The two legitimately differ: any
+    graph with a ring end carries
+    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` instead, whether it
+    passes it explicitly or resolves it through
     ``resolve_camilla_latency_for_devices``. A surface that reports only the
     settings therefore names a geometry no config on the box need carry.
     """
@@ -686,7 +677,6 @@ def validate_outputd_env(
     *,
     base_env: str,
     outputd_env: str,
-    fanin_env: str,
     camilla_statefile: str,
     camilla2_statefile: str,
     output_topology: str | None = None,
@@ -718,7 +708,6 @@ def validate_outputd_env(
     )
     if detail is not None:
         return False, (*lines, detail)
-    fanin = read_env_file_state(fanin_env)
     devices = output_endpoint_devices_from_statefiles(
         camilla_statefile,
         camilla2_statefile,
@@ -747,9 +736,9 @@ def validate_outputd_env(
             devices = None
     merged_outputd = {**base.values, **outputd.values}
     report = transport_coherence_report(
-        coupling=fanin.values.get(COUPLING_ENV_VAR),
         outputd_env=merged_outputd,
         camilla_devices=devices,
+        allow_grouping_capture=True,
     )
     if report.errors:
         return False, (*lines, "; ".join(report.errors))
@@ -1016,7 +1005,6 @@ def route_config_hash_for_plan(
     *,
     route: AudioRouteProfile,
     settings: tuple[RuntimeSetting, ...],
-    coupling: str,
     correction_latency: CorrectionLatencyEligibility,
     camilla_config_hash: str = "",
 ) -> str:
@@ -1034,7 +1022,6 @@ def route_config_hash_for_plan(
             for action in route_owned_env_actions(route)
         ],
         "settings": [setting.to_dict() for setting in settings],
-        "coupling": coupling,
         "correction_latency": correction_latency.to_dict(),
         "camilla_config_hash": camilla_config_hash,
         "uac2_gadget_attrs": (
@@ -1049,7 +1036,6 @@ def route_config_hash_for_plan(
 #: Stable reason tokens for the route-policy refusals, published beside their
 #: prose as :attr:`AudioRuntimePlan.route_policy_reason_codes`.
 ROUTE_POLICY_TRANSPORT_INCOHERENT = "transport_incoherent"
-ROUTE_POLICY_FANIN_OFF_RING = "fanin_off_the_ring_pair"
 ROUTE_POLICY_BONDED_MEMBER = "bonded_member_has_no_central_ring"
 ROUTE_POLICY_OUTPUTD_OFF_RING = "outputd_off_the_ring_pair"
 
@@ -1057,7 +1043,6 @@ ROUTE_POLICY_OUTPUTD_OFF_RING = "outputd_off_the_ring_pair"
 def _route_policy_errors(
     *,
     route: AudioRouteProfile,
-    coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None = None,
     read_saved_topology: Callable[[], Any] | None = None,
@@ -1066,7 +1051,6 @@ def _route_policy_errors(
     errors = [
         (ROUTE_POLICY_TRANSPORT_INCOHERENT, message)
         for message in transport_coherence_report(
-            coupling=coupling,
             outputd_env=outputd_env,
             camilla_devices=camilla_devices,
             read_saved_topology=read_saved_topology,
@@ -1075,40 +1059,25 @@ def _route_policy_errors(
     if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
         return tuple(errors)
 
-    # BOTH HALVES ASK THEIR OWN DAEMON'S ACCEPT SET, not a normalizer. Each
-    # daemon serves the ring for an UNDECLARED key and parks on anything it
-    # cannot serve, so "the box is on the ring pair" is the question both
-    # predicates answer — and a policy that demanded written tokens would
-    # turn the shipped low-latency claim red on every box the reconciler has not
-    # written yet, which is the mirror of the gap that made the old policy
-    # accept the retired pair.
-    #
-    # `coupling_value_removed` is fan-in's rule inverted: unset / empty /
-    # `shm_ring` are served, and everything else — a persisted `loopback` above
-    # all — is a config-class fault that exits 78
-    # (`rust/jasper-fanin/src/config.rs`). `outputd_content_is_central_ring` is
-    # the same question for the post-DSP hop, and it reads the dac-content
-    # marker as well as the bridge: a bonded member IS served, but off the ring
-    # PAIR this route's latency was measured on, so the claim must not stand.
-    fanin_on_ring = not coupling_value_removed(coupling)
+    # THE POST-DSP END ASKS ITS OWN DAEMON'S ACCEPT SET, not a normalizer.
+    # outputd serves the ring for an UNDECLARED bridge key and parks on anything
+    # it cannot serve, so "the box is on the ring pair" is the question that one
+    # predicate answers — a policy demanding written tokens would turn the
+    # shipped low-latency claim red on every box the reconciler has not written
+    # yet. `outputd_content_is_central_ring` reads the dac-content marker as well
+    # as the bridge: a bonded member IS served, but off the ring PAIR this
+    # route's latency was measured on, so the claim must not stand. The fan-in
+    # half does not branch at all (ADR-0100).
     outputd_on_ring = outputd_content_is_central_ring(outputd_env)
 
     # usb_low_latency_48k runs on the CENTRAL shm_ring pair (Ring A plus
     # whichever central post-DSP ring the box armed). That pair is what was
     # measured, so the route policy accepts it and refuses everything else —
     # including a bonded member, whose post-DSP hop is the bond's return ring.
-    if fanin_on_ring and outputd_on_ring:
+    if outputd_on_ring:
         return tuple(errors)
 
-    if not fanin_on_ring:
-        errors.append((
-            ROUTE_POLICY_FANIN_OFF_RING,
-            f"{ROUTE_USB_LOW_LATENCY_48K} requires a coherent shm_ring pair; "
-            f"{COUPLING_ENV_VAR}={str(coupling or '').strip().lower()} names a "
-            "transport jasper-fanin cannot serve, so it is not coherent for "
-            "the production low-latency claim",
-        ))
-    if not outputd_on_ring and dac_content_lane_marker_armed(outputd_env):
+    if dac_content_lane_marker_armed(outputd_env):
         # A BONDED MEMBER, not a misconfigured bridge. Its content comes off the
         # bond's return ring by design, so the central-ring pair this route's
         # latency was measured on does not exist here — and telling the operator
@@ -1120,10 +1089,9 @@ def _route_policy_errors(
             "pair is Ring A plus a CENTRAL post-DSP ring, and a bonded member "
             "attaches no central ring. Ungroup this speaker to claim it again",
         ))
-    elif not outputd_on_ring:
-        # No `(unset)` fallback on either half: both predicates answer True for
-        # an absent or blank value, so a refusal here always has a literal to
-        # name.
+    else:
+        # No `(unset)` fallback: the predicate answers True for an absent or
+        # blank value, so a refusal here always has a literal to name.
         raw_bridge = str(
             outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or ""
         ).strip().lower()
@@ -1336,13 +1304,12 @@ def build_audio_runtime_plan(
     profile_id = (profile_id or "").strip()
     profile = dac_profile_by_id(profile_id) if profile_id else None
     floor = latency_floor_for(profile_id) if profile_id else None
-    camilla_floor = camilla_floor_for(profile_id) if profile_id else None
     route_profile = resolve_audio_route_profile(base_values)
 
     camilla_chunksize_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_CHUNKSIZE",
         default=DEFAULT_CHUNKSIZE,
-        floor_value=camilla_floor.chunksize if camilla_floor else None,
+        floor_value=None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,
@@ -1351,18 +1318,10 @@ def build_audio_runtime_plan(
         generated_label=outputd_env_label,
         profile_id=profile_id,
     )
-    coupling_setting = _resolve_coupling(
-        base_env=base_values,
-        override_env=override_values,
-        fanin_env=fanin_values,
-        base_label=base_env_label,
-        override_label=override_label,
-        fanin_label=fanin_env_label,
-    )
     camilla_target_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_TARGET_LEVEL",
         default=DEFAULT_TARGET_LEVEL,
-        floor_value=camilla_floor.target_level if camilla_floor else None,
+        floor_value=None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,
@@ -1426,11 +1385,9 @@ def build_audio_runtime_plan(
                 max_value=MAX_FANIN_USB_DIRECT_PERIOD_FRAMES,
             )
         )
-    settings.append(coupling_setting)
     camilla_devices = read_camilla_devices_config(correction_config_path)
     read_saved_topology = saved_topology_reader()
     topology = transport_topology_for_coupling(
-        str(coupling_setting.value),
         fanin_env=fanin_values,
         outputd_env=outputd_layered,
         read_saved_topology=read_saved_topology,
@@ -1442,23 +1399,12 @@ def build_audio_runtime_plan(
     route_hash = route_config_hash_for_plan(
         route=route_profile,
         settings=tuple(settings),
-        coupling=str(coupling_setting.value),
         correction_latency=correction_latency,
         camilla_config_hash=camilla_config_hash,
     )
     combined_plan_warnings = tuple(plan_warnings) + route_profile.warnings
     route_policy = _route_policy_errors(
         route=route_profile,
-        # The RAW declaration, not `coupling_setting.value`: the resolver
-        # answers `loopback` for an absent key AND for a persisted one, and the
-        # route policy has to tell those apart — one is a box fan-in serves, the
-        # other is a box fan-in parks. `_resolve_coupling` already recorded both
-        # layers it read.
-        coupling=(
-            coupling_setting.generated_value
-            if coupling_setting.generated_value is not None
-            else coupling_setting.operator_value
-        ),
         outputd_env=outputd_layered,
         camilla_devices=camilla_devices,
         read_saved_topology=read_saved_topology,
@@ -2131,60 +2077,5 @@ def _resolve_fanin_int(
         unit="frames",
         operator_value=operator_raw,
         generated_value=generated_raw,
-        warnings=tuple(warnings),
-    )
-
-
-def _resolve_coupling(
-    *,
-    base_env: Mapping[str, str],
-    override_env: Mapping[str, str],
-    fanin_env: Mapping[str, str],
-    base_label: str,
-    override_label: str,
-    fanin_label: str,
-) -> RuntimeSetting:
-    base_raw = _raw(base_env, COUPLING_ENV_VAR)
-    unsupported_override_raw = _raw(override_env, COUPLING_ENV_VAR)
-    fanin_raw = _raw(fanin_env, COUPLING_ENV_VAR)
-    raw = fanin_raw if fanin_raw is not None else base_raw
-    coupling = resolve_coupling(raw)
-    warnings: list[str] = []
-    if unsupported_override_raw is not None:
-        warnings.append(
-            f"{COUPLING_ENV_VAR} in {override_label} is ignored; fan-in "
-            "coupling transitions are owned by jasper-fanin-coupling-reconcile"
-        )
-    if base_raw is not None:
-        warnings.append(
-            f"{COUPLING_ENV_VAR} is present in {base_label}; "
-            f"{fanin_label} is the reconciler-owned home"
-        )
-    if base_raw is not None and fanin_raw is not None:
-        warnings.append(
-            f"{COUPLING_ENV_VAR} is set in both {base_label} and {fanin_label}; "
-            f"{fanin_label} wins"
-        )
-    if raw is not None and coupling is None and raw.strip():
-        warnings.append(
-            f"{COUPLING_ENV_VAR}={raw!r} names no transport this box has; "
-            "jasper-fanin refuses it and parks (exit 78)"
-        )
-    return RuntimeSetting(
-        key=COUPLING_ENV_VAR,
-        # The transport the files NAME, else the token they carry verbatim —
-        # never a substituted one, which is what made an unwritten key read as a
-        # route this repo deleted.
-        value=coupling if coupling is not None else (raw or "").strip().lower(),
-        source_kind=(
-            "generated_env" if fanin_raw is not None
-            else "packaged_default"
-        ),
-        source=(
-            fanin_label if fanin_raw is not None
-            else "packaged fan-in default"
-        ),
-        generated_value=fanin_raw,
-        operator_value=base_raw,
         warnings=tuple(warnings),
     )

@@ -10,8 +10,7 @@ runtime code kills audio output until systemd restarts the unit: "no new
 panics outside test code" is a safety invariant worth pinning, not a style
 preference. CI builds and ``cargo test``s these crates, but cargo cannot run
 in every dev environment and nothing in cargo's gate distinguishes a
-test-only ``unwrap`` from a runtime one; this guard is the static-source twin
-(same technique as ``tests/test_outputd_wiring.py``).
+test-only ``unwrap`` from a runtime one; this guard is the static-source twin.
 
 The contract, for every panic-capable construct outside ``#[cfg(test)]``
 code:

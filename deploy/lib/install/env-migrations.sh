@@ -518,16 +518,9 @@ EOF
 widen_control_secret_env_modes() {
     getent group jasper >/dev/null 2>&1 || return 0
 
-    # /etc/jasper/jasper.env: the load-bearing config file the doctor reads. It
-    # is created 0640 but owned root:root (group root grants the jasper group
-    # nothing) and lives OUTSIDE the StateDirectory recursive-chown, so it needs
-    # an EXPLICIT chgrp jasper. The /etc/jasper dir must also be group-traversable
-    # — it can be created 0750 root:root (python-runtime.sh), which would block a
-    # jasper-group traverse. Set it 0755 (the dir listing is not sensitive — only
-    # jasper.env + the cert backups, which keep their own 0640/0600 modes; and
-    # nothing non-jasper reads here — the correction CA lives in /var/lib/jasper/ca,
-    # nginx certs in /etc/nginx/ssl). 0755 also keeps nginx/www-data traversal,
-    # avoiding any TLS-read surprise.
+    # Outside StateDirectory's recursive chown, jasper.env needs an explicit
+    # jasper group. The shared parent must allow service users to traverse it;
+    # the files retain their own 0640/0600 access rules.
     local jasper_env="${ENV_DIR}/jasper.env"
     if [[ -d "${ENV_DIR}" ]]; then
         chmod 0755 "${ENV_DIR}" 2>/dev/null || true

@@ -70,11 +70,11 @@ a live box between the two, were retired under
 [ADR-0100](adr/0100-one-audio-transport.md).
 
 A topology the ring cannot serve does not degrade onto a second path — it
-parks loudly: doctor FAIL, `/state.resilience.transport_park`, and one row
+parks loudly: doctor FAIL, `/system/snapshot.transport_park`, and one row
 per park on the `/system` page naming the shape and its tracked issue. Owner
 ruling 2026-08-27: no banner — a browser learns about a park on the system
 screen and nowhere else.
-`jasper/control/transport_park.py` is the single classifier all three
+`jasper/control/transport_eligibility.py` is the single classifier all three
 surfaces read, so they cannot name different reasons for the same box. The
 shapes it names are a passive-stereo composite sink (#2982), an explicit
 mono full-range layout (#3117), a bonded member whose `dac_content`
@@ -119,8 +119,8 @@ Ownership is deliberately split:
   fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
   1 Hz lost-alert patrol enter the same reconciler, which re-reads source
   state before applying policy; alert arrival order never chooses the winner.
-  The two probes that fork a subprocess (AirPlay over busctl, Bluetooth over
-  bluealsa-cli) are re-read on the patrol once per `EVENT_BACKED_PROBE_SEC`
+  The two event-backed probes (AirPlay over busctl, Bluetooth over BlueZ
+  `MediaTransport1`) are re-read on the patrol once per `EVENT_BACKED_PROBE_SEC`
   instead of every tick; an alert naming either source still probes it at once.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
@@ -490,7 +490,7 @@ matched, which reference won (`live_content`, `held_content`,
 
 TTS writes record bytes accepted by the output transport. They do not prove
 DAC output or what a listener heard. `TtsPlayout` in
-[`jasper/audio_io.py`](../jasper/audio_io.py) estimates a drain deadline from
+[`jasper/tts_playout.py`](../jasper/tts_playout.py) estimates a drain deadline from
 accepted sample duration plus `JASPER_TTS_DRAIN_TAIL_SEC`.
 `expected_drain_at()` returns that deadline; `wait_drained()` waits for it.
 [`play_responses()` and `idle_watchdog()`](../jasper/voice/turn_playback.py)
@@ -709,5 +709,5 @@ tap reads.
 
 Last verified: 2026-09-05 against `deploy/alsa/asoundrc.jasper`,
 `deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`,
-`jasper/control/transport_park.py`, and the DAC section against
+`jasper/control/transport_eligibility.py`, and the DAC section against
 `jasper/audio_hardware/dac.py` and `jasper/output_hardware.py`.

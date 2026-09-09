@@ -25,7 +25,7 @@ mod lane_fade;
 mod pcm_open;
 
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
@@ -348,27 +348,7 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
 /// `JASPER_FANIN_AUTO_TRIM=enabled`.
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
 
-/// Post-lock cushion-decay warm-up window: the continuous locked +
-/// DLL-`l0_locked` + calm duration required before the FIRST decay step. 10 s
-/// gives the outer host-clock DLL time to finish its per-session probe (up to
-/// 14 s worst case, but the fill is pinned well before that) and prove the
-/// steady regime before latency is reclaimed. Not an env knob — the three
-/// tunable decay knobs (floor/step/interval) are the operator surface.
-/// Converted to render periods by the lane from the live sample rate.
-const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
-
-/// Cascade-stability guard: decay pauses while the outer DLL's |commanded_ppm|
-/// exceeds this. Above it the DLL is working hard and the fill is in transient,
-/// so lowering the setpoint would fight the loop — the two-controller
-/// oscillation class the cascade design avoids. 400 ppm is well inside the
-/// ±1000 ppm servo authority: it flags "actively correcting" without tripping on
-/// the small steady-state trims a settled loop makes. The command compared here
-/// reflects genuine host-clock correction, not the descent — the decay's own
-/// demand is subtracted from the servo's observable at the source (#3466). A
-/// host whose genuine standing offset keeps |cmd| above the guard holds decay
-/// frozen for the session, by design: that host is being corrected hard and the
-/// cushion is load-bearing.
-const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
+const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread — which OWNS the `LaneResampler` and performs the actual ring trim —
@@ -513,6 +493,7 @@ const PACE_MIN_SLEEP_NS: u64 = 100_000;
 /// within a second. An ABSENT reader is safe (it drops); a live-but-unpaced one
 /// is fatal.
 struct PeriodPacer {
+    nominal_ns: u64,
     /// The targeted period in nanoseconds — one nominal period
     /// (`period_frames / sample_rate`) less [`PACE_HEADROOM_PERCENT`],
     /// precomputed so the hot loop never divides.
@@ -524,8 +505,23 @@ struct PeriodPacer {
 impl PeriodPacer {
     fn new(period_ns: u64) -> Self {
         Self {
+            nominal_ns: period_ns,
             target_ns: period_ns * (100 - PACE_HEADROOM_PERCENT) / 100,
             deadline_ns: None,
+        }
+    }
+
+    fn set_nominal(&mut self, nominal: bool) {
+        // Snapcast consumes at wall-clock rate. DAC refill headroom would fill
+        // its FIFO, then stall USB capture whenever a whole pipe page drains.
+        let target = if nominal {
+            self.nominal_ns
+        } else {
+            self.nominal_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        };
+        if target != self.target_ns {
+            self.target_ns = target;
+            self.deadline_ns = None;
         }
     }
 
@@ -701,16 +697,9 @@ pub struct Mixer {
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
-    /// REVERSE host-clock signals (servo thread → mixer) for the DEFAULT-OFF
-    /// post-lock cushion decay. The `fanin-host-clock` thread only ever WRITES
-    /// these, every servo tick; the mixer's per-period decay tick only ever
-    /// READS them. `ladder_l0` = the DLL is `l0_locked` (decay's steady-state
-    /// gate); `commanded_milli_ppm` = the DLL's last commanded bias (× 1000) for
-    /// the cascade guard. When the servo thread is not running (host-clock off /
-    /// no direct lane) these stay at their init (`false` / 0), so decay never
-    /// leaves the ceiling — decay REQUIRES the DLL.
     host_clock_ladder_l0: Arc<AtomicBool>,
-    host_clock_commanded_milli_ppm: Arc<AtomicI64>,
+    usb_connection_epoch: Arc<AtomicU64>,
+    host_clock_timing_failed: Arc<AtomicBool>,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -733,6 +722,7 @@ struct AutoTrimLaneState {
 /// work loop writes. Distinct from `WriterMetrics`, which is a value snapshot.
 #[derive(Clone)]
 struct RingCounters {
+    nominal_clock: Arc<AtomicBool>,
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
     /// Live-but-STUCK reader drops (issue #1524) — the bounded-wait give-ups
@@ -764,6 +754,7 @@ struct RingCounters {
 impl RingCounters {
     fn new() -> Self {
         Self {
+            nominal_clock: Arc::new(AtomicBool::new(false)),
             published: Arc::new(AtomicU64::new(0)),
             full_waits: Arc::new(AtomicU64::new(0)),
             stuck_reader_drops: Arc::new(AtomicU64::new(0)),
@@ -784,6 +775,7 @@ impl RingCounters {
 /// there is nothing for a later period to update.
 #[derive(Clone)]
 pub struct RingObservability {
+    pub nominal_clock: Arc<AtomicBool>,
     pub path: String,
     pub slots: u32,
     /// The OBSERVED channel count from the attached header.
@@ -1275,6 +1267,7 @@ impl Mixer {
             attached.channels,
         );
         let ring_observability = RingObservability {
+            nominal_clock: Arc::clone(&counters.nominal_clock),
             path: config.ring_path.clone(),
             slots: config.ring_slots,
             channels: attached.channels,
@@ -1349,7 +1342,8 @@ impl Mixer {
             // Init to the inert state (not-l0, 0 ppm) so decay never leaves the
             // ceiling until the servo thread actually reports `l0_locked`.
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
-            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
+            usb_connection_epoch: Arc::new(AtomicU64::new(0)),
+            host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1392,9 +1386,6 @@ impl Mixer {
             // i64-bits-in-u64). Written by the resampler on the mixer thread; the
             // servo thread only ever READS it.
             correction_milli_ppm: Arc::clone(&resampler.ratio_milli_ppm),
-            // The cushion decay's live demand gauge, published by the decay
-            // itself; `build_obs` subtracts it from the ratio above (#3466).
-            decay_demand_milli_ppm: Arc::clone(&resampler.decay_demand_milli_ppm),
             // The decay's declared refill window — `build_obs` clears
             // `Obs::steady` on it (ADR-0214).
             decay_refilling: Arc::clone(&resampler.decay_refilling),
@@ -1407,7 +1398,8 @@ impl Mixer {
             // The REVERSE signals: owned here so both sides share the same
             // atomics, and the servo thread only ever WRITES these two.
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
-            commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
+            connection_epoch: Arc::clone(&self.usb_connection_epoch),
+            timing_failed: Arc::clone(&self.host_clock_timing_failed),
         })
     }
 
@@ -1501,16 +1493,14 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         self.maybe_trim();
 
-        // Snapshot the REVERSE host-clock signals ONCE per period for the
-        // cushion-decay tick below (a per-input read would self-borrow). `l0`
-        // gates decay to the DLL's steady state; `commanded_ppm_abs` drives the
-        // cascade guard. Both are inert (false / 0) when the servo thread is not
-        // running, so decay never leaves the ceiling without the DLL.
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
-        let decay_commanded_ppm_abs =
-            (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
+        let connection_epoch = self.usb_connection_epoch.load(Ordering::Relaxed);
+        let timing_failed = self.host_clock_timing_failed.load(Ordering::Relaxed);
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
+            if let Some(r) = input.resampler.as_mut() {
+                r.latency_context(connection_epoch, timing_failed);
+            }
             let frames = if input.direct.is_some() {
                 // USB DIRECT lane: read hw:UAC2Gadget directly, feed the SAME
                 // resampler untouched, render one DAC-paced period. The aloop
@@ -1576,7 +1566,7 @@ impl Mixer {
                 if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
                     r.force_decay_snap_back();
                 }
-                r.tick_decay(decay_l0, decay_commanded_ppm_abs);
+                r.tick_decay(decay_l0);
             }
             // Selection AND mute gate, applied at the SUM only: the per-lane
             // telemetry above is already accounted, so a de-selected OR muted
@@ -1646,6 +1636,11 @@ impl Mixer {
         // period (reader absent / stuck) adds nothing.
         let published_frames =
             write_ring_period(&mut self.output, &self.ring_payload, self.period_frames);
+        for input in &mut self.inputs {
+            if let Some(resampler) = &mut input.resampler {
+                resampler.output_published(published_frames);
+            }
+        }
         self.frames_written
             .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())
@@ -1821,6 +1816,8 @@ fn write_ring_period(ring: &mut RingOutput, payload: &[u8], period_frames: u32) 
     // this sleep, so it is floored at `PACE_MIN_SLEEP_NS` even when the deadline
     // has already passed. Every other period is left exactly as the pacer found
     // it: a zero sleep after back-pressure, so the DAC keeps owning the rate.
+    ring.pace
+        .set_nominal(ring.counters.nominal_clock.load(Ordering::Relaxed));
     let mut sleep_ns = ring.pace.pace(now_ns);
     let clockless = !publish_blocked && !dropped_this_period;
     if clockless {
@@ -2028,10 +2025,7 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     let decay_params = crate::lane_resampler::DecayParams {
         enabled: config.input_resampler_cushion_decay_enabled,
         floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
-        step_frames: config.input_resampler_cushion_decay_step_frames as u64,
-        interval_ms: config.input_resampler_cushion_decay_interval_ms as u64,
         stability_ms: CUSHION_DECAY_STABILITY_MS,
-        cascade_guard_ppm: CUSHION_DECAY_CASCADE_GUARD_PPM,
     };
     match LaneResampler::new(
         CHANNELS as usize,
@@ -2052,10 +2046,8 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
             // stable.
             let decay_note = if config.input_resampler_cushion_decay_enabled {
                 format!(
-                    "decay=on floor={} step={} interval_ms={}",
-                    config.input_resampler_cushion_decay_floor_frames,
-                    config.input_resampler_cushion_decay_step_frames,
-                    config.input_resampler_cushion_decay_interval_ms,
+                    "decay=on floor={}",
+                    config.input_resampler_cushion_decay_floor_frames
                 )
             } else {
                 "decay=off".to_string()
@@ -3317,7 +3309,11 @@ mod tests {
     // contract — there is nothing else for a test to stub out.
 
     use jasper_ring::{RingReader, SlotRead};
+    use jasper_tts_protocol::loudness::{gain_db_to_linear, AssistantLoudnessConfig};
+    use jasper_tts_protocol::{QueuedTtsCommand, TtsCommand};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
+
+    use crate::tts::{tts_channels, QueuedFlush};
 
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
@@ -3434,6 +3430,164 @@ mod tests {
         cleanup_ring(&path);
     }
 
+    /// A `TtsMixer` with an ACTIVE program duck and one queued TTS period.
+    /// Returns it with its senders, which the caller must keep alive for the
+    /// mixer's whole life.
+    fn ducking_tts_mixer(
+        payload: &[i16],
+        program_duck_db: f32,
+    ) -> (
+        TtsMixer,
+        SyncSender<QueuedTtsCommand>,
+        SyncSender<QueuedFlush>,
+    ) {
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+        });
+        for command in [
+            TtsCommand::ProgramDuckOn,
+            TtsCommand::Audio(payload.to_vec()),
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+        (mixer, tx, flush_tx)
+    }
+
+    /// Q2 (duck ORDER): `step()` applies the program duck to the summed
+    /// renderer lanes and mixes the TTS period on top of that ducked sum, so a
+    /// voice turn is never attenuated by its own duck. Driven through `step()`
+    /// and read back off the ring, so swapping the two stages inside `step()`
+    /// fails HERE rather than nowhere.
+    ///
+    /// The mixer runs with NO program lane: the sum `step()` ducks is silence,
+    /// which still separates the two orders — a duck applied AFTER the TTS mix
+    /// scales the published TTS period by `duck_gain`, which the last assertion
+    /// rejects. The ducked-program half of the order is pinned by
+    /// `ring_output_carries_post_duck_post_tts_period`.
+    #[test]
+    fn step_mixes_the_tts_period_after_the_program_duck() {
+        const PROGRAM_DUCK_DB: f32 = -25.0;
+        // 96 of the period's 128 frames, so the tail carries no TTS at all.
+        const TTS_FRAMES: usize = 96;
+
+        let period_frames = RING_SLOT_FRAMES;
+        let period_samples = (period_frames as usize) * (CHANNELS as usize);
+
+        let (output, out_path) = tmp_ring_output(8, "duck_order");
+        let mut reader = RingReader::create_or_attach(&out_path, ring_geometry(8)).unwrap();
+        let mut slot = vec![0u8; period_samples * BYTES_PER_SAMPLE];
+        // Prime the reader heartbeat so the writer takes the publish path.
+        assert_eq!(reader.try_consume_slot_bytes(&mut slot), SlotRead::Empty);
+
+        // A loud TTS period: it must ride above anything a duck applied AFTER
+        // the TTS mix could produce (asserted on the reference below).
+        let payload = vec![30_000i16; TTS_FRAMES * (CHANNELS as usize)];
+        let (tts, _tx, _flush_tx) = ducking_tts_mixer(&payload, PROGRAM_DUCK_DB);
+        let duck_gain = gain_db_to_linear(PROGRAM_DUCK_DB);
+
+        let (tap_sender, tap_receiver) =
+            std::sync::mpsc::sync_channel::<TapEvent>(EVENT_CHANNEL_CAPACITY);
+        let counters = RingCounters::new();
+        let ring_observability = RingObservability {
+            path: out_path.clone(),
+            nominal_clock: Arc::clone(&counters.nominal_clock),
+            slots: 8,
+            channels: CHANNELS,
+            occupancy: Arc::clone(&counters.occupancy),
+            published: Arc::clone(&counters.published),
+            full_waits: Arc::clone(&counters.full_waits),
+            stuck_reader_drops: Arc::clone(&counters.stuck_reader_drops),
+            drop_no_reader: Arc::clone(&counters.drop_no_reader),
+            stall_active: Arc::clone(&counters.stall_active),
+            last_stall_ms: Arc::clone(&counters.last_stall_ms),
+            clockless_paces: Arc::clone(&counters.clockless_paces),
+        };
+        let mut mixer = Mixer {
+            inputs: Vec::new(),
+            output,
+            sum_buf: vec![0i64; period_samples],
+            ring_payload: vec![0u8; period_samples * BYTES_PER_SAMPLE],
+            content_meter_buf: vec![0i16; period_samples],
+            frames_written: Arc::new(AtomicU64::new(0)),
+            selected_input_index: Arc::new(AtomicI32::new(-2)),
+            period_frames,
+            tts: Some(tts),
+            // A SETTLED duck — the steady state of a voice turn, where the
+            // per-period target and the persisted gain already agree.
+            program_duck_current: duck_gain,
+            program_duck_attack_step: duck_step_per_frame(20, 48_000),
+            program_duck_release_step: duck_step_per_frame(200, 48_000),
+            ring_observability,
+            auto_trim_enabled: false,
+            auto_trim_delay_frames: 0,
+            auto_trim_lane_state: Vec::new(),
+            direct_tap: DirectTapHook::new(
+                Arc::new(TapState::default()),
+                Arc::new(Mutex::new(TapConfig::default())),
+                tap_sender,
+            ),
+            direct_tap_receiver: Some(tap_receiver),
+            host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
+            usb_connection_epoch: Arc::new(AtomicU64::new(0)),
+            host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
+        };
+
+        // The UNATTENUATED TTS period: the same fixture, the same commands and
+        // the same (silent) content period, mixed into a ZERO sum. It is what
+        // `tts.mix_period` contributes with no duck in front of it — nothing
+        // about where `step()` applies the duck is modelled here.
+        let (mut reference, _ref_tx, _ref_flush_tx) = ducking_tts_mixer(&payload, PROGRAM_DUCK_DB);
+        let mut tts_only = vec![0i64; period_samples];
+        assert!(reference.prepare_period());
+        reference.observe_content_period(&vec![0i16; period_samples]);
+        reference.mix_period(&mut tts_only);
+        assert!(
+            tts_only
+                .iter()
+                .any(|&t| t
+                    > ((jasper_resampler::widen_i16_to_i32(i16::MAX) as f32) * duck_gain) as i64),
+            "fixture: the TTS period must ride above a ducked full-scale sample, or a \
+             duck applied after the TTS mix would be indistinguishable from one applied \
+             before it"
+        );
+
+        mixer.step().unwrap();
+
+        assert_eq!(reader.try_consume_slot_bytes(&mut slot), SlotRead::Filled);
+        assert_eq!(
+            slot,
+            payload_of(&tts_only),
+            "the ring must carry the UNATTENUATED TTS period"
+        );
+        assert!(
+            samples_of(&slot)[TTS_FRAMES * (CHANNELS as usize)..]
+                .iter()
+                .all(|&s| s == 0),
+            "past the TTS period nothing but the (silent) ducked sum is published"
+        );
+        // What a duck applied AFTER the TTS mix would have published instead.
+        let ducked_tts: Vec<i64> = tts_only
+            .iter()
+            .map(|&t| ((t as f32) * duck_gain).round() as i64)
+            .collect();
+        assert_ne!(
+            slot,
+            payload_of(&ducked_tts),
+            "the TTS period must not carry the program duck"
+        );
+
+        cleanup_ring(&out_path);
+    }
+
     /// A period's worth of mix sum spanning the values the publish has to get
     /// right: silence, both spine rails, the two-full-scale-lanes sum that
     /// legitimately exceeds the rails, its negative twin, and ordinary program
@@ -3529,6 +3683,24 @@ mod tests {
         let blocked = t0 + 10 * target;
         assert_eq!(pacer.pace(blocked), 0);
         assert_eq!(pacer.pace(blocked), target);
+    }
+
+    #[test]
+    fn nominal_clock_keeps_one_period_per_deadline_without_dac_headroom() {
+        let period_ns = 256 * 1_000_000_000 / 48_000;
+        let mut pacer = PeriodPacer::new(period_ns);
+        pacer.set_nominal(true);
+        let t0 = 1_000_000_000;
+        assert_eq!(pacer.pace(t0), 0);
+        for period in 0..1000 {
+            assert_eq!(pacer.pace(t0 + period * period_ns), period_ns);
+        }
+        pacer.set_nominal(false);
+        assert_eq!(
+            pacer.target_ns,
+            period_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        );
+        assert_eq!(pacer.deadline_ns, None);
     }
 
     /// Reader-absent: `write_ring_period` free-run-drops and paces (never

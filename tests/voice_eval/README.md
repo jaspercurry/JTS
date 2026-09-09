@@ -62,7 +62,7 @@ Existing detailed checks remain in their owning test files:
 | Quiet command, short pause, final silence, manual release, no-speech abort; immediate/delayed input through adapters and playback | `test_voice_replay.py::test_input_endpoint_adapter_and_output_replay` |
 | Packet wait/write/drain interruption followed by a fresh response | `test_voice_replay.py::test_interrupt_then_fresh_turn_replay` |
 | Concurrent capture during acquire, overflow and gap resets, mute during prefix upload | `test_audio_buffer_drain.py` |
-| Capture overload and expired frames | `test_udp_mic_capture.py` |
+| Capture overload and expired frames | `test_mic_capture.py` |
 | Mute clears rolling capture history | `test_voice_daemon_mute_privacy.py` |
 | Button hold cap and delayed buffered button input | `test_voice_daemon_push_to_talk_endpointer.py` |
 | Flush confirmation and per-item output boundaries | `test_turn_playback_barge_in.py` |

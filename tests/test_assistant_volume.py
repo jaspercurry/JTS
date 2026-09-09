@@ -4,103 +4,66 @@
 
 import asyncio
 
+import pytest
+
 from jasper.assistant_volume import (
     EffectiveVolumeContext,
-    make_volume_context_publisher,
     volume_context_publisher_for_runtime,
 )
 
 
-def test_volume_context_publisher_sends_one_absolute_idempotent_message(monkeypatch):
+@pytest.mark.parametrize(
+    ("env", "expected_socket"),
+    [
+        # Solo default: pre-DSP fan-in.
+        ({}, "/run/jasper-fanin/tts.sock"),
+        # Confirmed post-DSP member: the SAME wire message, outputd's socket.
+        (
+            {
+                "JASPER_TTS_MIX_STAGE": "post_dsp",
+                "JASPER_TTS_OUTPUTD_SOCKET": "/run/jasper-outputd/tts.sock",
+            },
+            "/run/jasper-outputd/tts.sock",
+        ),
+        ({"JASPER_TTS_MIX_STAGE": "pre_dsp"}, "/run/jasper-fanin/tts.sock"),
+        # A socket that names no mix stage publishes nothing: pre-DSP
+        # compensation into an uncertain stage is a large level error.
+        ({"JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock"}, None),
+        ({"JASPER_TTS_MIX_STAGE": "sideways"}, None),
+    ],
+)
+def test_runtime_publisher_is_scoped_to_context_consuming_routes(
+    monkeypatch, env, expected_socket,
+):
     calls = []
 
     def fake_send(path, context, *, timeout=0.5):
         calls.append((path, context, timeout))
 
     monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
-    context = EffectiveVolumeContext(
-        canonical_db=-30.0,
-        downstream_db=0.0,
-        tts_envelope_lufs=-41.0,
-        muted=False,
-        stamp_boot_ns=123,
-    )
-
-    asyncio.run(make_volume_context_publisher("/tmp/fanin.sock")(context))
-
-    assert calls == [("/tmp/fanin.sock", context, 0.5)]
-
-
-def test_runtime_publisher_is_scoped_to_context_consuming_routes():
-    assert volume_context_publisher_for_runtime({}) is not None
-    # Since #1547 outputd interprets VolumeContext: a CONFIRMED post-DSP route
-    # builds a publisher (the same wire message goes to outputd's socket).
-    assert volume_context_publisher_for_runtime({
-        "JASPER_TTS_MIX_STAGE": "post_dsp",
-    }) is not None
-    # A custom socket with NO stage is ambiguous → fail closed either way.
-    assert volume_context_publisher_for_runtime({
-        "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
-    }) is None
-    assert volume_context_publisher_for_runtime({
-        "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
-        "JASPER_TTS_MIX_STAGE": "pre_dsp",
-    }) is not None
-
-
-def test_runtime_publisher_targets_outputd_on_confirmed_post_dsp(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_send(path, context, *, timeout=0.5):
-        calls.append((path, context, timeout))
-
-    monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
-    grouping_env = tmp_path / "grouping-voice.env"
-    # A reconciled passive member: the grouping reconciler writes BOTH the
-    # outputd socket and the explicit post_dsp stage.
-    grouping_env.write_text(
-        "JASPER_TTS_MIX_STAGE=post_dsp\n"
-        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
-    )
-    publisher = volume_context_publisher_for_runtime(
-        {},
-        grouping_env_path=str(grouping_env),
-    )
-    assert publisher is not None
     context = EffectiveVolumeContext(
         canonical_db=-30.0,
         downstream_db=-30.0,
         tts_envelope_lufs=-41.0,
         muted=False,
-        stamp_boot_ns=5,
+        stamp_boot_ns=123,
     )
 
-    asyncio.run(publisher(context))
+    asyncio.run(volume_context_publisher_for_runtime(env)(context))
 
-    # The SAME wire message is sent to outputd's socket; downstream_db is NOT
-    # mutated to 0 in Python — the structural-zero fact belongs to the post-DSP
-    # consumer.
-    assert calls == [("/run/jasper-outputd/tts.sock", context, 0.5)]
+    assert calls == (
+        [] if expected_socket is None else [(expected_socket, context, 0.5)]
+    )
+    # downstream_db is NOT mutated to 0 in Python — the structural-zero fact
+    # belongs to the post-DSP consumer.
     assert context.downstream_db == -30.0
 
 
-def test_runtime_publisher_fails_closed_for_legacy_socket_only_grouping(
-    tmp_path,
-):
-    grouping_env = tmp_path / "grouping-voice.env"
-    grouping_env.write_text(
-        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
-    )
-
-    assert volume_context_publisher_for_runtime(
-        {},
-        grouping_env_path=str(grouping_env),
-    ) is None
-
-
-def test_dynamic_runtime_publisher_tracks_grouping_file(
+def test_runtime_publisher_rereads_the_grouping_file_every_publish(
     monkeypatch, tmp_path,
 ):
+    """The reconciler rewrites this file while the daemon runs, so a route
+    frozen at construction would keep publishing to a stale mix stage."""
     sent = []
     parse_calls = 0
 
@@ -128,9 +91,7 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
     publisher = volume_context_publisher_for_runtime(
         {},
         grouping_env_path=str(grouping_env),
-        dynamic_topology=True,
     )
-    assert publisher is not None
     context = EffectiveVolumeContext(-30.0, 0.0, -41.0, False, 123)
 
     asyncio.run(publisher(context))

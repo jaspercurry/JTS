@@ -80,12 +80,17 @@ from .driver_base_trim import (
     write_base_trim,
 )
 from .driver_pad import effective_sensitivity_db
+from .driver_safety import evaluate_driver_safety_profile
 from .level_trim import (
     MAX_ATTENUATION_DB,
     LevelTrimError,
     attenuation_from_group_deltas,
 )
-from .measured_crossover_candidate import candidate_room_peqs
+from .measured_crossover_candidate import (
+    MeasuredCrossoverCandidateError,
+    candidate_room_peqs,
+    room_peqs_from_correction,
+)
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -393,6 +398,7 @@ def _source_payload(
     measurements: Mapping[str, Any],
     *,
     measured_candidate_fingerprint: str | None = None,
+    driver_protection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
 
@@ -461,6 +467,8 @@ def _source_payload(
     }
     if measured_candidate_fingerprint is not None:
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
+    if driver_protection is not None:
+        source["driver_protection_fingerprint"] = _fingerprint(driver_protection)
     return {**source, "fingerprint": _fingerprint(source)}
 
 
@@ -1365,6 +1373,7 @@ def _frozen_applied_profile(
         # the Gap 3c bug class. A list, not a mapping, because it describes the
         # SUM rather than a driver.
         "blend_correction": list(applied.get("blend_correction") or []),
+        "room_correction": dict(applied.get("room_correction") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
         # it here lets an older sensitivity-only profile masquerade as a
@@ -2023,6 +2032,21 @@ def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     )
 
 
+def _snapshot_protection_sections(
+    snapshot: Mapping[str, Any], preset: ActiveSpeakerPreset,
+) -> Mapping[str, Sequence[Any]] | None:
+    protection = snapshot.get("driver_protection")
+    if protection is None:
+        return None
+    from .branch_chain import confirmed_protection_sections  # lazy: graph compilation imports NumPy
+
+    try:
+        sections = confirmed_protection_sections(protection)
+        return {role: sections[role] for role in required_driver_roles(preset.way_count)}
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ActiveSpeakerConfigError("saved driver protection is invalid") from exc
+
+
 def build_baseline_profile_candidate(
     topology: OutputTopology,
     *,
@@ -2103,6 +2127,24 @@ def build_baseline_profile_candidate(
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
     now = created_at or _utc_now()
+    saved = _load_saved_state(state_target)
+    applied_anchor = _applied_profile_anchor(saved)
+    protection_anchor = preserved_applied_profile or applied_anchor or {}
+    protection = (protection_anchor.get("recomposition_snapshot") or {}).get("driver_protection")
+    safety_profile = design_draft.get("driver_safety_profile")
+    if evaluate_driver_safety_profile(safety_profile, topology).confirmed_and_current:
+        protection = {
+            "profile_fingerprint": safety_profile["profile_fingerprint"],
+            "targets": [{
+                "role": target["role"],
+                "target_fingerprint": target["target_fingerprint"],
+                "required_protection_filters": [
+                    dict(requirement) for requirement in target["required_protection_filters"]
+                ],
+            } for target in safety_profile["targets"]],
+        }
+    if driver_domain:
+        protection = None
     source = _source_payload(
         topology,
         design_draft,
@@ -2111,6 +2153,7 @@ def build_baseline_profile_candidate(
         measured_candidate_fingerprint=(
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        driver_protection=protection,
     )
     resolved_playback_device, playback_device_source = (
         resolve_active_playback_device(
@@ -2170,7 +2213,6 @@ def build_baseline_profile_candidate(
     emit_capture_format = (
         devices.capture_format if capture_format is None else capture_format
     )
-    saved = _load_saved_state(state_target)
     candidate_graph_context = {
         "playback_device": resolved_playback_device,
         "domain": "driver" if driver_domain else "full",
@@ -2183,6 +2225,7 @@ def build_baseline_profile_candidate(
         "measured_candidate_fingerprint": (
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        **({"driver_protection": protection} if protection is not None else {}),
     }
     saved_snapshot = (
         saved.get("recomposition_snapshot")
@@ -2190,7 +2233,6 @@ def build_baseline_profile_candidate(
         and isinstance(saved.get("recomposition_snapshot"), Mapping)
         else {}
     )
-    applied_anchor = _applied_profile_anchor(saved)
     applied_profile_context_id = ""
     if isinstance(applied_anchor, Mapping):
         applied_snapshot = applied_anchor.get("recomposition_snapshot")
@@ -2803,6 +2845,7 @@ def build_baseline_profile_candidate(
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
+                protection_sections_by_role=_snapshot_protection_sections(candidate_graph_context, preset),
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -2948,15 +2991,9 @@ def build_baseline_profile_candidate(
         # one is what a "what is applied right now" read (`/state`, the apply
         # observability line) uses without unpacking the snapshot.
         "blend_correction": blend_correction,
-        # The room layer this candidate applies. Top level only, NOT inside
-        # recomposition_snapshot: baseline_candidate_fingerprint hashes that
-        # snapshot. The applied config text is the room PEQs' durable copy, and
-        # only a seam that re-reads it carries them forward --
-        # jasper.sound.graph_carrier's preference-EQ and bass-extension
-        # recomposes, and audition.build_reduced_yaml off the anchor. A
-        # recompose that passes no room_peqs (jasper-active-speaker
-        # baseline-reemit, the setup_status readiness compare) re-emits without
-        # the room layer.
+        # Convenience mirror of the accepted room layer. Recomposition reads
+        # the immutable snapshot below; the mirror supports profiles saved
+        # before the snapshot carried this field.
         "room_correction": room_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
@@ -3013,6 +3050,7 @@ def build_baseline_profile_candidate(
             # It is: dropping it here would silently revert the blend
             # correction on the next preference-EQ save.
             "blend_correction": blend_correction,
+            **({"room_correction": room_correction} if room_correction else {}),
             **candidate_graph_context,
         },
     }
@@ -3051,7 +3089,7 @@ def applied_baseline_hardware_match(
     :func:`recompose_applied_baseline_yaml` has always asked these four questions
     inline before emitting; it still asks them, through here. The new caller is
     the unattended roleful gate
-    (``jasper.fanin.coupling_reconcile.ring_roleful_unattended_ready``), which
+    (``jasper.fanin.ring_readiness.ring_roleful_unattended_ready``), which
     must answer "does this box HAVE a hardware-matched applied baseline?" without
     emitting anything. Re-deriving the compare there would put the definition of
     "matches the hardware" in two places — the failure mode where one site is
@@ -3106,7 +3144,7 @@ def recompose_applied_baseline_yaml(
     topology: OutputTopology,
     *,
     applied_profile: Mapping[str, Any],
-    room_peqs: Sequence[PeqFilter] = (),
+    room_peqs: Sequence[PeqFilter] | None = None,
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
@@ -3123,6 +3161,9 @@ def recompose_applied_baseline_yaml(
     crossover previews, and measurement stores are deliberately not parameters:
     captures remain candidates until :func:`apply_baseline_profile` snapshots
     them under an explicit Apply transaction.
+
+    Omitted ``room_peqs`` preserves the accepted room correction in that
+    snapshot. An explicit empty sequence emits the speaker layer alone.
 
     ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
     is opt-in: ``None`` emits against the device the snapshot recorded,
@@ -3170,6 +3211,26 @@ def recompose_applied_baseline_yaml(
             "applied_baseline_snapshot_invalid",
             f"the applied active-speaker snapshot is invalid: {exc}",
         )]
+    if room_peqs is None:
+        room_correction = (
+            snapshot.get("room_correction")
+            if "room_correction" in snapshot
+            else applied_profile.get("room_correction", {})
+        )
+        if not isinstance(room_correction, Mapping):
+            return None, [_issue(
+                "blocker",
+                "applied_baseline_snapshot_invalid",
+                "the applied active-speaker snapshot has invalid room correction data",
+            )]
+        try:
+            room_peqs = room_peqs_from_correction(room_correction, preset)
+        except (MeasuredCrossoverCandidateError, KeyError, TypeError, ValueError) as exc:
+            return None, [_issue(
+                "blocker",
+                "applied_baseline_snapshot_invalid",
+                f"the applied active-speaker snapshot has invalid room correction data: {exc}",
+            )]
     corrections = snapshot.get("corrections")
     # The snapshot's device is the DEFAULT, never the only answer: an explicit
     # ``playback_device`` re-points this evidence at the other transport of the
@@ -3291,7 +3352,10 @@ def recompose_applied_baseline_yaml(
         ),
         linearization=linearization,
         blend_correction=blend_correction,
-        protection_sections_by_role=protection_sections_by_role,
+        protection_sections_by_role=(
+            protection_sections_by_role if protection_sections_by_role is not None
+            else _snapshot_protection_sections(snapshot, preset)
+        ),
     )
     return yaml, []
 

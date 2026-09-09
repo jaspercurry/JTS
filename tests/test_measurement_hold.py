@@ -528,11 +528,8 @@ async def test_state_carries_the_same_projection(tmp_path):
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )
-    section = dict(state["measurement"])
-    section.pop("observed_at")  # every /state section is stamped (issue #4197)
-    assert section == mh.snapshot()
+    assert state["measurement"] == mh.snapshot()
     assert state["measurement"]["owner"] == "seat-level"
 
 

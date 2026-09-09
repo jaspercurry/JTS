@@ -48,10 +48,10 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     The fake carrier returns a base_flat result; what this helper needs is the
     dry-run reemit call, not what reconcile decides afterwards.
 
-    Both token sources are declared OFF the ring — the env var unset, and a
-    ``fanin.env`` naming the retired ``loopback`` at the module path its
-    readers are handed — so ring kwargs coming out the far end prove the seam
-    consults neither.
+    The retired selector is declared OFF the ring in both places it could be
+    read — the process env and a ``fanin.env`` at the module path its readers
+    are handed — so ring kwargs coming out the far end prove the seam consults
+    neither.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
     declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
@@ -141,15 +141,10 @@ def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
     The DEFECT-1 class this used to guard — a stale ``os.environ`` coupling
     steering the CLI reconcile onto the wrong route — cannot recur, because
     there is no second route to be steered onto and the resolver takes no
-    coupling argument at all (ADR-0100: it consults neither). That is proved
-    rather than reasoned: the persisted reader raises.
+    coupling argument at all (ADR-0100: it consults neither).
     """
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
-    def _boom(*a, **k):
-        raise AssertionError("the capture kwargs must not depend on a coupling token")
-
-    monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", _boom)
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
 
     kwargs = coupling_capture_kwargs_from_env()

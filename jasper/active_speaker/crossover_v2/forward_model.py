@@ -26,7 +26,7 @@ import numpy as np
 
 from .contracts import DRIVER_ROLE_TWEETER, DRIVER_ROLE_WOOFER
 from .plan_assembly import SummationFrame, compose_linearized_prediction
-from .position_cycle import parse_curve_complex, read_pose_curve_pair
+from .position_cycle import parse_curve_complex, read_pose_curve_pair, take_phase_composition
 
 PREDICTION_KIND = "jts_forward_model_prediction"
 PREDICTION_SCHEMA_VERSION = 1
@@ -188,6 +188,8 @@ def candidate_from_json(
             raise ValueError(f"{path}: {exc}") from exc
         if not isinstance(loaded, Mapping):
             raise ValueError(f"{path}: candidate JSON must be an object")
+        if "source_preset" in loaded:
+            raise ValueError(f"{path}: complete candidates require an exact --capture-id")
         raw = loaded
     filters = raw.get("filters_by_role") or {}
     trims = raw.get("trim_db_by_role") or {}
@@ -234,6 +236,8 @@ def load_branch_pair(
     if found is None:
         return None
     woofer_curve, tweeter_curve, take_path = found
+    if take_phase_composition(bundle_dir, take_path) == "complete_tune_measured":
+        raise ForwardModelError("complete-tune timing needs forward-model --capture-id; legacy residual delay does not apply")
     woofer = parse_curve_complex(woofer_curve)
     tweeter = parse_curve_complex(tweeter_curve)
     if woofer is None or tweeter is None:
@@ -354,6 +358,8 @@ def predicted_minus_measured_db(
         "compared_points": int(compared_grid.size),
         "level_offset_db": offset_db,
         "freqs_hz": [float(hz) for hz in compared_grid],
+        "predicted_db": predicted_curve.tolist(),
+        "measured_db": measured_on_grid.tolist(),
         "delta_db": [float(db) for db in delta],
         "max_abs_db": float(np.max(np.abs(delta))),
         "rms_db": float(np.sqrt(np.mean(delta**2))),

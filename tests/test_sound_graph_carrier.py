@@ -768,7 +768,7 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     assert result.yaml == "eqd-active-yaml"
     assert result.room_peq_count == 0
     assert recompose.call_args.kwargs["out_path"] == out
-    assert recompose.call_args.kwargs["room_peqs"] == []
+    assert recompose.call_args.kwargs["room_peqs"] is None
     # The household's manual headroom / loudness-match trim is forwarded to the
     # active emitter, not silently dropped.
     assert recompose.call_args.kwargs["output_trim_db"] == 3.0
@@ -1118,11 +1118,23 @@ def test_bass_extension_recompose_preserves_exact_program_overlays(
         updated_at="2026-07-19T12:00:00Z",
     )
     settings = SoundSettings(headroom_trim_db=6.0)
-    room_peqs = [PeqFilter(freq=83.0, q=4.2, gain=-3.0)]
+    room_correction = {
+        "sides": {"mono": [{"freq": 83.0, "q": 4.2, "gain": -3.0}]},
+        "ceiling_hz": 350.0,
+        "ceiling_source": "applied_candidate",
+        "basis": {
+            "round_id": "round-1",
+            "room_median_sha256": "b" * 64,
+            "admitted_boosts_hz": [],
+        },
+        "boost_db_total": 0.0,
+        "level_cost_db": 0.0,
+    }
+    applied["room_correction"] = room_correction
+    applied["recomposition_snapshot"]["room_correction"] = room_correction
     current, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        room_peqs=room_peqs,
         preference_filters=build_sound_filter_slots(preference),
         output_trim_db=output_trim_db(preference, settings),
     )
@@ -1286,24 +1298,23 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
 
 
 @pytest.mark.parametrize("wire", ["S32_LE", "S16_LE"])
-def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
+def test_solo_reemit_carries_the_ring_geometry(tmp_path, wire):
     """The COMMISSIONED stereo box's devices block, end to end.
 
-    jts.local (Apple dongle, solo) runs chunk 256 / target 1536 over the ring:
-    its DacProfile floor, which already fits the ring's capacity and so is
-    passed through, NOT the certified 128/128 an end-to-end ring graph carries.
-    Moving an ordinary stereo graph onto that pair is a retune, so this pins the
-    whole block rather than one field. BOTH halves of the coupling cross on a
-    solo box, so the emitted formats follow the declared wire — the narrow
-    rollback pin included — never the emitter's own default.
+    jts.local (Apple dongle, solo) has BOTH ends on the ring, so its re-emit
+    carries the certified ring pairing — the same geometry the flat boot graph
+    and the ACTIVE ring graph pass explicitly, not a per-DAC number. That is the
+    whole point of pinning the block rather than one field. BOTH halves of the
+    coupling cross on a solo box, so the emitted formats follow the declared
+    wire — the narrow rollback pin included — never the emitter's own default.
     """
-    from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
     from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
+    )
     from jasper.multiroom.member_config import member_camilla_kwargs
-
-    from .doctor_test_support import record_active_dac
-
-    record_active_dac(APPLE_USB_C_DONGLE_ID)
 
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
@@ -1316,9 +1327,9 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
     ).yaml
 
     expected = {
-        "chunksize": 256,
-        "target_level": 1536,
-        "queuelimit": 4,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
         "enable_rate_adjust": False,
         "capture_device": RING_CAPTURE_DEVICE,
         "playback_device": RING_PLAYBACK_DEVICE,

@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
 
+from jasper.camilla_emit import fmt
 from jasper.audio_measurement.analysis import resample_log
 from jasper.bass_extension.adapters import adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
     COMMISSION_FLOOR_HZ,
+    MIN_CURVE_POINTS,
+    TARGET_RESPONSE_RESERVE_DB,
     CabinetInfo,
     CaptureRole,
     FitRefusal,
@@ -24,18 +25,118 @@ from jasper.bass_extension.adapters.ported import PORTED_ADAPTER, PortedPlantFit
 from jasper.bass_extension.adapters.sealed import SEALED_ADAPTER, SealedPlantFit
 from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
-    lt_boost_db,
     second_order_highpass_db,
 )
+from jasper.bass_extension.profile import BassExtensionRefusal
 from jasper.bass_extension.targets import MARGINS
 
 
 FREQS = np.geomspace(10.0, 500.0, 1200)
+CAP_AUDIT_FREQS = np.concatenate(
+    ([0.0], np.geomspace(0.01, 23_999.0, 65_536))
+)
+_AUDIT_Z1 = np.exp(-2j * np.pi * CAP_AUDIT_FREQS / 48_000.0)
+_AUDIT_Z2 = _AUDIT_Z1 * _AUDIT_Z1
 CABINET = CabinetInfo("sealed", 1, 165.0, 220.0)
 
 
 def _curve(magnitude):
     return MagnitudeCurve(tuple(FREQS), tuple(np.asarray(magnitude, dtype=float)))
+
+
+def _emitted(value):
+    return float(fmt(float(value)))
+
+
+def _digital_response_db(coefficients):
+    b0, b1, b2, a0, a1, a2 = coefficients
+    numerator = b0 + b1 * _AUDIT_Z1 + b2 * _AUDIT_Z2
+    denominator = a0 + a1 * _AUDIT_Z1 + a2 * _AUDIT_Z2
+    magnitude = np.abs(numerator / denominator)
+    return 20.0 * np.log10(np.maximum(magnitude, 1e-300))
+
+
+def _digital_biquad_db(filter_spec):
+    kind = filter_spec["type"]
+    if kind == "LinkwitzTransform":
+        f0 = _emitted(filter_spec["freq_act"])
+        q0 = _emitted(filter_spec["q_act"])
+        fp = _emitted(filter_spec["freq_target"])
+        qp = _emitted(filter_spec["q_target"])
+        k0 = np.tan(np.pi * f0 / 48_000.0)
+        kp = np.tan(np.pi * fp / 48_000.0)
+        return _digital_response_db((
+            1.0 + k0 / q0 + k0 * k0,
+            2.0 * (k0 * k0 - 1.0),
+            1.0 - k0 / q0 + k0 * k0,
+            1.0 + kp / qp + kp * kp,
+            2.0 * (kp * kp - 1.0),
+            1.0 - kp / qp + kp * kp,
+        ))
+
+    freq = _emitted(filter_spec["freq"])
+    if kind == "ButterworthHighpass":
+        order = int(filter_spec["order"])
+        response = np.zeros_like(CAP_AUDIT_FREQS)
+        w0 = 2.0 * np.pi * freq / 48_000.0
+        cosine = np.cos(w0)
+        for section in range(order // 2):
+            section_q = 1.0 / (
+                2.0 * np.cos((2 * section + 1) * np.pi / (2.0 * order))
+            )
+            alpha = np.sin(w0) / (2.0 * section_q)
+            response += _digital_response_db((
+                (1.0 + cosine) / 2.0,
+                -(1.0 + cosine),
+                (1.0 + cosine) / 2.0,
+                1.0 + alpha,
+                -2.0 * cosine,
+                1.0 - alpha,
+            ))
+        return response
+
+    q = _emitted(filter_spec.get("q", 1.0))
+    w0 = 2.0 * np.pi * freq / 48_000.0
+    cosine = np.cos(w0)
+    alpha = np.sin(w0) / (2.0 * q)
+    if kind == "Highpass":
+        return _digital_response_db((
+            (1.0 + cosine) / 2.0,
+            -(1.0 + cosine),
+            (1.0 + cosine) / 2.0,
+            1.0 + alpha,
+            -2.0 * cosine,
+            1.0 - alpha,
+        ))
+
+    gain = _emitted(filter_spec["gain"])
+    amplitude = 10.0 ** (gain / 40.0)
+    if kind == "Peaking":
+        return _digital_response_db((
+            1.0 + alpha * amplitude,
+            -2.0 * cosine,
+            1.0 - alpha * amplitude,
+            1.0 + alpha / amplitude,
+            -2.0 * cosine,
+            1.0 - alpha / amplitude,
+        ))
+    assert kind == "Lowshelf"
+    beta = 2.0 * np.sqrt(amplitude) * alpha
+    return _digital_response_db((
+        amplitude * ((amplitude + 1.0) - (amplitude - 1.0) * cosine + beta),
+        2.0 * amplitude * ((amplitude - 1.0) - (amplitude + 1.0) * cosine),
+        amplitude * ((amplitude + 1.0) - (amplitude - 1.0) * cosine - beta),
+        (amplitude + 1.0) + (amplitude - 1.0) * cosine + beta,
+        -2.0 * ((amplitude - 1.0) + (amplitude + 1.0) * cosine),
+        (amplitude + 1.0) + (amplitude - 1.0) * cosine - beta,
+    ))
+
+
+def _emitted_target_boost_db(target):
+    response = np.zeros_like(CAP_AUDIT_FREQS)
+    for filter_spec in target.filters:
+        response += _digital_biquad_db(filter_spec)
+    return max(0.0, float(np.max(response)))
 
 
 def _natural_curve():
@@ -49,16 +150,31 @@ def _natural_curve():
 NATURAL_CURVE = _natural_curve()
 
 
+@pytest.mark.parametrize("role", (CaptureRole.WOOFER_NEARFIELD, CaptureRole.SEAT_MEDIAN))
 @pytest.mark.parametrize("f0", (45.0, 61.0, 80.0))
 @pytest.mark.parametrize("q0", (0.55, 0.707, 0.9))
-def test_sealed_clean_fit_round_trip(f0, q0):
+def test_sealed_clean_fit_round_trip(f0, q0, role):
     fit = SEALED_ADAPTER.fit_plant(
-        {CaptureRole.WOOFER_NEARFIELD: _curve(second_order_highpass_db(FREQS, f0, q0) + 7.0)},
+        {role: _curve(second_order_highpass_db(FREQS, f0, q0) + 7.0)},
         CABINET,
     )
     assert isinstance(fit, SealedPlantFit)
     assert fit.f0_hz == pytest.approx(f0, rel=0.01)
     assert fit.q0 == pytest.approx(q0, abs=0.02)
+
+
+def test_sealed_fit_window_without_support_refuses_rather_than_raising():
+    """A grid so coarse, with its roll-off so near the top of it, that the
+    fit's own window keeps too few points to fit."""
+    freqs = np.geomspace(20.0, 320.0, MIN_CURVE_POINTS + 1)
+    curve = MagnitudeCurve(
+        tuple(freqs), tuple(second_order_highpass_db(freqs, 300.0, 0.707))
+    )
+
+    fit = SEALED_ADAPTER.fit_plant({CaptureRole.SEAT_MEDIAN: curve}, CABINET)
+
+    assert isinstance(fit, FitRefusal)
+    assert fit.refusal == BassExtensionRefusal.FIT_QUALITY_INSUFFICIENT
 
 
 @pytest.mark.parametrize("f0,q0", ((45.0, 0.55), (61.0, 0.707), (80.0, 0.9)))
@@ -198,15 +314,24 @@ def test_passive_radiator_notch_location_and_absent_crossover_refusal():
         ),
     ),
 )
-def test_family_invariants_for_every_adapter(adapter, plant):
-    family = adapter.generate_family(plant, margin=MARGINS["normal"])
+@pytest.mark.parametrize("margin", MARGINS.values(), ids=MARGINS)
+def test_family_invariants_for_every_adapter(adapter, plant, margin):
+    family = adapter.generate_family(plant, margin=margin)
     assert family[-1].target_id == "natural"
     assert family[-1].filters == ()
     assert family[-1].boost_headroom_db == 0.0
     assert all(target.subsonic is not None for target in family)
+    assert all(
+        int(target.subsonic["order"]) == margin.subsonic_order
+        for target in family
+    )
     assert len({target.target_id for target in family}) == len(family)
     boosts = [target.boost_headroom_db for target in family]
     assert all(left >= right for left, right in zip(boosts, boosts[1:]))
+    for target in family:
+        actual_boost = _emitted_target_boost_db(target)
+        assert actual_boost <= margin.boost_cap_db
+        assert target.boost_headroom_db == pytest.approx(actual_boost, abs=0.002)
     for left, right in zip(family, family[1:]):
         if left.boost_headroom_db == pytest.approx(right.boost_headroom_db):
             assert left.fp_hz <= right.fp_hz
@@ -215,6 +340,24 @@ def test_family_invariants_for_every_adapter(adapter, plant):
             filter_spec.get("type") == "LinkwitzTransform"
             for target in family for filter_spec in target.filters
         )
+    if adapter is SEALED_ADAPTER:
+        expected_subsonic = max(
+            15.0, margin.subsonic_corner_ratio * family[0].fp_hz
+        )
+    elif adapter is PORTED_ADAPTER:
+        expected_subsonic = max(
+            COMMISSION_FLOOR_HZ, margin.subsonic_corner_ratio * plant.fb_hz
+        )
+    else:
+        expected_subsonic = max(
+            COMMISSION_FLOOR_HZ,
+            margin.subsonic_corner_ratio * plant.fb_hz,
+            1.1 * plant.notch_hz,
+        )
+    assert all(
+        float(target.subsonic["freq"]) == pytest.approx(expected_subsonic)
+        for target in family
+    )
     if adapter is PASSIVE_RADIATOR_ADAPTER:
         assert all(float(target.subsonic["freq"]) >= 1.1 * plant.notch_hz for target in family)
         shaping = (
@@ -317,15 +460,44 @@ def test_pr_composite_constraint_includes_exact_notch(margin):
         assert np.max(delta - natural) <= 0.5 + 1e-12
 
 
-def test_sealed_low_q_headroom_captures_peak_above_dc_boost():
-    dc_boost = lt_boost_db(60.0, 40.0)
-    margin = replace(MARGINS["normal"], boost_cap_db=dc_boost)
+def test_sealed_low_q_family_moves_corner_to_honor_actual_boost_cap():
+    margin = MARGINS["conservative"]
     family = SEALED_ADAPTER.generate_family(
         SealedPlantFit(60.0, 0.5, 0.0), margin=margin, n_targets=2
     )
-    assert family[0].fp_hz == pytest.approx(40.0)
+    dc_corner = 60.0 / 10.0 ** (margin.boost_cap_db / 40.0)
+    assert family[0].fp_hz > dc_corner
     assert family[0].qp == pytest.approx(0.65)
-    assert family[0].boost_headroom_db > dc_boost
+    assert family[0].boost_headroom_db == pytest.approx(
+        margin.boost_cap_db - TARGET_RESPONSE_RESERVE_DB, abs=2e-4
+    )
+
+
+@pytest.mark.parametrize("fb_hz,knee_hz", ((25.0, 30.0), (45.0, 68.0)))
+def test_ported_deep_shaping_is_scaled_to_actual_boost_cap(fb_hz, knee_hz):
+    margin = MARGINS["conservative"]
+    plant = PortedPlantFit(fb_hz, knee_hz, 24.0, 0.5, NATURAL_CURVE)
+    family = PORTED_ADAPTER.generate_family(plant, margin=margin)
+    deepest = family[0]
+    actual = _emitted_target_boost_db(deepest)
+    expected_corner = max(
+        COMMISSION_FLOOR_HZ, margin.subsonic_corner_ratio * fb_hz
+    )
+    assert deepest.fp_hz == pytest.approx(expected_corner)
+    assert actual <= margin.boost_cap_db
+    assert deepest.boost_headroom_db == pytest.approx(actual, abs=0.002)
+
+
+@pytest.mark.parametrize("margin", MARGINS.values(), ids=MARGINS)
+@pytest.mark.parametrize("f0_hz", np.geomspace(15.0, 200.0, 15))
+@pytest.mark.parametrize("q0", np.linspace(0.3, 1.2, 13))
+def test_sealed_family_actual_boost_cap_across_fit_domain(margin, f0_hz, q0):
+    plant = SealedPlantFit(f0_hz, q0, 0.0)
+    family = SEALED_ADAPTER.generate_family(plant, margin=margin)
+    for target in family:
+        actual = _emitted_target_boost_db(target)
+        assert actual <= margin.boost_cap_db
+        assert target.boost_headroom_db == pytest.approx(actual, abs=0.002)
 
 
 @pytest.mark.parametrize(

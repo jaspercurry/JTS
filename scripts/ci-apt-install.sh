@@ -46,8 +46,10 @@ as_root() {
 }
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
-    if as_root timeout -k "$KILL_GRACE" "$APT_TIMEOUT" apt-get update \
-        && as_root timeout -k "$KILL_GRACE" "$APT_TIMEOUT" \
+    # A vendor index the runner image ships (dl.google.com) can fail its hash
+    # while the Ubuntu indexes refresh fine; the install is the verdict.
+    as_root timeout -k "$KILL_GRACE" "$APT_TIMEOUT" apt-get update || true
+    if as_root timeout -k "$KILL_GRACE" "$APT_TIMEOUT" \
             apt-get install -y --no-install-recommends "$@"; then
         echo "apt ok on attempt ${attempt}/${ATTEMPTS}: $*"
         exit 0

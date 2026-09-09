@@ -194,6 +194,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
             rationale=args.rationale,
             room_correction=room_fields.get("room_correction"),
             room_prescription_sha256=room_sha256,
+            room_measured_basis=room_fields.get("measured_basis"),
         )
     except RoomPrescriptionRefused as exc:
         return _gate_refusal(exc)
@@ -214,6 +215,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
         "out": str(published.path),
         "measurement_status": "unmeasured",
         "adopted": False,
+        **({"room_source": candidate.analysis["room_source"]} if candidate.room_correction else {}),
     })
 
 
@@ -339,7 +341,7 @@ def _composed_room(
         read_prescription_bytes(payload), args, _room_median_path(args), sides
     )
     return (
-        room_prescription_to_candidate_fields(prescription),
+        {**room_prescription_to_candidate_fields(prescription), "measured_basis": prescription.measured_basis},
         prescription_sha256(payload),
     )
 
@@ -1053,11 +1055,6 @@ def _candidate_records() -> list[dict[str, Any]]:
     return records
 
 
-def _candidate_fingerprints(candidates: list[dict[str, Any]]) -> list[str]:
-    """Available artifact identities; capture validates each graph against this speaker."""
-    return [one["fingerprint"] for one in candidates]
-
-
 def _degree_list(block: dict[str, Any], key: str) -> list[int]:
     """One of the packet's whole-degree lists, or empty when it published none."""
 
@@ -1274,14 +1271,10 @@ def _next_commands(
         commands.append(shlex.join([
             PROG, "packet", *evidence, *(["--state", state] if state else []),
         ]))
-    candidate_ids = _candidate_fingerprints(sections["banked"]["candidates"])
-    # One candidate is not a comparison: a tournament exists to put two of them
-    # at one pose, adjacent, so the microphone moves once.
-    if len(candidate_ids) > 1:
-        commands.append(shlex.join([
-            "jasper-angle-capture", "stage",
-            "--program", "tournament", "--candidates", ",".join(candidate_ids),
-        ]))
+    # Status discovers candidates; the LLM chooses a compatible shortlist.
+    # Staging every retained artifact would turn discovery into an experiment.
+    if len(sections["banked"]["candidates"]) > 1:
+        commands.append("jasper-angle-capture plan --help")
     if not sections["staged"]["available"]:
         commands.append(
             " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])
