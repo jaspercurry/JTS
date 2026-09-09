@@ -296,7 +296,7 @@ def _assistant_width_token(env_path: str | Path) -> str:
     except (OSError, ValueError):
         # An unreadable/typo'd declaration is fan-in's fault to report (it parks
         # at exit 78). Resolving narrow here matches what jasper-voice resolves
-        # in the same situation (`jasper.audio_io.tts_wire_is_wide` catches the
+        # in the same situation (`jasper.tts_playout.tts_wire_is_wide` catches the
         # same two and returns False), so the comparison stays honest.
         return RING_WIRE_FORMAT
     return RING_WIRE_FORMAT_WIDE if wide else RING_WIRE_FORMAT

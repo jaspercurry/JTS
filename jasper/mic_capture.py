@@ -16,18 +16,12 @@ import numpy as np
 
 from .audio_buffer import AudioBuffer, InputFrame
 from .dsp_numpy import resample_poly
+from .mic_presence import read_mic_presence
 from . import wake_ports
 
-# `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
-# installed in the local dev venv and isn't needed by the pure-Python
-# helpers in this module (UdpMicCapture and the dataclasses).
-# Lazy-import inside the two places that actually open PortAudio streams
-# (_log_audio_open_failure, MicCapture.__aenter__) so the module can be
-# imported on a dev machine, hardware-free tests can parse it, and the
-# lazy-import guards in test_lazy_imports.py can run.
-# The annotation on MicCapture._stream uses `sd.InputStream`, but
-# `from __future__ import annotations` above makes that a string —
-# never evaluated.
+# `sounddevice` (PortAudio bindings) is a Pi-side dep absent from the dev venv,
+# so the two places that open a stream import it lazily and this module stays
+# importable off-hardware. Pinned by tests/test_lazy_imports.py.
 
 logger = logging.getLogger(__name__)
 
@@ -56,32 +50,15 @@ class InputDeviceUnavailable(RuntimeError):
 def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     """Dump environmental state when a sounddevice stream open fails.
 
-    Called from MicCapture.__aenter__ immediately before re-raising
-    on a real open failure. The bare exception (typically
-    `ValueError: No <kind> device matching '<name>'`) doesn't tell
-    us whether ALSA can see the device, whether dmesg has a recent
-    USB-disconnect line, or what PortAudio actually has enumerated —
-    all common when the Apple dongle de-enumerates after losing
-    its analog load, or when the AEC bridge's loopback isn't fed.
-    Capturing this snapshot once at failure beats blind reasoning
-    from a stack trace days later.
-
-    Best-effort: a logging helper must NEVER mask or suppress the
-    underlying audio failure, so every snapshot path is wrapped in
-    `try/except` and falls through to `logger.warning` rather than
-    raising. The caller still re-raises the original exception.
+    Best-effort: a logging helper must NEVER mask the underlying audio
+    failure, so every snapshot path swallows its own exception. The caller
+    still re-raises the original.
     """
-    # A missing mic is already the reconciler's single source of truth. When it
-    # has confirmed "no microphone", a capture-open failure here is that same
-    # expected fact — not a new incident — so log one line and skip the full
-    # portaudio/arecord/aplay/dmesg snapshot. Keeps absence one flag, not a
-    # cascade. Playback failures, and capture failures with a present/unknown
-    # mic, still get the full snapshot below. See jasper/mic_presence.py.
-    # "MicCapture" is the literal the capture caller passes — a "capture"
-    # comparison here never matched and the cascade ran on absent mics too.
+    # The AEC reconciler already owns "is there a microphone". Once it has
+    # confirmed absence, a capture-open failure is that same expected fact, so
+    # log one line and skip the snapshot cascade. See jasper/mic_presence.py.
     if role == "MicCapture":
         try:
-            from jasper.mic_presence import read_mic_presence
             if read_mic_presence().absent_confirmed:
                 logger.warning(
                     "audio open failed (expected): role=capture device=%r — no "
@@ -93,16 +70,15 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
         except Exception:  # noqa: BLE001 — the gate must never mask the failure
             pass
 
-    import sounddevice as sd  # Pi-side dep, lazy — see module top.
+    import sounddevice as sd  # lazy: optional dep — see module top.
 
     logger.error(
         "audio open failed: role=%s device=%r exc=%s: %s",
         role, device, type(exc).__name__, exc,
     )
     try:
-        # PortAudio's view — what sounddevice could see at the
-        # moment of failure. If our target device isn't in this
-        # list, the dongle/mic disappeared (most common cause).
+        # A target device missing from this list means the dongle/mic
+        # de-enumerated — the most common cause.
         devices = sd.query_devices()
         logger.error("audio open failed: portaudio devices = %s", list(devices))
     except Exception as e:  # noqa: BLE001
@@ -119,8 +95,7 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
         except Exception as e:  # noqa: BLE001
             logger.warning("audio open failed: %s snapshot failed: %s", label, e)
     try:
-        # Last 20 lines of dmesg catches USB-disconnect / xhci
-        # reset events that often correlate with dongle dropouts.
+        # USB-disconnect / xhci reset events correlate with dongle dropouts.
         out = subprocess.run(
             ["dmesg", "--ctime"],
             capture_output=True, text=True, timeout=2.0,
@@ -217,8 +192,8 @@ class MicCapture:
         # Block size at the capture rate that yields exactly OUTPUT_FRAME_SAMPLES
         # frames at OUTPUT_RATE after downsampling.
         self._capture_block = self.OUTPUT_FRAME_SAMPLES * self._decimation
-        # Lazy queue init — see UdpMicCapture for rationale (construct
-        # from sync code shouldn't fail on stale event-loop state).
+        # _CaptureQueue binds a running loop; construction must stay callable
+        # from sync code.
         self._queue: _CaptureQueue | None = None
         self._stream: sd.InputStream | None = None
 
@@ -250,7 +225,7 @@ class MicCapture:
         return self._queue.dropped_frames if self._queue is not None else 0
 
     async def __aenter__(self) -> "MicCapture":
-        import sounddevice as sd  # Pi-side dep, lazy — see module top.
+        import sounddevice as sd  # lazy: optional dep — see module top.
 
         self._queue = _CaptureQueue()
         try:

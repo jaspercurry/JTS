@@ -1577,7 +1577,7 @@ mark_voice_input_absent() {
     fi
     # No marker means no gate, and exit 66 cannot stand in for one: it needs a
     # capture device that will not OPEN (InputDeviceUnavailable,
-    # jasper/audio_io.py), and a udp: carrier always binds — see
+    # jasper/mic_capture.py), and a udp: carrier always binds — see
     # park_managed_xvf. `disable` is weaker than the gate (it closes the
     # boot/enable-driven start, not an explicit `systemctl restart`), but it is
     # a stop that actually fires, where the exit-66 backstop this branch used

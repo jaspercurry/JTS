@@ -216,7 +216,7 @@ async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
 
 def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, caplog):
     monkeypatch.setattr(
-        "jasper.mic_presence.read_mic_presence",
+        "jasper.mic_capture.read_mic_presence",
         lambda: SimpleNamespace(absent_confirmed=True),
     )
     with caplog.at_level(logging.WARNING, logger="jasper.mic_capture"):

@@ -322,7 +322,6 @@ async def test_a_start_is_noticed_by_its_event_or_within_the_repair_window(
 async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
     mux, monkeypatch,
 ):
-    import jasper.source_events as source_events
 
     mux.POLL_INTERVAL_SEC = 0.01
     mux._fanin_none_best_effort = AsyncMock()
@@ -340,7 +339,7 @@ async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
 
     mux._run_control_server = control_forever
     monkeypatch.setattr(
-        source_events,
+        mux_module,
         "start_source_event_tasks",
         lambda *args, **kwargs: [asyncio.create_task(adapter_forever())],
     )
@@ -408,14 +407,13 @@ async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
     resolves the awaited event and ``cancel()`` follows with no intervening
     await, so both wake-ups are queued in the same iteration.
     """
-    import jasper.source_events as source_events
 
     # Park in the bounded wait: only the alert or the cancellation wakes it,
     # so the race is not muddied by an unrelated patrol expiry.
     mux.POLL_INTERVAL_SEC = 3600
     mux._fanin_none_best_effort = AsyncMock()
     monkeypatch.setattr(
-        source_events,
+        mux_module,
         "start_source_event_tasks",
         lambda *args, **kwargs: [],
     )
@@ -450,12 +448,11 @@ async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
 async def test_alert_storm_does_not_postpone_fixed_patrol(
     mux, monkeypatch,
 ):
-    import jasper.source_events as source_events
 
     mux.POLL_INTERVAL_SEC = 0.02
     mux._fanin_none_best_effort = AsyncMock()
     monkeypatch.setattr(
-        source_events,
+        mux_module,
         "start_source_event_tasks",
         lambda *args, **kwargs: [],
     )
@@ -526,7 +523,6 @@ async def test_alert_storm_does_not_postpone_fixed_patrol(
 async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     mux, monkeypatch,
 ):
-    import jasper.source_events as source_events
 
     # Push the fixed patrol out past every wait below so no patrol can
     # land inside this test at all. A disabling value, not a deadline the
@@ -540,7 +536,7 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     mux.POLL_INTERVAL_SEC = 30.0
     mux._fanin_none_best_effort = AsyncMock()
     monkeypatch.setattr(
-        source_events,
+        mux_module,
         "start_source_event_tasks",
         lambda *args, **kwargs: [],
     )
@@ -2327,7 +2323,6 @@ def _daemon_main(monkeypatch, tmp_path, ready: asyncio.Event) -> asyncio.Task:
     The event comes off the emitted event name rather than a poll, so the
     handoff back to the test body is the daemon's own transition.
     """
-    import jasper.source_events as source_events
 
     real_log_event = mux_module.log_event
 
@@ -2341,7 +2336,7 @@ def _daemon_main(monkeypatch, tmp_path, ready: asyncio.Event) -> asyncio.Task:
         mux_module, "MUX_CONTROL_SOCKET_PATH", str(tmp_path / "control.sock"),
     )
     monkeypatch.setattr(
-        source_events, "start_source_event_tasks", lambda *args, **kwargs: [],
+        mux_module, "start_source_event_tasks", lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(Mux, "_fanin_none_best_effort", AsyncMock())
     monkeypatch.setattr(Mux, "_reconcile", AsyncMock())

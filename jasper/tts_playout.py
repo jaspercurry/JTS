@@ -26,6 +26,7 @@ from .assistant_loudness import (
     upsample_2x,
 )
 from .assistant_volume import EffectiveVolumeContext
+from .fanin_coupling import assistant_wire_is_wide
 from .log_event import log_event
 from .platform import wire
 from .tts_routing import FANIN_TTS_SOCKET
@@ -34,8 +35,6 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-
 
 
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE — the narrow wire
@@ -88,7 +87,7 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
 # audio. OpenAI Realtime delivers replies faster than realtime (~11 s of
 # audio in ~4 s), so an unpaced writer overflows the budget and the
 # surviving chunks play as garbled "fast-forward" audio
-# (event=fanin.tts_command_dropped, observed on JTS3 2026-06-11).
+# (event=fanin.tts_command_dropped).
 # Keeping ≤1.2 s queued ahead of realtime leaves 0.55 s of margin
 # (2.0 s budget − 1.2 s watermark − one 0.25 s IPC chunk) against
 # event-loop jitter AND the bounded drift from a concurrent same-object
@@ -138,37 +137,18 @@ def _quantize_to_wire(arr, *, wide: bool):
     keeps that scale), regardless of which wire it is headed for. This is THE
     one place the assistant path leaves floating point.
 
-    NARROW is preserved verbatim — ``np.clip(...).astype(np.int16)``, the same
-    saturating truncate-toward-zero it has always been. Its bytes are a shipped
-    contract; "the same thing but rounded" would be a different signal on every
-    box in the fleet.
+    NARROW saturates and truncates toward zero. Its bytes are a shipped
+    contract: rounding instead would change the signal on every box in the
+    fleet.
 
     WIDE scales to the i32 spine (``_SPINE_SCALE``, the exact 2^16 the Rust
-    ``widen_i16_to_i32`` shifts by) and quantizes ROUND-TO-NEAREST saturating —
-    the campaign's rule for a JTS-owned quantizer, and a new edge that does not
-    inherit the narrow one's history.
-
-    The scaling multiply runs in **float64**, and it is worth being exact about
-    why, because the obvious reason is wrong. ``arr`` is float32 (the resampler
-    is cast back to it), and multiplying it by 2^16 is EXACT in float32:
-    a power of two changes only the exponent, so no mantissa bit moves and no
-    precision is recovered by widening. The upcast buys two smaller things —
-    ``np.rint`` and the clip compare against the i32 rails at a width that
-    represents every i32 exactly, so the rounding decision and the saturation
-    boundary are not themselves approximated — and it costs one temporary per
-    chunk on a path that already allocates several. It is insurance on the
-    quantizer's own arithmetic, not a wider signal. (The ``pcm_wide`` ingest
-    below states the same power-of-two exactness for the inverse divide; the two
-    should read alike, because they are the same fact.)
-
-    What actually survives is therefore bounded by float32, and that is fine:
-    resampling a 16-bit source produces values off the S16 grid, and float32's
-    24-bit mantissa carries ~8 of those bits into the payload. The remaining 8
-    bits of the i32 container sit below that mantissa and below the source's own
-    resolution — the container is sized by the spine, not by a claim about the
-    assistant's precision. Widening the RESAMPLE path is not proposed here: it
-    would cost a real float64 pass over every chunk for bits the 16-bit source
-    never had.
+    ``widen_i16_to_i32`` shifts by) and quantizes round-to-nearest saturating.
+    The multiply runs in float64 not for precision — ``arr`` is float32 and
+    multiplying by a power of two is exact there — but so ``np.rint`` and the
+    clip compare against the i32 rails at a width that represents every i32
+    exactly. Payload precision stays bounded by float32's 24-bit mantissa; the
+    i32 container is sized by the spine, not by a claim about assistant
+    precision.
     """
     if wide:
         scaled = np.rint(arr.astype(np.float64) * _SPINE_SCALE)
@@ -180,58 +160,34 @@ def _quantize_to_wire(arr, *, wide: bool):
 def tts_wire_is_wide() -> bool:
     """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
 
-    ONE RULE, TWO LANGUAGES. Delegates to
-    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
-    the shared crate's ``TtsWireWidth::from_box_declaration`` that
-    ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
-    the box's declaration are required — the ``S32_LE`` wire format AND a
-    coupling that leaves fan-in on the ring (an UNDECLARED one does, ADR-0100)
-    — and both are read file-fresh, not from ``os.environ``: ``jasper-voice``
-    never loaded ``fanin.env``, which is the stale-``os.environ`` class
-    AGENTS.md canonizes.
+    Delegates to :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the
+    Python mirror of the shared crate's ``TtsWireWidth::from_box_declaration``.
+    Both halves of the box's declaration are required — the ``S32_LE`` wire
+    format AND a coupling that leaves fan-in on the ring (an UNDECLARED one
+    does, ADR-0100) — and both are read file-fresh: ``jasper-voice`` never
+    loaded ``fanin.env``, so ``os.environ`` would be stale.
 
-    WHY A BAD TOKEN DOES NOT RAISE HERE. ``jasper-fanin`` already treats an
-    unrecognized value as a config-class fault and parks at exit 78, and the
-    doctor surfaces it. Re-raising in ``jasper-voice`` would take down the
-    daemon that plays the failure cues, turning one operator typo into a silent
-    speaker. So the fault is reported loudly here and resolved narrow — the
-    conservative width, and the one every unarmed box uses.
+    A bad token resolves NARROW rather than raising: ``jasper-fanin`` already
+    parks at exit 78 on an unrecognized value and the doctor surfaces it, while
+    raising here would take down the daemon that plays the failure cues.
 
-    CACHED so the process has exactly ONE answer. Two callers ask — the playout
-    (which quantizes provider TTS) and the daemon (which bakes earcons) — and a
-    second file read between them could return a second answer, which is the
-    drift this campaign exists to remove.
+    CACHED so the process has exactly ONE answer — the playout (quantizing
+    provider TTS) and the daemon (baking earcons) must not disagree. Two of the
+    three ways the answer can move restart ``jasper-voice`` and so rebuild the
+    cache: a coupling flip through ``coupling_reconcile``, and a
+    resolver-default move through a deploy's
+    ``park_audio_clients_for_core_graph_restart``. The third — an operator
+    hand-editing ``JASPER_FANIN_RING_WIRE_FORMAT`` on a live box — is NOT
+    covered: this process keeps its old answer until the documented "set it,
+    reconcile, arm" sequence restarts the daemons.
 
-    WHAT BOUNDS THE STALENESS, stated as the THREE ways the answer can move
-    rather than the one this used to name:
-
-    * a COUPLING flip — ``coupling_reconcile``'s transition path ``try-restart``s
-      ``jasper-voice`` when the verdict changes, so the process is replaced;
-    * the RESOLVER'S DEFAULT moving (the ring wire's narrow→wide flip is one),
-      which changes the answer with no coupling flip and no reconciler
-      transition. Nothing in ``coupling_reconcile`` covers that — but such a move
-      only ever arrives in a DEPLOY, and a deploy parks ``jasper-voice``
-      (``park_audio_clients_for_core_graph_restart``) and restarts it through
-      ``jasper-aec-reconcile``, so the cache is rebuilt in the same operation
-      that moved the default;
-    * an operator hand-editing ``JASPER_FANIN_RING_WIRE_FORMAT`` on a live box.
-      That is NOT covered and never was: the documented per-box move is "set it,
-      run the hardware reconciler, then arm", and the arm is what restarts the
-      daemons. Until then this process keeps its old answer.
-
-    A STALE ANSWER IS A WIDTH DISAGREEMENT, NEVER A LEVEL ERROR. The IPC verb is
-    self-describing (``AUDIO`` vs ``AUDIO32``), so fan-in converts exactly
-    whichever it receives and logs
-    ``event=fanin.tts_wire_width_mismatch action=converted``; the failure
-    direction is an unnecessary conversion and a warn, not a scale error. The
-    ``except`` below resolves NARROW for the same reason — the conservative
-    width every unarmed box uses.
+    A stale answer is a width disagreement, never a level error: the IPC verb
+    is self-describing (``AUDIO`` vs ``AUDIO32``), so fan-in converts whichever
+    it receives and logs ``event=fanin.tts_wire_width_mismatch``.
 
     Tests reset it with ``tts_wire_is_wide.cache_clear()``;
     ``tests/conftest.py`` does it automatically around every test.
     """
-    from .fanin_coupling import assistant_wire_is_wide
-
     try:
         return assistant_wire_is_wide()
     except (OSError, ValueError) as e:
@@ -734,12 +690,10 @@ class TtsPlayout:
     """Assistant-audio playout: gain validation, drain-deadline timing, and
     the fan-in TTS IPC client.
 
-    The name and "transport" language are historical; the packaged socket
-    is fan-in so TTS/cues enter before CamillaDSP. Provider PCM enters as
-    24 kHz mono; write() polyphase-upsamples it 2x to the fan-in socket's
-    fixed 48 kHz, duplicates mono to stereo, updates the drain deadline,
-    and writes bytes to this class's socket adapter. Gain travels as
-    metadata so the active TTS IPC owner can apply the final clamp at its
+    Provider PCM enters as 24 kHz mono; write() polyphase-upsamples it 2x to
+    the fan-in socket's fixed 48 kHz, duplicates mono to stereo, updates the
+    drain deadline, and writes bytes to this class's socket adapter. Gain
+    travels as metadata so the TTS IPC owner applies the final clamp at its
     mix boundary.
     """
 
@@ -770,12 +724,8 @@ class TtsPlayout:
         # Cumulative pacing-sleep time since the last take_paced_sec().
         self._paced_total_sec = 0.0
         self._stream: _OutputdStreamAdapter | None = None
-        # One-shot warning latch: if a caller invokes write() before
-        # entering the async context (so _stream is still None), log
-        # once. The class is a context manager and the underlying
-        # ALSA stream only opens in __aenter__; without that, write()
-        # used to silently no-op, which was the cause of "I can't
-        # hear the cue" being mis-diagnosed as routing problems.
+        # One-shot latch so a write() before __aenter__ (no stream yet) is
+        # audible in the journal instead of a silent no-op.
         self._closed_stream_warned = False
         # Drain tracking — see `expected_drain_at`. None (not 0.0)
         # because CLOCK_MONOTONIC's reference is platform-defined; 0.0
@@ -785,8 +735,6 @@ class TtsPlayout:
         # Emission-time admission authority — see set_emission_admission.
         self._emission_admission: "Callable[[], str | None] | None" = None
         self._emission_refusal_logged = False
-        # Apply the constructor's gain_db through the same validation path
-        # as runtime updates.
         self.set_gain_db(gain_db)
         self._socket_path = socket_path
         self._provider = provider
@@ -806,10 +754,8 @@ class TtsPlayout:
             if self._wire_wide
             else _OUTPUTD_AUDIO_FRAME_BYTES
         )
-        # Item 4 (observability): a support read must be able to answer "what
-        # width is this box speaking, and why" without journal archaeology or a
-        # code read. One line, at construction, naming the resolved width AND
-        # where it came from — a resolver answer or an explicit caller override.
+        # One line naming the resolved width and where it came from, paired
+        # with fan-in's own resolved line so a support read can compare the two.
         log_event(
             logger,
             "tts_wire.resolved",

@@ -262,8 +262,9 @@ class RecordingTask:
         self.current_rms_dbfs: float = -100.0
 
     async def start(self) -> None:
-        # lazy: optional dep — jasper.mic_capture imports sounddevice,
-        # which dev machines don't have.
+        # lazy: import cost — jasper.mic_capture imports numpy at module
+        # scope, and jasper-web reaches this module through
+        # jasper.web.wake_corpus_setup.
         from jasper.mic_capture import UdpMicCapture
 
         self._stack = AsyncExitStack()
