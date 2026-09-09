@@ -20,6 +20,7 @@ from jasper.usage import (
     AggregateUsageReader,
     BillableActivityMeter,
     USAGE_RETENTION_DAYS,
+    _CONNECTION_INTERVALS_TABLE_DDL,
     _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
     Pricing,
@@ -333,35 +334,62 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
     assert store.spend_last_24h_usd() == 0.0
 
 
-def test_spend_window_query_uses_epoch_index(tmp_path: Path):
-    """The 24h spend window range-scans the epoch index instead of running
-    strftime() over every row — the fix for the per-wake full table scan."""
+def test_spend_window_query_uses_started_at_index(tmp_path: Path):
+    """The 24h spend window range-scans the started_at index instead of
+    running strftime() over every row, on the path production reads through
+    (the buffered writer's periodic disk snapshot)."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
+    store._snapshot([])  # creates the TEMP VIEW the buffered writer reads through
     plan = store._conn.execute(
         "EXPLAIN QUERY PLAN SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
-        "WHERE started_at_epoch >= ?", (0,),
+        "WHERE started_at >= ?", ("2020-01-01",),
     ).fetchall()
     detail = " ".join(row[-1] for row in plan)
     assert "USING INDEX" in detail
-    assert "idx_sessions_started_at_epoch" in detail
+    assert "idx_sessions_started_at" in detail
 
 
-def test_sessions_older_than_retention_are_pruned_on_open(tmp_path: Path):
+def test_expired_rows_are_pruned_on_open(tmp_path: Path):
     db = tmp_path / "usage.db"
     now = datetime.now(timezone.utc)
     old = (now - timedelta(days=USAGE_RETENTION_DAYS + 1)).isoformat()
     recent = (now - timedelta(days=1)).isoformat()
     with sqlite3.connect(str(db)) as conn:
         conn.execute(_SESSIONS_TABLE_DDL)
+        conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
         conn.executemany(
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
             [(old, 1.0), (recent, 2.0)],
         )
+        conn.executemany(
+            "INSERT INTO connection_intervals (provider, opened_at) VALUES (?, ?)",
+            [("grok", old), ("grok", recent)],
+        )
 
     store = UsageStore(str(db))  # opening the writer runs the one-time prune
-    rows = store._conn.execute("SELECT started_at FROM sessions").fetchall()
-    assert rows == [(recent,)]
+    assert store._conn.execute(
+        "SELECT started_at FROM sessions",
+    ).fetchall() == [(recent,)]
+    assert store._conn.execute(
+        "SELECT opened_at FROM connection_intervals",
+    ).fetchall() == [(recent,)]
+
+
+def test_read_only_store_reads_existing_spend(tmp_path: Path):
+    """A read-only reopen of a DDL-only DB (created by another surface, no
+    rows written yet) must resolve spend without error once rows exist."""
+    db = tmp_path / "usage.db"
+    UsageStore(str(db))._conn.close()
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            (datetime.now(timezone.utc).isoformat(), 0.42),
+        )
+        conn.commit()
+
+    reader = UsageStore(str(db), read_only=True)
+    assert reader.spend_last_24h_usd() == pytest.approx(0.42)
 
 
 # ---------------------------------------------------------------------------

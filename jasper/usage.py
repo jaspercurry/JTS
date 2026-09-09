@@ -342,6 +342,14 @@ _CONNECTION_INTERVALS_TABLE_DDL = f"""
     )
 """
 
+_SESSIONS_STARTED_AT_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at)"
+)
+_CONNECTION_INTERVALS_OPENED_AT_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_connection_intervals_opened_at "
+    "ON connection_intervals(opened_at)"
+)
+
 
 _USAGE_COLUMNS = {
     "sessions": "id, started_at, ended_at, input_tokens, output_tokens, cost_usd, provider",
@@ -397,13 +405,13 @@ class UsageStore:
             if not read_only:
                 self._conn.execute(_SESSIONS_TABLE_DDL)
                 self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
+                self._conn.execute(_SESSIONS_STARTED_AT_INDEX_DDL)
+                self._conn.execute(_CONNECTION_INTERVALS_OPENED_AT_INDEX_DDL)
                 self._ensure_connection_interval_kind_column()
-                self._ensure_sessions_epoch_column()
-                self._prune_expired_sessions()
+                self._prune_expired_rows()
             self._connection_intervals_have_kind = (
                 self._connection_interval_kind_column_exists()
             )
-            self._sessions_have_epoch_column = self._sessions_epoch_column_exists()
         except sqlite3.Error:
             self._conn.close()
             raise
@@ -598,42 +606,15 @@ class UsageStore:
             f"ADD COLUMN kind TEXT NOT NULL DEFAULT '{_LEGACY_CONNECTION_UPTIME_KIND}'"
         )
 
-    def _sessions_epoch_column_exists(self) -> bool:
-        # table_xinfo, not table_info: a GENERATED column is hidden from
-        # the latter, which would otherwise re-run the ALTER every open.
-        return "started_at_epoch" in {
-            row[1] for row in self._conn.execute("PRAGMA table_xinfo(sessions)")
-        }
-
-    def _ensure_sessions_epoch_column(self) -> None:
-        """A GENERATED column mirrors started_at as epoch seconds so the 24h
-        spend window range-scans an indexed number instead of running
-        strftime() over every row. VIRTUAL (not STORED — SQLite refuses to
-        ALTER a STORED column onto a table that already has rows, which a
-        live usage.db always does) means the value is derived from
-        started_at on every read, so rows written via raw SQL (an older
-        usage.db, forensic inserts) stay in sync with no separate UPDATE
-        and no possibility of drift."""
-        if not self._sessions_epoch_column_exists():
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN started_at_epoch REAL "
-                "GENERATED ALWAYS AS (strftime('%s', started_at)) VIRTUAL"
-            )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_started_at_epoch "
-            "ON sessions(started_at_epoch)"
-        )
-
-    def _prune_expired_sessions(self) -> None:
-        """Drop sessions past USAGE_RETENTION_DAYS. Runs once per writable
-        store open — the voice daemon and research scheduler each open
-        theirs once per process start — so usage.db does not grow
-        unbounded over the household's lifetime."""
+    def _prune_expired_rows(self) -> None:
+        """Drop sessions and connection_intervals past USAGE_RETENTION_DAYS.
+        Runs once per writable store open."""
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=USAGE_RETENTION_DAYS)
-        ).timestamp()
+        ).isoformat()
+        self._conn.execute("DELETE FROM sessions WHERE started_at < ?", (cutoff,))
         self._conn.execute(
-            "DELETE FROM sessions WHERE started_at_epoch < ?", (cutoff,),
+            "DELETE FROM connection_intervals WHERE opened_at < ?", (cutoff,),
         )
 
     # ------------------------------------------------------------------
@@ -712,21 +693,10 @@ class UsageStore:
     def spend_last_24h_usd(self) -> float:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
-        if self._sessions_have_epoch_column:
-            cur = self._conn.execute(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
-                "WHERE started_at_epoch >= ?",
-                (cutoff.timestamp(),),
-            )
-        else:
-            # Read-only reopen of a usage.db that predates this column and
-            # whose writer hasn't migrated it yet — fail open to the old
-            # full scan rather than raise "no such column".
-            cur = self._conn.execute(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
-                "WHERE strftime('%s', started_at) >= ?",
-                (str(int(cutoff.timestamp())),),
-            )
+        cur = self._conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions WHERE started_at >= ?",
+            (cutoff.replace(microsecond=0).isoformat(),),
+        )
         row = cur.fetchone()
         token_cost = float(row[0] if row else 0.0)
         return token_cost + self._time_billed_spend(cutoff, now)
