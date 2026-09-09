@@ -164,7 +164,7 @@ async def resolve_target(
     )
 
 
-async def stop_renderers(renderer, names: list[str]) -> None:
+async def stop_renderers(names: list[str]) -> None:
     """Stop the renderers named in `names`. Names match
     Resolution.stop_renderers values: airplay → mux's ``PREEMPT airplay``,
     the same DropSession-then-MPRIS-Stop escalation mux runs when a source

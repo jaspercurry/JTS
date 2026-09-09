@@ -1429,15 +1429,30 @@ class TtsPlayout:
         so the caller can own its own restore.
         """
         stream = self._stream
-        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-            return False
-        duck = getattr(stream, "program_duck", None)
+        closed = isinstance(stream, _OutputdStreamAdapter) and stream.closed
+        duck = None if closed else getattr(stream, "program_duck", None)
         if duck is None:
+            # A silent duck failure means music does not step back under the
+            # assistant, so say so rather than returning False quietly.
+            log_event(
+                logger,
+                "fanin.duck_failed",
+                on=str(bool(on)).lower(),
+                reason="no_connection",
+                level=logging.WARNING,
+            )
             return False
         try:
             duck(on)
         except OSError as e:
-            logger.warning("fan-in TTS IPC program duck failed: %s", e)
+            log_event(
+                logger,
+                "fanin.duck_failed",
+                on=str(bool(on)).lower(),
+                reason="send",
+                detail=str(e),
+                level=logging.WARNING,
+            )
             return False
         return True
 

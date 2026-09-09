@@ -245,7 +245,7 @@ async def test_stop_renderers_dispatches_per_source(
     monkeypatch.setattr("jasper.spotify_routing.mux_socket_command", fake_mux)
     monkeypatch.setattr("jasper.spotify_routing.asyncio.sleep", _no_sleep)
 
-    await stop_renderers(object(), names)
+    await stop_renderers(names)
 
     assert avrcp_calls == avrcp
     assert mux_calls == mux
