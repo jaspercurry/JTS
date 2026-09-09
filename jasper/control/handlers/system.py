@@ -109,11 +109,11 @@ def _safe_audio_quality_state() -> dict[str, Any]:
 
 class SystemRoutes(ControlHandlerMixin):
     def _transport_park_reader(self) -> Callable[[], dict[str, Any]]:
-        """The park-verdict reader both operator surfaces share: the health
-        sampler's cached verdict when it has one, so every row in one payload
-        is the same observation; the module's own fail-soft read otherwise,
-        because both routes must keep answering without a sampler."""
-        from ..transport_park import snapshot
+        """The park-verdict reader for /system/snapshot: the health sampler's
+        cached verdict when it has one, so every row in the payload is the
+        same observation; the module's own fail-soft read otherwise, because
+        the route must keep answering without a sampler."""
+        from ..transport_eligibility import snapshot
 
         return getattr(
             self._audio_health_sampler, "transport_park_snapshot", None,
@@ -128,9 +128,9 @@ class SystemRoutes(ControlHandlerMixin):
         self._send_json(debug_control.snapshot())
 
     def _get_state(self) -> None:
-        # Cross-daemon snapshot for jasper-doctor and ad-hoc `curl | jq`; the
-        # dashboard reads /system/snapshot instead. The aggregate builds every
-        # key on the wire — nothing is attached here (ADR-0233 rule 2).
+        # This daemon's own posture for jasper-doctor and ad-hoc `curl | jq`;
+        # the dashboard reads /system/snapshot instead. The aggregate builds
+        # every key on the wire — nothing is attached here (ADR-0270).
         try:
             state = self._state_response_cache.get_or_compute(
                 lambda: asyncio.run(
@@ -138,7 +138,6 @@ class SystemRoutes(ControlHandlerMixin):
                         camilla_host=self._camilla_host,
                         camilla_port=self._camilla_port,
                         voice_socket_path=self._voice_socket_path,
-                        ha_status_snapshot=self._ha_status_cache.snapshot,
                         # shairport's MPRIS PlaybackStatus from the health
                         # sampler that already holds it, so `/state` runs no
                         # `busctl` of its own (ADR-0233 rules 1 and 2).
@@ -147,19 +146,10 @@ class SystemRoutes(ControlHandlerMixin):
                             else self._audio_health_sampler.airplay_playing
                         ),
                         # The same sampler's normalized health contract, and
-                        # the payload's `active_source` (ADR-0233 rule 2).
+                        # the payload's `active_source`.
                         audio_health_snapshot=(
                             None if self._audio_health_sampler is None
                             else self._audio_health_sampler.snapshot
-                        ),
-                        transport_park_snapshot=self._transport_park_reader(),
-                        # The 30 s systemd snapshot this daemon already
-                        # samples for /system — reused so
-                        # resilience.outputd_failure_reconcile can read
-                        # outputd's unit state without a second probe.
-                        service_states_snapshot=(
-                            None if self._sampler is None
-                            else self._sampler.service_states_snapshot
                         ),
                     )
                 ),

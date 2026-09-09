@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Honest USB renderer projection from kernel + fan-in owners."""
+"""Honest USB renderer activity from fan-in's DIRECT lane."""
 
 from __future__ import annotations
 
-import json
+import pytest
 
 from jasper.control import state_aggregate
 
@@ -20,64 +20,16 @@ def _fanin(**usb):
     }
 
 
-def test_renderer_projects_direct_lane_and_udc_connection():
-    state = state_aggregate._build_usbsink_renderer_state(
-        _fanin(rms_dbfs=-8.5, muted=False),
-        host_connected=True,
-    )
-
-    assert state == {
-        "playing": True,
-        "muted": False,
-        "host_connected": True,
-        "rms_dbfs": -8.5,
-    }
-
-
-def test_renderer_keeps_activity_separate_from_mix_mute():
-    state = state_aggregate._build_usbsink_renderer_state(
-        _fanin(rms_dbfs=-8.5, muted=True),
-        host_connected=False,
-    )
-
-    assert state is not None
-    assert state["playing"] is True
-    assert state["muted"] is True
-    assert state["host_connected"] is False
-
-
-def test_renderer_fails_closed_without_identity_bound_direct_lane():
-    assert (
-        state_aggregate._build_usbsink_renderer_state(
-            None,
-            host_connected=True,
-        )
-        is None
-    )
-    assert (
-        state_aggregate._build_usbsink_renderer_state(
-            {"inputs": [{"label": "usbsink", "source": "lane"}]},
-            host_connected=True,
-        )
-        is None
-    )
-    assert (
-        state_aggregate._build_usbsink_renderer_state(
-            {"inputs": [{"label": "other", "source": "direct"}]},
-            host_connected=True,
-        )
-        is None
-    )
-
-
-def test_renderer_missing_level_is_null_and_json_clean():
-    state = state_aggregate._build_usbsink_renderer_state(
-        _fanin(),
-        host_connected=True,
-    )
-
-    assert state is not None
-    assert state["playing"] is None
-    assert state["rms_dbfs"] is None
-    assert state["muted"] is None
-    json.dumps(state, allow_nan=False)
+@pytest.mark.parametrize(
+    ("fanin_status", "expected"),
+    [
+        (_fanin(rms_dbfs=-8.5), True),
+        (_fanin(rms_dbfs=-65.0), False),
+        (_fanin(), False),
+        (None, False),
+        ({"inputs": [{"label": "usbsink", "source": "lane"}]}, False),
+        ({"inputs": [{"label": "other", "source": "direct"}]}, False),
+    ],
+)
+def test_usbsink_renderer_playing(fanin_status, expected):
+    assert state_aggregate._usbsink_renderer_playing(fanin_status) is expected

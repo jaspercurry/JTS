@@ -1127,16 +1127,10 @@ impl ChipRefDownsampler {
         })
     }
 
-    /// KNOWN ALLOCATION EXCEPTION on the playout thread, deliberately left
-    /// alone here.
-    ///
-    /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
-    /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
-    /// no-allocation guard cannot cover. It costs a ~107-sample allocation per
-    /// period, and ONLY on boxes with the chip-reference leg armed
-    /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
-    /// second thread for it. Fixing it means giving the writer a pool or a
-    /// pre-sized ring, which changes the queue's ownership model.
+    /// Allocates one ~107-sample `Vec` per period on the playout thread (moved
+    /// to the writer thread inside `ChipRefPacket`), and only where the
+    /// chip-reference leg is armed (`chip_ref_pcm` set). Removing it means a
+    /// pool or pre-sized ring on the writer side — a different ownership model.
     fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
         let input_frames = stereo_samples.len() / (CHANNELS as usize);
         let output_frames =

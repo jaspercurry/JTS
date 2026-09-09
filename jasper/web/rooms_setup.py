@@ -161,8 +161,6 @@ def _build_rooms_payload() -> dict:
         "hostname": me.hostname,
         "room": me.room,
         "address": self_addr,
-        # with_airplay_latency_fit is the same composer /state uses, so the
-        # bonded-leader lip-sync status is not re-derived here.
         "grouping": grouping,
         "peering": peering,
     }

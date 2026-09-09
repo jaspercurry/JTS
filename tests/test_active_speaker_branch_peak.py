@@ -24,7 +24,12 @@ from jasper.active_speaker import branch_peak
 from jasper.active_speaker.branch_peak import (
     BranchPeakError,
     branch_peaks_for_targets,
+    complex_channel_transfer,
     stimulus_branch_peaks_dbfs,
+)
+from jasper.active_speaker.crossover_v2.graph_prediction import (
+    GraphPredictionError,
+    relative_branch_response,
 )
 
 MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…, the split mixer's leg
@@ -892,8 +897,7 @@ def _cross_check_graph(extra_tweeter=(), extra_filters=None):
     applies the real soft-clip curve. Including one would compare a modelling
     DECISION rather than modelling FIDELITY. The delay is 1.0 ms — exactly 48
     samples at 48 kHz — because the reference rounds delays to whole samples
-    and this module applies the exact phase; an integer delay is where those
-    two definitions coincide, so the comparison stays about the filters.
+    and this module uses the same whole-sample rule.
     """
     filters = {
         "lp": {"type": "BiquadCombo", "parameters": {
@@ -1049,3 +1053,184 @@ def test_a_target_without_a_usable_output_index_refuses(tmp_path):
         )
     with pytest.raises(BranchPeakError):
         branch_peaks_for_targets(config, wav, [{"output_index": 0}])
+
+
+# --- complete-graph complex response ---------------------------------------
+
+
+def test_complex_transfer_includes_shared_gain_polarity_delay_and_mono_sum():
+    config = {
+        "devices": _devices(),
+        "filters": {
+            "shared": {"type": "Gain", "parameters": {
+                "gain": -3.0, "inverted": True, "mute": False,
+            }},
+            "delay": {"type": "Delay", "parameters": {
+                "delay": 1, "unit": "samples",
+            }},
+        },
+        "mixers": _split_mixer(),
+        "pipeline": [
+            {"type": "Filter", "names": ["shared", "delay"]},
+            {"type": "Mixer", "name": "split_active_2way"},
+        ],
+    }
+    freqs = np.asarray([100.0, 1000.0, 10000.0])
+    response = complex_channel_transfer(
+        config, freqs,
+        input_weights={0: 1.0, 1: 1.0}, output_channels={"woofer": 0},
+    )["woofer"]
+    expected = -10.0 ** (-3.0 / 20.0) * np.exp(-2j * np.pi * freqs / 48000.0)
+    assert response == pytest.approx(expected)
+
+
+def test_complex_transfer_rounds_default_delay_to_camilladsp_samples():
+    config = {
+        "devices": _devices(),
+        "filters": {"delay": {"type": "Delay", "parameters": {
+            "delay": 0.03, "unit": "ms",
+        }}},
+        "mixers": _passthru_mixer(),
+        "pipeline": [
+            {"type": "Mixer", "name": "passthru"},
+            {"type": "Filter", "channels": [0], "names": ["delay"]},
+        ],
+    }
+    freqs = np.asarray([1000.0, 10000.0])
+    response = complex_channel_transfer(
+        config, freqs,
+        input_weights={0: 1.0}, output_channels={"woofer": 0},
+    )["woofer"]
+    # 0.03 ms at 48 kHz is 1.44 samples. CamillaDSP defaults subsample to
+    # false and rounds that request to a one-sample delay line.
+    assert response == pytest.approx(np.exp(-2j * np.pi * freqs / 48000.0))
+
+
+def test_complex_transfer_refuses_a_subsample_delay_allpass():
+    config = {
+        "devices": _devices(),
+        "filters": {"delay": {"type": "Delay", "parameters": {
+            "delay": 0.03, "unit": "ms", "subsample": True,
+        }}},
+        "mixers": _passthru_mixer(),
+        "pipeline": [
+            {"type": "Mixer", "name": "passthru"},
+            {"type": "Filter", "channels": [0], "names": ["delay"]},
+        ],
+    }
+    with pytest.raises(BranchPeakError, match="allpass"):
+        complex_channel_transfer(
+            config, np.asarray([1000.0]),
+            input_weights={0: 1.0}, output_channels={"woofer": 0},
+        )
+
+
+def test_relative_response_equates_role_routing_with_the_coherent_summed_mixer():
+    source = {
+        "devices": _devices(), "filters": {}, "mixers": _passthru_mixer(),
+        "pipeline": [{"type": "Mixer", "name": "passthru"}],
+    }
+    target = {
+        "devices": _devices(), "filters": {}, "mixers": _split_mixer(),
+        "pipeline": [{"type": "Mixer", "name": "split_active_2way"}],
+    }
+    freqs = np.asarray([100.0, 1000.0, 10000.0])
+    result = relative_branch_response(
+        source, target, freqs,
+        role_output_channels={"woofer": 0, "tweeter": 1},
+        source_input_weights_by_role={
+            "woofer": {0: 1.0}, "tweeter": {1: 1.0},
+        },
+        target_input_weights_by_role={
+            "woofer": {0: 1.0, 1: 1.0},
+            "tweeter": {0: 1.0, 1: 1.0},
+        },
+        valid_band_hz_by_role={
+            "woofer": (100.0, 10000.0), "tweeter": (100.0, 10000.0),
+        },
+    )
+    assert result.responses_by_role["woofer"] == pytest.approx(np.ones(3))
+    assert result.responses_by_role["tweeter"] == pytest.approx(np.ones(3))
+    assert result.to_dict()["limiter"]["model"] == "unchanged_pass_through"
+
+
+def test_relative_response_masks_a_near_zero_source_instead_of_filling_it():
+    silent = {
+        "devices": _devices(),
+        "filters": {"mute": {"type": "Gain", "parameters": {
+            "gain": 0.0, "mute": True,
+        }}},
+        "mixers": _passthru_mixer(),
+        "pipeline": [
+            {"type": "Mixer", "name": "passthru"},
+            {"type": "Filter", "channels": [0], "names": ["mute"]},
+        ],
+    }
+    target = {
+        "devices": _devices(), "filters": {}, "mixers": _passthru_mixer(),
+        "pipeline": [{"type": "Mixer", "name": "passthru"}],
+    }
+    result = relative_branch_response(
+        silent, target, np.asarray([100.0, 1000.0]),
+        role_output_channels={"woofer": 0},
+        source_input_weights_by_role={"woofer": {0: 1.0}},
+        target_input_weights_by_role={"woofer": {0: 1.0}},
+        valid_band_hz_by_role={"woofer": (100.0, 1000.0)},
+    )
+    assert not result.usable_by_role["woofer"].any()
+    assert np.isnan(result.responses_by_role["woofer"]).all()
+    assert result.excluded_bins_by_role["woofer"]["source_near_zero"] == 2
+
+
+def test_relative_response_refuses_a_changed_limiter():
+    def graph(limit):
+        return {
+            "devices": _devices(),
+            "filters": {"lim": {"type": "Limiter", "parameters": {
+                "soft_clip": True, "clip_limit": limit,
+            }}},
+            "mixers": _passthru_mixer(),
+            "pipeline": [
+                {"type": "Mixer", "name": "passthru"},
+                {"type": "Filter", "channels": [0], "names": ["lim"]},
+            ],
+        }
+
+    with pytest.raises(GraphPredictionError, match="limiter"):
+        relative_branch_response(
+            graph(-1.0), graph(-2.0), np.asarray([1000.0]),
+            role_output_channels={"woofer": 0},
+            source_input_weights_by_role={"woofer": {0: 1.0}},
+            target_input_weights_by_role={"woofer": {0: 1.0}},
+            valid_band_hz_by_role={"woofer": (500.0, 2000.0)},
+        )
+
+
+def test_relative_response_allows_candidate_filters_before_an_unchanged_limiter():
+    def graph(with_filter):
+        filters = {
+            "lim": {"type": "Limiter", "parameters": {
+                "soft_clip": True, "clip_limit": -1.0,
+            }},
+            "candidate": {"type": "Biquad", "parameters": {
+                "type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -3.0,
+            }},
+        }
+        names = ["candidate", "lim"] if with_filter else ["lim"]
+        return {
+            "devices": _devices(), "filters": filters, "mixers": _passthru_mixer(),
+            "pipeline": [
+                {"type": "Mixer", "name": "passthru"},
+                {"type": "Filter", "channels": [0], "names": names},
+            ],
+        }
+
+    result = relative_branch_response(
+        graph(True), graph(False), np.asarray([1000.0]),
+        role_output_channels={"woofer": 0},
+        source_input_weights_by_role={"woofer": {0: 1.0}},
+        target_input_weights_by_role={"woofer": {0: 1.0}},
+        valid_band_hz_by_role={"woofer": (500.0, 2000.0)},
+    )
+    assert result.usable_by_role["woofer"].tolist() == [True]
+    assert abs(result.responses_by_role["woofer"][0]) > 1.0

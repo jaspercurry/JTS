@@ -80,6 +80,7 @@ from .driver_base_trim import (
     write_base_trim,
 )
 from .driver_pad import effective_sensitivity_db
+from .driver_safety import evaluate_driver_safety_profile
 from .level_trim import (
     MAX_ATTENUATION_DB,
     LevelTrimError,
@@ -393,6 +394,7 @@ def _source_payload(
     measurements: Mapping[str, Any],
     *,
     measured_candidate_fingerprint: str | None = None,
+    driver_protection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
 
@@ -461,6 +463,8 @@ def _source_payload(
     }
     if measured_candidate_fingerprint is not None:
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
+    if driver_protection is not None:
+        source["driver_protection_fingerprint"] = _fingerprint(driver_protection)
     return {**source, "fingerprint": _fingerprint(source)}
 
 
@@ -2023,6 +2027,21 @@ def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     )
 
 
+def _snapshot_protection_sections(
+    snapshot: Mapping[str, Any], preset: ActiveSpeakerPreset,
+) -> Mapping[str, Sequence[Any]] | None:
+    protection = snapshot.get("driver_protection")
+    if protection is None:
+        return None
+    from .branch_chain import confirmed_protection_sections  # lazy: graph compilation imports NumPy
+
+    try:
+        sections = confirmed_protection_sections(protection)
+        return {role: sections[role] for role in required_driver_roles(preset.way_count)}
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ActiveSpeakerConfigError("saved driver protection is invalid") from exc
+
+
 def build_baseline_profile_candidate(
     topology: OutputTopology,
     *,
@@ -2103,6 +2122,24 @@ def build_baseline_profile_candidate(
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
     now = created_at or _utc_now()
+    saved = _load_saved_state(state_target)
+    applied_anchor = _applied_profile_anchor(saved)
+    protection_anchor = preserved_applied_profile or applied_anchor or {}
+    protection = (protection_anchor.get("recomposition_snapshot") or {}).get("driver_protection")
+    safety_profile = design_draft.get("driver_safety_profile")
+    if evaluate_driver_safety_profile(safety_profile, topology).confirmed_and_current:
+        protection = {
+            "profile_fingerprint": safety_profile["profile_fingerprint"],
+            "targets": [{
+                "role": target["role"],
+                "target_fingerprint": target["target_fingerprint"],
+                "required_protection_filters": [
+                    dict(requirement) for requirement in target["required_protection_filters"]
+                ],
+            } for target in safety_profile["targets"]],
+        }
+    if driver_domain:
+        protection = None
     source = _source_payload(
         topology,
         design_draft,
@@ -2111,6 +2148,7 @@ def build_baseline_profile_candidate(
         measured_candidate_fingerprint=(
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        driver_protection=protection,
     )
     resolved_playback_device, playback_device_source = (
         resolve_active_playback_device(
@@ -2170,7 +2208,6 @@ def build_baseline_profile_candidate(
     emit_capture_format = (
         devices.capture_format if capture_format is None else capture_format
     )
-    saved = _load_saved_state(state_target)
     candidate_graph_context = {
         "playback_device": resolved_playback_device,
         "domain": "driver" if driver_domain else "full",
@@ -2183,6 +2220,7 @@ def build_baseline_profile_candidate(
         "measured_candidate_fingerprint": (
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        **({"driver_protection": protection} if protection is not None else {}),
     }
     saved_snapshot = (
         saved.get("recomposition_snapshot")
@@ -2190,7 +2228,6 @@ def build_baseline_profile_candidate(
         and isinstance(saved.get("recomposition_snapshot"), Mapping)
         else {}
     )
-    applied_anchor = _applied_profile_anchor(saved)
     applied_profile_context_id = ""
     if isinstance(applied_anchor, Mapping):
         applied_snapshot = applied_anchor.get("recomposition_snapshot")
@@ -2803,6 +2840,7 @@ def build_baseline_profile_candidate(
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
+                protection_sections_by_role=_snapshot_protection_sections(candidate_graph_context, preset),
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -3291,7 +3329,10 @@ def recompose_applied_baseline_yaml(
         ),
         linearization=linearization,
         blend_correction=blend_correction,
-        protection_sections_by_role=protection_sections_by_role,
+        protection_sections_by_role=(
+            protection_sections_by_role if protection_sections_by_role is not None
+            else _snapshot_protection_sections(snapshot, preset)
+        ),
     )
     return yaml, []
 

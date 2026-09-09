@@ -1224,6 +1224,13 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
         "producer_needs_more_than_this_round"
     ] is False
 
+    # An ordinary summed round does not claim it carries a legacy solo basis.
+    assert rows["forward_model.json"]["next_command"] is None
+    assert rows["forward_model.json"]["required_inputs"] == ["<capture-id>"]
+    assert rows["forward_model.json"]["repair_reason"] == (
+        "forward_model_basis_missing"
+    )
+
     # One row no view here writes: the banker's own pose index, named with the
     # command that makes it rather than with this tool's prog.
     assert rows[POSITION_CYCLE_FILENAME]["produced_by"] == (

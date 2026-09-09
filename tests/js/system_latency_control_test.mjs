@@ -39,44 +39,31 @@ const refs = {
   buttons: [button("low"), button("medium"), button("high")],
 };
 
-sections.updateUsbLatency(refs, {
-  selected_mode: "medium",
-  applied_mode: "medium",
-  effective_mode: null,
-  live_buffer_ms: 42.7,
-  state: "recovery",
-  detail: "Recovery buffer active; latency will fall after timing stabilizes.",
-});
-assert.equal(refs.preference.textContent, "Medium");
-assert.equal(refs.effective.textContent, "Adjusting");
-assert.equal(refs.live.textContent, "42.7 ms");
-assert.match(refs.status.textContent, /Recovery buffer active/);
-assert.ok(refs.buttons.every((item) => item.el.attrs["aria-pressed"] === "false"));
-
-sections.updateUsbLatency(refs, {
-  selected_mode: "low",
-  applied_mode: "low",
-  effective_mode: "high",
-  live_buffer_ms: 53.3,
-  state: "fallback",
-  detail: "Low is selected, but the host timing check failed. This USB session is using the stable 53.3 ms buffer.",
-});
-assert.match(refs.status.textContent, /host timing check failed/);
-assert.equal(refs.effective.textContent, "High · stable fallback");
-assert.equal(refs.buttons[0].el.attrs["aria-pressed"], "false");
-assert.equal(refs.buttons[2].el.attrs["aria-pressed"], "true");
-
-sections.updateUsbLatency(refs, {
-  selected_mode: "low",
-  applied_mode: "low",
-  effective_mode: null,
-  live_buffer_ms: 53.3,
-  state: "idle",
-  detail: "Low is preferred. It will be used when USB audio starts.",
-});
-assert.equal(refs.preference.textContent, "Low");
-assert.equal(refs.effective.textContent, "Not active");
-assert.ok(refs.buttons.every((item) => item.el.attrs["aria-pressed"] === "false"));
+for (const [state, selected, effective, label, pending] of [
+  ["recovery", "medium", null, "Adjusting", true],
+  ["fallback", "low", "high", "High · stable fallback", true],
+  ["idle", "low", null, "Not active", true],
+  ["starting", "low", "high", "Starting", true],
+  ["applying", "medium", null, "Starting", true],
+  ["error", "low", "high", "High", true],
+  ["unavailable", "low", null, "unknown", true],
+  ["applied", "low", "low", "Low", false],
+  ["applied", "high", "high", "High", false],
+]) {
+  sections.updateUsbLatency(refs, {
+    selected_mode: selected, effective_mode: effective,
+    live_buffer_ms: 42.7, state, detail: "Live status from the speaker",
+  });
+  assert.equal(refs.effective.textContent, label);
+  assert.equal(refs.live.textContent, "42.7 ms");
+  assert.equal(refs.status.textContent, "Live status from the speaker");
+  for (const item of refs.buttons) {
+    const chosen = item.mode === selected;
+    assert.equal(item.el.attrs["aria-pressed"], String(chosen));
+    assert.equal(item.el.dataset.latencyPending, String(chosen && pending));
+    assert.equal(item.el.disabled, false);
+  }
+}
 
 const quietConsole = { error() {} };
 // postJSON's failure contract: a non-2xx throws an Error carrying the

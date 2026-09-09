@@ -130,7 +130,8 @@ def _clear_audition_state(path: str | Path | None = None) -> None:
         return
     except OSError as exc:
         # The graph is already back; a stranded record only mis-reports. Loud
-        # rather than silent, because /state would keep claiming an audition.
+        # rather than silent, because `jasper-audition status` would keep
+        # claiming an audition.
         log_event(
             logger,
             "active_speaker.audition",
@@ -441,9 +442,10 @@ async def start_audition(
                 f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification})",
             )
         # A swap that TOOK but was never recorded is the one state nothing
-        # would put back: no record means no owner, no deadline and no /state
-        # disclosure. Undoing it here costs a redundant reload on the paths
-        # where nothing was loaded at all, which is the cheaper mistake.
+        # would put back: no record means no owner, no deadline, and
+        # `jasper-audition status` has nothing to disclose. Undoing it here
+        # costs a redundant reload on the paths where nothing was loaded at
+        # all, which is the cheaper mistake.
         armed = False
         try:
             await _swap_running_graph(
@@ -528,9 +530,9 @@ async def stop_audition(
         anchor = await _durable_anchor(cam)
         took_effect, message = await _restore_verdict(cam, anchor)
         if not took_effect:
-            # The record stays on disk on purpose: /state keeps disclosing that
-            # the speaker is not on its applied graph, and the next `stop` has
-            # something to retry against.
+            # The record stays on disk on purpose: `jasper-audition status`
+            # keeps disclosing that the speaker is not on its applied graph,
+            # and the next `stop` has something to retry against.
             log_event(
                 logger,
                 "active_speaker.audition",

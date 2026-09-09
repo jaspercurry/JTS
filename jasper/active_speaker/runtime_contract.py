@@ -261,17 +261,11 @@ FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER: FlatProgramGraphBlockCode = (
     "flat_graph_protected_tweeter"
 )
 
-# The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint, and absent
-# from the legal set below, so no graph naming it can be a legal outputd
-# endpoint. It has zero production readers; the name survives because the suite
-# pins that a graph persisted before the retirement is refused BY NAME, and a
-# bare literal there would be worse than one named constant.
-OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
 # Every playback device a legal outputd ENDPOINT graph may name. ONE member: the
 # ACTIVE RING is the only transport carrying POST-crossover per-driver channels
 # to outputd. A frozenset rather than a single `==` because membership is the
 # seam the endpoint width probe reads — it must reject everything outside the
-# set, notably the STEREO ring and the retired lane above.
+# set, notably the STEREO ring and the retired snd-aloop lane (ADR-0100).
 #
 # Redeclared rather than imported from jasper.fanin_coupling: this module is the
 # runtime VERIFIER's independent copy of the endpoint vocabulary, and a contract

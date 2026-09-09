@@ -97,7 +97,7 @@ check(els.cloud.hidden === true, "curve explicitly null on both phases: still hi
 renderCloud(els, {
   cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
 });
 check(els.cloud.hidden === false, "measure-only: section is visible (something was measured)");
@@ -112,10 +112,6 @@ check(
   "the pending caption is plain-language and hardware-blind, no numeric promise",
 );
 check(els.cloudCallouts.children.length === 0, "measure-only: no callouts (verify has no carve_outs yet)");
-check(
-  lastChartPayload.measureReferenceDb === -27.3 && lastChartPayload.verifyReferenceDb === null,
-  "measure-only: chart payload carries MEASURE's own reference, VERIFY's is null",
-);
 
 // --- a real carve-outs fixture, matching the shipped schema ----------------
 // (jasper.active_speaker.crossover_v2_flow.carve_outs_by_band's exact shape:
@@ -170,8 +166,8 @@ renderCloud(els, {
     },
   },
   cloud_chart: {
-    [CLOUD_VERIFY]: { curve: { freqs_hz: [100, 200], magnitude_db: [-1, -2] } },
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
+    [CLOUD_VERIFY]: { curve: { freqs_hz: [100, 200], magnitude_db: [-1, -2], display: { deviation_db: [1, -1], untrusted_intervals_hz: [[8300, 8600]] } } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4], display: { deviation_db: [1, -1], untrusted_intervals_hz: [[8300, 8600]] } } },
   },
 });
 
@@ -189,14 +185,6 @@ check(els.cloudPending.hidden === true, "full state: no 'still coming' caption o
 
 // Review B-1: each curve is plotted relative to its OWN reference — the
 // payload handed to the chart carries both, never one shared value.
-check(
-  lastChartPayload.measureReferenceDb === -24.1,
-  "chart payload carries MEASURE's own reference_db",
-);
-check(
-  lastChartPayload.verifyReferenceDb === -27.3,
-  "chart payload carries VERIFY's own reference_db (they differ — cut-only correction)",
-);
 check(
   lastChartPayload.specBands.length === 3 &&
     lastChartPayload.specBands[2].tolerance_db === 2.5,
@@ -244,7 +232,7 @@ renderCloud(els, {
         "help JTS tell the speaker's own sound apart from the room's.",
     },
   },
-  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1] } } },
+  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } } },
 });
 check(els.cloudGeometry.hidden === false, "non-empty geometry guidance is shown");
 check(
@@ -255,7 +243,7 @@ check(els.cloudCallouts.children.length === 0, "no carve-outs: no callout cards,
 
 renderCloud(els, {
   cloud: { [CLOUD_VERIFY]: { carve_outs: [], provenance_note: "", geometry_guidance: "" } },
-  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1] } } },
+  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } } },
 });
 check(els.cloudGeometry.hidden === true, "empty geometry guidance (not locked): hidden, no placeholder");
 
@@ -267,14 +255,14 @@ const staleNote =
   "this session's own result.";
 renderCloud(els, {
   cloud: { [CLOUD_VERIFY]: { carve_outs: [], provenance_note: staleNote, geometry_guidance: "" } },
-  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1] } } },
+  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } } },
 });
 check(els.cloudProvenance.hidden === false, "a stale provenance note is shown");
 check(els.cloudProvenance.textContent === staleNote, "the provenance caption is the server string verbatim");
 
 renderCloud(els, {
   cloud: { [CLOUD_VERIFY]: { carve_outs: [], provenance_note: "", geometry_guidance: "" } },
-  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1] } } },
+  cloud_chart: { [CLOUD_VERIFY]: { curve: { freqs_hz: [1], magnitude_db: [1], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } } },
 });
 check(els.cloudProvenance.hidden === true, "an empty provenance note (current or unknown session) stays silent");
 
@@ -284,7 +272,7 @@ check(els.cloudProvenance.hidden === true, "an empty provenance note (current or
 renderCloud(els, {
   cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
   tier: "express",
 });
@@ -309,7 +297,7 @@ check(
 renderCloud(els, {
   cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
   tier: "full",
 });
@@ -321,7 +309,7 @@ check(
 renderCloud(els, {
   cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
   tier: null,
 });
@@ -354,7 +342,7 @@ renderCloud(els, {
     },
   },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4], display: { deviation_db: [1, -1], untrusted_intervals_hz: [[8300, 8600]] } } },
   },
   tier: "express",
 });
@@ -382,8 +370,7 @@ check(
   "express: the chart payload's spec bands come from CLOUD_MEASURE, drawn on the before curve",
 );
 check(
-  lastChartPayload.excludedIntervals.length === 1
-    && lastChartPayload.excludedIntervals[0].f_lo_hz === 8300.0,
+  lastChartPayload.measureCurve.display.untrusted_intervals_hz[0][0] === 8300.0,
   "express: the chart payload's excluded intervals come from CLOUD_MEASURE",
 );
 
@@ -402,7 +389,7 @@ renderCloud(els, {
     },
   },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4], display: { deviation_db: [1, -1], untrusted_intervals_hz: [[8300, 8600]] } } },
   },
   tier: "full",
 });
@@ -411,8 +398,8 @@ check(
   "full tier: CLOUD_MEASURE's geometry guidance stays silent — Full's surface is VERIFY's, unchanged",
 );
 check(
-  els.legendCorridor.hidden === true && els.legendExcluded.hidden === true,
-  "full tier: no corridor/excluded legend from a pre-apply cloud that exists to be out of spec",
+  els.legendCorridor.hidden === true && els.legendExcluded.hidden === false,
+  "full tier: trust shading belongs to the displayed curve; the verdict corridor waits for verify",
 );
 check(els.cloudCallouts.children.length === 0, "full tier: no callouts from CLOUD_MEASURE's carve-outs");
 
@@ -434,7 +421,7 @@ function renderPredictionOnly() {
     cloud: { [CLOUD_MEASURE]: { reference_db: -27.3, carve_outs: [] } },
     cloud_chart: null,
     prediction: {
-      curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4] },
+      curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } },
       reference_db: -27.3,
     },
   });
@@ -498,8 +485,8 @@ renderCloud(els, {
     [CLOUD_VERIFY]: { reference_db: -28.0, carve_outs: [] },
   },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
-    [CLOUD_VERIFY]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
+    [CLOUD_VERIFY]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
 });
 check(
@@ -526,10 +513,10 @@ check(
 renderCloud(els, {
   cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
   cloud_chart: {
-    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } } },
   },
   prediction: {
-    curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4] },
+    curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4], display: { deviation_db: [1, -1], untrusted_intervals_hz: [] } },
     reference_db: -27.3,
   },
 });

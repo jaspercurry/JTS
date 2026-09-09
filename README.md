@@ -300,7 +300,7 @@ on the next deploy. "Endpoint behaviour" is now purely the runtime multiroom
 ```sh
 # On the Pi:
 sudo /opt/jasper/.venv/bin/jasper-doctor          # codified smoke tests
-curl -s http://jts.local:8780/state | jq          # cross-daemon snapshot
+curl -s http://jts.local:8780/state | jq          # jasper-control's own posture
 
 # From the laptop:
 bash scripts/fetch-pi-logs.sh                     # pull journals to ./logs/
@@ -315,7 +315,8 @@ into `./logs/`, redacting environment-style secret assignments first.
 `pi-run-diagnostic.sh` is the safe path for ad-hoc Pi-side experiments: it
 wraps the command in a transient systemd unit with memory and runtime
 bounds. `GET /state` on `jasper-control` returns one fail-soft JSON snapshot
-of voice, audio, and renderers.
+of the daemon's own in-process posture — voice, audio, fanin/outputd
+(ADR-0270); a health fact lives in `/system/snapshot` or a doctor row.
 
 Common failure modes are at the bottom of [BRINGUP.md](BRINGUP.md). Start at
 [docs/README.md](docs/README.md) for current subsystem references.

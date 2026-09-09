@@ -57,6 +57,7 @@ PROG = "jasper-round-views"
 
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
+TAKES_EXACT_CAPTURE = (TAKES_THIS_ROUND, "--capture-id", "<capture-id>")
 TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
 TAKES_BUNDLE_AND_RING = (
@@ -104,6 +105,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "forward-model": ViewArtifact("forward_model.json"),
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
+    "windows": ViewArtifact("window_view.json", (TAKES_THIS_ROUND, "--capture-id", "<take-id>")),
     "frequency": ViewArtifact("frequency_view.json"),
     "delay-landscape": ViewArtifact("delay_landscape.json", TAKES_BUNDLE_AND_FC),
     "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
@@ -112,6 +114,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room-ceiling": ViewArtifact("room_ceiling.json"),
     "room-median": ViewArtifact("room_median.json"),
     "room-persistence": ViewArtifact("room_persistence.json"),
+    "bass-fit": ViewArtifact("bass_fit.json"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(
