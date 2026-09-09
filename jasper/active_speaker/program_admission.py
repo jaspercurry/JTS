@@ -709,6 +709,9 @@ def readmit_summed_program_from_wav(
         bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                  program_id=program.program_id, classification=graph.classification,
+                  issues=graph.issues)
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     view = view_from_emitted_text(graph_yaml)
     pcm = _read_program_pcm(program, wav_path)
@@ -730,10 +733,14 @@ def readmit_summed_program_from_wav(
         caps.append(cap)
         output = physical[fingerprint]["output_index"]
         requirements = declared[fingerprint]["required_protection_filters"]
-        if not all(protection_requirement_present(
-            view, output_index=output, allowed_channels={output}, requirement=requirement,
-        ) for requirement in requirements):
-            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+        for requirement in requirements:
+            if not protection_requirement_present(
+                view, output_index=output, allowed_channels={output}, requirement=requirement,
+            ):
+                log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                          program_id=program.program_id, role=role, output_index=output,
+                          required_protection=requirement)
+                return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         for segment in program.stimulus_segments():
             low, high = segment_emitted_band_hz(segment)
             low_ok = low >= band.lower_hz or any(
