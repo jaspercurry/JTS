@@ -417,40 +417,26 @@ outputd_dac_buffer_frames() {
 
 # Ring A (fan-in -> CamillaDSP, pcm.jts_ring_capture / program.ring).
 # Richest evidence first:
-#   tier=live-status (ALSA delay) — fanin STATUS output.snd_pcm_delay_frames,
-#     the real ALSA queue depth on a LOOPBACK-topology box. This field
-#     predates the ring and stays correct there; it is always null on the
-#     ring topology (ADR-0100 left no playback PCM to sample), which is
-#     exactly when the next tier is what actually answers.
-#   tier=live-status (ring occupancy) — output.ring.occupancy (the live
-#     write_seq-read_seq depth, refreshed every render period) times
-#     output.period_frames (the ring's slot size). Absent whenever
-#     output.ring itself is absent — a non-ring topology, i.e. exactly the
-#     case the tier above already answered.
+#   tier=live-status — output.ring.occupancy (the live write_seq-read_seq
+#     depth, refreshed every render period) times output.period_frames (the
+#     ring's slot size). See ADR-0266: fan-in has no playback PCM to sample
+#     since ADR-0100, so the ring is the only live Ring A evidence.
 #   tier=parsed — jasper.ring_assets's period_frames x n_slots for
 #     pcm.jts_ring_capture, reached only when fanin's STATUS is entirely
 #     unavailable (daemon down, no socket).
 #   tier=default — DEFAULT_RING_A_LATENCY_FRAMES, reached only when the
 #     conf itself cannot be read or parsed either.
 ring_a_latency_frames() {
-    # Args: fanin's pre-fetched output.snd_pcm_delay_frames,
-    # output.ring.occupancy, output.period_frames — one status_json_values
-    # call per render (see derive_audio_backend_latency_offset) supplies
-    # all three; this function fetches nothing itself.
-    local value
-    value="$(nonnegative_int_or_empty "$1")"
-    if [[ -n "$value" ]]; then
-        echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=alsa-delay frames=$value" >&2
-        printf '%s\n' "$value"
-        return
-    fi
-
-    local occupancy period
-    occupancy="$(nonnegative_int_or_empty "$2")"
-    period="$(nonnegative_int_or_empty "$3")"
+    # Args: fanin's pre-fetched output.ring.occupancy, output.period_frames
+    # — one status_json_values call per render (see
+    # derive_audio_backend_latency_offset) supplies both; this function
+    # fetches nothing itself.
+    local value occupancy period
+    occupancy="$(nonnegative_int_or_empty "$1")"
+    period="$(nonnegative_int_or_empty "$2")"
     if [[ -n "$occupancy" && -n "$period" ]]; then
         value="$((occupancy * period))"
-        echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=ring-occupancy occupancy=$occupancy period_frames=$period frames=$value" >&2
+        echo "jasper-apply-airplay-mode: ring_a tier=live-status occupancy=$occupancy period_frames=$period frames=$value" >&2
         printf '%s\n' "$value"
         return
     fi
@@ -574,16 +560,12 @@ derive_audio_backend_latency_offset() {
     fi
 
     # ONE STATUS fetch per daemon per render (status_json_values), not one
-    # per dotted field: fanin serves Ring A's three candidate fields and
+    # per dotted field: fanin serves Ring A's two candidate fields and
     # outputd serves Ring B's and the DAC's in a single JSON reply apiece,
-    # so a fetch per field cost four extra round-trips for nothing — six
-    # total (3 fanin + 3 outputd), unconditionally: fanin's ALSA-delay
-    # field is null every period on the only transport (ADR-0100 deleted
-    # the loopback route this field once served), so the old code always
-    # walked the 3-field path on both sockets, never fewer.
+    # so a fetch per field cost three extra round-trips for nothing.
     fanin_fields="$(status_json_values "$FANIN_STATUS_SOCKET" \
-        output.snd_pcm_delay_frames output.ring.occupancy output.period_frames || true)"
-    IFS='|' read -r fanin_delay_frames fanin_ring_occupancy fanin_period_frames <<< "$fanin_fields"
+        output.ring.occupancy output.period_frames || true)"
+    IFS='|' read -r fanin_ring_occupancy fanin_period_frames <<< "$fanin_fields"
     outputd_fields="$(status_json_values "$OUTPUTD_STATUS_SOCKET" \
         shm_ring.occupancy shm_ring.slot_frames dac.snd_pcm_delay_frames || true)"
     IFS='|' read -r outputd_ring_occupancy outputd_slot_frames outputd_dac_delay_frames <<< "$outputd_fields"
@@ -593,7 +575,7 @@ derive_audio_backend_latency_offset() {
     # lane, so it is also invisible to shairport's snd_pcm_delay(). See
     # ring_a_latency_frames for the tier cascade.
     ring_a_latency="$(ring_a_latency_frames \
-        "$fanin_delay_frames" "$fanin_ring_occupancy" "$fanin_period_frames" || true)"
+        "$fanin_ring_occupancy" "$fanin_period_frames" || true)"
 
     # Ring B: CamillaDSP's output queue into outputd. Also downstream of
     # shairport's private lane and of CamillaDSP, so shairport cannot

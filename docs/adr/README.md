@@ -89,10 +89,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0151](0151-a-new-source-is-camilla-master-until-it-proves-an-observable-volume-surface.md) | A new source is Camilla-master until it proves an observable volume surface | accepted |
 | [0185](0185-latency-is-monitored-and-adapted-never-certified.md) | Latency is monitored and adapted, never certified | accepted |
 | [0191](0191-usb-transport-is-not-gated-on-derived-state.md) | USB transport is not gated on derived state | accepted |
-| [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | accepted |
+| [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | amended by 0266 |
 | [0221](0221-source-start-gates-are-marker-files-published-by-the-coordinator.md) | Source start gates are marker files published by the coordinator | accepted |
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
-| [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | accepted |
+| [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | amended by 0266 |
+| [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
 
 ## Multiroom & grouping
 
