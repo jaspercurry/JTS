@@ -329,7 +329,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
 
-from .measurement_programs import GATE_EXEMPTION_BY_POSE_KIND
+from .measurement_programs import gate_exemption, resolved_measurement_purpose
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -1992,15 +1992,11 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError(str(exc)) from exc
 
     def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
-        """The session's geometry with THIS capture's window.
-
-        A seat take is the room's own measurement, so it is analyzed ungated
-        (docs/measurement-loop-doctrine.md 1a; ADR-0260).
-        """
-        exemption = (
-            GATE_EXEMPTION_BY_POSE_KIND.get(self._prompt_shown_for(phase, index).kind)
-            if phase in GROUP_PHASES else None
-        )
+        """Apply the plan's analysis purpose to this capture."""
+        exemption = None
+        if phase in GROUP_PHASES:
+            prompt = self._prompt_shown_for(phase, index)
+            exemption = gate_exemption(resolved_measurement_purpose(prompt.purpose, prompt.kind))
         return replace(self._geometry, gate_exempt_reason=exemption) if exemption else self._geometry
 
     def consume_capture(

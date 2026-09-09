@@ -258,7 +258,7 @@ include = ["jasper", "jasper.*"]
 [tool.setuptools.package-data]
 "jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
-"jasper.active_speaker" = ["presets/*.json"]
+"jasper.active_speaker" = ["measurement_plans.json", "presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
