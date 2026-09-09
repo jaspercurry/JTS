@@ -15,29 +15,13 @@
 // which is the behaviour, and leaves the wording free to change.
 
 import assert from "node:assert/strict";
-import { buildFunction } from "./_loader.mjs";
+import { buildFunction, h } from "./_loader.mjs";
 
 const [sectionsPath, viewsPath] = process.argv.slice(2);
 if (!sectionsPath || !viewsPath) {
   throw new Error("usage: node system_transport_park_test.mjs <sections.js> <views.js>");
 }
 
-function flatten(items) {
-  return items.flatMap((item) => Array.isArray(item) ? flatten(item) : [item]);
-}
-
-function h(tag, props, ...children) {
-  return {
-    tag,
-    props: props || {},
-    children: flatten(children).filter((child) => child != null && child !== false),
-    // Enough of an Element for buildSystemPanel's assembly: it appends into
-    // card bodies and tags one section with a class.
-    append(...nodes) { this.children.push(...flatten(nodes)); },
-    classList: { add() {} },
-    style: { setProperty() {} },
-  };
-}
 const defList = (rows, modifier = "") => h("deflist", { rows, modifier });
 
 const STRIP = [[/^import[\s\S]*?;\n/gm, ""]];
