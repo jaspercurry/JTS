@@ -69,9 +69,9 @@ full = [
     # tflite-runtime is never imported at runtime. See install.sh.
     "sounddevice==0.5.6",
     "numpy>=1.26,<3",
-    # SciPy is needed for room-correction v2 (jasper.correction.* and the
-    # jasper.audio_measurement kernel it consumes): synchronized swept-sine
-    # generation, FFT-based deconvolution, and fractional-octave smoothing.
+    # SciPy is needed for the jasper.audio_measurement kernel: synchronized
+    # swept-sine generation, FFT-based deconvolution, and fractional-octave
+    # smoothing.
     # Pi 5 1 GB has plenty of free disk for the install (~200 MB) and
     # the runtime RAM cost during measurement is bounded by the
     # measurement_window() pause that frees librespot/shairport/
@@ -190,7 +190,6 @@ jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
 jasper-correction-web = "jasper.web.correction_setup:main"
-jasper-correction-bundle = "jasper.cli.correction_bundle:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
 jasper-audition = "jasper.cli.audition:main"
 jasper-crossover-prescriber = "jasper.cli.crossover_prescriber:main"
@@ -379,11 +378,6 @@ module = [
     "jasper.control.state_aggregate",
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
-    "jasper.correction.acoustic_quality",
-    "jasper.correction.autolevel",
-    "jasper.correction.bundle_tools",
-    "jasper.correction.runtime_integrity",
-    "jasper.correction.session",
     "jasper.home_assistant",
     "jasper.multiroom.leader_config",
     "jasper.multiroom.member_config",
@@ -480,7 +474,6 @@ exhaustive_ignores = [
   "config",
   "control",
   "conversation_history",
-  "correction",
   "cues",
   "data",
   "debug_mode",

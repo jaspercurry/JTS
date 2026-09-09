@@ -564,7 +564,7 @@ def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correcti
     # `flat_program_graph_blocked_reason(topology) is not None`. Under a
     # full-range passive topology there is no protected tweeter, so that reason is
     # None: a plain stereo speaker that happens to be a SnapFIFO grouping leader
-    # must stay on the ordinary sound/sound/room/ carrier, never get re-stamped as
+    # must stay on the ordinary sound carrier, never get re-stamped as
     # an active program bake. Delete the topology clause and this resolves to
     # `active_leader_program_bake` instead — the mutation tripwire.
     from jasper.multiroom.reconcile import SNAPFIFO
@@ -688,7 +688,7 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "correction_abc_123.yml"
-    path.write_text("# jts sound/sound/room/ config\n")
+    path.write_text("# jts sound config\n")
     preserved = [object(), object()]
 
     with mock.patch(
@@ -706,12 +706,12 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
 
 
 def test_sound_carrier_replaces_room_peqs_when_explicit(tmp_path):
-    # Room correction apply/start must be able to say "use this exact room
+    # A room-layer apply must be able to say "use this exact room
     # layer" instead of preserving whatever was already loaded.
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "correction_abc_123.yml"
-    path.write_text("# jts sound/sound/room/ config\n")
+    path.write_text("# jts sound config\n")
     replacement = [object()]
 
     with mock.patch(
@@ -1330,7 +1330,7 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
 
 
 def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_path):
-    """END-TO-END, on the path a bonded leader's /sound or /sound/room/ save takes.
+    """END-TO-END, on the path a bonded leader's /sound save takes.
 
     PRECEDENCE: the SnapFIFO pipe owns the SINK, so the ring's playback half is
     dropped — but the CAPTURE half must still cross. This reemit rewrites the

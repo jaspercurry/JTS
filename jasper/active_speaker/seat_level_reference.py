@@ -358,9 +358,9 @@ def resolve_anchor_level(
             "with the mic you will measure with"
             if not serial
             else f"the anchor was measured with mic serial {serial} and no "
-            "stored calibration resolves for it — store its vendor file "
-            "through the calibration wizard (/sound/room/calibration/fetch), "
-            "or re-run jasper-seat-level with the mic you will measure with",
+            "stored calibration resolves for it — store its vendor file in "
+            "the calibration store, or re-run jasper-seat-level with the mic "
+            "you will measure with",
         )
     banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
     if (

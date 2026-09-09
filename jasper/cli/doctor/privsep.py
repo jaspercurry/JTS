@@ -184,7 +184,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("audio", "jts-ring"),
         paths=(
-            # The graphs /sound/room/ validates, applies, and rolls back.
+            # The graphs the measurement daemon validates, applies and rolls back.
             "/var/lib/camilladsp/configs/*.yml",
             # Written by whichever commissioning arm measured first — /sound/
             # as jasper-web, or this unit. An unreadable one reads as "no

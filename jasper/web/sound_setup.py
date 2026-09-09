@@ -21,7 +21,6 @@ lives in the backend and is untouched here.
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import os
@@ -61,7 +60,12 @@ from ._common import (
     send_json_response,
     send_route_failure,
 )
-from .chrome import canonical_header, canonical_page, json_island
+from .chrome import (
+    canonical_header,
+    canonical_page,
+    follower_delegation_page,
+    json_island,
+)
 from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
@@ -233,16 +237,6 @@ def _follower_sound_html(
     active-speaker commissioning/crossover endpoints are allowed.
     """
     page_mode = _coerce_page_mode(page_mode)
-    leader_path = _PAGE_PATHS[page_mode]
-    leader_sound_url = bonded_follower_leader_web_url(leader_path)
-    leader_link = (
-        '<a class="btn btn--primary" href="'
-        + html.escape(leader_sound_url)
-        + '">Open leader sound</a>'
-        if leader_sound_url
-        else ""
-    )
-    page_island = _sound_page_island(page_mode=page_mode, follower=True)
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
@@ -256,32 +250,23 @@ def _follower_sound_html(
         if page_mode != "speaker"
         else ""
     )
-    header = canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
-    body = f"""
-{header}
-<main class="page">
-  <section class="info-card info-card--accent" role="note">
-    <h2 class="section__title">Sound is controlled by the pair leader</h2>
-    <p class="form-hint">This speaker is an active follower, so content EQ,
+    return follower_delegation_page(
+        title,
+        canonical_header(
+            title, back_href="/sound/", back_label="Sound", back_id="back"
+        ),
+        "Sound is controlled by the pair leader",
+        """This speaker is an active follower, so content EQ,
     room correction, and volume shaping are rendered by the leader while the
     pair is active. Local crossover and driver-protection work stays with the
-    speaker that owns the DAC path.</p>
-    <div class="form-actions">
-      {leader_link}
-      {local_setup_link}
-      <a class="btn" href="/sound/pair/">Manage pair</a>
-    </div>
-  </section>
-  {local_setup}
-  {_crossover_child_link(page_mode)}
-</main>
-{page_island}
-"""
-    return canonical_page(
-        title,
-        body,
+    speaker that owns the DAC path.""",
         csrf_token=csrf_token,
-        page_css_href="/assets/sound-profile/sound.css",
+        leader_url=bonded_follower_leader_web_url(_PAGE_PATHS[page_mode]),
+        leader_label="Open leader sound",
+        extra_actions=[local_setup_link],
+        main_extra=f"\n  {local_setup}\n  {_crossover_child_link(page_mode)}",
+        page_extra=f"\n{_sound_page_island(page_mode=page_mode, follower=True)}",
+        css_href="/assets/sound-profile/sound.css",
     )
 
 

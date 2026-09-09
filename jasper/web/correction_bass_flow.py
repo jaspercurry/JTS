@@ -60,11 +60,9 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   <section class="info-card">
     <h2 class="section__title">Bass-region correction</h2>
     <p class="form-hint">
-      Your room's low-frequency response — and any correction — is measured on
-      the Room tab. A dip right at the crossover is your speakers handing off to
-      the subwoofer, not a room mode, so it is left alone there.
+      A dip right at the crossover is your speakers handing off to the
+      subwoofer, not a room mode, so bass management leaves it alone.
     </p>
-    <a class="btn btn--ghost" href="/sound/room/">Go to Room measurement</a>
   </section>
 </main>
 <script type="module" src="/assets/correction/js/bass/main.js"></script>

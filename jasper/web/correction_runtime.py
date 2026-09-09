@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room-correction wizard: the runtime floor under its other three modules.
+"""The measurement daemon's runtime floor under its other three modules.
 
 Owns the single background asyncio loop and the sync-to-async bridge onto it,
 the per-request CamillaController factory, both bounded request-body readers
-(JSON and WAV) with their caps, and the two request exceptions the routes
-raise.
+(JSON and WAV) with their caps, and the request exception the routes raise.
 
 :mod:`jasper.web.correction_capture`, :mod:`jasper.web.correction_handlers`
 and :mod:`jasper.web.correction_setup` all import this module; it imports none
@@ -55,19 +54,15 @@ class BadRequest(ValueError):
     """Client supplied an invalid request body."""
 
 
-class RequestConflict(RuntimeError):
-    """Client request conflicts with the current correction session state."""
-
-
 # Lazy-init on first use so importing this module is cheap (lets `python -m
 # jasper.web.correction_setup --help` work without spinning up a loop). The
 # lock exists only to keep loop creation single-creator: every caller must
 # reach the loop through `ensure_loop`, because two loops means two capture
 # owners.
-# ORDERING: never enter this bridge (ensure_loop / run_async /
-# run_graph_mutation) while holding correction_capture._session_lock — loop
-# work takes that lock itself (`_set_capture_slot`), so holding it across the
-# bridge stalls the loop and every capture-state reader with it.
+# ORDERING: never enter this bridge (ensure_loop / run_async) while holding
+# correction_capture._session_lock — loop work takes that lock itself
+# (`_set_capture_slot`), so holding it across the bridge stalls the loop and
+# every capture-state reader with it.
 _loop_lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
@@ -143,19 +138,6 @@ def run_async(coro, *, timeout: float | None = 60.0):
             # abandon cleanup; fail closed until the owner actually drains.
             drained.wait()
         raise
-
-
-def run_graph_mutation(coro):
-    """Wait for one Room-owned graph mutation to reach a terminal result.
-
-    CamillaController bounds and drains each transport attempt. Shared writer-
-    lock admission is currently blocking and remains a Shared-owned bounded-
-    admission gap. Once admitted, adding a second outer deadline here could
-    cancel between graph load and rollback/state persistence, so Room waits for
-    the transaction's terminal result.
-    """
-
-    return run_async(coro, timeout=None)
 
 
 def read_json_body(
