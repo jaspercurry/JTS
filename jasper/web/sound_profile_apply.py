@@ -62,6 +62,10 @@ _live_draft_unavailable_log_at: dict[str, float] = {}
 # ordered result instead of interleaving browser saves.
 _sound_state_write_lock = threading.Lock()
 _LAST_DSP_APPLY_SNAPSHOT_UNSET = object()
+# "Nobody probed the loaded graph on this response" — distinct from "probed,
+# and it can host EQ", so a payload built without a live CamillaDSP read never
+# claims the /sound/eq/ editor is usable.
+_EQ_CARRIER_NOT_PROBED = object()
 _SOUND_SETTINGS_FIELDS = frozenset({
     "headroom_trim_db",
     "match_loudness",
@@ -84,6 +88,7 @@ def _state_payload(
     last_dsp_apply_snapshot: Mapping[str, Any] | None | object = (
         _LAST_DSP_APPLY_SNAPSHOT_UNSET
     ),
+    eq_block: Any = _EQ_CARRIER_NOT_PROBED,
 ) -> dict[str, Any]:
     from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
@@ -128,6 +133,14 @@ def _state_payload(
         },
         "last_dsp_apply": last_dsp_apply,
         "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),
+        # Whether the LOADED graph can host preference EQ, so /sound/eq/ can be
+        # a page state rather than a status line after a save is refused.
+        "eq_carrier": (
+            {"status": "unknown"}
+            if eq_block is _EQ_CARRIER_NOT_PROBED
+            else {"status": "ok"} if eq_block is None
+            else eq_block.to_payload()
+        ),
     }
     if include_library:
         payload["profile_library"] = profile_library_payload(

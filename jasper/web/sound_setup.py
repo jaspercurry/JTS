@@ -40,6 +40,10 @@ from jasper.sound.profile import (
     rename_named_profile,
     save_named_profile,
 )
+from jasper.sound.settings import (
+    load_sound_settings,
+    output_trim_db as _output_trim,  # aliased so the probe's kwarg can't shadow it
+)
 
 from ._common import (
     JsonBodyError,
@@ -117,6 +121,7 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
 from .sound_active_speaker import apply_measured_crossover_geometry  # noqa: F401
 from .sound_profile_apply import audition_profile  # noqa: F401
 from .sound_profile_apply import (
+    _EQ_CARRIER_NOT_PROBED,
     _apply_profile,
     _apply_settings,
     _audition_profile,
@@ -263,11 +268,11 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     editor_chrome = (
         canonical_header(
             title, back_href="/sound/", back_label="Sound", back_id="back",
-            tabs_html=eq_tabs_html,
+            tabs_html=eq_tabs_html, tabs_id="eq-tabs",
         )
         + """
 <main class="page">
-  <section class="now-playing">
+  <section class="now-playing" id="now-playing">
     <div class="row-between">
       <h2 class="eyebrow">Now playing</h2>
       <span class="now-playing__label" id="live-label">Bypass</span>
@@ -370,6 +375,49 @@ def _json_route_payload(builder: str) -> dict[str, Any]:
     return fn()
 
 
+def _requested_page_mode(headers: Any) -> str:
+    """Which split page a request is for: nginx sets the header per location."""
+    mode = headers.get("X-JTS-Sound-Page", "eq")
+    return mode if mode in {"eq", "setup"} else "eq"
+
+
+def _eq_carrier_block(
+    profile: SoundProfile,
+    *,
+    config_dir: str | Path,
+    camilla_factory: Callable[[], Any],
+    output_trim_db: float,
+) -> Any:
+    """Probe the LOADED graph for /state: a refusal, ``None``, or "not probed".
+
+    ``output_trim_db`` is the household's real trim, computed as the apply path
+    computes it: the emitter folds the trim into ``total_headroom_db`` against
+    ``MAX_PROGRAM_HEADROOM_DB``, so probing at 0 dB would report a graph
+    hostable that the save then refuses.
+
+    Fail-OPEN: an unreachable CamillaDSP, an empty path, or a probe that blows
+    up returns "not probed" and the page keeps its editor. The /apply and
+    /settings refusals stay the fail-closed gate.
+    """
+    from jasper.sound.graph_carrier import eq_block_for_loaded_config
+
+    try:
+        current_path = asyncio.run(
+            camilla_factory().get_config_file_path(best_effort=True)
+        )
+        if not current_path:
+            return _EQ_CARRIER_NOT_PROBED
+        return eq_block_for_loaded_config(
+            profile,
+            current_path=current_path,
+            config_dir=config_dir,
+            output_trim_db=output_trim_db,
+        )
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("sound: eq-carrier probe unavailable", exc_info=True)
+        return _EQ_CARRIER_NOT_PROBED
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -421,16 +469,31 @@ def _make_handler(
                 self._send_html(
                     _index_html(
                         ctx["csrf_token"],
-                        page_mode=self.headers.get("X-JTS-Sound-Page", "eq"),
+                        page_mode=_requested_page_mode(self.headers),
                     )
                 )
                 return
             if path == "/state":
+                profile = load_profile(profile_path)
+                settings = load_sound_settings()
+                # Only /sound/eq/ renders the editor, and the probe is a
+                # dry-run recompose of the loaded graph, so no other page pays
+                # for it — it keeps the "not probed" default.
+                eq_block: Any = _EQ_CARRIER_NOT_PROBED
+                if _requested_page_mode(self.headers) == "eq":
+                    eq_block = _eq_carrier_block(
+                        profile,
+                        config_dir=config_dir,
+                        camilla_factory=camilla_factory,
+                        output_trim_db=_output_trim(profile, settings),
+                    )
                 self._send_json(
                     _state_payload(
-                        load_profile(profile_path),
+                        profile,
                         library_path=library_path,
                         include_library=True,
+                        settings_snapshot=settings,
+                        eq_block=eq_block,
                     )
                 )
                 return

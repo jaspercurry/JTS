@@ -54,6 +54,7 @@
 .stop-row.active { border-color: var(--primary); background: color-mix(in oklab, var(--primary) 8%, var(--surface)); }
 .stop-row input[type="radio"],
 .stop-row input[type="checkbox"] { flex: none; margin: 0; }
+.stop-row--nested { padding-left: 1.6em; }
 .stop-row .name { font-weight: 600; }
 .stop-row .meta {
   color: var(--muted);
@@ -138,6 +139,13 @@
 
 /* Save row — keep the hint beside the button. */
 .save-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.2rem; }
+
+/* "Stations near you" heading — clears the e-bike toggle above it. */
+.stations-heading { margin-top: 1.1rem; }
+
+/* "Clear all transit settings" — separates the destructive action from the
+   save form above it. */
+.clear-form { margin-top: 2rem; }
 
 /* The "Advanced — enter coordinates or stop IDs manually" section uses the
    shared .disclosure primitive (app.css); margin-top: 1.25rem to clear the

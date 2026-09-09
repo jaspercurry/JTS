@@ -275,7 +275,7 @@ def test_get_root_rejects_off_origin_return_link(tmp_path):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert 'href="/"' in out
+    assert 'href="/assistant/"' in out
     assert "evil.test" not in out
 
 
