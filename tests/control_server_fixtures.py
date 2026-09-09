@@ -355,7 +355,7 @@ def _post_raw(
 
 def _grouping_test_setup(monkeypatch, tmp_path):
     """Redirect grouping.env to a tmp file + capture reconciler kicks."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     env = tmp_path / "grouping.env"
     popens: list[list[str]] = []

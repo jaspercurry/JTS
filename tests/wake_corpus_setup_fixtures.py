@@ -11,8 +11,8 @@ the HTTP handler routing. Hardware-free.
 Strategy for the async parts: the backend's asyncio loop runs in a
 daemon thread; tests start + shutdown the backend explicitly. The
 UdpMicCapture used by RecordingTask is lazy-imported via
-`from jasper.audio_io import UdpMicCapture`, so tests monkeypatch
-`jasper.audio_io.UdpMicCapture` to inject a fake before the
+`from jasper.mic_capture import UdpMicCapture`, so tests monkeypatch
+`jasper.mic_capture.UdpMicCapture` to inject a fake before the
 RecordingTask is constructed.
 """
 from __future__ import annotations
@@ -181,10 +181,10 @@ class _FakeUdpMicCapture:
 
 @pytest.fixture(autouse=True)
 def _patch_udp(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject the fake into jasper.audio_io so RecordingTask's lazy
+    """Inject the fake into jasper.mic_capture so RecordingTask's lazy
     import picks it up."""
-    import jasper.audio_io as audio_io
-    monkeypatch.setattr(audio_io, "UdpMicCapture", _FakeUdpMicCapture)
+    import jasper.mic_capture as mic_capture
+    monkeypatch.setattr(mic_capture, "UdpMicCapture", _FakeUdpMicCapture)
     # Reset the per-port value map between tests
     _FakeUdpMicCapture.port_to_value = {}
 

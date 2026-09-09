@@ -352,8 +352,8 @@ def test_saved_corrections_refuse_instead_of_becoming_defaults(tuning_profile, s
 def test_the_room_candidate_scope_always_names_its_candidate():
     """The new scope joins the candidate scopes, which never stand alone."""
 
-    assert GRAPH_SCOPES[-1] == "room_candidate"
-    assert CANDIDATE_SCOPES == frozenset({"candidate", "room_candidate"})
+    assert "room_candidate" in GRAPH_SCOPES
+    assert CANDIDATE_SCOPES == frozenset({"candidate", "room_candidate", "candidate_branches"})
     with pytest.raises(ValueError):
         MeasureSpec(kind="baseline", graph_scope="room_candidate")
     assert MeasureSpec(
@@ -444,3 +444,19 @@ def test_the_candidate_scope_refuses_a_candidate_carrying_a_room_layer(tuning_pr
             candidate=_room_candidate(tuning_profile),
         )
     assert exc.value.reason == "measurement_candidate_room_scope"
+
+
+def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning_profile):
+    candidate = _trial_candidate(tuning_profile, trim=-5, gain=4)
+    original = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
+    split = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="candidate_branches", candidate=candidate))
+    assert split["filters"] == original["filters"]
+    assert split["pipeline"] == original["pipeline"]
+    assert split["devices"] == original["devices"]
+    mapping = next(iter(split["mixers"].values()))["mapping"]
+    for output in tuning_profile.preset.channel_map.outputs:
+        entry, = [row for row in mapping if row["dest"] == output.index]
+        source, = entry["sources"]
+        assert source["channel"] == tuning_profile.role_channels[output.driver_role]
+        assert source["gain"] == 0
+        assert not source["inverted"]

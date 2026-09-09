@@ -31,8 +31,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import audio_io
-from jasper.audio_io import (
+from jasper import tts_playout
+from jasper.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
     _OUTPUTD_AUDIO_FRAME_BYTES_WIDE,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
@@ -272,88 +272,44 @@ def _clear_cache():
     tts_wire_is_wide.cache_clear()
 
 
-def _declare(monkeypatch, tmp_path, *, wire_format: str, coupling: str | None) -> None:
-    """Declare BOTH halves of the box, at the read points the code actually uses.
-
-    The FORMAT half is stubbed at its resolver. The TRANSPORT half is a REAL
-    ``fanin.env`` the predicate opens, because that half's reader is a FILE door
-    (``persisted_coupling_feeds_ring``) and a function stub is only as good as
-    the caller still calling it: this helper used to stub
-    ``coupling_reconcile.read_persisted_coupling``, which `assistant_wire_is_wide`
-    stopped calling, and the ``loopback`` rows below silently began asserting
-    against the runner's absent ``/var/lib/jasper/fanin.env`` instead — the
-    vacuous-stub class #3644 fixed.
-
-    ``coupling=None`` leaves the key out entirely: the UNDECLARED box.
-    """
+def _declare(monkeypatch, tmp_path, *, wire_format: str) -> None:
+    """Declare the box's ring wire format at the read point the code uses."""
     import jasper.fanin_coupling as fc
 
-    declare_fanin_env(
-        monkeypatch,
-        tmp_path,
-        "" if coupling is None else f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n",
-    )
+    declare_fanin_env(monkeypatch, tmp_path, "")
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: wire_format)
     _clear_cache()
 
 
-# The verdict table, mirroring `the_assistant_width_needs_both_halves_of_the_box_declaration`
-# in rust/jasper-tts-protocol/src/lib.rs. The (S32_LE, loopback) row is the one
-# that matters: fan-in publishes through the ring and nothing else (ADR-0100),
-# so a box that declared a wide format but never armed the ring is NARROW.
-# The UNDECLARED rows are the other side of the same rule: `jasper-fanin` serves
-# an absent key AS the ring (`coupling_is_shm_ring: true`), so naming nothing is
-# WIDE at a wide format and the transport half only ever subtracts (#3655).
-_VERDICTS = [
-    ("S32_LE", "shm_ring", True),
-    ("S32_LE", None, True),
-    ("S32_LE", "", True),
-    ("S32_LE", "loopback", False),
-    ("S16_LE", "shm_ring", False),
-    ("S16_LE", None, False),
-    ("S16_LE", "loopback", False),
-]
-
-
-@pytest.mark.parametrize(("wire_format", "coupling", "expected"), _VERDICTS)
-def test_the_width_needs_both_halves_of_the_box_declaration(
-    monkeypatch, tmp_path, wire_format, coupling, expected
+@pytest.mark.parametrize(
+    ("wire_format", "expected"), [("S32_LE", True), ("S16_LE", False)]
+)
+def test_the_width_follows_the_declared_ring_wire_format(
+    monkeypatch, tmp_path, wire_format, expected
 ):
-    _declare(monkeypatch, tmp_path, wire_format=wire_format, coupling=coupling)
+    """The declared ring wire format is the whole verdict: ADR-0100 left one
+    transport, so no transport half remains to disagree with it."""
+    _declare(monkeypatch, tmp_path, wire_format=wire_format)
     assert tts_wire_is_wide() is expected
 
 
-def test_a_declared_wide_but_unarmed_box_speaks_the_narrow_verb(
-    monkeypatch, tmp_path
-):
-    """The row an earlier revision of this PR got wrong, end to end.
-
-    Keying on the format token alone made `jasper-voice` send AUDIO32 into a
-    fan-in that mixes narrow — converted losslessly, but a standing
-    disagreement. UNARMED is the RETIRED token here, not an absent key: fan-in
-    refuses `loopback` at parse and parks, so that box's voice must speak the
-    conservative verb.
-    """
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="loopback")
-    tts = TtsPlayout(socket_path="/nonexistent.sock")
-    assert tts._wire_wide is False
-    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
-
-
-def test_a_declared_wide_undeclared_coupling_box_speaks_the_wide_verb(
-    monkeypatch, tmp_path
-):
-    """The pair of the row above, and the one #3655 adds.
-
-    A box the reconciler has not written names no coupling, and `jasper-fanin`
-    runs it on the ring regardless — the ring is its only transport (ADR-0100).
-    Voice must speak AUDIO32 to it or every assistant payload takes a needless
-    conversion at the mixer.
-    """
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling=None)
+def test_a_declared_wide_box_speaks_the_wide_verb(monkeypatch, tmp_path):
+    """`jasper-fanin` runs every box on the ring — the ring is its only
+    transport (ADR-0100) — so voice must speak AUDIO32 to a wide-declared box
+    or every assistant payload takes a needless conversion at the mixer."""
+    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
+
+
+def test_a_declared_narrow_box_speaks_the_narrow_verb(monkeypatch, tmp_path):
+    """The conservative verb, so a narrow-pinned box's payloads are not
+    converted at the mixer."""
+    _declare(monkeypatch, tmp_path, wire_format="S16_LE")
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
+    assert tts._wire_wide is False
+    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
 
 
 def test_an_unreadable_declaration_resolves_narrow_and_says_so(monkeypatch, caplog):
@@ -386,7 +342,7 @@ def test_the_process_resolves_the_width_exactly_once(monkeypatch, tmp_path):
         calls.append(1)
         return "S32_LE"
 
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="shm_ring")
+    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _counted)
     assert tts_wire_is_wide() is True
     assert tts_wire_is_wide() is True
@@ -396,11 +352,11 @@ def test_the_process_resolves_the_width_exactly_once(monkeypatch, tmp_path):
 
 
 def test_the_playout_resolves_its_width_when_none_is_given(monkeypatch, tmp_path):
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="shm_ring")
+    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
-    _declare(monkeypatch, tmp_path, wire_format="S16_LE", coupling="shm_ring")
+    _declare(monkeypatch, tmp_path, wire_format="S16_LE")
     tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is False
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
@@ -414,7 +370,7 @@ def test_a_startup_line_names_the_resolved_width_and_where_it_came_from(
     The mismatch warn fires at most once for the daemon's lifetime and may have
     scrolled away; this line is always there, on both sides of the socket.
     """
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling="shm_ring")
+    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     with caplog.at_level("INFO"):
         TtsPlayout(socket_path="/nonexistent.sock")
     assert "event=tts_wire.resolved" in caplog.text
@@ -452,6 +408,6 @@ def test_the_spine_scale_is_the_shift_the_rust_primitive_applies():
     assert _SPINE_SCALE == 2 ** int(match.group(1))
 
 
-def test_audio_io_module_is_the_one_the_worktree_owns():
+def test_tts_module_is_the_one_the_worktree_owns():
     """Guard against a shared venv resolving `jasper` to another checkout."""
-    assert Path(audio_io.__file__).resolve().parent.parent == _REPO
+    assert Path(tts_playout.__file__).resolve().parent.parent == _REPO

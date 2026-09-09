@@ -17,6 +17,7 @@ import time
 import pytest
 
 from jasper import service_units
+from jasper.control import heal_supervisor
 from jasper.cli.doctor import _evidence, _shared, resilience, web
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
@@ -215,6 +216,28 @@ def test_check_required_units_active_skips_without_systemctl(monkeypatch):
 
     assert (result.status, result.reason) == (
         "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+    )
+
+
+# ----------------------------------------------------- check_accessory_bridges
+
+
+def test_check_accessory_bridges_warns_on_restart_loop(monkeypatch):
+    monkeypatch.setattr(
+        resilience.accessory_status, "snapshot",
+        lambda: {
+            "published": True,
+            "bridges": {
+                "hid": {"restarts": 3, "last_error": "ConnectionError"},
+                "wiim_remote_mic": {"restarts": 0, "last_error": None},
+            },
+        },
+    )
+
+    result = resilience.check_accessory_bridges()
+
+    assert (result.status, result.reason) == (
+        "warn", resilience.REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
     )
 
 
@@ -692,7 +715,10 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
     "check_name",
     [
         "check_bootloop_guard",
+        "check_heal_recency",
+        "check_outputd_failure_reconcile_park",
         "check_required_units_active",
+        "check_speaker_silence",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
         "check_voice_unit_running",
@@ -702,7 +728,66 @@ def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()
 
 
+# ---------------------------------------------------------- check_heal_recency
+
+
+_HEAL_STALE_AFTER_SEC = 3 * 600.0
+
+
+def test_the_stale_window_is_three_supervisor_ticks():
+    assert (
+        resilience._HEAL_STALE_TICKS * heal_supervisor.TICK_INTERVAL_SEC
+        == _HEAL_STALE_AFTER_SEC
+    )
+
+
+@pytest.mark.parametrize(
+    "heal, status, reason",
+    [
+        (None, "skipped", resilience.REASON_CONTROL_UNAVAILABLE),
+        ({"enabled": False}, "skipped", resilience.REASON_HEAL_UNOBSERVED),
+        ({"age": _HEAL_STALE_AFTER_SEC + 60}, "warn", resilience.REASON_HEAL_STALE),
+        ({"age": 60.0}, "ok", resilience.REASON_HEAL_RECENT),
+        (
+            {"age": 60.0, "would_act": {"case": "silent", "action": "restart-audio"}},
+            "ok", resilience.REASON_HEAL_RECENT,
+        ),
+    ],
+)
+def test_check_heal_recency_verdicts(monkeypatch, heal, status, reason):
+    """``age`` is how long ago the supervisor published its last tick."""
+    snapshot = None if heal is None else dict(heal)
+    if snapshot is not None and "age" in snapshot:
+        snapshot["last_tick"] = time.time() - snapshot.pop("age")
+    monkeypatch.setattr(
+        resilience, "_read_resilience_state",
+        lambda: None if snapshot is None else {"heal": snapshot},
+    )
+
+    result = resilience.check_heal_recency()
+
+    assert (result.status, result.reason) == (status, reason)
+
+
 # --------------------------------------- check_outputd_failure_reconcile_park
+
+
+def _seed_signal_path(code: str | None, *, warmup: bool = False) -> None:
+    """Seed jasper-control's /system/snapshot with one signal-path code, or
+    with the transport error that means the daemon is unreachable."""
+    payload = (
+        None if code is None
+        else {"audio_health": {
+            "signal_path": {
+                "code": code, "headline": "headline", "status": "issue",
+            },
+            "technical": {"sampler": {"warmup_active": warmup}},
+        }}
+    )
+    _evidence.evidence.seed(
+        "control_system_snapshot",
+        _evidence.StatusRead(payload, None if payload else OSError("refused")),
+    )
 
 
 def _park_check(monkeypatch, tmp_path, *, record: str | None, unit: dict):
@@ -738,7 +823,10 @@ _ACTIVATING = {"active_state": "activating", "sub_state": "start", "result": "su
 def test_outputd_failure_reconcile_park_verdicts(
     tmp_path, monkeypatch, record, unit, status, reason, silent,
 ):
-    """outputd owns the DAC write loop, so both fail branches prove silence."""
+    """outputd owns the DAC write loop, so both fail branches prove silence —
+    here with jasper-control unreachable, which is when these rows carry it."""
+
+    _seed_signal_path(None)
     result = _park_check(monkeypatch, tmp_path, record=record, unit=unit)
     assert (result.status, result.reason) == (status, reason)
     assert result.speaker_silent is silent
@@ -780,5 +868,86 @@ def test_a_pre_2020_park_stamp_is_named_not_counted(parked_at, shown):
     assert shown in resilience._parked_ago(parked_at, now=1_800_000_100.0)
 
 
-def test_outputd_failure_reconcile_park_is_registered():
-    assert "check_outputd_failure_reconcile_park" in _registered_check_names()
+# ------------------------------------------------------------ speaker silence
+
+
+def test_the_signal_path_vocabulary_is_partitioned():
+    """`SIGNAL_PATH_CODES` is a closed vocabulary and the doctor's silence lead
+    projects it, so every member sits in exactly one of the doctor's three
+    sets — a code added there fails here until it is classified."""
+    from jasper.control.audio_health import SIGNAL_PATH_CODES
+
+    playing = _shared._SIGNAL_PATH_PLAYING_CODES
+    unknown = _shared._SIGNAL_PATH_UNKNOWN_CODES
+    silent = _shared._SIGNAL_PATH_SILENT_CODES
+
+    assert playing | unknown | silent == SIGNAL_PATH_CODES
+    assert len(playing) + len(unknown) + len(silent) == len(SIGNAL_PATH_CODES)
+
+
+@pytest.mark.parametrize(
+    "code, warmup, status, reason, silent",
+    [
+        ("camilla_stopped", False, "warn", "camilla_stopped", True),
+        ("clean", False, "ok", "clean", False),
+        (
+            "path_unreported", False, "skipped",
+            resilience.REASON_SIGNAL_PATH_UNOBSERVED, False,
+        ),
+        (None, False, "skipped", resilience.REASON_SIGNAL_PATH_UNOBSERVED, False),
+        (
+            "a_code_from_a_newer_control", False, "skipped",
+            resilience.REASON_SIGNAL_PATH_UNOBSERVED, False,
+        ),
+        ("clean", True, "skipped", resilience.REASON_SIGNAL_PATH_UNOBSERVED, False),
+    ],
+    ids=["silent", "playing", "cannot-tell", "unreachable", "off-vocabulary", "warming"],
+)
+def test_speaker_silence_projects_the_control_signal_path(
+    code, warmup, status, reason, silent,
+):
+    """The doctor's silence lead IS jasper-control's signal-path verdict, so
+    the /system dashboard headline and the doctor cannot disagree. Anything
+    control cannot classify — a code the doctor does not know, an unreachable
+    daemon, the warmup window — leaves the row skipped, claiming neither way."""
+    _seed_signal_path(code, warmup=warmup)
+
+    result = resilience.check_speaker_silence()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        status, reason, silent,
+    )
+
+
+@pytest.mark.parametrize(
+    "code, warmup, silent",
+    [
+        (None, False, True),
+        ("path_unreported", False, True),
+        ("clean", True, True),
+        ("clean", False, False),
+        ("output_deaf", False, False),
+    ],
+    ids=["unreachable", "cannot-tell", "warming", "playing", "already-led"],
+)
+def test_a_down_audio_unit_leads_with_silence_only_without_a_control_verdict(
+    monkeypatch, code, warmup, silent,
+):
+    """The fallback: with no usable verdict from jasper-control — including its
+    warmup window, where it reports `clean` for a dead CamillaDSP — the
+    doctor's own unit-state rows are the only evidence of silence there is."""
+    _seed_signal_path(code, warmup=warmup)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-outputd.service": {
+            "active_state": "inactive", "result": "success",
+        }}),
+    )
+
+    result = _shared._service_state_failure(
+        "jasper-outputd", "jasper-outputd.service",
+        missing="m", not_enabled="n", inactive="i",
+    )
+
+    assert result is not None
+    assert (result.reason, result.speaker_silent) == ("i", silent)

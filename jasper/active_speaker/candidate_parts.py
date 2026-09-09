@@ -37,6 +37,7 @@ def compose_candidate(
     rationale: str = "",
     room_correction: Mapping[str, Any] | None = None,
     room_prescription_sha256: str = "",
+    room_measured_basis: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Replace each selected role's filters and trim; retain other base settings.
 
@@ -96,9 +97,16 @@ def compose_candidate(
         "rationale": rationale,
     }
     if room:
+        measured_basis = dict(room_measured_basis or {})
+        measured_candidate = measured_basis.get("speaker_candidate_id") or measured_basis.get("candidate_id")
         analysis["room_source"] = {
             "prescription_sha256": room_prescription_sha256,
             ROOM_MEDIAN_FIELD: room["basis"][ROOM_MEDIAN_FIELD],
+            "measured_basis": measured_basis,
+            "base_match": (
+                "unknown" if not measured_candidate else
+                "match" if measured_candidate == base.fingerprint else "different"
+            ),
         }
     elif base.candidate.room_correction:
         analysis["room_source"] = {"dropped_from_base": base.fingerprint}

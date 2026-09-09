@@ -120,7 +120,11 @@ def _curve(
             f"{field_name} does not parse as a banked complex curve "
             "(freqs_hz/magnitude_db/phase_deg/band_hz)"
         )
-    return parsed
+    freqs, tf, band = parsed
+    floor = raw.get("validity_floor_hz")
+    if isinstance(floor, (int, float)) and math.isfinite(floor):
+        band = (max(band[0], floor), band[1])
+    return freqs, tf, band
 
 
 def _shoulders(lower_freqs, lower_band, upper_band, *, crossover_fc_hz: float):
@@ -450,6 +454,7 @@ def landscape_from_bank(
     inverted_role: str,
     phase: str,
     position_deg: int,
+    take_path: str | None = None,
 ) -> BankedLandscape:
     """The banked landscape both operator verbs read.
 
@@ -475,6 +480,7 @@ def landscape_from_bank(
     found = read_pose_curve_pair(
         bundle_dir, phase=phase, position_deg=position_deg,
         roles=(lower_role, upper_role),
+        take_path=take_path,
     )
     if found is None:
         raise DelayLandscapeError(

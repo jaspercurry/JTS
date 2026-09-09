@@ -33,7 +33,7 @@ from ._supervisor import (
     provider_code,
     request_planned_reopen,
     request_unplanned_reopen,
-    run_supervisor_loop,
+    run_connection_supervisor,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -371,7 +371,7 @@ class BaseLiveConnection:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
         await self._do_initial_connect()
-        self._supervisor_task = asyncio.create_task(run_supervisor_loop(self))
+        self._supervisor_task = asyncio.create_task(run_connection_supervisor(self))
 
     async def stop(self) -> None:
         if self._state is ConnectionState.CLOSED:

@@ -18,8 +18,13 @@ from jasper.active_speaker.crossover_v2.frequency_view import (
 )
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
+from jasper.active_speaker.frequency_view import build_frequency_view as neutral_view
+from jasper.active_speaker.frequency_plot import render_frequency_view
+from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
+from jasper.cli.round_views import main as round_views_main
 from jasper.web import correction_measurements
 
 
@@ -126,14 +131,59 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
 
     assert average["reference_db"] == -24.0
     assert baseline["reference_db"] == -34.0
-    assert [
-        magnitude - average["reference_db"]
-        for magnitude in average["magnitude_db"]
-    ] == [-1.0, 0.0, -2.0]
-    assert [
-        magnitude - baseline["reference_db"]
-        for magnitude in baseline["magnitude_db"]
-    ] == [-1.0, 0.0, -2.0]
+    assert average["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
+    assert baseline["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
+
+
+@pytest.mark.parametrize("reference", [-24, None])
+def test_saved_live_and_predicted_views_share_display_rules(reference):
+    raw = {"freqs_hz": [50, 150, 200, 500, 1000, 20000],
+           "magnitude_db": [-29, -25, -24, -23, -22, -21], "band_hz": [100, 10000]}
+    metadata = {"reference_db": reference, "validity_floor_hz": 143, "trusted_floor_hz": 357,
+                "excluded_bands_hz": [[400, 450], [440, 500]]}
+    series = frequency_series(series_id="take", label="Take", kind="measurement",
+                              reference_db=reference, **raw)
+    assert series is not None
+    saved = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata=metadata))
+    pipeline = {**metadata, "available": True, "curve": raw, "spec": {"reference_db": reference},
+                "merged_excluded_bands_hz": metadata["excluded_bands_hz"]}
+    shifted = {**pipeline, "curve": {**raw, "magnitude_db": [db - 10 for db in raw["magnitude_db"]]},
+               "spec": {"reference_db": reference - 10 if reference is not None else None}}
+    live = chart_cloud_status({"cloud_verify": {"pipeline": pipeline}, "cloud_measure": {"pipeline": shifted}})
+    predicted = prediction_status({"verify_priors": {"predicted_sum": raw, "predicted_spec": {
+        **metadata, "excluded_intervals": metadata["excluded_bands_hz"],
+    }}})
+    display = saved["runs"][0]["series"][0]["display"]
+    assert live["cloud_verify"]["curve"]["display"] == predicted["curve"]["display"] == display
+    assert live["cloud_measure"]["curve"]["display"] == display
+    assert display == {
+        "deviation_db": [None, -1, 0, 1, 2, None] if reference is not None else [None] * 6,
+        "valid_band_hz": [143, 10000],
+        "untrusted_intervals_hz": [[0, 357], [400, 500]],
+    }
+    assert saved["runs"][0]["series"][0]["magnitude_db"] == raw["magnitude_db"]
+    json.dumps(saved, allow_nan=False)
+
+
+def test_image_uses_shared_trust_markings_and_keeps_untrusted_data(tmp_path, monkeypatch):
+    figure = pytest.importorskip("matplotlib.figure")
+    series = frequency_series(
+        series_id="take", label="Take", kind="measurement", reference_db=-24,
+        freqs_hz=[50, 150, 200, 500, 1000], magnitude_db=[-29, -25, -24, -23, -22],
+        validity_floor_hz=143, trusted_floor_hz=357, excluded_intervals_hz=[[440, 500], [900, 900]],
+    )
+    view = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata={
+        "trusted_floor_hz": 200, "excluded_bands_hz": [[400, 450]],
+    }))
+    figures = []
+    monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+    render_frequency_view(view, tmp_path / "response.png", band_hz=(50, 1000))
+    ax = figures[0].axes[0]
+    assert list(ax.lines[0].get_ydata()) == view["runs"][0]["series"][0]["display"]["deviation_db"]
+    spans = [patch.get_path().transformed(patch.get_patch_transform()).vertices[:, 0]
+             for patch in ax.patches]
+    assert [(min(xs), max(xs)) for xs in spans] == [(50, 357), (400, 500)]
+    assert list(ax.lines[-1].get_xdata()) == [900, 900]
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
@@ -366,6 +416,165 @@ def test_neutral_adapter_requires_an_honest_display_reference():
         )
 
 
+@pytest.mark.parametrize("compared", [False, True])
+def test_frequency_cli_reads_capture_prediction_evidence(
+    tmp_path: Path, compared: bool, monkeypatch,
+) -> None:
+    basis = {
+        "capture_id": "basis-take",
+        "candidate_id": "basis-candidate",
+        "graph_fingerprint": "basis-graph",
+        "record_path": "/captures/basis.json",
+    }
+    measured = {
+        "capture_id": "measured-take",
+        "candidate_id": "target-candidate",
+        "graph_fingerprint": "measured-graph",
+        "record_path": "/captures/measured.json",
+    }
+    comparison = {
+        "freqs_hz": [500.0, 1000.0, 2000.0],
+        "predicted_db": [-18.0, -17.0, -16.0],
+        "measured_db": [-23.0, -22.0, -21.0],
+        "delta_db": [0.0, 0.0, 0.0],
+        "compared_band_hz": [500.0, 2000.0],
+        "level_offset_db": 5.0,
+        "take_path": "/captures/basis.json",
+    }
+    document = {
+        "schema_version": 1,
+        "kind": "jts_capture_prediction",
+        "summary": {
+            "basis": basis,
+            "candidate_id": "target-candidate",
+            "measured": measured if compared else None,
+            "window": {
+                "window_ms": 7.0,
+                "validity_floor_hz": 286.0,
+                "trusted_floor_hz": 572.0,
+            },
+            "comparison_kind": "changed_candidate" if compared else "unmeasured_forecast",
+            "limits": "Forecast assumes unchanged setup.",
+        },
+        "prediction": {
+            "freqs_hz": [500.0, 1000.0, 2000.0],
+            "predicted_db": [-18.0, -17.0, -16.0],
+            "sum_band_hz": [500.0, 2000.0],
+            "take_path": "/captures/basis.json",
+        },
+        "reconstruction": {
+            **comparison,
+            "predicted_db": [-18.0, -17.0, -16.0],
+            "measured_db": [-19.0, -18.0, -17.0],
+            "level_offset_db": 1.0,
+        },
+        "predicted_minus_measured": comparison if compared else None,
+        "limitations": ["No score authorizes playback."],
+    }
+    source = tmp_path / f"prediction-{compared}.json"
+    output = tmp_path / f"frequency-{compared}.json"
+    source.write_text(json.dumps(document))
+
+    assert round_views_main([
+        "frequency", str(source), "--out", str(output),
+    ]) == 0
+    [run] = json.loads(output.read_text())["runs"]
+
+    labels = [series["label"] for series in run["series"]]
+    assert labels == [
+        *([] if compared else ["Forecast predicted response"]),
+        "Reconstruction predicted response",
+        "Reconstruction measured response",
+        *(
+            ["Prediction comparison predicted response", "Prediction comparison measured response"]
+            if compared else []
+        ),
+        "Reconstruction level-aligned difference (predicted − measured)",
+        *(
+            ["Prediction comparison level-aligned difference (predicted − measured)"]
+            if compared else []
+        ),
+    ]
+    responses = [series for series in run["series"] if series["role"] != "difference"]
+    assert len({series["reference_db"] for series in responses}) == 1
+    reconstruction = {series["id"]: series for series in run["series"]}
+    predicted_id = "comparison:predicted" if compared else "prediction:predicted"
+    forecast = reconstruction[predicted_id]
+    assert forecast["candidate_id"] == "target-candidate"
+    assert forecast["basis_capture_id"] == "basis-take"
+    assert forecast["basis_graph_fingerprint"] == "basis-graph"
+    assert "graph_fingerprint" not in forecast
+    assert [series["id"] for series in run["series"] if series["visible_by_default"]] == [predicted_id]
+    assert reconstruction["reconstruction:predicted"]["magnitude_db"][0] - reconstruction["reconstruction:measured"]["magnitude_db"][0] == 1.0
+    assert reconstruction["reconstruction:difference"]["reference_db"] == 0.0
+    assert reconstruction["reconstruction:difference"]["level_offset_db"] == 1.0
+    assert reconstruction["reconstruction:difference"]["measured_capture_id"] == "basis-take"
+    assert reconstruction["reconstruction:difference"]["display"]["deviation_db"] == [0.0, 0.0, 0.0]
+    assert run["metadata"]["summary"]["basis"] == basis
+    assert run["metadata"]["summary"]["candidate_id"] == "target-candidate"
+    assert run["metadata"]["summary"]["measured"] == (
+        measured if compared else None
+    )
+    assert run["metadata"]["summary"]["window"]["window_ms"] == 7.0
+    assert run["metadata"]["summary"]["limits"] == (
+        "Forecast assumes unchanged setup."
+    )
+
+    if compared:
+        predicted = reconstruction["comparison:predicted"]
+        observed = reconstruction["comparison:measured"]
+        assert predicted["reference_db"] == observed["reference_db"]
+        assert predicted["display"]["deviation_db"][0] - observed["display"]["deviation_db"][0] == 5.0
+        assert observed["capture_id"] == "measured-take"
+        assert observed["candidate_id"] == "target-candidate"
+        difference = reconstruction["comparison:difference"]
+        assert difference["measured_capture_id"] == "measured-take"
+        assert difference["measured_graph_fingerprint"] == "measured-graph"
+        assert difference["measured_take_path"] == "/captures/measured.json"
+
+        figure = pytest.importorskip("matplotlib.figure")
+        figures = []
+        monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+        render_frequency_view(json.loads(output.read_text()), tmp_path / "prediction.png")
+        evidence = " ".join(figures[0].axes[-1].texts[0].get_text().split())
+        assert "basis take: basis-take | candidate: target-candidate | basis graph: basis-graph" in evidence
+        assert "measured-take | candidate: target-candidate | graph: measured-graph" in evidence
+        assert "measured take: measured-take" in evidence
+        assert "measured graph: measured-graph" in evidence
+
+        narrower = json.loads(json.dumps(document))
+        narrower["predicted_minus_measured"]["compared_band_hz"] = [1000.0, 2000.0]
+        narrow_run = frequency_run_from_documents(
+            run_id="narrow", documents=(narrower,),
+        )
+        assert "prediction:predicted" in {series.id for series in narrow_run.series}
+
+
+def test_legacy_capture_prediction_exposes_no_invented_response_curves():
+    run = frequency_run_from_documents(run_id="legacy", documents=({
+        "kind": "jts_capture_prediction",
+        "summary": {"limits": "Comparison response arrays were not retained."},
+        "prediction": {
+            "freqs_hz": [500.0, 1000.0],
+            "predicted_db": [-20.0, -19.0],
+            "sum_band_hz": [500.0, 1000.0],
+        },
+        "reconstruction": {
+            "freqs_hz": [500.0, 1000.0],
+            "delta_db": [0.5, -0.5],
+            "compared_band_hz": [500.0, 1000.0],
+            "level_offset_db": 1.0,
+        },
+    },))
+
+    assert [series.id for series in run.series] == [
+        "prediction:predicted", "reconstruction:difference",
+    ]
+    assert run.metadata["summary"]["limits"] == (
+        "Comparison response arrays were not retained."
+    )
+
+
 def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypatch):
     from jasper.active_speaker.crossover_v2 import evidence_packet
 
@@ -431,3 +640,18 @@ def test_archive_keeps_old_packet_positions_when_a_record_has_only_a_baseline(
     ]
     assert run.metadata["position_count"] == 2
     assert run.metadata["angles_deg"] == [-7, 0]
+
+
+def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, monkeypatch):
+    from jasper.active_speaker.crossover_v2 import evidence_packet
+    docs = [{"take_id": take, "candidate_id": candidate, "graph_fingerprint": "entry",
+             "provenance": {"graph": {"fingerprint": graph}}, "position_deg": 0,
+             "curves": [{"role": "summed", "freqs_hz": [500, 1000, 2000],
+                         "magnitude_db": [-20, -20, -21], "reference_db": -20}]}
+            for take, candidate, graph in (("a", "candidate-a", "played-a"), ("b", "candidate-b", "played-b"))]
+    monkeypatch.setattr(measurement_archive, "_measurement_documents", lambda _: docs)
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", lambda _: _packet("saved"))
+    run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
+    assert len(run.series) == 2
+    assert {r.details["take_id"] for r in run.series} == {"a", "b"}
+    assert {r.details["graph_fingerprint"] for r in run.series} == {"played-a", "played-b"}

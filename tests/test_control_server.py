@@ -36,8 +36,6 @@ from jasper.control.server import (
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.control.volume_ops import VOLUME_MAX_DB, VOLUME_MIN_DB
-from jasper.volume_curve import db_to_percent
 
 from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
@@ -85,15 +83,6 @@ def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
         "detail": "choose and save a speaker layout before using audio",
     }
     assert setup is blocked
-
-
-# --- pure helpers ---
-
-
-def test_db_to_percent_endpoints():
-    assert db_to_percent(VOLUME_MIN_DB) == 0
-    assert db_to_percent(VOLUME_MAX_DB) == 100
-    assert db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
 
 
 # --- management request guardrails ---
@@ -782,10 +771,10 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
 
 @pytest.fixture
 def _peering_env(monkeypatch):
-    """Stub peering config, reset `_peering_thread`/`_peering_loop` around
-    the test, and hand back the modules so the test can install its own
-    FakePeeringDaemon on `peering_daemon_mod.PeeringDaemon`."""
-    import jasper.control.server as srv_mod
+    """Stub peering config, reset `_peering_task` around the test, and hand
+    back the modules so the test can install its own FakePeeringDaemon on
+    `peering_daemon_mod.PeeringDaemon`."""
+    import jasper.control.handlers.peering as srv_mod
     import jasper.peering as peering_pkg
     import jasper.peering.daemon as peering_daemon_mod
 
@@ -798,18 +787,16 @@ def _peering_env(monkeypatch):
 
     monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
     with srv_mod._peering_lock:
-        srv_mod._peering_thread = None
-        srv_mod._peering_loop = None
+        srv_mod._peering_task = None
     try:
         yield srv_mod, peering_daemon_mod
     finally:
         srv_mod.stop_peering_daemon(timeout=1)
         with srv_mod._peering_lock:
-            srv_mod._peering_thread = None
-            srv_mod._peering_loop = None
+            srv_mod._peering_task = None
 
 
-def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(_peering_env, monkeypatch):
+def test_stop_peering_daemon_runs_daemon_stop_before_returning(_peering_env, monkeypatch):
     srv_mod, peering_daemon_mod = _peering_env
 
     started = threading.Event()
@@ -830,14 +817,40 @@ def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(_peering_env, monke
     srv_mod.start_peering_daemon_if_enabled()
     assert started.wait(timeout=2)
     srv_mod.stop_peering_daemon(timeout=2)
-    assert stopped.wait(timeout=2)
+    assert stopped.is_set()
     with srv_mod._peering_lock:
-        assert srv_mod._peering_thread is None
-        assert srv_mod._peering_loop is None
+        assert srv_mod._peering_task is None
 
 
-def test_peering_start_failure_clears_thread_and_allows_retry(_peering_env, monkeypatch):
-    """A start() failure clears `_peering_thread` so the next start is a
+def test_stop_peering_daemon_returns_promptly_when_stop_races_the_start(
+    _peering_env, monkeypatch,
+):
+    """Stopping before the control loop has run the coroutine must not sit
+    out the whole stop budget."""
+    srv_mod, peering_daemon_mod = _peering_env
+
+    class FakePeeringDaemon:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    began = time.monotonic()
+    srv_mod.stop_peering_daemon(timeout=5)
+    assert time.monotonic() - began < 1.0
+    with srv_mod._peering_lock:
+        assert srv_mod._peering_task is None
+
+
+def test_peering_start_failure_clears_task_and_allows_retry(_peering_env, monkeypatch):
+    """A start() failure clears `_peering_task` so the next start is a
     real retry."""
     srv_mod, peering_daemon_mod = _peering_env
 
@@ -858,14 +871,14 @@ def test_peering_start_failure_clears_thread_and_allows_retry(_peering_env, monk
     monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
 
     srv_mod.start_peering_daemon_if_enabled()
-    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    wait_until_sync(lambda: srv_mod._peering_task is None)
     assert start_calls == [1]
     assert stop_calls == [1]
 
     srv_mod.start_peering_daemon_if_enabled()
     wait_until_sync(lambda: len(start_calls) >= 2)
     assert start_calls == [1, 1]
-    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    wait_until_sync(lambda: srv_mod._peering_task is None)
     assert stop_calls == [1, 1]
 
 
@@ -888,7 +901,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     fail-LOUD-invalid configs all resolve to None (local handling)."""
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         effective_role, "read_effective_role_status", lambda: {},
@@ -907,7 +920,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
 
 
 def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
 
@@ -948,7 +961,7 @@ class _FakeUpstream:
 def follower_server(monkeypatch, server_with_coordinator):
     """The coordinator server, with this speaker patched into an active
     bonded follower and the upstream leader call captured."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
@@ -1018,7 +1031,7 @@ def test_follower_forward_loop_is_broken(follower_server):
 def test_follower_forward_failure_is_502_with_leader_named(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
@@ -1043,7 +1056,7 @@ def test_follower_forward_relays_leader_http_verdict(
     JSON body, pair_leader-tagged) — never mislabeled 'unreachable'. Only
     transport failures take the 502 path."""
     import io
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",

@@ -19,6 +19,7 @@ from ...usb_mic import (
     write_usb_mic_leg,
 )
 from .. import aec_endpoints
+from .. import restart_broker
 from .. import server as _server
 from ._base import ControlHandlerMixin, logger
 
@@ -303,7 +304,7 @@ class AecRoutes(ControlHandlerMixin):
                 leg=leg,
                 client=self.address_string(),
             )
-            restart = _server.restart_broker.reset_then_manage(
+            restart = restart_broker.reset_then_manage(
                 _server._AEC_BRIDGE_UNIT,
                 verb="restart",
                 reason="usb_mic_leg",
@@ -364,7 +365,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        restart = _server.restart_broker.manage_units(
+        restart = restart_broker.manage_units(
             "jasper-voice.service",
             verb="restart",
             reason="wake_threshold",
@@ -483,7 +484,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        started = _server.restart_broker.manage_units(
+        started = restart_broker.manage_units(
             "jasper-enhanced-aec-install.service",
             verb="start",
             reason="enhanced_aec_install",

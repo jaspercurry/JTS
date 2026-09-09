@@ -83,6 +83,7 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
             inverted_role=args.inverted_role,
             phase=args.phase,
             position_deg=args.position_deg,
+            take_path=args.take_path,
         )
     except DelayLandscapeError:
         raise
@@ -115,7 +116,10 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
         "phase": args.phase,
         "phase_composition": composition,
         "landscape": landscape.to_dict(),
-        "confirm_with": confirmation_stage_commands(
+        "delay_coordinates": "residual addition to measured tune" if composition == "complete_tune_measured" else "neutral branch delay",
+        "confirm_with": [
+            "Author full candidate variants with these residual changes added to the measured tune's alignment; compare their summed captures with tournament. jasper-null uses neutral branches and cannot confirm this tune."
+        ] if composition == "complete_tune_measured" else confirmation_stage_commands(
             landscape, position_deg=args.position_deg,
             inverted_role=args.inverted_role,
         ),
@@ -135,6 +139,9 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
         landscape, take_path, composition = _landscape_from_bank(args)
     except DelayLandscapeError as exc:
         return refused_by_name(exc.refusal_reason, str(exc))
+
+    if composition == "complete_tune_measured":
+        return refused_by_name("delay_confirm_graph_mismatch", "These curves include the complete tune. Compare complete candidate variants with tournament; neutral jasper-null rows cannot confirm residual tune changes.")
 
     rows_dir = Path(args.bundle_dir) / NULL_RUNS_DIR
     graded = stage(
@@ -185,6 +192,7 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
                        help="the applied crossover corner")
     child.add_argument("--upper-role", default="tweeter")
     child.add_argument("--lower-role", default="woofer")
+    child.add_argument("--take-path", help="exact indexed take path; otherwise the latest matching pose is read")
     child.add_argument(
         "--inverted-role", default="tweeter", choices=sorted(DRIVER_ROLES),
         help="which branch the confirmation flips",

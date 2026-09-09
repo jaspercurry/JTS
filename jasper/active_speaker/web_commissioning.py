@@ -74,6 +74,7 @@ from jasper.audio_measurement.correction_lane import (
     correction_play_device,
 )
 from jasper.camilla import CamillaUnavailable
+from jasper.platform import wire
 from jasper.platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
@@ -99,6 +100,7 @@ COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
 SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 COMMISSION_TONE_FANIN_LABEL = "correction"
+_COMMISSION_GATE_OWNER = "active-speaker-commissioning"
 
 
 _EVIDENCE_READ_ERRORS = (
@@ -597,7 +599,9 @@ def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
 def _commission_tone_select_fanin_lane() -> dict[str, Any]:
     try:
         return _commission_tone_mux_command(
-            f"TEST_SELECT {COMMISSION_TONE_FANIN_LABEL} active-speaker-commissioning",
+            wire.mux_test_select(
+                COMMISSION_TONE_FANIN_LABEL, _COMMISSION_GATE_OWNER,
+            ),
         )
     except _MUX_COMMAND_ERRORS:
         # SELECT may have landed even when its response was lost, and the
@@ -609,7 +613,7 @@ def _commission_tone_select_fanin_lane() -> dict[str, Any]:
 def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
     try:
         payload = _commission_tone_mux_command(
-            "TEST_RELEASE active-speaker-commissioning"
+            wire.mux_test_release(_COMMISSION_GATE_OWNER)
         )
     except _MUX_COMMAND_ERRORS as exc:
         log_event(

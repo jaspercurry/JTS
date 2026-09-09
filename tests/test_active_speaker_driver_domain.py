@@ -251,9 +251,9 @@ def test_emits_the_ring_chunk_it_is_given() -> None:
 
 
 def test_chunksize_env_override_reaches_the_emitter(monkeypatch) -> None:
-    # The non-ring path leaves chunksize=None so resolve_camilla_chunksize()
-    # reads the env. The operator's value arrives as asked — the G7 knob is
-    # tunable low on this emitter exactly as it is on the direct-DAC paths.
+    # The non-ring path leaves chunksize=None, so the resolver reads the env.
+    # The operator's value arrives as asked — the G7 knob is tunable low on this
+    # emitter exactly as it is on the direct-DAC paths.
     monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
     assert _doc()["devices"]["chunksize"] == 256
 

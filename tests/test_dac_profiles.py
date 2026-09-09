@@ -11,7 +11,6 @@ import pytest
 
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
-from jasper.camilla_config_contract import CamillaFloor
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -750,47 +749,35 @@ def test_latency_floor_rejects_nonpositive_values() -> None:
 
 
 def test_apple_dongle_declares_the_measured_floors() -> None:
-    # The codified floors must match the measured Apple-dongle floors. The exact
-    # 4x Camilla target (1024) and outputd 64/128 were too tight on jts.local.
+    # The codified floor must match the measured Apple-dongle floor; outputd
+    # 64/128 was too tight on jts.local.
     assert APPLE_USB_C_DONGLE.latency_floor == LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
-    )
-    assert APPLE_USB_C_DONGLE.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1536,
     )
 
 
 def test_floor_accessors_round_trip_by_profile_id() -> None:
     floor = dac.latency_floor_for(APPLE_USB_C_DONGLE_ID)
-    camilla = dac.camilla_floor_for(APPLE_USB_C_DONGLE_ID)
-    assert floor is not None and camilla is not None
+    assert floor is not None
     assert (floor.outputd_period_frames, floor.outputd_dac_buffer_frames) == (128, 256)
-    assert (camilla.chunksize, camilla.target_level) == (256, 1536)
 
 
 def test_floor_accessors_are_none_for_undeclared_and_unknown() -> None:
     # A DAC that declares no floor keeps the shipped default — None is the
     # non-breaking signal the reconciler and the emitters read as "use default".
     assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
-    assert dac.camilla_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
-    assert dac.camilla_floor_for("no_such_dac") is None
 
 
-def test_innomaker_declares_the_jts4_outputd_and_camilla_floors() -> None:
+def test_innomaker_declares_the_jts4_outputd_floor() -> None:
     # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro): period 128 / dac_buffer 256 —
     # the pair both other declaring profiles use — took 1 DAC xrun in 5 minutes
     # here, and 512 took zero in 5 minutes plus zero in a 3-minute run through
-    # the armed ring. CamillaDSP's pair is the ring-clamped 256/1024 the ring
-    # clamp (#3542) scaled this board's former 1024/4096 down to; jts4 has run
-    # it since, CamillaDSP-validated.
+    # the armed ring.
     assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
-    )
-    assert INNOMAKER_HIFI_AMP_PRO.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1024,
     )
 
 
@@ -826,9 +813,6 @@ def test_dac8x_declares_the_soak_validated_floors() -> None:
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     )
-    assert HIFIBERRY_DAC8X.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1536,
-    )
 
 
 # --- final-edge format (PR-1, final-edge format program) ---------------------
@@ -841,14 +825,31 @@ def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
         )
 
 
-def _rust_dac_format_arms() -> set[str]:
-    """The values outputd's own parse accepts for ``JASPER_OUTPUTD_DAC_FORMAT``.
+def _rust_env_match_literals(anchor: str, env_name: str) -> list[str]:
+    """The string literals of one outputd ``match env_str(...)`` arm block.
 
-    Read out of the Rust match arms rather than restated, so the test below
-    compares the two IMPLEMENTATIONS instead of comparing the registry to a copy
+    Read out of the Rust match arms rather than restated, so the tests below
+    compare the two IMPLEMENTATIONS instead of comparing the registry to a copy
     of itself. Same idiom as
     ``tests/test_wifi_profile_hardening_contract.py``: read the fact out of each
     owner and compare, rather than comparing one owner to a copy of itself.
+    """
+    config_rs = (ROOT / "rust" / "jasper-outputd" / "src" / "config.rs").read_text(
+        encoding="utf-8"
+    )
+    assert anchor in config_rs, (
+        f"could not locate outputd's {env_name} parse in "
+        "rust/jasper-outputd/src/config.rs — if the match was reshaped, update "
+        "this parser; do not delete the contract it feeds"
+    )
+    # Everything between the match's `{` and its catch-all `other =>` arm: the
+    # value arms and nothing else.
+    block = config_rs.split(anchor, 1)[1].split("other =>", 1)[0]
+    return re.findall(r'"([^"]*)"', block)
+
+
+def _rust_dac_format_arms() -> set[str]:
+    """The values outputd's own parse accepts for ``JASPER_OUTPUTD_DAC_FORMAT``.
 
     The unset/blank arm (``"" | "S16_LE"``) contributes ``S16_LE`` only: the empty
     string is outputd's default-when-absent, and no ``DacProfile`` can carry it
@@ -856,19 +857,10 @@ def _rust_dac_format_arms() -> set[str]:
     Its presence IS asserted, though — it is how this parser proves it found the
     real arm block and not some other match.
     """
-    config_rs = (ROOT / "rust" / "jasper-outputd" / "src" / "config.rs").read_text(
-        encoding="utf-8"
+    literals = _rust_env_match_literals(
+        'let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {',
+        "JASPER_OUTPUTD_DAC_FORMAT",
     )
-    anchor = 'let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {'
-    assert anchor in config_rs, (
-        "could not locate outputd's JASPER_OUTPUTD_DAC_FORMAT parse in "
-        "rust/jasper-outputd/src/config.rs — if the match was reshaped, update "
-        "this parser; do not delete the contract it feeds"
-    )
-    # Everything between the match's `{` and its catch-all `other =>` arm: the
-    # value arms and nothing else.
-    block = config_rs.split(anchor, 1)[1].split("other =>", 1)[0]
-    literals = re.findall(r'"([^"]*)"', block)
     assert "" in literals, (
         "outputd's DAC-format parse no longer has an unset/blank arm; this parser "
         "is probably reading the wrong block"
@@ -1154,9 +1146,27 @@ def test_every_registry_row_declares_a_sink_outputd_can_parse() -> None:
     off the SAME probe as the edge format (ADR-0235 R1), so a spelling outputd's
     parser does not know parks the final-output owner at exit 78 exactly as an
     unknown format does. ``DacProfile.__post_init__`` only requires the field to
-    be non-empty, so this is what stops a new row from introducing one. The Rust
-    side of the vocabulary is pinned in tests/test_outputd_wiring.py.
+    be non-empty, so this is what stops a new row from introducing one — and the
+    accepting side is read out of outputd's own parse, so the two owners of the
+    vocabulary are compared rather than the registry compared to a copy of
+    itself.
     """
-
-    for profile in dac.all_profiles():
-        assert profile.outputd_sink in ("single_alsa", "composite")
+    rust_arms = set(
+        _rust_env_match_literals(
+            'let sink_mode = match env_str("JASPER_OUTPUTD_SINK", "single_alsa")',
+            "JASPER_OUTPUTD_SINK",
+        )
+    )
+    # The literal is the non-vacuity proof that the parser found a real block.
+    assert "composite" in rust_arms, (
+        "outputd's JASPER_OUTPUTD_SINK arm block parsed to "
+        f"{sorted(rust_arms)} — the regex is probably reading the wrong block"
+    )
+    emitted = {profile.outputd_sink for profile in dac.all_profiles()}
+    assert emitted <= rust_arms, (
+        "the outputd sink vocabulary drifted between its two owners. "
+        f"jasper/audio_hardware/dac.py emits {sorted(emitted)}; "
+        f"rust/jasper-outputd/src/config.rs parses {sorted(rust_arms)}. "
+        "Registry-only (emitted but unparseable -> parked final-output owner "
+        f"at exit 78): {sorted(emitted - rust_arms)}"
+    )

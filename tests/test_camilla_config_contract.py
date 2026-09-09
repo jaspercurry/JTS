@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_STUDIO_ID
 from jasper.camilla_config_contract import (
-    CamillaFloor,
     DEFAULT_CHUNKSIZE,
+    DEFAULT_QUEUELIMIT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
@@ -17,17 +16,16 @@ from jasper.camilla_config_contract import (
     resolve_enable_rate_adjust,
     total_positive_boost_db,
 )
-from jasper.camilla_latency import (
-    resolve_camilla_chunksize,
-    resolve_camilla_target_level,
-)
+from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_GEOMETRY,
+    RING_CAMILLA_QUEUELIMIT,
+    RING_CAMILLA_TARGET_LEVEL,
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
-    ring_capacity_frames,
 )
 
 
@@ -78,138 +76,6 @@ def test_pipe_sink_format_matches_snapserver_wire_contract():
     assert argv_carries_16_2 == (DEFAULT_PIPE_SINK_FORMAT == "S16_LE")
 
 
-def test_camilla_latency_knobs_default_to_literals_when_unset():
-    """G7: with the env vars unset and no profile floor the resolvers return the
-    shipped literals. ``profile_floor=None`` pins the no-floor path so this tests
-    pure env-vs-default behavior independent of any active-DAC state on the host."""
-    assert resolve_camilla_chunksize({}, profile_floor=None) == DEFAULT_CHUNKSIZE == 1024
-    assert (
-        resolve_camilla_target_level({}, profile_floor=None)
-        == DEFAULT_TARGET_LEVEL
-        == 2048
-    )
-
-
-def test_camilla_latency_knobs_read_env_override():
-    """A valid positive override is honored."""
-    assert (
-        resolve_camilla_chunksize(
-            {"JASPER_CAMILLA_CHUNKSIZE": "512"}, profile_floor=None
-        )
-        == 512
-    )
-    assert (
-        resolve_camilla_target_level(
-            {"JASPER_CAMILLA_TARGET_LEVEL": "1024"}, profile_floor=None
-        )
-        == 1024
-    )
-
-
-def test_camilla_latency_knobs_reject_malformed_to_default():
-    """A bad override must degrade to the default rather than produce a config
-    that won't load (non-int, zero, negative, blank all fall back)."""
-    for bad in ("", "  ", "bogus", "0", "-256", "1.5"):
-        assert resolve_camilla_chunksize(
-            {"JASPER_CAMILLA_CHUNKSIZE": bad}, profile_floor=None
-        ) == DEFAULT_CHUNKSIZE, bad
-        assert resolve_camilla_target_level(
-            {"JASPER_CAMILLA_TARGET_LEVEL": bad}, profile_floor=None
-        ) == DEFAULT_TARGET_LEVEL, bad
-
-
-def test_camilla_latency_knobs_use_profile_floor_when_env_unset():
-    """#27: with the operator env unset, the active DAC's profile floor wins
-    over the global default."""
-    assert resolve_camilla_chunksize({}, profile_floor=256) == 256
-    assert resolve_camilla_target_level({}, profile_floor=1024) == 1024
-
-
-def test_camilla_latency_knobs_operator_env_can_raise_above_profile_floor():
-    """#27 precedence: explicit operator env can raise above the floor."""
-    assert (
-        resolve_camilla_chunksize(
-            {"JASPER_CAMILLA_CHUNKSIZE": "512"}, profile_floor=256
-        )
-        == 512
-    )
-    assert (
-        resolve_camilla_target_level(
-            {"JASPER_CAMILLA_TARGET_LEVEL": "2048"}, profile_floor=1024
-        )
-        == 2048
-    )
-
-
-def test_camilla_latency_knobs_clamp_operator_env_below_profile_floor():
-    """Saved/stale env below a measured DAC floor is clamped to the floor.
-
-    This pins the jts5 256/512 saved-profile gap: once the Apple DAC declares
-    256/1536, an old ``JASPER_CAMILLA_TARGET_LEVEL=512`` must not keep
-    regenerated CamillaDSP configs below the measured floor.
-    """
-    assert (
-        resolve_camilla_chunksize(
-            {"JASPER_CAMILLA_CHUNKSIZE": "128"}, profile_floor=256
-        )
-        == 256
-    )
-    assert (
-        resolve_camilla_target_level(
-            {"JASPER_CAMILLA_TARGET_LEVEL": "512"}, profile_floor=1536
-        )
-        == 1536
-    )
-
-
-def test_camilla_latency_lab_override_can_probe_below_profile_floor(tmp_path):
-    from jasper.audio_runtime_overrides import (
-        AUDIO_RUNTIME_OVERRIDES_PATH_ENV,
-        set_runtime_override,
-    )
-
-    override_path = tmp_path / "audio_runtime_overrides.json"
-    set_runtime_override(
-        key="JASPER_CAMILLA_TARGET_LEVEL",
-        value="1024",
-        reason="test low-latency target",
-        path=override_path,
-        allowed_keys={"JASPER_CAMILLA_TARGET_LEVEL"},
-    )
-
-    assert (
-        resolve_camilla_target_level(
-            {
-                "JASPER_CAMILLA_TARGET_LEVEL": "1024",
-                AUDIO_RUNTIME_OVERRIDES_PATH_ENV: str(override_path),
-            },
-            profile_floor=1536,
-        )
-        == 1024
-    )
-
-
-def test_camilla_latency_knobs_malformed_env_falls_back_to_profile_floor():
-    """A bad operator override degrades to the profile floor (not the global
-    default) when a floor is present — still never an unloadable config."""
-    for bad in ("", "bogus", "0", "-1"):
-        assert (
-            resolve_camilla_chunksize(
-                {"JASPER_CAMILLA_CHUNKSIZE": bad}, profile_floor=256
-            )
-            == 256
-        ), bad
-
-
-def test_camilla_latency_knobs_none_floor_keeps_global_default():
-    """profile_floor=None is the non-breaking path — byte-identical to the
-    no-floor behavior."""
-    assert resolve_camilla_chunksize({}, profile_floor=None) == DEFAULT_CHUNKSIZE
-    assert (
-        resolve_camilla_target_level({}, profile_floor=None) == DEFAULT_TARGET_LEVEL
-    )
-
-
 def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
     """The end-to-end byte-identical contract: the sound emitter with the None
     sentinel (env unset, no resolvable profile) must equal the pre-G7
@@ -219,17 +85,11 @@ def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
 
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    # Point profile resolution at an absent state file so no floor resolves —
-    # the global-default (byte-identical) path.
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH", "/nonexistent/jts-output-hardware.json"
-    )
     profile = SoundProfile()
     # At a sink with its own buffer. The ring end is the deliberate exception —
-    # there the sentinel path clamps to the ring's capacity while an explicit
-    # caller value still passes through, so the two calls are NOT byte-identical
-    # for a default above that capacity (see
-    # test_a_ring_end_never_emits_a_chunk_larger_than_the_ring).
+    # there the sentinel resolves the ring's geometry while an explicit caller
+    # value still passes through, so the two calls are NOT byte-identical (see
+    # test_a_ring_end_takes_the_whole_certified_geometry).
     explicit = emit_sound_config(
         profile,
         chunksize=DEFAULT_CHUNKSIZE,
@@ -240,85 +100,104 @@ def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
     assert sentinel == explicit
 
 
-# --- #27: the active DAC profile floor reaches a GENERATED CamillaDSP config ---
-# The keystone claim the prior tests did NOT cover: not "the resolver returns N"
-# but "a config GENERATED for the Apple-dongle profile actually carries
-# chunksize 256 / target_level 1536." These run the live emitters (sound +
-# active-speaker) with the active output-hardware state staged, then parse the
-# emitted YAML's devices: block — proving the floor is in the config a daemon
-# would load, with max(operator-env, profile-floor) > global precedence.
+# --- ONE OWNER PER TRANSPORT: what a GENERATED CamillaDSP config carries -----
+# Not "the resolver returns N" but "the config a daemon would load carries the
+# geometry its transport certified". A ring end takes the whole
+# RING_CAMILLA_GEOMETRY; an ordinary ALSA sink takes the box's global default.
 
 
-def _stage_output_profile(monkeypatch, tmp_path, profile_id: str) -> None:
-    """Write an output-hardware state file the generators resolve the floor from.
-
-    Mirrors what jasper-audio-hardware-reconcile writes to
-    /run/jasper-output-hardware/output_hardware.json; the generators read the
-    active profile id from it (env-independent) and look up its codified floor.
-    """
-    from jasper.output_hardware import OutputHardwareState, write_state
-
-    state_path = tmp_path / "output_hardware.json"
-    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
-    write_state(
-        OutputHardwareState(
-            profile_id=profile_id,
-            profile_label=profile_id,
-            status="ready",
-            physical_output_count=2,
-            selected_card_id=profile_id,
-        ),
-        state_path,
-    )
-
-
-# An ordinary ALSA sink — NOT one of the ring PCMs. The floor-resolution tests
-# below emit against it because the ring CAPS what a resolved floor can put in
-# the YAML (resolve_camilla_latency_for_devices): at a ring end a chunk above
-# the ring's capacity is clamped, so a resolver answer larger than that is only
-# observable at a sink that has its own buffer. The clamp itself is pinned by
-# test_a_ring_end_never_emits_a_chunk_larger_than_the_ring.
+# An ordinary ALSA sink — NOT one of the ring PCMs.
 NON_RING_SINK = "hw:CARD=DAC8x,DEV=0"
 
 
-def _generated_sound_devices(
-    monkeypatch, tmp_path, profile_id: str, *, playback_device: str | None = None
-) -> dict:
+def _sound_devices(**kwargs) -> dict:
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 
-    _stage_output_profile(monkeypatch, tmp_path, profile_id)
-    kwargs = {} if playback_device is None else {"playback_device": playback_device}
     return parse_camilla_devices_config(emit_sound_config(SoundProfile(), **kwargs))
 
 
-def test_generated_sound_config_uses_apple_dongle_floor(monkeypatch, tmp_path):
-    """Apple-dongle profile => generated CamillaDSP config carries 256 / 1536."""
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
-    assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1536
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, (RING_CAMILLA_CHUNKSIZE, RING_CAMILLA_TARGET_LEVEL,
+              RING_CAMILLA_QUEUELIMIT, False)),
+        ({"playback_pipe_path": "/run/jasper-snapserver/snapfifo"},
+         (RING_CAMILLA_CHUNKSIZE, RING_CAMILLA_TARGET_LEVEL,
+          RING_CAMILLA_QUEUELIMIT, False)),
+        ({"playback_device": NON_RING_SINK},
+         (DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL, DEFAULT_QUEUELIMIT, True)),
+    ],
+    ids=["ring-playback", "ring-capture-file-sink", "alsa-sink"],
+)
+def test_a_ring_end_takes_the_whole_certified_geometry(monkeypatch, kwargs, expected):
+    """The four fields move TOGETHER, decided by the graph's governing device.
 
-
-def test_fresh_flat_outputd_cutover_takes_the_ring_geometry(monkeypatch, tmp_path):
-    """The flat startup config carries the RING's geometry, not the DAC floor.
-
-    The DAC profile's Camilla floor governs graphs whose playback is an ordinary
-    ALSA device. This graph's is Ring B, and the ioplug pins the ring's period
-    bytes min==max — an Apple-dongle floor of chunk 256 cannot negotiate it at
-    all, so a floor here would fail the open rather than raise it. The floor
-    still reaches every other emitted config.
+    chunk 128 is one ring slot, queuelimit 1 makes the slot handshake blocking,
+    and rate_adjust is off because a ring PCM is an ioplug alsa-lib reports as
+    card -1 — CamillaDSP builds no HCtl and can actuate nothing. Mixing a box
+    floor's chunk/target into that pairing is what put a 1536-frame target on a
+    256-frame ring. A File sink declares no ALSA buffer, so its ring CAPTURE
+    governs; an ordinary ALSA sink governs its own graph and keeps the default.
     """
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    _stage_output_profile(monkeypatch, tmp_path, "apple_usb_c_dongle")
 
-    from jasper.fanin_coupling import (
-        RING_CAMILLA_CHUNKSIZE,
-        RING_CAMILLA_TARGET_LEVEL,
-        RING_PLAYBACK_DEVICE,
+    parsed = _sound_devices(**kwargs)
+
+    assert (
+        parsed["chunksize"],
+        parsed["target_level"],
+        parsed["queuelimit"],
+        parsed["enable_rate_adjust"],
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("384", 384), ("", DEFAULT_CHUNKSIZE), ("  ", DEFAULT_CHUNKSIZE),
+     ("bogus", DEFAULT_CHUNKSIZE), ("0", DEFAULT_CHUNKSIZE),
+     ("-256", DEFAULT_CHUNKSIZE), ("1.5", DEFAULT_CHUNKSIZE)],
+)
+def test_the_operator_chunk_knob_is_a_positive_int_or_the_default(
+    monkeypatch, raw, expected
+):
+    """A valid positive override is honored; anything else degrades to the
+    default rather than emitting a config CamillaDSP would refuse to load."""
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", raw)
+
+    chunksize, _, _ = resolve_camilla_latency_for_devices(
+        capture_device=RING_CAPTURE_DEVICE, playback_device=NON_RING_SINK
     )
+
+    assert chunksize == expected
+
+
+def test_the_operator_knobs_cannot_reach_a_ring_end(monkeypatch):
+    """The knobs tune a graph the BOX owns; the ring's geometry is not the
+    box's to tune, so an operator (or a stale reconciled env) cannot put an
+    unopenable chunk on the transport."""
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "1024")
+    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "4096")
+
+    parsed = _sound_devices()
+
+    assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
+    assert parsed["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert parsed["target_level"] == RING_CAMILLA_TARGET_LEVEL
+
+
+def test_fresh_flat_outputd_cutover_takes_the_ring_geometry(monkeypatch, tmp_path):
+    """The flat boot graph passes the certified pairing EXPLICITLY.
+
+    It is one of the two end-to-end ring graphs that hand
+    RING_CAMILLA_GEOMETRY straight to the emitter instead of resolving it, so
+    it must land on the same values the resolver answers for a ring end — two
+    routes to one geometry, never two geometries.
+    """
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "1024")
+    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "4096")
+
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     out = tmp_path / "outputd-cutover.yml"
@@ -329,166 +208,6 @@ def test_fresh_flat_outputd_cutover_takes_the_ring_geometry(monkeypatch, tmp_pat
     assert parsed["chunksize"] == RING_CAMILLA_CHUNKSIZE
     assert parsed["target_level"] == RING_CAMILLA_TARGET_LEVEL
     assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
-
-
-def test_generated_sound_config_floorless_dac_uses_global_default(
-    monkeypatch, tmp_path
-):
-    """A profile with no declared floor => the generated config keeps 1024/2048."""
-    from jasper.audio_hardware.dac import (
-        HIFIBERRY_DAC8X_STUDIO_ID,
-        camilla_floor_for,
-    )
-
-    # Asserted, not assumed: a later floor declaration for this profile must
-    # fail HERE rather than silently turning the two assertions below into a
-    # test of the floor path (what an R7a DAC8x floor did to this test, and
-    # what jts4's measured floor then did to its InnoMaker replacement).
-    assert camilla_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    parsed = _generated_sound_devices(
-        monkeypatch,
-        tmp_path,
-        HIFIBERRY_DAC8X_STUDIO_ID,
-        playback_device=NON_RING_SINK,
-    )
-    assert parsed["chunksize"] == DEFAULT_CHUNKSIZE == 1024
-    assert parsed["target_level"] == DEFAULT_TARGET_LEVEL == 2048
-
-
-def test_generated_sound_config_operator_env_can_raise_above_profile_floor(
-    monkeypatch, tmp_path
-):
-    """Operator env can raise above the Apple floor in generated config."""
-    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "384")
-    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "1536")
-    parsed = _generated_sound_devices(
-        monkeypatch, tmp_path, "apple_usb_c_dongle", playback_device=NON_RING_SINK
-    )
-    assert parsed["chunksize"] == 384
-    assert parsed["target_level"] == 1536
-
-
-@pytest.mark.parametrize(
-    "profile_id,env_chunk",
-    [
-        # A DAC that declares no floor at all falls to the 1024 global default.
-        (HIFIBERRY_DAC8X_STUDIO_ID, None),
-        # An operator raise lands above the ring's capacity too.
-        ("apple_usb_c_dongle", "384"),
-    ],
-)
-def test_a_ring_end_never_emits_a_chunk_larger_than_the_ring(
-    monkeypatch, tmp_path, profile_id, env_chunk
-):
-    """A ring-crossing graph carries a chunk the ring can actually negotiate.
-
-    CamillaDSP sets avail_min to its chunk and ALSA refuses an avail_min above
-    the device's buffer, so a chunk over the ring's capacity does not degrade —
-    it exits at open and systemd restart-loops it (observed on jts4: "Trying to
-    set avail_min to 1024, must be smaller than or equal to device buffer size
-    of 256", ten restarts, no audio on the box at all).
-
-    The sources a chunk can arrive from are covered together because the
-    clamp is about the TRANSPORT, not about where the number came from. The
-    InnoMaker is not one of them any more: its declared 256/1024 already fits
-    the ring (see test_a_floor_that_already_fits_the_ring_is_not_clamped).
-    """
-    if env_chunk is None:
-        monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    else:
-        monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", env_chunk)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, profile_id)
-
-    assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
-    assert parsed["chunksize"] == ring_capacity_frames()
-
-
-def test_a_clamped_chunk_scales_its_target_with_it(monkeypatch, tmp_path):
-    """The (chunk, target) pair moves together, because its ceiling does.
-
-    CamillaDSP bounds target_level at ``chunksize x (queuelimit + 4)``
-    (measured against 4.1.3 on jts4; exact across chunk 128/256/512 and
-    queuelimit 1/2/4), so shrinking the chunk shrinks the ceiling. Clamping
-    the chunk alone put jts4's floor-declared 4096 over the new 2048 ceiling
-    and swapped one crash loop for another (the InnoMaker now declares the
-    already-scaled 256/1024 instead, so a floorless profile exercises the
-    live scaling path here).
-
-    Scaling preserves the RATIO already in play (the floorless global
-    default's 2x) rather than substituting a number of our own.
-    """
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-
-    parsed = _generated_sound_devices(
-        monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID
-    )
-
-    chunk, target = parsed["chunksize"], parsed["target_level"]
-    assert chunk == ring_capacity_frames()
-    # The default 1024/2048 scaled by the same factor the chunk was.
-    assert target == 512
-    # And inside CamillaDSP's ceiling for the emitted queuelimit.
-    assert target <= chunk * (parsed["queuelimit"] + 4)
-
-
-@pytest.mark.parametrize(
-    "profile_id,chunksize,target_level",
-    [
-        ("apple_usb_c_dongle", 256, 1536),
-        # jts4's declared pair is the ring clamp's OWN output (#3542): 256 is
-        # already the ring's capacity, so nothing here clamps or scales it.
-        ("innomaker_hifi_amp_pro", 256, 1024),
-    ],
-)
-def test_a_floor_that_already_fits_the_ring_is_not_clamped(
-    monkeypatch, tmp_path, profile_id, chunksize, target_level
-):
-    """The clamp is a ceiling, not a retune.
-
-    jts.local runs the Apple floor's 256 across this ring healthily, so a floor
-    at or under the ring's capacity is the box's own tuning and is emitted
-    whole. Were this to answer the certified RING_CAMILLA_CHUNKSIZE instead,
-    every commissioned box would be silently re-tuned by a bug fix.
-    """
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, profile_id)
-
-    assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
-    assert parsed["chunksize"] == chunksize <= ring_capacity_frames()
-    assert parsed["target_level"] == target_level
-
-
-def test_a_clockless_sink_clamps_on_its_ring_capture(monkeypatch, tmp_path):
-    """A File sink declares no buffer, so the ring CAPTURE is the bound.
-
-    The parked graph's /dev/null sink and the bonded leader's snapserver FIFO
-    both still capture Ring A, so an oversized chunk fails their open just as it
-    fails a ring playback's.
-    """
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    _stage_output_profile(monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID)
-
-    from jasper.sound.camilla_yaml import emit_sound_config
-    from jasper.sound.profile import SoundProfile
-
-    parsed = parse_camilla_devices_config(
-        emit_sound_config(
-            SoundProfile(),
-            playback_pipe_path=str(tmp_path / "snapfifo"),
-            enable_rate_adjust=False,
-        )
-    )
-
-    assert parsed["capture_device"] == RING_CAPTURE_DEVICE
-    assert parsed["chunksize"] == ring_capacity_frames()
 
 
 @pytest.mark.parametrize(
@@ -509,140 +228,6 @@ def test_enable_rate_adjust_follows_the_sink(playback_device, rate_adjust):
     """
 
     assert resolve_enable_rate_adjust(playback_device) is rate_adjust
-
-
-def test_emit_sound_config_defaults_rate_adjust_from_the_sink():
-    """The emitter's own default is the resolver's answer for the sink it
-    emits — ring by default, True once pointed at an ordinary DAC."""
-
-    from jasper.sound.camilla_yaml import emit_sound_config
-    from jasper.sound.profile import SoundProfile
-
-    assert (
-        parse_camilla_devices_config(emit_sound_config(SoundProfile()))[
-            "enable_rate_adjust"
-        ]
-        is False
-    )
-    assert (
-        parse_camilla_devices_config(
-            emit_sound_config(SoundProfile(), playback_device="hw:CARD=Dac,DEV=0")
-        )["enable_rate_adjust"]
-        is True
-    )
-
-
-def test_generated_sound_config_clamps_stale_env_below_apple_dongle_floor(
-    monkeypatch, tmp_path,
-):
-    """A saved-profile re-render must lift old 256/512 env to 256/1536."""
-    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
-    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "512")
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
-    assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1536
-
-
-def test_generated_sound_config_no_state_file_uses_global_default(
-    monkeypatch, tmp_path
-):
-    """No resolvable profile (state file absent) => global default, unchanged."""
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "absent.json")
-    )
-    from jasper.sound.camilla_yaml import emit_sound_config
-    from jasper.sound.profile import SoundProfile
-
-    parsed = parse_camilla_devices_config(
-        emit_sound_config(SoundProfile(), playback_device=NON_RING_SINK)
-    )
-    assert parsed["chunksize"] == DEFAULT_CHUNKSIZE
-    assert parsed["target_level"] == DEFAULT_TARGET_LEVEL
-
-
-def test_generated_active_speaker_baseline_uses_apple_dongle_floor(
-    monkeypatch, tmp_path
-):
-    """The active-speaker baseline generator (the install.sh runtime-safe-graph
-    and jasper-control path) also carries the Apple-dongle floor."""
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    _stage_output_profile(monkeypatch, tmp_path, "apple_usb_c_dongle")
-    from jasper.active_speaker import (
-        ActiveSpeakerPreset,
-        emit_active_speaker_baseline_config,
-    )
-    from tests.test_active_speaker_profile import _two_way_preset
-
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
-    yaml = emit_active_speaker_baseline_config(
-        preset, playback_device="outputd_active_content_playback"
-    )
-    parsed = parse_camilla_devices_config(yaml)
-    assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1536
-
-
-def test_generated_active_speaker_baseline_carries_the_dac8x_floor(
-    monkeypatch, tmp_path
-):
-    """R7a: an EMITTED roleful baseline carries the DAC8x floor (soak gap).
-
-    The jts3 soak proved the 256/1536 geometry by pushing it into the RUNNING
-    CamillaDSP over the websocket — it never re-emitted the applied baseline, so
-    it could not prove that the next regeneration of that config (install.sh's
-    runtime-safe-graph, a jasper-control re-emit, a re-apply after a
-    correction) reproduces the geometry from the declaration alone. That is what
-    this pins, on the shape jts3 actually runs: a roleful two-way baseline
-    resolving the floor through ``resolve_camilla_chunksize`` /
-    ``resolve_camilla_target_level``.
-
-    The floorless control below is what makes the assertion mean "the DECLARED
-    floor moved this", not "256 happens to be the default".
-    """
-    from jasper.active_speaker import (
-        ActiveSpeakerPreset,
-        emit_active_speaker_baseline_config,
-    )
-    from jasper.active_speaker.runtime_contract import (
-        classify_output_contract,
-        topology_supports_shm_ring,
-    )
-    from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_STUDIO_ID
-    from tests.test_active_speaker_profile import _two_way_preset
-    from tests.test_active_speaker_runtime_contract import _active_topology
-
-    # The topology this preset stands for really is roleful — the jts3 shape,
-    # and the reason this box has no ring width of its own.
-    topology = _active_topology("mono", "active_2_way")
-    assert classify_output_contract(topology).requires_roleful_graph
-    assert not topology_supports_shm_ring(topology)
-
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
-
-    _stage_output_profile(monkeypatch, tmp_path, "hifiberry_dac8x")
-    parsed = parse_camilla_devices_config(
-        emit_active_speaker_baseline_config(
-            preset, playback_device="outputd_active_content_playback"
-        )
-    )
-    assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1536
-
-    # Control: same emit, same preset, a profile that declares NO floor.
-    # (Named the InnoMaker until it declared jts4's measured floor.)
-    _stage_output_profile(monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID)
-    control = parse_camilla_devices_config(
-        emit_active_speaker_baseline_config(
-            preset, playback_device="outputd_active_content_playback"
-        )
-    )
-    assert control["chunksize"] == DEFAULT_CHUNKSIZE == 1024
-    assert control["target_level"] == DEFAULT_TARGET_LEVEL == 2048
 
 
 def test_total_positive_boost_db_sums_only_boosts():
@@ -722,30 +307,6 @@ def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
         assert "volume_limit" not in parsed
 
 
-
-
-@pytest.mark.parametrize(
-    "chunksize,target_level,reason",
-    [
-        (0, 1024, "chunksize must be > 0"),
-        (256, 1023, "target_level must be >= 4 x chunksize"),
-        # The declaration that took jts4 silent: a chunk the ring cannot open.
-        (1024, 4096, "exceeds the ring"),
-    ],
-)
-def test_camilla_floor_refuses_what_camilladsp_could_not_run(
-    chunksize, target_level, reason,
-):
-    with pytest.raises(ValueError, match=reason):
-        CamillaFloor(chunksize=chunksize, target_level=target_level)
-
-
-def test_camilla_floor_accepts_the_ring_capacity_at_exactly_4x():
-    capacity = ring_capacity_frames()
-
-    floor = CamillaFloor(chunksize=capacity, target_level=4 * capacity)
-
-    assert (floor.chunksize, floor.target_level) == (capacity, 4 * capacity)
 
 
 def test_the_certified_ring_pairing_agrees_with_the_sink_rule():

@@ -50,11 +50,17 @@ from .assistant_volume import (
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
-from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
+from .music_sources import (
+    MUSIC_SOURCE_VALUES,
+    SOURCE_TO_ACTIVE_KEY,
+    Source,
+    VolumeMode,
+    volume_mode,
+)
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
-from .volume_owner import VolumeOwner
+from .volume_owner import VolumeOwner, install_volume_owner
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -64,10 +70,6 @@ from .volume_persistence import (
 )
 
 if TYPE_CHECKING:
-    # Avoid loading camilladsp/dbus modules at unit-test time. The
-    # coordinator is duck-typed against CamillaController and
-    # RendererClient; the real Pi-side imports happen in voice_daemon
-    # and jasper-control.
     from .camilla import CamillaController
     from .renderer import RendererClient
     from .volume_persistence import VolumeRecord
@@ -1368,6 +1370,19 @@ class VolumeCoordinator:
         prev_carries = await self._camilla_carries_level(prev_source)
         curr_carries = await self._camilla_carries_level(current_source)
         async with self._mutation():
+            # The verdict was resolved before the cross-daemon lease. Re-check
+            # source ownership at the ordering point, as
+            # `observe_source_volume` does, so a handoff that landed meanwhile
+            # cannot pin camilla against a lane the mux has already left.
+            active = await self._active_source()
+            if active != current_source:
+                self._refresh_from_disk()
+                logger.debug(
+                    "active_source transition %s→%s: dropped, active "
+                    "source became %s",
+                    prev_source.value, current_source.value, active.value,
+                )
+                return
             # Pull the latest listening_level from disk before
             # dispatching. The control daemon (remote / HTTP) writes
             # the same file on every twist, but voice_daemon's in-
@@ -1687,7 +1702,9 @@ class VolumeCoordinator:
         if publisher is None:
             return
         try:
-            await publisher(context)
+            if not await publisher(context):
+                # The active route names no mix stage, so nothing was sent.
+                return
             log_event(
                 logger,
                 "volume.context_published",
@@ -1964,10 +1981,16 @@ class VolumeCoordinator:
         if selected_source is not None:
             try:
                 selected = await selected_source()
-                if selected:
+                # Mux answers with a music source, "idle", or — during a
+                # measurement lease — a fan-in lane label. It holds its last
+                # committed answer while a handoff is in flight, so "idle" is
+                # true idle and takes the attenuating camilla-master carrier.
+                # Only the lane label is not a source; it falls through to the
+                # raw probes.
+                if selected in MUSIC_SOURCE_VALUES:
                     return Source(selected)
-            except (ValueError, TypeError):
-                logger.debug("mux selected_source was unknown; ignoring")
+                if selected == Source.IDLE.value:
+                    return Source.IDLE
             except Exception as e:  # noqa: BLE001
                 logger.debug("selected_source() failed (%s); using probes", e)
         try:
@@ -2764,8 +2787,10 @@ async def _busctl_set_property(
 
 async def env_canonical_target_db() -> float:
     """Read current household intent through the active source coordinator."""
-    from jasper.camilla import primary_controller
+    # lazy: import cost — every wizard, CLI and daemon that imports this module
+    # to read the projection would otherwise load the whole actuator graph.
     from jasper import librespot_state
+    from jasper.camilla import primary_controller
     from jasper.renderer import RendererClient
 
     coord = VolumeCoordinator(
@@ -2812,12 +2837,8 @@ def install_env_canonical_target_provider() -> None:
     Which processes call it is pinned by
     ``tests/test_canonical_target_registration.py``.
     """
-    from jasper.camilla import (
-        primary_controller,
-        set_canonical_target_db_provider,
-    )
-
-    from .volume_owner import install_volume_owner
+    # lazy: import cost — see env_canonical_target_db above.
+    from jasper.camilla import primary_controller, set_canonical_target_db_provider
 
     set_canonical_target_db_provider(env_canonical_target_db)
 

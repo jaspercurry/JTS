@@ -583,7 +583,7 @@ def _declared_wire(tmp_path, monkeypatch):
 
     isolate_base_jasper_env(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", lambda: None
+        "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: None
     )
 
     def declare(value: str | None) -> None:
@@ -622,9 +622,9 @@ def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
         return "RESOLVED-WIRE", ""
 
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
     )
-    monkeypatch.setattr("jasper.fanin.ring_health.resolve_wire_for_gate", _spy)
+    monkeypatch.setattr("jasper.fanin.ring_readiness.resolve_wire_for_gate", _spy)
     assert audio._resolved_ring_wire() == "RESOLVED-WIRE"
     assert passed == [topology]
 
@@ -694,7 +694,7 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
     a tested property of the arm path rather than an inference from a check that
     quotes it.
     """
-    import jasper.fanin.coupling_reconcile as cr
+    import jasper.fanin.ring_readiness as rr
     from jasper.cli.doctor import audio_runtime_ring as audio
 
     _declared_wire(None)
@@ -703,7 +703,7 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
         ring_assets, "RING_ALSA_PLUGIN_DIR", str(so_path.parent)
     )
 
-    ok, detail = cr.ring_wire_caps_ready()
+    ok, detail = rr.ring_wire_caps_ready()
 
     assert ok is False
     assert "no provenance record" in detail
@@ -718,7 +718,7 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
         _record_text(_sha_of(b"\x7fELF a different plugin"), "wire_format"),
         encoding="utf-8",
     )
-    ok, detail = cr.ring_wire_caps_ready()
+    ok, detail = rr.ring_wire_caps_ready()
     assert ok is False
     assert "STALE ioplug" in detail
 
@@ -728,7 +728,7 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
         _record_text(_sha_of(b"\x7fELF plugin"), ring_assets.RING_CAP_WIRE_FORMAT),
         encoding="utf-8",
     )
-    ok, detail = cr.ring_wire_caps_ready()
+    ok, detail = rr.ring_wire_caps_ready()
     assert ok is True, detail
 
 

@@ -937,6 +937,13 @@ class SummedCaptureCurve:
     gating: dict[str, Any] | None
     above_validity_floor: bool | None
     near_validity_floor: bool
+    shoulders: Any = None
+
+
+class SummedCaptureUnusable(DriverAcousticsError):
+    def __init__(self, reason: str, diagnostics: Mapping[str, Any]) -> None:
+        super().__init__(reason)
+        self.diagnostics = {"reason": reason, **diagnostics}
 
 
 def summed_capture_curve(
@@ -948,6 +955,8 @@ def summed_capture_curve(
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
     ambient_duration_s: float | None = None,
+    raise_on_unusable: bool = False,
+    overlap_hz: tuple[float, float] | None = None,
 ) -> SummedCaptureCurve | None:
     """A summed capture as a magnitude curve, or ``None`` when it cannot be read.
 
@@ -971,16 +980,33 @@ def summed_capture_curve(
         capture_geometry=capture_geometry,
         ambient_duration_s=ambient_duration_s,
     )
-    if freqs is None or mag_db is None:
+    lower_shoulder_hz = crossover_fc_hz / 2
+    span = None
+    if freqs is not None:
+        from jasper.audio_measurement.analysis import shoulder_span
+
+        band = overlap_hz or (float(freqs[0]), float(freqs[-1]))
+        span = shoulder_span(freqs[(freqs >= band[0]) & (freqs <= band[1])],
+                             crossover_fc_hz=crossover_fc_hz, overlap_hz=band)
+        lower_shoulder_hz = span.used_hz[0]
+
+    def unusable(reason: str) -> SummedCaptureCurve | None:
+        if raise_on_unusable:
+            raise SummedCaptureUnusable(reason, {
+                "quality": report.to_dict(), "gating": gating_block,
+                "required_lower_shoulder_hz": lower_shoulder_hz,
+            })
         return None
+
+    if freqs is None or mag_db is None:
+        return unusable("capture_quality_failed")
     validity_known, floor_hz = _validity_floor(capture_geometry, gating_block)
     if not validity_known:
-        return None
-    lower_shoulder_hz = crossover_fc_hz / 2.0
+        return unusable("gate_floor_unknown")
     near = False
     if floor_hz is not None:
         if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
-            return None
+            return unusable("gate_excludes_lower_shoulder")
         from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
 
         near = floor_hz <= lower_shoulder_hz < NEAR_FLOOR_RATIO * floor_hz
@@ -990,4 +1016,5 @@ def summed_capture_curve(
         gating=gating_block,
         above_validity_floor=True,
         near_validity_floor=near,
+        shoulders=span,
     )

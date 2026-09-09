@@ -35,7 +35,7 @@ from jasper.fanin.coupling_reconcile import (
     CAMILLA_ANCHOR_CONVERGED_DETAIL,
     CARRIER_TRANSIENT_ACTIVE_REFUSAL,
 )
-from jasper.fanin.ring_health import ring_endpoint_anchor_converged
+from jasper.fanin.ring_readiness import ring_endpoint_anchor_converged
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -47,7 +47,7 @@ from jasper.fanin_coupling import (
 # The ALSA active lane a roleful box plays into BEFORE it is armed — the
 # "incoherent endpoint" fixture below. Resolved from the contract rather than
 # spelled, so a rename moves this test with it.
-from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 
 # The canonical saved dual-Apple composite: 4 outputs, left woofer/tweeter on
 # 0/1, right on 2/3. Reused rather than re-fabricated so this file cannot drift
@@ -156,7 +156,7 @@ def _stage_box(
     import json
 
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
-    from jasper.fanin import ring_health as rh
+    from jasper.fanin import ring_readiness as rh
 
     configs = tmp_path / "configs"
     configs.mkdir(parents=True, exist_ok=True)
@@ -306,7 +306,6 @@ def _arm_with_camilla_detail(tmp_path, detail: str):
         restart_outputd=lambda: (True, ""),
         reconcile_camilla=lambda: (True, detail),
         kick_hardware_reconcile=lambda: (True, ""),
-        restart_voice=lambda: (True, ""),
     )
 
 
@@ -482,7 +481,7 @@ def test_an_unmuted_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch):
             id="a_bypassed_mute_step_is_refused",
         ),
         pytest.param(
-            {"playback_device": OUTPUTD_ACTIVE_PLAYBACK_DEVICE},
+            {"playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE},
             {},
             (RING_ACTIVE_PLAYBACK_DEVICE,),
             id="a_half_moved_anchor_playing_the_aloop_lane_is_refused",
@@ -687,13 +686,13 @@ def test_an_anchor_still_at_the_ALOOP_endpoint_is_refused(tmp_path, monkeypatch)
         monkeypatch,
         graph_yaml=_graph_yaml(
             capture_device="plug:jasper_capture",
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             fmt=RING_WIRE_FORMAT_WIDE,
         ),
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
-    assert OUTPUTD_ACTIVE_PLAYBACK_DEVICE in detail
+    assert ACTIVE_OUTPUTD_PLAYBACK_DEVICE in detail
 
     _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
     step_ok, step_detail = cr._reconcile_camilla(reason="arm")
@@ -934,7 +933,7 @@ def test_the_journal_records_both_acceptance_outcomes(tmp_path, monkeypatch, cap
     )
     incoherent = _graph_yaml(
         capture_device="plug:jasper_capture",
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
         fmt=RING_WIRE_FORMAT_WIDE,
     )
 

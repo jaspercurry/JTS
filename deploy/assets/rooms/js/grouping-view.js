@@ -41,9 +41,10 @@ export function balanceTrimRequest(value) {
 }
 
 // The bonded-leader "AirPlay lip-sync" row's presentation, or null when no row
-// should render. `fit` is /state.grouping.airplay_latency_fit (shape from
-// jasper/multiroom/airplay_latency.py): {applicable, tight?, residual_lag_sec?}
-// — null on a fail-soft read error, {applicable:false} on solo/follower.
+// should render. `fit` is /rooms.json's self.grouping.airplay_latency_fit
+// (shape from jasper/multiroom/airplay_latency.py):
+// {applicable, tight?, residual_lag_sec?} — null on a fail-soft read error,
+// {applicable:false} on solo/follower.
 //
 // Returns null unless this speaker is an active bonded leader. Otherwise
 // {tight, tone, label, note}: a quiet "Synced" (status-ok) when the offset
@@ -68,9 +69,10 @@ export function airplayLipSyncRow(fit) {
   };
 }
 
-// Snapcast provisioning notice. `g` is /state.grouping. While the reconciler
-// installs the snapcast binaries on the grouping opt-in (the household's
-// "set up multi-room" click — provision.state === "installing"), show a quiet
+// Snapcast provisioning notice. `g` is /rooms.json's self.grouping. While
+// the reconciler installs the snapcast binaries on the grouping opt-in
+// (the household's "set up multi-room" click —
+// provision.state === "installing"), show a quiet
 // "Installing Snapcast…" progress notice; on a failed install, show the error
 // + the apt remediation. Returns {tone, label, note} or null when there is
 // nothing to show (already present / installed / no status). PURE (no DOM);

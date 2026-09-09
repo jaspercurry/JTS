@@ -11,7 +11,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import AsyncGenerator, Awaitable, Callable
 
-from ..audio_io import TtsPlayout, confirmed_tts_flush
+from ..tts_playout import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
 from .session import AudioOutChunk, LiveTurn
 
