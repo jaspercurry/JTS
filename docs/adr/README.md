@@ -156,11 +156,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
 | [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | accepted |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
-| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | accepted |
+| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0261 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
 | [0240](0240-mic-absence-reason-is-a-code-vocabulary.md) | The voice-input-absent marker's `reason=` is a closed code vocabulary; `detail=` carries the prose | accepted |
 | [0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md) | The server-VAD path is deleted, not kept as a knob | accepted |
 | [0246](0246-arbitration-is-the-whole-of-peering.md) | Arbitration is the whole of peering | accepted |
+| [0261](0261-the-aec-bridge-restart-ladder-matches-controls.md) | The AEC bridge's restart ladder matches control's | accepted |
 
 ## Control plane, state & observability
 
