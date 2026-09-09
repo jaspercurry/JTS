@@ -505,6 +505,11 @@ def _stage_ring_geometry(
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_A_PROGRAM_FILE", str(program))
+    # The check's own read is the evidence-memoized `fanin_env()`, sourced from
+    # `env_load.FANIN_ENV_PATH`; `ring_health.FANIN_ENV_PATH` still needs
+    # patching too since `resolve_effective_fanin_ring_slots` reports it as
+    # the resolution's `source` label.
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )

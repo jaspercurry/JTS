@@ -1227,9 +1227,9 @@ def test_check_fanin_coupling_value_reads_the_shared_predicate(
     fanin_env = tmp_path / "fanin.env"
     if raw is not None:
         fanin_env.write_text(f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
-    )
+    # The check's own read is the evidence-memoized `fanin_env()`, sourced
+    # from `env_load.FANIN_ENV_PATH`.
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     res = audio_runtime_fanin.check_fanin_coupling_value()
     assert res.status == status
     assert res.reason == reason
