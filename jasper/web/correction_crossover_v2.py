@@ -71,6 +71,7 @@ from typing import (
 )
 
 from jasper.atomic_io import atomic_write_text
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 # The stage-capability vocabulary this module publishes and binds (#2291 Phase
 # 4). EAGER, unlike every other ``jasper.active_speaker`` import here, because
 # these are module-level NAMES rather than call-time dependencies — a lazy
@@ -3389,7 +3390,7 @@ def bind_production_play(
             preset=preset, topology=topology, role_channels=role_channels,
             playback_device=playback_device,
             protection_sections_by_role=protection_sections_by_role,
-            applied_profile=_applied_profile_now(),
+            applied_profile=load_applied_baseline_profile_state(),
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
