@@ -33,5 +33,5 @@
 /* "Manual coordinates" uses the shared .disclosure primitive (app.css). */
 .manual-coords { margin: 0.5rem 0 0; }
 
-/* Sit the destructive "Clear" form a little below the save form. */
-.clear-form { margin-top: 1.25rem; }
+/* Separate the destructive "Clear" form from the save form above it. */
+.clear-form { margin-top: 2rem; }

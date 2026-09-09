@@ -59,7 +59,7 @@ __HEADER__
   <button id="current-correction-reset" type="button" class="btn btn--danger" hidden>Reset correction</button>
 </section>
 
-<section id="readiness-blocker" data-envelope-section="readiness-blocker" class="info-card" hidden role="alert">
+<section id="readiness-blocker" data-envelope-section="readiness-blocker" class="banner banner--danger" hidden role="alert">
   <p id="readiness-blocker-message"></p>
   <a id="readiness-blocker-action" class="btn" hidden href=""></a>
 </section>
