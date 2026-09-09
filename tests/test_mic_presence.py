@@ -122,7 +122,6 @@ def test_marker_present_is_absent(paths: tuple[Path, Path]) -> None:
     assert mp.absent_confirmed is True
     assert mp.reason == MIC_ABSENT_NO_LOCAL_OR_ACCESSORY
     assert mp.detail == "no candidate microphone present"
-    assert mp.as_dict()["detail"] == "no candidate microphone present"
     # The code is the machine axis; the prose beside it is what the headline
     # and /state.microphone.summary render.
     assert "input unavailable — no candidate microphone present" in mp.summary
@@ -239,7 +238,6 @@ def test_accessory_only_box_does_not_claim_a_present_microphone(
     )
     assert "runs" not in mp.summary
     assert "available" not in mp.summary
-    assert mp.as_dict()["accessory_sources"] == ["wiim_remote_2"]
 
 
 def test_local_xvf_and_accessory_report_both(

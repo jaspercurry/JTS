@@ -23,7 +23,8 @@ Hot-plug: a pyudev monitor catches "add" events on /dev/input/* and
 opens a reader for matched devices; "remove" cancels that device's
 reader. Each reader runs under a per-device supervisor task that
 re-arms it on a bounded backoff when it ends, and reports its state
-in the status file so a dead reader is visible in ``/state``.
+in the status file so a dead reader is visible to jasper-doctor
+(``jasper.cli.doctor.resilience.check_accessory_bridges``).
 
 The bridge is the translation boundary for supported HID devices that
 surface as kernel input nodes.
@@ -689,7 +690,7 @@ class _ReaderHealth:
 
     The supervisor's own ``restarts``/``last_error`` describe the bridge
     coroutine, which stays healthy while every reader under it is dead —
-    this is what tells the two apart in ``/state.accessory_bridges``.
+    this is what tells the two apart in the published status file.
     """
 
     def __init__(self) -> None:

@@ -25,6 +25,7 @@ from jasper.multiroom.leader_config import (
     read_stash,
     restore_action,
 )
+from tests._log_events import event_field_maps
 
 
 def test_restore_action_none_on_the_common_solo_reconcile():
@@ -291,15 +292,9 @@ def _save_topology(tmp_path, monkeypatch, topology) -> Path:
 
 def _unplanned_events(caplog) -> list[dict[str, str]]:
     """The degraded-emit disclosures in ``caplog``, as structured fields."""
-    from jasper.multiroom.cascade_timeline import _parse_logfmt_event
-
-    parsed = (_parse_logfmt_event(record.getMessage()) for record in caplog.records)
-    return [
-        fields
-        for event, fields in filter(None, parsed)
-        if event == "multiroom.camilla_apply"
-        and fields.get("result") == "solo_restore_unplanned"
-    ]
+    return event_field_maps(
+        caplog, "multiroom.camilla_apply", result="solo_restore_unplanned",
+    )
 
 
 def _solo_restore_yaml(muted=frozenset(), fold=None) -> str:

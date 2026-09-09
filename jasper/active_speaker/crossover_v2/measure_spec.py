@@ -122,10 +122,10 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
-GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate")
+GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate", "candidate_branches")
 #: The scopes whose graph is compiled FROM one named candidate, and which
 #: therefore cannot be selected without naming it.
-CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate"})
+CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate", "candidate_branches"})
 
 
 @dataclass(frozen=True)

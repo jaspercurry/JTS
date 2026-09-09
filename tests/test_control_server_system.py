@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
-from jasper.control import aec_endpoints, state_aggregate, usb_gadget_forensics
+from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
 from tests._cue_spy import SpyCues
@@ -47,220 +47,6 @@ _IMPORTED_FIXTURES = (
     _isolate_household_secret,
     server_with_coordinator,
 )
-
-
-def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """#2135: /state.resilience reports the parked state from the STATEFILE.
-
-    Its two sibling surfaces (jasper-doctor's `active speaker runtime graph`,
-    audio_health's parked transport reason) both key on the statefile. Keying
-    this one on the LIVE CamillaDSP config path instead would make /state report
-    parked:false on a parked box whenever CamillaDSP is down — the exact moment
-    an operator is most likely to be reading /state.
-    """
-    from jasper.active_speaker.runtime_contract import (
-        build_parked_muted_graph,
-        parked_muted_exits,
-    )
-    from tests.test_active_speaker_runtime_contract import _active_topology
-
-    topology = _active_topology("mono", "active_2_way")
-    text, graph = build_parked_muted_graph(topology)
-    assert graph.allowed
-    parked = tmp_path / "active_speaker_parked.yml"
-    parked.write_text(text, encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
-    from jasper.output_topology import save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
-    )
-
-    assert state_aggregate._active_speaker_parked_snapshot() == {
-        "parked": True,
-        "detail": parked_muted_exits(topology),
-    }
-
-    # Not-parked: the same statefile pointing at an ordinary generated config.
-    other = tmp_path / "sound_current.yml"
-    other.write_text("devices:\n  volume_limit: 0.0\n", encoding="utf-8")
-    statefile.write_text(f"config_path: {other}\n", encoding="utf-8")
-    assert state_aggregate._active_speaker_parked_snapshot() == {
-        "parked": False,
-        "detail": None,
-    }
-
-
-def test_state_resilience_unconfigured_parked_snapshot_names_layout_action(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """The `/state` detail is the same owned action doctor/dashboard use."""
-    from jasper.active_speaker.runtime_contract import (
-        UNCONFIGURED_PARKED_EXIT,
-        build_parked_muted_graph,
-    )
-    from jasper.output_topology import save_output_topology
-    from tests.test_active_speaker_runtime_contract import _topology
-
-    topology = _topology([])
-    text, graph = build_parked_muted_graph(topology)
-    assert graph.allowed
-    parked = tmp_path / "speaker_setup_parked.yml"
-    parked.write_text(text, encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
-    )
-
-    assert state_aggregate._active_speaker_parked_snapshot() == {
-        "parked": True,
-        "detail": UNCONFIGURED_PARKED_EXIT,
-    }
-
-    # Fail-soft: an unreadable statefile reads as not-parked, never raises.
-    statefile.unlink()
-    assert state_aggregate._active_speaker_parked_snapshot() == {
-        "parked": False,
-        "detail": None,
-    }
-
-
-def test_state_resilience_parked_snapshot_surfaces_a_corrupt_layout(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """Corrupt intent stays visible instead of reading as reset silence."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _topology
-
-    text, graph = build_parked_muted_graph(_topology([]))
-    assert graph.allowed
-    parked = tmp_path / "speaker_setup_parked.yml"
-    parked.write_text(text, encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
-    topology_path = tmp_path / "output_topology.json"
-    topology_path.write_text("{not json", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
-    )
-
-    assert state_aggregate._active_speaker_parked_snapshot() == {
-        "parked": True,
-        "detail": "saved speaker layout is unavailable or invalid; run jasper-doctor",
-    }
-
-
-def test_state_resilience_parked_detail_offers_commissioning_on_the_innomaker(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """The other side of the same advice: now that the InnoMaker declares the
-    width-2 active lane, "finish crossover preview" is a road WITH an end, so
-    the parked detail must offer it instead of steering the household back to
-    passive.
-
-    This is the advice half of the flip. The box the #2135 issue was filed from
-    used to be told its DAC "cannot drive an active speaker layout". (No browser
-    surface reads THIS field; the household meets the parked state through
-    ``audio_health``'s sentence on the Status dashboard — #2381.)
-    """
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _innomaker_active_2way
-
-    topology = _innomaker_active_2way()
-    text, _graph = build_parked_muted_graph(topology)
-    parked = tmp_path / "active_speaker_parked.yml"
-    parked.write_text(text, encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
-    )
-    from jasper.output_topology import save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-    snapshot = state_aggregate._active_speaker_parked_snapshot()
-
-    assert snapshot["parked"] is True
-    assert "finish crossover preview" in snapshot["detail"]
-    assert "cannot drive an active speaker layout" not in snapshot["detail"]
-    assert "attach an active-capable DAC" not in snapshot["detail"]
-
-
-def test_state_resilience_parked_detail_drops_an_impossible_exit(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """On a DAC with no active outputd lane, "finish crossover preview" is a
-    road with no end — the detail must not lead with it."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.active_speaker_fixtures import (
-        PASSIVE_ONLY_DAC_LABEL,
-        register_passive_only_dac,
-    )
-    from tests.test_audio_health import _no_lane_active_two_way
-
-    register_passive_only_dac(monkeypatch)
-    topology = _no_lane_active_two_way()
-    text, _graph = build_parked_muted_graph(topology)
-    parked = tmp_path / "active_speaker_parked.yml"
-    parked.write_text(text, encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
-    )
-    # Real premise, no stub of the module under test: persist the topology and
-    # point the loader's env at it, the way the doctor suites do.
-    from jasper.output_topology import save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-    snapshot = state_aggregate._active_speaker_parked_snapshot()
-
-    assert snapshot["parked"] is True
-    assert "finish crossover preview" not in snapshot["detail"]
-    assert PASSIVE_ONLY_DAC_LABEL in snapshot["detail"]
-    assert "reset output setup" in snapshot["detail"]
-    assert "choose an explicit passive layout" in snapshot["detail"]
-
-
-def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:
-    """Static pin of the /state wiring, matching the identity-snapshot guard."""
-    aggregate_src = (
-        REPO_ROOT / "jasper" / "control" / "state_aggregate.py"
-    ).read_text()
-    assert (
-        '"active_speaker_parked": _active_speaker_parked_snapshot()'
-        in aggregate_src
-    )
-    # The source is the contract: keyed on the statefile, never on the live
-    # CamillaDSP path that /state.audio reports.
-    snapshot_src = aggregate_src.split(
-        "def _active_speaker_parked_snapshot("
-    )[1].split("\ndef ")[0]
-    assert "read_camilla_statefile_config_path" in snapshot_src
-    assert "DEFAULT_CAMILLA_STATEFILE_PATH" in snapshot_src
-    assert "active_config_path" not in snapshot_src
 
 
 @pytest.fixture
@@ -980,27 +766,6 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     with a stable top-level shape."""
     base, _ = server_with_coordinator
 
-    monkeypatch.setattr(
-        aec_endpoints,
-        "_aec_full_status",
-        lambda: {
-            "mode": "auto",
-            "bridge_active": True,
-            "audio_profile": {
-                "requested": "xvf_software_aec3",
-                "active": "xvf_software_aec3",
-                "state": "active",
-                "reason": "Software AEC3 bridge is active.",
-            },
-            "microphone": {
-                "detected": True,
-                "processing_mode": "Software AEC3",
-                "session_source": "WebRTC AEC3 via :9876",
-                "wake_legs": ["AEC3", "Chip-direct raw"],
-                "warnings": [],
-            },
-        },
-    )
     state_path = tmp_path / "speaker_volume.json"
     state_path.write_text(
         '{"listening_level": 73, "main_volume_db": -13.5}',
@@ -1030,18 +795,6 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     )
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")  # stale env, must be ignored
-    # Model comes from read_active_model_from_env_files (merges jasper.env +
-    # the wizard file; issue #3133) rather than this file alone — stub it so
-    # this shape test isn't tied to real /etc/jasper paths. The dedicated
-    # jasper.env-pinned-model regression is
-    # test_state_voice_model_reads_pin_from_jasper_env_not_just_wizard_file
-    # below.
-    from jasper.voice import provider_state
-    monkeypatch.setattr(
-        provider_state,
-        "read_active_model_from_env_files",
-        lambda provider: "gpt-realtime-2" if provider == "openai" else "",
-    )
     # Point librespot state at a missing file → empty dict.
     monkeypatch.setenv(
         "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"),
@@ -1051,7 +804,6 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert status == 200
     assert "ts" in body
     assert body["voice"]["provider"] == "openai"
-    assert body["voice"]["model"] == "gpt-realtime-2"
     assert body["voice"]["provider_status"] == "configured"
     assert body["voice"]["provider_error"] is None
     assert body["voice"]["reachable"] is False
@@ -1088,17 +840,9 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
     assert body["audio"]["sound"]["runtime_state"] == "unknown"
     assert body["audio"]["camilla_active_config_path"] is None
-    assert body["renderers"]["spotify"]["playing"] is False
     assert body["outputd"] is None
-    assert body["aec"]["audio_profile"]["active"] == "xvf_software_aec3"
-    assert body["aec"]["microphone"]["processing_mode"] == "Software AEC3"
     assert body["active_source"] in {"idle", "airplay"}
     assert "satellites" not in body
-    # Transit city packs: a JSON-able {packs: [{id, label, enabled}]} block,
-    # read fresh from the wizard-owned transit.env (absent file here -> the
-    # legacy all-enabled default). Top-level shape guard.
-    assert isinstance(body["transit"]["packs"], list)
-    assert any(p["id"] == "nyc" for p in body["transit"]["packs"])
 
 
 def _pinned_state_keys() -> set[str]:
@@ -1115,11 +859,10 @@ def test_state_wire_key_set_is_the_pinned_set(
 
     The aggregate builds every top-level key, so a key bolted on in the
     handler instead would reach consumers unpinned — the nesting-drift class
-    the key-set pin exists for. The first case also pins that `aec`, the one
-    section still behind a fork, resolves. The second refuses every spawn
-    primitive and pins the shape only: no per-request process may be
-    load-bearing for it (ADR-0233 rule 2), so a probe that forks and lets the
-    failure escape takes the payload to 502. Retire with the key-set pin.
+    the key-set pin exists for. The second case refuses every spawn primitive:
+    no per-request process may be load-bearing for the payload (ADR-0233
+    rule 2), so a probe that forks and lets the failure escape takes it to
+    502. Retire with the key-set pin.
     """
     if refuse_spawns:
         def refuse(*_args, **_kwargs):
@@ -1137,8 +880,6 @@ def test_state_wire_key_set_is_the_pinned_set(
 
     assert status == 200
     assert set(body) == _pinned_state_keys()
-    if not refuse_spawns:
-        assert body["aec"] is not None
 
 
 async def test_state_section_read_past_the_deadline_reports_unavailable(
@@ -1155,22 +896,23 @@ async def test_state_section_read_past_the_deadline_reports_unavailable(
 
     released = threading.Event()
 
-    def wedged_transit():
+    def wedged_sound_profile():
         released.wait(timeout=30)
-        return {"packs": []}
+        return {}
 
+    monkeypatch.setattr(
+        state_aggregate, "_read_sound_profile", wedged_sound_profile,
+    )
     monkeypatch.setattr(state_aggregate, "_STATE_AGGREGATE_BUDGET_SEC", 1.0)
     started = time.monotonic()
     try:
-        payload = await _state_payload(
-            monkeypatch, tmp_path, read_transit_state_func=wedged_transit,
-        )
+        payload = await _state_payload(monkeypatch, tmp_path)
     finally:
         released.set()
 
     assert time.monotonic() - started < 15.0
     assert set(payload) == _pinned_state_keys()
-    assert payload["transit"] is None
+    assert payload["audio"]["sound"] is None
 
 
 @pytest.mark.parametrize(
@@ -1217,213 +959,6 @@ async def test_state_outputd_section_drops_the_chip_ref_write_ring():
     writer = body["reference_outputs"]["chip_ref_writer"]
     assert "recent_writes" not in writer
     assert writer["recent_writes_capacity"] == 256
-
-
-async def test_state_voice_model_reads_pin_from_jasper_env_not_just_wizard_file(
-    monkeypatch, tmp_path,
-):
-    """issue #3133's drift class, for /state instead of the doctor's
-    pricing row: active_provider.model only ever sees the wizard's SSOT
-    file, so a model pinned solely in jasper.env (never written to the
-    wizard file) would render as the catalog default there. /state.voice.model
-    must come from read_active_model_from_env_files instead, which merges
-    jasper.env with the wizard file — same set jasper-voice sources."""
-    from jasper.control import state_aggregate
-    from jasper.voice import provider_state
-    from jasper.voice.catalog import default_model_id
-
-    provider_file = tmp_path / "voice_provider.env"
-    provider_file.write_text("JASPER_VOICE_PROVIDER=openai\n")  # no model key
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
-
-    seen_providers: list[str] = []
-
-    def fake_model_from_files(provider: str) -> str:
-        seen_providers.append(provider)
-        return "jasperenv-pinned-model"
-
-    monkeypatch.setattr(
-        provider_state, "read_active_model_from_env_files", fake_model_from_files,
-    )
-
-    body = await state_aggregate._get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path="/nonexistent.sock",
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
-    )
-
-    assert body["voice"]["provider"] == "openai"
-    assert body["voice"]["model"] == "jasperenv-pinned-model"
-    assert body["voice"]["model"] != default_model_id("openai")
-    # Same provider /state reports must be the one resolved for — never a
-    # second, independently-read provider.
-    assert seen_providers == ["openai"]
-
-
-async def test_state_voice_model_is_none_when_provider_unconfigured(
-    monkeypatch, tmp_path,
-):
-    """Preserves the pre-existing display contract (empty/None means no
-    usable provider) and proves the merged-files resolver is never
-    consulted for a provider that doesn't exist."""
-    from jasper.control import state_aggregate
-    from jasper.voice import provider_state
-
-    monkeypatch.setenv(
-        "JASPER_VOICE_PROVIDER_FILE", str(tmp_path / "missing_voice_provider.env"),
-    )
-
-    def fail_if_called(provider: str) -> str:
-        raise AssertionError(
-            f"resolver must not run for an unconfigured provider, got {provider!r}",
-        )
-
-    monkeypatch.setattr(
-        provider_state, "read_active_model_from_env_files", fail_if_called,
-    )
-
-    body = await state_aggregate._get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path="/nonexistent.sock",
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
-    )
-
-    assert body["voice"]["provider_status"] == "missing"
-    assert body["voice"]["model"] is None
-
-
-def test_state_active_speaker_commissioning_block_passes_through(
-    server_with_coordinator, monkeypatch,
-):
-    """active_speaker_setup.commissioning (setup_status.commissioning_summary)
-    rides straight through _get_state's existing active_speaker_setup
-    pass-through -- jasper/control/state_aggregate.py needs no structural
-    change for it (docs/active-crossover-information-design.md "Runtime
-    surface"). This guards against a future refactor that starts filtering
-    keys out of that pass-through.
-    """
-    base, _ = server_with_coordinator
-    from jasper.control import state_aggregate
-
-    fake_commissioning = {
-        "phase": "measuring",
-        "session_id": None,
-        "session_fingerprint": "f" * 64,
-        "applied_profile_fingerprint": None,
-        "last_capture": None,
-        "last_failure_code": None,
-        "room_correction_allowed": False,
-    }
-    monkeypatch.setattr(
-        state_aggregate,
-        "read_active_speaker_setup_status",
-        lambda **kwargs: {  # noqa: ARG005
-            "active": True,
-            "commissioning": fake_commissioning,
-        },
-    )
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["active_speaker_setup"]["commissioning"] == fake_commissioning
-
-
-def test_state_active_speaker_protected_profile_linearization_outcome_passes_through(
-    server_with_coordinator, monkeypatch,
-):
-    """Gauge fix (2026-07-24): the linearization run/skip outcome
-    (setup_status.read_active_speaker_setup_status's protected_profile
-    block, read fresh off the applied baseline artifact) rides through
-    _get_state's existing active_speaker_setup pass-through the same way
-    commissioning does above -- no structural change needed in
-    state_aggregate.py for it either."""
-    base, _ = server_with_coordinator
-    from jasper.control import state_aggregate
-
-    fake_protected_profile = {
-        "available": True,
-        "status": "ready",
-        "linearization_outcome": "ineligible_mic_tier",
-    }
-    monkeypatch.setattr(
-        state_aggregate,
-        "read_active_speaker_setup_status",
-        lambda **kwargs: {  # noqa: ARG005
-            "active": True,
-            "protected_profile": fake_protected_profile,
-        },
-    )
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert (
-        body["active_speaker_setup"]["protected_profile"]["linearization_outcome"]
-        == "ineligible_mic_tier"
-    )
-
-
-def test_state_active_speaker_setup_fails_soft_to_null_on_read_error(
-    server_with_coordinator, monkeypatch,
-):
-    """A broken active-speaker setup read (any of the exceptions
-    _get_state's own try/except catches) must not take down the whole
-    /state response -- the section degrades to null, matching every other
-    fail-soft section (bass_extension_state, output_hardware_state, ...).
-    This wrapper predates the gauge fix; guarded here because
-    linearization_outcome now depends on it staying total."""
-    base, _ = server_with_coordinator
-    from jasper.control import state_aggregate
-
-    def _boom(**kwargs):  # noqa: ARG001
-        raise RuntimeError("simulated active speaker setup read failure")
-
-    monkeypatch.setattr(state_aggregate, "read_active_speaker_setup_status", _boom)
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["active_speaker_setup"] is None
-
-
-def test_state_aec_probe_failure_is_fail_soft(
-    server_with_coordinator, monkeypatch,
-):
-    base, _ = server_with_coordinator
-
-    def boom():
-        raise RuntimeError("aec probe exploded")
-
-    monkeypatch.setattr(aec_endpoints, "_aec_full_status", boom)
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["aec"] is None
-    assert body["voice"]["reachable"] is False
-
-
-def test_state_transit_read_failure_is_fail_soft(
-    server_with_coordinator, monkeypatch,
-):
-    """If the transit SSOT read raises, /state still returns 200 with a null
-    transit section rather than 500 — mirrors the grouping/aec fail-soft
-    guard so one broken section never takes the whole snapshot down."""
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    def boom():
-        raise RuntimeError("transit read exploded")
-
-    monkeypatch.setattr(srv_mod, "read_transit_state", boom)
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["transit"] is None
 
 
 def test_state_voice_wake_legs_flows_from_session_status(
@@ -1674,7 +1209,6 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
     status, body = _get(f"{base}/state")
 
     assert status == 200
-    assert body["renderers"]["spotify"]["playing"] is True
     assert body["active_source"] == "airplay"
     assert body["source_selection"]["winner"] == "airplay"
 
@@ -1717,7 +1251,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path="/nonexistent.sock",
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )
 
     policy = body["audio"]["volume_policy"]
@@ -1730,64 +1263,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     assert policy["guard_reason"] == "push_write_failed"
     assert policy["previous_db"] == 0.0
     assert policy["last_source_push_result"]["reason"] == "write_failed"
-
-
-def test_state_usbsink_section_null_when_disabled(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """No identity-bound fan-in DIRECT lane means the source is off."""
-    base, _ = server_with_coordinator
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["renderers"]["usbsink"] is None
-
-
-def test_state_usbsink_section_populated_when_enabled(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Fan-in owns activity/level; UDC sysfs owns host connection."""
-    import jasper.control.server as srv_mod
-
-    base, _ = server_with_coordinator
-    udc = tmp_path / "udc" / "controller"
-    udc.mkdir(parents=True)
-    (udc / "state").write_text("configured\n")
-    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(tmp_path / "udc"))
-
-    async def fake_status(path, **_kwargs):
-        if "jasper-fanin" in path:
-            return {
-                "inputs": [{
-                    "label": "usbsink",
-                    "source": "direct",
-                    "rms_dbfs": -12.3,
-                    "muted": False,
-                }],
-            }
-        return None
-
-    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    section = body["renderers"]["usbsink"]
-    assert section["playing"] is True
-    assert section["muted"] is False
-    assert section["host_connected"] is True
-    assert section["rms_dbfs"] == -12.3
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
@@ -1850,7 +1325,6 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
 
     status, body = _get(f"{base}/state")
     assert status == 200
-    assert body["renderers"]["usbsink"] is None
     assert body["active_source"] == "usbsink"
 
 
@@ -1963,7 +1437,7 @@ def test_state_camilla_probe_times_out_fail_soft(
     assert audio["playback_rms_dbfs"] is None
     assert audio["clipped_samples"] is None
     # Fail-soft: the camilla stall didn't take down the whole snapshot.
-    assert "renderers" in body
+    assert "source_selection" in body
     assert "event=state.camilla_probe_failed" in caplog.text
 
 
@@ -1990,9 +1464,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
         get_clipped_samples = _hang
         get_config_file_path = _hang
 
-    def _fast_ha():
-        return {"configured": False, "connected": False}
-
     monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
     # Camilla's own ceiling is high, so the OUTER aggregate budget is what
     # fires — that's the path under test.
@@ -2005,7 +1476,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
                 camilla_host="127.0.0.1",
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
-                ha_status_snapshot=_fast_ha,
             )
 
     assert any(
@@ -2018,8 +1488,8 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
 async def test_state_airplay_row_and_active_source_come_from_the_injected_reader(
     playing, monkeypatch, tmp_path,
 ):
-    """`/state` serves the AirPlay health sampler's held PlaybackStatus and
-    derives `active_source` from the same value — no second reader."""
+    """`/state` derives `active_source` from the AirPlay health sampler's
+    held PlaybackStatus — no second reader."""
     async def no_status(*_args, **_kwargs):
         return None
 
@@ -2033,26 +1503,20 @@ async def test_state_airplay_row_and_active_source_come_from_the_injected_reader
         voice_socket_command=no_status,
         mux_socket_command=no_status,
         local_status_json=no_status,
-        aec_full_status=lambda: {},
-        read_transit_state_func=lambda: {"packs": []},
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
         airplay_playing_snapshot=lambda: playing,
     )
 
-    assert body["renderers"]["airplay"] == (
-        None if playing is None else {"playing": playing}
-    )
     assert body["active_source"] == ("airplay" if playing else "idle")
 
 
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):
-    """When JASPER_HA_URL/TOKEN are unset, /state.home_assistant returns
-    configured=false with no error — fail-soft for the dashboard."""
+    """With JASPER_HA_URL/TOKEN unset, /system/snapshot.home_assistant
+    returns configured=false with no error — fail-soft for the dashboard."""
     base, _ = server_with_coordinator
     monkeypatch.delenv("JASPER_HA_URL", raising=False)
     monkeypatch.delenv("JASPER_HA_TOKEN", raising=False)
 
-    status, body = _get(f"{base}/state")
+    status, body = _get(f"{base}/system/snapshot")
     assert status == 200
     ha = body["home_assistant"]
     assert ha["configured"] is False
@@ -2061,13 +1525,13 @@ def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch)
 
 
 def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
-    """Configured + reachable: /state.home_assistant carries instance_name
-    + version from the injected child-cache status provider."""
+    """Configured + reachable: /system/snapshot.home_assistant carries
+    instance_name + version from the injected child-cache status provider."""
     import jasper.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
     async def should_not_run():
-        raise AssertionError("state must not import/probe HA in-process")
+        raise AssertionError("the snapshot must not import/probe HA in-process")
 
     monkeypatch.setattr(ha_mod, "probe_status_from_env", should_not_run)
     monkeypatch.setenv(
@@ -2082,7 +1546,7 @@ def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
         }),
     )
 
-    status, body = _get(f"{base}/state")
+    status, body = _get(f"{base}/system/snapshot")
     assert status == 200
     ha = body["home_assistant"]
     assert ha["configured"] is True
@@ -2093,7 +1557,7 @@ def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
 
 def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, monkeypatch):
     """Configured but probe fails: response still 200 with the rest of
-    /state intact; home_assistant carries the error string."""
+    the snapshot intact; home_assistant carries the error string."""
     base, _ = server_with_coordinator
 
     monkeypatch.setenv(
@@ -2108,15 +1572,15 @@ def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, mo
         }),
     )
 
-    status, body = _get(f"{base}/state")
+    status, body = _get(f"{base}/system/snapshot")
     assert status == 200
     ha = body["home_assistant"]
     assert ha["configured"] is True
     assert ha["connected"] is False
     assert ha["error"]
-    # Other /state sections still populated despite HA failure
-    assert "audio" in body
-    assert "renderers" in body
+    # Other snapshot sections still populated despite HA failure
+    assert "build" in body
+    assert "audio_health" in body
 
 
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):

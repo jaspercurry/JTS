@@ -23,6 +23,7 @@ import json
 import math
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -131,10 +132,11 @@ class NullRunInterrupted(RuntimeError):
 class NullDoorRefused(RuntimeError):
     """One coordinate cannot be measured; the row says why."""
 
-    def __init__(self, reason: str, detail: str) -> None:
+    def __init__(self, reason: str, detail: str, diagnostics: Mapping[str, Any] | None = None) -> None:
         super().__init__(detail)
         self.reason = reason
         self.detail = detail
+        self.diagnostics = dict(diagnostics or {})
 
 
 
@@ -229,6 +231,7 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
     )
     from jasper.active_speaker.crossover_v2.position_cycle import (
         read_pose_curve_pair,
+        take_phase_composition,
     )
 
     found = read_pose_curve_pair(
@@ -239,6 +242,8 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
     )
     if found is None:
         return (0.0,)
+    if take_phase_composition(Path(args.bundle_dir), found[2]) == "complete_tune_measured":
+        raise NullDoorRefused("null_confirm_graph_mismatch", "The selected curves include a complete tune. Use full candidate variants in tournament to confirm residual delay changes; jasper-null measures neutral branches.")
     try:
         landscape = compute_landscape(
             found[0], found[1], spec=spec, inverted_role=args.inverted_role,
@@ -455,34 +460,28 @@ def _depth(
     ``crossover_null_depth_db`` subtracts. A shoulder outside that overlap
     would be read where only one driver played.
     """
-    from jasper.active_speaker.driver_acoustics import summed_capture_curve
-    from jasper.audio_measurement.analysis import crossover_null_depth_db, shoulder_span
+    from jasper.active_speaker.driver_acoustics import SummedCaptureUnusable, summed_capture_curve
+    from jasper.audio_measurement.analysis import crossover_null_depth_db
 
-    curve = summed_capture_curve(
-        captured_wav,
-        _sweep_meta(program.stimulus_segments()[0]),
-        crossover_fc_hz=fc_hz,
-        capture_geometry=CAPTURE_GEOMETRY,
-        # NO ambient window, and that is a deletion rather than a smaller
-        # number: any `ambient_duration_s` selects the signal-located branch,
-        # whose guard needs controlled quiet reaching back PAST the whole sweep,
-        # and this door records no such quiet.
-    )
-    if curve is None:
+    try:
+        curve = summed_capture_curve(
+            captured_wav, _sweep_meta(program.stimulus_segments()[0]),
+            crossover_fc_hz=fc_hz, capture_geometry=CAPTURE_GEOMETRY,
+            raise_on_unusable=True, overlap_hz=plan.overlap_hz,
+        )
+    except SummedCaptureUnusable as exc:
+        gate = exc.diagnostics.get("gating") or {}
         raise NullDoorRefused(
             REFUSE_UNUSABLE_CAPTURE,
-            f"the capture cannot decide a null at fc={fc_hz:g} Hz: it failed "
-            "quality gating, or the room's low-frequency validity floor sits "
-            f"above the lower shoulder {fc_hz / 2.0:g} Hz",
-        )
-    # The REAL analysis grid, not a stand-in: `shoulder_span` counts the bins
-    # either side of Fc to decide whether a shoulder can be placed at all.
-    grid = curve.freqs
-    span = shoulder_span(
-        grid[(grid >= plan.overlap_hz[0]) & (grid <= plan.overlap_hz[1])],
-        crossover_fc_hz=fc_hz,
-        overlap_hz=plan.overlap_hz,
-    )
+            f"{exc}: gate {gate.get('window_ms')} ms, floor "
+            f"{gate.get('f_valid_floor_hz')} Hz; lower shoulder needs {exc.diagnostics['required_lower_shoulder_hz']:g} Hz. "
+            "Inspect the saved impulse and window overlay. A longer window includes more room; "
+            "if no useful span clears the first reflection, change mic geometry before another null take. "
+            "For a capture quality failure, correct the recorded quality codes first.",
+            exc.diagnostics,
+        ) from exc
+    assert curve is not None
+    span = curve.shoulders
     if not span.usable:
         raise NullDoorRefused(
             REFUSE_NO_SHOULDERS,
@@ -512,6 +511,9 @@ def _row(
     depth_db: float | None = None,
     span: Any = None,
     wav_sha256: str | None = None,
+    stimulus_wav_path: str | None = None,
+    capture_wav_path: str | None = None,
+    capture_wav_sha256: str | None = None,
     capture_integrity: Mapping[str, Any] | None = None,
     capture_device: Mapping[str, Any] | None = None,
     capture_faults: Sequence[str] = (),
@@ -541,7 +543,12 @@ def _row(
             None if math.isinf(gap_ceiling_db) else round(gap_ceiling_db, 2)
         ),
         "graph_fingerprint": graph_fingerprint,
+        # Historical ``wav_sha256`` identifies the stimulus, not the microphone.
         "wav_sha256": wav_sha256,
+        "stimulus_wav_path": stimulus_wav_path,
+        "stimulus_wav_sha256": wav_sha256,
+        "capture_wav_path": capture_wav_path,
+        "capture_wav_sha256": capture_wav_sha256,
         # What the RECORDER said about this take, from the same kernel the
         # wizard's takes mint: frame ledger + zero-run scan, and the mic that
         # heard it. A refused row carries them too, so a coordinate that could
@@ -564,6 +571,7 @@ def _row(
         row["status"] = "refused"
         row["reason"] = refusal.reason
         row["detail"] = refusal.detail
+        row["diagnostics"] = refusal.diagnostics
         row["depth_db"] = None
         row["shoulders_used"] = None
         row["clamped_lo"] = None
@@ -590,10 +598,11 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
     rows_dir.mkdir(parents=True, exist_ok=True)
     name = (
         f"{int(row['ts'])}_{row['position_deg']}deg_"
-        f"{row['fc_hz']:.0f}hz_{row['delay_us']:+.0f}us_{row['polarity']}.json"
+        f"{row['fc_hz']:.0f}hz_{row['delay_us']:+.0f}us_{row['polarity']}_{uuid.uuid4().hex}.json"
     )
     path = rows_dir / name
-    path.write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, indent=2, sort_keys=True) + "\n")
     return path
 
 
@@ -707,12 +716,9 @@ async def _run(args: argparse.Namespace) -> int:
             action="confirming a reverse null",
             gate_owner=DOOR_GATE_OWNER,
         ) as door:
-            # INSIDE: a write that runs before the interlock runs even when the
-            # door refuses. This publishes `null_programs/stimulus.wav` under a
-            # fixed name, so a refused second run would overwrite the bytes a
-            # live run's artifact sha256 is bound to (#3393 B2).
+            programs_dir = Path("null_programs") / uuid.uuid4().hex
             artifact = _publish_program(
-                program, work_dir, "null_programs/stimulus.wav",
+                program, work_dir, str(programs_dir / "stimulus.wav"),
             )
             try:
                 for index, (candidate, inverted) in enumerate(coordinates):
@@ -733,9 +739,8 @@ async def _run(args: argparse.Namespace) -> int:
                         context, door.plan, program, mic, artifact, work_dir,
                         graph_yaml=door.graph.installed_graph_yaml(),
                     )
-                    mic_wav = (
-                        work_dir / "null_programs" / f"capture_{index:02d}.wav"
-                    )
+                    capture_relpath = programs_dir / f"capture_{index:02d}.wav"
+                    mic_wav = work_dir / capture_relpath
                     mic_wav.write_bytes(answer.wav)
                     report = answer.capture_integrity or {}
                     try:
@@ -748,6 +753,9 @@ async def _run(args: argparse.Namespace) -> int:
                     _bank(
                         candidate, inverted, fingerprint,
                         wav_sha256=artifact.sha256,
+                        stimulus_wav_path=artifact.relative_path,
+                        capture_wav_path=str(capture_relpath),
+                        capture_wav_sha256=hashlib.sha256(answer.wav).hexdigest(),
                         capture_integrity=report,
                         capture_device=answer.device,
                         capture_faults=_capture_faults(report),
@@ -954,6 +962,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_env_canonical_target_provider()
     try:
         return asyncio.run(_run(args))
+    except NullDoorRefused as exc:
+        return failed(EXIT_REFUSED, exc.reason, {"detail": exc.detail, "diagnostics": exc.diagnostics})
     except NullRunInterrupted as exc:
         # k rows are on disk and named, so the operator gets both halves: why
         # the run stopped, and which coordinates it did bank.

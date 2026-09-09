@@ -49,7 +49,13 @@ from jasper.active_speaker.crossover_preview import (
     crossover_preview_fingerprint,
 )
 from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.graph_safety import protection_requirement_present, view_from_emitted_text
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
+from jasper.audio_measurement.program import write_program_wav
+from tests.test_active_speaker_program_admission import _profile_and_targets, _roles
 from jasper.active_speaker.measurement import (
     load_measurement_state,
     record_driver_measurement,
@@ -62,7 +68,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
-from jasper.camilla_config_contract import PeqFilter
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE, PeqFilter
 from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
 from jasper.dsp_apply import CamillaConfigValidationResult
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
@@ -2898,14 +2904,10 @@ def test_ring_reemit_declares_whatever_the_resolver_answers(
     # CONTROL: the same evidence emitted at the ALSA active lane is untouched by
     # the resolver — a helper that answered the ring's wire for every sink would
     # pass the assertion above and mis-declare every unarmed box.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
@@ -2956,14 +2958,10 @@ def test_ring_reemit_refuses_a_typod_wire_instead_of_raising(
     # CONTROL: the same box emitting at the ALSA lane is unaffected — the wire is
     # only resolved for a ring sink, so a typo cannot block an unarmed box's
     # ordinary re-emit.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
@@ -3025,14 +3023,10 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     # CONTROL: the ALSA active lane still takes the box's floor, resolved by the
     # emitter at emit time. A helper that forced ring geometry everywhere would
     # pass every assertion above and silently retune every unarmed box.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
@@ -5196,12 +5190,11 @@ def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
 async def test_apply_baseline_profile_applies_v2_measured_candidate(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """End-to-end: publish a v2 candidate with delay+polarity, apply it through
-    the existing atomic DSP transaction, and confirm the emitted config
-    carries both — through the SAME rollback-capable apply_baseline_profile
-    used for every other candidate shape."""
-    topology = _dual_apple_topology()
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=40, woofer_highpass=40, woofer_upper=4000, max_sweep_duration_s=4,
+    )
     draft = _draft(topology)
+    draft["driver_safety_profile"] = safety
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
     assert preset is not None, issues
@@ -5244,15 +5237,52 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
         "delay_ms": 0.25,
         "inverted": True,
     }
-    # #1666: the applied candidate lands on its own source-fingerprinted
-    # sibling (what load_config was actually called with); the canonical file at
-    # tmp_path/active_speaker_baseline.yml is a POST-success promoted copy, so
-    # it independently carries the same content.
     config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
     assert "as_tweeter_delay" in config_text
     assert "delay: 0.2500" in config_text
     assert calls == [payload["profile"]["config"]["path"]]
     assert calls != [str(tmp_path / "active_speaker_baseline.yml")]
+    applied = load_applied_baseline_profile_state(tmp_path / "baseline_profile.json")
+    assert applied["recomposition_snapshot"]["driver_protection"]["profile_fingerprint"] == safety["profile_fingerprint"]
+    emitted, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=applied, bass_extension_profile=None,
+    )
+    assert issues == []
+    assert emitted is not None
+    verify_graph = compile_tuning_graph(MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
+        topology, {"woofer": 0, "tweeter": 1}, applied["recomposition_snapshot"]["playback_device"],
+        applied_profile=applied,
+    ), scope="speaker_tune")
+    requirement = safety["targets"][0]["required_protection_filters"][0]
+    for text in (config_text, emitted, verify_graph):
+        assert protection_requirement_present(
+            view_from_emitted_text(text), output_index=0, allowed_channels={0}, requirement=requirement,
+        )
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=2500,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "verify.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=verify_graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+    )
+    assert admission.allowed, admission.to_dict()
+    _, changed_safety, _ = _profile_and_targets(
+        woofer_floor=80, woofer_highpass=80, woofer_upper=4000, max_sweep_duration_s=4,
+    )
+    draft["driver_safety_profile"] = changed_safety
+    changed = build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        tuning_owner="automatic", measured_candidate=candidate,
+    )
+    assert changed["candidate_fingerprint"] != applied["candidate_fingerprint"]
+    assert changed["config"]["path"] != applied["config"]["path"]
 
 
 async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(

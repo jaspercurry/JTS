@@ -1399,8 +1399,8 @@ def check_ring_transport_park() -> CheckResult:
     four shapes it cannot carry and the tracked issue each waits on. A parked box
     emits NOTHING and no automatic path recovers it, hence ``fail``. The
     classification, issue numbers and remedy text all come from
-    ``jasper.control.transport_park``, the reader
-    ``/state.resilience.transport_park`` and the household audio card also use.
+    ``jasper.control.transport_park``, the reader ``/system/snapshot``'s
+    ``transport_park`` and the household audio card also use.
 
     Three shapes land between ``ok`` and a park — the ADR-0184 coverage seam, a
     converge refusal, and ADR-0189's mirror of the seam. All three are operator

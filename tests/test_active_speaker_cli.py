@@ -751,7 +751,7 @@ def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
                 "classification": "jts_outputd_stereo",
                 "path": "/etc/camilladsp/outputd-cutover.yml",
                 "label": "JTS outputd stereo config",
-                "playback_device": "outputd_content_playback",
+                "playback_device": "jts_ring_playback",
                 "playback_channels": 2,
                 "volume_limit_db": 0.0,
             },
