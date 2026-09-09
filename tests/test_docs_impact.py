@@ -114,11 +114,10 @@ def test_vad_file_routes_to_voice_and_vad_docs():
 
 def test_state_aggregate_routes_to_state_surface_docs():
     """The /state.resilience producer must route to the resilience subsystem's
-    mapped docs. /state.chat also lives in this file, and /state.audio
-    (volume_policy, sound profile) lives here too, so the path intentionally
-    maps to conversation-history and volume as well. Pins the routing intent:
-    the stale-glob guard only catches a rename, not a re-route of this path
-    to the wrong subsystem."""
+    mapped docs. /state.audio (volume_policy, sound profile) also lives here,
+    so the path intentionally maps to volume as well. Pins the routing
+    intent: the stale-glob guard only catches a rename, not a re-route of
+    this path to the wrong subsystem."""
 
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
@@ -128,13 +127,11 @@ def test_state_aggregate_routes_to_state_surface_docs():
     )
 
     assert [item["id"] for item in report] == [
-        "conversation-history",
         "volume-and-sound",
         "resilience-and-system-dashboard",
     ]
-    assert "docs/conversation-history-plan.md" in report[0]["docs"]
-    assert "docs/audio-paths.md" in report[1]["docs"]
-    assert "AGENTS.md" in report[2]["docs"]
+    assert "docs/audio-paths.md" in report[0]["docs"]
+    assert "AGENTS.md" in report[1]["docs"]
 
 
 def test_landing_page_routes_to_web_design_system_not_conversation_history():

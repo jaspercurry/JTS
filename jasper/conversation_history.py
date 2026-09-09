@@ -358,11 +358,9 @@ def read_settings(
 def health(*, warn_unavailable: bool = False) -> dict[str, Any]:
     """One fresh read of capture settings plus the store's own status.
 
-    The sole computation of availability, turn count, and write age for both
-    ``jasper-doctor`` and ``/state.chat`` (ADR-0233 rule 1) — each caller
-    applies only its own verdict/wire shape on top. ``warn_unavailable``
-    controls whether an unavailable store logs (the doctor wants the signal;
-    a frequently-polled ``/state`` read does not).
+    The sole computation of availability, turn count, and write age for
+    ``jasper-doctor``, which applies only its own verdict/wire shape on top.
+    ``warn_unavailable`` controls whether an unavailable store logs.
     """
     settings = read_settings()
     if not settings.capture_enabled:

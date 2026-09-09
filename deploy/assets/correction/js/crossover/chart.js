@@ -25,17 +25,14 @@ export function drawCloudChart(canvas, payload) {
   const series = [
     {
       curve: payload && payload.measureCurve,
-      referenceDb: payload && payload.measureReferenceDb,
       color: cssColor(canvas, '--crossover-chart-measure', '#c0392b'),
     },
     {
       curve: payload && payload.verifyCurve,
-      referenceDb: payload && payload.verifyReferenceDb,
       color: cssColor(canvas, '--crossover-chart-verify', '#2e8b57'),
     },
     {
       curve: payload && payload.predictedCurve,
-      referenceDb: payload && payload.predictedReferenceDb,
       color: cssColor(canvas, '--crossover-chart-predicted', '#d08b25'),
       dash: PREDICTED_DASH,
     },
@@ -45,7 +42,6 @@ export function drawCloudChart(canvas, payload) {
     frequencyRangeHz: [20, 20000],
     domainRangeHz: gradedFrequencyRange(specBands),
     corridorBands: specBands,
-    excludedIntervals: (payload && payload.excludedIntervals) || [],
     padDb: 3,
     theme: {
       grid: cssColor(canvas, '--border-strong', '#ccc'),

@@ -20,7 +20,8 @@ from jasper.bass_extension.alignment import (
     peaking_response_db,
 )
 from .base import (COMMISSION_FLOOR_HZ, CabinetInfo, CaptureRole, FitRefusal,
-                   MagnitudeCurve, TargetSpec, _curve_arrays, _passband_normalize)
+                   MagnitudeCurve, TargetSpec, _curve_arrays, passband_normalize,
+                   woofer_curve)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.targets import MarginPolicy
@@ -103,7 +104,7 @@ class PortedPlantFit:
 
 def _normalized_curve(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
     freqs, magnitude = _curve_arrays(curve)
-    return freqs, _passband_normalize(freqs, magnitude)
+    return freqs, passband_normalize(freqs, magnitude)
 
 
 def _refine_extremum(freqs: np.ndarray, magnitude: np.ndarray, index: int) -> float:
@@ -177,7 +178,7 @@ def _filters_response_db(freqs: np.ndarray,
 def fit_ported_plant(
     captures: Mapping[CaptureRole, MagnitudeCurve],
 ) -> PortedPlantFit | FitRefusal:
-    woofer = captures.get(CaptureRole.WOOFER_NEARFIELD)
+    woofer = woofer_curve(captures)
     if woofer is None:
         return FitRefusal("bass_extension_tuning_not_located",
                           "woofer nearfield capture is required")
@@ -207,7 +208,7 @@ def fit_ported_plant(
     rms = float(np.sqrt(np.mean((magnitude[fit_band] - model[fit_band]) ** 2)))
     natural_freqs, natural_db = resample_log(
         freqs, measured, f_min=10.0, f_max=500.0, n_points=96)
-    natural_db = _passband_normalize(natural_freqs, natural_db)
+    natural_db = passband_normalize(natural_freqs, natural_db)
     natural_curve = MagnitudeCurve(tuple(float(freq) for freq in natural_freqs),
                                    tuple(float(level) for level in natural_db))
     return PortedPlantFit(fb, knee, slope, rms, natural_curve)
@@ -328,6 +329,9 @@ def ported_predicted_response(
 class PortedAdapter:
     adapter_id = "ported_v1"
     adapter_version = 1
+    #: ``fb`` is located as the port null (:func:`_locate_fb`), which exists in
+    #: a nearfield capture and not in a seat median, where the only minima that
+    #: deep are room modes. No in-room fit for this enclosure.
     required_captures = (CaptureRole.WOOFER_NEARFIELD,)
 
     def fit_plant(

@@ -77,7 +77,6 @@ import contextlib
 import json
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -88,10 +87,10 @@ from ..atomic_io import atomic_write_text
 from ..platform.control_client import CONTROL_PORT
 from . import restart_broker
 from .supervisor_runtime import (
-    build_asyncio_thread,
     resolve_env_mode,
     run_supervisor_loop,
     snapshot_or_disabled,
+    spawn_on_control_loop,
 )
 
 logger = logging.getLogger(__name__)
@@ -601,7 +600,6 @@ def _write_reboot_state(path: Path, last_reboot_at: float) -> None:
 # wrt the instance and Python attribute reads are atomic at the
 # snapshot dict's resolution.
 _supervisor: SystemSupervisor | None = None
-_supervisor_thread: threading.Thread | None = None
 
 
 def snapshot() -> dict[str, Any]:
@@ -612,18 +610,18 @@ def snapshot() -> dict[str, Any]:
     )
 
 
-def start_supervisor() -> threading.Thread | None:
-    """Start the supervisor in a background thread. No-op when
-    `JASPER_SYSTEM_SUPERVISOR=disabled` (exact match, case-
+def start_supervisor() -> None:
+    """Start the supervisor on jasper-control's shared background loop.
+    No-op when `JASPER_SYSTEM_SUPERVISOR=disabled` (exact match, case-
     insensitive). Idempotent under sequential calls — the sole
     caller is `jasper-control`'s single-threaded `main()`."""
-    global _supervisor, _supervisor_thread
-    if _supervisor_thread is not None:
-        return _supervisor_thread
+    global _supervisor
+    if _supervisor is not None:
+        return
     mode = resolve_env_mode("JASPER_SYSTEM_SUPERVISOR")
     if mode == "disabled":
         log_event(logger, "system_supervisor.disabled")
-        return None
+        return
     if mode != "auto":
         logger.warning(
             "JASPER_SYSTEM_SUPERVISOR=%r unrecognized; "
@@ -631,11 +629,9 @@ def start_supervisor() -> threading.Thread | None:
             mode,
         )
     _supervisor = SystemSupervisor()
-    _supervisor_thread = build_asyncio_thread(
+    spawn_on_control_loop(
         target=_supervisor.run,
         name="system-supervisor",
         logger=logger,
         crash_event="system_supervisor.thread_crash",
     )
-    _supervisor_thread.start()
-    return _supervisor_thread

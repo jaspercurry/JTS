@@ -529,7 +529,7 @@ def test_a_raised_walk_publishes_its_elevations():
     )
 
 
-def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
+def test_the_bank_lists_candidates_but_leaves_the_tournament_shortlist_unstaged(
     tmp_path, capsys, bank
 ):
     plain = _candidate()
@@ -562,10 +562,8 @@ def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
         "delay_role": "tweeter",
     }
     assert all("measurable" not in record for record in listed.values())
-    assert (
-        "jasper-angle-capture stage --program tournament --candidates "
-        f"{plain.fingerprint},{flipped.fingerprint},{filtered.fingerprint}"
-    ) in payload["next"]
+    assert "jasper-angle-capture plan --help" in payload["next"]
+    assert not any(" stage " in command for command in payload["next"])
 
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():

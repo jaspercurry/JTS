@@ -131,8 +131,12 @@ class PeeringDaemon:
         ))
 
         # Install the Avahi service file (best-effort — non-fatal if
-        # the template is missing; we'll still arbitrate).
-        avahi.render_and_install(
+        # the template is missing; we'll still arbitrate). Off the loop:
+        # it renders a file and shells out to `systemctl reload
+        # avahi-daemon` (up to 4 s), and this loop is shared with
+        # jasper-control's supervisors.
+        await asyncio.to_thread(
+            avahi.render_and_install,
             peer_id=self._cfg.peer_id,
             room=self._cfg.room,
             primary=self._cfg.primary,
@@ -207,8 +211,10 @@ class PeeringDaemon:
                 logger.exception("peering: transport stop failed")
             self._transport = None
 
-        # Unpublish Avahi so peers stop seeing us promptly.
-        avahi.uninstall()
+        # Unpublish Avahi so peers stop seeing us promptly. Off the loop
+        # for the same reason as the install, and so a slow reload cannot
+        # eat jasper-control's shutdown budget.
+        await asyncio.to_thread(avahi.uninstall)
 
         # Resolve any in-flight decision as WIN — voice falls back to
         # solo mode rather than hanging.

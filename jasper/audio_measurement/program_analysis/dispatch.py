@@ -13,6 +13,9 @@ from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 import numpy as np
 
+from jasper.audio_measurement.branch_program import is_branch_program
+from .branches import analyze_branches
+
 from jasper.audio_measurement import analysis as analysis_mod, deconv
 from jasper.audio_measurement.comparison_bands import (
     crossover_region_band_hz,
@@ -138,7 +141,9 @@ def analyze_program_capture(
     )
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
-    if program.phase == PROGRAM_PHASE_CHECK:
+    if is_branch_program(program):
+        analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors)
+    elif program.phase == PROGRAM_PHASE_CHECK:
         analysis = _analyze_check(
             program, capture, sample_rate, global_offset, locations, priors,
         )
