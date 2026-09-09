@@ -256,11 +256,12 @@ span still cannot answer, retain that limitation and use measured full sums.
 
 ## Room
 
-The room is measured on the seat cube, through the applied tune, ungated
+The room is measured on the seat cloud, through the applied tune, ungated
 (methodology §11). In order:
 
-1. `jasper-angle-capture plan --program seat --size cube`: seven summed stops
-   around the listener's head (`--size express`: three). `stage` it; a human
+1. `jasper-angle-capture plan --program seat`: eleven summed stops around
+   the listener's head. `--size cube` keeps the seven-position walk;
+   `--size express` selects three. `stage` it; a human
    moves the microphone, and an arm cannot reach the seat.
 2. `jasper-round open --tier express`, then the phone's position-ready walk
    states each place from the head centre at ear height.
@@ -277,7 +278,7 @@ The room is measured on the seat cube, through the applied tune, ungated
    missing identity fields and unusable takes; it uses only shared measured
    frequency coverage. Use `--out <path>` to retain each candidate separately.
 6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
-   hold across the cube, and at what fraction of positions. Use the same
+   hold across the cloud, and at what fraction of positions. Use the same
    `--capture-id` selection as the median.
 7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
    judges a room prescription (`kind: jts_room_prescription`) against
@@ -286,7 +287,7 @@ The room is measured on the seat cube, through the applied tune, ungated
    `jasper-measure --graph-scope room_candidate --candidate-id <fingerprint>`
    plays it for its trial through the accepted tune.
 8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
-   re-measured cube's median against flat, band by band, with the incumbent
+   re-measured cloud's median against flat, band by band, with the incumbent
    round's numbers beside it; a regressed band is a disclosure, and restore
    is the doctrine's own path.
 
