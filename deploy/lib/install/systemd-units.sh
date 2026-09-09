@@ -662,11 +662,6 @@ enable_usbgadget() {
     # `systemctl enable --now` reports as a SUCCESSFUL job (rc=0), so the
     # benign pre-reboot no-UDC case does NOT reach here. Point the operator at
     # the unit's journal rather than mislabeling every failure as "no UDC yet".
-    # The relay is dependency-enabled (not independently boot-started). Its
-    # ExecCondition keeps it inert unless the wizard intent + descriptor are
-    # both On; the wants links let either gadget or AEC recovery bring it back.
-    systemctl enable jasper-usbmic.service >/dev/null 2>&1 || \
-        echo "  WARN: could not enable jasper-usbmic dependency links"
     systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
         echo "  WARN: jasper-usbgadget failed to enable/compose — check 'systemctl status jasper-usbgadget' and 'journalctl -u jasper-usbgadget' (pre-reboot no-UDC is a clean skip, not this error)"
     systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
@@ -684,6 +679,19 @@ enable_usbgadget() {
         echo "  ERROR: jasper-usbgadget did not converge to the desired composition; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
         return 1
     }
+}
+
+enable_usbmic_relay() {
+    # The relay is dependency-enabled (not independently boot-started). Its
+    # ExecCondition keeps it inert unless the wizard intent + descriptor are
+    # both On; the wants links let either gadget or AEC recovery bring it back.
+    #
+    # FULL PROFILE ONLY. Both [Install] wants links and the ExecCondition's
+    # last gate name jasper-aec-bridge.service, which park_streambox_brain_units
+    # disables: on a streambox the enable would only plant a .wants link on a
+    # parked unit for a relay that can never pass its own condition (#4139).
+    systemctl enable jasper-usbmic.service >/dev/null 2>&1 || \
+        echo "  WARN: could not enable jasper-usbmic dependency links"
 }
 
 install_grouping_unit_files() {
@@ -1187,10 +1195,15 @@ park_streambox_brain_units() {
     # jasper-input is out for the same reason: it translates HID key events into
     # jasper-control HTTP calls, and jasper-control runs on both profiles. A
     # streambox with a paired volume remote must keep its buttons.
+    #
+    # jasper-usbmic IS in: the host-microphone relay is PartOf= and WantedBy=
+    # jasper-aec-bridge, and its ExecCondition's last gate is that bridge being
+    # active — all three parked here — so a full->streambox conversion would
+    # otherwise leave an enabled relay that can never run (#4139).
     local brain_unit
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
-        jasper-aec-reconcile.service \
+        jasper-aec-reconcile.service jasper-usbmic.service \
         jasper-enhanced-aec-install.service jasper-enhanced-aec-reconcile.path \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
@@ -1552,7 +1565,11 @@ install_systemd_units() {
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition
     # skips cleanly when the resolved role cannot provide management transport
-    # or no UDC exists yet.
+    # or no UDC exists yet. enable_usbmic_relay only PLANTS the relay's wants
+    # links; jasper-usbgadget is RemainAfterExit=yes, so its `enable --now`
+    # starts nothing on an already-composed box. The boot-time WantedBy pull and
+    # jasper-usbgadget-compose.sh's try-restart are what run the relay.
+    enable_usbmic_relay
     enable_usbgadget
 
     # Migrate wizard services from always-on to socket-activated.

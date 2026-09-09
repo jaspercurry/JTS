@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -46,12 +47,14 @@ def _bash(
     script: str,
     *,
     env: dict[str, str] | None = None,
+    strict: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
+    prelude = "set -euo pipefail\n" if strict else ""
     return subprocess.run(
-        ["bash", "-c", f'source "{LIB}"\n{script}'],
+        ["bash", "-c", f'{prelude}source "{LIB}"\n{script}'],
         check=False,
         text=True,
         capture_output=True,
@@ -217,6 +220,53 @@ def test_env_file_seed_absent_reports_a_failed_write_apart_from_a_refusal(
 
     assert result.returncode == 1
     assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("flock") is None,
+    reason="without flock the lock is refused and the render is never reached",
+)
+@pytest.mark.parametrize("strict", [False, True], ids=["lax", "euo-pipefail"])
+@pytest.mark.parametrize(
+    "call",
+    [
+        'jasper_env_file_set "{path}" KEEP two 0644 0755',
+        'jasper_env_file_unset "{path}" KEEP 0644',
+    ],
+)
+def test_env_file_writers_never_publish_a_truncated_render(
+    tmp_path: Path, call: str, strict: bool
+) -> None:
+    """A render that failed mid-write must not be renamed over the good file.
+
+    Both single-key writers build the new content with `awk ... > $tmp`. A
+    redirect that runs out of space leaves $tmp short but complete-looking, and
+    an unguarded publish then installs that truncation atomically over a file
+    every reader trusts. Both callers run under `set -euo pipefail`, so the
+    guard is pinned there too. Removal condition: the bash env-file writers are
+    replaced by the Python owner.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake_awk = bindir / "awk"
+    fake_awk.write_text("#!/bin/sh\nprintf 'KEE'\nexit 1\n", encoding="utf-8")
+    fake_awk.chmod(0o755)
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("KEEP=one\n", encoding="utf-8")
+
+    result = _bash(
+        call.format(path=env_file),
+        env={"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"},
+        strict=strict,
+    )
+
+    # A refused lock returns 1 without ever rendering, which would pass every
+    # assertion below vacuously.
+    assert "event=env_file.lock_failed" not in result.stderr, result.stderr
+    assert (tmp_path / f".{env_file.name}.lock").is_file()
+    assert result.returncode == 1, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=one\n"
+    assert list(tmp_path.glob(".KEEP.*")) == []
 
 
 def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
