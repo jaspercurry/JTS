@@ -39,6 +39,7 @@ from jasper.web import (
     spotify_setup,
     system_setup,
     tools_setup,
+    transit_setup,
     voice_setup,
     wake_corpus_setup,
     wake_setup,
@@ -461,6 +462,11 @@ _TABLED_WIZARD_FACTORIES = {
         },
     ),
     "wifi_setup": wifi_setup._make_handler,
+    "transit_setup": lambda: transit_setup._make_handler({
+        "state_path": "/tmp/jts-test-transit.env",
+        "routes_secret_path": "/tmp/jts-test-transit-routes.env",
+        "weather_path": "/tmp/jts-test-transit-weather.env",
+    }),
     "voice_setup": lambda: voice_setup._make_handler({
         "state_path": "/tmp/jts-test-voice-provider.env",
         "keys_path": "/tmp/jts-test-voice-keys.env",

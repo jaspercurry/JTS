@@ -75,13 +75,12 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     api_key_token_is_valid,
     begin_request,
-    reject_csrf,
+    form_guarded,
     send_html_response,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
-    read_form,
     restart_voice_daemon,
+    route_path,
     SECRET_ENV_MODE,
 )
 from .chrome import safe_back_href
@@ -443,176 +442,180 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         "weather_path": cfg.get("weather_path", location_state.WEATHER_FILE),
     }
 
+    # The route tables live in this closure so the bodies can read `cfg`.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        state = _load_state(cfg["state_path"])
+        ctx = begin_request(handler)
+        # Wrap render in a top-level guard: an unexpected
+        # exception (corrupt CSV, malformed env file, etc.)
+        # should yield a useful page with a diagnostic banner
+        # rather than 500ing the whole route. The wizard's job
+        # is to tell the user what to do next.
+        try:
+            routes_state = read_env_file(cfg["routes_secret_path"])
+            body = _index_html(
+                state,
+                ctx["csrf_token"],
+                routes_state=routes_state,
+                status_msg=ctx["flash"],
+                back_href=safe_back_href(
+                    (qs.get("return_to") or [""])[0],
+                    default="/assistant/",
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("transit wizard render failed")
+            body = _wrap_transit_page(
+                "Transit",
+                f'<div class="banner banner--danger" role="status">'
+                f'Couldn\'t render the page: {html.escape(str(e))}. '
+                f'Check the daemon logs for the full traceback '
+                f'(<code>journalctl -u jasper-web</code>).</div>',
+            )
+        send_html_response(handler, body)
+
+    @form_guarded
+    def _post_geocode(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        new, err = _apply_geocode(form, current)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        try:
+            _locked_apply(cfg["state_path"], current, new)
+            _seed_weather_from_transit_if_missing(
+                new, weather_path=cfg["weather_path"],
+            )
+        except OSError as e:
+            logger.exception("could not write transit.env after geocode")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        display = new.get(DISPLAY_NAME_ENV, "")
+        # Geocoded coordinates and display names reveal the household's
+        # location, so record only that a successful mutation landed.
+        log_event(logger, "transit.geocode", client=handler.address_string())
+        send_see_other(handler, "./", flash=f"Found location: {display}")
+
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        new, err = _apply_save(form, current)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        routes_current = read_env_file(cfg["routes_secret_path"])
+        routes_new, routes_err = _apply_routes_save(form, routes_current)
+        if routes_err is not None:
+            send_see_other(handler, "./", flash=routes_err)
+            return
+        try:
+            _locked_apply(cfg["state_path"], current, new)
+            if new:
+                _seed_weather_from_transit_if_missing(
+                    new, weather_path=cfg["weather_path"],
+                )
+            if routes_new:
+                write_env_file(
+                    cfg["routes_secret_path"],
+                    routes_new,
+                    mode=SECRET_ENV_MODE,
+                )
+            else:
+                delete_env_file(cfg["routes_secret_path"])
+        except OSError as e:
+            logger.exception("could not write transit.env after save")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        # No station/stop/dock IDs in the log — those reveal the
+        # household's home location. Record only that a save landed.
+        log_event(logger, "transit.save", client=handler.address_string())
+        restart_voice_daemon()
+        send_see_other(handler, "./", flash="Saved. Voice daemon restarting.")
+
+    @form_guarded
+    def _post_cities(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        new = _apply_cities(form, current)
+        # _apply_cities always sets JASPER_TRANSIT_CITIES (possibly empty),
+        # so `new` is never an empty dict — write, never delete. (Coords are
+        # normally present too, since the cities form only renders with
+        # coords; a hand-crafted coords-less POST just persists the toggle,
+        # which is harmless.)
+        try:
+            _locked_apply(cfg["state_path"], current, new)
+        except OSError as e:
+            logger.exception("could not write transit.env after cities save")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        log_event(
+            logger,
+            "transit.cities",
+            cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
+            client=handler.address_string(),
+        )
+        restart_voice_daemon()
+        send_see_other(
+            handler, "./", flash="Saved cities. Voice daemon restarting.",
+        )
+
+    @form_guarded
+    def _post_clear(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        new = _apply_clear(current)
+        # _apply_clear always records JASPER_TRANSIT_CITIES="" (present-empty
+        # = "no cities"), so `new` is never empty — always write, never
+        # delete. Deleting would drop the key back to ABSENT, which reads as
+        # "all packs eligible" and would wrongly re-enable every city.
+        try:
+            _locked_apply(cfg["state_path"], current, new)
+            delete_env_file(cfg["routes_secret_path"])
+        except OSError as e:
+            logger.exception("could not write transit.env after clear")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        log_event(logger, "transit.clear", client=handler.address_string())
+        restart_voice_daemon()
+        send_see_other(
+            handler, "./",
+            flash="Cleared transit settings. Voice restarting.",
+        )
+
+    _GET_ROUTES = {"/": _get_index}
+    _POST_ROUTES = {
+        "/geocode": _post_geocode,
+        "/save": _post_save,
+        "/cities": _post_cities,
+        "/clear": _post_clear,
+    }
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                state = _load_state(cfg["state_path"])
-                ctx = begin_request(self)
-                # Wrap render in a top-level guard: an unexpected
-                # exception (corrupt CSV, malformed env file, etc.)
-                # should yield a useful page with a diagnostic banner
-                # rather than 500ing the whole route. The wizard's job
-                # is to tell the user what to do next.
-                try:
-                    routes_state = read_env_file(cfg["routes_secret_path"])
-                    body = _index_html(
-                        state,
-                        ctx["csrf_token"],
-                        routes_state=routes_state,
-                        status_msg=ctx["flash"],
-                        back_href=safe_back_href(
-                            (qs.get("return_to") or [""])[0],
-                            default="/assistant/",
-                        ),
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("transit wizard render failed")
-                    body = _wrap_transit_page(
-                        "Transit",
-                        f'<div class="banner banner--danger" role="status">'
-                        f'Couldn\'t render the page: {html.escape(str(e))}. '
-                        f'Check the daemon logs for the full traceback '
-                        f'(<code>journalctl -u jasper-web</code>).</div>',
-                    )
-                send_html_response(self, body)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            # Route-check before CSRF-check: unknown paths return 404
-            # without consuming the request body or revealing the CSRF
-            # state. Matches what every test asserts.
-            if path not in ("/geocode", "/save", "/clear", "/cities"):
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
+            if not guard_read_request(self):
                 return
-            if path == "/geocode":
-                self._handle_geocode(form)
-                return
-            if path == "/save":
-                self._handle_save(form)
-                return
-            if path == "/cities":
-                self._handle_cities(form)
-                return
-            if path == "/clear":
-                self._handle_clear()
-                return
+            handler_fn(self)
 
-        def _handle_geocode(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
-            new, err = _apply_geocode(form, current)
-            if err is not None:
-                send_see_other(self, "./", flash=err)
+        def do_POST(self) -> None:  # noqa: N802
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            try:
-                _locked_apply(cfg["state_path"], current, new)
-                _seed_weather_from_transit_if_missing(
-                    new, weather_path=cfg["weather_path"],
-                )
-            except OSError as e:
-                logger.exception("could not write transit.env after geocode")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            display = new.get(DISPLAY_NAME_ENV, "")
-            # Geocoded coordinates and display names reveal the household's
-            # location, so record only that a successful mutation landed.
-            log_event(logger, "transit.geocode", client=self.address_string())
-            send_see_other(self, "./", flash=f"Found location: {display}")
-
-        def _handle_save(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
-            new, err = _apply_save(form, current)
-            if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
-            routes_current = read_env_file(cfg["routes_secret_path"])
-            routes_new, routes_err = _apply_routes_save(form, routes_current)
-            if routes_err is not None:
-                send_see_other(self, "./", flash=routes_err)
-                return
-            try:
-                _locked_apply(cfg["state_path"], current, new)
-                if new:
-                    _seed_weather_from_transit_if_missing(
-                        new, weather_path=cfg["weather_path"],
-                    )
-                if routes_new:
-                    write_env_file(
-                        cfg["routes_secret_path"],
-                        routes_new,
-                        mode=SECRET_ENV_MODE,
-                    )
-                else:
-                    delete_env_file(cfg["routes_secret_path"])
-            except OSError as e:
-                logger.exception("could not write transit.env after save")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            # No station/stop/dock IDs in the log — those reveal the
-            # household's home location. Record only that a save landed.
-            log_event(logger, "transit.save", client=self.address_string())
-            restart_voice_daemon()
-            send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
-
-        def _handle_cities(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
-            new = _apply_cities(form, current)
-            # _apply_cities always sets JASPER_TRANSIT_CITIES (possibly empty),
-            # so `new` is never an empty dict — write, never delete. (Coords are
-            # normally present too, since the cities form only renders with
-            # coords; a hand-crafted coords-less POST just persists the toggle,
-            # which is harmless.)
-            try:
-                _locked_apply(cfg["state_path"], current, new)
-            except OSError as e:
-                logger.exception("could not write transit.env after cities save")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            log_event(
-                logger,
-                "transit.cities",
-                cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
-                client=self.address_string(),
-            )
-            restart_voice_daemon()
-            send_see_other(
-                self, "./", flash="Saved cities. Voice daemon restarting.",
-            )
-
-        def _handle_clear(self) -> None:
-            current = _load_state(cfg["state_path"])
-            new = _apply_clear(current)
-            # _apply_clear always records JASPER_TRANSIT_CITIES="" (present-empty
-            # = "no cities"), so `new` is never empty — always write, never
-            # delete. Deleting would drop the key back to ABSENT, which reads as
-            # "all packs eligible" and would wrongly re-enable every city.
-            try:
-                _locked_apply(cfg["state_path"], current, new)
-                delete_env_file(cfg["routes_secret_path"])
-            except OSError as e:
-                logger.exception("could not write transit.env after clear")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            log_event(logger, "transit.clear", client=self.address_string())
-            restart_voice_daemon()
-            send_see_other(
-                self, "./",
-                flash="Cleared transit settings. Voice restarting.",
-            )
+            handler_fn(self)
 
     return Handler
 
