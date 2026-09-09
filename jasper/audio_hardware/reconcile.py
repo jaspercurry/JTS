@@ -1236,6 +1236,11 @@ class Pass:
                 preserved_existing=1,
             )
             return False
+        # BEFORE the byte-compare, or a narrow-wire box never converges: the
+        # source ships the wide aloop aliases, so a candidate compared wide
+        # would differ from the narrowed live template on EVERY pass and stop
+        # jasper-voice with it (#3580).
+        aloop_lane_render = self.render_aloop_lane_wire_candidate(tmp)
         os.chmod(tmp, 0o644)
         if destination.is_file() and destination.read_bytes() == Path(tmp).read_bytes():
             os.unlink(tmp)
@@ -1275,8 +1280,31 @@ class Pass:
             output_dac_card=self.output_dac_card,
             outputd_active_mode=int(self.outputd_active_mode),
             outputd_active_channels=_log_token(self.outputd_active_channels),
+            aloop_lane_wire=aloop_lane_render,
         )
         return True
+
+    def render_aloop_lane_wire_candidate(self, candidate: str) -> str:
+        """Narrow the candidate template's snd-aloop lane aliases to this box's
+        resolved ring wire (#3580). Best-effort: an unrenderable candidate keeps
+        the shipped wide aliases, which jasper-doctor's
+        ``check_fanin_asound_wiring`` names on a box that declared narrow.
+        """
+        from jasper.fanin_coupling import resolve_ring_wire  # lazy: ADR-0226
+        from jasper.ring_assets import render_aloop_lane_wire  # lazy: ADR-0226
+
+        try:
+            return render_aloop_lane_wire(
+                candidate, resolve_ring_wire(self.saved_topology()).sample_format
+            )
+        # noqa reason: same posture as the ring conf.d render — a failure leaves
+        # the shipped wire in place and must not abort a hardware reconcile.
+        except Exception as exc:  # noqa: BLE001
+            self.log(
+                "aloop_lane_wire_failed",
+                detail=_log_token(f"{type(exc).__name__}: {exc}"),
+            )
+            return "failed"
 
     def render_ring_conf_if_needed(self) -> None:
         """Render the shm-ring conf.d slot period from the ACTIVE DAC's
@@ -1320,8 +1348,10 @@ class Pass:
             ring_b_channels=report.get("ring_b_channels") or "none",
             ring_active_channels=report.get("ring_active_channels") or "none",
             topology=report.get("topology") or "none",
+            lane_result=report.get("lane_result") or "none",
             reason=report.get("reason") or "none",
             ring_conf=_log_token(report.get("conf") or ""),
+            lane_conf=_log_token(report.get("lane_conf") or ""),
         )
 
     def render_flat_cutover_if_needed(self) -> None:

@@ -4107,3 +4107,124 @@ def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
     assert payload["reason"] != "commission_load_already_active"
     # The refusal is actionable as DATA too, not only as prose.
     assert payload["active_target"] == "mono/tweeter", payload
+
+
+def _narrow_wire():
+    from jasper import ring_assets as ra
+    from jasper.fanin_coupling import RingWire
+
+    return RingWire(
+        period_frames=ra.RING_SLOT_FRAMES,
+        sample_format="S16_LE",
+        ring_a_channels=2,
+        ring_b_channels=2,
+        ring_active_channels=None,
+    )
+
+
+def _staged_ring_and_lane_conf_d(tmp_path):
+    """The two shipped conf.d drop-ins, staged as the siblings they install as."""
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
+    lanes = tmp_path / "61-jts-renderer-lanes.conf"
+    lanes.write_text(
+        (REPO / "deploy/alsa/conf.d/61-jts-renderer-lanes.conf").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    return conf, lanes
+
+
+def test_a_narrow_wire_renders_the_lane_conf_d_beside_the_ring_conf_d(tmp_path):
+    """One resolved wire narrows the ring conf.d and the renderer-lane conf.d
+    together (#3580).
+
+    The shipped lane file declares ``format S32_LE`` statically; before this
+    rung a box pinning ``JASPER_FANIN_RING_WIRE_FORMAT`` narrowed only the
+    program ring and the renderer's ``snd_pcm_open`` refused.
+    """
+    from jasper import ring_assets as ra
+    from jasper.renderer_lanes import RENDERER_LANES, ring_conf_pcm_name
+
+    conf, lanes = _staged_ring_and_lane_conf_d(tmp_path)
+
+    outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
+
+    assert outcome.changed is True
+    assert outcome.lane_conf_d == str(lanes)
+    assert outcome.lane_result == "rendered"
+    lane_text = lanes.read_text(encoding="utf-8")
+    assert lane_text.count("format S16_LE") == len(RENDERER_LANES)
+    for lane in RENDERER_LANES:
+        assert ra.conf_block_body(
+            lane_text, ring_conf_pcm_name(lane.label)
+        ).count("format S16_LE") == 1
+    for pcm_name in ra.RING_CONF_PCMS:
+        assert ra.ring_conf_format(pcm_name, str(conf)) == "S16_LE"
+
+    # Idempotent: a box already on the resolved wire is left byte-identical.
+    again = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
+    assert again.changed is False
+    assert again.lane_result == "skipped"
+
+
+def test_an_absent_lane_conf_d_is_a_skip_not_a_failed_render(tmp_path):
+    """Mid-upgrade and pre-lane boxes: the ring still renders (#3580)."""
+    from jasper import ring_assets as ra
+
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
+
+    outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
+
+    assert outcome.changed is True
+    assert outcome.lane_result == "skipped"
+
+
+def test_an_unwritable_lane_conf_d_never_costs_the_box_its_ring_render(
+    tmp_path, monkeypatch
+):
+    """The ring conf.d is published FIRST and the lane failure is reported as a
+    field, not raised (#3580). Both files share one directory, so the failure
+    is injected at the writer rather than with a mode."""
+    from jasper import atomic_io, ring_assets as ra
+
+    conf, lanes = _staged_ring_and_lane_conf_d(tmp_path)
+    real = atomic_io.atomic_write_text
+
+    def refuse_the_lane_file(path, text, **kwargs):
+        if str(path) == str(lanes):
+            raise PermissionError(13, "read-only")
+        return real(path, text, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", refuse_the_lane_file)
+
+    outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
+
+    assert outcome.lane_result == "failed"
+    # The ring conf.d itself still carries the narrowed wire.
+    for pcm_name in ra.RING_CONF_PCMS:
+        assert ra.ring_conf_format(pcm_name, str(conf)) == "S16_LE"
+
+
+def test_the_aloop_lane_aliases_narrow_from_the_same_resolved_wire(tmp_path):
+    """The lane's OTHER ingress end (#3580): the reconcile applies this to the
+    asound template it renders, so both halves of a cable name one format."""
+    from jasper import ring_assets as ra
+    from jasper.renderer_lanes import RENDERER_LANES
+
+    template = tmp_path / "asoundrc.jasper.template"
+    template.write_text(
+        (REPO / "deploy/alsa/asoundrc.jasper").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    assert ra.render_aloop_lane_wire(str(template), "S16_LE") == "rendered"
+
+    text = template.read_text(encoding="utf-8")
+    for lane in RENDERER_LANES:
+        assert ra.conf_block_body(text, lane.aloop_device).count("format S16_LE") == 1
+    # Second pass on an already-narrow file writes nothing.
+    assert ra.render_aloop_lane_wire(str(template), "S16_LE") == "skipped"
+    assert ra.render_aloop_lane_wire(str(tmp_path / "absent"), "S16_LE") == "skipped"

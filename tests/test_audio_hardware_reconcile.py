@@ -168,6 +168,10 @@ def _reconcile_env(
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(tmp_path / "output_topology.json"),
             "JASPER_CAMILLA2_STATEFILE": str(tmp_path / "crossover-statefile.yml"),
             "JASPER_CAMILLA_CONF_DIR": str(tmp_path / "camilladsp"),
+            # Same reason, for the ring conf.d the wire render REWRITES: without
+            # it a pass on a box that has ALSA drop-ins installed renders the
+            # live /etc/alsa/conf.d pair. Staged by _staged_ring_conf().
+            "JASPER_RING_CONF_D": str(tmp_path / "60-jts-ring.conf"),
             # Hermetic: source the repo's shared lib, never a stale installed
             # copy under /usr/local/lib.
             "JASPER_ASOUND_RENDER_LIB": str(
@@ -718,11 +722,12 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
     )
     assert resolved["ring_active_channels"], "the shape under test never rendered"
     fields = stderr_event(result.stderr, "audio_hardware_reconcile.ring_conf")
-    # `conf` is journalled as a log token, so compare the key set plus the
-    # values that travel verbatim.
-    assert set(resolved) - {"conf"} <= set(fields)
+    # The two conf.d paths are journalled as log tokens, so compare the key set
+    # plus the values that travel verbatim.
+    tokenised = {"conf", "lane_conf"}
+    assert set(resolved) - tokenised <= set(fields)
     for name, value in resolved.items():
-        if name != "conf":
+        if name not in tokenised:
             assert fields[name] == value, name
 
 
@@ -2936,6 +2941,65 @@ def test_render_success_still_writes_template(tmp_path: Path):
         "pcm.outputd_dac",
         "card sndrpihifiberry",
     )
+
+
+def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#3580: the shipped source declares the WIDE snd-aloop aliases, so the
+    candidate must be narrowed to this box's resolved wire BEFORE it is compared
+    with the live template. Compared wide, it differed from a narrowed box's
+    live template on EVERY pass — `render_changed=1`, and `restart_audio` stops
+    jasper-voice once per reconcile on a box that changed nothing.
+    """
+    from jasper import env_load
+    from jasper.renderer_lanes import RENDERER_LANES
+
+    fanin_env = tmp_path / "declared-fanin.env"
+    fanin_env.write_text("JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n", encoding="utf-8")
+    monkeypatch.setattr(env_load, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(env_load, "BASE_ENV_PATH", str(tmp_path / "absent.env"))
+    source = tmp_path / "shipped-asoundrc.jasper.source"
+    source.write_text(
+        (ROOT / "deploy" / "alsa" / "asoundrc.jasper").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    shipped_source = {"JASPER_ASOUND_SOURCE_TEMPLATE": str(source)}
+
+    first = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "first",
+        extra_env=shipped_source,
+    )
+    assert first.returncode == 0, first.stderr
+    assert stderr_event(first.stderr, "audio_hardware_reconcile.asound_rendered")
+    first_complete = stderr_event(first.stderr, "audio_hardware_reconcile.complete")
+    assert first_complete["render_changed"] == "1"
+    # The narrowing is what the second pass has to agree with.
+    template = _template(tmp_path)
+    assert template.count("format S16_LE") == len(RENDERER_LANES), template
+    after_first = _systemctl_log(tmp_path)
+
+    second = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "second",
+        extra_env=shipped_source,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert not stderr_events(second.stderr, "audio_hardware_reconcile.asound_rendered")
+    second_complete = stderr_event(second.stderr, "audio_hardware_reconcile.complete")
+    assert second_complete["render_changed"] == "0"
+    assert _template(tmp_path) == template
+    _assert_omits(
+        _systemctl_log(tmp_path)[len(after_first) :], "stop jasper-voice.service"
+    )
+    # One render of the live asound.conf, not one per pass.
+    assert _render_log(tmp_path) == "render\n"
 
 
 def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: Path):
