@@ -291,8 +291,10 @@ def _service_state_failure(
     """The systemd verdict for a MANDATORY audio-path unit: the actionable
     failure, or ``None`` when it is installed, enabled and active.
 
-    One ladder for jasper-fanin, jasper-camilla and jasper-outputd — each
-    passes its own three reason codes. All three units carry an ``[Install]``
+    One ladder for jasper-fanin and jasper-outputd — each passes its own
+    three reason codes. (jasper-camilla's own ladder is
+    :func:`jasper.service_units.camilla_not_running`, shared with
+    :mod:`jasper.control.audio_health`.) Both units carry an ``[Install]``
     section, so anything other than ``enabled``/``enabled-runtime`` (including
     ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
     come up on its own. `journalctl -u <unit>` is the next step for every
@@ -344,8 +346,9 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
-# NO audio-path unit: `_service_state_failure` (jasper-fanin, jasper-camilla)
-# and resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
+# NO audio-path unit: `_service_state_failure` (jasper-fanin),
+# `service_units.camilla_not_running` (jasper-camilla) and
+# resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
 # record and all) own their runtime state, so one down unit is one fail row.
 _RUNTIME_STATE_UNITS = (
     "nginx.service",

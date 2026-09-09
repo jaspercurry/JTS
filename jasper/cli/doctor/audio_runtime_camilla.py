@@ -34,6 +34,7 @@ from ...camilla_config_contract import (
 )
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
+from ...service_units import camilla_not_running
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -42,7 +43,7 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_UNREADABLE,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
     _group_writable_dir,
-    _service_state_failure,
+    _systemctl_unavailable_result,
 )
 
 REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
@@ -88,25 +89,40 @@ def check_camilla_service() -> CheckResult:
 
     Owns the CLEAN-stop state its peers miss (#2163): `check_service_runtime_state`
     flags only `failed`, and `check_camilla_websocket` reports it as an
-    unreachable 127.0.0.1:1234. "Enabled but not active" is unambiguous here
-    because CamillaDSP has no gate that makes `inactive` legitimate, unlike
-    jasper-outputd (missing-DAC `ExecCondition`) or jasper-voice
-    (`voice-input-absent` marker).
+    unreachable 127.0.0.1:1234.
 
     Returns:
-      - ok when enabled and active.
-      - fail when the unit is missing, disabled, or enabled and not active.
+      - ok when active.
+      - fail when the unit is missing, disabled, or not active — see
+        :func:`jasper.service_units.camilla_not_running`.
     """
     label = "jasper-camilla service"
-    service_failure = _service_state_failure(
-        label,
-        "jasper-camilla.service",
-        missing=REASON_CAMILLA_UNIT_MISSING,
-        not_enabled=REASON_CAMILLA_UNIT_NOT_ENABLED,
-        inactive=REASON_CAMILLA_INACTIVE,
-    )
-    if service_failure is not None:
-        return service_failure
+    unit = "jasper-camilla.service"
+    state = evidence.unit_state(unit)
+    if state is None:
+        return _systemctl_unavailable_result(label)
+    code = camilla_not_running(state)
+    if code == "missing":
+        return CheckResult(
+            label, "fail", f"{unit} is not installed. Re-run install.sh.",
+            reason=REASON_CAMILLA_UNIT_MISSING, speaker_silent=True,
+        )
+    if code == "not_enabled":
+        enabled = state.get("unit_file_state")
+        return CheckResult(
+            label, "fail",
+            f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
+            f"sudo systemctl enable --now {unit}",
+            reason=REASON_CAMILLA_UNIT_NOT_ENABLED, speaker_silent=True,
+        )
+    if code is not None:
+        active = state.get("active_state")
+        return CheckResult(
+            label, "fail",
+            f"{unit} is enabled but state={active or 'unknown'}. "
+            f"Check: journalctl -u {unit}",
+            reason=REASON_CAMILLA_INACTIVE, speaker_silent=True,
+        )
     return CheckResult(label, "ok", "enabled and active")
 
 

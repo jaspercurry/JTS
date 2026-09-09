@@ -165,6 +165,43 @@ def unit_activating(record: Mapping[str, Any] | None) -> bool:
     return str(record.get("active_state") or "") == "activating"
 
 
+def camilla_not_running(record: Mapping[str, Any] | None) -> str | None:
+    """Small stable code for a ``jasper-camilla.service`` record that is not
+    doing its job, or ``None`` when ``active_state == "active"``.
+
+    Codes: ``"missing"`` (``load_state`` ``error``/``not-found``),
+    ``"not_enabled"`` (loaded, but ``unit_file_state`` is neither
+    ``enabled`` nor ``enabled-runtime``), ``"failed"``
+    (``active_state == "failed"``), ``"inactive"`` (anything else
+    non-active — a clean stop, a jasper-camilla-recover park (ADR-0175), and
+    mid-transition ``activating``/``reloading`` alike).
+
+    The one reading shared by :mod:`jasper.control.audio_health` and
+    jasper-doctor's ``check_camilla_service``. Scoped to CamillaDSP rather
+    than generalised over the other core units: those carry a legitimate
+    parked-inactive state of their own (jasper-outputd's missing-DAC
+    ``ExecCondition``, jasper-voice's ``voice-input-absent`` marker) while
+    CamillaDSP has no ``Condition*``/``ExecCondition`` and runs
+    ``Restart=always``, so "not active" is unambiguous here. A caller that
+    also treats ``activating``/``reloading`` as still-coming-up rather than a
+    verdict checks ``active_state`` itself before calling this.
+    """
+    if not record:
+        return None
+    load_state = str(record.get("load_state") or "")
+    if load_state in {"error", "not-found"}:
+        return "missing"
+    unit_file_state = str(record.get("unit_file_state") or "")
+    if unit_file_state not in {"enabled", "enabled-runtime"}:
+        return "not_enabled"
+    active_state = str(record.get("active_state") or "")
+    if active_state == "active":
+        return None
+    if active_state == "failed":
+        return "failed"
+    return "inactive"
+
+
 def systemd_int(value: str | None) -> int | None:
     """An integer property, or None for unset: an empty value, a bracketed
     placeholder such as ``[not set]``, or UINT64_MAX (systemd's unset
