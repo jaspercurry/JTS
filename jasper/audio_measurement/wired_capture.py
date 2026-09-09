@@ -68,6 +68,7 @@ from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_RENDER_GAPS,
     REPORT_KEY_RENDER_GAP_FRAMES,
 )
+from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
 __all__ = [
     "CODE_WIRED_MIC_MISSING",
@@ -483,28 +484,41 @@ def _as_frames_array(recording: WiredRecording) -> Any:
     return samples[:usable].reshape(-1, recording.channels)
 
 
-def select_capture_channel(recording: WiredRecording) -> tuple[int, Any, tuple[float, ...]]:
+def select_capture_channel(
+    recording: WiredRecording, *, declared_channel: int | None = None,
+) -> tuple[int, Any, tuple[float, ...]]:
     """Pick the channel that actually carries the microphone.
 
-    The UMIK-2 presents 2 channels around ONE physical capsule; which slot carries signal is a
-    firmware fact this code must not assume. Selection is by energy: highest RMS wins, ties
-    (including all-silent) resolve to channel 0 — a both-silent capture is then refused by the
-    analyzer's own sweep-not-heard gate, so selection never manufactures a verdict.
-
-    Returns ``(channel_index, mono_int32_array, per_channel_rms_dbfs)``.
+    A declared channel wins; otherwise the highest RMS does. Returns the
+    selected index, its mono samples, and every channel's RMS dBFS.
     """
     import numpy as np
 
+    if (
+        declared_channel is not None
+        and (
+            isinstance(declared_channel, bool)
+            or not isinstance(declared_channel, int)
+            or not 0 <= declared_channel < recording.channels
+        )
+    ):
+        raise WiredCaptureError(
+            f"declared capture channel {declared_channel!r} is outside "
+            f"the device's {recording.channels} channels"
+        )
     frames = _as_frames_array(recording)
     if frames.size == 0:
-        return 0, frames.reshape(0), (float("-inf"),) * recording.channels
+        selected = declared_channel if declared_channel is not None else 0
+        return selected, frames.reshape(0), (float("-inf"),) * recording.channels
     scale = float(np.iinfo(np.int32).max)
     rms_dbfs: list[float] = []
     for channel in range(recording.channels):
         column = frames[:, channel].astype(np.float64) / scale
         rms = float(np.sqrt(np.mean(np.square(column))))
         rms_dbfs.append(20.0 * np.log10(rms) if rms > 0 else float("-inf"))
-    best = int(np.argmax(rms_dbfs)) if rms_dbfs else 0
+    best = declared_channel
+    if best is None:
+        best = int(np.argmax(rms_dbfs)) if rms_dbfs else 0
     return best, np.ascontiguousarray(frames[:, best]), tuple(rms_dbfs)
 
 
@@ -669,7 +683,12 @@ def mint_wired_answer(
     Resolving it is host policy, so it stays outside this leaf; a door with no
     household session simply passes nothing and the take is uncalibrated.
     """
-    channel, mono, rms_dbfs = select_capture_channel(recording)
+    declared_channel = SUPPORTED_MODELS.get(device.model_key, {}).get(
+        "capture_channel"
+    )
+    channel, mono, rms_dbfs = select_capture_channel(
+        recording, declared_channel=declared_channel,
+    )
     zero_count, zero_runs = scan_zero_runs(mono)
     wav, encoded_frames = encode_wav_s32(
         mono, sample_rate_hz=recording.sample_rate_hz
@@ -702,12 +721,9 @@ def make_wired_recorder(
 
     The channel count is the one fact about a capture card that is neither on
     the device record nor derivable from the PCM name, so it is read from
-    ``SUPPORTED_MODELS`` where a model declares ``capture_channels``. No model
-    declares one today, so every supported mic opens at the UMIK-2's 2 — the
-    lookup is what a mono measurement mic would be registered through.
+    ``SUPPORTED_MODELS`` where a model declares ``capture_channels``. The
+    default remains 2 so a future mono measurement mic can be registered there.
     """
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-
     channels = int(
         SUPPORTED_MODELS.get(device.model_key, {}).get("capture_channels", 2)
     )
