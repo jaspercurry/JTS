@@ -5,8 +5,9 @@ program (issue #4502). Read this file, then `seat-tuning-program/PLAN.md` §9
 (status log, newest first — it carries every ruling below with its evidence),
 then `briefs/wave-3-bass.md` for the lane still landing.
 
-True as of 2026-09-09 ~15:15Z. This is the second handoff; the first one's
-plan for lane D was wrong about the branch topology, and §1 explains how.
+True as of 2026-09-09 ~15:35Z, `origin/main` at `4157a6030`. This is the
+second handoff; the first one's plan for lane D was wrong about the branch
+topology, and §1 explains how.
 
 ## 1. Where the program stands
 
@@ -16,21 +17,38 @@ only unfinished lane and is mid-landing.**
 
 | Row | State |
 |---|---|
-| 3.2 `bass-fit` view | **PR #4641, merging** — reviewed, fixed, CI green |
-| 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE** — 4 must-fixes + 2 blockers, fix agent's round in flight |
+| 3.2 `bass-fit` view | **LANDED** — PR #4641 squash-merged at `4157a6030` |
+| 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE.** Head `2d409cdb3`, 9 commits, **conflicted against main**. 4 must-fixes + 2 adversarial blockers; a fix agent's round was in flight at handoff, so re-read the head before judging |
 | 3.2b adapters honour the margin policy | **not started; gates 3.3** |
-| 3.3 candidate kind + emission | branch being built by an agent, stacked on 3.2; **NN** |
-| 3.4a rung graph | unopened branch `claude/seat-w3-3-4a-rung-graph`; **NN** |
-| 3.4b ladder view | unopened branch `claude/seat-w3-3-4b-ladder-view` |
-| 3.1 part 2 (`--live` binding) | unopened branch `claude/seat-w3-3-1b-bench-field` |
-| 3.5 docs | unopened branch `claude/seat-w3-3-5-bass-docs` |
+| 3.3 candidate kind + emission | branch `claude/seat-w3-3-3-bass-candidate-kind` at `732cfd388`, 13 ahead, **no PR**, conflicted; see §1a. **NN** |
+| 3.4a rung graph | unopened branch `claude/seat-w3-3-4a-rung-graph` (`628432b2b`); **NN** |
+| 3.4b ladder view | unopened branch `claude/seat-w3-3-4b-ladder-view` (`eda8ef1a5`) |
+| 3.1 part 2 (`--live` binding) | unopened branch `claude/seat-w3-3-1b-bench-field` (`a36c06172`) |
+| 3.5 docs | unopened branch `claude/seat-w3-3-5-bass-docs` (`12aba24f0`) |
 
-**The branch topology the first handoff got wrong.** The eight lane D branches
-are one stack (`3-2 → 3-3a → 3-3b → 3-4a → 3-4b`), an independent `3-1`, and
-`3-1b-bench-field`, which is a *merge* of `3-1` and `3-4a` plus two commits
-that consume 3.3's candidate field and 3.4a's scope. So "3.1 with 3.1b" cannot
-land first. Landing order: **3.1 part 1 ∥ 3.2 → 3.2b → 3.3 → 3.4a → 3.4b →
-3.1 part 2 → 3.5.**
+**The branch topology the first handoff got wrong.** The eight original lane D
+branches are one stack (`3-2 → 3-3a → 3-3b → 3-4a → 3-4b`), an independent
+`3-1`, and `3-1b-bench-field`, which is a *merge* of `3-1` and `3-4a` plus two
+commits that consume 3.3's candidate field and 3.4a's scope. So "3.1 with 3.1b"
+cannot land first. Landing order: **3.1 part 1 → 3.2b → 3.3 → 3.4a → 3.4b →
+3.1 part 2 → 3.5** (3.2 is done).
+
+### 1a. Row 3.3's branch needs a rebase that drops row 3.2's commits
+
+`claude/seat-w3-3-3-bass-candidate-kind` was built on top of row 3.2's branch
+*before* 3.2 squash-merged, so its first three commits (`b52eb253c`,
+`5c65cb146`, `6d7bb96ff`) are 3.2's content, now on main as one squashed
+commit. Replay only its own ten with
+`git rebase --onto origin/main 6d7bb96ff claude/seat-w3-3-3-bass-candidate-kind`.
+It has no PR yet and conflicts with main in three files:
+`docs/tuning-operator-runbook.md` (regenerate), `jasper/bass_extension/profile.py`
+(the `LADDER_INCOMPLETE` trap in §2.8) and
+`tests/test_active_speaker_baseline_profile.py`. Its ten commits go well past
+the original 3.3a/3.3b: they also delete the apply-intent record and retire the
+legacy profile's authority. **Review it as new work, not as a rebase of the
+pre-read.** The agent that built it never reported, so nothing about it has
+been verified — treat the pre-read at `/home/user/wt/PRE-3-3.md` (regenerate if
+the container is gone) as describing the *older* 3.3a/3.3b branches only.
 
 ## 2. Rulings already made — do not relitigate, all recorded in §9
 
@@ -52,14 +70,20 @@ land first. Landing order: **3.1 part 1 ∥ 3.2 → 3.2b → 3.3 → 3.4a → 3.
 6. **Per-driver caps come from the summed admission gate**, not from
    `assert_stimulus_band_protected`. Where the design and adversarial reviews
    disagreed on this, the adversarial reading won (see §4).
-7. **Wave 4 gained row 4.1b**, the contract-revision ADR, because the frozen
+8. **`BassExtensionRefusal.LADDER_INCOMPLETE` must survive every rebase.**
+   #4563 deleted it from `profile.py` as producer-less; row 3.4b's
+   `round_views/bass_ladder.py` uses it live. Lane D moved the enum to a new
+   `refusals.py` while main edited it in place, so git reports delete-vs-modify
+   in `profile.py` on every lane D rebase. Keep the move AND the member.
+9. **Wave 4 gained row 4.1b**, the contract-revision ADR, because the frozen
    protocol blocks all production wiring until one names the accepted bundle's
    fingerprint and authorizes a caller, and the tap amendment forbids "a
    scheduler" by name.
 
 ## 3. Findings still open
 
-- **#4643's six**: the sustain hold rendered as a sweep so admission judges it
+- **#4643's six** (a fix round was in flight at handoff — verify against the
+  head rather than assuming any are done): the sustain hold rendered as a sweep so admission judges it
   by a per-sweep ceiling (no campaign can ever reach `accepted` — this would
   have failed at the speaker during wave 4.1); the hand-composed play seam
   reverting to the engine's binder (`confirm_graph_is_live` fingerprints a

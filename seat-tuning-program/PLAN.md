@@ -318,6 +318,28 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 15:35Z: Handoff refreshed against verified state (`origin/main`
+  `4157a6030`). Two facts a successor must not get wrong:
+  - **Row 3.3 has a branch nobody has reviewed.**
+    `claude/seat-w3-3-3-bass-candidate-kind` (`732cfd388`, 13 ahead, no PR) was
+    built on row 3.2's pre-squash branch, so its first three commits are 3.2's
+    content now on main; replay only its own ten with
+    `git rebase --onto origin/main 6d7bb96ff`. Those ten go well past the
+    original 3.3a/3.3b — they also delete the apply-intent record and retire
+    the legacy profile's authority — and the agent that wrote them never
+    reported, so the earlier pre-read describes the *older* branches, not this
+    one. Review it as new work. It conflicts with main in the runbook menu,
+    `bass_extension/profile.py` and `tests/test_active_speaker_baseline_profile.py`.
+  - **#4643 is conflicted against main** now that 3.2 landed (both touch
+    `adapters/sealed.py` and `alignment.py`). Resolving it must not undo 3.2's
+    two corrections: `PortedAdapter.required_captures` stays
+    `(CaptureRole.WOOFER_NEARFIELD,)`, and `sealed.fit_plant` keeps its
+    `ValueError` guard.
+  Also recorded: every CI "failure" on #4643's intermediate heads today was a
+  run *cancellation* caused by the fix agent's own next push, verified from the
+  job logs, not a red test. Judge that PR only on a run that completes
+  undisturbed on its final head.
+
 - 2026-09-09 15:25Z: **Row 3.2 LANDED**: PR #4641 squash-merged at `4157a6030`
   (+1119/−38 over 16 files) after a Sonnet claim check (8/10 pass
   independently, including a byte-for-byte `--dry-run` comparison against main
