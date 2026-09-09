@@ -109,6 +109,14 @@ pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 /// geometry, rather than spelled again here.
 pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = jasper_ring::RING_SLOT_FRAMES;
 
+/// Versioned last-achieved assistant loudness for the bonded-member post-DSP
+/// mix. A separate file from fan-in's (`JASPER_FANIN_ASSISTANT_REFERENCE_PATH`)
+/// so a box that flips between solo and bonded never cross-contaminates the two
+/// engines' learned quiet-room offsets. Not operator input: no box states it,
+/// so it is a constant rather than an env knob.
+pub const ASSISTANT_REFERENCE_PATH: &str =
+    "/var/lib/jasper/outputd_assistant_volume_reference.json";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShmRingConfig {
     pub path: String,
@@ -266,11 +274,6 @@ pub struct Config {
     /// Program duck applied to CONTENT while voice requests it
     /// (PROGRAM_DUCK_ON). Negative dB; mirrors fanin's knob + fallback.
     pub tts_program_duck_db: f32,
-    /// Versioned last-achieved assistant loudness for the bonded-member
-    /// post-DSP mix. Separate file from fan-in's so a box that flips between
-    /// solo and bonded never cross-contaminates the two engines' learned
-    /// quiet-room offsets. Mirrors JASPER_FANIN_ASSISTANT_REFERENCE_PATH.
-    pub assistant_reference_path: String,
     /// Set by the reconciler on a 2-channel active-crossover sink — the one
     /// active case the bare `content_channels == 2` check cannot tell apart
     /// from a full-range stereo L/R sink. The real invariant for outputd's
@@ -884,10 +887,6 @@ impl Config {
             tts_socket_path,
             tts_max_pending_frames,
             tts_program_duck_db,
-            assistant_reference_path: env_str(
-                "JASPER_OUTPUTD_ASSISTANT_REFERENCE_PATH",
-                "/var/lib/jasper/outputd_assistant_volume_reference.json",
-            ),
             active_lane,
             ring_active_endpoint,
         };
@@ -1056,12 +1055,6 @@ mod tests {
             assert!(cfg.dac_content_ring.is_none());
             assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
             assert!(!cfg.active_lane);
-            // Learned quiet-room reference persists to outputd's own file so a
-            // solo/bonded flip never cross-contaminates fan-in's learned value.
-            assert_eq!(
-                cfg.assistant_reference_path,
-                "/var/lib/jasper/outputd_assistant_volume_reference.json"
-            );
         });
     }
 

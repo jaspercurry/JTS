@@ -1369,7 +1369,6 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
 def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
-    state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
     writer = main_rs.split("fn run_chip_ref_writer(", 1)[1].split(
         "fn write_playback_period(",
@@ -1378,12 +1377,8 @@ def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
 
     assert "JASPER_OUTPUTD_CHIP_REF_TEE_PATH" in config_rs
     assert "chip_ref_tee_path: env_optional(" in config_rs
-    assert "write_chip_ref_tee(&mut tee, &packet.samples, state);" in writer
+    assert "write_chip_ref_tee(&mut tee, &packet.samples);" in writer
     assert "write_chip_ref_tee" not in run_alsa
-    assert "diagnostic_tee_path" in state_rs
-    assert "diagnostic_tee_active" in state_rs
-    assert "diagnostic_tee_open_error_count" in state_rs
-    assert "mark_chip_ref_tee_open_error" in main_rs
 
 
 def test_outputd_optional_chip_reference_cannot_gate_dac_playback():
@@ -1420,10 +1415,10 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
         ".context(sink.prime_context())?;"
     )
     started = run_alsa.index("sink.start()?;")
-    ready = run_alsa.index("notify_ready(config)?;")
+    ready = run_alsa.index("notify_ready(config, state)?;")
 
     assert "notify(NotifyState::Ready)" not in main_fn
-    assert "notify_ready(config)?" not in main_fn
+    assert "notify_ready(config, state)?" not in main_fn
     assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
     # `prime_periods` lives in `alsa_backend.rs`: the composite's post-recovery
@@ -1449,7 +1444,7 @@ def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
     prime_loop = run_alsa.index("for _ in 0..prime_periods")
     primed = run_alsa.index(".context(sink.prime_context())?;")
     started = run_alsa.index("sink.start()?;")
-    ready = run_alsa.index("notify_ready(config)?;")
+    ready = run_alsa.index("notify_ready(config, state)?;")
 
     assert composite_open < paired_open
     assert sink_open < prime_count < prime_loop < primed < started < ready

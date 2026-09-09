@@ -28,11 +28,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::ledger::SegmentId;
-use crate::loudness::{
+use crate::types::ProgramSample;
+use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, sanitize_tts_gain_db, AssistantGainDecision, AssistantLoudness,
     GainRamp, MIN_TTS_GAIN_DB,
 };
-use crate::types::ProgramSample;
 use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
 
 /// The playout facts captured when an assistant segment finishes rendering,
