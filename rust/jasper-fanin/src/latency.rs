@@ -213,6 +213,20 @@ impl CushionDecay {
         }
     }
 
+    pub fn output_lost(&mut self) {
+        self.interrupted_at = None;
+        self.reuse_last_good();
+    }
+
+    fn reuse_last_good(&mut self) {
+        if self.connection != 0 && !self.failed {
+            if let Some(target) = self.last_good {
+                self.held = target as f64;
+                self.reused = true;
+            }
+        }
+    }
+
     // Called after rendering. Integrate only the motion actually used in that
     // period, then prepare the next period's feed-forward and target together.
     pub fn tick(&mut self, s: DecaySignals) -> u64 {
@@ -222,11 +236,8 @@ impl CushionDecay {
         if !s.locked {
             self.motion_ppm = 0.0;
             self.idle_periods = self.idle_periods.saturating_add(1);
-            if self.idle_periods >= self.pause_periods && self.connection != 0 && !self.failed {
-                if let Some(target) = self.last_good {
-                    self.held = target as f64;
-                    self.reused = true;
-                }
+            if self.idle_periods >= self.pause_periods {
+                self.reuse_last_good();
             }
             self.frozen_reason = Some(DecayFrozenReason::Unlocked);
             return self.held();

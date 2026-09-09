@@ -1863,6 +1863,11 @@ impl Mixer {
             &self.ring_wide_payload,
             self.period_frames,
         );
+        for input in &mut self.inputs {
+            if let Some(resampler) = &mut input.resampler {
+                resampler.output_published(published_frames);
+            }
+        }
         self.frames_written
             .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())

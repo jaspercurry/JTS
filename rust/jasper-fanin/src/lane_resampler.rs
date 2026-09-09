@@ -675,6 +675,15 @@ impl LaneResampler {
         self.publish_ratio();
     }
 
+    pub fn output_published(&mut self, frames: u32) {
+        // Dropped output has no DAC clock. Re-prime before using its rate or fill.
+        if frames < self.period_frames as u32 {
+            self.reset();
+            self.decay.output_lost();
+            self.publish_decay_gauges();
+        }
+    }
+
     // A shallow start makes buffer refill saturate the correction gauge used
     // by the host-clock probe. Start at the held target so it measures the host.
     fn try_lock(&mut self) {
@@ -873,11 +882,12 @@ impl LaneResampler {
         self.decay.tick(DecaySignals {
             locked: self.locked,
             dll_l0_locked,
-            // Pre-render fill and working floor share the DLL's frame margin.
-            // The moving target is not a measure of the remaining audio reserve.
-            buffer_low: (self.fill_frames.load(Ordering::Relaxed) as f64
-                + crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as f64)
-                < self.decay.learned_floor() as f64,
+            // Allow one capture period of delivery jitter, but preserve the floor.
+            buffer_low: (self.fill_frames.load(Ordering::Relaxed) as f64)
+                < (self.decay.held_exact() - self.period_frames as f64).max(
+                    self.decay.learned_floor() as f64
+                        - crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as f64,
+                ),
         });
         self.publish_decay_gauges();
         self.note_refill_edge(was_refilling);
@@ -1678,15 +1688,16 @@ mod tests {
 
     #[test]
     fn host_probe_distinguishes_compliance_after_a_stalled_start() {
-        for (prefill, compliant, short_periods, offset, bursty, retries) in [
-            (1024, true, 4, 50.0, false, 0),
-            (1500, false, 4, 50.0, false, 2),
-            (2560, true, 4, -250.0, false, 1),
-            (2560, true, 0, 250.0, false, 0),
-            (2560, true, 0, 50.0, false, 0),
-            (2560, false, 0, -250.0, false, 2),
-            (2560, false, 0, 250.0, false, 2),
-            (2560, true, 0, 0.0, true, 0),
+        for (prefill, compliant, short_periods, offset, bursty, output_stall, retries) in [
+            (1024, true, 4, 50.0, false, false, 0),
+            (1500, false, 4, 50.0, false, false, 2),
+            (2560, true, 4, -250.0, false, false, 1),
+            (2560, true, 0, 250.0, false, false, 0),
+            (2560, true, 0, 50.0, false, false, 0),
+            (2560, false, 0, -250.0, false, false, 2),
+            (2560, false, 0, 250.0, false, false, 2),
+            (2560, true, 0, 0.0, true, false, 0),
+            (2560, true, 0, 50.0, false, true, 0),
         ] {
             let params = DecayParams {
                 enabled: true,
@@ -1732,6 +1743,12 @@ mod tests {
                 let frames = fractional.floor() as usize;
                 fractional -= frames as f64;
                 let frames = frames - if period <= short_periods { 128 } else { 0 };
+                let dropped_output = output_stall && seconds < 3;
+                let frames = if dropped_output {
+                    frames * 3 / 4
+                } else {
+                    frames
+                };
                 if !paused {
                     pending += frames;
                     if !bursty || period % 8 != 0 {
@@ -1741,6 +1758,7 @@ mod tests {
                 }
                 r.render_period(&mut out);
                 r.tick_decay(clock.ladder() == Ladder::L0Locked);
+                r.output_published(if dropped_output { 0 } else { PERIOD });
                 if compliant && r.locked && r.hold_fill_frames() == 576 {
                     first_low.get_or_insert(seconds);
                     if seconds == 100 {
@@ -1786,9 +1804,10 @@ mod tests {
                 }
             );
             assert_eq!(r.unlock_count.load(Ordering::Relaxed), 1);
+            assert_eq!(r.decay.backoffs(), 0);
             if compliant {
                 assert!(
-                    first_low.unwrap() < 35,
+                    first_low.unwrap() < if short_periods > 0 { 40 } else { 35 },
                     "prefill={prefill} offset={offset} bursty={bursty} first_low={first_low:?}"
                 );
                 assert!(resumed_at_low);
@@ -2021,9 +2040,13 @@ mod tests {
 
     #[test]
     fn pauses_reuse_the_buffer_but_short_stalls_and_disconnects_do_not() {
-        for (idle_periods, disconnect, expected) in
-            [(2000, false, 544), (2, false, 768), (2000, true, 768)]
-        {
+        for (idle_periods, disconnect, output_lost, expected) in [
+            (2000, false, false, 544),
+            (2, false, false, 768),
+            (2000, true, false, 768),
+            (2, false, true, 544),
+            (2000, false, true, 544),
+        ] {
             let mut r = build_with_decay();
             r.latency_context(1, false);
             let mut out = vec![0i16; PERIOD as usize * 2];
@@ -2037,9 +2060,11 @@ mod tests {
             assert_eq!(r.hold_fill_frames(), 544);
             r.reset();
             for i in 0..idle_periods {
-                if i == 1000 {
+                if output_lost {
+                    r.output_published(0);
+                } else if i == 1000 {
                     r.reset();
-                } // Idle capture-handle reopen.
+                }
                 r.render_period(&mut out);
                 r.tick_decay(false);
             }
@@ -2051,7 +2076,12 @@ mod tests {
             r.render_period(&mut out);
             r.tick_decay(false); // New timing probe runs in the background.
             assert_eq!(r.hold_fill_frames(), expected);
-            assert_eq!(r.decay.resumes(), u64::from(expected == 544));
+            let resumes = u64::from(expected == 544 && !output_lost);
+            assert_eq!(r.decay.resumes(), resumes);
+            assert_eq!(
+                r.decay.backoffs(),
+                u64::from(idle_periods == 2 && !output_lost)
+            );
             if expected == 544 {
                 r.latency_context(1, true);
                 for _ in 0..1000 {
@@ -2060,7 +2090,7 @@ mod tests {
                     r.tick_decay(false);
                 }
                 assert_eq!(r.hold_fill_frames(), 768);
-                assert_eq!(r.decay.resumes(), 1);
+                assert_eq!(r.decay.resumes(), resumes);
                 assert_eq!(r.unlock_count.load(Ordering::Relaxed), 0);
             }
         }

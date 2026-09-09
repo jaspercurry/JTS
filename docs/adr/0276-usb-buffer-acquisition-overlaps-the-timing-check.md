@@ -8,8 +8,11 @@
   17 seconds at 13.5 ms because clock corrections kept resetting the wait.
 - **Decision:** On an observed USB connection, buffer acquisition runs during
   the full timing check. Its existing 0.2% rate adjustment stays unchanged.
-  Reduction pauses when measured fill falls below the working floor minus
-  the shared DLL frame margin; it resumes as that reserve recovers. A clock
+  Reduction pauses when fill trails its target by more than one capture
+  period or falls below the floor’s frame margin; it resumes as reserve recovers.
+  Dropped downstream output re-primes the input so an unpaced startup cannot
+  supply clock measurements or a depleted acquisition buffer. It preserves
+  the known-good input depth; only input starvation raises that depth. A clock
   correction limit alone does not restart acquisition or invalidate reuse.
   Only a passed timing check and uninterrupted playback at the settled target
   allow reuse. Failed checks still restore the acquisition buffer; underfills
