@@ -311,6 +311,17 @@ class SystemSampler:
                 snap["current"]["oom_kill"] = self._oom_kill
             return snap
 
+    def pressure_snapshot(self) -> dict[str, Any]:
+        """The two host conditions that starve the audio path without leaving
+        a trace in it — SoC throttling and memory stall pressure — read off
+        this sampler's cache, without copying the history ring."""
+        with self._lock:
+            return {
+                "throttled_now": self._throttled_now,
+                "throttled_history": self._throttled_history,
+                "mem_psi_some_avg60": self._mem_psi_some_avg60,
+            }
+
     def service_states_snapshot(self) -> dict[str, dict[str, Any]]:
         """Return the already-cached 30 s systemd state without re-probing.
 
