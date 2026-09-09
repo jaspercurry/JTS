@@ -98,11 +98,12 @@ def configure_logging(
 
     root = logging.getLogger()
     logging.basicConfig(level=level, format=fmt)
-    # basicConfig no-ops entirely when root already carries a handler, so
-    # neither the level nor the filter may be left to it: one foreign handler
-    # would otherwise take this process's whole journal out of redaction with
-    # no signal. setLevel and addFilter are both idempotent.
-    root.setLevel(level)
+    # basicConfig no-ops entirely when root already carries a handler, so the
+    # filter may not be left to it: one foreign handler would otherwise take
+    # this process's whole journal out of redaction with no signal.
+    # Filterer.addFilter dedupes, so this covers foreign handlers idempotently.
+    # The level stays basicConfig's business: setting it here reconfigures a
+    # root logger this process does not own.
     for handler in root.handlers:
         handler.addFilter(REDACTING_FILTER)
 

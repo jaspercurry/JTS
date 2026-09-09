@@ -136,18 +136,17 @@ def test_a_record_is_redacted_once(monkeypatch):
     assert len(passes) == 1
 
 
-def test_a_handler_root_already_carried_is_redacted_and_levelled():
-    """`logging.basicConfig` no-ops entirely when root already has a handler —
-    handler creation AND `root.setLevel` sit inside that guard. So a process
-    where anything (a dependency, an earlier bootstrap) put a handler on root
-    first must not silently run its whole life unredacted and at the wrong
-    level."""
+def test_a_handler_root_already_carried_is_redacted_too():
+    """`logging.basicConfig` no-ops entirely when root already has a handler,
+    so the filter cannot be left to it. A process where anything (a
+    dependency, an earlier bootstrap) put a handler on root first must not
+    silently run its whole life unredacted."""
     with bare_root_logger() as root:
         foreign = logging.StreamHandler(io.StringIO())
         root.addHandler(foreign)
-        configure_logging(level=logging.DEBUG)
+        root.setLevel(logging.DEBUG)
+        configure_logging()
 
-        assert root.level == logging.DEBUG
         logging.getLogger("jasper.x").debug(
             "provider ready OPENAI_API_KEY=sk-live-abc123456789"
         )
