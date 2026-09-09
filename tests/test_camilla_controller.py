@@ -614,7 +614,6 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
         async with dsp_writer_lock(
             tmp_path,
             source="bass_extension.apply",
-            allow_pending_bass_extension_recovery=True,
         ):
             intent.write_text("{}\n", encoding="utf-8")
 
@@ -652,7 +651,6 @@ async def test_intent_publication_wins_race_before_direct_graph_mutation(
         async with dsp_writer_lock(
             tmp_path,
             source="bass_extension.apply",
-            allow_pending_bass_extension_recovery=True,
         ):
             intent.write_text("{}\n", encoding="utf-8")
             publication_entered.set()

@@ -72,7 +72,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_bass_extension_graph,
 )
 from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
-from jasper.bass_extension import _intent_payload
+from jasper.bass_extension.apply_intent import _intent_payload
 from jasper.bass_extension.profile import save_bass_extension_profile
 from jasper.camilla_config_contract import (
     FilterSpec,
