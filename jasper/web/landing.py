@@ -18,7 +18,7 @@ per request is substituted once, here, by install.sh:
   * the WS1 control token the assistant-pause button rides on POST /mic/mute
     (kept inside this process — never a shell argument or a log line);
   * the shared icon sprite, so the landing and the Python-rendered pages draw
-    from one set (``_common.CANONICAL_ICON_SPRITE``);
+    from one set (``chrome.CANONICAL_ICON_SPRITE``);
   * the settings groups, rendered from the site-map manifest (``nav.NAV``)
     so the landing page and the pages it links share one row table.
 
@@ -39,7 +39,7 @@ from jasper.install_profile import (
     system_capabilities_for_profile,
 )
 
-from ._common import CANONICAL_ICON_SPRITE, json_island
+from .chrome import CANONICAL_ICON_SPRITE, json_island
 from .nav import children, hub_paths, landing_groups_html, render_hub
 
 def substitutions(

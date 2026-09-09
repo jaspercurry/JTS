@@ -761,7 +761,7 @@ def read_grouping_state(
 # GET /grouping wire contract — ONE home for the envelope shape.
 #
 # jasper-control's GET /grouping handler (the PRODUCER) and the /rooms
-# /unbond fan-out (the CONSUMER, jasper.web.rooms_setup._get_member_grouping)
+# /unbond fan-out (the CONSUMER, jasper.web.rooms_peers._get_member_grouping)
 # are in different daemons and exchange JSON over HTTP. The C4 regression
 # (2026-06-09) was exactly this contract drifting: the producer nested the
 # snapshot under a "grouping" key while the consumer read bond_id at the top

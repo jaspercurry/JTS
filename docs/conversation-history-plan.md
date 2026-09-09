@@ -269,7 +269,7 @@ unavailable path is a logged no-op that never raises into the turn).
 
 - **Not interactive chat-by-text.** This is a read-only log, not a second way
   to talk to the assistant. (A future interactive surface would be its own
-  Feature; it is *not* the calibration agent's `/chat` either.)
+  Feature.)
 - **Not a new tool.** The LLM does not call anything to make this work.
 - **No audio retention**, no local/cloud STT, no resident model.
 - **None of the Phase-3 untrusted-code machinery** (sandbox, permission

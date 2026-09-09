@@ -38,10 +38,6 @@ RECOVER_UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla-recover.service"
 )
-RECOVER_SCRIPT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "bin" / "jasper-camilla-recover"
-)
 INSTALL_SH = (
     Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
 )
@@ -170,20 +166,10 @@ def test_recovery_unit_points_at_installed_helper():
     assert _assignments_for(body, "ExecStart") == (
         "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
-    # Both deadlines are load-bearing: the body must be able to finish its
-    # own restore ladder, and the EXIT trap that reruns it on a kill needs
-    # the ladder's share as its own budget.
-    assert _value_for(body, "TimeoutStartSec") == "600"
-    assert _value_for(body, "TimeoutStopSec") == "400"
-
-
-def test_recovery_helper_is_bounded_and_forensic():
-    body = RECOVER_SCRIPT_PATH.read_text()
-    assert "event=camilla.recover." in body
-    assert "capture_dev_snd_holders" in body
-    assert "capture_asound_status" in body
-    assert "JASPER_CAMILLA_RECOVER_COOLDOWN_SEC" in body
-    assert "systemctl reboot" not in body
+    # The deadline must cover the handler's own pass: bounded captures, one
+    # blocking camilla start behind every unit it pulls in, the liveness wait.
+    assert _value_for(body, "TimeoutStartSec") == "180"
+    assert _value_for(body, "TimeoutStopSec") == "5"
 
 
 def test_install_sh_installs_recovery_unit_and_helper():

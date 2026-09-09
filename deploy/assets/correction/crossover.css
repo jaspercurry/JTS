@@ -27,9 +27,9 @@
 }
 
 /* Step indicator (crossover/main.js renderSteps()) is app.css's shared
-   .wizard-steps; this flow's step reads .active, not the room page's
-   .current — crossover_envelope.py's `_step_payload` says "active", and
-   app.css's contract recognises both. */
+   .wizard-steps; this flow's step reads .active —
+   crossover_envelope.py's `_step_payload` says "active", and app.css's
+   contract recognises both .active and .current. */
 
 .wizard-nudges { display: flex; flex-direction: column; gap: 0.45rem; }
 .wizard-nudge {

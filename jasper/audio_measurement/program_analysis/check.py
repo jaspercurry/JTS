@@ -22,12 +22,16 @@ from jasper.audio_measurement.program import (
     ProgramSegment,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from .model import (
+    ALIGNMENT_SNR_REFUSAL_VERDICT,
     CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     CHANNEL_MAP_TARGET_RISE_DB,
     DBFS_FLOOR,
+    DRIVER_SNR_ALIGNMENT_KEY,
+    DriverResponse,
     GAIN_BOUND_CAPTURE_FLOOR,
     GAIN_BOUND_DEGENERATE_AMBIENT,
     GAIN_BOUND_FLAT_TARGET,
@@ -730,6 +734,35 @@ def _solve_gain_plan(
         snr_floor_ok=snr_floor_ok,
         role_solves=solves,
     )
+
+
+def alignment_snr_gain_adjustment(
+    responses: Sequence[DriverResponse],
+    gain_db: Mapping[str, float],
+    ceiling_db: Mapping[str, float],
+) -> dict[str, float]:
+    """Raise only measured weak branches, within the caller's admitted ceilings.
+
+    The measured shortfall replaces CHECK's peak-based prediction; the same
+    solve margin applies. An absent verdict or ceiling is not gain headroom.
+    """
+    adjusted = {}
+    for response in responses:
+        block = (response.snr or {}).get(DRIVER_SNR_ALIGNMENT_KEY) or {}
+        worst = block.get("worst_relevant") or {}
+        band: Mapping[str, Any] = next((row for row in block.get("bands", ())
+                                      if row.get("band_id") == worst.get("band_id")), {})
+        shortfall = finite_float(band.get("shortfall_db"))
+        current = finite_float(gain_db.get(response.role))
+        ceiling = finite_float(ceiling_db.get(response.role))
+        if (worst.get("verdict") != ALIGNMENT_SNR_REFUSAL_VERDICT
+                or shortfall is None or current is None or ceiling is None):
+            continue
+        if shortfall > 0 and ceiling > current:
+            adjusted[response.role] = min(
+                ceiling, current + shortfall + MEASURE_SNR_SOLVE_MARGIN_DB,
+            )
+    return adjusted
 
 
 def _snr_floor_ok(ambient_report: Mapping[str, Any], target_capture_dbfs: float) -> bool:

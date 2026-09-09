@@ -7,13 +7,9 @@
 Pins the split SNR policy from "Level control and SNR" in
 docs/active-crossover-information-design.md:
 
-  - :func:`band_levels_dbfs` is the FFT band-power math moved verbatim out of
-    ``jasper.correction.session._band_levels_dbfs`` (which now delegates
-    through ``jasper.correction.acoustic_quality``) — the delegation's output
-    must stay byte-equal.
   - :data:`CROSSOVER_SNR_BANDS_HZ`'s first four rows are :data:`SNR_BANDS_HZ`,
-    the one room-correction table ``acoustic_quality`` and the session alias
-    to, so the room and crossover tables cannot drift apart.
+    the one room table, so the room and crossover tables cannot drift apart
+    (pinned in ``test_audio_measurement_boundary_ssot.py``).
   - :func:`band_snr_verdicts` — magnitude/trim tiers at 25/20 dB (reusing
     ``QualityModel.snr_ok_db``/``snr_warn_db``), the stricter 35 dB alignment
     tier that rejects scalar-only evidence, and the worst-RELEVANT-band
@@ -38,8 +34,6 @@ import pytest
 
 from jasper.audio_measurement import program_analysis, snr_policy, sweep
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.correction import acoustic_quality
-from jasper.correction import session as correction_session
 
 SR = 48000
 
@@ -53,33 +47,6 @@ def _bands(rows):
 
 
 # ---------- band_levels_dbfs / CROSSOVER_SNR_BANDS_HZ -----------------------
-
-
-def test_crossover_bands_first_four_match_room_correction_table():
-    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == snr_policy.SNR_BANDS_HZ
-    assert acoustic_quality.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
-    assert correction_session.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
-
-
-def test_band_levels_dbfs_matches_session_delegation():
-    """session._band_levels_dbfs (now a thin delegation) is byte-equal to
-    calling snr_policy.band_levels_dbfs directly with the same band table —
-    pins that the delegation forwards samples/sample_rate/bands correctly and
-    that the relocated math was not altered in the move."""
-    rng = np.random.default_rng(20260711)
-    # Broadband noise-like fixture so all four low bands carry real energy —
-    # a band-boundary mistake in the moved table would show up as a level
-    # shift, not just a missing band.
-    samples = rng.normal(scale=0.2, size=SR).astype(np.float64)
-
-    via_owner = acoustic_quality.band_levels_dbfs(samples, SR)
-    via_session = correction_session._band_levels_dbfs(samples, SR)
-    via_policy = snr_policy.band_levels_dbfs(
-        samples, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ[:4]
-    )
-    assert via_owner == via_policy
-    assert via_session == via_owner
-    assert len(via_session) == 4
 
 
 def test_band_levels_dbfs_reports_true_band_power():
@@ -207,10 +174,10 @@ def test_band_levels_dbfs_rectangular_window_matches_the_sweep_law():
     levels = {
         row["band_id"]: row["level_dbfs"]
         for row in snr_policy.band_levels_dbfs(
-            stimulus, SR, acoustic_quality.SNR_BANDS_HZ, window="rectangular",
+            stimulus, SR, snr_policy.SNR_BANDS_HZ, window="rectangular",
         )
     }
-    for band_id, lo, hi in acoustic_quality.SNR_BANDS_HZ:
+    for band_id, lo, hi in snr_policy.SNR_BANDS_HZ:
         predicted = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
             (f1, f2), (lo, hi)
         )
@@ -231,7 +198,7 @@ def test_band_levels_dbfs_hann_default_still_biases_a_sweep():
     hann_levels = {
         row["band_id"]: row["level_dbfs"]
         for row in snr_policy.band_levels_dbfs(
-            stimulus, SR, acoustic_quality.SNR_BANDS_HZ,
+            stimulus, SR, snr_policy.SNR_BANDS_HZ,
         )  # default window="hann"
     }
     # The reported bias was ~-10 dB; assert at least half of that survives
@@ -246,23 +213,6 @@ def test_band_levels_dbfs_rejects_an_unknown_window():
         snr_policy.band_levels_dbfs(
             np.zeros(SR), SR, snr_policy.CROSSOVER_SNR_BANDS_HZ, window="boxcar",
         )
-
-
-def test_acoustic_quality_band_levels_dbfs_forwards_window():
-    """The wrapper's ``window`` kwarg reaches ``snr_policy`` unchanged — pins
-    the forwarding ``capture_band_snr`` relies on for #1847, and that the
-    default keeps forwarding "hann" so the ambient/noise delegation test
-    above (byte-equal, no kwarg) is untouched."""
-    rng = np.random.default_rng(1847)
-    samples = rng.normal(scale=0.05, size=SR).astype(np.float64)
-    assert acoustic_quality.band_levels_dbfs(
-        samples, SR, window="rectangular"
-    ) == snr_policy.band_levels_dbfs(
-        samples, SR, acoustic_quality.SNR_BANDS_HZ, window="rectangular",
-    )
-    assert acoustic_quality.band_levels_dbfs(samples, SR) == snr_policy.band_levels_dbfs(
-        samples, SR, acoustic_quality.SNR_BANDS_HZ,
-    )
 
 
 def test_band_snr_verdicts_are_unchanged_by_the_band_power_rescale():

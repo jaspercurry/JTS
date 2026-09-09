@@ -1448,7 +1448,7 @@ def check_ring_transport_park() -> CheckResult:
                 "active-crossover layout, so none of the four named parks "
                 "describes it (ADR-0184). Unproven, not parked — nothing is "
                 "claimed to the household. Report the saved layout "
-                "(/sound/setup/) if sound is missing.",
+                "(/sound/speaker/) if sound is missing.",
                 reason=REASON_TRANSPORT_ENDPOINT_UNPROVEN,
             )
         refusal = state.get("converge_refused")
@@ -1477,7 +1477,7 @@ def check_ring_transport_park() -> CheckResult:
                 "should have armed it (ADR-0189). Not parked — whatever graph "
                 "is loaded keeps playing. A reconcile in flight clears this on "
                 "its next pass; if it persists, report the saved layout "
-                "(/sound/setup/).",
+                "(/sound/speaker/).",
                 reason=REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE,
             )
         return CheckResult(
@@ -1491,7 +1491,7 @@ def check_ring_transport_park() -> CheckResult:
             "this box's declared topology resolves no ring geometry of either "
             "kind, and none of the four named parks describes it — so it is "
             "neither servable by the single transport nor tracked by an issue "
-            "yet. Report the saved layout (/sound/setup/) so it can be named.",
+            "yet. Report the saved layout (/sound/speaker/) so it can be named.",
             reason=REASON_TRANSPORT_TOPOLOGY_UNCLASSIFIED,
         )
 

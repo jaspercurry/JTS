@@ -65,9 +65,6 @@ from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     flash_error,
     guard_mutating_request,
@@ -77,11 +74,11 @@ from ._common import (
     redirect_with_legacy_msg,
     reject_csrf,
     restart_voice_daemon,
-    safe_back_href,
     send_html_response,
     write_env_file,
     SECRET_ENV_MODE,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 logger = logging.getLogger(__name__)
 

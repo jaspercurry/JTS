@@ -103,7 +103,6 @@ _UNCODIFIED = {
     "JASPER_CORRECTION_CALIBRATION_DIR",
     "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH",
     "JASPER_CORRECTION_ROOT",
-    "JASPER_CORRECTION_SESSIONS_DIR",
     "JASPER_DSP_APPLY_STATE_PATH",
     "JASPER_DTLN_MODEL_DIR",
     "JASPER_FANIN_ENV_FILE",
@@ -211,17 +210,8 @@ _UNCODIFIED = {
     #    JASPER_HOSTNAME like JASPER_MANAGEMENT_URL; override is for
     #    nonstandard reverse-proxy setups only).
     "JASPER_GOOGLE_SETUP_URL",
-    # -- Calibration-agent advisor LLM selection — lab CLI
-    #    (jasper/calibration_agent/cli.py), not a speaker daemon; its
-    #    --advisor-* flags are the primary interface.
-    "JASPER_CALIBRATION_ADVISOR_MODEL",
-    "JASPER_CALIBRATION_ADVISOR_OPENAI_BASE_URL",
-    "JASPER_CALIBRATION_ADVISOR_PROVIDER",
-    "JASPER_CALIBRATION_ADVISOR_TIMEOUT_SEC",
     # -- Debug capture toggles (off unless an operator exports one for
-    #    a single diagnosis session; raw OpenAI session audio dumps,
-    #    correction measurement bundle retention).
-    "JASPER_CORRECTION_SAVE_BUNDLES",
+    #    a single diagnosis session; raw OpenAI session audio dumps).
     "JASPER_DEBUG_OPENAI_AUDIO_DIR",
     "JASPER_DEBUG_RECORD_OPENAI_AUDIO",
 }

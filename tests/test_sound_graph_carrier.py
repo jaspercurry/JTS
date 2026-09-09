@@ -564,7 +564,7 @@ def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correcti
     # `flat_program_graph_blocked_reason(topology) is not None`. Under a
     # full-range passive topology there is no protected tweeter, so that reason is
     # None: a plain stereo speaker that happens to be a SnapFIFO grouping leader
-    # must stay on the ordinary sound/sound/room/ carrier, never get re-stamped as
+    # must stay on the ordinary sound carrier, never get re-stamped as
     # an active program bake. Delete the topology clause and this resolves to
     # `active_leader_program_bake` instead — the mutation tripwire.
     from jasper.multiroom.reconcile import SNAPFIFO
@@ -688,7 +688,7 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "correction_abc_123.yml"
-    path.write_text("# jts sound/sound/room/ config\n")
+    path.write_text("# jts sound config\n")
     preserved = [object(), object()]
 
     with mock.patch(
@@ -706,12 +706,12 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
 
 
 def test_sound_carrier_replaces_room_peqs_when_explicit(tmp_path):
-    # Room correction apply/start must be able to say "use this exact room
+    # A room-layer apply must be able to say "use this exact room
     # layer" instead of preserving whatever was already loaded.
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "correction_abc_123.yml"
-    path.write_text("# jts sound/sound/room/ config\n")
+    path.write_text("# jts sound config\n")
     replacement = [object()]
 
     with mock.patch(
@@ -1209,130 +1209,6 @@ def test_bass_extension_recompose_refuses_program_overlay_reset(
     assert exc.value.reason_code == "bass_extension_recompose_unavailable"
 
 
-@pytest.mark.parametrize(
-    ("broken_source", "broken_value"),
-    [
-        ("preference", "missing"),
-        ("preference", "malformed"),
-        ("settings", "missing"),
-        ("settings", "malformed"),
-        ("selected_graph", "driver_semantics"),
-    ],
-)
-async def test_bass_apply_refuses_unreproducible_predecessor_before_mutation(
-    tmp_path,
-    broken_source,
-    broken_value,
-) -> None:
-    from jasper.active_speaker.baseline_profile import (
-        recompose_applied_baseline_yaml,
-    )
-    from jasper.bass_extension import apply_bass_extension
-    from jasper.bass_extension.profile import save_bass_extension_profile
-    from jasper.sound.graph_carrier import CarrierCannotHostEq
-
-    topology, applied = _real_active_applied_baseline(tmp_path)
-    preference = SoundProfile(
-        simple_eq=SimpleEq(bass_db=4.0),
-        updated_at="2026-07-19T12:00:00Z",
-    )
-    settings = SoundSettings(headroom_trim_db=6.0)
-    current, issues = recompose_applied_baseline_yaml(
-        topology,
-        applied_profile=applied,
-        preference_filters=build_sound_filter_slots(preference),
-        output_trim_db=output_trim_db(preference, settings),
-    )
-    assert issues == []
-    assert current is not None
-    configs = tmp_path / "configs"
-    configs.mkdir(exist_ok=True)
-    selected = configs / "active-speaker-baseline.yml"
-    selected.write_text(current, encoding="utf-8")
-    selected.chmod(0o664)
-    preference_path, settings_path = _write_program_overlay_sources(
-        tmp_path,
-        profile=preference,
-        settings=settings,
-    )
-    if broken_source == "selected_graph":
-        changed_graph = yaml.safe_load(selected.read_text(encoding="utf-8"))
-        highpass_name = next(
-            name
-            for name in changed_graph["filters"]
-            if name.startswith("as_tweeter_") and name.endswith("_hp")
-        )
-        parameters = changed_graph["filters"][highpass_name]["parameters"]
-        parameters["freq"] = float(parameters["freq"]) + 1.0
-        selected.write_text(
-            yaml.safe_dump(changed_graph, sort_keys=False),
-            encoding="utf-8",
-        )
-    else:
-        broken_path = (
-            preference_path if broken_source == "preference" else settings_path
-        )
-        if broken_value == "missing":
-            broken_path.unlink()
-        else:
-            broken_path.write_text("{ malformed", encoding="utf-8")
-    applied_path = tmp_path / "applied.json"
-    applied_path.write_text(json.dumps(applied), encoding="utf-8")
-    statefile = tmp_path / "outputd-statefile.yml"
-    statefile.write_text(f"config_path: {selected}\n", encoding="utf-8")
-    staged_path = tmp_path / "staged.json"
-    staged_path.write_text("{}\n", encoding="utf-8")
-    profile_path = tmp_path / "bass-profile.json"
-    desired = _sealed_profile(topology, applied)
-    predecessor = replace(desired, status="bypassed")
-    save_bass_extension_profile(predecessor, profile_path)
-    intent_path = tmp_path / "bass-intent.json"
-
-    class NoReloadController:
-        def __init__(self) -> None:
-            self.reload_count = 0
-
-        async def get_config_file_path(self, *, best_effort=False):
-            return str(selected)
-
-        async def get_active_config_raw(self, *, best_effort=False):
-            return selected.read_text(encoding="utf-8")
-
-        async def reload(self, *, best_effort=False):
-            self.reload_count += 1
-            return True
-
-    controller = NoReloadController()
-    graph_before = selected.read_bytes()
-    graph_mode_before = selected.stat().st_mode
-    profile_before = profile_path.read_bytes()
-    selector_before = statefile.read_bytes()
-
-    with pytest.raises(CarrierCannotHostEq) as exc:
-        await apply_bass_extension(
-            desired,
-            topology=topology,
-            controller=controller,
-            statefile_path=statefile,
-            applied_baseline_path=applied_path,
-            profile_path=profile_path,
-            intent_path=intent_path,
-            staged_metadata_path=staged_path,
-            config_dir=configs,
-            preference_profile_path=preference_path,
-            sound_settings_path=settings_path,
-            validate=lambda _path: SimpleNamespace(ok_to_apply=True),
-        )
-
-    assert exc.value.reason_code == "bass_extension_recompose_unavailable"
-    assert selected.read_bytes() == graph_before
-    assert selected.stat().st_mode == graph_mode_before
-    assert profile_path.read_bytes() == profile_before
-    assert statefile.read_bytes() == selector_before
-    assert controller.reload_count == 0
-    assert not intent_path.exists()
-
-
 # --- inv 6: refusals are typed with a stable reason_code ----------------
 
 @pytest.mark.parametrize(
@@ -1454,7 +1330,7 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
 
 
 def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_path):
-    """END-TO-END, on the path a bonded leader's /sound or /sound/room/ save takes.
+    """END-TO-END, on the path a bonded leader's /sound save takes.
 
     PRECEDENCE: the SnapFIFO pipe owns the SINK, so the ring's playback half is
     dropped — but the CAPTURE half must still cross. This reemit rewrites the

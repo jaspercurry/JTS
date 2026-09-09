@@ -31,14 +31,12 @@ from jasper.usage import (
 )
 
 from ._common import (
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     mask_secret,
     pair_banner_html,
     value_for_env as _value_for,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -197,21 +195,21 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     sessions_today = 0
     if usage_available:
         try:
-            # Read HOUSEHOLD spend: the voice ledger plus the tuning-surface
-            # sibling ledger, so the displayed figure includes P6 tuning-LLM
-            # spend. The aggregate opens each member read_only and lazily —
+            # Read HOUSEHOLD spend: the voice ledger plus the sibling
+            # tuning-spend ledger, still summed into household spend. The
+            # aggregate opens each member read_only and lazily —
             # this runs in jasper-web (root), not jasper-voice, and a
             # read-write open could re-own usage.db and lock the voice daemon
             # out of its own DB (see UsageStore.__init__).
             reader = household_usage_reader(usage_db)
             spend_last_24h = reader.spend_last_24h_usd()
             month_to_date = reader.spend_month_to_date_usd()
-            # "Turns today" stays VOICE-only: each paid tuning tap opens a
-            # session row in the tuning ledger, and folding those into a
-            # figure labelled "Turns today" would over-count. The DOLLAR
-            # figures above deliberately include tuning (household spend);
-            # the card carries a hint saying so. Single-member aggregate =
-            # the same lazy/read-only/fail-open discipline for one file.
+            # "Turns today" stays VOICE-only: a tuning-ledger row is not a
+            # voice turn, and folding those into a figure labelled "Turns
+            # today" would over-count. The DOLLAR figures above deliberately
+            # include tuning (household spend); the card carries a hint saying
+            # so. Single-member aggregate = the same lazy/read-only/fail-open
+            # discipline for one file.
             sessions_today = AggregateUsageReader(
                 paths=[usage_db],
             ).session_count_today_utc()

@@ -18,9 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli.doctor import _evidence, _shared, correction
-from jasper.correction import bundles
-
-from .correction_bundle_fixtures import write_golden_correction_bundle
 
 from .doctor_test_support import (
     _make_unit_states_fake,
@@ -167,7 +164,7 @@ def test_latest_deferred_hold_keeps_the_newest_line():
     assert correction._latest_deferred_hold("nothing to see\n") is None
 
 
-# ---------- /sound/room/ HTTPS assets
+# ---------- measurement-page HTTPS assets
 
 
 def _web_root_with_app_css(tmp_path: Path) -> Path:
@@ -283,7 +280,7 @@ def test_check_correction_state_dirs_warns_when_locked_out_by_mode(
     root = tmp_path / "correction"
     root.mkdir()
     os.chmod(root, 0o700)
-    for name in ("sweeps", "captures", "sessions", "calibration_mics"):
+    for name in ("calibration_mics", "tones"):
         d = root / name
         d.mkdir()
         os.chmod(d, 0o700)
@@ -348,28 +345,58 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
     assert clean.reason == ""
 
 
-_JTS_SOUND_CONFIG = (
-    "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
-    "filters:\n"
-    "  flat:\n"
-    "    type: Gain\n"
-)
+def _sound_config_text(room_peqs=()):
+    """A real ``emit_sound_config`` graph, so the fixture cannot drift from
+    what the reader under test parses."""
 
-_JTS_BASELINE_CONFIG = (
-    "# Source: jasper.active_speaker.camilla_yaml."
-    "emit_active_speaker_baseline_config\n"
-    "filters:\n"
-    "  active_baseline_headroom:\n"
-    "    type: Gain\n"
-)
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
 
-_JTS_PROGRAM_BAKE_CONFIG = (
+    return emit_sound_config(SoundProfile(), room_peqs=list(room_peqs))
+
+
+def _room_peq(freq=63.0, q=2.0, gain=-4.5):
+    from jasper.sound.camilla_yaml import PeqFilter
+
+    return PeqFilter(freq=freq, q=q, gain=gain)
+
+
+_ACTIVE_STAGED_CONFIG = (
     "# Source: jasper.active_speaker.camilla_yaml."
-    "emit_active_speaker_program_bake_config\n"
+    "emit_active_speaker_startup_config\n"
     "devices:\n"
     "  playback:\n"
-    "    type: File\n"
+    "    device: jts_active\n"
 )
+
+
+def _round_tripped_active_config():
+    """An active-speaker graph as CamillaDSP hands it back: the YAML round-trip
+    drops every comment, so the `# Source:` marker is gone and only the split
+    mixer is left to prove the graph is JTS-generated."""
+
+    import yaml
+
+    return yaml.safe_dump(
+        yaml.safe_load(
+            _ACTIVE_STAGED_CONFIG
+            + "mixers:\n  split_active_2way:\n    channels: { in: 2, out: 4 }\n"
+        )
+    )
+
+
+def _hand_written_config_on_the_jts_ring():
+    """An operator config with no JTS provenance that plays out of the ring
+    JTS itself uses — naming the device is not provenance."""
+
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
+
+    return (
+        "devices:\n"
+        "  playback:\n"
+        f"    device: {DEFAULT_PLAYBACK_DEVICE}\n"
+        "  volume_limit: 0.0\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -384,26 +411,31 @@ _JTS_PROGRAM_BAKE_CONFIG = (
             correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
         ),
         (
-            "configs/sound_current.yml", _JTS_SOUND_CONFIG, "ok",
+            "configs/sound_current.yml", _sound_config_text(), "ok",
             correction.REASON_CURRENT_CONFIG_MANAGED,
         ),
         (
-            "configs/active_speaker_baseline.yml", _JTS_BASELINE_CONFIG, "ok",
-            correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/grouping_active_leader_bake.yml", _JTS_PROGRAM_BAKE_CONFIG,
+            "configs/active_speaker_staged_startup.yml", _ACTIVE_STAGED_CONFIG,
             "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
         ),
         (
             "configs/correction_abc_1700000000.yml",
-            "filters:\n  room_peq_1:\n    type: Biquad\n",
+            _sound_config_text([_room_peq()]),
             "ok", correction.REASON_CURRENT_CONFIG_ROOM_CORRECTION,
+        ),
+        (
+            "configs/active_speaker_startup.yml", _round_tripped_active_config(),
+            "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
+        ),
+        (
+            "configs/operator.yml", _hand_written_config_on_the_jts_ring(),
+            "warn", correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
         ),
     ],
     ids=[
-        "missing-config", "unclassified", "jts-sound", "active-speaker-baseline",
-        "active-leader-bake", "generated-correction",
+        "missing-config", "unclassified", "jts-sound",
+        "active-speaker-staged", "generated-correction",
+        "round-tripped-active-graph", "hand-written-on-the-jts-ring",
     ],
 )
 def test_check_correction_current_config_verdicts(
@@ -423,6 +455,24 @@ def test_check_correction_current_config_verdicts(
     assert r.reason == reason
 
 
+def test_check_correction_current_config_warns_when_the_config_cannot_be_read(
+    monkeypatch, tmp_path
+):
+    """Provenance unseen is never `ok`: a config JTS could not read gets the
+    same warn as one it could not classify."""
+    # A directory at the config path: exists(), but read_text() raises.
+    config = tmp_path / "configs" / "sound_current.yml"
+    config.mkdir(parents=True)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = correction.check_correction_current_config()
+
+    assert r.status == "warn"
+    assert r.reason == correction.REASON_CAMILLA_CONFIG_UNREADABLE
+
+
 def test_check_correction_current_config_warns_on_an_unreadable_statefile(
     monkeypatch, tmp_path
 ):
@@ -430,127 +480,6 @@ def test_check_correction_current_config_warns_on_an_unreadable_statefile(
     r = correction.check_correction_current_config()
     assert r.status == "warn"
     assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
-
-
-# ---------- correction bundles
-
-
-def test_check_correction_latest_bundle_warns_without_calibration(
-    monkeypatch,
-    tmp_path,
-):
-    sessions = tmp_path / "sessions"
-    bundle = sessions / "abc"
-    bundle.mkdir(parents=True)
-    bundles.write_json_artifact(
-        bundle,
-        "info.json",
-        {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": "abc",
-            "state": "ready",
-            "started_at": 1000,
-            "capture_quality": [],
-        },
-        kind="session_metadata",
-        sensitivity="private_metadata",
-        recomputable=False,
-        generated_by="tests.test_doctor",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    bundles.write_json_artifact(
-        bundle,
-        "result.json",
-        {"bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION},
-        kind="analysis_result",
-        sensitivity="private_metadata",
-        recomputable=True,
-        generated_by="tests.test_doctor",
-        dependencies=["info.json"],
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_UNCALIBRATED_MIC
-
-
-def test_check_correction_latest_bundle_warns_on_bundle_issues(
-    monkeypatch,
-    tmp_path,
-):
-    sessions = tmp_path / "sessions"
-    bundle = sessions / "failed"
-    bundle.mkdir(parents=True)
-    bundles.write_json_artifact(
-        bundle,
-        "info.json",
-        {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": "failed",
-            "state": "failed",
-            "started_at": 1000,
-            "error": "analysis failed: capture clipped",
-            "capture_quality": [],
-        },
-        kind="session_metadata",
-        sensitivity="private_metadata",
-        recomputable=False,
-        generated_by="tests.test_doctor",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_ISSUES
-
-
-def test_check_correction_latest_bundle_ok_on_a_golden_collection(
-    monkeypatch,
-    tmp_path,
-):
-    """The collection's own counts and sizes are pinned at their owner
-    (tests/test_correction_bundles.py); here only the verdict is."""
-    sessions = tmp_path / "sessions"
-    write_golden_correction_bundle(sessions, "old", started_at=1000)
-    write_golden_correction_bundle(sessions, "new", started_at=2000)
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_correction_latest_bundle_warns_when_the_walk_was_capped(
-    monkeypatch,
-    tmp_path,
-):
-    """A capped walk makes the storage totals a lower bound, so the row says
-    so rather than reporting the undercount as fact."""
-    sessions = tmp_path / "sessions"
-    write_golden_correction_bundle(sessions, "new", started_at=2000)
-    monkeypatch.setattr(bundles, "BUNDLE_WALK_MAX_ENTRIES", 1)
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED
-
-
-def test_check_correction_latest_bundle_ok_when_none_recorded(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "sessions"))
-    r = correction.check_correction_latest_bundle()
-    assert r.status == "ok"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_NONE
-
-
-# ---------- crossover v2 cloud pipeline
 
 
 def _patch_v2_state(monkeypatch, state):
@@ -1095,7 +1024,7 @@ def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_
     assert result.reason == correction.REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE
 
 
-# ---------- /sound/room/ TLS cert
+# ---------- measurement-page TLS cert
 #
 # check_correction_cert_hostname compares the cert's SAN against the name the
 # speaker actually advertises, so a collision-renamed box stops serving a cert

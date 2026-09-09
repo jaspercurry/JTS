@@ -26,7 +26,7 @@ import pytest
 
 import jasper.measurement_window as coordinator
 import jasper.multiroom.state as mstate
-from jasper.web import rooms_setup as rooms
+from jasper.web import rooms_peers as rooms
 from jasper.web import active_speaker_flow, sync_flow
 
 from ._async_wait import wait_until, wait_until_sync

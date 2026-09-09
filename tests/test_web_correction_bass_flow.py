@@ -25,8 +25,6 @@ def test_render_page_is_a_canonical_page_with_the_bass_module():
     assert "Bass management" in html
     # The static ES module is loaded (no inline script behaviour on the page).
     assert '<script type="module" src="/assets/correction/js/bass/main.js">' in html
-    # A pointer to the Room tab where the bass-region measurement lives.
-    assert "/sound/room/" in html
 
 
 def test_render_page_escapes_hostname_in_back_link():

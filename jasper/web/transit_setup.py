@@ -82,9 +82,9 @@ from ._common import (
     guard_mutating_request,
     read_form,
     restart_voice_daemon,
-    safe_back_href,
     SECRET_ENV_MODE,
 )
+from .chrome import safe_back_href
 # Rendering helpers resolve names in transit_page's globals: patch
 # transit_page.<name>, not these aliases. transit_page also owns the
 # LAT_ENV/etc. constants below; import rather than redeclare.

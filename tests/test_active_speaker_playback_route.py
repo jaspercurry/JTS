@@ -231,7 +231,7 @@ def test_explicit_lab_pcm_is_the_only_non_outputd_route() -> None:
 # no active outputd lane. CamillaDSP then plays the roleful graph into the
 # active loopback lane while outputd captures the passive one, and the speaker
 # emits digital silence. One predicate, read by /state, doctor, and the
-# /sound/setup/ save guard.
+# /sound/speaker/ save guard.
 
 
 def test_roleful_layout_on_a_dac_without_an_active_lane_is_a_gap(monkeypatch) -> None:
@@ -255,7 +255,7 @@ def test_innomaker_roleful_layout_is_no_longer_a_gap() -> None:
     """The InnoMaker declares the width-2 active lane, so the one predicate
     that would refuse this layout at save time stops firing for it.
 
-    This is the user-visible half of the flip: /sound/setup/ refused a mono
+    This is the user-visible half of the flip: /sound/speaker/ refused a mono
     active 2-way on this board, and the refusal resolved here.
     """
     topo = _topology(

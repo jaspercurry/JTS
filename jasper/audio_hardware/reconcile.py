@@ -796,28 +796,6 @@ class Pass:
             ("JASPER_OUTPUTD_SINK", dac_sink),
         ], dac_format
 
-    def resolved_content_format(self) -> str:
-        """The CamillaDSP -> outputd content lane's sample format, from the one
-        policy function that also decides what CamillaDSP emits. Empty when the
-        probe could not answer, which the caller reads as "leave the key alone"
-        rather than "write a guess" — a hardcoded fallback here would be a
-        second spelling of DEFAULT_PLAYBACK_FORMAT, and an empty value would
-        silently narrow a wide box.
-
-        NOT the DAC edge: that is JASPER_OUTPUTD_DAC_FORMAT, a separate hop
-        with its own declaration, and the two legitimately differ.
-        """
-        try:
-            # lazy: patch target — the tests replace it on the source
-            # module, which only a per-call import sees.
-            from jasper.fanin_coupling import content_lane_format_for_coupling
-
-            return content_lane_format_for_coupling()
-        # noqa reason: any failure leaves the key alone rather than narrowing the
-        # content lane; the caller marks the pass degraded.
-        except Exception:  # noqa: BLE001
-            return ""
-
     # -- route and latency-floor env ----------------------------------------
 
     def apply_route_env(self) -> bool:
@@ -1019,8 +997,19 @@ class Pass:
         prelude: list[EnvAction] = [("JASPER_OUTPUTD_CONTENT_PCM", None)]
         # The CONTENT lane's width is a function of the fan-in coupling, never
         # of the DAC, so unlike the edge format it is emitted once ahead of the
-        # per-hardware branches and is always definitive.
-        content_format = self.resolved_content_format()
+        # per-hardware branches and is always definitive. An empty answer means
+        # leave the key alone rather than write a guess — a fallback here would
+        # be a second spelling of DEFAULT_PLAYBACK_FORMAT.
+        try:
+            # lazy: patch target — the tests replace it on the source
+            # module, which only a per-call import sees.
+            from jasper.fanin_coupling import content_lane_format_for_coupling
+
+            content_format = content_lane_format_for_coupling()
+        # noqa reason: any failure leaves the key alone rather than narrowing the
+        # content lane; the pass is marked degraded below.
+        except Exception:  # noqa: BLE001
+            content_format = ""
         if content_format:
             prelude.append(("JASPER_OUTPUTD_CONTENT_FORMAT", content_format))
         else:
@@ -1100,7 +1089,7 @@ class Pass:
         if declares_no_lane:
             # The registry answered: this DAC declares no active outputd lane,
             # so the width gate never ran. Fixed only by choosing a different
-            # layout at /sound/setup/. Same literal as that save-guard's
+            # layout at /sound/speaker/. Same literal as that save-guard's
             # refusal reason.
             graph_status = "dac_no_active_lane"
         elif active_lane_cap is not None:

@@ -219,7 +219,7 @@ def _outputd_dual_apple_health(
         # Cumulative group counters. A nonzero value is history outputd
         # recovered from (a bail on the pair restarts the daemon and them).
         counters = ", ".join(
-            f"dual_{name}={dual.get(name)}"
+            f"dual_{name}={dual.get(name, 0)}"
             for name in (
                 "dac_a_xruns",
                 "dac_b_xruns",
@@ -500,7 +500,7 @@ def _transport_route_remedy() -> str:
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
             "this cannot be reconciled: choose a passive speaker layout on this "
-            "speaker's /sound/setup/ page (passive sends full-range audio to "
+            "speaker's /sound/speaker/ page (passive sends full-range audio to "
             "every output — only safe when the speaker has its own built-in "
             "passive crossover), or attach an active-capable DAC."
         )
