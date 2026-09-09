@@ -87,6 +87,8 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/web/correction_setup.py",
     "jasper/web/correction_handlers.py",
     "jasper/web/correction_capture.py",
+    # Owns the BadRequest / RequestConflict text the wizard's routes hand back.
+    "jasper/web/correction_runtime.py",
     "jasper/web/correction_room_flow.py",
     "jasper/web/sync_flow.py",
     # Cluster 3 — the measurement pages' own chrome. The landing page is the

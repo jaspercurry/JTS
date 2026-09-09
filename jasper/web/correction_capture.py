@@ -52,12 +52,6 @@ _AUTHORITY_UNCONFIRMED_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 # we refuse the upload rather than silently resampling (silent
 # resampling would produce a working but wrong correction).
 REQUIRED_SAMPLE_RATE = 48000
-# Browser captures are mono 16-bit PCM at 48 kHz. A normal 10 s sweep
-# upload is ~1 MB; 32 MB leaves generous room for measurement-window
-# setup latency while still avoiding unbounded reads in the Pi web
-# process.
-MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
-MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/sync"})
 
@@ -65,6 +59,9 @@ _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/sync"})
 # Module-level session. Lazy-init on first use so importing this module is
 # cheap (lets `python -m jasper.web.correction_setup --help` work without
 # spinning up a session).
+# ORDERING: never hold this lock across a correction_runtime bridge call
+# (ensure_loop / run_async / run_graph_mutation) — loop work takes this lock
+# too, so the bridge would stall behind the holder.
 _session_lock = threading.Lock()
 _session = None  # type: ignore[var-annotated]
 

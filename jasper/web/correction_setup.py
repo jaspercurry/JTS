@@ -71,13 +71,13 @@ from ._common import (
 )
 from . import correction_capture, correction_handlers, correction_runtime
 from .correction_capture import (
-    MAX_SYNC_WAV_BODY_BYTES,
     REQUIRED_SAMPLE_RATE,
     _FOLLOWER_DELEGATED_PAGE_PATHS,
 )
 from .correction_runtime import (
     BadRequest,
     CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+    MAX_SYNC_WAV_BODY_BYTES,
     RequestConflict,
     TuningSetupUnavailable,
     logger,
@@ -291,7 +291,7 @@ def _dispatch_sync(handler: _Handler) -> None:
                 correction_runtime.run_async, _schedule)
         elif path == "/sync/analyze":
             try:
-                body = correction_handlers._read_wav_body(
+                body = correction_runtime.read_wav_body(
                     handler,
                     max_bytes=MAX_SYNC_WAV_BODY_BYTES,
                 )

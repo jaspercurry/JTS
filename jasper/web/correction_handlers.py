@@ -47,7 +47,6 @@ from ..platform.systemd import no_hold
 from . import correction_capture, correction_runtime
 from .correction_capture import (
     CaptureKind,
-    MAX_WAV_BODY_BYTES,
     REQUIRED_SAMPLE_RATE,
     _BUNDLE_DELETE_BLOCKED_STATES,
     _session_lock,
@@ -1131,25 +1130,6 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"deleted": True, "session_id": session_id}
 
 
-def _read_wav_body(
-    handler: BaseHTTPRequestHandler,
-    *,
-    max_bytes: int = MAX_WAV_BODY_BYTES,
-) -> bytes:
-    try:
-        length = int(handler.headers.get("Content-Length") or "0")
-    except ValueError as e:
-        raise BadRequest("invalid Content-Length") from e
-    if length <= 0:
-        raise BadRequest("empty body")
-    if length > max_bytes:
-        raise BadRequest(f"WAV body too large ({length} bytes)")
-    raw = handler.rfile.read(length)
-    if len(raw) != length:
-        raise BadRequest("incomplete WAV body")
-    return raw
-
-
 def _handle_local_capture_setup(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -1239,7 +1219,7 @@ def _handle_upload_noise(
         )
 
     correction_runtime.run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
-    body = _read_wav_body(handler)
+    body = correction_runtime.read_wav_body(handler)
     captured_path = sess.noise_capture_path_for_position(sess.current_position)
     captured_path.parent.mkdir(parents=True, exist_ok=True)
     captured_path.write_bytes(body)
@@ -1300,7 +1280,7 @@ def _handle_upload_capture(
     if sess is None:
         raise RuntimeError("no session — POST /start first")
 
-    body = _read_wav_body(handler)
+    body = correction_runtime.read_wav_body(handler)
 
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
         captured_path = sess.verify_capture_path()

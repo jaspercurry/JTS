@@ -1336,7 +1336,7 @@ def test_upload_handler_runs_auto_revert_on_confirmed_regression(
     cam = _RecordingCam()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
+        correction_runtime, "read_wav_body", lambda handler: wav_bytes,
     )
     monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
     async def resolve(_sess, _cam):
@@ -1371,7 +1371,7 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     cam = _RecordingCam()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
+        correction_runtime, "read_wav_body", lambda handler: wav_bytes,
     )
     monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
 

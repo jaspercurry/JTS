@@ -474,9 +474,10 @@ class IdleShutdownTracker:
                 if self._on_idle_exit is not None:
                     # Same specific tuple the service-start claim boundary
                     # catches around this hook's restore (correction_setup):
-                    # _run_async timeouts are TimeoutError (an OSError), and
-                    # CamillaUnavailable is a RuntimeError. Hooks are expected
-                    # to be fail-soft themselves; os._exit below still runs.
+                    # correction_runtime.run_async timeouts are TimeoutError
+                    # (an OSError), and CamillaUnavailable is a RuntimeError.
+                    # Hooks are expected to be fail-soft themselves; os._exit
+                    # below still runs.
                     try:
                         self._on_idle_exit()
                     except (OSError, RuntimeError, ValueError):

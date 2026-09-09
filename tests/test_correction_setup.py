@@ -554,6 +554,91 @@ def test_run_async_timeout_waits_for_coroutine_cleanup():
     assert failures == []
 
 
+def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
+    """Callers arriving DURING loop startup all get the one loop, running.
+
+    Two loops means two capture owners. Gating re-creation on
+    ``_loop.is_running()`` read False between ``Thread.start()`` and
+    ``run_forever()``, so a caller landing in that window built a second loop
+    despite the lock. The gate below holds the window open for the whole race
+    rather than hoping to hit it.
+    """
+    prior_loop = correction_runtime._loop
+    prior_thread = correction_runtime._loop_thread
+    prior_running = correction_runtime._loop_running.is_set()
+    before = {
+        t for t in threading.enumerate() if t.name == "jasper-correction-loop"
+    }
+    correction_runtime._loop = None
+    correction_runtime._loop_thread = None
+    correction_runtime._loop_running.clear()
+
+    open_the_gate = threading.Event()
+    at_the_gate = threading.Semaphore(0)
+    built: list = []
+    real_run_loop = correction_runtime._run_loop
+
+    def gated_run_loop(loop, running):
+        built.append(loop)
+        at_the_gate.release()
+        open_the_gate.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        real_run_loop(loop, running)
+
+    monkeypatch.setattr(correction_runtime, "_run_loop", gated_run_loop)
+
+    workers = 8
+    seen: list = []
+    seen_lock = threading.Lock()
+
+    def call_ensure_loop():
+        loop = correction_runtime.ensure_loop()
+        with seen_lock:
+            seen.append(loop)
+
+    threads = [
+        threading.Thread(target=call_ensure_loop, daemon=True)
+        for _ in range(workers)
+    ]
+    try:
+        threads[0].start()
+        # The first loop thread is now parked before run_forever(): every
+        # later caller arrives inside the startup window.
+        assert at_the_gate.acquire(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        for thread in threads[1:]:
+            thread.start()
+        assert not at_the_gate.acquire(timeout=0.2), (
+            "a caller inside the startup window started a second loop"
+        )
+        open_the_gate.set()
+        for thread in threads:
+            thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert not thread.is_alive()
+        assert len(built) == 1
+        assert len(seen) == workers
+        assert all(loop is seen[0] for loop in seen)
+        assert seen[0].is_running()
+        started = {
+            t for t in threading.enumerate() if t.name == "jasper-correction-loop"
+        } - before
+        assert len(started) == 1
+    finally:
+        open_the_gate.set()
+        correction_runtime._loop = prior_loop
+        correction_runtime._loop_thread = prior_thread
+        if prior_running:
+            correction_runtime._loop_running.set()
+        else:
+            correction_runtime._loop_running.clear()
+        for loop in built:
+            loop.call_soon_threadsafe(loop.stop)
+        for thread in threading.enumerate():
+            if thread.name == "jasper-correction-loop" and thread not in before:
+                thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        for loop in built:
+            if not loop.is_running():
+                loop.close()
+
+
 def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     cleanup_started = threading.Event()
     release_cleanup = threading.Event()
@@ -793,8 +878,8 @@ def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
     sess = Session()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_handlers,
-        "_read_wav_body",
+        correction_runtime,
+        "read_wav_body",
         lambda _handler: events.append("body-read") or b"WAVE",
     )
     monkeypatch.setattr(
@@ -905,7 +990,7 @@ def test_read_wav_body_rejects_invalid_content_length():
         rfile = io.BytesIO()
 
     with pytest.raises(correction_runtime.BadRequest, match="Content-Length"):
-        correction_handlers._read_wav_body(Handler())
+        correction_runtime.read_wav_body(Handler())
 
 
 def test_read_wav_body_rejects_large_or_incomplete_body():
@@ -914,14 +999,14 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
         rfile = io.BytesIO(b"12345")
 
     with pytest.raises(correction_runtime.BadRequest, match="too large"):
-        correction_handlers._read_wav_body(TooLarge(), max_bytes=4)
+        correction_runtime.read_wav_body(TooLarge(), max_bytes=4)
 
     class Incomplete:
         headers = {"Content-Length": "5"}
         rfile = io.BytesIO(b"123")
 
     with pytest.raises(correction_runtime.BadRequest, match="incomplete"):
-        correction_handlers._read_wav_body(Incomplete())
+        correction_runtime.read_wav_body(Incomplete())
 
 
 def test_render_page_includes_mic_picker_and_calibration_controls():
