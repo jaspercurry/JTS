@@ -299,6 +299,23 @@ async def test_private_admission_refuses_pending_bass_intent_for_any_source(
             pytest.fail("a source label granted recovery permission")
 
 
+async def test_reentrant_admission_refuses_pending_bass_intent(
+    tmp_path: Path,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    lock_path = dsp_apply_lock_path(tmp_path)
+
+    async with _dsp_apply_lock(
+        lock_path, source="outer", bass_extension_intent_path=intent
+    ):
+        intent.write_text("{}\n", encoding="utf-8")
+        with pytest.raises(BassExtensionApplyPending):
+            async with _dsp_apply_lock(
+                lock_path, source="nested", bass_extension_intent_path=intent
+            ):
+                pytest.fail("lock reentry ignored the pending intent")
+
+
 async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
     tmp_path: Path,
     monkeypatch,
