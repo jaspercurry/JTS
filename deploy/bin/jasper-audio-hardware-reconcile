@@ -14,11 +14,6 @@
 
 set -euo pipefail
 
-ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
-OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
-FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
-ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
-ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_OUTPUT_HARDWARE_PYTHON="python3"
 if [[ -x /opt/jasper/.venv/bin/python ]]; then
@@ -40,22 +35,10 @@ if [[ -n "$OUTPUT_HARDWARE_PYTHONPATH" ]]; then
     export PYTHONPATH="${OUTPUT_HARDWARE_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
 fi
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
-I2S_HAT_INTENT_FILE="${JASPER_I2S_HAT_INTENT_FILE:-/var/lib/jasper/i2s_hat.env}"
-I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper-output-hardware/i2s-hat-reboot-required}"
-MANAGEMENT_TRANSPORT_MARKER="${OUTPUT_HARDWARE_STATE_PATH%/*}/management-transport.ok"
-INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
-OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
-CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
-CAMILLA_CONF_DIR="${JASPER_CAMILLA_CONF_DIR:-/etc/camilladsp}"
-CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
-# The board facts the pass reads. Same env seams the unit unsets.
-PROC_ASOUND_DIR="${JASPER_PROC_ASOUND:-/proc/asound}"
-PI_MODEL_FILE="${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}"
-BOOT_CONFIG_FILE="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
-UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
 # In the tmpfs directory OUTPUT_HARDWARE_STATE_PATH lives in, so a reboot always
 # clears it and the first pass after boot is a full one.
 RECONCILE_STAMP_PATH="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.stamp"
+RECONCILE_INPUTS_PATH="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.inputs"
 RECONCILE_DEGRADED_MARKER="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.degraded"
 
 REASON="manual"
@@ -63,46 +46,7 @@ PRINT_ENV=0
 NO_RESTART=0
 CHECK_CHANGED=0
 OBSERVED_AT_PASS_START=""
-
-# What the box tells us and this script never writes. Split out of the list
-# below only so write_reconcile_stamp can re-check it: a card that appeared or
-# vanished DURING a pass was not reconciled by that pass.
-#
-# cards+pcm are a PROXY for the `aplay -L` view the pass actually enumerates
-# from, not the same thing: they move on a card add/remove and on a PCM-device
-# change, but two cards whose lines and device lists are identical hash equal.
-reconcile_observed_paths() {
-    printf '%s\n' \
-        "$PROC_ASOUND_DIR/cards" \
-        "$PROC_ASOUND_DIR/pcm" \
-        "$PI_MODEL_FILE" \
-        "$UDC_CLASS_DIR"
-}
-
-# SINGLE SOURCE OF TRUTH for the files a pass depends on. The stamp itself is
-# deliberately absent: hashing it would make the fingerprint self-referential.
-# asound.conf and the ring conf.d are absent because each is re-derived from
-# entries that ARE listed, and naming them here would fork a path constant
-# owned by jasper-render-asound-conf and jasper.ring_assets.
-reconcile_input_paths() {
-    reconcile_observed_paths
-    printf '%s\n' \
-        "$ENV_FILE" \
-        "$OUTPUTD_ENV_FILE" \
-        "$FANIN_ENV_FILE" \
-        "$ASOUND_SOURCE_TEMPLATE" \
-        "$ASOUND_TEMPLATE" \
-        "$I2S_HAT_INTENT_FILE" \
-        "$I2S_HAT_REBOOT_REQUIRED_PATH" \
-        "$MANAGEMENT_TRANSPORT_MARKER" \
-        "$INSTALL_PROFILE_FILE" \
-        "$OUTPUT_TOPOLOGY_PATH" \
-        "$OUTPUT_HARDWARE_STATE_PATH" \
-        "$CAMILLA_STATEFILE" \
-        "$CAMILLA2_STATEFILE" \
-        "$CAMILLA_CONF_DIR" \
-        "$BOOT_CONFIG_FILE"
-}
+INPUTS_AT_PASS_START=""
 
 # The hermetic tests run this script on the developer laptop, where macOS
 # ships shasum and no sha256sum.
@@ -114,16 +58,27 @@ reconcile_sha256() {
     fi | cut -d ' ' -f 1
 }
 
-# A deterministic byte stream for the paths read on stdin. Content, not mtime:
-# several inputs are rewritten byte-identically by every pass (and
-# $CAMILLA_CONF_DIR holds a lock file that is touched constantly), so a
-# timestamp term would never settle and nothing would ever skip. A directory
-# contributes the names one level down plus the contents of the regular files
-# there -- enough for $CAMILLA_CONF_DIR's configs and $UDC_CLASS_DIR's links,
-# and it never descends into sysfs.
+# The Python pass owns resolved paths; environment keys make an override change
+# invalidate its old list. No source/eval: the list carries only tagged paths.
+# Content, not mtime: several inputs and Camilla's lock are touched every pass.
+# Directories contribute one level of names and regular-file contents, never a
+# recursive sysfs walk. Missing or malformed lists always request another pass.
 reconcile_path_bytes() {
-    local path entry
-    while IFS= read -r path; do
+    local filter="$1" header kind key path entry observed=0 inputs=0
+    IFS= read -r header || return 1
+    [[ "$header" == "JTS_RECONCILE_INPUTS_V1" ]] || return 1
+    while IFS=$'\t' read -r kind key path || [[ -n "$kind$key$path" ]]; do
+        case "$kind" in
+            observed) observed=1 ;;
+            input) inputs=1 ;;
+            *) return 1 ;;
+        esac
+        [[ "$key" == "-" || "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || return 1
+        [[ "$path" == /* && "$path" != *$'\t'* && "$path" != *$'\r'* ]] || return 1
+        [[ "$filter" == "all" || "$kind" == "$filter" ]] || continue
+        if [[ "$key" != "-" ]]; then
+            printf '\n%s=%s\n' "$key" "${!key-}"
+        fi
         printf '\n>>> %s\n' "$path"
         if [[ -d "$path" ]]; then
             while IFS= read -r entry; do
@@ -138,14 +93,18 @@ reconcile_path_bytes() {
             printf 'absent\n'
         fi
     done
+    [[ "$observed" == "1" && "$inputs" == "1" ]]
 }
 
 reconcile_observed_digest() {
-    reconcile_observed_paths | reconcile_path_bytes | reconcile_sha256
+    reconcile_path_bytes observed <"$RECONCILE_INPUTS_PATH" | reconcile_sha256
 }
 
 reconcile_fingerprint() {
-    reconcile_input_paths | reconcile_path_bytes | reconcile_sha256
+    {
+        cat -- "${BASH_SOURCE[0]}" "$RECONCILE_INPUTS_PATH" || return 1
+        reconcile_path_bytes all <"$RECONCILE_INPUTS_PATH" || return 1
+    } | reconcile_sha256
 }
 
 log_event() {
@@ -166,10 +125,16 @@ write_reconcile_stamp() {
         log_event "stamp_skipped" "reason=probe_unavailable"
         return 0
     fi
+    # A first pass publishes its list but has no prior hardware snapshot. A
+    # changed path layout also needs one full pass with the new observed paths.
+    if [[ -z "$OBSERVED_AT_PASS_START" || "$INPUTS_AT_PASS_START" != "$(cat -- "$RECONCILE_INPUTS_PATH" 2>/dev/null)" ]]; then
+        log_event "stamp_skipped" "reason=inputs_changed"
+        return 0
+    fi
     # A card that appeared or vanished mid-pass was not reconciled by this pass,
     # and no second pass is queued for it: udev's start merges into this
     # already-activating oneshot. Stamping would make that staleness stick.
-    if [[ "$(reconcile_observed_digest)" != "$OBSERVED_AT_PASS_START" ]]; then
+    if [[ "$(reconcile_observed_digest 2>/dev/null)" != "$OBSERVED_AT_PASS_START" ]]; then
         log_event "stamp_skipped" "reason=hardware_moved_mid_pass"
         return 0
     fi
@@ -316,7 +281,8 @@ fi
 # abort in the window before the first state write (an OOM kill, TimeoutStartSec)
 # would otherwise leave a predecessor's stamp valid and the retry would be
 # condition-skipped and report success.
-OBSERVED_AT_PASS_START="$(reconcile_observed_digest)"
+INPUTS_AT_PASS_START="$(cat -- "$RECONCILE_INPUTS_PATH" 2>/dev/null)" || INPUTS_AT_PASS_START=""
+OBSERVED_AT_PASS_START="$(reconcile_observed_digest 2>/dev/null)" || OBSERVED_AT_PASS_START=""
 rm -f -- "$RECONCILE_STAMP_PATH" "$RECONCILE_DEGRADED_MARKER"
 rc=0
 "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile "$@" || rc=$?

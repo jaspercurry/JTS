@@ -49,6 +49,7 @@ from .json_fields import json_fingerprint, utc_now_iso
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
+DEFAULT_PROC_ASOUND_PATH = "/proc/asound"
 DEFAULT_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 DEFAULT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
@@ -741,7 +742,7 @@ def observe(
     hat = read_hat_eeprom()
     cards = probe_system_cards(
         sys_class_sound=os.environ.get("JASPER_SYS_CLASS_SOUND", "/sys/class/sound"),
-        proc_asound=os.environ.get("JASPER_PROC_ASOUND", "/proc/asound"),
+        proc_asound=os.environ.get("JASPER_PROC_ASOUND", DEFAULT_PROC_ASOUND_PATH),
         hat=hat,
     )
     if not cards:
