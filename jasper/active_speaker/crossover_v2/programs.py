@@ -153,6 +153,7 @@ class SessionExcitation:
     #: gate compares each composed segment against. A role absent here composes
     #: at its nominal.
     sweep_duration_limits_s: Mapping[str, float]
+    summed_sweep_band_hz: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(self.roles))
@@ -259,6 +260,7 @@ class SessionExcitation:
             roles=self.roles,
             sweep_duration_limits_s=self.sweep_duration_limits_s,
             measurement_band_hz=measurement_band_hz(self.roles),
+            sweep_band_hz=self.summed_sweep_band_hz,
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain),

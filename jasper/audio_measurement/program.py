@@ -973,6 +973,7 @@ def build_verify_program(
     fc_hz: float | None,
     *,
     measurement_band_hz: tuple[float, float] | None = None,
+    sweep_band_hz: tuple[float, float] | None = None,
     gain_db: float = BASE_STIMULUS_PEAK_DBFS,
     guard_s: float = DEFAULT_VERIFY_GUARD_S,
     sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
@@ -989,6 +990,7 @@ def build_verify_program(
     sweep played through the applied production graph. ``fc_hz`` widens the
     low bound when the crossover is low: ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
     ``fc_hz=None`` is the NO-CROSSOVER mode, requiring ``measurement_band_hz``.
+    ``sweep_band_hz`` overrides the sweep while retaining the crossover's pilot band.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
     docstring); the pilot rides its own band to avoid the
     crossover notch. Scoped measurement callers also re-admit the rendered WAV
@@ -1010,6 +1012,10 @@ def build_verify_program(
             )
         f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
     f2_hz = VERIFY_F_HI_HZ
+    if sweep_band_hz is not None:
+        f1_hz, f2_hz = map(float, sweep_band_hz)
+        if not (0 < f1_hz < f2_hz < PROGRAM_SAMPLE_RATE_HZ / 2):
+            raise ValueError("sweep_band_hz must lie between zero and Nyquist")
     if not f1_hz < f2_hz:
         raise ValueError("verify sweep band collapsed")
     if sweep_duration_limits_s:
