@@ -9,8 +9,8 @@ components on 2026-07-31. Neither is installed; we own every rule below.
 The craft reference for **every management page** — type, colour, depth, radii,
 touch targets, motion, copy — applied as each page is touched, never as a
 standalone compliance sweep. The jasper.tech capture page
-and the Sound measurement wizards at `/sound/room/`, `/sound/speaker/crossover/`
-(**Active speaker**), and `/sound/bass/` (#1941's world) carry the most design
+and the Sound measurement wizards at `/sound/speaker/crossover/`
+(**Active speaker**) and `/sound/bass/` (#1941's world) carry the most design
 attention.
 
 | Question | Read |

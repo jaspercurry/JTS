@@ -242,7 +242,10 @@ def test_inactive_speaker_gets_not_applicable():
     env = build_crossover_envelope_v2({"active": False})
     assert env["screen"] == "not_applicable"
     assert env["active"] is False
-    assert env["next_action"]["href"] == "/sound/room/"
+    # Nothing to do on this speaker from this flow, so it mints no action
+    # rather than a link into a subsystem that does not apply to it.
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
 
 
 def test_setup_not_ready_blocks_before_any_capture():
@@ -1716,20 +1719,18 @@ def test_done_headline_trusts_a_graded_result():
     assert "unverified" not in env["verdict_text"].lower()
 
 
-def test_done_promotes_the_recommended_next_step_to_primary():
-    """The done screen leads with a forward action, never a click-to-fail one.
+def test_done_offers_nothing_when_the_tune_is_finished():
+    """A verified tune with no retry and no way back mints no action.
 
-    The head of the recommendedness-ordered alternates is promoted — on a
-    round that is NOT iterating that head is room correction. The iterating
-    case has its own test below, because the head differs there and the
-    promotion deliberately inherits the list's ordering rather than naming
-    one action."""
+    The done screen promotes the head of its recommendedness-ordered
+    alternates; when that list is empty there is genuinely no further step,
+    and an invented one would be a click-to-nowhere. The iterating case has
+    its own test below, where the head is a real next experiment."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    action = env["next_action"]
-    assert action["id"] == "room"
-    assert action["href"] == "/sound/room/"
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
 
 
 _DONE_VERDICT_VARIANTS = {
@@ -1765,7 +1766,7 @@ def test_no_done_verdict_names_undo(variant):
     ))
     assert env["screen"] == "done"
     assert "undo" not in env["verdict_text"].lower(), env["verdict_text"]
-    actions = [env["next_action"], *env["alternate_actions"]]
+    actions = [a for a in (env["next_action"], *env["alternate_actions"]) if a]
     assert not any(a["id"] == "verify_undo" for a in actions)
 
 
@@ -1797,10 +1798,9 @@ def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
     assert "confirmed at the mark" in verdict
     assert "full measurement" in verdict
     assert env["tier"] == "express"
-    assert env["next_action"]["id"] == "room"
-    alternates = {a["id"]: a for a in env["alternate_actions"]}
-    assert "run_full_measurement" in alternates
-    upgrade = alternates["run_full_measurement"]
+    # The upgrade is the recommended next step, so it is the promoted head.
+    upgrade = env["next_action"]
+    assert upgrade["id"] == "run_full_measurement"
     assert upgrade["endpoint"] == "/sound/speaker/crossover/v2/session"
     assert upgrade["body"] == {"tier": "full"}
 
@@ -4360,9 +4360,8 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     """
     env = build_crossover_envelope_v2(status)
     assert env["screen"] == screen
-    way_back = [
-        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
-    ]
+    offered = [a for a in (env["next_action"], *env["alternate_actions"]) if a]
+    way_back = [a for a in offered if a["id"] == "republish_previous"]
     assert len(way_back) == 1
     assert way_back[0]["endpoint"] == "/sound/speaker/crossover/v2/republish"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
@@ -4947,7 +4946,7 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
     assert [a["id"] for a in env["alternate_actions"]] == [
         "review_remeasure", "review_decline",
     ]
-    every_action = [env["next_action"], *env["alternate_actions"]]
+    every_action = [a for a in (env["next_action"], *env["alternate_actions"]) if a]
     assert not any("restore" in str(a.get("endpoint") or "") for a in every_action)
     assert not any("undo" in str(a.get("id") or "").lower() for a in every_action)
     assert not any("undo" in str(a.get("label") or "").lower() for a in every_action)
@@ -4955,15 +4954,11 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
 
 def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
     """#1985: "Keep current sound" must land the household back where the
-    journey started, not in another subsystem's permission flow.
+    journey started, not in another subsystem's page. The R8 slice check found
+    exactly that landing.
 
-    The generic ``/sound/room/`` hub is the Room-correction wizard, and its
-    first act is the browser-mic HTTPS-transition interstitial — a non-sequitur
-    for someone who just finished a crossover measurement and chose to keep
-    things as they are. The R8 slice check found exactly that landing.
-
-    Pinned as a literal, not "anything under /sound/room/": ``/sound/room/`` is
-    a prefix of ``/sound/speaker/crossover/``, so a containment assertion would
+    Pinned as a literal, not "anything under /sound/": a shorter prefix is a
+    prefix of ``/sound/speaker/crossover/``, so a containment assertion would
     have passed against the bug.
 
     Since #2641 the href is a PRESENTATION HINT beside a real endpoint rather
@@ -5014,7 +5009,7 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
     The invariant, stated so it can be checked rather than intended: an action
     whose ``href`` points back INTO this flow is a decision, and a decision has
     to carry an ``endpoint`` a driver can POST. An action pointing at another
-    subsystem (``/sound/room/``, ``/sound/speaker/``) is a navigation and is
+    subsystem (``/sound/``, ``/sound/speaker/``) is a navigation and is
     exempt — no endpoint here could perform it, and minting a fake one would be
     worse than the link.
 
@@ -5790,9 +5785,6 @@ def test_the_calibration_reservation_reaches_both_decision_screens():
         # actionable before the NEXT measurement.
         assert reservation["severity"] == "warn"
         assert reservation["code"] == "crossover_v2_mic_calibration_reservation"
-    # The sentence names the concrete surface, never a vague "check your
-    # setup" — the structured fact this pin is actually about.
-    assert "/sound/room/" in MIC_CALIBRATION_RESERVATION_COPY
 
 
 def test_a_calibrated_capture_says_nothing_about_the_mic_at_all():
@@ -5935,10 +5927,11 @@ def test_the_reservation_does_not_displace_the_verified_badge():
 ])
 def test_each_kept_round_offers_another_round_as_a_choice(ordinal, adoption, row, reason):
     env = _round_done_env(adoption=adoption, row=row, reason=reason, round_ordinal=ordinal)
-    actions = {a["id"]: a for a in env["alternate_actions"]}
-    assert "room" == env["next_action"]["id"]
-    assert actions["round_remeasure"]["endpoint"] == "/sound/speaker/crossover/v2/session"
-    assert actions["round_remeasure"]["body"] == {}
+    # Another round is the recommended next step, so it is the promoted head.
+    remeasure = env["next_action"]
+    assert remeasure["id"] == "round_remeasure"
+    assert remeasure["endpoint"] == "/sound/speaker/crossover/v2/session"
+    assert remeasure["body"] == {}
 
 
 @pytest.mark.parametrize("reason", [

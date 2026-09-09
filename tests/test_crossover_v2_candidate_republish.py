@@ -965,9 +965,8 @@ def test_the_wizard_way_back_action_round_trips_through_this_door(
         "crossover_v2": v2status.crossover_v2_status_block(),
     })
     assert env["screen"] == "done"
-    way_back = next(
-        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
-    )
+    offered = [a for a in (env["next_action"], *env["alternate_actions"]) if a]
+    way_back = next(a for a in offered if a["id"] == "republish_previous")
     assert way_back["body"] == {"fingerprint": previous.fingerprint}
 
     result = republish.handle_v2_republish(way_back["body"])

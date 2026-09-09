@@ -4315,18 +4315,15 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
 
     first_ever = _envelope_for(None)
     assert first_ever["screen"] == "done"
-    assert first_ever["next_action"]["id"] == "room"
-    assert not any(
-        a["id"] == "republish_previous" for a in first_ever["alternate_actions"]
-    )
+    assert first_ever["next_action"] is None
+    assert first_ever["alternate_actions"] == []
 
+    # With a prior candidate the way back is the only offer, so it is the
+    # promoted primary rather than an alternate.
     with_prior = _envelope_for("f" * 64)
     assert with_prior["screen"] == "done"
-    assert with_prior["next_action"]["id"] == "room"
-    way_back = next(
-        a for a in with_prior["alternate_actions"]
-        if a["id"] == "republish_previous"
-    )
+    way_back = with_prior["next_action"]
+    assert way_back["id"] == "republish_previous"
     assert way_back["endpoint"] == "/sound/speaker/crossover/v2/republish"
     assert way_back["body"] == {"fingerprint": "f" * 64}
 

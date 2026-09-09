@@ -6,9 +6,8 @@
 bin is allowed.
 
 Pure computation only: no I/O, no product policy, no CamillaDSP/emission
-imports. Not :mod:`jasper.correction.envelope` or
-:mod:`jasper.active_speaker.crossover_envelope_v2` — those are *screen*
-envelopes (wizard UI state). Implements
+imports. Not :mod:`jasper.active_speaker.crossover_envelope_v2` — that is a
+*screen* envelope (wizard UI state). Implements
 docs/active-speaker-tuning-layers-design.md "The correction envelope":
 ``allowed_depth(f) = min(mic_trust_limit, repeatability_limit,
 class_prior_limit)``, plus two optional cloud-derived terms

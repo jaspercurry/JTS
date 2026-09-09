@@ -244,10 +244,9 @@ sessions. `frequency` can read a banked round, bundle, or take file directly.
 ## URLs and access
 
 Use the tool's `handoff_url`; it derives from the selected speaker's hostname.
-Room browser capture is at `https://<speaker>/sound/room/`; it needs HTTPS and
-trust in the speaker's local CA. The crossover surface is
-`/sound/speaker/crossover/` and records with the wired Pi microphone. Its state
-is separate from the browser's mic indicator; the phone relay is retired.
+The crossover surface is `/sound/speaker/crossover/` and records with the wired
+Pi microphone; it needs HTTPS and trust in the speaker's local CA. Room has no
+browser wizard — its steps are the CLI walk above.
 
 Backend paths in tool output use `127.0.0.1:8770` on the Pi. Through nginx,
 prefix crossover paths with `/sound/speaker`, for example

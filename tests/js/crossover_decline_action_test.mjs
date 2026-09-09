@@ -52,19 +52,20 @@ const DECLINE = {
   body: { expected_candidate_fingerprint: "fp-1" },
   href: "/sound/speaker/crossover/",
 };
-const ROOM = {
-  id: "room",
-  label: "Continue to Room correction",
-  href: "/sound/room/",
+// An href-only navigation out of this flow — no endpoint could perform it.
+const HUB = {
+  id: "sound_hub",
+  label: "Back to Sound",
+  href: "/sound/",
 };
 
 render({
   verdict_text: "Review", steps: [], nudges: [], capture: null,
   next_action: null,
-  alternate_actions: [DECLINE, ROOM],
+  alternate_actions: [DECLINE, HUB],
 });
 
-const [decline, room] = rowChildren();
+const [decline, hub] = rowChildren();
 
 // --- (a) endpoint wins: the decision is a button, not a link --------------
 check(decline.tag === "button", "(a) an action with an endpoint renders a button");
@@ -96,9 +97,9 @@ check(
 // The other half of the rule. A cross-subsystem link has no endpoint that
 // could perform it, and turning it into a dead button would be the mirror of
 // the bug above.
-check(room.tag === "a", "(c) an href-only action still renders an anchor");
+check(hub.tag === "a", "(c) an href-only action still renders an anchor");
 check(
-  room.href === "/sound/room/",
+  hub.href === "/sound/",
   "(c) and keeps pointing where the envelope said",
 );
 

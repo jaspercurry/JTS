@@ -394,10 +394,6 @@ OFF_LADDER_HELD: dict[str, set[str]] = {
     "deploy/index.html": {"0.86rem", "0.88rem", "0.92rem"},
     "deploy/assets/airplay/airplay.css": {"10px"},
     "deploy/assets/bluetooth/bluetooth.css": {"0.7rem", "0.85rem", "0.95rem"},
-    "deploy/assets/correction/correction.css": {
-        "0.72rem", "0.82rem", "0.93rem", "0.94rem", "0.95rem",
-        "0.9rem", "1.08rem", "1rem",
-    },
     "deploy/assets/correction/crossover.css": {
         "0.8125rem", "0.82rem", "0.95rem", "0.9rem", "1.05rem",
     },
@@ -601,9 +597,9 @@ def test_design_language_doc_is_reachable_and_dated():
 
 # A "page" is a *_setup.py/*_flow.py/*_page.py module that owns a page shell
 # (it calls canonical_page() itself). A pure router that delegates every GET
-# route to another such module (correction_setup.py -> correction_room_flow
-# etc.) or a stateless helper (pair_flow.py, active_speaker_flow.py) renders
-# no shell of its own and is not a page for this guard.
+# route to another such module, or a stateless helper (pair_flow.py,
+# active_speaker_flow.py), renders no shell of its own and is not a page for
+# this guard.
 _PAGE_SHELL_MODULES = tuple(
     p for p in (
         sorted((ROOT / "jasper" / "web").glob("*_setup.py"))

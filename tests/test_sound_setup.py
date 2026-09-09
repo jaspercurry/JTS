@@ -465,13 +465,13 @@ def test_active_speaker_ui_level_match_helpers():
 
 
 def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
-    """commission-load serializes against room correction / balance / sync: when
-    one is active it refuses with a distinct reason (not a camilla touch) so the
-    UI shows the correct message instead of "another driver is being tested"."""
+    """commission-load serializes against balance / sync: when one is active it
+    refuses with a distinct reason (not a camilla touch) so the UI shows the
+    correct message instead of "another driver is being tested"."""
     from jasper.web import active_speaker_flow
 
     monkeypatch.setattr(
-        active_speaker_flow, "blocking_measurement_phase", lambda: "correction:sweeping"
+        active_speaker_flow, "blocking_measurement_phase", lambda: "sync:measuring"
     )
 
     def _camilla_must_not_be_called():
@@ -485,7 +485,7 @@ def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
     )
     assert payload["status"] == "refused"
     assert payload["reason"] == "measurement_in_progress"
-    assert payload["blocking_phase"] == "correction:sweeping"
+    assert payload["blocking_phase"] == "sync:measuring"
 
 
 @contextmanager
@@ -7422,8 +7422,8 @@ def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
 def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
     """The re-mute teardown may not let ANY exception escape uncopied.
 
-    /sound/ and /sound/room/ both run the combined-test re-mute from a
-    ``finally`` and both import this one helper. /sound/room/ used to catch a
+    /sound/ runs the combined-test re-mute from a ``finally`` through this one
+    helper. A sibling caller used to catch a
     five-entry tuple (``CamillaUnavailable``, ``OSError``, ``RuntimeError``,
     ``ValueError``, ``TypeError``), so a rollback failing with anything else —
     a ``KeyError`` out of a payload, an ``AttributeError`` off a stubbed

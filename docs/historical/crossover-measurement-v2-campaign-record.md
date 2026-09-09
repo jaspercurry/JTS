@@ -482,7 +482,7 @@ the arbitrary fill size, and the audible tears all fit.
 
 The fill is no longer silent: `event=outputd.content_fill` plus the
 `outputd_content_fill_increased` gate in
-[`jasper/correction/runtime_integrity.py`](../../jasper/correction/runtime_integrity.py)
+`jasper/correction/runtime_integrity.py`
 mean a capture that spans one is now flagged rather than passing its own
 integrity check (#1768). Still open: step-aware recovery using the N=3
 redundancy already paid for — a located step lets the analysis pick a

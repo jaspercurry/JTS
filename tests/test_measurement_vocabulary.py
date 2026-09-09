@@ -82,30 +82,20 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/active_speaker/crossover_envelope_v2.py",
     "jasper/active_speaker/baseline_profile.py",
     # Cluster 2 — failure / refusal copy.
-    "jasper/correction/failures.py",
     "jasper/audio_measurement/level_match.py",
     "jasper/web/correction_setup.py",
     "jasper/web/correction_handlers.py",
     "jasper/web/correction_capture.py",
-    # Owns the BadRequest / RequestConflict text the wizard's routes hand back.
+    # Owns the BadRequest text the daemon's routes hand back.
     "jasper/web/correction_runtime.py",
-    "jasper/web/correction_room_flow.py",
     "jasper/web/sync_flow.py",
     # Cluster 3 — the measurement pages' own chrome. The landing page is the
-    # ENTRY POINT to /sound/room/, so its row label and that page's
-    # subtitle have to agree; they did not until #1959. The labels live in the
+    # ENTRY POINT to the measurement pages, so its row labels and those pages'
+    # subtitles have to agree; they did not until #1959. The labels live in the
     # site-map manifest, the page template holds the rest of the chrome.
     "jasper/web/nav.py",
     "deploy/index.html",
     "jasper/web/correction_crossover_flow.py",
-    "deploy/assets/correction/js/main.js",
-    # Sibling modules main.js was cut into: same page, same household copy,
-    # now split by concern.
-    "deploy/assets/correction/js/api.js",
-    "deploy/assets/correction/js/chart.js",
-    "deploy/assets/correction/js/format.js",
-    "deploy/assets/correction/js/quality.js",
-    "deploy/assets/correction/js/report.js",
     "deploy/assets/correction/js/crossover/main.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",

@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import json
 import urllib.parse
+from collections.abc import Sequence
 from typing import Any
 
 from ..env_load import parse_env_file
@@ -350,6 +351,38 @@ def canonical_header(
         f'{right}'
         f'</div>{tabs}</header>'
     )
+
+
+def follower_delegation_page(
+    title: str, header: str, heading: str, lead_html: str, *, csrf_token: str,
+    leader_url: str, leader_label: str, extra_actions: Sequence[str] = (),
+    main_extra: str = "", page_extra: str = "", css_href: str = "",
+) -> bytes:
+    """The page a bonded follower gets where the control lives on the leader.
+
+    An empty ``leader_url`` (an unknown leader) drops the leader link;
+    ``main_extra`` is what the follower still owns locally, ``page_extra``
+    what follows ``</main>``.
+    """
+    leader_link = (
+        f'<a class="btn btn--primary" href="{html.escape(leader_url)}">'
+        f"{leader_label}</a>"
+    ) if leader_url else ""
+    manage_pair = '<a class="btn" href="/sound/pair/">Manage pair</a>'
+    actions = "\n      ".join([leader_link, *extra_actions, manage_pair])
+    body = f"""
+{header}
+<main class="page">
+  <section class="info-card info-card--accent" role="note">
+    <h2 class="section__title">{heading}</h2>
+    <p class="form-hint">{lead_html}</p>
+    <div class="form-actions">
+      {actions}
+    </div>
+  </section>{main_extra}
+</main>{page_extra}
+"""
+    return canonical_page(title, body, csrf_token=csrf_token, page_css_href=css_href)
 
 
 def safe_back_href(raw: str | None, *, default: str = "/") -> str:

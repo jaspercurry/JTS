@@ -105,7 +105,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   `web/_common.py`, page shell in `web/chrome.py`), `control/`
   (jasper-control daemon), `fanin/`, `multiroom/`, `transit/`, `cues/`,
   `cli/` (incl. `cli/doctor/`).
-- `jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`
+- `jasper/active_speaker/`, `jasper/audio_measurement/`
   — the speaker tuning/measurement program (own doctrine:
   [docs/measurement-loop-doctrine.md](docs/measurement-loop-doctrine.md)).
 - `rust/` — jasper-fanin (mixer), jasper-outputd (final output owner),

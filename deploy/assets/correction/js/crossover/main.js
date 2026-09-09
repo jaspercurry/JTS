@@ -1048,8 +1048,7 @@ if (typeof document !== 'undefined') {
 
 // Redraw the before/after chart on resize/orientation change — without this
 // the canvas's drawing surface stays at whatever size it had on the last
-// poll. Debounced at 150 ms (review S-4) — mirrors
-// deploy/assets/correction/js/main.js's scheduleChartRedraw() exactly, so a
+// poll. Debounced at 150 ms (review S-4), so a
 // drag-resize does not force a style recalc + canvas buffer realloc +
 // ~1024-point redraw on every intermediate frame. Guarded separately from
 // the `document` check above: the small per-feature test harnesses for this
