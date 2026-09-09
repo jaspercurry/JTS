@@ -311,6 +311,15 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 07:40Z: Lane D pre-review (Sonnet, read-only, branches not yet
+  PRs; posted on #4502): both branches stale (3.1 102 commits behind, 3.2
+  139; not stacked on each other); 3.1 ships `bench/wired_play.py` (a faithful
+  mirror of `null_door._play_and_capture`, wired-only) but not the CLI
+  binding (`bass_extension_bench.py --live` still refuses), no `TargetPlan`
+  binding, no `PACKAGE_BOUNDARIES` row; 3.2 adds a third `room_median.json`
+  parser (`seat_fit.read_seat_median`) with no `window` check instead of
+  consuming the door's `read_room_median`. Registration and side-effects
+  clean. Lane D has since pushed 3.3a and 3.3b as well; still no PR.
 - 2026-09-09 06:30Z: LLM client retired: PR #4567 squash-merged at `ce093fecc`
   (its session merged main twice, including #4580, and resolved the
   `correction_runtime.py` collision; Sonnet verified no revert). Lane A's
