@@ -27,10 +27,12 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
     candidate_room_peqs,
+    candidate_trial_scope,
     compile_candidate_config,
     driver_corrections,
     effective_preset,
     prove_candidate_config,
+    room_peqs_from_correction,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -892,11 +894,17 @@ def test_non_empty_room_correction_is_fingerprinted_and_tamper_protected():
 
 def test_candidate_room_peqs_are_the_first_declared_sides_filters():
     candidate = _candidate(room_correction=_room_correction())
-    assert candidate_room_peqs(candidate) == (
+    expected = (
         PeqFilter(freq=45.0, q=3.0, gain=-4.0),
         PeqFilter(freq=120.0, q=2.0, gain=-2.0),
     )
+    assert room_peqs_from_correction(
+        candidate.room_correction, candidate.source_preset
+    ) == expected
+    assert candidate_room_peqs(candidate) == expected
     assert candidate_room_peqs(_candidate()) == ()
+    assert candidate_trial_scope(candidate) == "room_candidate"
+    assert candidate_trial_scope(_candidate()) == "candidate"
 
 
 def test_from_mapping_rejects_non_mapping_room_correction():

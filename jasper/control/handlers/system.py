@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import subprocess
+import threading
+import time
 from typing import Any, Callable, Iterable
 
 from ...audio_quality import (
@@ -20,8 +24,12 @@ from ...audio_quality import (
 )
 from ...doctor_contract import (
     DOCTOR_RESULT_PATH,
+    REASON_REFRESH_FAILED,
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
+    CheckResult,
+    check_row,
+    summarize,
 )
 from ...fanin.latency_mode import (
     LatencyApplyError,
@@ -32,15 +40,156 @@ from ...install_profile import system_capabilities_for_profile
 from ...local_sources import local_source_park_units
 from ...log_event import log_event
 from .. import debug_control
+from .. import restart_broker
 from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
+from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
 
 
 # `systemctl` exits 5 when the named unit has no unit file on this box
 # (EXIT_NOTINSTALLED; verified against systemd 257 on the lab Pi).
 _UNIT_NOT_FOUND_RC = 5
+
+_DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
+# Ceiling on how long a start can be treated as in flight. Sized to
+# `TimeoutStartSec=600` in deploy/systemd/jasper-doctor-json.service: systemd
+# cannot leave the oneshot activating longer, so an older start is over
+# whatever became of it. Within the ceiling the authority is systemd itself
+# (`_diagnostics_unit_in_flight`), and a run that lands clears the window
+# early — see `_start_diagnostics_refresh`.
+_DIAGNOSTICS_REFRESH_WINDOW_SECONDS = 600.0
+_diagnostics_refresh_lock = threading.Lock()
+_diagnostics_refresh_started_at: float | None = None
+
+
+def _diagnostics_unit_in_flight() -> bool:
+    """Is the doctor oneshot still running? Asked of systemd, not inferred from
+    the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
+    crashed) reopens the window on the next request instead of holding it for
+    the whole `_DIAGNOSTICS_REFRESH_WINDOW_SECONDS`.
+
+    Unreadable answers hold the window: not knowing must not become a restart
+    per request. A `oneshot` reads `activating` while it runs.
+    """
+    try:
+        proc = _server._run_unit_systemctl(
+            "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
+        )
+    except (subprocess.SubprocessError, OSError):
+        return True
+    if proc.returncode != 0:
+        return True
+    return (proc.stdout or "").strip() in ("activating", "active", "deactivating")
+
+
+def _start_diagnostics_refresh(
+    *,
+    snapshot_age_seconds: float | None,
+) -> tuple[bool, str]:
+    """Start the root doctor oneshot unless one this process started is
+    still running. Returns ``(refreshing, error)``, where `refreshing` is
+    true only when a start is genuinely in flight."""
+    global _diagnostics_refresh_started_at
+    now = time.monotonic()
+    with _diagnostics_refresh_lock:
+        started_at = _diagnostics_refresh_started_at
+    # A snapshot younger than the elapsed run is that run's own output: it
+    # landed, so the window is over. Systemd is asked only when the cheap
+    # checks still allow a run to be in flight, and outside the lock — the
+    # probe is a subprocess.
+    if started_at is not None:
+        elapsed = now - started_at
+        if (
+            elapsed < _DIAGNOSTICS_REFRESH_WINDOW_SECONDS
+            and (snapshot_age_seconds is None or snapshot_age_seconds > elapsed)
+            and _diagnostics_unit_in_flight()
+        ):
+            return True, ""
+    with _diagnostics_refresh_lock:
+        _diagnostics_refresh_started_at = now
+    try:
+        proc = _server._run_unit_systemctl(
+            "--no-block", "start", "jasper-doctor-json.service",
+        )
+        error = "" if proc.returncode == 0 else (
+            "diagnostics refresh unavailable: "
+            + (proc.stderr or "").strip()[:300]
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        error = f"diagnostics refresh failed: {e}"
+    if error:
+        with _diagnostics_refresh_lock:
+            _diagnostics_refresh_started_at = None
+    return not error, error
+
+
+def _diagnostics_placeholder_result(
+    *,
+    detail: str,
+    status: str,
+    reason: str,
+    refreshing: bool,
+) -> dict[str, Any]:
+    result = CheckResult("jasper-doctor", status, detail, reason=reason)
+    counts = summarize([result])
+    return {
+        "fails": counts["fails"],
+        "warns": counts["warns"],
+        "generated_at_epoch": None,
+        "duration_sec": None,
+        "cache_age_seconds": None,
+        "stale": True,
+        "refreshing": refreshing,
+        "results": [check_row(result)],
+    }
+
+
+def _append_diagnostics_refresh_failure(
+    body: dict[str, Any],
+    refresh_error: str,
+) -> None:
+    row = check_row(CheckResult(
+        "jasper-doctor refresh",
+        "fail",
+        refresh_error,
+        reason=REASON_REFRESH_FAILED,
+    ))
+    results = body.get("results")
+    if isinstance(results, list):
+        results.append(row)
+    else:
+        body["results"] = [row]
+    try:
+        body["fails"] = int(body.get("fails", 0)) + 1
+    except (TypeError, ValueError):
+        body["fails"] = 1
+    body["refresh_error"] = refresh_error
+
+
+def _read_diagnostics_snapshot(
+    result_path: str,
+    *,
+    ttl_seconds: float,
+) -> tuple[dict[str, Any] | None, str]:
+    try:
+        stat = os.stat(result_path)
+        with open(result_path, encoding="utf-8") as f:
+            body = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        return None, str(e)
+    if not isinstance(body, dict):
+        return None, "diagnostics result was not a JSON object"
+    generated_at = body.get("generated_at_epoch")
+    if not isinstance(generated_at, (int, float)):
+        generated_at = stat.st_mtime
+        body["generated_at_epoch"] = generated_at
+    age = max(0.0, time.time() - generated_at)
+    body["cache_age_seconds"] = round(age, 3)
+    body["stale"] = age > ttl_seconds
+    body.setdefault("refreshing", False)
+    return body, ""
 
 
 def _try_restart_each(
@@ -62,7 +211,7 @@ def _try_restart_each(
         "failed_units": [],
     }
     for unit in units:
-        result = _server.restart_broker.manage_units(
+        result = restart_broker.manage_units(
             unit, verb="try-restart", reason=reason, no_block=True, timeout=5.0,
         )
         if result.get("ok"):
@@ -230,17 +379,17 @@ class SystemRoutes(ControlHandlerMixin):
     # and schedules stale/missing refreshes with `systemctl --no-block`, so the
     # dashboard never waits on a live run.
     def _get_system_diagnostics(self) -> None:
-        body, read_error = _server._read_diagnostics_snapshot(
+        body, read_error = _read_diagnostics_snapshot(
             DOCTOR_RESULT_PATH,
-            ttl_seconds=_server._DIAGNOSTICS_CACHE_TTL_SECONDS,
+            ttl_seconds=_DIAGNOSTICS_CACHE_TTL_SECONDS,
         )
         if body is None:
-            refreshing, refresh_error = _server._start_diagnostics_refresh(
+            refreshing, refresh_error = _start_diagnostics_refresh(
                 snapshot_age_seconds=None,
             )
             if refreshing:
                 self._send_json(
-                    _server._diagnostics_placeholder_result(
+                    _diagnostics_placeholder_result(
                         detail=(
                             "diagnostics snapshot not ready yet; "
                             "background refresh started"
@@ -252,7 +401,7 @@ class SystemRoutes(ControlHandlerMixin):
                 )
                 return
             self._send_json(
-                _server._diagnostics_placeholder_result(
+                _diagnostics_placeholder_result(
                     detail=(
                         f"diagnostics snapshot unavailable ({read_error}); "
                         f"{refresh_error}"
@@ -265,12 +414,12 @@ class SystemRoutes(ControlHandlerMixin):
             return
 
         if body.get("stale"):
-            refreshing, refresh_error = _server._start_diagnostics_refresh(
+            refreshing, refresh_error = _start_diagnostics_refresh(
                 snapshot_age_seconds=body.get("cache_age_seconds"),
             )
             body["refreshing"] = refreshing
             if refresh_error:
-                _server._append_diagnostics_refresh_failure(body, refresh_error)
+                _append_diagnostics_refresh_failure(body, refresh_error)
         else:
             body["refreshing"] = False
         self._send_json(body)
@@ -465,7 +614,7 @@ class SystemRoutes(ControlHandlerMixin):
         # (consistent with the wizards). Anyone already on the
         # trusted WiFi can trigger these; the dashboard's
         # confirm dialogs are UX, not security.
-        parked = _server._pair_follower_leader_addr() is not None
+        parked = _peering._pair_follower_leader_addr() is not None
         restart_units: list[str] = []
         try_restart_units: list[str] = []
         if self.path == "/system/restart/voice":
@@ -522,7 +671,7 @@ class SystemRoutes(ControlHandlerMixin):
             client=self.address_string(),
         )
         if action in ("reboot", "poweroff"):
-            result = _server.restart_broker.manage_units(
+            result = restart_broker.manage_units(
                 verb=action, reason=action,
             )
             if not result.get("ok"):
@@ -537,7 +686,7 @@ class SystemRoutes(ControlHandlerMixin):
         # profile installs them, so a refusal is a real failure.
         accepted: list[str] = []
         if restart_units:
-            result = _server.restart_broker.manage_units(
+            result = restart_broker.manage_units(
                 *restart_units, verb="restart", reason=action,
                 no_block=True, timeout=5.0,
             )

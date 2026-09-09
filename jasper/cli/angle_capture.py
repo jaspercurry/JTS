@@ -256,7 +256,10 @@ def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
         return measurement_programs.spot_program(args.azimuth, args.elevation or 0)
     if args.azimuth is not None or args.elevation is not None:
         parser.error("--azimuth/--elevation belong to --program spot; a named program owns its poses")
-    return measurement_programs.program(args.program, args.size)
+    size = args.size if args.size is not None else (
+        "cloud" if args.program == "seat" else "express"
+    )
+    return measurement_programs.program(args.program, size)
 
 
 def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
@@ -539,7 +542,7 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
 def _open_round(size: str) -> str:
     """The verb that RUNS a staged walk, at the tier its program was sized for.
 
-    A size that is not a session tier (``cube``, ``spot``) rides the smallest.
+    A size that is not a session tier rides the smallest.
     """
     return f"jasper-round open --tier {size if size in TIERS else TIER_EXPRESS}"
 
@@ -706,7 +709,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "the named measurement program to walk, sized by --size: baseline "
             "(the standard pose table), tournament (the candidate cycle's few "
-            "poses, multiplied by --candidates), seat (the cube around the "
+            "poses, multiplied by --candidates), seat (the cloud around the "
             "listener's head, summed through the applied tune), close (one "
             "summed take near the baffle), or spot (one pose, at --azimuth and "
             f"--elevation). The rows and their costs: {_program_phrase()}. The "
@@ -724,12 +727,12 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--size",
-        default="express",
         # No argparse ``choices``: the registry owns the valid set, so an
         # unknown size refuses in its own words and names the real pairs.
         help=(
-            f"which tier of a named program ({_size_phrase()}). Ignored by "
-            "--program spot, which is one pose either way"
+            f"which tier of a named program ({_size_phrase()}). The default "
+            "selects the program's usual size. Ignored by --program spot, "
+            "which is one pose either way"
         ),
     )
     parser.add_argument(
@@ -957,7 +960,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  jasper-angle-capture plan --program baseline --size express\n"
             "  jasper-angle-capture stage --program baseline --size express\n"
             "  jasper-angle-capture stage --program spot --azimuth 22\n"
-            "  jasper-angle-capture plan --program seat --size cube\n"
+            "  jasper-angle-capture plan --program seat\n"
             "  jasper-angle-capture stage --angles 0,7,-7 (operator escape\n"
             "    hatch: a free-form list no program names)\n"
             "  jasper-angle-capture show\n"

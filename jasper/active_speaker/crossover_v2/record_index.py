@@ -15,7 +15,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import (
@@ -27,6 +27,7 @@ from .contracts import (
 __all__ = [
     "Measurement",
     "bundle_measurements",
+    "measurement_documents",
 ]
 
 
@@ -113,20 +114,14 @@ def _load(take: Path) -> Mapping[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def _scan(artifacts_dir: Path) -> list[tuple[Any, ...]]:
-    """Every banked take under ``artifacts_dir``, as rows sorted by path.
-
-    Sorted on the relative path STRING, not ``Path`` object order: the two
-    disagree when one session directory's name is a ``.``/``-``-extended prefix
-    of another's.
-    """
-    rows = []
-    for take in Path(artifacts_dir).glob(BANKED_TAKE_GLOB):
-        row = _row(take.relative_to(artifacts_dir).as_posix(), _load(take))
+def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:
+    """Canonical takes and their metadata, read once and sorted by relative path."""
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    for take in sorted(artifacts.glob(BANKED_TAKE_GLOB), key=lambda path: path.as_posix()):
+        document = _load(take)
+        row = _row(take.relative_to(artifacts).as_posix(), document)
         if row is not None:
-            rows.append(row)
-    rows.sort(key=lambda r: r[0])
-    return rows
+            yield Measurement(*row), document
 
 
 def bundle_measurements(
@@ -148,10 +143,8 @@ def bundle_measurements(
     select; the take files still decide — every caller re-reads the file it was
     pointed at through its own accept rule.
     """
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    rows = (Measurement(*columns) for columns in _scan(artifacts))
     return tuple(
-        row for row in rows
+        row for row, _ in measurement_documents(bundle_dir)
         if (kind is None or row.kind == kind)
         and (phase is None or row.phase == phase)
         and (position_deg is None or row.position_deg == position_deg)
