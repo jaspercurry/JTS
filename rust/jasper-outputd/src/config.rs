@@ -103,7 +103,7 @@ pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 /// period, which is what lets outputd consume a whole DAC period per DAC period
 /// and never hold a partial slot; every DAC profile declaring a latency floor
 /// runs outputd here. A box whose `period_frames` is not this value — the
-/// floorless profile, left at `DEFAULT_PERIOD_FRAMES` — cannot serve the lane,
+/// floorless profile, left at `DEFAULT_PERIOD_FRAMES` — cannot serve any ring,
 /// and `Config::from_env` refuses to arm it rather than creating a ring the
 /// writer's ioplug can never open. Read from `jasper_ring`, which owns the ring
 /// geometry, rather than spelled again here.
@@ -118,9 +118,6 @@ pub struct ShmRingConfig {
 /// Final-output transport SHAPE — clock-domain shape, not DAC id. The
 /// transport dispatches on this; channel width + map ride as data, so a new
 /// DAC of an established shape adds no variant here.
-///
-/// `dual_apple` is accepted on input as a parse alias for `composite`, for one
-/// release while reconciler env catches up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkMode {
     /// One coherent ALSA device at any width (single Apple 2ch, DAC8x 8ch, …).
@@ -328,13 +325,10 @@ impl Config {
             .as_str()
         {
             "single" | "single_alsa" | "alsa" => SinkMode::SingleAlsa,
-            // `dual_apple` / `dual_apple_usb_c_dac_4ch` are accepted parse
-            // aliases for one release while reconciler env migrates to the
-            // shape-named `composite`.
-            "composite" | "dual_apple" | "dual_apple_usb_c_dac_4ch" => SinkMode::Composite,
+            "composite" => SinkMode::Composite,
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_SINK must be one of single_alsa, composite (alias dual_apple); got {:?}",
+                    "JASPER_OUTPUTD_SINK must be one of single_alsa, composite; got {:?}",
                     other
                 )
             }
@@ -622,21 +616,6 @@ impl Config {
                 );
             }
         }
-        // The ring arm's one extra requirement: the slot IS the reader's period.
-        // A box with any other period would CREATE the return ring at a geometry
-        // the writer's ioplug then refuses to open, presenting as a leader that
-        // plays silence forever with a climbing starvation counter — loud in
-        // /state but three layers from its cause. Name it here instead.
-        if dac_content_ring.is_some() && period_frames != DAC_CONTENT_RING_PERIOD_FRAMES {
-            anyhow::bail!(
-                "JASPER_OUTPUTD_DAC_CONTENT_LANE requires \
-                 JASPER_OUTPUTD_PERIOD_FRAMES={} (the return ring's slot IS one DAC \
-                 period, so outputd never holds a partial slot); this box declares {}",
-                DAC_CONTENT_RING_PERIOD_FRAMES,
-                period_frames
-            );
-        }
-
         let tts_socket_path = env_optional("JASPER_OUTPUTD_TTS_SOCKET");
         let tts_max_pending_frames = env_u64(
             "JASPER_OUTPUTD_TTS_MAX_PENDING_FRAMES",
@@ -744,7 +723,7 @@ impl Config {
                  path; on an active-crossover lane it would feed full-range audio that \
                  is then split to the tweeter) — OR an armed ACTIVE-ring endpoint \
                  (JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT with JASPER_OUTPUTD_ACTIVE_LANE on a \
-                 single_alsa or dual_apple sink), whose ring carries the POST-crossover \
+                 single_alsa or composite sink), whose ring carries the POST-crossover \
                  per-driver program and therefore is not the stereo path this predicate \
                  guards",
                 content_bridge_mode.as_str()
@@ -776,6 +755,32 @@ impl Config {
                      send a full-range channel to the tweeter)"
                 );
             }
+        }
+
+        // Every ring outputd reads shares one requirement: the slot IS the
+        // reader's period. A box with any other period would CREATE the ring at
+        // a geometry the writer's ioplug then refuses to open, presenting as a
+        // leader that plays silence forever with a climbing starvation counter
+        // (or, on the central ring, as CamillaDSP restart-looping on attach) —
+        // loud in /state but three layers from its cause. Name it here instead.
+        // The fake backend (`run_fake`, the reconciler's no-DAC state) attaches
+        // no ring, so it keeps running at any period.
+        let ring_reader = if backend == BackendMode::Fake {
+            None
+        } else if dac_content_ring.is_some() {
+            Some("JASPER_OUTPUTD_DAC_CONTENT_LANE")
+        } else if content_bridge_mode == ContentBridgeMode::ShmRing {
+            Some("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring")
+        } else {
+            None
+        };
+        if let Some(key) = ring_reader.filter(|_| period_frames != DAC_CONTENT_RING_PERIOD_FRAMES) {
+            anyhow::bail!(
+                "{key} requires JASPER_OUTPUTD_PERIOD_FRAMES={} (the ring's slot IS one \
+                 DAC period, so outputd never holds a partial slot); this box declares {}",
+                DAC_CONTENT_RING_PERIOD_FRAMES,
+                period_frames
+            );
         }
 
         // The SHM ring reader's settings. `Some` iff the CENTRAL ring is the
@@ -1000,6 +1005,13 @@ mod tests {
         for (k, _) in &snapshot {
             std::env::remove_var(k);
         }
+        // Every shipped box declares the ring slot as its period (the only
+        // period any ring-ended bridge can arm); a row may unset it to test
+        // the packaged default.
+        std::env::set_var(
+            "JASPER_OUTPUTD_PERIOD_FRAMES",
+            DAC_CONTENT_RING_PERIOD_FRAMES.to_string(),
+        );
         for (k, v) in vars {
             match v {
                 Some(val) => std::env::set_var(k, val),
@@ -1028,7 +1040,7 @@ mod tests {
             assert!(cfg.dual_dac_a_pcm.is_none());
             assert!(cfg.dual_dac_b_pcm.is_none());
             assert_eq!(cfg.sample_rate, SAMPLE_RATE);
-            assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
+            assert_eq!(cfg.period_frames, DAC_CONTENT_RING_PERIOD_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
@@ -1072,10 +1084,6 @@ mod tests {
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", bridge),
-                    // Spelled, not defaulted: the slot guard below passes on
-                    // the period every DAC-floored box actually runs, never on
-                    // the packaged `DEFAULT_PERIOD_FRAMES`.
-                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                 ],
                 || {
                     let cfg = Config::from_env().unwrap();
@@ -1119,14 +1127,19 @@ mod tests {
     /// can drive, or the slot is not one DAC period.
     #[test]
     fn the_ring_arm_refuses_every_shape_it_cannot_serve() {
-        // Every row but the last spells the box's real period, or the slot
-        // guard would refuse it before the shape the row is about.
-        let cases: [EnvCase; 5] = [
+        let cases: [EnvCase; 6] = [
+            (
+                "central ring at the packaged default period: the writer could never open it",
+                &[
+                    ("JASPER_OUTPUTD_BACKEND", Some("alsa")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", None),
+                ],
+            ),
             (
                 "active-crossover lane: the pick would reach the tweeter",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
                 ],
             ),
@@ -1134,7 +1147,6 @@ mod tests {
                 "central ring declared too: two content sources on one DAC",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
                 ],
             ),
@@ -1142,7 +1154,6 @@ mod tests {
                 "the retired route declared too: one source, one spelling",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ],
             ),
@@ -1150,8 +1161,7 @@ mod tests {
                 "composite sink: not a stereo single-DAC member path",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
-                    ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                    ("JASPER_OUTPUTD_SINK", Some("composite")),
                     // Declared, or the composite's own child-PCM requirement
                     // refuses this row before the sink fence it is about.
                     ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
@@ -1161,6 +1171,7 @@ mod tests {
             (
                 "period is not the ring's slot: the writer could never open it",
                 &[
+                    ("JASPER_OUTPUTD_BACKEND", Some("alsa")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("512")),
                 ],
@@ -1174,6 +1185,13 @@ mod tests {
                 );
             });
         }
+        // The reconciler's no-DAC state: backend fake with the period unset.
+        // Nothing attaches a ring there, so the slot guard must not park it.
+        with_env(&[("JASPER_OUTPUTD_PERIOD_FRAMES", None)], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.backend, BackendMode::Fake);
+            assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
+        });
     }
 
     #[test]
@@ -1257,7 +1275,7 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 // The lane's bridge requirement bites first otherwise; the sink
@@ -1283,7 +1301,7 @@ mod tests {
         // active sink and the dac_content+single_alsa fence above never fires.
         with_env(
             &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 // The ACTIVE-ring endpoint marker pair: without it a composite
@@ -1557,7 +1575,7 @@ mod tests {
     /// The composite env set that differs ONLY in the axis each test varies.
     fn composite_active_ring_env() -> Vec<(&'static str, Option<&'static str>)> {
         vec![
-            ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+            ("JASPER_OUTPUTD_SINK", Some("composite")),
             ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
             ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
             ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
@@ -1738,7 +1756,7 @@ mod tests {
         // composite rides the ACTIVE ring, so the same sink mode must NOT park
         // with the marker armed.
         let composite = [
-            ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+            ("JASPER_OUTPUTD_SINK", Some("composite")),
             ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
             ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
         ];
@@ -1770,7 +1788,7 @@ mod tests {
     fn parses_dual_apple_sink_contract() {
         with_env(
             &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 // The ACTIVE-ring endpoint marker: without it this shape is
@@ -1786,6 +1804,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
+                assert_eq!(cfg.sink_mode.as_str(), "dual_apple");
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
                 assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
@@ -1794,34 +1813,6 @@ mod tests {
                     cfg.dual_max_delay_delta_frames,
                     DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES
                 );
-            },
-        );
-    }
-
-    #[test]
-    fn composite_sink_string_parses_to_same_shape_as_dual_apple_alias() {
-        // The shape-named `composite` and the `dual_apple` alias must resolve to
-        // one identical sink shape.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("composite")),
-                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
-                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // The ACTIVE-ring endpoint marker pair: without it a composite
-                // is the passive shape's #2982 park, which is a different
-                // test's subject.
-                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
-                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
-                (
-                    "JASPER_OUTPUTD_SHM_RING_PATH",
-                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
-                ),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.sink_mode, SinkMode::Composite);
-                assert_eq!(cfg.sink_mode.as_str(), "dual_apple");
-                assert_eq!(cfg.content_channels, 4);
             },
         );
     }
@@ -2095,7 +2086,7 @@ mod tests {
 
     #[test]
     fn dual_apple_sink_requires_both_child_pcms() {
-        with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
+        with_env(&[("JASPER_OUTPUTD_SINK", Some("composite"))], || {
             let err = Config::from_env().unwrap_err();
             assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
         });
@@ -2105,7 +2096,7 @@ mod tests {
     fn dual_apple_sink_rejects_identical_child_pcms() {
         with_env(
             &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=A,DEV=0")),
             ],
@@ -2120,7 +2111,7 @@ mod tests {
     fn dual_apple_sink_rejects_negative_delay_delta_budget() {
         with_env(
             &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES", Some("-1")),

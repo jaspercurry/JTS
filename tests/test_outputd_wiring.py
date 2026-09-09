@@ -658,10 +658,7 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    # The transport dispatches on sink SHAPE, not the DAC's name; `dual_apple`
-    # survives as a parse alias and the stable `/state` wire value.
     assert "SinkMode::Composite" in config_rs
-    assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
     # A PASSIVE composite is a parse-time refusal. The refusal ITSELF is owned
     # by config.rs's `a_passive_composite_parks_and_a_roleful_one_does_not`,

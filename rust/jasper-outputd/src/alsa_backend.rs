@@ -1636,12 +1636,21 @@ fn write_dac_frames<S: Copy>(
                         );
                     }
                 } else {
+                    log_dac_write_failed("dac", pcm_name, errno, frames_total - frames_done);
                     return Err(e).context(format!("writing outputd DAC PCM {}", pcm_name));
                 }
             }
         }
     }
     Ok(())
+}
+
+/// A DAC write that is not an xrun (ENODEV when the device vanishes) has no
+/// recovery; this is the one line the journal gets before the daemon exits.
+fn log_dac_write_failed(source: &str, pcm_name: &str, errno: i32, frames_pending: usize) {
+    eprintln!(
+        "event=outputd.dac.write_failed source={source} pcm={pcm_name} errno={errno} frames_pending={frames_pending}"
+    );
 }
 
 /// What one composite child's period write did.
@@ -1779,6 +1788,12 @@ fn write_dac_fail_closed<S: Copy>(
                     }
                     return Ok(ChildWriteOutcome::GroupRecovered);
                 }
+                log_dac_write_failed(
+                    child.source,
+                    child.pcm_name,
+                    errno,
+                    frames_total - frames_done,
+                );
                 return Err(e)
                     .context(format!("writing outputd dual Apple DAC {}", child.pcm_name));
             }

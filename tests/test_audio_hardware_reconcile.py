@@ -2246,7 +2246,7 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert "JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch" in _jasper_env(tmp_path)
     outputd_env = _outputd_env(tmp_path)
-    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=composite" in outputd_env
     # The armed composite names ITSELF on the DAC_PCM key — outputd reads it
     # back as the composite's label, not as a PCM to open.
     assert "JASPER_OUTPUTD_DAC_PCM=dual_apple_usb_c_dac_4ch" in outputd_env
@@ -2391,7 +2391,7 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch" in _jasper_env(tmp_path)
     outputd_env = _outputd_env(tmp_path)
     assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
-    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=composite" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
     commands = _systemctl_log(tmp_path)[commands_before:]
@@ -4117,7 +4117,7 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     extra_env: dict[str, str] = {}
     listing = APPLE_LISTING
     expected_dac_id = "apple_usb_c_dongle"
-    stale_sink = "single_alsa" if composite else "dual_apple"
+    stale_sink = "single_alsa" if composite else "composite"
     if composite:
         listing = DUAL_APPLE_LISTING
         expected_dac_id = "dual_apple_usb_c_dac_4ch"
