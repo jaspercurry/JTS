@@ -298,19 +298,26 @@ def _handler_cls(client_id="", mode="bounce", registry_path="/tmp/no.json"):
     })
 
 
-def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        spotify_setup,
-        "redirect_with_legacy_msg",
-        lambda handler, location: calls.append((handler, location)),
-    )
-    handler_cls = _handler_cls()
-    handler = handler_cls.__new__(handler_cls)
+def test_post_reset_credentials_flashes_via_cookie_not_query_param(monkeypatch):
+    """D.7: this route used to build its own `./?msg=...` redirect target;
+    it must now answer 303 to a clean `./` with the status carried in the
+    flash cookie instead."""
+    token = "y" * 64
+    monkeypatch.setattr(spotify_setup, "_delete_creds_file", lambda: None)
+    monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
+    monkeypatch.setattr(spotify_setup, "_restart_spotify_consumers", lambda: None)
 
-    handler._redirect("./?msg=Saved")
+    body = ("csrf_token=" + token).encode()
+    h = _Request(_handler_cls(), "/reset-credentials", body=body,
+                 cookies="jts_csrf=" + token)
+    h.do_POST()
 
-    assert calls == [(handler, "./?msg=Saved")]
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    location = h.header_values("Location")[0]
+    assert location == "./"
+    assert "msg=" not in location
+    cookies = h.header_values("Set-Cookie")
+    assert any("jts_flash=Credentials%20cleared." in c for c in cookies)
 
 
 def test_get_root_unconfigured_renders_setup_wizard():
