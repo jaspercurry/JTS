@@ -879,8 +879,11 @@ park_audio_clients_for_core_graph_restart() {
     # let the existing restart/reconcile steps below restore the profile-
     # appropriate runtime state. The list is the single canonical
     # JASPER_CORE_GRAPH_PARK_UNITS sourced at the top of this file.
+    # Those restore steps run unguarded under `set -e`, so record each unit
+    # before stopping it: the record is what install.sh's EXIT trap replays.
     local unit
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
+        _record_low_memory_parked_unit "${unit}"
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
@@ -949,9 +952,10 @@ JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
     bt-agent.service
 )
 
-# Units this install actually STOPPED for the constrained build window, so an
-# aborted install can put back exactly what it took away — no more (a unit the
-# profile deliberately keeps parked must stay parked) and no less.
+# Units this install actually STOPPED — the core-graph park on every box, plus
+# the extra phase a constrained build window adds — so an aborted install can
+# put back exactly what it took away: no more (a unit the profile deliberately
+# keeps parked must stay parked) and no less.
 JASPER_LOW_MEMORY_PARK_RECORD=()
 
 # The subset of the record that was ALREADY `disabled`/`masked` when it was
@@ -1002,6 +1006,13 @@ _record_low_memory_parked_unit() {
     # "this install turned it off" from "it was always off and something other
     # than systemd runs it".
     local unit="$1" enablement
+    # park_low_memory_build_units pre-snapshots JASPER_CORE_GRAPH_PARK_UNITS,
+    # then calls park_audio_clients_for_core_graph_restart, which records the
+    # same list again. Emptiness check first, per _jasper_unit_was_off_at_park.
+    if (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )) &&
+        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; then
+        return 0
+    fi
     systemctl is-active --quiet "${unit}" 2>/dev/null || return 0
     JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
     enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"

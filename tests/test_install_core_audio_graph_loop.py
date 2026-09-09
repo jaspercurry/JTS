@@ -466,6 +466,57 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     )
 
 
+def _abort_after_park_harness(tmp_path: Path) -> str:
+    """install.sh's shape around the core-graph park: the EXIT trap that
+    replays the park record, the park itself, then a restart-tail command that
+    aborts under `set -euo pipefail`. `systemctl` is shimmed with real
+    stop/start state so `is-active` answers truthfully across the park."""
+    return f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+mkdir -p "$SYSTEMD_DIR" "{tmp_path}/stopped"
+systemctl() {{
+  local verb="${{1:-}}" unit
+  case "$verb" in
+    is-active) unit="${{3:-}}"; [[ -e "{tmp_path}/stopped/$unit" ]] && return 1; return 0 ;;
+    is-enabled) echo enabled; return 0 ;;
+    stop) unit="${{2:-}}"; : > "{tmp_path}/stopped/$unit" ;;
+    start) unit="${{2:-}}"; rm -f "{tmp_path}/stopped/$unit" ;;
+  esac
+  echo "systemctl $*" >> "{tmp_path}/calls.log"
+  return 0
+}}
+_build_sandbox_log() {{ :; }}
+# install.sh's first unguarded restart-tail command, made to fail.
+ensure_outputd_camilla_statefile() {{ return 1; }}
+source "{FRAGMENT}"
+trap 'unpark_low_memory_build_units || true' EXIT
+park_audio_clients_for_core_graph_restart
+ensure_outputd_camilla_statefile
+"""
+
+
+def test_an_abort_after_the_park_unparks_every_stopped_client(tmp_path):
+    """F-S2-1: `park_audio_clients_for_core_graph_restart` stops voice, the
+    output owner, mux and every renderer, and the restart tail below it runs
+    unguarded under `set -e`. An abort there must not leave a silent speaker:
+    the EXIT trap has to start back exactly what the park stopped."""
+    r = subprocess.run(
+        ["bash", "-c", _abort_after_park_harness(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode != 0, r.stdout
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    stopped = [c.split()[2] for c in calls if c.startswith("systemctl stop ")]
+    started = [c.split()[2] for c in calls if c.startswith("systemctl start ")]
+    assert "jasper-voice.service" in stopped, calls
+    assert len(started) == len(set(started)), f"unparked twice: {started}"
+    assert set(started) == set(stopped), f"unparked {started} != parked {stopped}"
+
+
 def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
     """The install.sh globals the fragment assumes, every mutable root pointed
     at tmp_path, and the fragment itself. `errexit` is off for the runtime
