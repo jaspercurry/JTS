@@ -581,6 +581,14 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "ok", r.detail
     assert r.reason == ""
+    for name in (
+        "dac_a_xruns",
+        "dac_b_xruns",
+        "group_recoveries",
+        "delay_baseline_relatches",
+        "reprime_alignment_failures",
+    ):
+        assert f"dual_{name}=0" in r.detail
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):

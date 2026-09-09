@@ -693,17 +693,19 @@ def test_no_blocking_io_on_the_fanin_render_thread():
 def test_servo_thread_exit_clears_reverse_signals():
     """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
 
-    The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
-    the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
-    tick reads (`ladder_l0`, `commanded_milli_ppm`); otherwise a dead thread leaves
-    `ladder_l0=true` frozen, driving the thin-cushion free-run churn loop. Both
-    stores sit AFTER the `catch_unwind` block so they run on both exit paths.
+    The graceful-shutdown exit path neutralizes the pitch ctl so the host
+    free-runs. It must ALSO clear the outer-loop signals the mixer's decay
+    tick reads (`ladder_l0`, `commanded_milli_ppm`); otherwise a dead thread
+    leaves `ladder_l0=true` frozen, driving the thin-cushion free-run churn
+    loop. A panic instead aborts the process outright (C6's ExecStopPost
+    neutralizes the pitch), so this is the only exit path that needs the
+    signal clear.
     """
     host_clock_text = (
         _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
     ).read_text(encoding="utf-8")
-    # The exit-neutralize block ends the thread body; every reverse-signal clear
-    # follows the actuator neutralize (so they run on graceful + caught-panic exit).
+    # The exit-neutralize block ends the thread body; every reverse-signal
+    # clear follows the actuator neutralize on this graceful-exit path.
     exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
     exit_tail = host_clock_text[exit_start:]
     assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (

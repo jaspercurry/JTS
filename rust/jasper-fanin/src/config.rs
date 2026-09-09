@@ -14,7 +14,7 @@
 use anyhow::Result;
 use jasper_env::{env_f32, env_parse, env_str};
 
-use crate::loudness::AssistantLoudnessConfig;
+use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
 /// The SHM ring's pinned slot size in frames (Ring A), re-exported from the
 /// crate that owns the ring geometry so fan-in and outputd read one constant.
@@ -179,10 +179,6 @@ pub struct Config {
     /// `/state` aggregator and by jasper-doctor. Under `/run` so it is tmpfs and
     /// recreated on each daemon start.
     pub control_socket_path: String,
-
-    /// Append-only xrun event log, persisted across reboots. Ring-truncated at
-    /// ~10 KB.
-    pub xrun_log_path: String,
 
     /// Outputd-compatible TTS socket. Python's TTS transport points here so
     /// speech/cues enter before CamillaDSP crossover/protection. `disabled` is a
@@ -1122,10 +1118,6 @@ impl Config {
             period_frames,
             input_buffer_frames,
             control_socket_path: "/run/jasper-fanin/control.sock".to_string(),
-            xrun_log_path: env_str(
-                "JASPER_FANIN_XRUN_LOG_PATH",
-                "/var/lib/jasper/fanin/xrun_history.jsonl",
-            ),
             tts_socket_path: env_optional_with_default(
                 "JASPER_FANIN_TTS_SOCKET",
                 "/run/jasper-fanin/tts.sock",

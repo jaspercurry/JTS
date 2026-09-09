@@ -216,12 +216,24 @@ def _outputd_dual_apple_health(
             )
         if not dual_linked:
             dual_warning = "dual Apple PCMs are not ALSA-linked"
+        # Cumulative group counters. A nonzero value is history outputd
+        # recovered from (a bail on the pair restarts the daemon and them).
+        counters = ", ".join(
+            f"dual_{name}={dual.get(name, 0)}"
+            for name in (
+                "dac_a_xruns",
+                "dac_b_xruns",
+                "group_recoveries",
+                "delay_baseline_relatches",
+                "reprime_alignment_failures",
+            )
+        )
         dual_detail = (
             f", dual_a_pcm={dual_a_pcm}, dual_b_pcm={dual_b_pcm}, "
             f"dual_linked={dual_linked}, "
             f"dual_delay_delta_frames={delay_delta}, "
             f"dual_delay_delta_error_frames={delay_error}, "
-            f"dual_max_delay_delta_frames={max_delay}"
+            f"dual_max_delay_delta_frames={max_delay}, {counters}"
         )
     return active_detail, dual_detail, dual_warning
 
@@ -865,6 +877,7 @@ def check_outputd_service() -> CheckResult:
         f"{transport_detail}",
         reason=evidence_reason,
     )
+
 
 @doctor_check()
 def check_aec_clock_drift() -> CheckResult:

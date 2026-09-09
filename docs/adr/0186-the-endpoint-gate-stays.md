@@ -1,7 +1,8 @@
 # ADR-0186: The endpoint gate stays
 
 - **Date:** 2026-08-27
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md)
 
 ## Context
 

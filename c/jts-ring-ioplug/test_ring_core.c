@@ -45,6 +45,136 @@ typedef struct {
         }                                                                       \
     } while (0)
 
+// --- the generated ring ABI -------------------------------------------------
+//
+// rust/jasper-ring/layout.json is rendered from jasper_ring::layout (see its
+// `layout_dump` example) and is the ONE place the header's numbers are owned.
+// The path is relative to this Makefile's directory, which is where `make test`
+// runs the binary from.
+//
+// The scan is deliberate: a key occurs once in a flat object of integers and
+// short strings, so `"key":` plus strtoull (or one quoted span) is the whole
+// parser and the C test pulls in no JSON library.
+#define LAYOUT_JSON_PATH "../../rust/jasper-ring/layout.json"
+
+static char g_layout_json[8192];
+
+static const char *layout_value(const char *key) {
+    char needle[128];
+    snprintf(needle, sizeof(needle), "\"%s\":", key);
+    const char *at = strstr(g_layout_json, needle);
+    if (!at) {
+        fprintf(stderr, "FAIL: %s declares no \"%s\"\n", LAYOUT_JSON_PATH, key);
+        g_failures++;
+        return NULL;
+    }
+    at += strlen(needle);
+    while (*at == ' ') at++;
+    return at;
+}
+
+static void check_layout_uint(const char *key, unsigned long long declared) {
+    const char *at = layout_value(key);
+    if (!at) return;
+    char *end = NULL;
+    unsigned long long owned = strtoull(at, &end, 10);
+    if (end == at) {
+        fprintf(stderr, "FAIL: \"%s\" in %s is not an integer\n", key, LAYOUT_JSON_PATH);
+        g_failures++;
+        return;
+    }
+    if (owned != declared) {
+        fprintf(stderr,
+                "FAIL: ring ABI drift on %s: %s owns %llu, this header declares %llu\n",
+                key, LAYOUT_JSON_PATH, owned, declared);
+        g_failures++;
+    }
+}
+
+static void check_layout_str(const char *key, const char *declared) {
+    const char *at = layout_value(key);
+    if (!at) return;
+    if (*at != '"') {
+        fprintf(stderr, "FAIL: \"%s\" in %s is not a string\n", key, LAYOUT_JSON_PATH);
+        g_failures++;
+        return;
+    }
+    at++;
+    const char *end = strchr(at, '"');
+    size_t len = declared ? strlen(declared) : 0;
+    if (!end || (size_t)(end - at) != len || memcmp(at, declared, len) != 0) {
+        fprintf(stderr, "FAIL: ring ABI drift on %s: %s owns %.*s, this header declares %s\n",
+                key, LAYOUT_JSON_PATH, end ? (int)(end - at) : 0, at, declared);
+        g_failures++;
+    }
+}
+
+// Every offset and constant the header's `_Static_assert` block pins, compared
+// against the generated ABI. The offsets go through `offsetof` rather than the
+// literals beside them, so this checks the STRUCT the writer actually lays out.
+static void test_header_matches_the_generated_ring_abi(void) {
+    FILE *fh = fopen(LAYOUT_JSON_PATH, "r");
+    if (!fh) {
+        fprintf(stderr, "FAIL: cannot open %s (run `make test` from this directory)\n",
+                LAYOUT_JSON_PATH);
+        g_failures++;
+        return;
+    }
+    size_t n = fread(g_layout_json, 1, sizeof(g_layout_json) - 1, fh);
+    int truncated = !feof(fh);
+    fclose(fh);
+    g_layout_json[n] = '\0';
+    CHECK(!truncated, "layout.json outgrew g_layout_json");
+    if (truncated) return;
+
+    check_layout_uint("magic", JTS_RING_MAGIC);
+    check_layout_uint("version", JTS_RING_VERSION);
+    check_layout_uint("header_bytes", sizeof(jts_ring_header_t));
+    check_layout_uint("header_bytes", JTS_RING_HEADER_BYTES);
+
+    check_layout_uint("off_magic", offsetof(jts_ring_header_t, magic));
+    check_layout_uint("off_magic_qword", offsetof(jts_ring_header_t, magic));
+    check_layout_uint("off_version", offsetof(jts_ring_header_t, version));
+    check_layout_uint("off_rate", offsetof(jts_ring_header_t, rate));
+    check_layout_uint("off_channels", offsetof(jts_ring_header_t, channels));
+    check_layout_uint("off_sample_format", offsetof(jts_ring_header_t, sample_format));
+    check_layout_uint("off_period_frames", offsetof(jts_ring_header_t, period_frames));
+    check_layout_uint("off_n_slots", offsetof(jts_ring_header_t, n_slots));
+    check_layout_uint("off_pad", offsetof(jts_ring_header_t, _pad));
+    check_layout_uint("off_writer_epoch", offsetof(jts_ring_header_t, writer_epoch));
+    check_layout_uint("off_write_seq", offsetof(jts_ring_header_t, write_seq));
+    check_layout_uint("off_read_seq", offsetof(jts_ring_header_t, read_seq));
+    check_layout_uint("off_writer_pid", offsetof(jts_ring_header_t, writer_pid));
+    check_layout_uint("off_writer_heartbeat_ns",
+                      offsetof(jts_ring_header_t, writer_heartbeat_ns));
+    check_layout_uint("off_reader_pid", offsetof(jts_ring_header_t, reader_pid));
+    check_layout_uint("off_reader_heartbeat_ns",
+                      offsetof(jts_ring_header_t, reader_heartbeat_ns));
+    check_layout_uint("off_futex_word", offsetof(jts_ring_header_t, futex_word));
+    check_layout_uint("off_reserved", offsetof(jts_ring_header_t, reserved));
+
+    // The accept-set: header FIELD VALUES compared field-by-field at attach, so
+    // a drift here is a ring one side can create and the other must refuse.
+    check_layout_uint("sample_format_s16le", JTS_RING_SAMPLE_FORMAT_S16LE);
+    check_layout_uint("sample_format_s32le", JTS_RING_SAMPLE_FORMAT_S32LE);
+    check_layout_uint("min_n_slots", JTS_RING_MIN_SLOTS);
+    check_layout_uint("max_n_slots", JTS_RING_MAX_SLOTS);
+    check_layout_uint("max_ring_channels", JTS_RING_MAX_CHANNELS);
+    check_layout_uint("max_slot_bytes", JTS_RING_MAX_SLOT_BYTES);
+    check_layout_uint("rate_hz", JTS_RING_RATE_HZ);
+
+    // The create/attach transaction and liveness contract both languages run.
+    check_layout_uint("writer_liveness_timeout_ns", JTS_RING_WRITER_LIVENESS_TIMEOUT_NS);
+    check_layout_uint("magic_wait_timeout_ms", JTS_RING_MAGIC_WAIT_TIMEOUT_MS);
+    check_layout_uint("magic_wait_step_us", JTS_RING_MAGIC_WAIT_STEP_US);
+    check_layout_uint("open_lock_mode", JTS_RING_OPEN_LOCK_MODE);
+    check_layout_uint("open_lock_wait_timeout_ms", JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS);
+    check_layout_uint("open_lock_wait_step_us", JTS_RING_OPEN_LOCK_WAIT_STEP_US);
+    check_layout_uint("open_max_attempts", JTS_RING_OPEN_MAX_ATTEMPTS);
+    check_layout_str("open_lock_suffix", JTS_RING_OPEN_LOCK_SUFFIX);
+    check_layout_str("writer_lock_suffix", JTS_RING_WRITER_LOCK_SUFFIX);
+}
+
 static int read_observation(int fd, test_inode_observation_t *observation) {
     // The timeout is only a deadlock guard: ordering comes from the production
     // hook writing after fstat observes the zero-size fd, never from elapsed time.
@@ -3106,8 +3236,7 @@ static void test_capture_destage_partial_reads(void) {
 // ungoverned paths against a frozen copy of the pre-governor clamp.
 //
 // The hardware numbers these tests stand in for are stated once, in
-// jts_ring_shm.h's governor banner, and measured in
-// captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md. Not restated here.
+// jts_ring_shm.h's governor banner and ADR-0261. Not restated here.
 // ============================================================================
 
 // The grouping ring's own geometry — the only PCM that declares pace_nominal.
@@ -3855,6 +3984,7 @@ int main(void) {
     test_no_reader_pointer_keeps_advancing();
     test_gate_faithful_dead_ring_opens_without_publish();
     test_reader_attach_midplay_hw_ptr_monotonic();
+    test_header_matches_the_generated_ring_abi();
     test_alias_live_reader_drain_gap();
     test_alias_dead_flip_at_full_ring();
     test_alias_dead_to_live_recovery();

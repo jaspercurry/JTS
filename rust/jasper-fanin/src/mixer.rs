@@ -45,7 +45,6 @@ use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
-use crate::xrun_log::{XrunEvent, XrunSource};
 
 use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
@@ -61,12 +60,6 @@ pub use ring_capture::RingLaneObservability;
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
 pub const CHANNELS: u32 = 2;
-
-/// Sentinel for "no ALSA playback delay sample has landed", which since
-/// ADR-0100 is every period: this daemon opens no playback PCM to sample. It
-/// renders `/state.output.snd_pcm_delay_frames` as `null`, which is what the
-/// AirPlay latency derivation already reads on a ring box.
-pub const OUTPUT_DELAY_UNAVAILABLE: u64 = u64::MAX;
 
 /// Per-input catch-up target, in WHOLE periods. The fill we want a lane's
 /// capture ring to sit at right before the per-period read. One period is
@@ -193,55 +186,21 @@ const fn direct_narrow_scratch_samples() -> usize {
     (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)
 }
 
-/// Bounded capacity of each off-thread event channel out of the work loop —
-/// the impulse tap's and the xrun log's. Neither producer can fill it in
-/// practice (the single tap detector fires at most once per refractory window,
-/// ~4/s at the 250 ms default); the bound is a drop-and-count safety net that
-/// keeps the mixer thread's `try_send` non-blocking.
+/// Bounded capacity of the impulse tap's off-thread event channel. Its producer
+/// cannot fill it in practice (the single tap detector fires at most once per
+/// refractory window, ~4/s at the 250 ms default); the bound is a drop-and-count
+/// safety net that keeps the mixer thread's `try_send` non-blocking.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Forward one event to an off-thread writer with `try_send`, calling
 /// `note_dropped` instead of blocking the SCHED_FIFO work loop on the writer's
 /// I/O. EVERY failure counts, `Disconnected` included: a writer thread that
-/// returned early (its log file would not open) leaves the gauge as the only
+/// returned early (its artifact would not open) leaves the gauge as the only
 /// evidence, and a gauge reading 0 while 100% of events are lost is the wrong
 /// answer. See ADR-0254.
 fn send_drop_counted<T>(tx: &SyncSender<T>, event: T, note_dropped: impl FnOnce()) {
     if tx.try_send(event).is_err() {
         note_dropped();
-    }
-}
-
-/// The bounded xrun-forwarding channel and the events it has dropped, as one
-/// value.
-///
-/// Bundled because neither half means anything alone: the gauge reports
-/// exactly this channel's losses, and every producer that holds the sender
-/// needs the counter on the same line. See ADR-0254.
-#[derive(Clone)]
-pub(crate) struct XrunSink {
-    tx: SyncSender<XrunEvent>,
-    dropped: Arc<AtomicU64>,
-}
-
-impl XrunSink {
-    fn new(tx: SyncSender<XrunEvent>) -> Self {
-        Self {
-            tx,
-            dropped: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    pub(crate) fn send(&self, event: XrunEvent) {
-        send_drop_counted(&self.tx, event, || {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        });
-    }
-
-    /// The drop gauge, for STATUS. The per-lane `xrun_count` gauges are bumped
-    /// before the send, so a drop here only loses the forensic JSONL line.
-    pub(crate) fn dropped(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.dropped)
     }
 }
 
@@ -793,26 +752,12 @@ pub struct Mixer {
     /// Cumulative output frames written since startup. Surfaced via
     /// the STATUS endpoint.
     pub frames_written: Arc<AtomicU64>,
-    /// Cumulative output xrun events. Pinned at 0 since ADR-0100 — an SHM ring
-    /// has no xrun; a wedged reader shows up in the ring's own stall counters.
-    pub output_xrun_count: Arc<AtomicU64>,
-    /// Last observed ALSA playback delay for the output PCM. Pinned at
-    /// [`OUTPUT_DELAY_UNAVAILABLE`] since ADR-0100 — there is no playback PCM to
-    /// sample. Both stay in STATUS because live Python readers
-    /// (`jasper.control.airplay_health`, the AirPlay latency derivation) read
-    /// them through their absent/zero shape on a ring box.
-    pub output_delay_frames: Arc<AtomicU64>,
     /// Selected input index. -2 means pass no renderer lanes;
     /// non-negative means pass only that source's lane. The
     /// correction/test lane is always mixed so diagnostics keep working
     /// even if the household selected a renderer manually or mux
     /// temporarily selected NONE.
     selected_input_index: Arc<AtomicI32>,
-    /// Bounded ([`EVENT_CHANNEL_CAPACITY`]) hand-off of xrun events to the
-    /// off-thread log writer, with the drops it has counted. Bounded so a
-    /// producer storm can never block the SCHED_FIFO work loop on the writer's
-    /// per-event fdatasync.
-    pub(crate) xrun: XrunSink,
     period_frames: u32,
     tts: Option<TtsMixer>,
     /// Smoothed program-lane duck gain (linear), persisted across periods.
@@ -1307,6 +1252,10 @@ pub struct Input {
     /// that could disagree with which buffer actually holds the period.
     read_buf_wide: Vec<i32>,
     pub xrun_count: Arc<AtomicU64>,
+    /// `CLOCK_MONOTONIC` milliseconds of this lane's last xrun, or
+    /// [`jasper_daemon::json::NEVER_MS`] until the first one. Bumped with `xrun_count` by
+    /// [`Input::note_xrun`]; STATUS renders it as the lane's `last_xrun_age_ms`.
+    pub last_xrun_ms: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
     /// rounded into an `i32`. Overwritten EVERY period from exactly the samples
@@ -1363,13 +1312,8 @@ pub struct Input {
 impl Mixer {
     /// Open all configured inputs and the output. Every configured input
     /// is required: a missing lane means one renderer silently drops out
-    /// of the summed music reference. `xrun_tx` is the
-    /// non-blocking channel to the off-thread xrun log writer.
-    pub fn new(
-        config: &Config,
-        xrun_tx: SyncSender<XrunEvent>,
-        tts: Option<TtsInput>,
-    ) -> Result<Self> {
+    /// of the summed music reference.
+    pub fn new(config: &Config, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
         // The ONE width derivation for this run. Resolved before any lane is
         // built because it decides the DIRECT lane's render width and whether it
@@ -1574,10 +1518,7 @@ impl Mixer {
             ring_wide_payload,
             content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
-            output_xrun_count: Arc::new(AtomicU64::new(0)),
-            output_delay_frames: Arc::new(AtomicU64::new(OUTPUT_DELAY_UNAVAILABLE)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
-            xrun: XrunSink::new(xrun_tx),
             period_frames: config.period_frames,
             tts: tts.map(TtsMixer::new),
             program_duck_current: 1.0,
@@ -1716,10 +1657,7 @@ impl Mixer {
     pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
         // No prime + start: the SHM ring transport has no kernel ring to prime
         // and no PREPARED→RUNNING transition.
-        info!(
-            "event=fanin.mixer.running inputs={} output_xruns=0",
-            self.inputs.len(),
-        );
+        info!("event=fanin.mixer.running inputs={}", self.inputs.len());
 
         while !shutdown.load(Ordering::Relaxed) {
             self.step()?;
@@ -1727,9 +1665,8 @@ impl Mixer {
         }
 
         info!(
-            "event=fanin.mixer.stopped frames_written={} output_xruns={}",
+            "event=fanin.mixer.stopped frames_written={}",
             self.frames_written.load(Ordering::Relaxed),
-            self.output_xrun_count.load(Ordering::Relaxed),
         );
 
         Ok(())
@@ -1769,7 +1706,7 @@ impl Mixer {
                 // feed the SAME resampler, render one DAC-paced period. The aloop
                 // substream is never touched (`pcm` is None). The tap runs inline
                 // over the converted slice inside this call.
-                read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun)
+                read_direct_and_render(input, period_frames, &mut self.direct_tap)
             } else if input.ring.is_some() {
                 // Renderer-ingress RING lane: consume exactly one slot from this
                 // lane's SHM ring. The slot IS one render period, and a bounded
@@ -1782,7 +1719,7 @@ impl Mixer {
                 // to the DAC clock) and render exactly one DAC-paced period. The
                 // catch-up drain is bypassed on purpose — the resampler holds the
                 // ring at a small fixed fill, with no sawtooth.
-                read_into_resampler_and_render(input, period_frames, &self.xrun)?
+                read_into_resampler_and_render(input, period_frames)?
             } else {
                 // Bounded catch-up resync BEFORE the period read, for EVERY lane
                 // regardless of selection. A free-running lane (the USB host-clock
@@ -1795,7 +1732,7 @@ impl Mixer {
                 // lane STILL backs up and must be drained, so do NOT move this
                 // under the selection gate.
                 drain_input_excess(input, period_frames);
-                read_input(input, period_frames, &self.xrun)?
+                read_input(input, period_frames)?
             };
             // Per-lane content level (RMS dBFS ×100), computed for EVERY lane
             // BEFORE the selection gate below so a muxed-out lane still reports
@@ -2170,6 +2107,14 @@ fn write_ring_period(
 }
 
 impl Input {
+    /// Count one xrun on this lane and stamp when it happened, returning the new
+    /// cumulative count. The two gauges move together so `last_xrun_age_ms` can
+    /// never age out of step with `xrun_count`.
+    pub fn note_xrun(&self) -> u64 {
+        self.last_xrun_ms.store(event_stamp_ms(), Ordering::Relaxed);
+        self.xrun_count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     /// The lane's resampler observability handles for STATUS, or `None` when no
     /// resampler is armed on this lane.
     pub fn resampler_observability(&self) -> Option<LaneResamplerObservability> {
@@ -2762,11 +2707,11 @@ impl DirectTapHook {
     }
 }
 
-/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline. The tap
-/// and the Python mic harness both read `CLOCK_MONOTONIC` on the same Pi; that
-/// shared timeline is the only reason their cross-process subtraction is valid.
-/// On a syscall failure this returns 0 rather than crashing the work loop; a
-/// stray 0-anchored event is dropped by the harness's pairing window.
+/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline. The
+/// tap and the Python mic harness both read `CLOCK_MONOTONIC` on the same Pi;
+/// that shared timeline is the only reason their cross-process subtraction is
+/// valid. On a syscall failure this returns 0 rather than crashing the work
+/// loop; a stray 0-anchored event is dropped by the harness's pairing window.
 fn monotonic_ns() -> i128 {
     let mut ts = MaybeUninit::<libc::timespec>::uninit();
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
@@ -2775,6 +2720,12 @@ fn monotonic_ns() -> i128 {
     }
     let ts = unsafe { ts.assume_init() };
     (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
+}
+
+/// `CLOCK_MONOTONIC` milliseconds for a `NEVER_MS`-sentinel recency stamp,
+/// on the same timeline `state` ages it against.
+pub(crate) fn event_stamp_ms() -> u64 {
+    jasper_ring::monotonic_ns() / 1_000_000
 }
 
 /// Read up to `requested_frames` from `input`. Returns the number of
@@ -2789,7 +2740,7 @@ fn monotonic_ns() -> i128 {
 /// All other errors propagate up — they indicate a structural
 /// problem (PCM closed, driver fault) that the daemon can't handle
 /// at this layer.
-fn read_input(input: &mut Input, requested_frames: usize, xrun: &XrunSink) -> Result<usize> {
+fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
     // Non-direct lanes always have Some(pcm); the direct lane never reaches
     // this path. A None here means a silent lane — render silence.
     let Some(pcm) = input.pcm.as_ref() else {
@@ -2832,17 +2783,11 @@ fn read_input(input: &mut Input, requested_frames: usize, xrun: &XrunSink) -> Re
             }
             PcmIoFate::Xrun => {
                 // Overrun: the renderer produced faster than we drained.
-                let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let count = input.note_xrun();
                 warn!(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
                 );
-                xrun.send(XrunEvent {
-                    source: XrunSource::Input,
-                    label: input.label.clone(),
-                    frames: requested_frames as u32,
-                    count,
-                });
                 pcm.try_recover(e, true).context("recovering input xrun")?;
                 silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 Ok(0)
@@ -2876,21 +2821,13 @@ fn resampler_read_budget_frames(avail: Frames, period_frames: usize) -> usize {
 fn recover_resampler_input_xrun(
     input: &mut Input,
     error: alsa::Error,
-    period_frames: usize,
-    xrun: &XrunSink,
     operation: &str,
 ) -> Result<()> {
-    let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+    let count = input.note_xrun();
     warn!(
         "event=fanin.xrun source=input label={} count={} op={} (resampler lane)",
         input.label, count, operation,
     );
-    xrun.send(XrunEvent {
-        source: XrunSource::Input,
-        label: input.label.clone(),
-        frames: period_frames as u32,
-        count,
-    });
     // The aloop resampler lane always has Some(pcm); only the direct lane is
     // None, and it uses recover_direct_xrun instead.
     let Some(pcm) = input.pcm.as_ref() else {
@@ -2929,11 +2866,7 @@ fn recover_resampler_input_xrun(
 /// into the resampler's pre-sized ring), no blocking (non-blocking capture). An
 /// `EPIPE`/`ESTRPIPE` overrun recovers + resets the resampler (a discontinuity)
 /// and renders silence for this period.
-fn read_into_resampler_and_render(
-    input: &mut Input,
-    period_frames: usize,
-    xrun: &XrunSink,
-) -> Result<usize> {
+fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Result<usize> {
     // The aloop resampler lane always has Some(pcm); the direct lane routes to
     // read_direct_and_render and never reaches here.
     if input.pcm.is_none() {
@@ -2961,13 +2894,7 @@ fn read_into_resampler_and_render(
                 Err(e) => match classify_pcm_errno(e.errno()) {
                     PcmIoFate::WouldBlock => break,
                     PcmIoFate::Xrun => {
-                        recover_resampler_input_xrun(
-                            input,
-                            e,
-                            period_frames,
-                            xrun,
-                            "avail_update",
-                        )?;
+                        recover_resampler_input_xrun(input, e, "avail_update")?;
                         break;
                     }
                     PcmIoFate::Fatal => {
@@ -3037,7 +2964,7 @@ fn read_into_resampler_and_render(
                             // A discontinuity: reset the resampler so it re-primes
                             // from fresh input rather than interpolating across
                             // the gap.
-                            recover_resampler_input_xrun(input, e, period_frames, xrun, "readi")?;
+                            recover_resampler_input_xrun(input, e, "readi")?;
                             stop_drain = true;
                             break;
                         }
@@ -3182,22 +3109,22 @@ mod tests {
         assert_eq!(classify_pcm_errno(libc::EIO), PcmIoFate::Fatal);
     }
 
-    // ---- Bounded xrun channel (must never block the SCHED_FIFO work loop) ----
+    // ---- Bounded tap channel (must never block the SCHED_FIFO work loop) ----
 
     #[test]
     fn send_drop_counted_counts_a_full_channel_and_a_gone_writer_alike() {
         // Nothing draining: the bound-2 channel fills on the first two sends,
         // so the third must drop-and-count rather than block this (the
         // calling) thread. Then the receiver goes, which is what a writer
-        // thread that could not open its log file leaves behind — every event
+        // thread that could not open its artifact leaves behind — every event
         // is lost from there on, and the gauge is the only place that shows it.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<XrunEvent>(2);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TapEvent>(2);
         let dropped = AtomicU64::new(0);
-        let event = || XrunEvent {
-            source: XrunSource::Input,
-            label: "test".to_string(),
-            frames: 256,
-            count: 1,
+        let event = || TapEvent {
+            monotonic_ns: 1,
+            frame_index: 2,
+            ring_fill_frames: 3,
+            peak: 0.5,
         };
         let bump = || {
             dropped.fetch_add(1, Ordering::Relaxed);

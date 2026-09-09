@@ -18,8 +18,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from jasper.audio_measurement.calibration import configured_calibration_root
-
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -27,119 +25,7 @@ from .correction_capture import (
     CaptureKind,
     _session_lock,
 )
-from .correction_runtime import (
-    BadRequest,
-    MAX_CALIBRATION_UPLOAD_JSON_BYTES,
-)
-
-
-def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /test-tone: play a 5-second 1 kHz sine through the music
-    chain so the user can adjust their amp's volume by watching the
-    live mic level meter. Pauses renderers + voice loop for the tone
-    duration via the same measurement_window the sweep uses.
-
-    Synchronous-feeling from the browser's POV (it returns once the
-    tone has finished playing) so the polling state machine doesn't
-    have to track a "test tone in progress" sub-state.
-    """
-    from jasper.audio_measurement.correction_lane import (
-        CORRECTION_TONE_DIR,
-        correction_play_device,
-    )
-    from jasper.audio_measurement.playback import ensure_sine_wav, play_wav
-    from jasper.measurement_window import measurement_window
-
-    body = correction_runtime.read_json_body(handler)
-    duration_s = max(1.0, min(15.0, float(body.get("duration_s", 5.0))))
-
-    async def _run_test_tone() -> None:
-        async with measurement_window():
-            wav_path = ensure_sine_wav(
-                freq_hz=1000.0,
-                duration_s=duration_s,
-                dbfs=-18.0,
-                sample_rate=48000,
-                cache_dir=CORRECTION_TONE_DIR,
-            )
-            # `correction_play_device()` resolves this box's armed-vs-unarmed
-            # lane transport per call, so it must not be hoisted to import time.
-            await play_wav(
-                wav_path,
-                alsa_device=correction_play_device(),
-                timeout_s=duration_s + 5.0,
-            )
-
-    correction_runtime.run_async(_run_test_tone(), timeout=duration_s + 30.0)
-    return {"played": True, "duration_s": duration_s}
-
-
-def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import SUPPORTED_MODELS
-    return {
-        "models": [
-            {"key": key, **value}
-            for key, value in SUPPORTED_MODELS.items()
-        ]
-    }
-
-
-def _handle_calibration_fetch(
-    handler: BaseHTTPRequestHandler,
-) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import fetch_vendor_calibration
-
-    body = correction_runtime.read_json_body(handler)
-    model = str(body.get("model") or "").strip()
-    serial = str(body.get("serial") or "").strip()
-    orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
-    record = fetch_vendor_calibration(
-        model_key=model,
-        serial=serial,
-        orientation=orientation,
-        root=configured_calibration_root(),
-    )
-    correction_capture._save_household_mic(record, serial=serial)
-    return correction_capture._calibration_payload(record)
-
-
-def _handle_calibration_upload(
-    handler: BaseHTTPRequestHandler,
-) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import (
-        DEFAULT_SIGN_CONVENTION,
-        store_calibration,
-    )
-
-    body = correction_runtime.read_json_body(
-        handler,
-        max_bytes=MAX_CALIBRATION_UPLOAD_JSON_BYTES,
-    )
-    text = str(body.get("content") or "")
-    filename = str(body.get("filename") or "uploaded-calibration.txt")
-    model = str(body.get("model") or "other").strip() or "other"
-    label = str(body.get("label") or "Other calibrated mic").strip()
-    orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
-    # The page's own control defaults to "response" because that is what a
-    # measurement-mic calibration file states (see the upload card's help
-    # copy and jasper.audio_measurement.calibration.SUPPORTED_MODELS); a
-    # caller that omits the field gets the same answer, not the opposite one.
-    sign_convention = (
-        str(body.get("sign_convention") or DEFAULT_SIGN_CONVENTION).strip()
-        or DEFAULT_SIGN_CONVENTION
-    )
-    record = store_calibration(
-        text=text,
-        provider="manual_upload",
-        model=model,
-        label=label,
-        source=f"uploaded:{filename}",
-        orientation=orientation,
-        sign_convention=sign_convention,
-        root=configured_calibration_root(),
-    )
-    correction_capture._save_household_mic(record)
-    return correction_capture._calibration_payload(record)
+from .correction_runtime import BadRequest
 
 
 def _handle_crossover_capture_cancel() -> dict[str, Any]:

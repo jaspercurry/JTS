@@ -14,13 +14,13 @@ use crate::assistant_source::{
 };
 use crate::fake::FakeContentSource;
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
-use crate::loudness::{
-    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
-    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
-};
 use crate::mixer::{mix_saturating, sanitize_tts_gain_db};
 use crate::types::{
     narrow_period, AssistantProfile, AudioFormat, ProgramSample, SegmentKind, CHANNELS, SAMPLE_RATE,
+};
+use jasper_tts_protocol::loudness::{
+    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
+    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
 };
 use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
 
@@ -649,14 +649,13 @@ mod tests {
         // With no observed content and no profile, the decision falls back
         // to the quiet-room envelope: baseline_lufs=target_lufs=-41.0,
         // fallback source_lufs=-24.0, so requested_gain=-17.0. The ordinary
-        // music-relative +1.5 LU offset does not apply without music. The fixed
-        // max-gain ceiling is gone; this helper now scales with the same
-        // decided segment gain that the runtime TTS bridge uses.
+        // music-relative +1.5 LU offset does not apply without music. This
+        // helper scales with the same decided segment gain the runtime TTS
+        // bridge uses.
         //
-        // The decision itself is width-independent — it is f32 dB arithmetic over
-        // the volume context and the observed content, and the content the meter
-        // observes is the narrowed spine, bit-identical to the old i16 buffer for
-        // widened S16 content. So the ledger gain is UNCHANGED, exactly.
+        // The decision itself is width-independent — it is f32 dB arithmetic
+        // over the volume context and the observed content. So the ledger
+        // gain is exact.
         assert_eq!(core.ledger().segment(segment).gain, -17.0);
         assert_period_matches_s16_level(&core.dac().periods[0], 1413, 1);
     }
@@ -722,20 +721,17 @@ mod tests {
     /// The loudness meter must actually SEE the spine's content, and see it as the
     /// same samples the pre-spine i16 buffer carried.
     ///
-    /// This exists because a mutation audit found the gap: deleting the content
-    /// observation from `prepare_from_buffered_content` outright left every other
-    /// test in the crate green. Nothing pinned the wiring — and the wide spine
-    /// added a NEW way for it to break, since the meter is now fed through a
-    /// narrowing scratch rather than the buffer itself. A silently blind meter
-    /// would mis-decide every assistant gain (too loud or too quiet replies) with
-    /// no failing test and no log line.
+    /// Nothing else in the crate pins this wiring, and the meter is fed
+    /// through a narrowing scratch rather than the buffer itself, so this path
+    /// can break silently: a blind meter would mis-decide every assistant gain
+    /// (too loud or too quiet replies) with no failing test and no log line.
     ///
     /// The assertion is equality against the shared meter fed the SAME audio at
     /// i16 directly, so it pins not just "the meter ran" but "the narrowing
     /// delivered the right samples".
     #[test]
     fn the_content_meter_observes_the_spine_content_as_its_i16_equivalent() {
-        use crate::loudness::{AssistantLoudness, AssistantLoudnessConfig, MixStage};
+        use jasper_tts_protocol::loudness::{AssistantLoudness, AssistantLoudnessConfig, MixStage};
 
         // The short-term window is 3 s; step a 1 kHz tone through enough periods
         // to fill it, then one more so the window is genuinely complete.
@@ -1021,7 +1017,9 @@ mod tests {
 
     #[test]
     fn post_dsp_live_volume_change_regains_queued_speech() {
-        use crate::loudness::{apply_gain, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
+        use jasper_tts_protocol::loudness::{
+            apply_gain, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES,
+        };
 
         const PERIOD: u32 = LIVE_VOLUME_RAMP_FRAMES; // ramp completes in one period
         let mut core = OutputCore::new(PERIOD);
@@ -1053,16 +1051,14 @@ mod tests {
         core.push_content_period(stereo(0, PERIOD as usize));
         core.step();
         let regained = &core.dac().periods[1];
-        // "No step discontinuity at the ramp start" — the bound is RE-DERIVED at
-        // the new width, not the old i16 bound scaled. `GainRamp::retarget` sets
-        // step_linear = (target - current) / LIVE_VOLUME_RAMP_FRAMES, so the
-        // first frame's gain is 1 + (10^(6/20) - 1)/4800 ≈ 1 + 2.074e-4, and the
-        // sample moves by w(8000) * 2.074e-4 ≈ 1.087e5 spine LSBs ≈ 1.66 S16
-        // LSBs. Two S16 LSBs is that derivation plus rounding margin. (The old
-        // i16 assertion's bound of 4 was the same derivation at 1/65536 the
-        // scale: 8000 * 2.074e-4 ≈ 1.66, asserted as <= 4.)
+        // "No step discontinuity at the ramp start" — bound derived from
+        // `GainRamp::retarget`: step_linear = (target - current) /
+        // LIVE_VOLUME_RAMP_FRAMES, so the first frame's gain is 1 +
+        // (10^(6/20) - 1)/4800 ≈ 1 + 2.074e-4, and the sample moves by
+        // w(8000) * 2.074e-4 ≈ 1.087e5 spine LSBs ≈ 1.66 S16 LSBs. Two S16
+        // LSBs is that derivation plus rounding margin.
         let one_ramp_step = (f64::from(gain_db_to_linear(6.0)) - 1.0)
-            / f64::from(crate::loudness::LIVE_VOLUME_RAMP_FRAMES);
+            / f64::from(jasper_tts_protocol::loudness::LIVE_VOLUME_RAMP_FRAMES);
         let derived_first_frame_delta = (f64::from(w(8000)) * one_ramp_step).abs();
         assert!(
             derived_first_frame_delta < 2.0 * f64::from(S16_LSB),
@@ -1076,7 +1072,7 @@ mod tests {
         // The ramp completes on the period's LAST frame (PERIOD ==
         // LIVE_VOLUME_RAMP_FRAMES, and `next_frame` assigns the exact target when
         // the countdown hits zero), so the final sample is EXACTLY the target
-        // gain — the old `<= 2` slack is not needed at any width.
+        // gain, no slack needed.
         let expected = apply_gain(w(8000), gain_db_to_linear(6.0));
         let last = *regained.last().unwrap();
         assert_eq!(last, expected, "ramp reaches +6 dB louder exactly");

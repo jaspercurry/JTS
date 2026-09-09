@@ -23,7 +23,6 @@ import yaml
 
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
-    RETIRED_ALOOP_PLAYBACK_DEVICE,
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
 )
@@ -43,6 +42,11 @@ ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
 DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
+# The snd-aloop playback half ADR-0100 retired. No emitter writes it and its
+# ALSA definition is gone, so this is not a lane to hand a caller; it lives here
+# because `classify_camilla_config_text` is its ONE remaining reader — the
+# graph an unreconciled box still carries has to stay recognizable.
+_RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 
 # The active-leader's camilla#1 program bake (distributed-active Stage B): a flat
 # (no-Layer-A) program graph whose playback is a File/pipe sink, not a DAC. Its
@@ -263,20 +267,6 @@ def _source_marker(text: str) -> str | None:
     return match.group("source") if match else None
 
 
-def jts_emitter_source(text: str) -> str | None:
-    """The JTS emitter that wrote this config, off its ``# Source:`` marker.
-
-    Provenance BY CONTENT: a marker naming a ``jasper.*`` emitter is a config
-    JTS wrote, whatever the file is called — which is how an active-speaker
-    graph (staged startup, commissioning, parked, program bake) declares
-    itself, since it is named for its role, not for a JTS config. ``None``
-    for no marker or a foreign one; a CamillaDSP round-trip can strip the
-    marker, so ``None`` is unproven provenance, not proof of a foreign graph.
-    """
-    source = _source_marker(text)
-    return source if source and source.startswith("jasper.") else None
-
-
 def _forbidden_playback_token(playback_device: str | None) -> str | None:
     if not playback_device:
         return None
@@ -363,7 +353,7 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     }:
         classification = "jts_generated_stereo"
         label = "JTS generated stereo DSP config"
-    elif playback_device in {DEFAULT_PLAYBACK_DEVICE, RETIRED_ALOOP_PLAYBACK_DEVICE}:
+    elif playback_device in {DEFAULT_PLAYBACK_DEVICE, _RETIRED_ALOOP_PLAYBACK_DEVICE}:
         # Ring B, or the retired snd-aloop lane a box that has not reconciled
         # still names. Both are outputd's stereo hop; the second one no longer
         # plays (ADR-0100), but classifying it `unknown_custom` would tell an

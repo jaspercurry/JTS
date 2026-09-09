@@ -85,15 +85,6 @@ function summedDbAt(points, freq) {
   return points[points.length - 1].db;
 }
 
-function freqToSlider(freq, min, max) {
-  var lmin = Math.log(min), lmax = Math.log(max);
-  return Math.round((Math.log(clamp(freq, min, max)) - lmin) / (lmax - lmin) * 1000);
-}
-function sliderToFreq(pos, min, max) {
-  var lmin = Math.log(min), lmax = Math.log(max);
-  return Math.exp(lmin + clamp(pos, 0, 1000) / 1000 * (lmax - lmin));
-}
-
 export {
   H,
   MAXDB,
@@ -102,7 +93,6 @@ export {
   advancedSpecs,
   drawArea,
   drawPath,
-  freqToSlider,
   gx,
   gy,
   padB,
@@ -110,7 +100,6 @@ export {
   padR,
   padT,
   pointsFor,
-  sliderToFreq,
   specActive,
   summedDbAt,
 };

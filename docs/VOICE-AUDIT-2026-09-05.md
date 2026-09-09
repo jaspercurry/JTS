@@ -31,8 +31,8 @@ the steward is owner decision 5 in §6.
 
 ## 0. How the orchestrator works
 
-Same method as [`UX-AUDIT-2026-09-03.md`](UX-AUDIT-2026-09-03.md) §0 — read
-it; it is not restated here. Voice-specific additions:
+Same method as the 2026-09-03 UX audit §0 (doc deleted after P11; leftovers
+in #4635) — read it; it is not restated here. Voice-specific additions:
 
 - **Measure before tuning.** Wave 0 lands the per-turn timeline first. No
   endpointing or capture constant changes until the timeline has been read

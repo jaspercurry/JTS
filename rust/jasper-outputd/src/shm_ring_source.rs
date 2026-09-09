@@ -156,7 +156,7 @@ impl ShmRingSource {
     ) -> io::Result<Self> {
         let (sample_format, kind) = ring_wire(format)?;
         let geometry = Geometry {
-            rate: 48_000,
+            rate: jasper_ring::RATE_HZ,
             channels: u32::from(channels),
             sample_format,
             period_frames,
@@ -347,7 +347,7 @@ mod tests {
         let path = tmp_path();
         // Writer creates a 128-frame ring; reader expects 256 -> fail loud.
         let g = Geometry {
-            rate: 48_000,
+            rate: jasper_ring::RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,
@@ -379,7 +379,7 @@ mod tests {
         ] {
             let path = tmp_path();
             let g = Geometry {
-                rate: 48_000,
+                rate: jasper_ring::RATE_HZ,
                 channels: 2,
                 sample_format: ring_format,
                 period_frames: 128,

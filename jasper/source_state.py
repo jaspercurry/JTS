@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -112,20 +111,6 @@ async def spotify_playing_observed(
     return state.get("playing") is True
 
 
-def _airplay_metadata_gate_disabled() -> bool:
-    """Env-var escape hatch for the metadata-corroboration predicate.
-
-    Set JASPER_AIRPLAY_METADATA_GATE=disabled to revert airplay_playing()
-    to its pre-2026-05-22 contract (PlaybackStatus alone). Useful if a
-    field condition is found where shairport's xesam:title is genuinely
-    empty during real audio (so far no such case is known) and the
-    full revert is needed without a redeploy.
-    """
-    return os.environ.get(
-        "JASPER_AIRPLAY_METADATA_GATE", "",
-    ).strip().lower() == "disabled"
-
-
 async def _airplay_has_metadata_title_observed() -> bool | None:
     """True iff shairport-sync's MPRIS Metadata carries a non-empty
     xesam:title at the moment we ask.
@@ -155,28 +140,14 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     return _AIRPLAY_TITLE_RE.search(result.stdout) is not None
 
 
-async def airplay_playing_observed() -> bool | None:
-    """True iff shairport-sync is currently emitting AirPlay audio.
+async def airplay_playbackstatus_observed() -> bool | None:
+    """MPRIS ``PlaybackStatus == "Playing"``, uncorroborated.
 
-    Predicate is two-part since 2026-05-22:
-      1) MPRIS `PlaybackStatus == "Playing"`, AND
-      2) MPRIS `Metadata` carries a non-empty `xesam:title`.
-
-    The metadata corroboration is what distinguishes a *genuine*
-    AirPlay session (sender carries track title in DAAP metadata)
-    from a *phantom* SETUP — the latter happens whenever an Apple
-    device (notably macOS) has JTS selected as an AirPlay output
-    but no app is sustained-streaming; macOS opens/tears down audio
-    streams on ~30 s cycles as a keepalive, and shairport-sync
-    reports PlaybackStatus=Playing for each cycle even though no
-    audio actually reaches the speakers (ALSA loopback typically
-    owned by librespot). Trusting PlaybackStatus alone caused
-    jasper-mux to flap source every 30 s and the volume coordinator
-    to duck Spotify by -25 dB on each cycle.
-
-    Off-switch (env-driven, see _airplay_metadata_gate_disabled):
-        JASPER_AIRPLAY_METADATA_GATE=disabled
-    reverts to the pre-fix PlaybackStatus-only behaviour.
+    The half of :func:`airplay_playing_observed` that a caller wants when its
+    fail-safe direction is "assume a listener is there": a genuine sender that
+    publishes no ``xesam:title`` (screen/system audio, untitled streams) still
+    reports Playing here. Callers that must not act on a phantom SETUP want the
+    corroborated predicate instead.
     """
     result = await run_busctl(
         "call",
@@ -193,12 +164,31 @@ async def airplay_playing_observed() -> bool | None:
     # busctl emits a single line like:  v s "Playing"
     # (variant-of-string-of-value). Substring match is robust to
     # leading/trailing whitespace busctl may add.
-    if b'"Playing"' not in result.stdout:
-        return False
-    # PlaybackStatus is Playing. Corroborate with metadata unless
-    # the gate is disabled via the escape-hatch env var.
-    if _airplay_metadata_gate_disabled():
-        return True
+    return b'"Playing"' in result.stdout
+
+
+async def airplay_playing_observed() -> bool | None:
+    """True iff shairport-sync is currently emitting AirPlay audio.
+
+    Two-part predicate:
+      1) MPRIS `PlaybackStatus == "Playing"`, AND
+      2) MPRIS `Metadata` carries a non-empty `xesam:title`.
+
+    The metadata corroboration is what distinguishes a *genuine*
+    AirPlay session (sender carries track title in DAAP metadata)
+    from a *phantom* SETUP — the latter happens whenever an Apple
+    device (notably macOS) has JTS selected as an AirPlay output
+    but no app is sustained-streaming; macOS opens/tears down audio
+    streams on ~30 s cycles as a keepalive, and shairport-sync
+    reports PlaybackStatus=Playing for each cycle even though no
+    audio actually reaches the speakers (ALSA loopback typically
+    owned by librespot). Trusting PlaybackStatus alone caused
+    jasper-mux to flap source every 30 s and the volume coordinator
+    to duck Spotify by -25 dB on each cycle.
+    """
+    playing = await airplay_playbackstatus_observed()
+    if playing is not True:
+        return playing
     return await _airplay_has_metadata_title_observed()
 
 
@@ -219,52 +209,15 @@ async def usbsink_playing() -> bool:
     return usbsink_direct_playing(status) is True
 
 
-def _nonnegative_int_counter(value: Any) -> int | None:
-    """Return a JSON u64-ish counter value, rejecting bools and bad shapes."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
-def usbsink_direct_frames_read(
-    fanin_status: dict[str, Any] | None,
-) -> int | None:
-    """Cumulative liveness counter on fan-in's USB DIRECT lane, else None.
-
-    Returns a counter only when the usbsink lane is in direct mode
-    (``source == "direct"``), meaning fan-in owns the live gadget capture.
-
-    Prefer ``resampler.input_frames``: direct capture accounts host input there
-    on builds where the lane-level ``frames_read`` can remain frozen at 0.
-    Fall back to lane-level ``frames_read`` for older/no-resampler snapshots.
-    A single snapshot is not enough; the value becomes a liveness signal only as
-    a delta across mux ticks.
-    """
-    lane = fanin_usbsink_input(fanin_status)
-    if not (
-        isinstance(lane, dict)
-        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
-    ):
-        return None
-
-    resampler = lane.get("resampler")
-    if isinstance(resampler, dict):
-        frames = _nonnegative_int_counter(resampler.get("input_frames"))
-        if frames is not None:
-            return frames
-    return _nonnegative_int_counter(lane.get("frames_read"))
-
-
 def usbsink_direct_streaming(
     fanin_status: dict[str, Any] | None,
 ) -> bool | None:
-    """Fan-in's edge-detected USB streaming state, when available.
+    """Fan-in's edge-detected USB streaming state.
 
-    New fan-in builds sample their existing host-input counter on a lightweight
-    helper thread and publish this boolean in ``direct.streaming``. Older builds
-    omit it; mux then falls back to comparing the cumulative frame counter across
-    patrols. ``None`` also covers a missing/malformed STATUS response, allowing
-    the arbiter to retain its last known state rather than invent a stop.
+    Fan-in samples its host-input counter on a lightweight helper thread and
+    publishes this boolean in ``direct.streaming``. ``None`` covers a
+    missing/malformed STATUS response or a non-direct lane, allowing the arbiter
+    to retain its last known state rather than invent a stop.
     """
     lane = fanin_usbsink_input(fanin_status)
     if not (
@@ -293,8 +246,7 @@ def usbsink_direct_rms_dbfs(
     """Most-recent-period content level (dBFS) on fan-in's USB DIRECT lane, else
     ``None``.
 
-    Mirrors :func:`usbsink_direct_frames_read`: a value is returned only when the
-    usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
+    A value is returned only when the usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
     live gadget capture and reports its pre-mute level directly.
     ``None`` when there is no direct lane, the STATUS is missing / malformed, or
     the lane carries no numeric ``rms_dbfs`` (an older fan-in build predating the
@@ -333,8 +285,7 @@ def usbsink_direct_playing(
     """Current USB activity from fan-in's DIRECT lane, or ``None`` if absent.
 
     ``direct.health`` proves capture is flowing now; ``rms_dbfs`` rejects a
-    host that is merely streaming digital silence. Older direct snapshots that
-    predate the health field fall back to the same RMS gate.
+    host that is merely streaming digital silence.
     """
 
     lane = fanin_usbsink_input(fanin_status)
@@ -347,8 +298,8 @@ def usbsink_direct_playing(
     if audible is None:
         return False
     direct = lane.get("direct")
-    if not isinstance(direct, dict) or "health" not in direct:
-        return audible
+    if not isinstance(direct, dict):
+        return False
     return direct.get("health") == "capturing" and audible
 
 

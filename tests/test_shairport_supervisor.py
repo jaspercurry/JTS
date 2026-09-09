@@ -25,7 +25,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from unittest.mock import AsyncMock
 
+import pytest
+
+from tests._log_events import event_fields
+
+from jasper.busctl import BusctlResult
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
     _OPTIONS_REQUEST,
@@ -79,8 +85,9 @@ class _FakeSupervisor(ShairportSupervisor):
             raise result
         return result
 
-    async def restart_shairport(self) -> None:
+    async def restart_shairport(self) -> bool:
         self.restart_calls += 1
+        return True
 
     def _now(self) -> float:
         return self.now
@@ -216,12 +223,12 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
     """If shairport is fully dead, MPRIS is unknown because there is no
     live process/session to protect. The supervisor must count through
     to restart instead of fail-safing to "active" forever."""
-    async def unknown_mpris(*args, **kwargs):
+    async def unknown_probe(*args, **kwargs):
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.mpris.shairport_playing",
-        unknown_mpris,
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
+        unknown_probe,
     )
 
     class _DeadUnitSupervisor(ShairportSupervisor):
@@ -243,8 +250,9 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
         async def is_shairport_unit_disabled(self) -> bool:
             return False  # crashed, not household-disabled
 
-        async def restart_shairport(self) -> None:
+        async def restart_shairport(self) -> bool:
             self.restart_calls += 1
+            return True
 
     sup = _DeadUnitSupervisor()
     for _ in range(3):
@@ -259,12 +267,12 @@ async def test_disabled_unit_is_never_restarted(monkeypatch):
     unknown and the unit is inactive — byte-for-byte the dead-unit
     bypass shape above — but the stop is deliberate, so the supervisor
     must idle instead of reviving a source the household turned off."""
-    async def unknown_mpris(*args, **kwargs):
+    async def unknown_probe(*args, **kwargs):
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.mpris.shairport_playing",
-        unknown_mpris,
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
+        unknown_probe,
     )
 
     class _DisabledUnitSupervisor(ShairportSupervisor):
@@ -286,8 +294,9 @@ async def test_disabled_unit_is_never_restarted(monkeypatch):
         async def is_shairport_unit_disabled(self) -> bool:
             return True
 
-        async def restart_shairport(self) -> None:
+        async def restart_shairport(self) -> bool:
             self.restart_calls += 1
+            return True
 
     sup = _DisabledUnitSupervisor()
     for _ in range(6):  # two full thresholds' worth of failing ticks
@@ -442,7 +451,7 @@ async def test_snapshot_keys_and_values():
     assert set(snap.keys()) == {
         "enabled", "parked_by_role", "unit_disabled", "last_probe_at",
         "last_probe_ok", "consecutive_failures", "restart_count",
-        "last_restart_at", "suppressed_count",
+        "last_restart_at", "suppressed_count", "last_restart_error",
     }
     assert snap["unit_disabled"] is False
     assert snap["enabled"] is True
@@ -565,69 +574,64 @@ async def test_default_is_session_active_fails_safe_on_non_zero_exit(
     assert await sup.is_session_active() is True
 
 
-async def test_default_restart_invokes_systemctl_with_both_units(monkeypatch):
-    """Pin the exact systemctl argv lists so a typo in unit names or
-    a missing recovery/--no-block flag surfaces in CI rather than the first
-    time the wedge happens in the wild."""
-    invocations: list[tuple] = []
+async def test_default_restart_uses_broker_reset_then_manage(monkeypatch):
+    """`restart_shairport` must route through the audited broker door, not a
+    direct systemctl call, with the two AirPlay units and the reset-first
+    semantics `reset_then_manage` owns."""
+    calls: list[tuple] = []
 
-    class _FakeProc:
-        returncode = 0
+    def fake_reset_then_manage(*units, **kwargs):
+        calls.append((units, kwargs))
+        return {"ok": True}
 
-        async def wait(self):
-            return 0
-
-    async def fake_exec(*args, **kwargs):
-        invocations.append(args)
-        return _FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.restart_broker.reset_then_manage",
+        fake_reset_then_manage,
+    )
     sup = ShairportSupervisor()
-    await sup.restart_shairport()
-    assert invocations == [
+    assert await sup.restart_shairport() is True
+    assert calls == [
         (
-            "systemctl", "reset-failed",
-            "shairport-sync.service", "nqptp.service",
-        ),
-        (
-            "systemctl", "--no-block", "restart",
-            "shairport-sync.service", "nqptp.service",
+            ("shairport-sync.service", "nqptp.service"),
+            {"verb": "restart", "reason": "shairport_supervisor"},
         ),
     ]
 
 
-async def test_default_restart_can_recover_a_fully_inactive_desired_on_receiver(
-    monkeypatch,
-):
-    """The dead-unit bypass needs restart, not active-only try-restart."""
-    units_active = True
-    invocations = []
+async def test_broker_refusal_does_not_count_as_restart(caplog, monkeypatch):
+    """A broker refusal is attempt-rate-limited but not counted as a restart."""
+    def fake_reset_then_manage(*units, **kwargs):  # noqa: ARG001
+        return {"ok": False, "rc": 1, "stderr": "denied"}
 
-    class _FakeProc:
-        def __init__(self, *, stop_before_return=False):
-            self.stop_before_return = stop_before_return
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.restart_broker.reset_then_manage",
+        fake_reset_then_manage,
+    )
 
-        async def wait(self):
-            nonlocal units_active
-            if self.stop_before_return:
-                units_active = False
-            return 0
+    class _WedgedSupervisor(ShairportSupervisor):
+        async def probe(self) -> bool:
+            return False
 
-    async def fake_exec(*args, **kwargs):
-        nonlocal units_active
-        invocations.append(args)
-        if args[1] == "reset-failed":
-            return _FakeProc(stop_before_return=True)
-        if args[2] == "restart":
-            units_active = True
-        return _FakeProc()
+        async def is_shairport_unit_disabled(self) -> bool:
+            return False
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        async def is_session_active(self) -> bool:
+            return False
 
-    await ShairportSupervisor().restart_shairport()
+    sup = _WedgedSupervisor(
+        interval_sec=0.0, jitter_sec=0.0, cold_start_sec=0.0,
+        failure_threshold=1,
+    )
+    with caplog.at_level(
+        logging.ERROR, logger="jasper.control.shairport_supervisor",
+    ):
+        await sup._tick()
 
-    assert invocations[-1][2] == "restart"
-    assert units_active is True
+    assert sup.restart_count == 0
+    assert sup._last_restart_monotonic is not None
+    assert sup.last_restart_error == "denied"
+    fields = event_fields(caplog, "shairport.restart_failed")
+    assert fields["rc"] == "1"
 
 
 def test_refused_follower_solo_fallback_keeps_airplay_supervision(monkeypatch):
@@ -705,3 +709,34 @@ async def test_bonded_follower_parks_the_probe():
     await sup._tick()
     assert sup.last_probe_ok is True
     assert sup.snapshot()["parked_by_role"] is False
+
+
+_NAME_ABSENT_STDERR = (
+    b"Call failed: The name org.mpris.MediaPlayer2.ShairportSync was not "
+    b"provided by any .service files\n"
+)
+
+
+@pytest.mark.parametrize(
+    "busctl,unit_active,expected",
+    [
+        (BusctlResult(0, b'v s "Playing"\n', b""), None, True),
+        (BusctlResult(0, b'v s "Paused"\n', b""), None, False),
+        # No MPRIS bus name is a definite not-Playing: the gate does not
+        # suppress the restart and does not consult systemd.
+        (BusctlResult(1, b"", _NAME_ABSENT_STDERR), None, False),
+        # Unknown probe fails safe to "active" while the unit is alive.
+        (None, True, True),
+    ],
+)
+async def test_session_gate_maps_probe_to_active(
+    monkeypatch, busctl, unit_active, expected,
+):
+    sup = ShairportSupervisor()
+    monkeypatch.setattr(
+        "jasper.source_state.run_busctl", AsyncMock(return_value=busctl),
+    )
+    monkeypatch.setattr(
+        sup, "is_shairport_unit_active", AsyncMock(return_value=unit_active),
+    )
+    assert await sup.is_session_active() is expected
