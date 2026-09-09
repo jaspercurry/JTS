@@ -110,10 +110,10 @@ from ._common import (
     dispatch_post,
     flash_error,
     form_guarded,
-    redirect_with_legacy_msg,
     restart_systemd_units,
     send_html_response,
     send_json_response,
+    send_see_other,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
@@ -927,9 +927,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            redirect_with_legacy_msg(self, location)
-
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
@@ -978,15 +975,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             client_id = form.get("client_id", "").strip()
             mode = form.get("mode", "").strip() or "bounce"
             if mode not in OAUTH_MODES:
-                self._redirect("./?msg=Invalid+OAuth+mode.")
+                send_see_other(self, "./", flash="Invalid OAuth mode.")
                 return
             if not client_id:
-                self._redirect("./?msg=Client+ID+is+required.")
+                send_see_other(self, "./", flash="Client ID is required.")
                 return
             if not _CLIENT_ID_RE.fullmatch(client_id):
-                self._redirect(
-                    "./?msg=Client+ID+should+be+32+lowercase+hex+characters."
-                    "+Double-check+the+value+from+Spotify."
+                send_see_other(
+                    self, "./",
+                    flash=(
+                        "Client ID should be 32 lowercase hex characters."
+                        " Double-check the value from Spotify."
+                    ),
                 )
                 return
             try:
@@ -1003,9 +1003,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _restart_spotify_consumers()
             # Action + requester only — no client_id/account in the line.
             log_event(logger, "spotify.credentials", client=self.address_string())
-            self._redirect(
-                "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
-            )
+            send_see_other(self, "./", flash="Credentials saved. Now add the redirect URL to your Spotify app.")
 
         @form_guarded
         def _handle_reset_credentials(self, _form: dict[str, str]) -> None:
@@ -1015,16 +1013,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _invalidate_health_cache()
             _restart_spotify_consumers()
             log_event(logger, "spotify.reset", client=self.address_string())
-            self._redirect("./?msg=Credentials+cleared.")
+            send_see_other(self, "./", flash="Credentials cleared.")
 
         @form_guarded
         def _handle_start(self, form: dict[str, str]) -> None:
             if not cfg["client_id"]:
-                self._redirect("./?msg=Set+up+Spotify+credentials+first.")
+                send_see_other(self, "./", flash="Set up Spotify credentials first.")
                 return
             name = form.get("name", "").strip()
             if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
-                self._redirect("./?msg=Invalid+name+(letters/digits/_-+only)")
+                send_see_other(self, "./", flash="Invalid name (letters/digits/_- only)")
                 return
 
             registry = Registry.load(cfg["registry_path"])
@@ -1074,7 +1072,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
 
             # bounce mode: standard 303 to Spotify.
-            self._redirect(authorize_url)
+            send_see_other(self, authorize_url)
 
         def _handle_oauth_callback_get(self, qs: dict[str, list[str]]) -> None:
             """Bounce mode: GH Pages redirected the browser here with
@@ -1084,12 +1082,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             state = (qs.get("state") or [""])[0]
             err = (qs.get("error") or [""])[0]
             if err:
-                self._redirect(
-                    f"./?msg=Spotify+returned+error:+{urllib.parse.quote(err)}"
-                )
+                # Spotify's own text, unbounded — cap/redact like every
+                # other flash so a long ?error= can't balloon the cookie.
+                flash_error(self, "Spotify returned error", err)
                 return
             if not (code and state):
-                self._redirect("./?msg=Missing+code+or+state+from+Spotify")
+                send_see_other(self, "./", flash="Missing code or state from Spotify")
                 return
             self._exchange_and_finish(code, state)
 
@@ -1100,13 +1098,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             code+state. Parse and exchange."""
             pasted = form.get("pasted", "").strip()
             if not pasted:
-                self._redirect("./?msg=Paste+the+full+URL+including+code+and+state.")
+                send_see_other(self, "./", flash="Paste the full URL including code and state.")
                 return
             parsed = _parse_callback_url(pasted)
             if parsed is None:
-                self._redirect(
-                    "./?msg=Could+not+find+code+and+state+in+the+pasted+URL."
-                    "+Make+sure+you+copied+the+whole+thing."
+                send_see_other(
+                    self, "./",
+                    flash=(
+                        "Could not find code and state in the pasted URL."
+                        " Make sure you copied the whole thing."
+                    ),
                 )
                 return
             code, state = parsed
@@ -1114,14 +1115,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def _exchange_and_finish(self, code: str, state: str) -> None:
             if not cfg["client_id"]:
-                self._redirect("./?msg=Credentials+were+cleared+mid-flow.+Start+over.")
+                send_see_other(self, "./", flash="Credentials were cleared mid-flow. Start over.")
                 return
             _gc_pending()
             entry = _PENDING_FLOWS.pop(state, None)
             if entry is None:
-                self._redirect(
-                    "./?msg=That+authorization+expired+or+wasn't+started+from+this+speaker."
-                    "+Start+over."
+                send_see_other(
+                    self, "./",
+                    flash=(
+                        "That authorization expired or wasn't started from"
+                        " this speaker. Start over."
+                    ),
                 )
                 return
             account_name, verifier, challenge, _created = entry
@@ -1138,9 +1142,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # No account name in the line — a household-member label is mild PII
             # and the journal gets bundled/shared for debugging.
             log_event(logger, "spotify.link", client=self.address_string())
-            self._redirect(
-                f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
-            )
+            send_see_other(self, "./", flash=f"Linked {account_name} successfully")
 
         @form_guarded
         def _handle_remove(self, form: dict[str, str]) -> None:
@@ -1160,9 +1162,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _invalidate_health_cache()
                 _restart_spotify_consumers()
                 log_event(logger, "spotify.unlink", client=self.address_string())
-                self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
+                send_see_other(self, "./", flash=f"Removed {name}")
             else:
-                self._redirect("./?msg=Account+not+found")
+                send_see_other(self, "./", flash="Account not found")
 
         @form_guarded
         def _handle_default(self, form: dict[str, str]) -> None:
@@ -1175,9 +1177,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # Account-identity config (which account voice cold-starts from)
                 # + a 3-daemon restart — same audit category as link/unlink.
                 log_event(logger, "spotify.default", client=self.address_string())
-                self._redirect(f"./?msg=Default+set+to+{urllib.parse.quote(name)}")
+                send_see_other(self, "./", flash=f"Default set to {name}")
             else:
-                self._redirect("./?msg=Account+not+found")
+                send_see_other(self, "./", flash="Account not found")
 
         # --- playlist config ---
 
@@ -1209,45 +1211,43 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             raw = form.get("url_or_uri", "").strip()
             uri = parse_playlist_uri(raw)
             if not uri:
-                self._redirect("./?msg=Not+a+Spotify+playlist+URL+or+URI")
+                send_see_other(self, "./", flash="Not a Spotify playlist URL or URI")
                 return
             sp = _spotify_client_for_account(cfg, account_name)
             if sp is None:
-                self._redirect(f"./?msg=Account+{urllib.parse.quote(account_name)}+not+found+or+not+signed+in")
+                send_see_other(self, "./", flash=f"Account {account_name} not found or not signed in")
                 return
             try:
                 name = _resolve_playlist_name(sp, uri)
             except Exception as e:  # noqa: BLE001
                 logger.info("playlist add lookup failed for %s: %s", uri, e)
-                self._redirect("./?msg=Spotify+couldn%27t+find+that+playlist")
+                send_see_other(self, "./", flash="Spotify couldn't find that playlist")
                 return
             if not name:
-                self._redirect("./?msg=Couldn%27t+find+that+playlist%27s+name")
+                send_see_other(self, "./", flash="Couldn't find that playlist's name")
                 return
             registry = Registry.load(cfg["registry_path"])
             if not registry.add_playlist(account_name, uri, name):
-                self._redirect("./?msg=Account+not+found")
+                send_see_other(self, "./", flash="Account not found")
                 return
             registry.save()
             _restart_voice_daemon()
-            self._redirect(
-                f"./?msg=Added+{urllib.parse.quote(name)}+to+{urllib.parse.quote(account_name)}"
-            )
+            send_see_other(self, "./", flash=f"Added {name} to {account_name}")
 
         @form_guarded
         def _handle_playlist_remove(self, form: dict[str, str]) -> None:
             account_name = form.get("account", "").strip()
             uri = form.get("uri", "").strip()
             if not (account_name and uri):
-                self._redirect("./?msg=Missing+account+or+uri")
+                send_see_other(self, "./", flash="Missing account or uri")
                 return
             registry = Registry.load(cfg["registry_path"])
             if registry.remove_playlist(account_name, uri):
                 registry.save()
                 _restart_voice_daemon()
-                self._redirect(f"./?msg=Removed+playlist+from+{urllib.parse.quote(account_name)}")
+                send_see_other(self, "./", flash=f"Removed playlist from {account_name}")
             else:
-                self._redirect("./?msg=Playlist+not+found")
+                send_see_other(self, "./", flash="Playlist not found")
 
         def _exchange_code(
             self, account_name: str, code: str,

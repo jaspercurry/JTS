@@ -140,7 +140,7 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #
 # Two shapes, because the route's counters live at two kinds of location:
 #   * KNOWN_HEALTH_COUNTER_PATHS — counters at a STABLE dict path (navigated to
-#     a single dotted key): the fan-in OUTPUT xrun + outputd content/DAC xruns.
+#     a single dotted key): the outputd content/DAC xruns.
 #   * KNOWN_HEALTH_COUNTER_SUFFIXES — counters that live inside the fan-in
 #     `inputs` ARRAY (per-lane xruns and the per-lane USB-resampler
 #     unlock/silence/overrun). Their dotted path carries a lane INDEX
@@ -149,8 +149,6 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #     any lane's xrun/unlock/silence/overrun counts. `_numeric_deltas`
 #     recurses into lists so these are visible in `all_deltas`.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
-    # fan-in output (post-mix ALSA loopback) xruns — a stable dict path.
-    ("fanin", "output", "xrun_count"),
     # outputd content-capture and final-DAC xruns — stable dict paths.
     ("outputd", "content", "xrun_count"),
     ("outputd", "dac", "xrun_count"),

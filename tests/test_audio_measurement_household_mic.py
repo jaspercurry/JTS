@@ -245,3 +245,112 @@ def test_resolved_household_mic_pairs_the_record_with_its_stored_calibration(
 
     Path(record.metadata_path).unlink()
     assert hm.resolved_household_mic() is None
+
+
+# --- the one writer: save_household_mic --------------------------------------
+
+
+def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, caplog):
+    """A different mic is never refused: the new success replaces the record
+    and says so with the model pair."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger=hm.logger.name)
+
+    first = _store(tmp_path, root=tmp_path / "cal")
+    hm.save_household_mic(first)
+    caplog.clear()
+
+    second = _store(
+        tmp_path,
+        text="20 -2\n100 0\n1000 2\n",
+        model="dayton_imm6",
+        label="New lab mic",
+        root=tmp_path / "cal",
+    )
+    hm.save_household_mic(second)
+
+    record = hm.read_household_mic(path=household_path)
+    assert record is not None
+    assert record.model_key == "dayton_imm6"  # replaced, not merged or refused
+    assert "event=correction.household_mic_replaced" in caplog.text
+    assert "old_model=other" in caplog.text
+    assert "new_model=dayton_imm6" in caplog.text
+
+
+def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, caplog):
+    """Within one model, a different physical unit (serial_hash) is still a
+    mic swap: the record is replaced and household_mic_replaced fires with a
+    `changed=serial` discriminator — while the serial hashes themselves stay
+    out of the log line."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger=hm.logger.name)
+
+    for serial in ("810-1111", "810-2222"):
+        record = _store(
+            tmp_path,
+            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
+            provider="minidsp",
+            model="minidsp_umik2",
+            label="miniDSP UMIK-2",
+            source="https://vendor.example/cal.txt",
+            serial=serial,
+            root=tmp_path / "cal",
+        )
+        hm.save_household_mic(record, serial=serial)
+
+    stored = hm.read_household_mic(path=household_path)
+    assert stored is not None
+    assert stored.serial_hash == calibration.serial_hash("810-2222")
+    assert "event=correction.household_mic_replaced" in caplog.text
+    assert "changed=serial" in caplog.text
+    # Hashes never ride the event line.
+    assert calibration.serial_hash("810-1111") not in caplog.text
+    assert calibration.serial_hash("810-2222") not in caplog.text
+
+
+def test_household_mic_write_failure_never_blocks_the_calibration(
+    tmp_path, monkeypatch, caplog,
+):
+    """The documented never-block invariant: persisting the household record
+    is best-effort. A write failure logs one WARN event and the caller
+    continues."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.WARNING, logger=hm.logger.name)
+
+    def boom(record, *, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(hm, "write_household_mic", boom)
+
+    hm.save_household_mic(_store(tmp_path, root=tmp_path / "cal"))
+
+    assert not household_path.exists()
+    assert "event=correction.household_mic_write_failed" in caplog.text
+    assert "reason=OSError" in caplog.text
+
+
+def test_an_unusable_stored_calibration_is_journalled_not_silent(
+    tmp_path, caplog,
+):
+    """The resolver stays fail-soft, and says so: a metadata file it cannot
+    use (unreadable under the Pi's root-owned registry, or corrupt) otherwise
+    degrades every take to uncalibrated with nothing in the journal."""
+    root = tmp_path / "calibrations"
+    record = _store(tmp_path)
+    Path(record.metadata_path).write_text("{not json")
+    caplog.set_level(logging.WARNING, logger=hm.logger.name)
+
+    resolved = hm.resolve_household_mic_calibration(
+        hm.household_mic_from_calibration(record), root=root,
+    )
+
+    assert resolved is None
+    assert "event=correction.calibration_unresolvable" in caplog.text
+    assert f"reason={json.JSONDecodeError.__name__}" in caplog.text
+    assert f"path={root}" in caplog.text

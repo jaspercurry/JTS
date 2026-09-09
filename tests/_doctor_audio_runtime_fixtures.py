@@ -76,7 +76,6 @@ def _fanin_status_payload(
     output = {
         "transport": transport,
         "frames_written": 1234,
-        "xrun_count": 0,
     }
     if ring is not None:
         output["ring"] = dict(ring)

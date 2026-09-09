@@ -86,6 +86,7 @@ from jasper.log_event import log_event
 
 from ..atomic_io import atomic_write_text
 from ..platform.control_client import CONTROL_PORT
+from . import restart_broker
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -484,16 +485,20 @@ class SystemSupervisor:
             return False
 
     async def reboot_system(self) -> None:
-        """Clean reboot via `systemctl reboot`. NOT `reboot-force` —
-        we want filesystems unmounted and zram dirty pages synced.
-        `--no-block` returns as soon as the job is enqueued; the
-        actual reboot proceeds asynchronously."""
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl", "--no-block", "reboot",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        """Clean reboot through the restart broker — the one audited
+        systemctl door, shared with the /system buttons. NOT `reboot-force`:
+        we want filesystems unmounted and zram dirty pages synced. The broker
+        spawns it detached, so this returns once the reboot is queued.
+
+        Raises if the broker refused or failed the request, so a wedged box
+        that cannot reboot surfaces via ``system_supervisor.reboot_failed``
+        instead of the caller assuming the reboot happened."""
+        result = await asyncio.to_thread(
+            restart_broker.manage_units,
+            verb="reboot", reason="system_supervisor",
         )
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        if not result.get("ok"):
+            raise RuntimeError(f"restart broker refused reboot: {result}")
 
     # ---- accessors ----
 

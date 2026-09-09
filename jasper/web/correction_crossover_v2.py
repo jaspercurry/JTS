@@ -2394,7 +2394,7 @@ def default_setup_calibration_for_v2() -> Any | None:
 
     Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
     the household had a resolvable stored mic (a UMIK-2 by serial, ingested
-    via the daemon's ``/calibration/fetch``). Root cause:
+    through ``jasper-mic-calibration``). Root cause:
     ``resolve_setup_calibration`` is only as good as the reference the capture
     carries in ``setup.calibration``, and a v2 session has no
     calibration-picker screen of its own (design: CHECK's own pilot pairs

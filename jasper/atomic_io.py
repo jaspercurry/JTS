@@ -375,10 +375,13 @@ def atomic_write_text(
     file's permissions and not its ownership (the env-file writers, whose
     ``chown --reference`` + ``chmod MODE`` shell predecessor did exactly this).
 
-    ``durable=True`` flushes and fsyncs the tempfile before publication, then
-    fsyncs the parent directory where the platform supports directory fsync.
-    Boot-critical callers use this stronger contract; ordinary runtime state
-    keeps the cheaper default.
+    ``durable=True`` flushes and fsyncs the tempfile before publication — a
+    failure there raises and nothing is published, same as any other failure
+    in this function. It then best-effort fsyncs the parent directory after
+    the rename; a failure there only degrades rename durability (the file's
+    own content is already published) and is logged, not raised. Boot-critical
+    callers use this stronger contract; ordinary runtime state keeps the
+    cheaper default.
 
     Raises ``OSError`` on any I/O failure; the tempfile is unlinked
     (best-effort) before the error propagates. Does NOT swallow errors — a
@@ -428,15 +431,21 @@ def atomic_write_text(
                 os.close(file_fd)
         os.replace(tmp, fspath)
         if durable:
-            fsync_directory(parent)
+            try:
+                fsync_directory(parent)
+            except OSError as exc:
+                # Already published: only rename durability is degraded,
+                # unlike the pre-publish content fsync above.
+                log_event(
+                    logger,
+                    "atomic_io.post_publish_dir_fsync_failed",
+                    level=logging.WARNING,
+                    path=parent,
+                    error=exc,
+                )
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
-        except FileNotFoundError:
-            # A durable write may fail while syncing the parent directory
-            # after ``os.replace`` has already published the target. In that
-            # case the tempfile no longer exists; cleanup is complete.
-            pass
         except OSError as cleanup_exc:
             log_event(
                 logger,

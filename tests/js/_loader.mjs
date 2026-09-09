@@ -193,3 +193,30 @@ export function buildFunction(sources, {
   // global instead of throwing. Strict keeps the harness honest about that.
   return new Ctor(...params, '"use strict";\n' + body + returnClause(returns));
 }
+
+// Flattens a children list one level at a time, dropping the arrays a
+// `rows.map(...)` child spread introduces — shared by every structural h()
+// double below and by callers walking the resulting tree (e.g. a `strings()`
+// text-extraction helper).
+export function flatten(items) {
+  return items.flatMap((item) => (Array.isArray(item) ? flatten(item) : [item]));
+}
+
+// A structural double for dom.js's h(): a plain {tag, props, children} tree,
+// cheap to inspect without a browser or a real DOM. `append`/`classList`/
+// `style` and `dataset`/`textContent` cover the module-side calls the
+// system-status harnesses exercise on a built node; they're inert where the
+// module under test never reaches for them.
+export function h(tag, props, ...children) {
+  const node = {
+    tag,
+    props: props || {},
+    dataset: (props && props.dataset) || {},
+    children: flatten(children).filter((c) => c != null && c !== false),
+    textContent: "",
+  };
+  node.append = (...nodes) => { node.children.push(...flatten(nodes)); };
+  node.classList = { add() {} };
+  node.style = { setProperty() {} };
+  return node;
+}

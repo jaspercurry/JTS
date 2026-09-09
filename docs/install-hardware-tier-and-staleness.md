@@ -186,34 +186,29 @@ is "every migration that exists at the target SHA" — identical at 1 or
   installs find nothing to migrate. Fresh installs … are a no-op."
 
 Counting the whole set — the `migrate_*` / `retire_*` / `reconcile_*`
-functions across `env-migrations.sh`, `memory-resilience.sh`, and
-`install.sh`:
+functions across `env-migrations.sh`, `memory-resilience.sh`,
+`retirements.sh`, and `install.sh`:
 
 ```sh
 grep -hoE '^(migrate|retire|reconcile|remove)_[A-Za-z0-9_]*\(\) \{' \
   deploy/lib/install/env-migrations.sh \
   deploy/lib/install/memory-resilience.sh \
+  deploy/lib/install/retirements.sh \
   deploy/install.sh | sort
 ```
 
-That returns **16 functions: all 16 convergent, 0 that assume a prior
+That returns **10 functions: all 10 convergent, 0 that assume a prior
 shape, and 0 that delete household state.**
 
 The last clause is deliberately narrower than "delete anything", because
-that phrasing is falsifiable by a grep of the same set: **6 of the 16 call
-`rm -f`**. For **5** of them the target is only the `${jasper_env}.bak`
-the same function just created with its own `sed -i.bak`
-(`migrate_control_host_bind_seed`, `migrate_fanin_coupling`,
-`migrate_grouping`, `migrate_transit_config`, `migrate_weather_config`) —
-the superseded text's "destructive-but-safe (backup-before-delete or
-idempotent `rm -f`)" bucket, which is a real distinction and is restated
-here rather than folded away. The **6th**,
-`remove_retired_audio_topology_state`, is the one genuine file removal:
-its whole body is an `rm -f` of the retired dmix/fanin switch's state file,
-which nothing reads and which `jasper-doctor` warns about on presence. It
-is an unconditional cleanup rather than a migration, and it is in the set
-because the grep above now matches `remove_` too — without that the
-denominator would silently omit the one function that deletes anything.
+that phrasing is falsifiable by a grep of the same set: **1 of the 10 calls
+`rm -f`** — `retire_leftovers`, folded into
+`deploy/lib/install/retirements.sh` and included in the grep above. It is
+the one genuine file removal in the set: it `rm -f`s the units, state files
+and stale CamillaDSP graphs earlier releases left behind — among them the
+retired dmix/fanin switch's state file, which nothing reads and which
+`jasper-doctor` warns about on presence. It is an unconditional cleanup
+rather than a migration.
 
 (The earlier "31 total / 28 convergent / 3 destructive-but-safe" figures
 are superseded and do not reproduce — the same grep returned 24
@@ -225,16 +220,6 @@ on both "old key present?" *and* "new key already there?" (e.g.
 `migrate_control_host_bind_seed` only rewrote the *exact* `0.0.0.0`
 seed), so a box that predates even the old key degraded to a no-op, not a
 misfire.
-
-(2026-08-25 update: the fleet-migration gate cleared (owner-confirmed every
-live Pi past every candidate migration) and the one-shot relocation loops
-named above — `migrate_wake_legs_config`, `migrate_control_host_bind_seed`,
-`migrate_transit_config`, `migrate_weather_config`, `migrate_fanin_coupling`,
-and the grouping migration — were retired as unreachable; the same grep now
-returns **10**. The two still-live ongoing sweeps, `migrate_voice_keys_split`
-and `migrate_google_routes_key`, keep running every deploy. The point this
-section makes — migrations are convergent and skew cannot pile them up —
-still holds; only the roster and the count changed.)
 
 Skew does not multiply migration count or introduce ordering hazards.
 Residual: a box so old it predates a migration's recognized "old shape"

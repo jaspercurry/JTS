@@ -19,8 +19,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from ...control.system_metrics import VCGENCMD_INTERVAL_SEC
+from ...env_load import parse_env_mapping
 from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -31,6 +34,7 @@ from ...service_units import (
     read_unit_property,
     read_unit_states,
 )
+from ._shared import _nested_dict
 from ._shared import install_profile_is_streambox as _install_profile_is_streambox
 
 T = TypeVar("T")
@@ -53,6 +57,12 @@ class StatusRead:
 
     payload: dict[str, Any] | None
     error: BaseException | None = None
+    # Wall-clock time of the read that produced this value, for a caller
+    # (system_metrics_current) that must compare it against a sample
+    # timestamp in the payload. None for reads that carry no such
+    # timestamp, and for a value that entered the memo other than through
+    # a read (e.g. a test seeding the memo directly).
+    fetched_at: float | None = None
 
     @property
     def unreachable(self) -> bool:
@@ -98,6 +108,16 @@ def _loopback_substreams() -> dict[int, str]:
         except OSError:
             continue
     return out
+
+
+def _read_env_mapping(path: str) -> dict[str, str] | None:
+    """One env file's parsed mapping, or None when it could not be read
+    (missing or unreadable)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return parse_env_mapping(text)
 
 
 class Evidence:
@@ -228,8 +248,42 @@ class Evidence:
 
         return self.get("mem_total_kb", lambda: meminfo_kb("MemTotal"))
 
+    def system_metrics_current(self) -> dict[str, Any] | None:
+        """The snapshot's ``metrics.current`` block when fresh within 2x
+        ``VCGENCMD_INTERVAL_SEC``; None when the snapshot or a fresh sample
+        is missing — jasper-control is the only vcgencmd poller (ADR-0226),
+        so a wedged sampler cannot report a supply-voltage verdict."""
+        snapshot = self.control_system_snapshot()
+        metrics = _nested_dict(snapshot.payload, "metrics")
+        if metrics is None:
+            return None
+        sampled_at = metrics.get("last_sample_at")
+        if not isinstance(sampled_at, (int, float)):
+            return None
+        fetched_at = snapshot.fetched_at
+        if fetched_at is None or fetched_at - sampled_at > 2 * VCGENCMD_INTERVAL_SEC:
+            return None
+        current = metrics.get("current")
+        return current if isinstance(current, dict) else None
+
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)
+
+    def fanin_env(self) -> dict[str, str] | None:
+        """``fanin.env``'s parsed mapping, read once per run. None when it
+        could not be read (missing or unreadable)."""
+        from ...env_load import FANIN_ENV_PATH  # lazy: tests patch env_load.FANIN_ENV_PATH at call time
+
+        return self.get("fanin_env", lambda: _read_env_mapping(FANIN_ENV_PATH))
+
+    def outputd_env(self) -> dict[str, str] | None:
+        """``outputd.env``'s own parsed mapping — just that single-writer
+        file's text, NOT the merged ``outputd_reconciled_env`` three-layer
+        stack (see ``audio_runtime_outputd._outputd_reconciled_env``). None
+        when it could not be read."""
+        from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
+
+        return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 
     def parked_bonded_follower(self) -> bool:
         from ._shared import _parked_as_bonded_follower
@@ -346,15 +400,19 @@ class Evidence:
         return self.get("control_state", read)
 
     def control_system_snapshot(self) -> StatusRead:
-        """jasper-control's /system/snapshot, fetched once per run."""
+        """jasper-control's /system/snapshot, fetched once per run; the read
+        carries its own fetch time for ``system_metrics_current``'s
+        freshness check, so the timestamp is tied to this exact snapshot
+        regardless of how much later it is consumed."""
 
         def read() -> StatusRead:
             from ...platform.control_client import get_system_snapshot
 
+            fetched_at = time.time()
             try:
-                return StatusRead(get_system_snapshot())
+                return StatusRead(get_system_snapshot(), fetched_at=fetched_at)
             except Exception as exc:  # noqa: BLE001
-                return StatusRead(None, exc)
+                return StatusRead(None, exc, fetched_at=fetched_at)
 
         return self.get("control_system_snapshot", read)
 
