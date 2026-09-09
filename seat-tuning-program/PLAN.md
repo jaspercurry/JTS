@@ -2,8 +2,8 @@
 
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
 (PR #4517, ADR-0259/0260). Lane B landed rows 1.4/1.5/1.7 (PRs #4522, #4524,
-#4525); lane C has row 2.3 open (#4520) and 2.1 in progress; lane D in
-progress; lane A not yet spawned. **Owner:** jaspercurry. **Orchestrating
+#4525); lane C landed row 2.3 (#4520), 2.1 in progress; lane D in progress;
+lane A not yet spawned. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
@@ -205,7 +205,7 @@ disjoint files.
 |---|---|---|---|---|
 | 2.1 | Layer-3 candidate kind: cuts-only bells on the program bus below the ceiling, one set per side (mono = one side). Code-computed limits: per-bin cut depth from spread, a taper to flat over ~1/3 octave below the ceiling (in `design_peq`'s per-bin arrays), boost admission per the regime plan's D5 (persistent in ≥ 5 of 7, modally plausible, N ≥ 3, capped, level cost disclosed). The LLM authors inside the limits; the `propose`/`stage` doors validate. | C | door refuses out-of-limit filters with codes; fixture candidate round-trips through the emitter reader | code-review high |
 | 2.2 | `room-grade` view: re-measured cube against the target below the ceiling, incumbent beside it; regression is a disclosure; restore is the doctrine path. | V | fixture grades; no auto-revert machinery | code-review |
-| 2.3 | **PR #4520 open (reviewed; main merged in and fixes pushed by the orchestrator).** Boundary prior view: from declared geometry predict the 2π/4π gain step and the quarter-wave null (c/4d) per wall. Advisory. | V | 85 cm → ≈100 Hz null on a fixture | code-review |
+| 2.3 | **LANDED 2026-09-09 — PR #4520 merged (`d7d5fdc1e`).** Boundary prior view: from declared geometry predict the 2π/4π gain step and the quarter-wave null (c/4d) per wall. Advisory. | V | 85 cm → ≈100 Hz null on a fixture | code-review |
 | 2.4 | Two seat-cube sessions on jts3: apply a Layer-3 candidate, re-measure, grade. | H | two banked rounds | owner |
 
 ### Wave 3 — the bass candidate kind and protection (lane D)
@@ -311,6 +311,8 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 00:15Z: Row 2.3 LANDED: PR #4520 squash-merged at `d7d5fdc1e` by
+  the orchestrator after CI went green on the merged-and-fixed head.
 - 2026-09-08 23:45Z: Lane B rows 1.4, 1.5, 1.7 LANDED (owner merged #4522 at
   `4d0a0a94f` and #4524 at `9f3ae539b`; orchestrator merged #4525 at
   `0cbed8a57` after review). Post-hoc Opus review against
