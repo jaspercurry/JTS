@@ -60,6 +60,7 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
+from .supervisor_runtime import signal_on_control_loop, spawn_on_control_loop
 from ..env_load import GROUPING_ENV_FILE
 from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -95,8 +96,6 @@ from ..platform.uds import (
 logger = logging.getLogger(__name__)
 SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 _peering_lock = threading.Lock()
-_peering_loop: asyncio.AbstractEventLoop | None = None
-_peering_stop_requested = threading.Event()
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
@@ -661,98 +660,77 @@ async def _dispatch_transport(action: str) -> dict:
     )
 
 
-# ---------- peering daemon supervisor ----------
+# ---------- peering daemon ----------
 
-# The peering daemon runs an asyncio event loop; jasper-control is stdlib
-# threaded HTTP. One background daemon thread owns that loop.
-_peering_thread: threading.Thread | None = None
+# The peering daemon needs an asyncio loop; jasper-control is stdlib threaded
+# HTTP. It runs as one coroutine on the shared control loop that also hosts
+# the supervisors (jasper/control/supervisor_runtime.py).
+_peering_task: concurrent.futures.Future[None] | None = None
+_peering_shutdown: asyncio.Event | None = None
 
 
-def _run_peering_loop() -> None:
-    """Background thread target: own an asyncio loop and run the PeeringDaemon."""
-    global _peering_loop, _peering_thread
-    # lazy: import cost — these load on this thread rather than on
-    # jasper-control's startup import path.
+async def _run_peering(shutdown: asyncio.Event) -> None:
+    """Own the peering daemon until `shutdown` is set by stop_peering_daemon."""
+    global _peering_task
+    # lazy: import cost — these load on the control loop's thread rather
+    # than on jasper-control's startup import path.
     from ..peering import load_config
     from ..peering.daemon import PeeringDaemon
 
-    cfg = load_config()
-    if not cfg.enabled:
-        log_event(
-            logger,
-            "peering.thread.exit",
-            mode=cfg.mode.value,
-            note="daemon will not start",
-        )
-        with _peering_lock:
-            if _peering_thread is threading.current_thread():
-                _peering_thread = None
-        return
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    daemon = PeeringDaemon(cfg)
-    with _peering_lock:
-        _peering_loop = loop
+    daemon = None
     try:
-        loop.run_until_complete(daemon.start())
-        if _peering_stop_requested.is_set():
-            loop.call_soon(loop.stop)
-        loop.run_forever()
-    except Exception:  # noqa: BLE001
-        logger.exception("peering daemon thread crashed")
+        daemon = PeeringDaemon(load_config())
+        await daemon.start()
+        await shutdown.wait()
     finally:
-        try:
-            loop.run_until_complete(daemon.stop())
-        except Exception:  # noqa: BLE001
-            logger.exception("peering daemon stop failed")
-        try:
-            loop.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if daemon is not None:
+            try:
+                await daemon.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("peering daemon stop failed")
         with _peering_lock:
-            if _peering_loop is loop:
-                _peering_loop = None
-            if _peering_thread is threading.current_thread():
-                _peering_thread = None
-            _peering_stop_requested.clear()
+            _peering_task = None
 
 
 def start_peering_daemon_if_enabled() -> None:
-    """Start the background thread that runs the peering daemon. Idempotent.
+    """Start the peering daemon coroutine. Idempotent.
 
-    The thread starts unconditionally; it reads
-    /var/lib/jasper/peering.env and exits immediately when peering is
-    disabled.
+    PeeringDaemon.start() owns the enabled check: it reads
+    /var/lib/jasper/peering.env and opens no socket and installs no mDNS
+    advert when peering is off.
     """
-    global _peering_thread
-    if _peering_thread is not None:
-        return
-    _peering_stop_requested.clear()
-    _peering_thread = threading.Thread(
-        target=_run_peering_loop,
-        name="peering-daemon",
-        daemon=True,
-    )
-    _peering_thread.start()
+    global _peering_task, _peering_shutdown
+    with _peering_lock:
+        if _peering_task is not None:
+            return
+        shutdown = asyncio.Event()
+        _peering_shutdown = shutdown
+        _peering_task = spawn_on_control_loop(
+            target=lambda: _run_peering(shutdown),
+            name="peering-daemon",
+            logger=logger,
+            crash_event="peering.daemon.crash",
+        )
 
 
 def stop_peering_daemon(*, timeout: float = 5.0) -> None:
-    """Stop the background peering loop so daemon.stop() can unpublish mDNS."""
+    """Stop the peering coroutine so daemon.stop() can unpublish mDNS.
+
+    Joins the coroutine's own cleanup — the future resolves only after it
+    has unwound — under a hard bound: a peering daemon that will not stop
+    must not hold jasper-control's shutdown open.
+    """
     with _peering_lock:
-        thread = _peering_thread
-        loop = _peering_loop
-    if thread is None:
+        future, shutdown = _peering_task, _peering_shutdown
+    if future is None or shutdown is None:
         return
-    _peering_stop_requested.set()
-    if loop is not None and not loop.is_closed():
-        loop.call_soon_threadsafe(loop.stop)
-    if thread is threading.current_thread():
-        return
-    thread.join(timeout=timeout)
-    if thread.is_alive():
+    signal_on_control_loop(shutdown)
+    try:
+        future.result(timeout)
+    except concurrent.futures.TimeoutError:
         log_event(
             logger,
-            "peering.thread.stop_timeout",
+            "peering.daemon.stop_timeout",
             timeout=f"{timeout:.1f}",
             level=logging.WARNING,
         )
@@ -2047,11 +2025,11 @@ def main(argv: list[str] | None = None) -> int:
     # non-fatal (logged): callers fall back to their fail-soft "restart didn't
     # happen, logged" behaviour.
     restart_broker_server = restart_broker.start_broker()
-    # Multi-device peering daemon. The worker thread always starts; it
-    # reads /var/lib/jasper/peering.env and returns immediately (no
-    # asyncio loop, no multicast socket) when JASPER_PEERING=off
-    # — the default. The /sound/pair/ Speakers page writes that env file and
-    # restarts jasper-control to pick up the new mode.
+    # Multi-device peering daemon. The coroutine always starts; it reads
+    # /var/lib/jasper/peering.env and returns immediately (no multicast
+    # socket) when JASPER_PEERING=off — the default. The /sound/pair/
+    # Speakers page writes that env file and restarts jasper-control to
+    # pick up the new mode.
     start_peering_daemon_if_enabled()
     # Protocol-level liveness probe so a wedged shairport-sync AP2 control
     # plane recovers without manual intervention. Off via
