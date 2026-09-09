@@ -110,6 +110,36 @@ def read_fanin_status(
         return None
 
 
+def fanin_inputs_by_label(
+    fanin_status: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Project fan-in's input lanes into one ``{label: lane}`` mapping.
+
+    Accepts either shape a caller may hold: the raw STATUS ``inputs`` list, or
+    an ``inputs`` already re-keyed by label (the shape the airplay-health
+    snapshot publishes). Fail-soft to ``{}`` — a missing / malformed STATUS,
+    an absent ``inputs``, and a lane with no string label all drop out rather
+    than raising, so every consumer keys off one projection.
+    """
+
+    if not isinstance(fanin_status, dict):
+        return {}
+    inputs = fanin_status.get("inputs")
+    if isinstance(inputs, dict):
+        return {
+            label: entry
+            for label, entry in inputs.items()
+            if isinstance(label, str) and isinstance(entry, dict)
+        }
+    if not isinstance(inputs, list):
+        return {}
+    return {
+        entry["label"]: entry
+        for entry in inputs
+        if isinstance(entry, dict) and isinstance(entry.get("label"), str)
+    }
+
+
 def fanin_usbsink_input(
     fanin_status: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -155,6 +185,7 @@ __all__ = [
     "FANIN_INPUT_SOURCE_DIRECT",
     "USBSINK_INPUT_LABEL",
     "extract_direct_sample",
+    "fanin_inputs_by_label",
     "fanin_usbsink_input",
     "fanin_usbsink_lane_is_direct",
     "FANIN_STATUS_SOCKET",

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from jasper.atomic_io import atomic_write_text
+from jasper.fanin.status import USBSINK_INPUT_LABEL, fanin_inputs_by_label
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
@@ -139,9 +140,8 @@ def _integer(value: Any) -> int | None:
 
 def _runtime_resampler(airplay_health: Any) -> dict[str, Any]:
     current = _mapping(_mapping(airplay_health).get("current"))
-    fanin = _mapping(current.get("fanin"))
-    inputs = _mapping(fanin.get("inputs"))
-    return _mapping(_mapping(inputs.get("usbsink")).get("resampler"))
+    lanes = fanin_inputs_by_label(_mapping(current.get("fanin")))
+    return _mapping(_mapping(lanes.get(USBSINK_INPUT_LABEL)).get("resampler"))
 
 
 def _runtime_host_clock(airplay_health: Any) -> dict[str, Any]:
