@@ -55,7 +55,6 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -69,14 +68,13 @@ from ._common import (
     JsonBodyError,
     begin_request,
     bonded_follower_active,
-    guard_mutating_request,
-    guard_read_request,
+    dispatch_get,
+    dispatch_post,
     json_body,
     read_active_provider,
     read_json_object,
-    reject_csrf,
+    resolve_samples,
     restart_voice_daemon,
-    route_path,
     send_html_response,
     send_proxy_json,
 )
@@ -245,10 +243,18 @@ def _get_detail(handler: BaseHTTPRequestHandler, pack_id: str) -> None:
     send_html_response(handler, _detail_html(pack_id, ctx["csrf_token"]))
 
 
+@resolve_samples({
+    "/pack/sample": functools.partial(_get_detail, pack_id="sample"),
+    "/tool/sample": functools.partial(_get_detail, pack_id="tool:sample"),
+})
 def _detail_route(path: str) -> Callable[[BaseHTTPRequestHandler], None] | None:
     """Bind /pack/<id> — and the old /tool/<name> links, which render the same
     page — to a route callable, so do_GET resolves before it guards. None when
-    `path` is neither."""
+    `path` is neither.
+
+    Hand-rolled rather than `prefix_route`: the id is a path segment this
+    hook extracts and binds into the route, and a nested `/pack/a/b` is not
+    this family at all."""
     pack_id = _pack_id_from_path(path)
     if pack_id is None:
         name = _tool_name_from_path(path)
@@ -417,24 +423,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # nginx strips the /assistant/tools/ prefix so we see paths like "/"
         # and "/catalog.json".
         def do_GET(self) -> None:  # noqa: N802
-            path = route_path(self.path)
-            handler_fn = _GET_ROUTES.get(path) or _detail_route(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES, resolve=_detail_route)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="header")
 
         def _read_json(self) -> dict[str, Any] | None:
             """Parse the request body, answering 400 and returning None on a
@@ -821,13 +813,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             "message": "Restarting the assistant to apply your changes…",
         }).encode(), status=200)
 
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this closure
-    # because every route body reads `cfg`. GET's two detail routes
-    # (/pack/<id>, /tool/<name>) carry a path parameter, so `_detail_route`
-    # binds them instead of the table. ORDERING IS LOAD-BEARING: each method
-    # resolves the route first, so an unknown path 404s before the read/CSRF
-    # guard runs.
+    # The tables stay local to this closure because every route body reads
+    # `cfg`. GET's two detail routes (/pack/<id>, /tool/<name>) carry a path
+    # parameter, so `_detail_route` binds them through the seam's `resolve=`
+    # hook instead of a table key.
     _GET_ROUTES = {
         "/": _get_index,
         "/catalog.json": _get_catalog,

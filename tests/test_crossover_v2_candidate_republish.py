@@ -679,13 +679,11 @@ def test_the_route_dispatches_into_the_handler(monkeypatch):
     wrong handler. This drives past the guard and asserts the refusal that only
     ``handle_v2_republish`` produces.
     """
-    from jasper.web import correction_setup
+    from jasper.web import _common
 
     from tests.test_web_correction_setup import _drive
 
-    monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
-    )
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     resp = _drive("/crossover/v2/republish", method="POST", body=b"{}")
 
     assert b"400" in resp.split(b"\r\n", 1)[0]
