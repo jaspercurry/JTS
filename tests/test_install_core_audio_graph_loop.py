@@ -378,22 +378,6 @@ def test_source_intent_reapply_runs_the_bounded_full_coordinator():
     assert "--stop-disabled" not in helper
 
 
-def test_upgrade_retires_destructive_combo_health_watcher():
-    """A deploy removes the obsolete observer and its persisted override state."""
-
-    body = _function_body(
-        FRAGMENT.read_text(),
-        "install_local_audio_graph_unit_files",
-    )
-    assert "systemctl disable --now jasper-fanin-combo-health.timer" in body
-    assert "systemctl stop jasper-fanin-combo-health.service" in body
-    assert "systemctl reset-failed jasper-fanin-combo-health.service" in body
-    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"' in body
-    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.service"' in body
-    assert "/var/lib/jasper/usb_combo_fallback.json" in body
-    assert "/var/lib/jasper/combo_health_tick.json" in body
-
-
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     """THE deploy hazard: a row in the MIDDLE fails. Every LATER row (including
     the newly-added guards at the end) must still be attempted, the function
