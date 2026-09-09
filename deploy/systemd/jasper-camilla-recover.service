@@ -5,10 +5,16 @@ After=local-fs.target systemd-journald.socket
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/jasper-camilla-recover --reason start-limit
-# 3 captures x CAPTURE_TIMEOUT_SEC 5s = 15, + the one `systemctl start
-# jasper-camilla.service` blocking on its Requires= jasper-audio-hardware-
-# reconcile (TimeoutStartSec=50s), + the 3s liveness wait = 68s, rounded up.
-TimeoutStartSec=90
+# 3 captures x CAPTURE_TIMEOUT_SEC 5s = 15, + the one blocking `systemctl
+# start jasper-camilla.service`, which waits behind every unit that start
+# pulls in: 50 for the Requires= jasper-audio-hardware-reconcile
+# (TimeoutStartSec=50s), then the Wants=/After= jasper-outputd.service and
+# jasper-fanin.service, both Type=notify with no TimeoutStartSec (systemd's
+# 90s default) and unordered against each other, so one 90s term covers the
+# pair, + the 3s liveness wait = 158, rounded up. The 90 is the COLD case:
+# every path that reaches this handler has both daemons already running, and
+# a SIGKILL here would lose the park record the handler writes last.
+TimeoutStartSec=180
 # No work runs after the SIGTERM at TimeoutStartSec (the handler holds no
 # trap), so this is only the delay to SIGKILL.
 TimeoutStopSec=5

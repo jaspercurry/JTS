@@ -167,8 +167,8 @@ def test_recovery_unit_points_at_installed_helper():
         "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
     # The deadline must cover the handler's own pass: bounded captures, one
-    # blocking camilla start, the liveness wait.
-    assert _value_for(body, "TimeoutStartSec") == "90"
+    # blocking camilla start behind every unit it pulls in, the liveness wait.
+    assert _value_for(body, "TimeoutStartSec") == "180"
     assert _value_for(body, "TimeoutStopSec") == "5"
 
 

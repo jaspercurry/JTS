@@ -59,9 +59,12 @@ ring's writer to 763x nominal where a live DAC-clocked reader held it to 1.00x
 with zero resyncs. The token bucket's 2500 ppm headroom is sized against a
 DIFFERENCE of independent clocks, not one crystal's spec: this fleet's dongle
 measures ~667 ppm and the two-crystal case took ~4x that (2667 ppm). The bound
-a finite window may observe is `HEADROOM_PPM + 1e6*(2*period)/(rate*T)`, which
-at a 128-frame period is 2589 ppm over 60 s. The field governs PLAYBACK only:
-a bind on the capture side would starve CamillaDSP on a DAC-vs-Pi clock
+a finite window may observe is
+`HEADROOM_PPM + 1e6*(2*period)/(rate*T) + instrument`, whose first two terms
+at a 128-frame period are 2500 + 89 = 2589 ppm over 60 s. **The instrument
+term is load-bearing, not a rounding hedge: without it the bound is BELOW the
+2667 ppm measurement it is supposed to cover.** The field governs PLAYBACK
+only: a bind on the capture side would starve CamillaDSP on a DAC-vs-Pi clock
 difference.
 
 ## Consequences
@@ -70,11 +73,19 @@ difference.
   named failure: a period that is not the reader's is a hard attach error, a
   shallower ring reopens the rate-controller flap, a widened wire is a failed
   open at one end, and a dropped `pace_nominal` restores the storm.
-- **The pace figures (763x, 1.00x, ~667 ppm, 2667 ppm) were observed on
-  2026-08-20 hardware whose capture is not in this tree.** They are recorded
-  here and in `c/jts-ring-ioplug/jts_ring_shm.h` as the sizing evidence; they
-  are not re-measurable from the repo, and a retune of the headroom should
-  re-measure rather than trust them.
+- **The pace figures (763x, 1.00x, ~667 ppm, 2667 ppm, 3111 ppm) were
+  observed on 2026-08-20 hardware whose capture is not in this tree.** They
+  are recorded here and in `c/jts-ring-ioplug/jts_ring_shm.h` as the sizing
+  evidence; they are not re-measurable from the repo, and a retune of the
+  headroom should re-measure rather than trust them. Both windows reconcile
+  against the derived bound only with a one-time term counted, and neither
+  reconciles without one:
+  - the graded 2667 ppm window sits inside the interior bound once that
+    instrument's own 533 ppm is added: 2589 + 533 = 3122 >= 2667;
+  - the +3111 ppm interior-stalled window straddles a STARVATION EXIT, whose
+    alias-clamp catch-up releases `1e6*(buffer - period)/(rate*T)` = 667 ppm
+    over 60 s once, not as rate: 3111 - 667 = 2444, inside the 2589 interior
+    bound.
 - Rejected: **a deeper ring.** Depth would have to move
   `JTS_RING_MAX_SLOTS`, `MAX_N_SLOTS` (`rust/jasper-ring/src/layout.rs`) and
   `MAX_SHM_RING_SLOTS` (`rust/jasper-outputd/src/config.rs`) in lockstep, and

@@ -51,7 +51,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0126](0126-a-subwoofer-crossover-executes-on-the-receiver.md) | A subwoofer's crossover executes on the receiver, on the one shared stereo stream | superseded by 0236 |
 | [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | accepted |
 | [0169](0169-the-outputd-ordering-guard-compares-recorded-instants-not-computed-ages.md) | the outputd ordering guard compares recorded instants, not computed ages | accepted |
-| [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | superseded by 0264 |
+| [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | amended by 0264 |
 | [0178](0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md) | Every shape the ring cannot serve parks under its own name | amended by 0187 |
 | [0184](0184-a-resolvable-width-with-no-armed-endpoint-signals-rather-than-parks.md) | A resolvable width with no armed endpoint signals, it does not park | accepted |
 | [0186](0186-the-endpoint-gate-stays.md) | The endpoint gate stays | accepted |
