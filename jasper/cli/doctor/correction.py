@@ -25,7 +25,7 @@ from ._shared import (
 from ...identity import identity_state
 from ...active_speaker.environment import (
     camilla_statefile_path,
-    jts_emitter_source,
+    classify_camilla_config_text,
     read_camilla_statefile_config_path,
 )
 from ...active_speaker.seat_level_reference import (
@@ -481,13 +481,16 @@ def check_correction_current_config() -> CheckResult:
             f"could not read the loaded config {config_path}: {e}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
-    # Provenance is a JTS name in the canonical config dir, or a `# Source:`
-    # marker naming a JTS emitter — the marker is what an active-speaker graph
-    # carries instead, being named for its role. A playback device JTS also
-    # uses is NOT provenance: an operator config can name the same ring.
+    summary = classify_camilla_config_text(text)
+    # Provenance is a JTS name in the canonical config dir, a `# Source:`
+    # marker naming a JTS emitter, or the active-split structure — a CamillaDSP
+    # round-trip strips the marker, and an active-speaker graph is named for its
+    # role, so structure is all a reloaded one has left. A playback device JTS
+    # also uses is NOT provenance: an operator config can name the same ring.
     if not (
         is_jts_generated_config(path, config_dir=CANONICAL_CAMILLA_CONFIG_DIR)
-        or jts_emitter_source(text)
+        or str(summary["source"] or "").startswith("jasper.")
+        or summary["classification"] == "active_startup_candidate"
     ):
         return CheckResult(
             "current correction", "warn",

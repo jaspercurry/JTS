@@ -263,20 +263,6 @@ def _source_marker(text: str) -> str | None:
     return match.group("source") if match else None
 
 
-def jts_emitter_source(text: str) -> str | None:
-    """The JTS emitter that wrote this config, off its ``# Source:`` marker.
-
-    Provenance BY CONTENT: a marker naming a ``jasper.*`` emitter is a config
-    JTS wrote, whatever the file is called — which is how an active-speaker
-    graph (staged startup, commissioning, parked, program bake) declares
-    itself, since it is named for its role, not for a JTS config. ``None``
-    for no marker or a foreign one; a CamillaDSP round-trip can strip the
-    marker, so ``None`` is unproven provenance, not proof of a foreign graph.
-    """
-    source = _source_marker(text)
-    return source if source and source.startswith("jasper.") else None
-
-
 def _forbidden_playback_token(playback_device: str | None) -> str | None:
     if not playback_device:
         return None
