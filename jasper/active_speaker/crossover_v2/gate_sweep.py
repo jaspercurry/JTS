@@ -671,9 +671,6 @@ def _feature_result(
         "valid_rungs_ms": list(valid),
         "poses": [
             {
-                "candidate_id": read.capture.candidate_id,
-                "graph_fingerprint": read.capture.graph_fingerprint,
-                "capture_wav_sha256": read.capture.capture_sha256,
                 "pose_key": read.capture.pose_key,
                 "value_db_by_rung": {
                     _key(r): float(read.curves[r][grid_index]) for r in rungs_ms

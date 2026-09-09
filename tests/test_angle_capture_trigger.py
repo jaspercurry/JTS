@@ -240,9 +240,11 @@ def test_both_pairs_the_regimes_so_the_microphone_moves_once_per_angle():
     ]
 
 
-def test_the_regime_table_covers_every_regime_the_seam_declares():
-    """A regime added to the seam must gain a verb here, not be silently absent."""
-    assert set(REGIMES) <= set(cli._REGIME_STOPS)
+def test_free_angle_regimes_exclude_the_batch_that_requires_a_named_candidate():
+    from jasper.active_speaker.angle_capture import REGIME_BRANCHES
+
+    assert set(REGIMES) - {REGIME_BRANCHES} <= set(cli._REGIME_STOPS)
+    assert REGIME_BRANCHES not in cli._REGIME_STOPS
 
 
 # --------------------------------------------------------------------------- #
