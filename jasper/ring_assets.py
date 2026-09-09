@@ -560,27 +560,6 @@ def conf_block_body(text: str, pcm_name: str) -> str | None:
     return None if span is None else text[span[0] : span[1]]
 
 
-def conf_pcm_type(text: str, pcm_name: str) -> str | None:
-    body = conf_block_body(text, pcm_name)
-    if body is None:
-        return None
-    depth = 0
-    type_next = False
-    for match in _CONF_TOKEN.finditer(body):
-        token = match.group()
-        if token.startswith("#"):
-            continue
-        if token == "{":
-            depth += 1
-        elif token == "}":
-            depth -= 1
-        elif depth == 0:
-            if type_next:
-                return token[1:-1] if token[0] in "\"'" else token
-            type_next = token == "type"
-    return None
-
-
 def _read_conf_text(conf_d: str | None) -> str | None:
     """The ring conf.d's text, or ``None`` when it is absent/unreadable."""
     path = RING_CONF_D if conf_d is None else conf_d

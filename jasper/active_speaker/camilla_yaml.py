@@ -133,6 +133,10 @@ BASS_EXTENSION_LT_FILTER = "bass_ext_lt"
 BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jasper_out",
+    # The retired snd-aloop stereo lane by its own name: an old asound.conf can
+    # still resolve these on a box that has not reconciled since the retirement.
+    "outputd_content_playback",
+    "outputd_content_capture",
     # The full-range STEREO ring: pointing an active emitter at it would put
     # POST-crossover per-driver audio on a full-range path. The ACTIVE ring
     # (``jts_ring_active_playback``) is the legal target and is deliberately NOT

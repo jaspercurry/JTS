@@ -383,11 +383,6 @@ def snapclient_argv(
     NOT write blank: without the marker outputd reads this key with ``env_str``,
     whose blank is a value it parks on, so they inherit layer 1 verbatim.
 
-    THE FIFO KEY IS CLEARED, NEVER SET. Arming both round-trip transports at once
-    is outputd's most fundamental refusal — two content sources on one DAC — and
-    this writer must never emit a combination the validator rejects across all
-    env LAYERS.
-
     Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
     mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
     also "2 channels", so arming that socket would send full-range assistant

@@ -133,6 +133,10 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 FORBIDDEN_TEST_PCM_TOKENS = (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",
+    # The retired snd-aloop stereo lane by its own name: an old asound.conf can
+    # still resolve these on a box that has not reconciled since the retirement.
+    "outputd_content_playback",
+    "outputd_content_capture",
     "outputd_active_content_capture",
     "outputd_dac",
     "jts_ring_capture",

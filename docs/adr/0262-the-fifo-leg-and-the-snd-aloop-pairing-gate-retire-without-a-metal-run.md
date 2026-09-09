@@ -40,6 +40,10 @@
   snd-aloop stereo pair was the map's one entry and is now simply not a member,
   so it stays error-free, and the two rings keep the dispositions they had.
   Deliberately given up: the #2489 clockless park, which only the exit-66 path
-  could trigger. Rejected alternative: keep the gate as a "Python works"
-  tripwire — the Python reconciler cannot run at all without the import it was
-  proving.
+  could trigger. No surface catches that shape today — a preserved
+  `backend=alsa` env against an `asound.conf` rendering `pcm.outputd_dac` as
+  `type null` opens and negotiates like a real DAC, so neither
+  `event=outputd.alsa.opened` (#4537) nor the doctor's outputd DAC row, which
+  reads outputd's own STATUS, would name it; an issue for a doctor row is owed.
+  Rejected alternative: keep the gate as a "Python works" tripwire — the
+  Python reconciler cannot run at all without the import it was proving.
