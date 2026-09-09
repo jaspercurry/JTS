@@ -16,7 +16,7 @@ import pytest
 import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli.doctor import active_speaker
-from jasper.cli.doctor._evidence import evidence
+from jasper.cli.doctor._evidence import StatusRead, evidence
 from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
 
 from .test_doctor_audio_runtime_camilla import _point_at_config
@@ -186,50 +186,68 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
 
 
+def _seed_control_reports_playing() -> None:
+    """A published `clean` verdict: a muted-but-running graph is a silence
+    jasper-control cannot see, so these rows must flag it anyway."""
+    evidence.seed(
+        "control_system_snapshot",
+        StatusRead({"audio_health": {"signal_path": {"code": "clean"}}}),
+    )
+
+
 @pytest.mark.parametrize(
-    "stage, status, reason",
+    "stage, status, reason, silent",
     [
-        (_stage_corrupt_topology, "fail", active_speaker.REASON_TOPOLOGY_UNREADABLE),
+        (_stage_corrupt_topology, "fail", active_speaker.REASON_TOPOLOGY_UNREADABLE, False),
         (
             _stage_complete_passive_layout, "ok",
-            active_speaker.REASON_GRAPH_PASSIVE_LAYOUT,
+            active_speaker.REASON_GRAPH_PASSIVE_LAYOUT, False,
         ),
         (
             _stage_unreadable_statefile, "fail",
-            active_speaker.REASON_CAMILLA_STATEFILE_UNREADABLE,
+            active_speaker.REASON_CAMILLA_STATEFILE_UNREADABLE, False,
         ),
-        (_stage_missing_config, "fail", active_speaker.REASON_CAMILLA_CONFIG_MISSING),
-        (_stage_unconfigured_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT),
-        (_stage_roleful_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT),
+        (
+            _stage_missing_config, "fail",
+            active_speaker.REASON_CAMILLA_CONFIG_MISSING, False,
+        ),
+        (
+            _stage_unconfigured_parked, "warn",
+            active_speaker.REASON_GRAPH_PARKED_SILENT, True,
+        ),
+        (_stage_roleful_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT, True),
         (
             _stage_blocker_bearing_parked, "warn",
-            active_speaker.REASON_GRAPH_PARKED_SILENT,
+            active_speaker.REASON_GRAPH_PARKED_SILENT, True,
         ),
         (
             _stage_incomplete_passive_parked, "fail",
-            active_speaker.REASON_GRAPH_LAYOUT_INCOMPLETE,
+            active_speaker.REASON_GRAPH_LAYOUT_INCOMPLETE, True,
         ),
         (
             _stage_flat_graph_without_a_layout, "fail",
-            active_speaker.REASON_GRAPH_UNSAFE,
+            active_speaker.REASON_GRAPH_UNSAFE, False,
         ),
         (
             _stage_flat_graph_on_a_tweeter_layout, "fail",
-            active_speaker.REASON_GRAPH_UNSAFE,
+            active_speaker.REASON_GRAPH_UNSAFE, False,
         ),
-        (_stage_staged_active_startup, "ok", ""),
+        (_stage_staged_active_startup, "ok", "", False),
     ],
     ids=lambda value: getattr(value, "__name__", None),
 )
 def test_active_speaker_runtime_graph_branches(
-    monkeypatch, tmp_path, stage, status, reason
+    monkeypatch, tmp_path, stage, status, reason, silent
 ):
-    """One row per outcome of the merged check."""
+    """One row per outcome of the merged check, each under a jasper-control
+    verdict of `clean`: only the parked branches claim ``speaker_silent``, and
+    they claim it without consulting that verdict."""
+    _seed_control_reports_playing()
     stage(monkeypatch, tmp_path)
 
     r = active_speaker.check_active_speaker_runtime_graph()
 
-    assert (r.status, r.reason) == (status, reason)
+    assert (r.status, r.reason, r.speaker_silent) == (status, reason, silent)
 
 
 def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
@@ -623,23 +641,24 @@ def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
 
 
 @pytest.mark.parametrize(
-    "load_status, live_is_anchor, status, reason",
+    "load_status, live_is_anchor, status, reason, silent",
     [
-        ("loaded", True, "ok", active_speaker.REASON_STARTUP_HOLD_IN_FLIGHT),
+        ("loaded", True, "ok", active_speaker.REASON_STARTUP_HOLD_IN_FLIGHT, False),
         # A hold with no load behind it keeps a box that is STILL on the anchor
         # silent across every reconcile.
-        ("rolled_back", True, "fail", active_speaker.REASON_STARTUP_HOLD_STALE),
+        ("rolled_back", True, "fail", active_speaker.REASON_STARTUP_HOLD_STALE, True),
         # Off the anchor the box plays: the selector rung the marker feeds also
         # requires the anchor graph, and /run empties before the next boot.
-        ("rolled_back", False, "warn", active_speaker.REASON_STARTUP_HOLD_STALE),
+        ("rolled_back", False, "warn", active_speaker.REASON_STARTUP_HOLD_STALE, False),
     ],
     ids=["in-flight", "stale-on-anchor", "stale-but-playing"],
 )
 def test_active_speaker_startup_hold_verdicts(
-    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason
+    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason, silent
 ):
     from jasper.active_speaker.startup_hold import hold_staged_startup
 
+    _seed_control_reports_playing()
     assert hold_staged_startup() is True
     anchor = tmp_path / "active_speaker_staged_startup.yml"
     state = tmp_path / "startup_load.json"
@@ -657,6 +676,7 @@ def test_active_speaker_startup_hold_verdicts(
 
     assert r.status == status
     assert r.reason == reason
+    assert r.speaker_silent is silent
 
 
 # ---------------------------------------------------- room correction authority

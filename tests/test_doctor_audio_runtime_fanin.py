@@ -1223,6 +1223,12 @@ def _fanin_case_invalid_status_json(monkeypatch, tmp_path):
 
 def _fanin_case_status_socket_unreachable(monkeypatch, tmp_path):
     _seed_units()
+    # jasper-control reports `path_unreported`/`starting` for a fan-in it
+    # cannot read, never a silence code, so this row carries the verdict.
+    evidence.seed(
+        "control_system_snapshot",
+        _evidence.StatusRead(None, OSError("control unreachable")),
+    )
     _patch_unreachable_status(monkeypatch)
     return audio_runtime_fanin.check_fanin_service()
 
@@ -1287,7 +1293,7 @@ _MALFORMED_LOUDNESS = {"decision_seen": True, "calibrated": False, "final_gain_d
         pytest.param(_fanin_case_with_tts_loudness(_MALFORMED_LOUDNESS), "warn", _F.REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC, None, id="test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness"),
         pytest.param(_fanin_case_loudness_telemetry_absent, "ok", _F.REASON_FANIN_LOUDNESS_TELEMETRY_MISSING, None, id="test_check_fanin_service_is_ok_when_loudness_telemetry_is_absent"),
         pytest.param(_fanin_case_invalid_status_json, "fail", _F.REASON_FANIN_STATUS_MALFORMED, None, id="test_check_fanin_service_fails_on_invalid_status_json"),
-        pytest.param(_fanin_case_status_socket_unreachable, "fail", _F.REASON_FANIN_STATUS_UNREACHABLE, None, id="test_check_fanin_service_fails_when_status_socket_unreachable"),
+        pytest.param(_fanin_case_status_socket_unreachable, "fail", _F.REASON_FANIN_STATUS_UNREACHABLE, _SILENT, id="test_check_fanin_service_fails_when_status_socket_unreachable"),
         pytest.param(_fanin_case_small_runtime_input_buffer, "warn", _F.REASON_FANIN_INPUT_BUFFER_UNDERSIZED, None, id="test_check_fanin_service_warns_on_small_runtime_input_buffer"),
         pytest.param(_fanin_case_roster_compare(_reorder_inputs), "ok", "", None, id="test_check_fanin_service_input_roster_compare[reordered-roster-is-not-drift]"),
         pytest.param(_fanin_case_roster_compare(_drift_one_input), "warn", _F.REASON_FANIN_INPUTS_DRIFTED, None, id="test_check_fanin_service_input_roster_compare[drifted-lane-warns]"),

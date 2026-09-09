@@ -32,7 +32,7 @@ from ...fanin_coupling import read_declared_ring_wire_format
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _service_state_failure
+from ._shared import CheckResult, _service_state_failure, silence_unobserved
 from .audio_runtime_camilla import _loaded_device_fields
 
 
@@ -408,6 +408,7 @@ def check_fanin_service() -> CheckResult:
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
             reason=REASON_FANIN_STATUS_UNREACHABLE,
+            speaker_silent=silence_unobserved(),
         )
     data = status.payload
     if data is None:
@@ -440,8 +441,8 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
-            # The one silence no jasper-control signal-path code names:
-            # a fan-in on another transport still reports healthy to it.
+            # Not gated on jasper-control: a fan-in on another transport
+            # still reports healthy to it, so no signal-path code names this.
             reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")

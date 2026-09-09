@@ -184,7 +184,9 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     if graph.allowed and active_graph_is_parked(graph.config_path):
         # A parked graph is intentional silence, not a broken runtime — both a
         # zero-group topology (the household must choose a layout) and an
-        # incomplete roleful layout.
+        # incomplete roleful layout. Both arms flag `speaker_silent`
+        # without consulting jasper-control: a muted graph keeps filling
+        # periods, so no signal-path code names this silence.
         if contract.classification == CONTRACT_UNCONFIGURED or (
             contract.requires_roleful_graph
         ):
@@ -194,10 +196,12 @@ def check_active_speaker_runtime_graph() -> CheckResult:
                 f"parked silent for {contract.classification}."
                 + (f" Clear {blockers} at {_SPEAKER_SETUP_URL}." if blockers else "")
                 + f" Next: {parked_muted_exits(topology)}",
+                speaker_silent=True,
                 reason=REASON_GRAPH_PARKED_SILENT,
             )
         return CheckResult(
             name, "fail", _incomplete_layout_detail(contract),
+            speaker_silent=True,
             reason=REASON_GRAPH_LAYOUT_INCOMPLETE,
         )
     if graph.allowed:
@@ -608,6 +612,9 @@ def check_active_speaker_startup_hold() -> CheckResult:
            f"not the anchor it staged ({anchor or 'unknown'}), so the hold "
            "silences nothing and /run empties at the next boot.")
         + " Roll the startup load back from http://jts.local/sound/.",
+        # Not gated on jasper-control: the held anchor graph keeps filling
+        # periods, so no signal-path code names this silence.
+        speaker_silent=on_anchor,
         reason=REASON_STARTUP_HOLD_STALE,
     )
 

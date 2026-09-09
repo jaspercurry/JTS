@@ -947,6 +947,8 @@ def check_outputd_dac_render() -> CheckResult:
             "playback is discarded. Re-run jasper-audio-hardware-reconcile "
             "with the DAC attached.",
             reason=REASON_OUTPUTD_DAC_RENDERED_NULL,
+            # Not gated on jasper-control: outputd keeps writing periods
+            # into `type null`, so no signal-path code names this silence.
             speaker_silent=True,
         )
     return CheckResult(label, "ok", f"pcm.{dac_pcm} type {rendered.group(1)}")
