@@ -41,6 +41,7 @@ from jasper.web import (
     tools_setup,
     wake_corpus_setup,
     wake_setup,
+    weather_setup,
     wifi_setup,
 )
 from jasper.web._common import CSRF_COOKIE_NAME
@@ -459,6 +460,10 @@ _TABLED_WIZARD_FACTORIES = {
         },
     ),
     "wifi_setup": wifi_setup._make_handler,
+    "weather_setup": lambda: weather_setup._make_handler({
+        "state_path": "/tmp/jts-test-weather.env",
+        "transit_path": "/tmp/jts-test-weather-transit.env",
+    }),
 }
 
 # Wizards whose CSRF token rides in a header, so the guard runs before any
