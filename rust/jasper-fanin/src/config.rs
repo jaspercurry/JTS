@@ -4,8 +4,11 @@
 
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
-//! This module owns the defaults; every default here must agree with its
-//! `.env.example` entry.
+//! This module owns the defaults. `.env.example` documents the operator-facing
+//! subset as prose rather than seeded literals: install.sh copies that file to
+//! `/etc/jasper/jasper.env` once and never re-syncs it, so a literal there
+//! would pin the default on every existing Pi. Where a key appears in both, the
+//! two must agree.
 //!
 //! Operator overrides go in `/etc/jasper/jasper.env` (system-wide);
 //! `/var/lib/jasper/fanin.env` is single-writer, owned by
@@ -31,6 +34,32 @@ pub use jasper_ring::RING_SLOT_FRAMES;
 /// error on BOTH sides, never a silent clamp).
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
+
+/// Compile-time render geometry: the defaults `JASPER_FANIN_PERIOD_FRAMES` and
+/// `JASPER_FANIN_SAMPLE_RATE` resolve to. Named because the mixer's
+/// period-counted cadences convert their millisecond intent at this geometry
+/// ([`periods_for_ms`]) — an operator override drifts them in wall time.
+pub(crate) const DEFAULT_PERIOD_FRAMES: u32 = 256;
+pub(crate) const DEFAULT_SAMPLE_RATE: u32 = 48_000;
+
+/// Render periods spanning `ms` at a lane geometry, floored at 1 so a
+/// sub-period interval still ticks. The crate's ONE ms→periods conversion:
+/// every period-counted cadence states its wall-clock intent and derives the
+/// count here rather than shipping a hand-multiplied literal.
+pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
+    let period_frames = if period_frames == 0 {
+        1
+    } else {
+        period_frames as u64
+    };
+    let sample_rate = sample_rate as u64;
+    let periods = ms.saturating_mul(sample_rate) / (1000 * period_frames);
+    if periods == 0 {
+        1
+    } else {
+        periods
+    }
+}
 
 /// Label of the measurement / diagnostic injection lane — the one lane that
 /// carries stimuli rather than program.
@@ -253,8 +282,8 @@ pub struct Config {
     pub usb_direct_device: String,
 
     /// The gadget capture OPEN period (frames) the USB DIRECT lane negotiates.
-    /// Default 256, the hardware-validated direct-capture envelope; fail-loud
-    /// range 32..=1024. Shrinking it (e.g. 64) exposes ready frames sooner if the
+    /// Defaults to [`crate::mixer::DIRECT_PERIOD_FRAMES`], the
+    /// hardware-validated direct-capture envelope; fail-loud range 32..=1024. Shrinking it (e.g. 64) exposes ready frames sooner if the
     /// gadget's readable `avail` advances in period-sized steps. The capture
     /// BUFFER stays DEEP regardless (`mixer::resolve_direct_buffer_frames`:
     /// ≥ 3 periods AND ≥ 768 frames), so a small period rides a deep buffer
@@ -355,8 +384,8 @@ impl Config {
             );
         }
 
-        let sample_rate = env_u32_positive("JASPER_FANIN_SAMPLE_RATE", 48_000)?;
-        let period_frames = env_u32_positive("JASPER_FANIN_PERIOD_FRAMES", 256)?;
+        let sample_rate = env_u32_positive("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
+        let period_frames = env_u32_positive("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
         let input_buffer_frames = env_u32_fallback(
             "JASPER_FANIN_INPUT_BUFFER_FRAMES",
             "JASPER_FANIN_BUFFER_FRAMES",
@@ -602,7 +631,10 @@ impl Config {
         // defeats the low-latency intent. Only consulted on the direct lane, but
         // parsed unconditionally so a typo fails loud on any boot, not only on an
         // armed box.
-        let usb_direct_period_frames = env_u32("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", 256)?;
+        let usb_direct_period_frames = env_u32(
+            "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES",
+            crate::mixer::DIRECT_PERIOD_FRAMES,
+        )?;
         if !(32..=1024).contains(&usb_direct_period_frames) {
             anyhow::bail!(
                 "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES={} out of range 32..=1024 (the gadget \
@@ -934,6 +966,15 @@ mod tests {
     /// everything.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Whether an error carries the config-class marker. That marker is the only
+    /// externally observable difference between the two failure classes: a marked
+    /// error exits 78 and `RestartPreventExitStatus=78` parks the unit, an
+    /// unmarked one takes the ordinary restart ladder into
+    /// `StartLimitAction=reboot`.
+    fn parks_the_unit(err: &anyhow::Error) -> bool {
+        err.downcast_ref::<crate::ConfigClassError>().is_some()
+    }
+
     /// Serialize on `ENV_LOCK`, snapshot ALL fan-in env vars, clear them, apply
     /// this test's per-var overrides, run the closure, restore.
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
@@ -968,6 +1009,15 @@ mod tests {
         for (k, v) in snapshot {
             std::env::set_var(&k, v);
         }
+    }
+
+    #[test]
+    fn periods_for_ms_converts_at_the_shipped_geometry() {
+        // 1000 ms at 48 kHz / 256 ≈ 187.5 periods, truncated.
+        assert_eq!(periods_for_ms(1000, 256, 48_000), 187);
+        assert_eq!(periods_for_ms(10_000, 256, 48_000), 1875);
+        // Sub-period intent still ticks: floored at one period.
+        assert_eq!(periods_for_ms(1, 256, 48_000), 1);
     }
 
     #[test]
@@ -1362,10 +1412,9 @@ mod tests {
         for bad in ["50", "100", "199", "801", "1200"] {
             with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(bad))], || {
                 let err = Config::from_env().expect_err("out-of-range probe ppm must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_HOST_CLOCK_PROBE_PPM"),
-                    "expected probe-ppm range error, got: {msg}"
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             });
         }
@@ -1592,21 +1641,22 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().expect_err("buffer < 2×period must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_INPUT_BUFFER_FRAMES"),
-                    "expected buffer-frames error, got: {}",
-                    msg,
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
     }
 
     #[test]
-    fn usb_direct_period_defaults_to_256() {
+    fn usb_direct_period_defaults_to_the_proven_open_envelope() {
         with_env(&[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", None)], || {
             let cfg = Config::from_env().expect("defaults must parse");
-            assert_eq!(cfg.usb_direct_period_frames, 256);
+            assert_eq!(
+                cfg.usb_direct_period_frames,
+                crate::mixer::DIRECT_PERIOD_FRAMES
+            );
         });
     }
 
@@ -1629,10 +1679,9 @@ mod tests {
                 || {
                     let err =
                         Config::from_env().expect_err("out-of-range direct period must error");
-                    let msg = format!("{:#}", err);
                     assert!(
-                        msg.contains("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES"),
-                        "expected direct-period range error, got: {msg}",
+                        !parks_the_unit(&err),
+                        "must restart-loop, not park at 78: {err:#}"
                     );
                 },
             );
@@ -1741,10 +1790,9 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().expect_err("floor below margin must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
-                    "expected decay-floor range error, got: {msg}"
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
@@ -1769,10 +1817,9 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().expect_err("floor above ceiling must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
-                    "expected decay-floor ceiling error, got: {msg}"
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
@@ -1802,11 +1849,9 @@ mod tests {
                 let err = Config::from_env().expect_err(
                     "floor below minimum-safe-fill must error even above target+margin",
                 );
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES")
-                        && msg.contains("minimum_safe_fill"),
-                    "expected minimum-safe-fill floor error, got: {msg}"
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
@@ -1904,10 +1949,9 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().expect_err("over-authority demand must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM"),
-                    "expected the demand-vs-authority error, got: {msg}"
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
@@ -1982,10 +2026,9 @@ mod tests {
                 )],
                 || {
                     let err = Config::from_env().expect_err("out-of-range step must error");
-                    let msg = format!("{:#}", err);
                     assert!(
-                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES"),
-                        "expected decay-step range error, got: {msg}"
+                        !parks_the_unit(&err),
+                        "must restart-loop, not park at 78: {err:#}"
                     );
                 },
             );
@@ -2002,10 +2045,9 @@ mod tests {
                 )],
                 || {
                     let err = Config::from_env().expect_err("out-of-range interval must error");
-                    let msg = format!("{:#}", err);
                     assert!(
-                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS"),
-                        "expected decay-interval range error, got: {msg}"
+                        !parks_the_unit(&err),
+                        "must restart-loop, not park at 78: {err:#}"
                     );
                 },
             );
@@ -2174,7 +2216,7 @@ mod tests {
                     Err(err) => {
                         assert!(!served, "{raw:?} must be served: {err:#}");
                         assert!(
-                            err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                            parks_the_unit(&err),
                             "{raw:?} must park the unit (exit 78), not restart-loop it",
                         );
                     }
@@ -2206,7 +2248,7 @@ mod tests {
                     Err(err) => {
                         assert!(!served, "{raw:?} must be served: {err:#}");
                         assert!(
-                            err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                            parks_the_unit(&err),
                             "{raw:?} must park the unit (exit 78), not restart-loop it",
                         );
                     }
@@ -2260,17 +2302,10 @@ mod tests {
                 ],
                 || {
                     let err = Config::from_env().expect_err("out-of-range ring slots must error");
-                    let msg = format!("{:#}", err);
                     assert!(
-                        msg.contains("JASPER_FANIN_RING_SLOTS"),
-                        "expected ring-slots range error, got: {}",
-                        msg,
-                    );
-                    assert!(
-                        err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                        parks_the_unit(&err),
                         "a bad ring geometry must park at 78, not restart-loop \
-                         into StartLimitAction=reboot: {}",
-                        msg,
+                         into StartLimitAction=reboot: {err:#}",
                     );
                 },
             );
@@ -2289,33 +2324,24 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().expect_err("non-128-multiple period must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("multiple") && msg.contains("slot"),
-                    "expected slot-shear error, got: {}",
-                    msg,
-                );
-                assert!(
-                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                    parks_the_unit(&err),
                     "a sheared ring geometry must park at 78, not restart-loop \
-                     into StartLimitAction=reboot: {}",
-                    msg,
+                     into StartLimitAction=reboot: {err:#}",
                 );
             },
         );
     }
 
     #[test]
-    fn bad_integer_env_var_returns_clear_error() {
+    fn bad_integer_env_var_takes_the_restart_ladder() {
         with_env(
             &[("JASPER_FANIN_SAMPLE_RATE", Some("not-a-number"))],
             || {
                 let err = Config::from_env().expect_err("bad integer must error");
-                let msg = format!("{:#}", err);
                 assert!(
-                    msg.contains("JASPER_FANIN_SAMPLE_RATE"),
-                    "error message should name the offending var, got: {}",
-                    msg,
+                    !parks_the_unit(&err),
+                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );

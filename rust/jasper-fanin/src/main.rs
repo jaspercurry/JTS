@@ -4,22 +4,21 @@
 
 //! jasper-fanin — JTS renderer fan-in daemon.
 //!
-//! Reads N snd-aloop substream pairs (one per music renderer), sums
-//! them sample-wise, and publishes the result to CamillaDSP over Ring A,
-//! the SPSC shared-memory ring that is this daemon's only transport
-//! toward the DSP (ADR-0100). No ALSA playback PCM is opened. This is
-//! the production renderer topology; the old renderer-side dmix path
-//! was retired after AirPlay burst testing exposed timing drops.
+//! Reads the per-renderer snd-aloop capture lanes — plus the USB gadget
+//! capture directly, when the direct lane is armed — sums them sample-wise,
+//! and publishes the result to CamillaDSP over Ring A, the SPSC shared-memory
+//! ring that is this daemon's only transport toward the DSP (ADR-0100). No
+//! ALSA playback PCM is opened; the ring publish is what paces the loop.
 //!
 //! This file is the entry point. Module layout:
-//!   - `config`   — JASPER_FANIN_* env var parsing.
-//!   - `watchdog` — progress-sentinel heartbeat (sd_notify pattern).
-//!   - `mixer`    — ALSA read/sum/write loop.
-//!   - `state`    — UDS STATUS endpoint for /state aggregation.
 //!
-//! The mux preempt path means simultaneous sources should not happen
-//! in steady state. If future measurement shows audible source-handover
-//! clicks, add ramping in the mixer with tests and doctor visibility.
+//! - `config` — `JASPER_FANIN_*` parsing and the compile-time defaults.
+//! - `mixer` — the read/sum/publish work loop, its lanes, and their recovery.
+//! - `lane_resampler`, `host_clock` — the USB lane's rate reconciliation.
+//! - `tts`, `playout` — the assistant/cue mix-in and its playout ledger.
+//! - `impulse_tap`, `source_notify`, `state` — latency diagnostics, mux
+//!   wakeups, and the UDS STATUS endpoint `/state` aggregates.
+//! - `watchdog` — progress-sentinel heartbeat (sd_notify pattern).
 
 mod config;
 mod host_clock;

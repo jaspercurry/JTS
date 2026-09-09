@@ -931,19 +931,9 @@ mod decay {
             }
         }
 
-        /// Convert `ms` at the lane's `period_frames`/`sample_rate` to a
-        /// render-period count (>= 1 so a tiny ms value still ticks). The decay
-        /// clock is render periods, so every wall-time knob is normalised HERE.
-        fn ms_to_periods(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
-            let period_frames = period_frames.max(1) as u64;
-            let sample_rate = sample_rate.max(1) as u64;
-            // periods = ms/1000 * rate / period_frames.
-            ((ms.saturating_mul(sample_rate)) / (1000 * period_frames)).max(1)
-        }
-
         /// The EXECUTED decay drain rate, in ppm, for a ms-space config — the
-        /// exact periods-space arithmetic the machine runs on (`ms_to_periods`
-        /// truncation included: defaults 6 / 1000 ms at 48 kHz / 256 ⇒ 187
+        /// exact periods-space arithmetic the machine runs on
+        /// ([`crate::config::periods_for_ms`] truncation included: defaults 6 / 1000 ms at 48 kHz / 256 ⇒ 187
         /// periods ⇒ ~125.33 ppm, not the ms-space 125.0). The ONE derivation
         /// both config validation and [`CushionDecay::new`] consume, so the
         /// validated number and the published/subtracted number can never
@@ -956,7 +946,7 @@ mod decay {
         ) -> f64 {
             demand_ppm_for(
                 step_frames,
-                Self::ms_to_periods(interval_ms, period_frames, sample_rate),
+                crate::config::periods_for_ms(interval_ms, period_frames, sample_rate),
                 period_frames,
             )
         }
@@ -979,9 +969,9 @@ mod decay {
             max_adjust_ppm: f64,
         ) -> CushionDecay {
             let interval_periods =
-                Self::ms_to_periods(self.interval_ms, period_frames, sample_rate);
+                crate::config::periods_for_ms(self.interval_ms, period_frames, sample_rate);
             let stability_periods =
-                Self::ms_to_periods(self.stability_ms, period_frames, sample_rate);
+                crate::config::periods_for_ms(self.stability_ms, period_frames, sample_rate);
             let min_safe =
                 jasper_resampler::minimum_safe_fill_frames(period_frames, max_adjust_ppm) as u64;
             // Never decay onto (or below) the underfill-unlock threshold: keep
@@ -1856,16 +1846,6 @@ mod decay {
                     DecayFrozenReason::AtFloor => "at_floor",
                 }
             }
-        }
-
-        #[test]
-        fn ms_to_periods_converts_at_lane_geometry() {
-            // 1000 ms at 48k / 256 ≈ 187.5 → 187 periods.
-            assert_eq!(DecayParams::ms_to_periods(1000, 256, 48_000), 187);
-            // 10_000 ms → 1875 periods.
-            assert_eq!(DecayParams::ms_to_periods(10_000, 256, 48_000), 1875);
-            // Tiny ms still yields >= 1 period.
-            assert_eq!(DecayParams::ms_to_periods(1, 256, 48_000), 1);
         }
     }
 }

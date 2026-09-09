@@ -38,14 +38,21 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 
 use jasper_resampler::RMS_DBFS_FLOOR;
 
-use crate::config::{Config, MEASUREMENT_LANE, RING_SLOT_FRAMES};
+use crate::config::{
+    periods_for_ms, Config, DEFAULT_PERIOD_FRAMES, DEFAULT_SAMPLE_RATE, MEASUREMENT_LANE,
+    RING_SLOT_FRAMES,
+};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
 
+pub use direct_capture::DirectObservability;
 use direct_capture::{read_direct_and_render, DirectCapture};
-pub use direct_capture::{DirectObservability, DrainStats};
+// The standalone name is a test seam: production reaches these counters through
+// a lane's `DirectObservability`.
+#[cfg(test)]
+pub use direct_capture::DrainStats;
 use dsp::{
     apply_gain_to_sum, duck_step_per_frame, fill_ring_payload, mix_into, ramp_program_duck,
     saturate_to_i16, BYTES_PER_SAMPLE,
@@ -107,13 +114,16 @@ const CATCHUP_LOG_EVERY: u64 = 64;
 /// deliberately NOT fan-in's aloop-tuned `configure_pcm`: S32_LE 2ch 48k,
 /// period 256, buffer ~768 (near).
 ///
-/// This is the DEFAULT gadget open period; the actual open period is
-/// overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`. The chunk-read cap
-/// and the narrowing scratch below stay pinned to this default regardless of
-/// the open period: they bound the per-`readi` granularity (256 frames), which
-/// is independent of the gadget's period IRQ cadence, so a larger open period
-/// never overflows the fixed scratch and a smaller one never under-reads.
-const DIRECT_PERIOD_FRAMES: u32 = 256;
+/// This is the compile-time DEFAULT gadget open period and the one spelling of
+/// it — `Config::usb_direct_period_frames` resolves
+/// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` against this constant. The chunk-read
+/// cap and the narrowing scratch below stay pinned to it regardless of the open
+/// period actually negotiated: they bound the per-`readi` granularity, which is
+/// independent of the gadget's period IRQ cadence, so a larger open period never
+/// overflows the fixed scratch and a smaller one never under-reads. It must stay
+/// a `const` — [`direct_narrow_scratch_samples`] sizes a fixed-length array with
+/// it.
+pub(crate) const DIRECT_PERIOD_FRAMES: u32 = 256;
 
 /// Deep-buffer safety floor for the (tunable) direct open period: the
 /// negotiated capture buffer must clear BOTH bounds — at least three whole
@@ -201,26 +211,42 @@ fn send_drop_counted<T>(tx: &SyncSender<T>, event: T, note_dropped: impl FnOnce(
     }
 }
 
-/// USB DIRECT reopen retry cadence, in render PERIODS (~2 s at 256/48k = 375).
-/// While the gadget is Absent, the lane attempts a reopen at most once per this
-/// many periods it renders — a period-counted cadence so the hot loop never
-/// reads a wall clock.
-const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
+/// Millisecond intent of the direct lane's two ~2 s recovery cadences, and of
+/// the ~1 s liveness probe below. Each is COUNTED in render periods so the hot
+/// loop never reads a wall clock; the conversion happens once, here, at the
+/// default render geometry. A box overriding `JASPER_FANIN_PERIOD_FRAMES` or
+/// `_SAMPLE_RATE` drifts the wall time these span — harmless, because all three
+/// are detection latency, not correctness.
+const DIRECT_RECOVERY_MS: u64 = 2_000;
+const DIRECT_LIVENESS_PROBE_MS: u64 = 1_000;
+
+/// USB DIRECT reopen retry cadence, in render PERIODS. While the gadget is
+/// Absent, the lane attempts a reopen at most once per this many periods it
+/// renders.
+const DIRECT_REOPEN_RETRY_PERIODS: u64 = periods_for_ms(
+    DIRECT_RECOVERY_MS,
+    DEFAULT_PERIOD_FRAMES,
+    DEFAULT_SAMPLE_RATE,
+);
 
 /// Consecutive zero-avail drains that mark a ZOMBIE capture handle. When the
 /// gadget function is REBUILT underneath fan-in (a UDC rebind / usbsink
 /// stop-start), fan-in's open `hw:UAC2Gadget` PCM stays attached to a DESTROYED
 /// instance: `avail_update()` returns `Ok(0)` forever — NOT an errno, so
 /// `classify_pcm_errno` never fires and the DeviceLost path never triggers, and
-/// the lane goes deaf. This threshold (~2 s at the default 256/48k period,
-/// matching `DIRECT_REOPEN_RETRY_PERIODS`) is how many consecutive render
+/// the lane goes deaf. This threshold — the same [`DIRECT_RECOVERY_MS`] window as
+/// `DIRECT_REOPEN_RETRY_PERIODS` — is how many consecutive render
 /// periods of exactly-zero avail — while the handle is Present — trip a forced
 /// close + bounded re-open. A genuinely idle-but-healthy host still streams
 /// silence frames (avail > 0), so sustained EXACTLY-zero avail means the gadget
 /// is no longer feeding this handle at all: either a zombie (reopen fixes it) or
 /// a clean host-stream-stop (reopen re-establishes an identical handle, harmless
 /// since no audio was flowing).
-const DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS: u64 = 375;
+const DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS: u64 = periods_for_ms(
+    DIRECT_RECOVERY_MS,
+    DEFAULT_PERIOD_FRAMES,
+    DEFAULT_SAMPLE_RATE,
+);
 
 /// Pure zombie-handle predicate. Both conditions must hold: frames have
 /// actually flowed on this handle since the last open, AND the zero-avail run
@@ -294,13 +320,14 @@ pub(crate) fn direct_health_str_from_obs(d: &DirectObservability) -> &'static st
 }
 
 /// Cadence for the HANDLE-LIVENESS probe, in render PERIODS between one
-/// `snd_pcm_status(2)` ioctl on the open capture handle. 187 is the whole-period
-/// count nearest one second at the default 256/48k geometry. The probe is a real
+/// `snd_pcm_status(2)` ioctl on the open capture handle. The probe is a real
 /// syscall (unlike the mmap-served `avail_update`), so it rides the drain-stats
-/// housekeeping cadence rather than the per-period hot path. The cadence is
-/// advisory — detection latency, not correctness — so drift under a non-default
-/// period override is harmless.
-const DIRECT_LIVENESS_PROBE_EVERY_PERIODS: u64 = 187;
+/// housekeeping cadence rather than the per-period hot path.
+const DIRECT_LIVENESS_PROBE_EVERY_PERIODS: u64 = periods_for_ms(
+    DIRECT_LIVENESS_PROBE_MS,
+    DEFAULT_PERIOD_FRAMES,
+    DEFAULT_SAMPLE_RATE,
+);
 
 /// Pure handle-liveness decision: map the result of one `snd_pcm_status` ioctl
 /// on the open capture handle to "is this handle dead (force a reopen) or live
@@ -2139,10 +2166,11 @@ pub(crate) fn event_stamp_ms() -> u64 {
 /// at this layer.
 fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
     // `None` on the DISABLED USB lane (direct off), which takes this arm every
-    // period and renders silence. Every aloop lane has Some(pcm), and the
-    // direct lane never reaches this path.
+    // period and contributes nothing. Every aloop lane has Some(pcm), and the
+    // direct lane never reaches this path. No fill: `read_buf` is zeroed at
+    // lane construction and no writer runs on a lane with neither source, so
+    // it stays silent without touching it per period on the RT thread.
     let Some(pcm) = input.pcm.as_ref() else {
-        input.read_buf.fill(0);
         return Ok(0);
     };
     // The PCM was opened S32_LE (`configure_pcm`), so the typed IO handle can
@@ -2359,14 +2387,14 @@ mod tests {
     }
 
     #[test]
-    fn direct_reopen_cadence_is_about_two_seconds() {
-        // 375 periods × 256 frames / 48000 Hz = 2.0 s.
-        let seconds = (DIRECT_REOPEN_RETRY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
-            / (SAMPLE_RATE_HZ as f64);
-        assert!(
-            (seconds - 2.0).abs() < 1e-9,
-            "reopen cadence must be ~2 s, got {seconds}"
-        );
+    fn direct_cadences_keep_their_shipped_period_counts() {
+        // The millisecond intent is the source; these are the period counts the
+        // shipped render geometry must still produce, so a change to
+        // `periods_for_ms` or to the default geometry cannot silently retime the
+        // gadget recovery paths.
+        assert_eq!(DIRECT_REOPEN_RETRY_PERIODS, 375);
+        assert_eq!(DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS, 375);
+        assert_eq!(DIRECT_LIVENESS_PROBE_EVERY_PERIODS, 187);
     }
 
     #[test]
@@ -2439,19 +2467,6 @@ mod tests {
             DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
             DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
         ));
-    }
-
-    #[test]
-    fn zombie_zero_avail_window_is_about_two_seconds() {
-        // The zombie detection window matches the reopen cadence (~2 s at the
-        // default 256/48k period) — enough dead time to be sure the gadget stopped
-        // feeding, not a transient.
-        let seconds = (DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
-            / (SAMPLE_RATE_HZ as f64);
-        assert!(
-            (seconds - 2.0).abs() < 1e-9,
-            "zombie window must be ~2 s, got {seconds}"
-        );
     }
 
     // ---- direct.health classifier (capture recovery observability) ------------
@@ -2582,21 +2597,6 @@ mod tests {
                 "live state {state:?} must not trip the liveness probe"
             );
         }
-    }
-
-    #[test]
-    fn liveness_probe_cadence_is_about_one_second() {
-        // The probe rides the drain housekeeping cadence gated to ~1 s (a
-        // `snd_pcm_status` ioctl is a real syscall — kept off the per-period hot
-        // path). 187 periods × 256 frames / 48000 Hz ≈ 0.997 s. The cadence is
-        // advisory (detection latency, not correctness), so "within ~1 s" is the
-        // contract, not exactness.
-        let seconds = (DIRECT_LIVENESS_PROBE_EVERY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
-            / (SAMPLE_RATE_HZ as f64);
-        assert!(
-            (seconds - 1.0).abs() < 0.05,
-            "liveness-probe cadence must be ~1 s, got {seconds}"
-        );
     }
 
     // ---- B2: direct-drain narrowing scratch never overflows (OOB panic) ---

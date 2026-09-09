@@ -176,6 +176,13 @@ def test_environment_files():
     ), "jasper-fanin.service must reference an optional fanin.env wizard file"
 
 
+def test_no_inline_environment_overrides_the_operator_env_file():
+    """systemd applies env in file order, so an `Environment=` literal here
+    would beat /etc/jasper/jasper.env, the documented operator seam. The
+    daemon's own compiled defaults are the bottom layer instead."""
+    assert _values_for(_read_unit(), "Environment") == ()
+
+
 def test_exec_start_points_at_installed_binary():
     """`ExecStart=/opt/jasper/bin/jasper-fanin` matches where
     install.sh's build_install_jasper_fanin installs the release
@@ -310,40 +317,6 @@ def test_no_shipped_unit_has_shell_param_expansion_in_exec():
         "systemd mis-reads as a specifier escape (defect E). Move the shell logic "
         "into a deploy/bin/ helper (see jasper-fanin-pitch-neutralize). Offenders:\n"
         + "\n".join(offenders)
-    )
-
-
-def test_input_buffer_frames_sized_for_wifi_burst_absorption():
-    """Per-input ALSA ring buffer must be >= 4096 frames so it
-    absorbs the worst-case 802.11 A-MPDU inter-burst gap (~40 ms
-    observed; we want comfortable headroom, hence 4096 = ~85 ms).
-
-    Below 4096, AirPlay sessions produce ~1 input EPIPE-overrun per
-    30-60 s on real hardware, each injecting one period of silence
-    into the mixer output.
-
-    The dmix layer (PR #214, which fanin replaces) had buffer_size
-    4096; fanin must match that to preserve the burst-absorption
-    behaviour the dmix accidentally provided.
-    """
-    unit = _read_unit()
-    # Look in the [Service] section for the Environment= directive
-    # — it's the production default, even though operators can
-    # override via /var/lib/jasper/fanin.env.
-    match = re.search(
-        r'^\s*Environment\s*=\s*"?JASPER_FANIN_INPUT_BUFFER_FRAMES=(\d+)"?',
-        unit,
-        re.MULTILINE,
-    )
-    assert match is not None, (
-        "jasper-fanin.service must set Environment=\"JASPER_FANIN_INPUT_BUFFER_FRAMES=...\" "
-        "(production default for per-input ALSA buffer sizing)."
-    )
-    val = int(match.group(1))
-    assert val >= 4096, (
-        f"JASPER_FANIN_INPUT_BUFFER_FRAMES={val} is below 4096 (~85 ms). "
-        f"Below 4096, WiFi A-MPDU burst delivery overruns the input "
-        f"ring at ~2 xruns/min on AirPlay."
     )
 
 

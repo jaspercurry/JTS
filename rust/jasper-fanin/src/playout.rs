@@ -20,21 +20,32 @@
 //!
 //! fan-in sits before CamillaDSP and cannot see the DAC clock, so the most
 //! downstream point it can observe is its own MIX-COMMIT: a frame counts as
-//! "played" the instant [`crate::tts::TtsMixer::mix_period`] pops it into
-//! the program sum bound for snd-aloop. That pop is paced by fan-in's
-//! blocking snd-aloop write, which is itself pull-driven by the DAC at the
-//! bottom of the chain, so the count is a real, DAC-rate-paced playout
-//! measure — NOT a queued-frame estimate (the distinction the barge-in
-//! contract draws between "what reached the speaker" and "bytes received").
+//! "played" the instant [`crate::tts::TtsMixer::mix_period`] pops it into the
+//! program sum bound for Ring A. That pop is paced by the ring publish, which
+//! blocks while Ring A is full — and Ring A drains only as CamillaDSP reads it,
+//! which happens only as outputd's DAC pulls. So the count is DAC-rate-paced,
+//! NOT a queued-frame estimate (the distinction the barge-in contract draws
+//! between "what reached the speaker" and "bytes received"). With no reader
+//! attached the publish free-runs on `PeriodPacer` instead, which is nominal
+//! rate rather than DAC rate — `ring.clockless_paces` in STATUS is the tell.
 //!
-//! It OVER-reads true acoustic playout by the FIXED downstream pipeline
-//! depth (CamillaDSP + the two snd-aloop rings + outputd's content ring +
-//! the DAC buffer/hw delay), on the order of tens to ~150 ms. That is the
-//! conservative direction for truncation (slightly more "heard" than
-//! reality, so the assistant will not wrongly repeat) and a large
-//! improvement over the previous hardcoded `0`. This ledger does not claim
-//! exact DAC-clock precision because it does not subtract outputd's reported
-//! DAC delay.
+//! It OVER-reads true acoustic playout by the depth of everything downstream of
+//! the commit, which at the packaged geometry is:
+//!
+//! - Ring A, `JASPER_FANIN_RING_SLOTS` (2) × [`crate::config::RING_SLOT_FRAMES`]
+//!   (128) = 256 frames ≈ 5.3 ms;
+//! - CamillaDSP's own chunk queue — chunk 128, `queuelimit` 1
+//!   (`jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`) — one 2.7 ms chunk;
+//! - Ring B, CamillaDSP → outputd, the same 2 × 128 = 256 frames ≈ 5.3 ms
+//!   (`deploy/alsa/conf.d/60-jts-ring.conf`);
+//! - outputd's DAC buffer, `DEFAULT_DAC_BUFFER_FRAMES` 3072 frames = 64 ms
+//!   (`rust/jasper-outputd/src/config.rs`) — the dominant term.
+//!
+//! ≈ 77 ms, plus whatever the DAC's own hardware delay adds. That is the
+//! conservative direction for truncation (slightly more "heard" than reality,
+//! so the assistant will not wrongly repeat). This ledger does not claim exact
+//! DAC-clock precision because it does not subtract outputd's reported DAC
+//! delay.
 //!
 //! ## Shape parity with outputd
 //!

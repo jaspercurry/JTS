@@ -105,6 +105,34 @@ pub struct DirectObservability {
     pub drain_stats: DrainStats,
 }
 
+impl DirectObservability {
+    /// A lane's counters at construction: every gauge zero/false and the
+    /// geometry it was built with. The caller stores the outcome of its first
+    /// open into `present` / `opens` / `buffer_frames`.
+    pub(super) fn new(device: String, period_frames: u32) -> Self {
+        DirectObservability {
+            device,
+            period_frames,
+            buffer_frames: Arc::new(AtomicU64::new(0)),
+            present: Arc::new(AtomicBool::new(false)),
+            streaming: Arc::new(AtomicBool::new(false)),
+            stream_starts: Arc::new(AtomicU64::new(0)),
+            stream_stops: Arc::new(AtomicU64::new(0)),
+            notify_attempts: Arc::new(AtomicU64::new(0)),
+            notify_failures: Arc::new(AtomicU64::new(0)),
+            opens: Arc::new(AtomicU64::new(0)),
+            retries: Arc::new(AtomicU64::new(0)),
+            reopen_pending: Arc::new(AtomicBool::new(false)),
+            reopens: Arc::new(AtomicU64::new(0)),
+            zero_avail_streak: Arc::new(AtomicU64::new(0)),
+            frames_flowed_since_open: Arc::new(AtomicBool::new(false)),
+            liveness_last_checked_drain: Arc::new(AtomicU64::new(0)),
+            card_gen_reopens: Arc::new(AtomicU64::new(0)),
+            drain_stats: DrainStats::new(),
+        }
+    }
+}
+
 /// Since-boot drain-entry avail dwell accumulators. One sample per
 /// `drain_direct_capture` call: the `avail_update()` reading at drain entry,
 /// which is the standing gadget-capture dwell the ~186-frame symptom measures.
@@ -884,6 +912,134 @@ fn adopt_open_outcome(outcome: DirectOpenOutcome, input: &mut Input) -> DirectCa
             DirectCapture::Absent {
                 periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The USB DIRECT lane's ABSENT-arm state machine: what each event the
+    //! render loop can hand a handle-less lane does to its state and its
+    //! counters. `DirectCapture::Present` carries a live `alsa::PCM`, so the
+    //! transitions INTO it happen only on hardware — nothing here opens a PCM.
+
+    use super::*;
+
+    use crate::mixer::pcm_open::lane_input;
+
+    /// A device name no box has, so the opener thread's `snd_pcm_open` can only
+    /// ever fail. The worker is REAL (stubbing it would test a lane shape no box
+    /// runs), but it never reaches hardware.
+    const TEST_DEVICE: &str = "hw:JtsAbsentGadget";
+
+    /// The events an Absent lane sees other than the plain render period, which
+    /// [`reopen_latch_spends_one_attempt_per_cadence`] owns.
+    #[derive(Debug)]
+    enum Step {
+        /// The opener handed back a failed open.
+        OpenFailed,
+        /// A dead handle handed over for close + replacement open.
+        Retire,
+    }
+
+    /// A lane with no capture handle, shaped like `open_direct_input`'s
+    /// gadget-absent-at-startup result.
+    fn absent_lane(periods_until_retry: u64) -> Input {
+        let obs = DirectObservability::new(TEST_DEVICE.to_string(), DIRECT_PERIOD_FRAMES);
+        let direct_opener = DirectOpener::spawn(Arc::clone(&obs.reopen_pending)).unwrap();
+        Input {
+            direct: Some(DirectCapture::Absent {
+                periods_until_retry,
+            }),
+            direct_opener: Some(direct_opener),
+            direct_obs: Some(obs),
+            ..lane_input(
+                None,
+                TEST_DEVICE,
+                "usbsink",
+                DEFAULT_PERIOD_FRAMES,
+                DEFAULT_SAMPLE_RATE,
+                None,
+            )
+        }
+    }
+
+    fn latch(state: &DirectCapture) -> u64 {
+        match state {
+            DirectCapture::Absent {
+                periods_until_retry,
+            } => *periods_until_retry,
+            DirectCapture::Present(_) => panic!("no test step can reach Present without a device"),
+        }
+    }
+
+    fn obs_of(input: &Input) -> &DirectObservability {
+        input.direct_obs.as_ref().expect("direct lane")
+    }
+
+    #[test]
+    fn absent_lane_transitions() {
+        // (step, resulting latch, open attempts spent)
+        for (step, expect_latch, expect_attempts) in [
+            // The attempt was counted when it was queued, so adopting its
+            // failure spends nothing — it only re-arms the cadence.
+            (Step::OpenFailed, DIRECT_REOPEN_RETRY_PERIODS, 1),
+            // Close + replacement open travel as ONE request, counted once. The
+            // resulting latch is the retiring caller's to choose, so the state
+            // it was handed is unchanged here.
+            (Step::Retire, 0, 1),
+        ] {
+            let mut input = absent_lane(0);
+            // Every row starts from a lane that has already queued one attempt,
+            // the only way production reaches either event.
+            hand_retired_handle_to_opener(&mut input, None);
+            let direct = input.direct.take().expect("direct lane");
+            let next = match &step {
+                Step::OpenFailed => adopt_open_outcome(
+                    DirectOpenOutcome::Failed {
+                        errno: libc::ENODEV,
+                        detail: "no such gadget".to_string(),
+                    },
+                    &mut input,
+                ),
+                Step::Retire => direct,
+            };
+            assert_eq!(latch(&next), expect_latch, "{step:?}");
+            let obs = obs_of(&input);
+            assert_eq!(
+                obs.retries.load(Ordering::Relaxed),
+                expect_attempts,
+                "{step:?}",
+            );
+            // No step without a device may claim the lane is capturing.
+            assert!(!obs.present.load(Ordering::Relaxed), "{step:?}");
+            assert_eq!(obs.opens.load(Ordering::Relaxed), 0, "{step:?}");
+        }
+    }
+
+    #[test]
+    fn reopen_latch_spends_one_attempt_per_cadence() {
+        // One render period each, from a fresh lane: the latch counts down by
+        // exactly one and only a latch at 0 queues an open.
+        for (start, expect_latch, expect_attempts) in [
+            (
+                DIRECT_REOPEN_RETRY_PERIODS,
+                DIRECT_REOPEN_RETRY_PERIODS - 1,
+                0,
+            ),
+            (2, 1, 0),
+            (1, 0, 0),
+            (0, DIRECT_REOPEN_RETRY_PERIODS, 1),
+        ] {
+            let mut input = absent_lane(start);
+            let direct = input.direct.take().expect("direct lane");
+            let next = maybe_reopen_direct(direct, &mut input);
+            assert_eq!(latch(&next), expect_latch, "latch from {start}");
+            assert_eq!(
+                obs_of(&input).retries.load(Ordering::Relaxed),
+                expect_attempts,
+                "attempts from {start}",
+            );
         }
     }
 }

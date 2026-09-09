@@ -10,7 +10,7 @@
 //
 // LANE GEOMETRY — every seconds-valued sync knob below is sized against
 // it. snd-aloop locks the writer's buffer to the capture side jasper-fanin
-// opens: JASPER_FANIN_INPUT_BUFFER_FRAMES=4096 (jasper-fanin.service) in
+// opens: JASPER_FANIN_INPUT_BUFFER_FRAMES=4096 in
 // JASPER_FANIN_PERIOD_FRAMES=256 steps (rust/jasper-fanin/src/config.rs),
 // at 48 kHz:
 //   4096 frames = 85.333 ms of depth, drained one 256-frame period per
