@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Correction-side level-match adapter: level feed, geometry lock, drift check.
+"""Level-match adapter: level feed, geometry lock, drift check.
 
 The kernel ramp math is tested in ``test_audio_measurement_ramp.py``; here we
-test the correction glue with a fake feed (a status dict the feed reads) and a
+test the adapter glue with a fake feed (a status dict the feed reads) and a
 fake clock — no network, no CamillaDSP. The protocol-honesty items the review
 demanded are pinned here: run-token scoping (a previous run's persisted slot
 never cancels or feeds a retry), seq-regression as a new stream (phone page
@@ -21,14 +21,7 @@ import logging
 
 import pytest
 
-from jasper.audio_measurement.ramp import (
-    LEVEL_EVENT_SCHEMA_VERSION,
-    MeasurementRamp,
-    RampData,
-    RampLockKind,
-    RampState,
-)
-from jasper.correction.level_match import (
+from jasper.audio_measurement.level_match import (
     LevelLockStore,
     LevelMatchSession,
     MeasurementLevelLock,
@@ -37,6 +30,13 @@ from jasper.correction.level_match import (
     parse_level_batch,
     phone_reported_abort,
     phone_reported_armed,
+)
+from jasper.audio_measurement.ramp import (
+    LEVEL_EVENT_SCHEMA_VERSION,
+    MeasurementRamp,
+    RampData,
+    RampLockKind,
+    RampState,
 )
 from jasper.correction.session import (
     ROOM_LEVEL_WINDOW_HIGH_DBFS,
@@ -313,7 +313,7 @@ async def test_level_feed_latches_read_failure_warning(caplog):
     feed = LevelStatusFeed(
         read_status=read_status, monotonic=clock.now, min_read_interval_s=0.0
     )
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.level_match"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.level_match"):
         for _ in range(50):
             assert await feed.next_samples() == []
     warnings = [r for r in caplog.records if "status read failed" in r.message]
@@ -326,7 +326,7 @@ async def test_level_feed_latches_schema_mismatch_warning(caplog):
     bad["level_batch"]["schema"] = 999
     ref = {"status": {"event": bad}}
     feed = _feed(ref, clock)
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.level_match"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.level_match"):
         for _ in range(50):
             assert await feed.next_samples() == []
     warnings = [r for r in caplog.records if "schema mismatch" in r.message]

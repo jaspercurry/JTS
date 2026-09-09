@@ -33,6 +33,12 @@ from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
+from jasper.audio_measurement.level_match import (
+    LevelLockStore,
+    LevelMatchOutcome,
+    LevelMatchSession,
+    MicGeometry as MicGeometry,
+)
 from jasper.audio_measurement.peq import PEQ
 from jasper.audio_measurement.ramp import (
     LISTENING_POSITION_CAP_BUMP_DB,
@@ -56,12 +62,6 @@ from .autolevel import (
     AutolevelData as AutolevelData,
     AutolevelStatus as AutolevelStatus,
     compute_autolevel_cap as compute_autolevel_cap,
-)
-from .level_match import (
-    LevelLockStore,
-    LevelMatchOutcome,
-    LevelMatchSession,
-    MicGeometry as MicGeometry,
 )
 from .state_guard import SessionStateGuard
 from .status import (

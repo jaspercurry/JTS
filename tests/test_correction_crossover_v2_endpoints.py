@@ -4742,7 +4742,7 @@ def _seed_household_mic(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
 
     from jasper.audio_measurement.calibration import store_calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -4933,10 +4933,12 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     assert "calibration_device_identity_mismatch" in caplog.text
 
     # The household record was never re-persisted against the wrong device.
-    from jasper.correction.household_mic import read_household_mic
-    from jasper.web.correction_capture import _household_mic_path
+    from jasper.audio_measurement.household_mic import (
+        household_mic_path,
+        read_household_mic,
+    )
 
-    saved = read_household_mic(path=_household_mic_path())
+    saved = read_household_mic(path=household_mic_path())
     assert saved is not None
     assert saved.model_key == "minidsp_umik2"
 
