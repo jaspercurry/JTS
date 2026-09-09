@@ -918,7 +918,7 @@ async function runAction(action, button) {
   let captureStarted = false;
   try {
     const response = await postJSON(action.endpoint, action.body || {});
-    captureStarted = Boolean(response && response.capture);
+    captureStarted = captureIsActive(response && response.capture);
     if (captureStarted) {
       renderCapture(response.capture);
       // The response's capture hasn't landed in `envelope` yet (that happens
@@ -927,7 +927,7 @@ async function runAction(action, button) {
       renderActionRow({capture: response.capture, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    setStatus(response && response.capture ? 'Measurement started.' : 'Updated.', 'ok');
+    setStatus(captureStarted ? 'Measurement started.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
