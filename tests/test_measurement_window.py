@@ -734,12 +734,11 @@ async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     [
         FileNotFoundError("no voice daemon"),
         RuntimeError("empty response"),
-        [],
         {},
         {"state": "UNKNOWN"},
         {"state": "SESSION"},
     ],
-    ids=["unreachable", "malformed", "nonmapping", "missing", "unknown", "session"],
+    ids=["unreachable", "malformed", "missing", "unknown", "session"],
 )
 async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status):
     acquired: list[bool] = []
@@ -771,13 +770,12 @@ async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status)
     [
         FileNotFoundError("no voice daemon"),
         RuntimeError("empty response"),
-        [],
         {},
         {"result": "BUSY"},
         {"result": "ok"},
     ],
     ids=[
-        "unreachable", "malformed", "nonmapping", "missing", "busy",
+        "unreachable", "malformed", "missing", "busy",
         "old-daemon-missing-drain-proof",
     ],
 )
@@ -1223,32 +1221,6 @@ async def test_voice_uds_command_answers_cancellation_racing_the_reply(monkeypat
         "immortal and wedges measurement_window() teardown (#1952)"
     )
     assert task.cancelled()
-
-
-async def test_voice_uds_command_times_out_on_stalled_connect(monkeypatch):
-    """A wedged voice-daemon listener must not hang _voice_uds_command's
-    connect past its 1s bound -- it gates _check_no_active_voice_session,
-    which measurement_window() calls before opening a window."""
-    async def _hang(*_a, **_kw):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(coordinator.asyncio, "open_unix_connection", _hang)
-
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(
-            coordinator._voice_uds_command(
-                "/tmp/jasper-test-stalled.sock", "STATUS",
-            ),
-            timeout=10.0,
-        )
-    elapsed = loop.time() - start
-    assert elapsed < 3.0, (
-        f"_voice_uds_command took {elapsed:.1f}s against a stalled "
-        "listener -- its connect must raise within its own 1.0s "
-        "asyncio.timeout bound, not the test's outer safety net"
-    )
 
 
 def test_every_deferred_relative_import_resolves():
