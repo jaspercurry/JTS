@@ -34,6 +34,11 @@ from ...camilla_config_contract import (
 )
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
+from .correction import (
+    REASON_CAMILLA_CONFIG_MISSING,
+    REASON_CAMILLA_CONFIG_UNREADABLE,
+    REASON_CAMILLA_STATEFILE_UNREADABLE,
+)
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir, _service_state_failure
@@ -386,18 +391,11 @@ def _devices_volume_limit_from_text(text: str) -> float | None:
 @doctor_check(core=True)
 def check_camilla_volume_limit() -> CheckResult:
     """Verify the active Camilla config has JTS's non-positive fader cap."""
-    # Lazy: keeps active_speaker.environment / correction out of --core.
-    from ...active_speaker.environment import camilla_statefile_path
-    from .correction import (
-        REASON_CAMILLA_CONFIG_MISSING,
-        REASON_CAMILLA_CONFIG_UNREADABLE,
-        REASON_CAMILLA_STATEFILE_UNREADABLE,
-    )
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
             "CamillaDSP volume_limit", "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
+            f"could not read config_path from {_camilla_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -456,20 +454,14 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     Removal condition: delete this check once no supported upgrade path can
     still carry a pre-clamp config onto a box.
     """
-    # Lazy: keeps active_speaker.environment/correction/camilla_latency out of --core.
-    from ...active_speaker.environment import camilla_statefile_path
+    # lazy: import cost, check is not core
     from ...camilla_latency import resolve_camilla_chunksize
-    from .correction import (
-        REASON_CAMILLA_CONFIG_MISSING,
-        REASON_CAMILLA_CONFIG_UNREADABLE,
-        REASON_CAMILLA_STATEFILE_UNREADABLE,
-    )
     label = "camilla ring chunk"
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
             label, "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
+            f"could not read config_path from {_camilla_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -478,13 +470,12 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             label, "fail", f"statefile points at missing config {config_path}",
             reason=REASON_CAMILLA_CONFIG_MISSING,
         )
-    try:
-        devices = parse_camilla_devices_config(path.read_text())
-    except (OSError, ValueError) as e:
+    if evidence.camilla_config_text() is None:
         return CheckResult(
-            label, "fail", f"could not read {config_path}: {e}",
+            label, "fail", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
+    devices = _loaded_device_fields(config_path)
 
     ring_ends = [
         name

@@ -77,6 +77,7 @@ def test_the_live_hearing_ceiling_check_runs_on_every_deploy():
     suite green while the deploy stopped reading the running graph back."""
     core_names = {c.func.__name__ for c in registered_checks(core_only=True)}
     assert "check_camilla_live_volume_limit" in core_names
+    assert "check_camilla_volume_limit" in core_names
 
 
 def test_only_restricts_the_import_and_the_result(monkeypatch):
