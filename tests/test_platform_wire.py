@@ -10,6 +10,7 @@ on the fan-in, mux or TTS socket fails here.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -132,4 +133,8 @@ def test_every_verb_is_still_handled_by_its_reader(command, reader):
     byte test above, but a verb the reader dropped is only visible here.
     """
     verb = command.split(" ", 1)[0]
-    assert f'"{verb}' in reader.read_text(), f"{reader.name} no longer handles {verb}"
+    # The reader spells a bare verb `"VERB"` and an argument-taking one
+    # `"VERB `; requiring that boundary keeps AUDIO from being satisfied by
+    # AUDIO32's arm.
+    handled = re.search(rf'"{re.escape(verb)}[" ]', reader.read_text())
+    assert handled, f"{reader.name} no longer handles {verb}"

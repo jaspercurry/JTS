@@ -7,8 +7,9 @@
 One formatter per verb, so a wire word is spelled once on the Python side and
 the Rust readers it must match are a single grep away:
 
-* fan-in's source gate and TTS verbs — ``rust/jasper-fanin/src`` (``state.rs``
-  for the gate, ``tts`` for the playout connection);
+* fan-in's source gate — ``rust/jasper-fanin/src/state.rs``;
+* the TTS playout verbs — ``rust/jasper-tts-protocol/src/lib.rs``, the parser
+  both fan-in and outputd serve the playout connection with;
 * mux's own verbs — ``jasper/mux.py``'s command handler.
 
 Formatters return the command LINE without its terminator; :func:`encode` adds
