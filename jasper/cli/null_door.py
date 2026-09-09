@@ -23,6 +23,7 @@ import json
 import math
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -512,6 +513,9 @@ def _row(
     depth_db: float | None = None,
     span: Any = None,
     wav_sha256: str | None = None,
+    stimulus_wav_path: str | None = None,
+    capture_wav_path: str | None = None,
+    capture_wav_sha256: str | None = None,
     capture_integrity: Mapping[str, Any] | None = None,
     capture_device: Mapping[str, Any] | None = None,
     capture_faults: Sequence[str] = (),
@@ -541,7 +545,12 @@ def _row(
             None if math.isinf(gap_ceiling_db) else round(gap_ceiling_db, 2)
         ),
         "graph_fingerprint": graph_fingerprint,
+        # Historical ``wav_sha256`` identifies the stimulus, not the microphone.
         "wav_sha256": wav_sha256,
+        "stimulus_wav_path": stimulus_wav_path,
+        "stimulus_wav_sha256": wav_sha256,
+        "capture_wav_path": capture_wav_path,
+        "capture_wav_sha256": capture_wav_sha256,
         # What the RECORDER said about this take, from the same kernel the
         # wizard's takes mint: frame ledger + zero-run scan, and the mic that
         # heard it. A refused row carries them too, so a coordinate that could
@@ -590,10 +599,11 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
     rows_dir.mkdir(parents=True, exist_ok=True)
     name = (
         f"{int(row['ts'])}_{row['position_deg']}deg_"
-        f"{row['fc_hz']:.0f}hz_{row['delay_us']:+.0f}us_{row['polarity']}.json"
+        f"{row['fc_hz']:.0f}hz_{row['delay_us']:+.0f}us_{row['polarity']}_{uuid.uuid4().hex}.json"
     )
     path = rows_dir / name
-    path.write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, indent=2, sort_keys=True) + "\n")
     return path
 
 
@@ -707,12 +717,9 @@ async def _run(args: argparse.Namespace) -> int:
             action="confirming a reverse null",
             gate_owner=DOOR_GATE_OWNER,
         ) as door:
-            # INSIDE: a write that runs before the interlock runs even when the
-            # door refuses. This publishes `null_programs/stimulus.wav` under a
-            # fixed name, so a refused second run would overwrite the bytes a
-            # live run's artifact sha256 is bound to (#3393 B2).
+            programs_dir = Path("null_programs") / uuid.uuid4().hex
             artifact = _publish_program(
-                program, work_dir, "null_programs/stimulus.wav",
+                program, work_dir, str(programs_dir / "stimulus.wav"),
             )
             try:
                 for index, (candidate, inverted) in enumerate(coordinates):
@@ -733,9 +740,8 @@ async def _run(args: argparse.Namespace) -> int:
                         context, door.plan, program, mic, artifact, work_dir,
                         graph_yaml=door.graph.installed_graph_yaml(),
                     )
-                    mic_wav = (
-                        work_dir / "null_programs" / f"capture_{index:02d}.wav"
-                    )
+                    capture_relpath = programs_dir / f"capture_{index:02d}.wav"
+                    mic_wav = work_dir / capture_relpath
                     mic_wav.write_bytes(answer.wav)
                     report = answer.capture_integrity or {}
                     try:
@@ -748,6 +754,9 @@ async def _run(args: argparse.Namespace) -> int:
                     _bank(
                         candidate, inverted, fingerprint,
                         wav_sha256=artifact.sha256,
+                        stimulus_wav_path=artifact.relative_path,
+                        capture_wav_path=str(capture_relpath),
+                        capture_wav_sha256=hashlib.sha256(answer.wav).hexdigest(),
                         capture_integrity=report,
                         capture_device=answer.device,
                         capture_faults=_capture_faults(report),
