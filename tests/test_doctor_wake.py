@@ -258,3 +258,64 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
         monkeypatch.setenv("JASPER_LOCAL_MIC_PRESENT", local_mic)
 
     assert wake._push_to_talk_only_speaker() is expected
+
+
+# ---------------------------------------------------------------------------
+# wake recency / leg liveness — the /state.voice facts jasper-doctor already
+# fetches via evidence, projected onto two new rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "last_wake_age_sec, push_to_talk_only, status, reason",
+    [
+        (60.0, False, "ok", "REASON_WAKE_RECENCY_FRESH"),
+        (wake.WAKE_RECENCY_STALE_SEC + 1, False, "warn", "REASON_WAKE_RECENCY_STALE"),
+        # No wake legs by design (push-to-talk-only speaker): there is no
+        # live wake path to report recency on.
+        (60.0, True, "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
+    ],
+    ids=["fresh", "stale", "no-legs"],
+)
+def test_check_wake_recency_verdicts(
+    monkeypatch, last_wake_age_sec, push_to_talk_only, status, reason
+):
+    from jasper.cli.doctor._evidence import StatusRead, evidence
+
+    now = 2_000_000.0
+    monkeypatch.setattr(wake.time, "time", lambda: now)
+    monkeypatch.setattr(wake, "_push_to_talk_only_speaker", lambda: push_to_talk_only)
+    evidence.seed("install_profile_is_streambox", False)
+    evidence.seed(
+        "control_state",
+        StatusRead({"voice": {"last_wake_at": now - last_wake_age_sec}}),
+    )
+
+    r = wake.check_wake_recency()
+
+    assert r.status == status
+    assert r.reason == getattr(wake, reason)
+
+
+def test_assess_wake_recency_never_woken_reads_as_stale():
+    """`last_wake_at is None` (no wake this daemon lifetime) is exactly the
+    silent-deafness case the row exists to catch, not a "can't tell"."""
+    r = wake._assess_wake_recency(None, 1_000.0)
+
+    assert r.status == "warn"
+    assert r.reason == wake.REASON_WAKE_RECENCY_STALE
+
+
+@pytest.mark.parametrize(
+    "dead_legs, status, reason",
+    [
+        ([], "ok", "REASON_WAKE_LEGS_NONE_DEAD"),
+        (["on"], "fail", "REASON_WAKE_LEGS_DEAD"),
+    ],
+    ids=["alive", "dead"],
+)
+def test_assess_wake_legs_alive_verdicts(dead_legs, status, reason):
+    r = wake._assess_wake_legs_alive(dead_legs)
+
+    assert r.status == status
+    assert r.reason == getattr(wake, reason)
