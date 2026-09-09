@@ -40,7 +40,11 @@ from pathlib import Path
 import pytest
 
 from jasper.control import household_credential
-from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS
+from jasper.platform.control_client import (
+    PEER_DETAIL_MAX_CHARS,
+    ControlError,
+    ControlResponse,
+)
 from jasper.web import _common, rooms_peers, rooms_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
@@ -1553,6 +1557,45 @@ def test_post_bond_partial_failure_is_502_with_per_member_results(monkeypatch):
 # ---- post_grouping_to_member: the cross-speaker call + SSRF guard ----
 
 
+def _stub_control_post(monkeypatch, result):
+    """Stub the control-client POST that `post_grouping_to_member` issues.
+
+    `result` is the ControlResponse to return, or an exception to raise.
+    Returns the captured call list — each entry carries the target, the body
+    and the lowercased request headers, so a test can assert what rode where.
+    """
+    calls: list[dict] = []
+
+    def fake_post(path, body=None, *, base_url, timeout, headers):
+        calls.append({
+            "path": path,
+            "body": body,
+            "base_url": base_url,
+            "timeout": timeout,
+            "headers": {k.lower(): v for k, v in headers.items()},
+        })
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(rooms_peers, "control_post", fake_post)
+    return calls
+
+
+def _stub_control_get(monkeypatch, result):
+    """`_stub_control_post`'s counterpart for the GET /grouping readers."""
+    calls: list[dict] = []
+
+    def fake_get(path, *, base_url, timeout):
+        calls.append({"path": path, "base_url": base_url, "timeout": timeout})
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(rooms_peers, "control_get", fake_get)
+    return calls
+
+
 @pytest.mark.parametrize(
     ("address", "detail_token"),
     [
@@ -1566,10 +1609,10 @@ def test_post_bond_partial_failure_is_502_with_per_member_results(monkeypatch):
 def test_member_post_rejects_non_lan_or_ipv6_without_request(
     monkeypatch, address, detail_token,
 ):
-    def fail_if_requested(*_args, **_kwargs):
-        raise AssertionError("rejected targets must never reach urlopen")
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fail_if_requested)
+    _stub_control_post(
+        monkeypatch,
+        AssertionError("a rejected target must never reach the control client"),
+    )
     ok, detail = rooms_peers.post_grouping_to_member(address, {}, known=set())
     assert ok is False
     assert detail_token in detail
@@ -1596,75 +1639,37 @@ def test_lan_target_acceptance_is_ipv4_only(address, known, expected):
     assert rooms_peers.lan_target(address, known) == expected
 
 
-def test_member_post_self_routes_to_loopback(monkeypatch):
+@pytest.mark.parametrize(
+    ("address", "base_url"),
+    [
+        ("192.168.1.5", "http://127.0.0.1:8780"),   # self → loopback
+        ("192.168.1.9", "http://192.168.1.9:8780"),  # LAN peer → its own port
+    ],
+)
+def test_member_post_targets_the_control_port(monkeypatch, address, base_url):
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: {"192.168.1.5"})
-    urls: list[str] = []
-
-    class FakeResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake_urlopen(req, timeout=None):
-        urls.append(req.full_url)
-        return FakeResp()
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
-    ok, _detail = rooms_peers.post_grouping_to_member("192.168.1.5", {"x": 1})
+    calls = _stub_control_post(monkeypatch, ControlResponse(200, b""))
+    ok, _detail = rooms_peers.post_grouping_to_member(address, {"x": 1})
     assert ok is True
-    assert urls == ["http://127.0.0.1:8780/grouping/set"]
+    assert [(c["base_url"], c["path"]) for c in calls] == [
+        (base_url, "/grouping/set")
+    ]
 
 
-def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
-    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: {"192.168.1.5"})
-    urls: list[str] = []
-
-    class FakeResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen",
-        lambda req, timeout=None: urls.append(req.full_url) or FakeResp(),
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_member_post_never_reports_a_redirect_as_applied(monkeypatch, status):
+    """A member's 3xx is a failure, never an apply. The transport does not
+    follow it (see test_platform_control_client.py for the no-second-hop
+    proof), so a redirect that used to be followed — dropping the body on the
+    POST→GET downgrade and answering 200 — can no longer come back as ok."""
+    _stub_control_post(monkeypatch, ControlResponse(status, b""))
+    ok, _detail = rooms_peers.post_grouping_to_member(
+        "192.168.1.9", {"enabled": True}, known=set(), household="house-secret",
     )
-    ok, _detail = rooms_peers.post_grouping_to_member("192.168.1.9", {"x": 1})
-    assert ok is True
-    assert urls == ["http://192.168.1.9:8780/grouping/set"]
+    assert ok is False
 
 
 # ---- household credential on the fan-out (control-plane-auth §6) ----
-
-
-def _capture_member_request_headers(monkeypatch):
-    """Stub urlopen and return a dict that fills with the lowercased request
-    headers of the LAST post_grouping_to_member call."""
-    captured: dict[str, str] = {}
-
-    class FakeResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake_urlopen(req, timeout=None):
-        captured.clear()
-        captured.update({k.lower(): v for k, v in req.header_items()})
-        return FakeResp()
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
-    return captured
 
 
 def test_post_grouping_to_member_attaches_household_credential(monkeypatch):
@@ -1672,34 +1677,34 @@ def test_post_grouping_to_member_attaches_household_credential(monkeypatch):
     the device-to-device credential each member verifies — alongside any relayed
     browser X-JTS-Token."""
     secret = household_credential.ensure()  # pair this speaker (autouse tmp file)
-    headers = _capture_member_request_headers(monkeypatch)
+    calls = _stub_control_post(monkeypatch, ControlResponse(200, b""))
     ok, _ = rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"x": 1}, token="browser-tok",
     )
     assert ok is True
-    assert headers["x-jts-household"] == secret
-    assert headers["x-jts-token"] == "browser-tok"
+    assert calls[-1]["headers"]["x-jts-household"] == secret
+    assert calls[-1]["headers"]["x-jts-token"] == "browser-tok"
 
 
 def test_post_grouping_to_member_omits_household_when_unpaired(monkeypatch):
     """A lone/unpaired speaker (no secret) attaches no X-JTS-Household — there is
     nothing to present, and the member fail-safe-accepts during bootstrap."""
     assert household_credential.is_paired() is False  # autouse tmp file is absent
-    headers = _capture_member_request_headers(monkeypatch)
+    calls = _stub_control_post(monkeypatch, ControlResponse(200, b""))
     ok, _ = rooms_peers.post_grouping_to_member("192.168.1.9", {"x": 1})
     assert ok is True
-    assert "x-jts-household" not in headers
+    assert "x-jts-household" not in calls[-1]["headers"]
 
 
 def test_post_grouping_to_member_explicit_household_overrides_live_read(monkeypatch):
     """An explicit household= (the race-free unbond path) is used verbatim,
     even over a different on-disk value."""
     household_credential.ensure()  # disk has some secret
-    headers = _capture_member_request_headers(monkeypatch)
+    calls = _stub_control_post(monkeypatch, ControlResponse(200, b""))
     rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"x": 1}, household="pre-read-secret",
     )
-    assert headers["x-jts-household"] == "pre-read-secret"
+    assert calls[-1]["headers"]["x-jts-household"] == "pre-read-secret"
 
 
 def test_save_bond_mints_household_credential(monkeypatch):
@@ -1897,10 +1902,10 @@ def test_get_member_grouping_refuses_non_lan_and_non_ip_target(monkeypatch):
     """Public, named, and IPv6 targets never reach the HTTP transport."""
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
 
-    def _boom(*_a, **_k):
-        raise AssertionError("must not issue a request for a refused target")
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", _boom)
+    _stub_control_get(
+        monkeypatch,
+        AssertionError("must not issue a request for a refused target"),
+    )
     assert rooms_peers._get_member_grouping("8.8.8.8") is None         # non-LAN
     assert rooms_peers._get_member_grouping("evil.example.com") is None  # non-IP
     assert rooms_peers._get_member_grouping("::1") is None
@@ -1908,152 +1913,51 @@ def test_get_member_grouping_refuses_non_lan_and_non_ip_target(monkeypatch):
 
 
 def test_remote_json_get_success_forwards_request_and_timeout(monkeypatch):
-    captured = {}
-
-    class FakeResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, _size=-1):
-            return b'{"ok": true}'
-
-    def fake_urlopen(req, timeout=None):
-        captured.update(
-            url=req.full_url,
-            method=req.get_method(),
-            timeout=timeout,
-        )
-        return FakeResp()
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
+    calls = _stub_control_get(monkeypatch, ControlResponse(200, b'{"ok": true}'))
 
     assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/state", timeout=0.375,
     ) == ({"ok": True}, None)
-    assert captured == {
-        "url": "http://192.168.1.9:8780/state",
-        "method": "GET",
+    assert calls == [{
+        "path": "/state",
+        "base_url": "http://192.168.1.9:8780",
         "timeout": 0.375,
-    }
-
-
-def test_remote_json_get_rejects_oversized_peer_response(monkeypatch):
-    class OversizedResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, size):
-            assert size == rooms_peers.PEER_RESPONSE_MAX_BYTES + 1
-            return b"x" * size
-
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
-    )
-
-    assert rooms_peers._get_remote_json_result(
-        "192.168.1.9", "/state", timeout=0.5,
-    ) == (None, "speaker returned an oversized response")
+    }]
 
 
 def test_remote_json_get_explains_unreachable_peer(monkeypatch):
-    monkeypatch.setattr(
-        rooms_peers.urllib.request,
-        "urlopen",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            rooms_peers.urllib.error.URLError("connection refused")
-        ),
-    )
+    _stub_control_get(monkeypatch, ControlError("connection refused"))
 
     assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.5,
     ) == (None, "speaker is unreachable — check its power and network")
 
 
-def test_member_post_rejects_oversized_success_response(monkeypatch):
-    class OversizedResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, size):
-            return b"x" * size
-
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
+def test_member_post_fails_soft_and_redacts_a_transport_failure(monkeypatch):
+    """A refused connection, a malformed reply and a body over the client's
+    cap all arrive as ControlError. The fan-out must get (False, detail)
+    rather than an exception, and the detail must not carry the credential
+    the failed request presented."""
+    household = "house-secret"
+    _stub_control_post(
+        monkeypatch,
+        ControlError(f"jasper-control POST /grouping/set: sent {household}"),
     )
 
-    assert rooms_peers.post_grouping_to_member(
-        "192.168.1.9", {"enabled": False}, known=set(), household="secret",
-    ) == (False, "peer response too large")
-
-
-def test_member_post_bounds_http_error_response(monkeypatch):
-    error = rooms_peers.urllib.error.HTTPError(
-        "http://192.168.1.9:8780/grouping/set",
-        500,
-        "failure",
-        hdrs=None,
-        fp=BytesIO(b"x" * (rooms_peers.PEER_RESPONSE_MAX_BYTES + 1)),
+    ok, detail = rooms_peers.post_grouping_to_member(
+        "192.168.1.9", {"enabled": False}, known=set(), household=household,
     )
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
-    )
-
-    assert rooms_peers.post_grouping_to_member(
-        "192.168.1.9", {"enabled": False}, known=set(), household="secret",
-    ) == (False, "HTTP 500: response too large")
-
-
-def test_member_post_contains_http_error_body_read_failure(monkeypatch):
-    class BrokenBody:
-        def read(self, _size):
-            raise OSError("truncated peer body")
-
-        def close(self):
-            pass
-
-    error = rooms_peers.urllib.error.HTTPError(
-        "http://192.168.1.9:8780/grouping/set",
-        502,
-        "failure",
-        hdrs=None,
-        fp=BrokenBody(),
-    )
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
-    )
-
-    assert rooms_peers.post_grouping_to_member(
-        "192.168.1.9", {}, known=set(), household="house-secret",
-    ) == (False, "HTTP 502")
+    assert ok is False
+    assert household not in detail
+    assert "<redacted>" in detail
 
 
 def test_member_post_redacts_echoed_credentials_from_http_error(monkeypatch):
     token = "browser-secret"
     household = "house-secret"
-    error = rooms_peers.urllib.error.HTTPError(
-        "http://192.168.1.9:8780/grouping/set",
-        403,
-        "failure",
-        hdrs=None,
-        fp=BytesIO(f"denied {token} {household}".encode()),
-    )
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+    _stub_control_post(
+        monkeypatch,
+        ControlResponse(403, f"denied {token} {household}".encode()),
     )
 
     ok, detail = rooms_peers.post_grouping_to_member(
@@ -2076,16 +1980,7 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
     prefix = '{"error":"household_mismatch","presented":"'
     pad = "f" * (PEER_DETAIL_MAX_CHARS - len(prefix) - len("<redacted>"))
     body = (prefix + pad + household + '"}').encode()
-    error = rooms_peers.urllib.error.HTTPError(
-        "http://192.168.1.9:8780/grouping/set",
-        403,
-        "failure",
-        hdrs=None,
-        fp=BytesIO(body),
-    )
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
-    )
+    _stub_control_post(monkeypatch, ControlResponse(403, body))
 
     ok, detail = rooms_peers.post_grouping_to_member(
         "192.168.1.9", {}, known=set(), household=household,
@@ -2108,21 +2003,7 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
 def test_remote_json_get_explains_status_decode_or_shape(
     monkeypatch, status, body, detail,
 ):
-    class FakeResp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, _size=-1):
-            return body
-
-    response = FakeResp()
-    response.status = status
-    monkeypatch.setattr(
-        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: response,
-    )
+    _stub_control_get(monkeypatch, ControlResponse(status, body))
 
     assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.5,
@@ -2130,10 +2011,7 @@ def test_remote_json_get_explains_status_decode_or_shape(
 
 
 def test_remote_json_get_fails_soft_on_transport_timeout(monkeypatch):
-    def timeout(*_args, **_kwargs):
-        raise TimeoutError("peer timed out")
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", timeout)
+    _stub_control_get(monkeypatch, ControlError("peer timed out"))
     assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.125,
     ) == (None, "speaker is unreachable — check its power and network")
@@ -2223,31 +2101,14 @@ def test_grouping_readiness_null_from_current_peer_explains_diagnostics(monkeypa
     )
 
 
-def _fake_grouping_urlopen(monkeypatch, body, *, status=200):
-    """Stub urlopen to return `body` (a dict, serialized) from a /grouping GET.
-    Returns the list the URLs are appended to so tests can assert the path."""
+def _fake_grouping_get(monkeypatch, body, *, status=200):
+    """Stub the control-client GET to return `body` (a dict, serialized) from
+    a /grouping read. Returns the captured calls so a test can assert the
+    target."""
     monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
-    urls: list[str] = []
-
-    class FakeResp:
-        def __init__(self):
-            self.status = status
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self, _size=-1):
-            return json.dumps(body).encode()
-
-    def fake_urlopen(req, timeout=None):
-        urls.append(req.full_url)
-        return FakeResp()
-
-    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
-    return urls
+    return _stub_control_get(
+        monkeypatch, ControlResponse(status, json.dumps(body).encode()),
+    )
 
 
 def test_get_member_grouping_unwraps_grouping_envelope(monkeypatch):
@@ -2258,20 +2119,22 @@ def test_get_member_grouping_unwraps_grouping_envelope(monkeypatch):
     returning the raw body left bond_id unreadable, so /unbond matched no real
     peer and dissolved only self.)"""
     inner = {"enabled": True, "role": "follower", "bond_id": "bond-abc"}
-    urls = _fake_grouping_urlopen(monkeypatch, {"grouping": inner})
+    calls = _fake_grouping_get(monkeypatch, {"grouping": inner})
     got = rooms_peers._get_member_grouping("192.168.1.9")
     assert got == inner
-    assert urls == ["http://192.168.1.9:8780/grouping"]
+    assert [(c["base_url"], c["path"]) for c in calls] == [
+        ("http://192.168.1.9:8780", "/grouping")
+    ]
 
 
 def test_get_member_grouping_none_when_envelope_missing_or_null(monkeypatch):
     """A body without a dict `grouping` block (flat, null, or absent) reads as
     "unknown" → None, so it can never spuriously match a bond_id. Guards the
     unwrap against the pre-fix flat-shape assumption."""
-    _fake_grouping_urlopen(monkeypatch, {"grouping": None})
+    _fake_grouping_get(monkeypatch, {"grouping": None})
     assert rooms_peers._get_member_grouping("192.168.1.9") is None
     # A flat body (no envelope) — the shape the live endpoint does NOT emit.
-    _fake_grouping_urlopen(monkeypatch, {"enabled": True, "bond_id": "x"})
+    _fake_grouping_get(monkeypatch, {"enabled": True, "bond_id": "x"})
     assert rooms_peers._get_member_grouping("192.168.1.9") is None
 
 

@@ -743,6 +743,14 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 
 
+# Google returns the single-use authorization code as `?code=…` on the
+# callback request line, which the stdlib hands to `log_message` verbatim.
+# The query string carries nothing an operator reading the journal needs, so
+# it is dropped from the record rather than left to the journal redactor to
+# recognise (non-negotiable 3).
+_QUERY_STRING_RE = re.compile(r"\?\S*")
+
+
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     """Returns a request handler class closed over the config dict."""
 
@@ -1017,7 +1025,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
+            line = _QUERY_STRING_RE.sub("", fmt % args)
+            logger.info("%s - %s", self.address_string(), line)
 
         def do_GET(self) -> None:  # noqa: N802
             handler_fn = _GET_ROUTES.get(route_path(self.path))

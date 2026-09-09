@@ -110,8 +110,9 @@ def test_auto_flush_floor_keys_log_event_on_the_event_name():
 
 def test_auto_flush_floor_survives_redaction_flattening():
     """The redacting filter rewrites `record.msg` to the rendered, redacted
-    line, so the floor keys on the template it stashes — otherwise one
-    chronic credential-carrying warning dumps the whole ring on every call.
+    line, which differs per call. The floor keys on the record's call site,
+    which the rewrite cannot move — otherwise one chronic
+    credential-carrying warning dumps the whole ring on every call.
     """
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)

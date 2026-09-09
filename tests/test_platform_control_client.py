@@ -335,3 +335,101 @@ def test_get_forwards_x_jts_token_header(header_server):
 def test_no_headers_sends_no_x_jts_token(header_server):
     resp = client.post("/grouping/set", data=b"{}", base_url=header_server)
     assert resp.json()["x_jts_token"] is None
+
+
+# ----------------------------------------------------------------------
+# Bounded reads and redirects (#4281, #4282).
+#
+# The Pi Zero 2 W has 415 MB, so no response body may be read unbounded —
+# a wedged handler on either end would otherwise take the caller down with
+# it. And `http.client` never follows a 3xx, which is why the peer paths
+# route through this client: `urllib`'s default opener replays every request
+# header to the redirect target, including the household credential, past
+# the SSRF guard that only ever saw the first hop.
+# ----------------------------------------------------------------------
+
+
+class _Flood(BaseHTTPRequestHandler):
+    """Serves exactly as many bytes as the path names."""
+
+    def log_message(self, *a):  # silence test server
+        pass
+
+    def do_GET(self):  # noqa: N802
+        body = b"x" * int(self.path.lstrip("/"))
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.fixture()
+def flood_server():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Flood)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_body_at_the_cap_is_read_and_one_byte_over_is_an_error(flood_server):
+    cap = client.PEER_RESPONSE_MAX_BYTES
+    assert len(client.get(f"/{cap}", base_url=flood_server).body) == cap
+    with pytest.raises(client.ControlError):
+        client.get(f"/{cap + 1}", base_url=flood_server)
+
+
+@pytest.fixture()
+def redirect_pair():
+    """A server that 302s every POST to a second server, plus that second
+    server's request log — an empty log proves nothing rode the second hop."""
+    hits: list[dict[str, str]] = []
+
+    class _Sink(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _record(self):
+            hits.append({k.lower(): v for k, v in self.headers.items()})
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = do_POST = _record  # noqa: N815
+
+    sink = ThreadingHTTPServer(("127.0.0.1", 0), _Sink)
+    Thread(target=sink.serve_forever, daemon=True).start()
+    sink_url = f"http://127.0.0.1:{sink.server_address[1]}/grouping/set"
+
+    class _Redirector(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                self.rfile.read(n)
+            self.send_response(302)
+            self.send_header("Location", sink_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Redirector)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}", hits
+    for each in (srv, sink):
+        each.shutdown()
+        each.server_close()
+
+
+def test_a_redirect_is_handed_back_and_no_header_rides_the_second_hop(
+    redirect_pair,
+):
+    base_url, hits = redirect_pair
+    resp = client.post(
+        "/grouping/set", {"enabled": True}, base_url=base_url,
+        headers={"X-JTS-Household": "house-secret"},
+    )
+    assert resp.status == 302
+    assert resp.ok is False
+    assert hits == []

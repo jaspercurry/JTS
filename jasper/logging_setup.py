@@ -24,12 +24,6 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 # ring) costs one redaction pass rather than two.
 _REDACTED_ATTR = "_jasper_redacted"
 
-# Holds the pre-redaction `record.msg` when the filter flattens a record:
-# the flight recorder keys its auto-flush floor on the template, which a
-# flattened message would make unique per call
-# (flight_recorder._auto_flush_due).
-TEMPLATE_ATTR = "_jasper_template"
-
 _EXC_FORMATTER = logging.Formatter()
 
 
@@ -73,17 +67,6 @@ class RedactingFilter(logging.Filter):
         except Exception as exc:  # noqa: BLE001
             # A %-format mismatch is reported by Handler.handleError today
             # and must not become an exception raised at the log call site.
-            # Key the sentinel on the call site (pathname:lineno), not
-            # record.msg or its type: two different broken call sites on one
-            # logger must not share an auto-flush signature. pathname and
-            # lineno are plain attributes set by the logging module itself,
-            # so neither can raise — unlike record.msg, whose own __str__
-            # may be what raised, so it must not be called again here.
-            setattr(
-                record,
-                TEMPLATE_ATTR,
-                f"<unformattable {record.pathname}:{record.lineno}>",
-            )
             flattened = (
                 f"{record.msg!r} % {record.args!r} "
                 f"(unformattable: {type(exc).__name__})"
@@ -92,7 +75,8 @@ class RedactingFilter(logging.Filter):
         else:
             redacted = redact_secrets(message)
             if redacted != message:
-                setattr(record, TEMPLATE_ATTR, record.msg)
+                # The pre-redaction msg is NOT kept anywhere on the record:
+                # the leak case is exactly the case that would retain it.
                 record.msg, record.args = redacted, ()
         if record.exc_info:
             # Formatter.format reuses a non-empty exc_text, so pre-formatting
@@ -113,13 +97,14 @@ def configure_logging(
     """Install this process's journal handler, redacting everything on it."""
 
     root = logging.getLogger()
-    before = set(root.handlers)
     logging.basicConfig(level=level, format=fmt)
-    # Only what this call created: basicConfig no-ops when the root already
-    # has a handler, and that one belongs to whoever installed it.
+    # basicConfig no-ops entirely when root already carries a handler, so
+    # neither the level nor the filter may be left to it: one foreign handler
+    # would otherwise take this process's whole journal out of redaction with
+    # no signal. setLevel and addFilter are both idempotent.
+    root.setLevel(level)
     for handler in root.handlers:
-        if handler not in before:
-            handler.addFilter(REDACTING_FILTER)
+        handler.addFilter(REDACTING_FILTER)
 
 
 def configure_verbose_logging(*, verbose: bool) -> None:

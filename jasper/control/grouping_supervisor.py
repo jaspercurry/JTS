@@ -274,7 +274,7 @@ class GroupingSupervisor:
         try:
             ok, detail = await self.post_peer_grouping(cfg.peer_addr, desired)
         except Exception as exc:  # noqa: BLE001
-            ok, detail = False, repr(exc)
+            ok, detail = False, peer_detail(repr(exc))
             log_event(
                 logger,
                 "grouping_supervisor.reassert_post_crash",
@@ -283,7 +283,10 @@ class GroupingSupervisor:
                 exc_info=True,
             )
         self.reassert_last_ok = ok
-        self.reassert_last_detail = detail[:200]
+        # No cap here: every `detail` above comes out of `peer_detail`, which
+        # redacts before capping to the one constant. Capping again would crop
+        # its `<redacted>` marker off a body that straddles the boundary.
+        self.reassert_last_detail = detail
         if ok:
             self._reassert_failed_latched = False
             log_event(
@@ -503,6 +506,7 @@ class GroupingSupervisor:
     ) -> tuple[bool, str]:
         """POST /grouping/set to the roster peer with the household header."""
         headers = self.household_headers()
+        credential = (headers or {}).get("X-JTS-Household", "")
         try:
             resp = await self.peer_client(peer_addr).post(
                 "/grouping/set",
@@ -510,12 +514,10 @@ class GroupingSupervisor:
                 headers=headers,
             )
         except Exception as exc:  # noqa: BLE001 — peer offline is expected IO
-            return False, repr(exc)
+            return False, peer_detail(repr(exc), credential)
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
-            household_credential_value = (headers or {}).get("X-JTS-Household", "")
-            peer_text = peer_detail(resp.body, household_credential_value)
-            detail = f"{detail}: {peer_text}"
+            detail = f"{detail}: {peer_detail(resp.body, credential)}"
         return resp.ok, detail
 
     def peer_client(self, peer_addr: str) -> AsyncControlClient:

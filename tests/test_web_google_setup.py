@@ -653,3 +653,26 @@ def test_callback_with_long_error_caps_the_flash_cookie():
     cookie = next(v for n, v in fake.response_headers if n == "Set-Cookie")
     flash = urllib.parse.unquote(cookie.split(";", 1)[0].split("=", 1)[1])
     assert len(flash) <= len("Google returned error: ") + web_common._FLASH_DETAIL_CAP
+
+
+def test_the_callback_access_log_never_carries_the_authorization_code(caplog):
+    """Google returns the single-use authorization code as `?code=…` on the
+    callback request line, which the stdlib hands to `log_message` verbatim.
+    The query string is dropped before the record exists, so the code cannot
+    reach the journal even if no redaction pattern happened to match it."""
+    handler_cls = google_setup._make_handler(_cfg())
+    fake = _FakeHandler("/callback")
+    log_message = handler_cls.log_message.__get__(fake, handler_cls)
+
+    with caplog.at_level(logging.INFO, logger=google_setup.logger.name):
+        log_message(
+            '"%s" %s %s',
+            "GET /callback?code=4-0AVMBsJgAbCdEf&state=xyz HTTP/1.1",
+            "302",
+            "-",
+        )
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "4-0AVMBsJgAbCdEf" not in logged
+    assert "code=" not in logged
+    assert "/callback" in logged  # the path itself still reaches the journal

@@ -73,10 +73,10 @@ DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{CONTROL_PORT}"
 DEFAULT_TIMEOUT = 2.0
 
-# Cap on a peer's HTTP response body that a caller will read/decode, so a
-# peer that may not be a trusted JTS box can't make the reader do unbounded
-# work. Peer-to-peer only (grouping's household requests, the rooms wizard's
-# probes) — a peer, unlike jasper-control itself, is not this box.
+# Cap on any HTTP response body a caller will read/decode, so neither a peer
+# that may not be a trusted JTS box nor a wedged local handler can make the
+# reader do unbounded work on a 415 MB box. One number for both response
+# paths: `_request` below and the rooms wizard's peer probes.
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
 # Cap on the peer-supplied detail `peer_detail()` returns, for a caller to
@@ -84,13 +84,15 @@ PEER_RESPONSE_MAX_BYTES = 64 * 1024
 PEER_DETAIL_MAX_CHARS = 160
 
 
-def peer_detail(raw: bytes, *literals: str) -> str:
-    """Redact, then cap, a peer's HTTP response body for `/state`, a
-    journal line or a flash. Order matters: capping first can crop a
-    credential that straddles the boundary, leaving its head exposed with
-    no marker at all (ADR-0243).
+def peer_detail(raw: bytes | str, *literals: str) -> str:
+    """Redact, then cap, peer-derived text — a response body or the string
+    form of a failed call's exception — for `/state`, a journal line or a
+    flash. Order matters: capping first can crop a credential that straddles
+    the boundary, leaving its head exposed with no marker at all (ADR-0243).
     """
-    text = raw[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
+    text = raw[:PEER_RESPONSE_MAX_BYTES]
+    if isinstance(text, bytes):
+        text = text.decode(errors="replace")
     return redact_secrets(text, literals=literals)[:PEER_DETAIL_MAX_CHARS]
 
 
@@ -131,9 +133,12 @@ def _request(
     headers: dict[str, str] | None = None,
 ) -> ControlResponse:
     """One blocking stdlib round-trip. Raises :class:`ControlError` on a
-    transport failure; otherwise returns a :class:`ControlResponse` (including
-    for non-2xx HTTP statuses). No pooling — the fresh connection is always
-    closed in ``finally``, keeping the FD count flat on every outcome.
+    transport failure or a body over :data:`PEER_RESPONSE_MAX_BYTES`;
+    otherwise returns a :class:`ControlResponse` (including for non-2xx HTTP
+    statuses). Redirects are never followed — ``http.client`` hands back the
+    3xx as-is, so no request header is replayed to a target the caller did
+    not vet. No pooling — the fresh connection is always closed in
+    ``finally``, keeping the FD count flat on every outcome.
 
     ``body`` is a dict serialized to JSON; ``data`` is a pre-encoded JSON
     body sent verbatim (the byte-forwarding path the web wizards' proxy
@@ -167,7 +172,15 @@ def _request(
                     req_headers[k] = v
         conn.request(method, path, body=payload, headers=req_headers)
         resp = conn.getresponse()
-        return ControlResponse(resp.status, resp.read())
+        # Bounded read: a truncated body would fail `json()` downstream with
+        # no hint why, so an over-cap response is a transport failure.
+        raw = resp.read(PEER_RESPONSE_MAX_BYTES + 1)
+        if len(raw) > PEER_RESPONSE_MAX_BYTES:
+            raise ControlError(
+                f"jasper-control {method} {path}: response exceeds "
+                f"{PEER_RESPONSE_MAX_BYTES} bytes"
+            )
+        return ControlResponse(resp.status, raw)
     except (OSError, TimeoutError, http.client.HTTPException) as e:
         raise ControlError(f"jasper-control {method} {path}: {e}") from e
     finally:
