@@ -58,6 +58,7 @@ _SHARED_JSON_OBJECT_READERS = {
     "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
     "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
+    "tools_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 
@@ -462,6 +463,7 @@ _TABLED_WIZARD_FACTORIES = {
     "tools_setup": lambda: tools_setup._make_handler({
         "catalog_path": "/tmp/jts-test-tools-catalog.json",
         "state_path": "/tmp/jts-test-tool-state.env",
+        "prompt_overrides_path": "/tmp/jts-test-tool-prompt-overrides.json",
     }),
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
@@ -533,12 +535,32 @@ TABLED_POST_WIZARDS = [
 ]
 
 
-# Wizards whose POST bodies parse through `_common.json_body`. The stub
-# backend the factory builds faults on any attribute, so a route body that
-# ran would surface as an exception rather than the decorator's 400.
+# wifi_setup's `_read_json` coerces a malformed body to {} on purpose, so its
+# routes run their bodies instead of the decorator's 400 — pinned in
+# tests/test_web_wifi_setup.py, excluded here.
+_COERCES_MALFORMED_BODY = frozenset({"wifi_setup"})
+
+
+def _post_route_table(handler_cls) -> dict:
+    """The wizard's live POST table — a closure cell on `do_POST` when the
+    table is closure-local (it captures per-server cfg), else a module global.
+    Same reach the header-CSRF pins use to drive the real callables."""
+    fn = handler_cls.do_POST
+    freevars = fn.__code__.co_freevars
+    if "_POST_ROUTES" in freevars:
+        return fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
+    return fn.__globals__["_POST_ROUTES"]
+
+
+# POST routes whose body parses through `_common.json_body` — the decorator
+# marks its wrapper, so this tracks the routes themselves rather than a
+# hand-kept wizard list.
 _JSON_BODY_POST_ROUTES = [
-    (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS
-    if name == "wake_corpus_setup" for path in posts
+    (name, cls, path)
+    for name, cls, _, posts in TABLED_WIZARDS
+    if posts and name not in _COERCES_MALFORMED_BODY
+    for path in posts
+    if getattr(_post_route_table(cls).get(path), "reads_json_body", False)
 ]
 
 
@@ -618,8 +640,8 @@ def test_a_malformed_json_body_never_reaches_a_route_body(
     module_name, handler_cls, path,
 ):
     """`json_body` parses before it dispatches: a token-bearing POST whose
-    body is not a JSON object is answered 400 by the decorator, so the route
-    body — which would fault on this stub backend — never runs."""
+    body is not a JSON object is answered 400 by the wizard's `_read_json`,
+    so the route body never runs."""
     req = _WizardRequest(
         handler_cls,
         path,
@@ -651,8 +673,6 @@ UNTABLED_WIZARD_FILES = [
 _POST_WORK_MARKERS = (
     "self._read_json(",
     "self._handle_",
-    "self._set_",
-    "self._clear_",
 )
 _POST_GUARD_MARKERS = ("guard_mutating_request(", "self._check_csrf(")
 

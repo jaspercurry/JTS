@@ -1377,10 +1377,7 @@ def _get_state(handler: _Handler) -> None:
     handler._send_json(payload, status=status)
 
 
-# Decorated even though it ignores the body: /scan is body-agnostic, but the
-# request body still has to be drained off the socket.
-@json_body
-def _post_scan(handler: _Handler, _body: dict[str, Any]) -> None:
+def _post_scan(handler: _Handler) -> None:
     handler._send_json(scan_networks_report())
 
 

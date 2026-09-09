@@ -46,6 +46,7 @@ URL surface (after nginx strips /assistant/tools/):
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -53,6 +54,7 @@ import os
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -64,6 +66,7 @@ from ..tool_catalog_view import catalog_view
 from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
+    JsonBodyError,
     begin_request,
     bonded_follower_active,
     canonical_header,
@@ -73,6 +76,7 @@ from ._common import (
     json_body,
     json_island,
     read_active_provider,
+    read_json_object,
     reject_csrf,
     restart_voice_daemon,
     route_path,
@@ -238,6 +242,24 @@ def _detail_html(pack_id: str, csrf_token: str = "") -> bytes:
     )
 
 
+def _get_detail(handler: BaseHTTPRequestHandler, pack_id: str) -> None:
+    ctx = begin_request(handler)
+    send_html_response(handler, _detail_html(pack_id, ctx["csrf_token"]))
+
+
+def _detail_route(path: str) -> Callable[[BaseHTTPRequestHandler], None] | None:
+    """Bind /pack/<id> — and the old /tool/<name> links, which render the same
+    page — to a route callable, so do_GET resolves before it guards. None when
+    `path` is neither."""
+    pack_id = _pack_id_from_path(path)
+    if pack_id is None:
+        name = _tool_name_from_path(path)
+        pack_id = None if name is None else "tool:" + name
+    if pack_id is None:
+        return None
+    return functools.partial(_get_detail, pack_id=pack_id)
+
+
 def _guide_html(csrf_token: str = "") -> bytes:
     body = f"""
 {canonical_header("Tool authoring guide", back_href="/assistant/tools/", back_label="Tools")}
@@ -398,30 +420,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # and "/catalog.json".
         def do_GET(self) -> None:  # noqa: N802
             path = route_path(self.path)
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is not None:
-                if not guard_read_request(self):
-                    return
-                handler_fn(self)
+            handler_fn = _GET_ROUTES.get(path) or _detail_route(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            pack_id = _pack_id_from_path(path)
-            if pack_id is not None:
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(self, _detail_html(pack_id, ctx["csrf_token"]))
+            if not guard_read_request(self):
                 return
-            detail_name = _tool_name_from_path(path)
-            if detail_name is not None:
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                # Backward-compatible fallback for old /tool/<name> links.
-                send_html_response(
-                    self, _detail_html("tool:" + detail_name, ctx["csrf_token"]),
-                )
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
             handler_fn = _POST_ROUTES.get(route_path(self.path))
@@ -434,30 +439,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def _read_json(self) -> dict[str, Any] | None:
-            """Parse the request body as a JSON object. On any framing/JSON
-            error it has already sent the 400 and returns None, so `json_body`
-            never dispatches a malformed body to a route."""
+            """Parse the request body, answering 400 and returning None on a
+            malformed one so `json_body` never dispatches it to a route."""
             try:
-                length = int(self.headers.get("Content-Length") or "0")
-            except ValueError:
+                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+            except JsonBodyError as exc:
                 send_proxy_json(
-                    self, b'{"error":"invalid body length"}', status=400,
+                    self, json.dumps({"error": exc.code}).encode(), status=400,
                 )
                 return None
-            if length < 0 or length > _JSON_BODY_LIMIT:
-                send_proxy_json(
-                    self, b'{"error":"invalid body length"}', status=400,
-                )
-                return None
-            raw = self.rfile.read(length) if length else b""
-            try:
-                parsed = json.loads(raw.decode("utf-8")) if raw else {}
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                send_proxy_json(
-                    self, b'{"error":"invalid JSON body"}', status=400,
-                )
-                return None
-            return parsed if isinstance(parsed, dict) else {}
 
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
@@ -836,10 +826,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
     # (exact path -> handler callable). The tables stay local to this closure
     # because every route body reads `cfg`. GET's two detail routes
-    # (/pack/<id>, /tool/<name>) carry a path parameter, so they stay outside
-    # the table as prefix fallbacks in do_GET. ORDERING IS LOAD-BEARING: each
-    # method resolves the route first, so an unknown path 404s before the
-    # read/CSRF guard runs.
+    # (/pack/<id>, /tool/<name>) carry a path parameter, so `_detail_route`
+    # binds them instead of the table. ORDERING IS LOAD-BEARING: each method
+    # resolves the route first, so an unknown path 404s before the read/CSRF
+    # guard runs.
     _GET_ROUTES = {
         "/": _get_index,
         "/catalog.json": _get_catalog,

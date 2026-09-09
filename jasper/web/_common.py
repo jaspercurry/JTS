@@ -1295,16 +1295,16 @@ def form_guarded(
 
 def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None]:
     """Wrap a JSON route body as the bare `handler_fn(handler)` a wizard
-    route table holds. The wizard's own `_read_json()` adapter — the shared
-    `read_json_object` reader under that wizard's byte cap — returns None
-    having already answered the client, so a malformed body can never reach
-    `fn` and no route body can forget to check."""
+    route table holds. The wizard's own `_read_json()` returns the parsed
+    object, or None once it has already answered the client itself; a wizard
+    may instead coerce a bad body to {} (wifi_setup)."""
     @functools.wraps(fn)
     def route(handler: Any) -> None:
         body = handler._read_json()
         if body is None:
             return
         fn(handler, body)
+    route.reads_json_body = True  # type: ignore[attr-defined]
     return route
 
 
