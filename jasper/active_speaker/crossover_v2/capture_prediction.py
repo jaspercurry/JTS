@@ -292,7 +292,7 @@ def capture_prediction(
         ),
         "comparison_kind": "changed_candidate" if measured is not None and candidate is not None else "same_candidate_repeat" if measured is not None else "unmeasured_forecast" if candidate is not None else "same_take_reconstruction",
         "comparison_context": context,
-        "limits": "Reconstruction checks this take only. Forecast assumes linear operation and unchanged setup; inspect window sensitivity. This result does not authorize or block playback.",
+        "limits": "Reconstruction checks this take only. Forecast assumes linear operation and unchanged setup; inspect window sensitivity. Magnitude errors can be dominated by low-SNR cancellation bins. This result does not authorize or block playback.",
     }
     summary["prediction_fingerprint"] = json_fingerprint({
         "basis": basis.source, "candidate_id": summary["candidate_id"],
