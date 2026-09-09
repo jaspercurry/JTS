@@ -623,7 +623,7 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 
 
 # ---------------------------------------------------------------------------
-# `/state`'s own key set (ADR-0268).
+# `/state`'s own key set (ADR-0270).
 #
 # jasper-doctor parses this payload by key, and every reader of it is
 # fail-soft: a key that moved a level down serves null on every real speaker
@@ -652,7 +652,7 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     ("fanin",): set(_FAKE_FANIN_STATUS),
     ("outputd",): set(_FAKE_OUTPUTD_STATUS),
     # The three supervisors that live only in this process's memory. Every
-    # other resilience fact is read from its own module (ADR-0268).
+    # other resilience fact is read from its own module (ADR-0270).
     ("resilience",): {
         "shairport", "grouping_supervisor", "system_supervisor",
     },
@@ -702,7 +702,7 @@ async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
 
 
 async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):
-    """No /state section reads a secrets compartment (ADR-0268).
+    """No /state section reads a secrets compartment (ADR-0270).
 
     The tool catalog, the chat store, the HA probe and `voice.model` each
     merged the full env-file set — three compartment files opened on every

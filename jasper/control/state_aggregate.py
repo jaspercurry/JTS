@@ -53,7 +53,7 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 
 # Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
 # so a consumer can branch on the number instead of probing for keys.
-# See ADR-0268 for the thirteen keys this version names.
+# See ADR-0270 for the thirteen keys this version names.
 STATE_SCHEMA_VERSION = 4
 
 # One deadline for the whole payload: the daemon fan-out and every section
@@ -561,7 +561,7 @@ async def _get_state(
 ) -> dict[str, Any]:
     """Build the whole GET /state payload — every key a client receives.
 
-    Thirteen keys, all of them this daemon's own posture (ADR-0268): its
+    Thirteen keys, all of them this daemon's own posture (ADR-0270): its
     in-process holds, its live CamillaDSP probe, and the daemon STATUS bodies
     it passes through. Every other fact a consumer wants it reads from the
     module that owns it.
@@ -691,7 +691,7 @@ async def _get_state(
             # Disambiguates reachable:false: true means the AEC reconciler
             # parked voice for a missing microphone ("intentionally idle, no
             # mic", NOT "crashed"). jasper.mic_presence owns the rich record;
-            # a consumer that wants it reads that module (ADR-0268).
+            # a consumer that wants it reads that module (ADR-0270).
             "parked_no_mic": read_mic_presence().parked,
         },
         "audio": {
@@ -714,7 +714,7 @@ async def _get_state(
         "source_selection": mux,
         # The three supervisors this process runs, and nothing else: every
         # other resilience fact has a module of its own that jasper-doctor
-        # reads directly (ADR-0268).
+        # reads directly (ADR-0270).
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
             # Bonded-member runtime liveness: dac_content starvation watch

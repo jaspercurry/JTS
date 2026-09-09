@@ -143,11 +143,6 @@ def test_read_journal_lines_uses_journal_timestamp(monkeypatch):
     assert str(ct.JOURNAL_SCAN_LINE_CAP) in calls[0]
 
 
-def test_module_snapshot_default_disabled(monkeypatch):
-    monkeypatch.setattr(ct, "_sampler", None)
-    assert ct.snapshot() == {"enabled": False, "events": []}
-
-
 # ---- solo gate ----
 
 
@@ -250,7 +245,6 @@ def test_start_sampler_disabled_starts_no_thread(monkeypatch):
     result = ct.start_sampler()
     assert result is None
     assert ct._sampler is None
-    assert ct.snapshot() == {"enabled": False, "events": []}
 
 
 def test_start_sampler_disabled_is_case_insensitive(monkeypatch):

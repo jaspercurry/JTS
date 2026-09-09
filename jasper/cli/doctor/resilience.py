@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ...accessories import status as accessory_status
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
@@ -36,6 +37,10 @@ REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
 REASON_UNITS_RESTARTED = "units_restarted"
 
 REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
+
+REASON_ACCESSORY_BRIDGE_RESTART_LOOP = "accessory_bridge_restart_loop"
+REASON_ACCESSORY_STATUS_UNAVAILABLE = "accessory_status_unavailable"
+REASON_ACCESSORY_BRIDGES_NOT_CONFIGURED = "accessory_bridges_not_configured"
 
 REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
 REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
@@ -179,6 +184,47 @@ def check_required_units_active() -> CheckResult:
     return CheckResult(
         label, "ok",
         f"{len(_REQUIRED_ACTIVE_UNITS)} required units are active",
+    )
+
+
+@doctor_check(core=True)
+def check_accessory_bridges() -> CheckResult:
+    """jasper-input's bridges (ADR-0225) each restart independently, so a
+    bridge stuck in restart backoff never fails the unit itself —
+    ``check_required_units_active`` sees jasper-input.service happily
+    ``active`` while one bridge loops. ``last_error`` in the published
+    status is set only while a bridge waits out its backoff, so it is the
+    live "looping now" signal, not the cumulative ``restarts`` count.
+    """
+    label = "accessory bridges"
+    snap = accessory_status.snapshot()
+    if not snap["published"]:
+        return CheckResult(
+            label, "skipped",
+            "no accessory status published — see 'required units active' "
+            "if jasper-input is down",
+            reason=REASON_ACCESSORY_STATUS_UNAVAILABLE,
+        )
+    bridges = snap["bridges"]
+    if not bridges:
+        return CheckResult(
+            label, "skipped", "no accessory bridges configured",
+            reason=REASON_ACCESSORY_BRIDGES_NOT_CONFIGURED,
+        )
+    looping = sorted(
+        name for name, entry in bridges.items()
+        if entry.get("last_error") is not None
+    )
+    if looping:
+        return CheckResult(
+            label, "warn",
+            "bridges in restart backoff: " + ", ".join(
+                f"{name} ({bridges[name]['last_error']})" for name in looping
+            ),
+            reason=REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
+        )
+    return CheckResult(
+        label, "ok", f"{len(bridges)} accessory bridges running with no restart loop",
     )
 
 

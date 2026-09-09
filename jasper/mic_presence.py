@@ -226,25 +226,6 @@ class MicPresence:
         # Present non-XVF mic: the per-device mic checks report its specifics.
         return "present"
 
-    def as_dict(self) -> dict[str, object]:
-        """JSON-friendly projection for ``/state`` and other API surfaces."""
-        return {
-            "present": self.present,
-            "parked": self.parked,
-            "reason": self.reason,
-            "detail": self.detail,
-            "accessory_sources": list(self.accessory_sources),
-            "accessory_present": self.accessory_present,
-            "is_xvf": self.is_xvf,
-            "alsa_card": self.alsa_card,
-            "variant": self.variant,
-            "display_name": self.display_name,
-            "capture_channels": self.capture_channels,
-            "recommended_profile": self.recommended_profile,
-            "chip_aec_supported": self.chip_aec_supported,
-            "summary": self.summary,
-        }
-
 
 def _marker_fields() -> tuple[str, str]:
     """``(reason code, detail prose)`` from the marker body.

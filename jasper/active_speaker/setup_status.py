@@ -412,7 +412,7 @@ def _commissioning_transport(topology: Any) -> str | None:
     ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call
     only: ``resolve_output_layout`` walks ``topology.hardware`` unguarded, so a
     ``None`` or duck-typed topology raises a class no sibling derivation does,
-    and an observability field must never stop ``/state`` answering.
+    and an observability field must never stop ``/system/snapshot`` answering.
     """
     from .playback_route import resolve_active_playback_device
 
@@ -509,12 +509,12 @@ def commissioning_summary(
     applied_profile: Mapping[str, Any] | None,
     measurements: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Small household/operator commissioning summary for ``/state``.
+    """Small household/operator commissioning summary for ``/system/snapshot``.
 
     Pure over ``profile``/``applied_profile``/``measurements`` and fail-soft:
     any unreadable or malformed input degrades to the safest phase (``"idle"``)
     rather than raising. Detailed curves and bundle paths belong to the session
-    report, not ``/state``.
+    report, not ``/system/snapshot``.
     """
     try:
         return _derive_commissioning_summary(

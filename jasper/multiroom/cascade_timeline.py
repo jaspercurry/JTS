@@ -351,10 +351,3 @@ def start_sampler() -> CascadeTimelineSampler | None:
     _sampler = CascadeTimelineSampler()
     _sampler.start()
     return _sampler
-
-
-def snapshot() -> dict[str, Any]:
-    """Read-only state for ``/state``."""
-    if _sampler is None:
-        return {"enabled": False, "events": []}
-    return _sampler.snapshot()

@@ -218,6 +218,28 @@ def test_check_required_units_active_skips_without_systemctl(monkeypatch):
     )
 
 
+# ----------------------------------------------------- check_accessory_bridges
+
+
+def test_check_accessory_bridges_warns_on_restart_loop(monkeypatch):
+    monkeypatch.setattr(
+        resilience.accessory_status, "snapshot",
+        lambda: {
+            "published": True,
+            "bridges": {
+                "hid": {"restarts": 3, "last_error": "ConnectionError"},
+                "wiim_remote_mic": {"restarts": 0, "last_error": None},
+            },
+        },
+    )
+
+    result = resilience.check_accessory_bridges()
+
+    assert (result.status, result.reason) == (
+        "warn", resilience.REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
+    )
+
+
 # --------------------------------------------------- check_voice_unit_running
 
 

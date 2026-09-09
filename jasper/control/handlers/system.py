@@ -130,7 +130,7 @@ class SystemRoutes(ControlHandlerMixin):
     def _get_state(self) -> None:
         # This daemon's own posture for jasper-doctor and ad-hoc `curl | jq`;
         # the dashboard reads /system/snapshot instead. The aggregate builds
-        # every key on the wire — nothing is attached here (ADR-0268).
+        # every key on the wire — nothing is attached here (ADR-0270).
         try:
             state = self._state_response_cache.get_or_compute(
                 lambda: asyncio.run(
