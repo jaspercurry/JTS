@@ -99,6 +99,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
 | [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | amended by 0276 |
 | [0276](0276-usb-buffer-acquisition-overlaps-the-timing-check.md) | USB buffer acquisition overlaps the timing check | accepted |
+| [0279](0279-airplay-session-release-belongs-to-source-takeover.md) | AirPlay session release belongs to source takeover | accepted |
 
 ## Multiroom & grouping
 
