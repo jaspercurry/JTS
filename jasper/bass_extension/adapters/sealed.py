@@ -22,13 +22,16 @@ from jasper.bass_extension.alignment import (
 )
 from .base import (
     COMMISSION_FLOOR_HZ,
+    TARGET_RESPONSE_RESERVE_DB,
     CabinetInfo,
     CaptureRole,
     FitRefusal,
     MagnitudeCurve,
     TargetSpec,
     _curve_arrays,
-    _passband_normalize,
+    passband_normalize,
+    target_response_grid,
+    woofer_curve,
 )
 
 if TYPE_CHECKING:
@@ -86,6 +89,21 @@ class SealedPlantFit:
         )
 
 
+def declared_plant(f0_hz: float, q0: float) -> SealedPlantFit | FitRefusal:
+    """The operator's datasheet pair as a sealed plant, admitted by this
+    module's own domain rule rather than a second copy of its bounds.
+
+    The ``0.0`` residual is the schema's; the ``declared`` note is what says no
+    fit ran.
+    """
+    try:
+        return SealedPlantFit.from_dict({
+            "f0_hz": f0_hz, "q0": q0, "fit_rms_db": 0.0, "notes": ["declared"],
+        })
+    except ValueError as exc:
+        return FitRefusal("bass_extension_fit_quality_insufficient", str(exc))
+
+
 def _minus_six_estimate(freqs: np.ndarray, magnitude: np.ndarray) -> float:
     candidates = np.flatnonzero((magnitude[:-1] <= -6.0) & (magnitude[1:] > -6.0))
     if candidates.size:
@@ -128,29 +146,64 @@ def _fit_model(
     return result.x, rms
 
 
+def _deepest_bounded_corner(
+    plant: SealedPlantFit,
+    boost_cap_db: float,
+) -> float:
+    """Lowest LT corner whose complete response stays within the cap."""
+
+    grid = target_response_grid()
+
+    def boost(fp_hz: float) -> float:
+        response = lt_response_db(grid, plant.f0_hz, plant.q0, fp_hz, 0.65)
+        return boost_headroom_db(response, np.zeros_like(response))
+
+    limit = max(0.0, boost_cap_db - TARGET_RESPONSE_RESERVE_DB)
+    floor = min(COMMISSION_FLOOR_HZ, plant.f0_hz)
+    if boost(floor) <= limit:
+        return floor
+    if boost(plant.f0_hz) > limit:
+        return plant.f0_hz
+
+    too_deep, admitted = floor, plant.f0_hz
+    for _ in range(64):
+        candidate = math.sqrt(too_deep * admitted)
+        if boost(candidate) > limit:
+            too_deep = candidate
+        else:
+            admitted = candidate
+    return admitted
+
+
 class SealedAdapter:
     adapter_id = "sealed_v1"
     adapter_version = 1
-    required_captures = (CaptureRole.WOOFER_NEARFIELD,)
+    required_captures = (CaptureRole.SEAT_MEDIAN,)
 
     def fit_plant(
         self,
         captures: Mapping[CaptureRole, MagnitudeCurve],
         cabinet: CabinetInfo,
     ) -> SealedPlantFit | FitRefusal:
-        curve = captures.get(CaptureRole.WOOFER_NEARFIELD)
+        curve = woofer_curve(captures)
         if curve is None:
             return FitRefusal(
                 "bass_extension_fit_quality_insufficient",
-                "woofer nearfield capture is required",
+                "seat median capture is required",
             )
         freqs, magnitude = _curve_arrays(curve)
-        normalized = _passband_normalize(freqs, magnitude)
+        normalized = passband_normalize(freqs, magnitude)
         smoothed = smooth_fractional_octave(freqs, normalized)
         estimate = _minus_six_estimate(freqs, smoothed)
-        first, _ = _fit_model(freqs, smoothed, estimate, order=2)
-        second, rms = _fit_model(freqs, smoothed, float(first[0]), order=2)
-        _, third_rms = _fit_model(freqs, smoothed, float(second[0]), order=3)
+        try:
+            first, _ = _fit_model(freqs, smoothed, estimate, order=2)
+            second, rms = _fit_model(freqs, smoothed, float(first[0]), order=2)
+            _, third_rms = _fit_model(freqs, smoothed, float(second[0]), order=3)
+        except ValueError:
+            return FitRefusal(
+                "bass_extension_fit_quality_insufficient",
+                "fit window has insufficient support",
+            )
         if third_rms + 0.5 < rms:
             return FitRefusal(
                 "bass_extension_fit_quality_insufficient",
@@ -184,10 +237,12 @@ class SealedAdapter:
             COMMISSION_FLOOR_HZ,
             plant.f0_hz / 10.0 ** (margin.boost_cap_db / 40.0),
         )
+        if plant.q0 <= 1.2:
+            deepest = _deepest_bounded_corner(plant, margin.boost_cap_db)
         subsonic = {
             "type": "ButterworthHighpass",
-            "freq": max(15.0, 0.5 * deepest),
-            "order": 2,
+            "freq": max(15.0, margin.subsonic_corner_ratio * deepest),
+            "order": margin.subsonic_order,
         }
         natural = TargetSpec(
             target_id="natural",
@@ -201,7 +256,7 @@ class SealedAdapter:
             return (natural,)
 
         corners = np.geomspace(deepest, plant.f0_hz, n_targets)
-        grid = np.geomspace(10.0, 500.0, 960)
+        grid = target_response_grid()
         natural_chain = second_order_highpass_db(grid, plant.f0_hz, plant.q0)
         natural_chain += butterworth_highpass_db(
             grid, float(subsonic["freq"]), int(subsonic["order"])

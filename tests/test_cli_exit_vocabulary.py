@@ -31,6 +31,7 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from jasper.cli import _refusal, round_views
+from tests.bass_fit_fixture import bank_bass_fit_inputs
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_seat_round,
@@ -276,6 +277,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     ],
     "spec-sweep": _NO_CLOUD_GROUP,
     "gate-sweep": _NO_CAPTURES,
+    "windows": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
@@ -286,6 +288,9 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
     "room-median": lambda r: ["room-median", str(r.seat)],
     "room-persistence": lambda r: ["room-persistence", str(r.seat)],
+    # The seat median and the design draft are the room-median view's and
+    # /sound/'s to file, so this view's two inputs are banked beside the round.
+    "bass-fit": lambda r: ["bass-fit", str(bank_bass_fit_inputs(r.measured))],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],

@@ -33,10 +33,9 @@ SHIPPED_RING_CONF_D = (
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
+from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin import latency_mode as lm
-from jasper.fanin.ring_health import read_persisted_coupling
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAMILLA_CHUNKSIZE,
@@ -67,7 +66,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
-    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env))
 
 
 # --------------------------------------------------------------------------
@@ -247,7 +246,8 @@ def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path
     assert "High remains active" in state["detail"]
 
 
-def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
+@pytest.mark.parametrize("held,refilling,effective", [(2560, False, "high"), (1536, True, None)])
+def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path, held, refilling, effective):
     state_path = tmp_path / "usb_latency.env"
     lm.write_requested_mode("low", state_path)
     fallback = {
@@ -261,8 +261,8 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
                     "usbsink": {
                         "resampler": {
                             "locked": True,
-                            "held_target_frames": 2560,
-                            "decay": {"enabled": True, "floor_frames": 576},
+                            "held_target_frames": held,
+                            "decay": {"enabled": True, "floor_frames": 576, "refilling": refilling},
                         },
                     },
                 },
@@ -273,10 +273,10 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
     state = lm.read_state(fallback, state_path=state_path)
 
     assert state["state"] == "fallback"
-    assert state["effective_mode"] == "high"
-    assert "host timing check failed" in state["detail"]
-    assert "53.3 ms" in state["detail"]
-    assert "next USB session" in state["detail"]
+    assert state["effective_mode"] == effective
+    assert state["selected_mode"] == "low"
+    assert state["live_buffer_frames"] == held
+    assert state["live_buffer_ms"] == round(held * 1000 / 48000, 1)
 
 
 def test_usb_latency_does_not_treat_idle_ceiling_as_effective_high(tmp_path):
@@ -508,7 +508,7 @@ def test_auto_gadget_box_with_intent_arms_ring_and_combo(
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "enabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "enabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "enabled"
-    assert read_value(text, COUPLING_ENV_VAR) == COUPLING_SHM_RING
+    assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
     assert r.restarted_fanin_for_combo is False
 
 
@@ -543,7 +543,6 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text(
-        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
         f"{ca.USB_DIRECT_ENV_VAR}=enabled\n"
         f"{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
         f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
@@ -581,7 +580,7 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
     assert read_value(text, "JASPER_UNRELATED_SOURCE_SENTINEL") == "enabled"
-    assert read_value(text, COUPLING_ENV_VAR) == COUPLING_SHM_RING
+    assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
     assert restarts == ["camilla_stop", "fanin", "camilla_start"]
     assert result.combo_armed is False
     assert result.usb_combo_changed is True
@@ -650,7 +649,7 @@ def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
     ring is live and a bare fan-in restart is what SIGKILLs camilla."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    fanin.write_text(f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+    fanin.write_text("")
     outputd.write_text(_armed_shm_ring_outputd())
     _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
@@ -681,9 +680,9 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     the ioplug capture reader can't busy-spin the SCHED_FIFO daemon into a SIGKILL."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    # Already shm_ring (the live-ring coupling) + standby already 1, so the ONLY
-    # change is the combo fan-in keys -> confirm path -> combo-forced fan-in restart.
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    # Nothing for the ring convergence to move, so the ONLY change is the combo
+    # fan-in keys -> confirm path -> combo-forced fan-in restart.
+    fanin.write_text("")
     outputd.write_text(_armed_shm_ring_outputd())
     _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
@@ -705,7 +704,7 @@ def test_auto_ring_combo_camilla_stop_failure_aborts_fanin_restart(tmp_path, mon
     surfaced ok=False, and camilla is started back — never left stopped-forever."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    fanin.write_text("")
     outputd.write_text(_armed_shm_ring_outputd())
     _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
@@ -726,7 +725,7 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     failure is surfaced ok=False."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    fanin.write_text("")
     outputd.write_text(_armed_shm_ring_outputd())
     _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
@@ -750,19 +749,20 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
     topology cannot be read, where the human-arm gate fails open."""
     from jasper.output_topology import OutputTopologyError
 
+    from jasper.fanin.ring_readiness import ring_topology_ready
+
     def boom():
         raise OutputTopologyError("topology file corrupt")
 
-    monkeypatch.setattr(cr, "load_output_topology_strict", boom, raising=False)
     import jasper.output_topology as ot
 
     monkeypatch.setattr(ot, "load_output_topology_strict", boom)
 
-    open_ok, open_detail = cr.ring_topology_ready()  # human arm: fail-open
+    open_ok, open_detail = ring_topology_ready()  # human arm: fail-open
     assert open_ok is True
     assert "deferring to outputd" in open_detail
 
-    strict_ok, strict_detail = cr.ring_topology_ready_strict()  # auto: fail-closed
+    strict_ok, strict_detail = ring_topology_ready(strict_unreadable=True)
     assert strict_ok is False
     assert "fail-closed" in strict_detail
 
@@ -779,10 +779,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-        "JASPER_FANIN_RING_SLOTS=8\n"
-    )
+    fanin.write_text("JASPER_FANIN_RING_SLOTS=8\n")
     outputd.write_text(_armed_outputd_env())
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
@@ -802,7 +799,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
-    assert read_persisted_coupling(fanin) == COUPLING_SHM_RING
+    assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
@@ -815,7 +812,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     jasper_env = tmp_path / "jasper.env"
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", encoding="utf-8")
+    fanin.write_text("", encoding="utf-8")
     outputd.write_text(_armed_outputd_env(), encoding="utf-8")
     jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
@@ -833,7 +830,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     _auto(fanin, outputd, gadget=False, restarts=restarts)
 
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
-    assert read_persisted_coupling(fanin) == COUPLING_SHM_RING
+    assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 # --------------------------------------------------------------------------
@@ -886,7 +883,6 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
         ca.USB_DIRECT_ENV_VAR: "enabled",
         ca.HOST_CLOCK_ENV_VAR: "enabled",
         ca.CUSHION_DECAY_ENV_VAR: "enabled",
-        COUPLING_ENV_VAR: COUPLING_SHM_RING,
     }
     for key, value in documented_combo.items():
         assert read_value(text, key) == value, (
@@ -949,3 +945,22 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "hardware-validated floor the measurement doc §2 table ships"
     )
 
+
+
+@pytest.mark.parametrize("reason,ladder,held,expected", [
+    ("reused", "probing", 576, "applied"),
+    ("", "probing", 1600, "recovery"),
+    ("backoff", "l0_locked", 1088, "held"),
+])
+def test_usb_latency_reports_reuse_and_held_buffer(tmp_path, reason, ladder, held, expected):
+    airplay = {"current": {"fanin": {
+        "host_clock": {"ladder": ladder},
+        "inputs": {"usbsink": {"resampler": {
+            "locked": True, "held_target_frames": held,
+            "decay": {"enabled": True, "floor_frames": 576, "frozen_reason": reason, "active": reason == ""},
+        }}},
+    }}}
+    state = lm.read_state(airplay, state_path=tmp_path / "usb.env")
+    assert state["selected_mode"] == "low"
+    assert state["state"] == expected
+    assert state["live_buffer_ms"] == round(held / 48, 1)

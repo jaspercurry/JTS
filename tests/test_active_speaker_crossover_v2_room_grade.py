@@ -50,6 +50,7 @@ from tests.room_median_fixture import (
     N_POSITIONS,
     RIPPLE_DB,
     SPREAD_DB,
+    median_document,
     room_median_document,
     write_room_median,
 )
@@ -161,6 +162,154 @@ def test_an_incumbent_with_another_ceiling_is_graded_on_this_rounds_bands():
     assert incumbent.freqs_hz[-1] <= OTHER_CEILING_HZ < CEILING_HZ
 
 
+def test_comparison_uses_only_common_frequency_support():
+    """A peak outside the trial's support cannot masquerade as improvement."""
+    baseline_grid = np.asarray(room_median_document()["freqs_hz"])
+    response = 6.0 * np.exp(-0.5 * (np.log2(baseline_grid / 145.0) / 0.18) ** 2)
+    keep = baseline_grid >= 200.39
+    candidate = read_room_median(median_document(
+        baseline_grid[keep], response[keep], ceiling_hz=CEILING_HZ,
+    ))
+    incumbent = read_room_median(median_document(
+        baseline_grid, response, ceiling_hz=CEILING_HZ,
+    ))
+
+    artifact = grade_room_median(candidate, incumbent=incumbent).to_dict()
+
+    assert artifact["regressed_bands"] == []
+    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["common_support_hz"][0] == pytest.approx(
+        candidate.freqs_hz[0]
+    )
+    assert artifact["comparison"]["incumbent_removed_support_hz"] == [[
+        pytest.approx(float(incumbent.freqs_hz[0])),
+        pytest.approx(float(candidate.freqs_hz[0])),
+    ]]
+    assert [row["rms_db"] for row in artifact["bands"][:2]] == [None, None]
+    top = artifact["bands"][2]
+    assert top["compared_hz"][0] == pytest.approx(float(candidate.freqs_hz[0]))
+    assert top["delta_rms_db"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_comparison_aligns_a_whole_graph_level_shift_once():
+    document = room_median_document()
+    shifted = {
+        **document,
+        "median_db": [value + 6.0 for value in document["median_db"]],
+    }
+
+    artifact = grade_room_median(
+        read_room_median(shifted),
+        incumbent=read_room_median(document),
+    ).to_dict()
+
+    assert artifact["comparison"]["level_alignment_db"] == pytest.approx(-6.0)
+    assert artifact["comparison"]["level_reference_db"] == pytest.approx(
+        float(np.median(document["median_db"]))
+    )
+    assert all(row["delta_rms_db"] == pytest.approx(0.0) for row in artifact["bands"])
+
+
+def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
+    document = room_median_document()
+    pose_keys = [f"seat-{index}" for index in range(document["n_positions"])]
+    document["evidence"] = {
+        "basis": {
+            "candidate_id": graph,
+            "submitted_graph_fingerprint": graph,
+            "graph_fingerprint": graph,
+            "graph_scope": "room_candidate" if graph == "candidate" else "speaker_tune",
+            "side": side,
+            "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
+            "level_db": -30.0,
+            "stimulus_dbfs": -12.0,
+            "stimulus_wav_sha256": "program",
+            "stimulus_peak_dbfs": -12.0,
+            "gating_applied": False,
+            "calibration_reference": "cal-1",
+            "calibration_applied": True,
+            "capture_calibration": {
+                "applied": True,
+                "calibration_id": "cal-1",
+                "curve_fingerprint": "curve-1",
+                "model_key": "umik-2",
+                "tier": "reference",
+            },
+        },
+        "take_ids": [entry["id"] for entry in document["positions"]],
+        "pose_keys": pose_keys,
+    }
+    return document
+
+
+def test_graph_change_is_the_intervention_not_an_incompatible_basis():
+    artifact = grade_room_median(
+        read_room_median(_comparison_document(graph="candidate")),
+        incumbent=read_room_median(_comparison_document(graph="incumbent")),
+    ).to_dict()
+
+    comparison = artifact["comparison"]
+    assert comparison["available"] is True
+    assert comparison["basis_status"] == "compatible"
+    assert comparison["incompatible_fields"] == []
+    assert comparison["intervention_fields"] == [
+        "candidate_id", "graph_fingerprint", "graph_scope",
+        "submitted_graph_fingerprint",
+    ]
+
+
+def test_known_capture_basis_mismatch_withholds_the_comparison():
+    artifact = grade_room_median(
+        read_room_median(_comparison_document(graph="candidate", side="right")),
+        incumbent=read_room_median(_comparison_document(graph="incumbent")),
+    ).to_dict()
+
+    assert artifact["comparison"]["available"] is False
+    assert artifact["comparison"]["basis_status"] == "incompatible"
+    assert artifact["comparison"]["incompatible_fields"] == ["side"]
+    assert artifact["comparison"]["unavailable_reason"] == "incompatible_measurement_basis"
+    assert all(row["delta_rms_db"] is None for row in artifact["bands"])
+
+
+@pytest.mark.parametrize(("changed_field", "change"), [
+    ("pose_keys", lambda document: document["evidence"].update(
+        pose_keys=["different", *document["evidence"]["pose_keys"][1:]],
+    )),
+    ("capture_calibration", lambda document: document["evidence"]["basis"][
+        "capture_calibration"
+    ].update(curve_fingerprint="curve-2")),
+    ("calibration_reference", lambda document: document["evidence"]["basis"].update(
+        capture_calibration=None,
+        calibration_reference="cal-2",
+        calibration_applied=True,
+    )),
+])
+def test_pose_or_calibration_change_withholds_comparison(changed_field, change):
+    candidate = _comparison_document(graph="candidate")
+    change(candidate)
+
+    artifact = grade_room_median(
+        read_room_median(candidate),
+        incumbent=read_room_median(_comparison_document(graph="incumbent")),
+    ).to_dict()
+
+    assert artifact["comparison"]["available"] is False
+    assert artifact["comparison"]["incompatible_fields"] == [changed_field]
+    assert all(row["delta_rms_db"] is None for row in artifact["bands"])
+
+
+def test_legacy_unknown_basis_is_disclosed_without_blocking_comparison():
+    artifact = grade_room_median(
+        read_room_median(room_median_document()),
+        incumbent=read_room_median(room_median_document(**INCUMBENT)),
+    ).to_dict()
+
+    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["basis_status"] == "unknown"
+    assert "capture_calibration" in artifact["comparison"]["unknown_fields"]
+    assert "calibration_applied" in artifact["comparison"]["unknown_fields"]
+
+
 def _grid_cropped_below(document: dict[str, Any], hi_hz: float) -> dict[str, Any]:
     """``document`` with its grid cropped below ``hi_hz``. The door checks that a
     median's grid stays inside the room band, not that it spans it, so this is
@@ -195,6 +344,10 @@ def test_a_band_the_incumbent_never_measured_grades_as_unknown():
     artifact = graded.to_dict()
 
     top = artifact["bands"][2]
+    assert top["n_bins"] == 0
+    assert top["rms_db"] is None
+    assert top["max_db"] is None
+    assert top["spread_db"] is None
     assert top["incumbent_n_bins"] == 0
     assert top["incumbent_rms_db"] is None
     assert top["delta_rms_db"] is None

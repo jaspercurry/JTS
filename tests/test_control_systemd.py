@@ -57,7 +57,7 @@ def test_unit_file_exists():
 
 
 def test_grouping_reconcile_trailing_service_runs_fixed_helper():
-    from jasper.control import server as control_server
+    from jasper.control.handlers import grouping as control_server
 
     unit = GROUPING_TRAILING_SERVICE_PATH.read_text()
     assert (

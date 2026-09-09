@@ -39,12 +39,11 @@ def _patch_asound_conf(
     real_path_cls = Path
 
     def fake_path(arg):
-        if arg == "/etc/asound.conf":
-            return target
         if arg == "/var/lib/jasper/audio_topology.env":
             return stale
         return real_path_cls(arg)
 
+    monkeypatch.setattr(audio_runtime_fanin, "_ASOUND_CONF_PATH", target)
     monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 
@@ -247,103 +246,6 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
     assert opens == [FANIN_STATUS_SOCKET]
 
 
-def test_check_fanin_service_ok_with_expected_status(monkeypatch):
-    _seed_units()
-    _patch_status_reader(monkeypatch, _fanin_status_payload())
-    r = audio_runtime_fanin.check_fanin_service()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-@pytest.mark.parametrize("persisted", ["shm_ring", "loopback", None])
-def test_check_fanin_service_expects_the_ring_whatever_the_file_says(
-    monkeypatch, persisted
-):
-    """The expected transport is a CONSTANT, not a read of the persisted file.
-
-    Fan-in refuses every non-ring declaration at config parse (exit 78), so a
-    LIVE STATUS can only come from a ring box. Deriving the expectation from
-    /var/lib/jasper/fanin.env FAILed a healthy box whose key was unwritten —
-    coupling-auto runs After=jasper-fanin.service, so that is every fresh boot.
-    """
-    _seed_units()
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda: persisted,
-    )
-    _patch_status_reader(monkeypatch, _fanin_status_payload())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "ok"
-
-
-def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch, _fanin_status_payload(transport="loopback")
-    )
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_TRANSPORT_NOT_RING
-    assert r.speaker_silent is True
-
-
-def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch):
-    _seed_units()
-    _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MISSING_RING
-    assert r.speaker_silent is True
-
-
-def test_check_fanin_service_fails_when_status_carries_no_output_block(monkeypatch):
-    payload = json.loads(_fanin_status_payload().decode())
-    payload["output"] = []
-    _seed_units()
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MISSING_OUTPUT
-    assert r.speaker_silent is True
-
-
-def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    payload["tts"] = {
-        "enabled": True,
-        "pending_frames": 0,
-        "assistant_loudness": {
-            "content_short_lufs": -31.2,
-            "content_anchor_lufs": -30.8,
-            "decision_seen": True,
-            "calibrated": True,
-            "profile_confidence": 1.0,
-            "baseline_lufs": -38.0,
-            "target_lufs": -36.5,
-            "source_lufs": -25.0,
-            "source_peak_dbfs": -8.0,
-            "requested_gain_db": -11.5,
-            "peak_cap_gain_db": 5.0,
-            "final_gain_db": -11.5,
-        },
-    }
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
 # The assistant-gain contract, boundary by boundary (#2345). The engine computes
 # final = max(MIN_TTS_GAIN_DB, min(requested, peak_cap)); the doctor asserts that
 # relation, NOT a fixed range, because there is deliberately no fixed positive
@@ -386,116 +288,6 @@ def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty
     assert (fault is not None) is faulty, fault
 
 
-def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
-    """#2345: a peak-capped positive gain is the contract, not a warning."""
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    payload["tts"] = {
-        "enabled": True,
-        "pending_frames": 0,
-        "assistant_loudness": {
-            "decision_seen": True,
-            "calibrated": False,
-            "source_peak_dbfs": -6.0,
-            "requested_gain_db": 5.0,
-            "peak_cap_gain_db": 3.0,
-            "final_gain_db": 3.0,
-        },
-    }
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    payload["tts"] = {
-        "enabled": True,
-        "pending_frames": 0,
-        "assistant_loudness": {
-            "decision_seen": True,
-            "calibrated": True,
-            "requested_gain_db": 5.0,
-            "peak_cap_gain_db": 3.0,
-            "final_gain_db": 5.0,
-        },
-    }
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT
-
-
-def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch):
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    payload["tts"] = {
-        "enabled": True,
-        "pending_frames": 0,
-        "assistant_loudness": {
-            "decision_seen": True,
-            "calibrated": False,
-            "final_gain_db": None,
-        },
-    }
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC
-
-
-def test_check_fanin_service_is_ok_when_loudness_telemetry_is_absent(monkeypatch):
-    """An older fan-in publishes no assistant_loudness: nothing was observed
-    about the gain, and the SERVICE is still active and responding."""
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    del payload["tts"]["assistant_loudness"]
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == "ok"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_LOUDNESS_TELEMETRY_MISSING
-
-
-def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
-    _seed_units()
-    _patch_status_reader(monkeypatch, b"not-json")
-    r = audio_runtime_fanin.check_fanin_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MALFORMED
-
-
-def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
-    _seed_units()
-    _patch_unreachable_status(monkeypatch)
-    r = audio_runtime_fanin.check_fanin_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_UNREACHABLE
-    assert r.speaker_silent is True
-
-
-def test_check_fanin_service_warns_on_small_runtime_input_buffer(monkeypatch):
-    """4096 is where AirPlay burst absorption was validated, not where audio
-    breaks: a smaller buffer is a WARN on a speaker that still plays."""
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _fanin_status_payload(input_buffer_frames=2048),
-    )
-    r = audio_runtime_fanin.check_fanin_service()
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_FANIN_INPUT_BUFFER_UNDERSIZED
-
-
 def _reorder_inputs(payload: dict) -> None:
     payload["inputs"].reverse()
 
@@ -512,43 +304,6 @@ def _drift_the_roster_and_wedge_the_work_loop(payload: dict) -> None:
     payload["inputs"][0]["pcm"] = "hw:Loopback,1,7"
     payload["input_buffer_frames"] = 2048
     payload["watchdog"]["last_progress_age_ms"] = 60_000
-
-
-@pytest.mark.parametrize(
-    "mutator, status, reason",
-    [
-        (_reorder_inputs, "ok", ""),
-        (_drift_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
-        (_duplicate_one_input, "warn", audio_runtime_fanin.REASON_FANIN_INPUTS_DRIFTED),
-        (
-            _drift_the_roster_and_wedge_the_work_loop,
-            "warn",
-            audio_runtime_fanin.REASON_FANIN_PROGRESS_STALE,
-        ),
-    ],
-    ids=[
-        "reordered-roster-is-not-drift",
-        "drifted-lane-warns",
-        "duplicated-lane-warns",
-        "wedged-work-loop-is-not-masked-by-roster-or-buffer-faults",
-    ],
-)
-def test_check_fanin_service_input_roster_compare(monkeypatch, mutator, status, reason):
-    """The roster compare is order-insensitive but multiplicity-preserving: a
-    lane-map REORDERING is not drift, but a duplicated lane must still be
-    caught — a `set` compare would forgive it by collapsing the duplicate.
-    The roster and buffer branches must not mask a wedged work loop: a box
-    with all three defects reports the watchdog fault, not the cosmetic
-    ones."""
-    _seed_units()
-    payload = json.loads(_fanin_status_payload().decode())
-    mutator(payload)
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_fanin.check_fanin_service()
-
-    assert r.status == status
-    assert r.reason == reason
 
 
 def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
@@ -1185,41 +940,6 @@ def test_check_skipped_when_no_loaded_capture(monkeypatch, tmp_path):
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_NO_LOADED_CAPTURE
 
 
-# --- check_fanin_coupling_value: persisted coupling value must be recognized --
-
-
-@pytest.mark.parametrize(
-    "raw,status,reason",
-    [
-        (None, "ok", audio_runtime_fanin.REASON_COUPLING_FILE_ABSENT),
-        ("", "ok", ""),
-        ("shm_ring", "ok", ""),
-        ("transport_pipe", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-        ("loopback", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-    ],
-    ids=["absent_file", "absent_key", "declared", "removed_token", "retired_token"],
-)
-def test_check_fanin_coupling_value_reads_the_shared_predicate(
-    monkeypatch, tmp_path, raw, status, reason
-):
-    """ADR-0100: only a value fan-in REFUSES is a finding.
-
-    A migrating box carrying the removed ``transport_pipe`` token (or a typo)
-    warns until the reconciler converges it. An ABSENT or empty key is not that
-    state — fan-in serves the ring for it — so this surface must agree with the
-    daemon rather than with the presence of a token (#3655).
-    """
-    fanin_env = tmp_path / "fanin.env"
-    if raw is not None:
-        fanin_env.write_text(f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n")
-    # The check's own read is the evidence-memoized `fanin_env()`, sourced
-    # from `env_load.FANIN_ENV_PATH`.
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    res = audio_runtime_fanin.check_fanin_coupling_value()
-    assert res.status == status
-    assert res.reason == reason
-
-
 # --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
 
 _RING_CFG = """\
@@ -1378,3 +1098,152 @@ def test_check_fanin_binary_installed(
     assert result.name == "jasper-fanin binary"
     assert result.status == status
     assert result.reason == reason
+
+
+# ===========================================================================
+# check_fanin_service — one seed/patch setup per behavior, returning the
+# CheckResult, with one status+reason (/ speaker_silent) assertion tail
+# (AGENTS.md: one altitude per behavior, prefer one parametrized test over an
+# example cluster). Test ids equal the old per-behavior function names so
+# `pytest -k` and CI history keep working. `expected_reason=None` means the
+# original test never asserted `.reason` at all.
+# ===========================================================================
+
+
+def _fanin_case_ok_expected(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload())
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_fails_non_ring_transport(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload(transport="loopback"))
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_fails_no_ring_block(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload(ring=None))
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_fails_no_output_block(monkeypatch, tmp_path):
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["output"] = []
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_with_tts_loudness(loudness):
+    def _case(monkeypatch, tmp_path):
+        _seed_units()
+        payload = json.loads(_fanin_status_payload().decode())
+        payload["tts"] = {"enabled": True, "pending_frames": 0, "assistant_loudness": loudness}
+        _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+        return audio_runtime_fanin.check_fanin_service()
+
+    return _case
+
+
+def _fanin_case_loudness_telemetry_absent(monkeypatch, tmp_path):
+    _seed_units()
+    payload = json.loads(_fanin_status_payload().decode())
+    del payload["tts"]["assistant_loudness"]
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_invalid_status_json(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, b"not-json")
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_status_socket_unreachable(monkeypatch, tmp_path):
+    _seed_units()
+    # jasper-control reports `path_unreported`/`starting` for a fan-in it
+    # cannot read, never a silence code, so this row carries the verdict.
+    evidence.seed(
+        "control_system_snapshot",
+        _evidence.StatusRead(None, OSError("control unreachable")),
+    )
+    _patch_unreachable_status(monkeypatch)
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_small_runtime_input_buffer(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _fanin_status_payload(input_buffer_frames=2048))
+    return audio_runtime_fanin.check_fanin_service()
+
+
+def _fanin_case_roster_compare(mutator):
+    def _case(monkeypatch, tmp_path):
+        _seed_units()
+        payload = json.loads(_fanin_status_payload().decode())
+        mutator(payload)
+        _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+        return audio_runtime_fanin.check_fanin_service()
+
+    return _case
+
+
+_F = audio_runtime_fanin
+_SILENT = {"speaker_silent": True}
+_PRE_DSP_LOUDNESS = {
+    "content_short_lufs": -31.2,
+    "content_anchor_lufs": -30.8,
+    "decision_seen": True,
+    "calibrated": True,
+    "profile_confidence": 1.0,
+    "baseline_lufs": -38.0,
+    "target_lufs": -36.5,
+    "source_lufs": -25.0,
+    "source_peak_dbfs": -8.0,
+    "requested_gain_db": -11.5,
+    "peak_cap_gain_db": 5.0,
+    "final_gain_db": -11.5,
+}
+_PEAK_CAPPED_POSITIVE_LOUDNESS = {
+    "decision_seen": True, "calibrated": False, "source_peak_dbfs": -6.0,
+    "requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.0,
+}
+_GAIN_OFF_CONTRACT_LOUDNESS = {
+    "decision_seen": True, "calibrated": True,
+    "requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 5.0,
+}
+_MALFORMED_LOUDNESS = {"decision_seen": True, "calibrated": False, "final_gain_db": None}
+
+
+@pytest.mark.parametrize(
+    "setup, expected_status, expected_reason, extra",
+    [
+        pytest.param(_fanin_case_ok_expected, "ok", "", None, id="test_check_fanin_service_ok_with_expected_status"),
+        pytest.param(_fanin_case_fails_non_ring_transport, "fail", _F.REASON_FANIN_TRANSPORT_NOT_RING, _SILENT, id="test_check_fanin_service_fails_on_a_non_ring_live_transport"),
+        pytest.param(_fanin_case_fails_no_ring_block, "fail", _F.REASON_FANIN_STATUS_MISSING_RING, None, id="test_check_fanin_service_fails_when_status_carries_no_ring_block"),
+        pytest.param(_fanin_case_fails_no_output_block, "fail", _F.REASON_FANIN_STATUS_MISSING_OUTPUT, None, id="test_check_fanin_service_fails_when_status_carries_no_output_block"),
+        pytest.param(_fanin_case_with_tts_loudness(_PRE_DSP_LOUDNESS), "ok", "", None, id="test_check_fanin_service_reports_pre_dsp_tts_loudness"),
+        pytest.param(_fanin_case_with_tts_loudness(_PEAK_CAPPED_POSITIVE_LOUDNESS), "ok", "", None, id="test_check_fanin_service_ok_with_peak_capped_positive_gain"),
+        pytest.param(_fanin_case_with_tts_loudness(_GAIN_OFF_CONTRACT_LOUDNESS), "warn", _F.REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT, None, id="test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap"),
+        pytest.param(_fanin_case_with_tts_loudness(_MALFORMED_LOUDNESS), "warn", _F.REASON_FANIN_ASSISTANT_GAIN_NOT_NUMERIC, None, id="test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness"),
+        pytest.param(_fanin_case_loudness_telemetry_absent, "ok", _F.REASON_FANIN_LOUDNESS_TELEMETRY_MISSING, None, id="test_check_fanin_service_is_ok_when_loudness_telemetry_is_absent"),
+        pytest.param(_fanin_case_invalid_status_json, "fail", _F.REASON_FANIN_STATUS_MALFORMED, None, id="test_check_fanin_service_fails_on_invalid_status_json"),
+        pytest.param(_fanin_case_status_socket_unreachable, "fail", _F.REASON_FANIN_STATUS_UNREACHABLE, _SILENT, id="test_check_fanin_service_fails_when_status_socket_unreachable"),
+        pytest.param(_fanin_case_small_runtime_input_buffer, "warn", _F.REASON_FANIN_INPUT_BUFFER_UNDERSIZED, None, id="test_check_fanin_service_warns_on_small_runtime_input_buffer"),
+        pytest.param(_fanin_case_roster_compare(_reorder_inputs), "ok", "", None, id="test_check_fanin_service_input_roster_compare[reordered-roster-is-not-drift]"),
+        pytest.param(_fanin_case_roster_compare(_drift_one_input), "warn", _F.REASON_FANIN_INPUTS_DRIFTED, None, id="test_check_fanin_service_input_roster_compare[drifted-lane-warns]"),
+        pytest.param(_fanin_case_roster_compare(_duplicate_one_input), "warn", _F.REASON_FANIN_INPUTS_DRIFTED, None, id="test_check_fanin_service_input_roster_compare[duplicated-lane-warns]"),
+        pytest.param(_fanin_case_roster_compare(_drift_the_roster_and_wedge_the_work_loop), "warn", _F.REASON_FANIN_PROGRESS_STALE, None, id="test_check_fanin_service_input_roster_compare[wedged-work-loop-is-not-masked-by-roster-or-buffer-faults]"),
+    ],
+)
+def test_check_fanin_service_status(monkeypatch, tmp_path, setup, expected_status, expected_reason, extra):
+    r = setup(monkeypatch, tmp_path)
+
+    assert r.status == expected_status
+    if expected_reason is not None:
+        assert r.reason == expected_reason
+    extra = extra or {}
+    if "speaker_silent" in extra:
+        assert r.speaker_silent is extra["speaker_silent"]

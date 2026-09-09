@@ -211,7 +211,7 @@ def _isolate_environ():
 def _isolate_tts_wire_width_cache():
     """Clear the per-process assistant-width answer before AND after each test.
 
-    ``jasper.audio_io.tts_wire_is_wide`` is ``lru_cache``'d on purpose: the two
+    ``jasper.tts_playout.tts_wire_is_wide`` is ``lru_cache``'d on purpose: the two
     callers that ask (the playout's quantizer and the daemon's earcon bake) must
     get ONE answer, and in production the daemon is restarted by anything that
     could change it. In a test process there is no restart, so the cache is a
@@ -224,11 +224,11 @@ def _isolate_tts_wire_width_cache():
     forward; clearing BEFORE means a test does not inherit one from a file that
     forgot to clean up, so this fixture is not itself a thing to remember.
 
-    IT MUST NOT IMPORT ``jasper.audio_io``, and that is a CI constraint rather
+    IT MUST NOT IMPORT ``jasper.tts_playout``, and that is a CI constraint rather
     than a preference. This fixture is autouse, so its body runs at the setup of
     EVERY test in the repo — including the ``python-policy`` job, which installs
     only the ``fast-landing`` dependency group and therefore has no numpy, while
-    ``jasper/audio_io.py`` imports numpy at module level. An unconditional import
+    ``jasper/tts_playout.py`` imports numpy at module level. An unconditional import
     here errored all 93 of that job's tests at setup, and because ``pytest-matrix``
     runs ``needs: python-policy``, one fixture took the entire Python matrix down
     with it.
@@ -240,7 +240,7 @@ def _isolate_tts_wire_width_cache():
     """
 
     def _clear() -> None:
-        module = sys.modules.get("jasper.audio_io")
+        module = sys.modules.get("jasper.tts_playout")
         if module is not None:
             module.tts_wire_is_wide.cache_clear()
 

@@ -40,6 +40,61 @@ def test_unit_predicates_match_read_unit_states_record_shape(
     assert service_units.unit_activating(record) is activating
 
 
+@pytest.mark.parametrize(
+    ("record", "code"),
+    [
+        (None, "missing"),
+        ({}, None),
+        ({"load_state": "not-found", "active_state": "inactive"}, "missing"),
+        (
+            {"load_state": "loaded", "unit_file_state": "disabled",
+             "active_state": "inactive"},
+            "not_enabled",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "inactive"},
+            "inactive",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "activating"},
+            "starting",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "reloading"},
+            "starting",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "failed"},
+            "inactive",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "active"},
+            None,
+        ),
+        (
+            {"load_state": "error", "unit_file_state": "enabled",
+             "active_state": "inactive"},
+            "inactive",
+        ),
+    ],
+    ids=[
+        "absent", "empty", "not-found", "not-enabled", "loaded-inactive",
+        "activating", "reloading", "failed", "active", "load-state-error",
+    ],
+)
+def test_unit_not_running_reads_the_unit_record(record, code):
+    """The one classification :mod:`jasper.control.audio_health` and
+    jasper-doctor's ``_service_state_failure`` share for "this unit is not
+    doing its job". ``load_state == "error"`` is NOT ``"missing"`` (#2163):
+    origin/main's ladder only treats ``"not-found"`` that way."""
+    assert service_units.unit_not_running(record) == code
+
+
 # The two cases jasper.web._unit_snapshot's now-retired parser pinned that
 # read_unit_states' own contract did not yet have a test for (ADR-0233 rule
 # 1 fold-in): tolerating systemctl's returncode 1 for a partially-answered

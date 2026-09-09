@@ -38,7 +38,7 @@ use jasper_tts_protocol::{
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
 /// Fan-in's assistant wire protocol is contractually 48 kHz stereo
-/// (`TtsPlayout.__init__` in jasper/audio_io.py hardcodes this rate) and
+/// (`TtsPlayout.__init__` in jasper/tts_playout.py hardcodes this rate) and
 /// matches the snd-aloop mix rate, so the playout ledger's frames->ms math
 /// is fixed at 48 kHz.
 const TTS_SAMPLE_RATE: u32 = 48_000;

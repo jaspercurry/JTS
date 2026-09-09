@@ -240,9 +240,11 @@ def test_both_pairs_the_regimes_so_the_microphone_moves_once_per_angle():
     ]
 
 
-def test_the_regime_table_covers_every_regime_the_seam_declares():
-    """A regime added to the seam must gain a verb here, not be silently absent."""
-    assert set(REGIMES) <= set(cli._REGIME_STOPS)
+def test_free_angle_regimes_exclude_the_batch_that_requires_a_named_candidate():
+    from jasper.active_speaker.angle_capture import REGIME_BRANCHES
+
+    assert set(REGIMES) - {REGIME_BRANCHES} <= set(cli._REGIME_STOPS)
+    assert REGIME_BRANCHES not in cli._REGIME_STOPS
 
 
 # --------------------------------------------------------------------------- #
@@ -833,6 +835,35 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert taken.program == "baseline/express"
 
 
+@pytest.mark.parametrize(
+    ("program_id", "size_args", "expected_size"),
+    [
+        ("room", [], "cloud"),
+        ("room", ["--size", "quick"], "quick"),
+        ("seat", [], "cloud"),
+        ("seat", ["--size", "cube"], "cube"),
+        ("seat", ["--size", "express"], "express"),
+        ("baseline", [], "express"),
+        ("tournament", [], "express"),
+    ],
+)
+def test_stage_program_defaults_preserve_explicit_sizes(
+    slot, capsys, program_id, size_args, expected_size,
+):
+    row = mp.program(program_id, expected_size)
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", program_id, "--mover", "human", *size_args]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+
+    assert (body["program"], body["size"]) == (program_id, expected_size)
+    assert body["stops_count"] == row.capture_count
+    assert body["price"]["captures"] == row.capture_count
+    assert body["price"]["mic_moves"] == row.mic_move_count
+    assert spool.take_staged_angle_request() == request_for_program(row, mover=MOVER_HUMAN)
+
+
 def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
@@ -1001,6 +1032,9 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
         "vertical_deg": 0,
         "regime": REGIME_PER_DRIVER,
         "candidate_id": None,
+        "purpose": "speaker",
+        "baseline_scope": "base",
+        "prompt": resolve_request(request_for_program(mp.program("baseline", "full")))[0].prompt.text,
     }
     assert body["out"] == str(path)
     assert body["next"] == "jasper-round open --tier full"
@@ -1233,3 +1267,15 @@ def test_mutation_the_busy_guard_cannot_be_removed(slot):
     # The positive control: the SAME request, the same slot, an idle speaker.
     volume_state.unlink()
     assert spool.stage_angle_request(per_driver_at([0])).is_file()
+
+
+def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slot, capsys):
+    args = cli.build_parser().parse_args(["stage", "--program", "room", "--size", "quick", "--mover", "arm"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["stops_count"] == 3
+    assert receipt["next"] == "jasper-round open --tier remote"
+    assert [s["azimuth_deg"] for s in receipt["stops"]] == [0, -20, 20]
+    assert {(s["purpose"], s["baseline_scope"], s["regime"]) for s in receipt["stops"]} == {
+        ("room", "speaker_tune", "summed"),
+    }

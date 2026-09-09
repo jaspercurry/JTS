@@ -3571,14 +3571,6 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
 # readiness gate (`_refuse_follower_bond`).
 
 
-def _arm_ring_for_reconcile(monkeypatch):
-    """Make main()'s read_persisted_coupling report shm_ring (ring-armed box)."""
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
-
-
 def _refuse_follower_bond(monkeypatch):
     """Make main() take a LIVE fail-safe refusal on a follower.
 
@@ -3782,7 +3774,6 @@ def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     # ACTIVE box: roleful topology, so no flat DAC graph is permitted and the
     # dac_content lane is cleared by outputd_grouping_env.
     monkeypatch.setattr(reconcile_mod, "output_topology_state", lambda: (True, False))
-    _arm_ring_for_reconcile(monkeypatch)
 
     import logging
 
@@ -3803,24 +3794,17 @@ def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     ), status
 
 
-@pytest.mark.parametrize("coupling", ["shm_ring", "loopback"])
-def test_a_dumb_member_bonds_under_either_coupling(tmp_path, monkeypatch, coupling):
-    """THE CUTOVER: the fan-in coupling no longer gates a DUMB member's bond.
+def test_a_dumb_member_bonds(tmp_path, monkeypatch):
+    """THE CUTOVER: the fan-in transport no longer gates a DUMB member's bond.
 
     A ring-armed box used to be REFUSED here, because its round-trip lane was a
     raw-PCM FIFO that needed outputd on the snd-aloop content PCM an armed ring
     moves CamillaDSP off — two content sources, one DAC. Armed onto the
     dac-content RETURN ring instead, outputd resolves its central `shm_ring` to
-    None, so the ring strands nothing and the coupling matrix's one blocked cell
-    no longer matches. `loopback` is the shape that always bonded; both now
-    reach the same place."""
+    None, so the ring strands nothing and the blocked cell no longer matches."""
     import json
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: coupling,
-    )
 
     assert main([]) == 0
     assert "camilla_bonded" in order
@@ -3963,15 +3947,3 @@ def test_refused_follower_with_unknown_crossover_state_keeps_sources_denied(
     assert status["local_sources_allowed"] is False
     assert status["blocked_reason"] == "crossover_ownership_state_unknown"
     assert status["active_follower"] is False
-
-
-def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
-    # Control: a non-ring (loopback) box bonds as before — the gate is ring-only.
-    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
-    rc = main([])
-    assert rc == 0
-    assert "camilla_bonded" in order

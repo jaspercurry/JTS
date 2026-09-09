@@ -16,11 +16,8 @@ from enum import Enum
 from jasper.log_event import log_event
 
 from .audio_buffer import AudioBuffer
-from .audio_io import (
-    InputDeviceUnavailable,
-    MicCapture,
-    TtsPlayout,
-)
+from .mic_capture import InputDeviceUnavailable, MicCapture
+from .tts_playout import TtsPlayout
 from .wake_events import (
     WakeEventStore,
     make_event_id,
@@ -2665,14 +2662,7 @@ class WakeLoop:
         counted: bool = False,
         **fields: object,
     ) -> bool:
-        """Journal one no-answer turn; say whether it is owed a cue.
-
-        An ending the household or the daemon chose (`end_reason` in
-        `NO_ANSWER_CUE_SUPPRESSED_REASONS`) is not "asked and got no
-        answer": it names itself in the record and is neither counted,
-        nor warned about, nor spoken about — but it is still journalled,
-        or a zero-answer turn would leave no trace at all.
-        """
+        """Journal no-answer turns; suppress cues for deliberate endings."""
         suppressed = end_reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
         if counted and not suppressed:
             self._silent_responses_session += 1
@@ -2735,8 +2725,12 @@ class WakeLoop:
             finally:
                 self._reset_turn()
 
+    def _reply_lost(self) -> bool:
+        assert self._turn is not None
+        return self._turn.turn_lost() and not self._turn.server_turn_complete()
+
     async def _record_turn_outcome(self, reason: str) -> None:
-        failed = reason == "playback_failed"
+        failed = reason == "playback_failed" or self._reply_lost()
         self._emit_turn_timeline("failed" if failed else "complete")
         if not failed:
             await self._wake_telemetry.stage("turn_complete")
@@ -2834,10 +2828,7 @@ class WakeLoop:
             and not self._user_speech_seen
             and not self._input_ended
         )
-        lost_mid_reply = (
-            turn.turn_lost()
-            and not turn.server_turn_complete()
-        )
+        lost_mid_reply = self._reply_lost()
         silent = not self._playback_report.accepted_audio and not turn.turn_lost()
         if reason == "playback_failed":
             play_no_answer_cue = self._log_no_answer(

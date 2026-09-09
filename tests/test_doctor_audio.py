@@ -788,12 +788,12 @@ def test_recorded_silence_stays_a_failure_even_with_an_accessory(
             return types.SimpleNamespace(max=lambda: 0)
 
     stub_sounddevice(monkeypatch, _FakeSd)
-    # `check_mic_capture` imports `jasper.audio_io` unconditionally before the
+    # `check_mic_capture` imports `jasper.mic_capture` unconditionally before the
     # code this test targets; that import chain needs real `numpy.lib`. Force
     # it to happen now, before the stub below replaces `sys.modules["numpy"]`
     # — otherwise this test only passes when an earlier test in the file
     # happened to import it first.
-    import jasper.audio_io  # noqa: F401
+    import jasper.mic_capture  # noqa: F401
 
     monkeypatch.setitem(sys.modules, "numpy", _FakeNp)
     result = audio.check_mic_capture(_CFG)
@@ -845,9 +845,9 @@ def _drive_capture_open_failure_site(monkeypatch: pytest.MonkeyPatch):
     stub_sounddevice(monkeypatch, _FakeSd)
     # See the matching comment in
     # test_recorded_silence_stays_a_failure_even_with_an_accessory: prime the
-    # real `jasper.audio_io` import (needs `numpy.lib`) before the stub below
+    # real `jasper.mic_capture` import (needs `numpy.lib`) before the stub below
     # replaces `sys.modules["numpy"]`, so this test doesn't depend on test order.
-    import jasper.audio_io  # noqa: F401
+    import jasper.mic_capture  # noqa: F401
 
     monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
     return audio.check_mic_capture(_CFG)

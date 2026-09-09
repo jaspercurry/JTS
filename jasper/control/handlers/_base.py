@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 # Not `__name__`: one journal name for every route body, not one per mixin.
@@ -18,8 +18,10 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     """Methods and factory-owned state consumed by concern route mixins.
 
     The concrete nested handler in ``server._make_handler`` supplies these
-    methods and attributes. Keeping the contract here lets mypy check the
-    extracted route bodies without changing their runtime dispatch shape.
+    attributes and most of these methods; ``_maybe_forward_pair_action_to_leader``
+    is instead implemented by ``PeeringRoutes``. Keeping the contract here lets
+    mypy check the extracted route bodies without changing their runtime
+    dispatch shape.
     """
 
     _adjust_op: Any
@@ -35,6 +37,7 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     _set_op: Any
     _state_response_cache: Any
     _voice_socket_path: str
+    server: ThreadingHTTPServer
 
     def _guard_control_token(self) -> bool:
         raise NotImplementedError

@@ -16,7 +16,8 @@ Why the fact has to live HERE and not in the volume coordinator:
 ``VolumeCoordinator`` per HTTP request and disposes it in ``finally``, so no
 in-memory measurement state can survive between two requests there. This
 module is process-scoped instead — the same lifetime as jasper-control
-itself, and the same shape as ``server._grouping_reconciler_kick_coalescer``.
+itself, and the same shape as
+``handlers.grouping._grouping_reconciler_kick_coalescer``.
 ``jasper/volume_coordinator.py`` is deliberately untouched by this design.
 
 Contract:
@@ -336,8 +337,9 @@ class MeasurementHold:
 
 
 # The process-scoped singleton. Module-level for the same reason
-# server._grouping_reconciler_kick_coalescer is: jasper-control's Handler is
-# instantiated per request, so cross-request state cannot live on it.
+# handlers.grouping._grouping_reconciler_kick_coalescer is: jasper-control's
+# Handler is instantiated per request, so cross-request state cannot live
+# on it.
 _hold = MeasurementHold()
 
 

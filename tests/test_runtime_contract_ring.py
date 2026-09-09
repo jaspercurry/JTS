@@ -7,7 +7,7 @@
 Two P2 contracts:
   1. topology_supports_shm_ring — ring is stereo-only (not roleful, not
      composite; requires an explicit passive stereo layout).
-  2. safe_graph_for_current_topology(coupling="shm_ring") re-seeds the RING flat
+  2. safe_graph_for_current_topology() re-seeds the RING flat
      config on a ring-armed box, not the loopback flat config — audit finding 5's
      built-in-revert dies here.
 """
@@ -398,25 +398,24 @@ def test_stale_subwoofer_on_dongle_is_correctly_ineligible():
 # --- statefile seeding has ONE flat graph -----------------------------------
 
 
-def test_the_one_flat_graph_is_seeded_whatever_the_coupling(tmp_path: Path):
+def test_the_one_flat_graph_is_seeded(tmp_path: Path):
     """ADR-0100: the flat startup graph IS the ring graph.
 
     It used to pick between a loopback flat config and a ring sibling by the
-    persisted coupling; with one transport there is nothing to pick, so no
-    coupling value can seed a box onto a graph its transport cannot serve.
+    persisted coupling; with one transport there is nothing to pick, and no
+    declaration left that could seed a box onto a graph its transport cannot
+    serve.
     """
     flat = tmp_path / "outputd-cutover.yml"
     emit_flat_outputd_cutover_config(out_path=flat)
 
-    for coupling in ("shm_ring", None):
-        decision = safe_graph_for_current_topology(
-            _full_range_stereo(),
-            flat_config_path=flat,
-            coupling=coupling,
-            staged_config={},
-        )
-        assert decision.status == "select_flat", decision.reason
-        assert decision.selected_config_path == str(flat)
+    decision = safe_graph_for_current_topology(
+        _full_range_stereo(),
+        flat_config_path=flat,
+        staged_config={},
+    )
+    assert decision.status == "select_flat", decision.reason
+    assert decision.selected_config_path == str(flat)
 
 
 def _render_names(tmp_path: Path, topology) -> set[str]:

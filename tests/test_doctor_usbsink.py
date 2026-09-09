@@ -1266,7 +1266,7 @@ def _setup_combo(
     )
     # The check's own read is the evidence-memoized `fanin_env()`, sourced
     # from `env_load.FANIN_ENV_PATH` (`declare_fanin_env` only patches
-    # `ring_health`'s copy, for its other non-doctor callers).
+    # `ring_readiness`'s copy, for its other non-doctor callers).
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env_path))
 
 

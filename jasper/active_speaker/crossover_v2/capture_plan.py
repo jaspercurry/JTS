@@ -22,6 +22,7 @@ from itertools import groupby
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
+from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
@@ -35,7 +36,7 @@ from jasper.audio_measurement.program import (
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
-from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT
+from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT, pose_place
 from . import contracts as _contracts
 from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
@@ -172,6 +173,13 @@ class CloudPositionPrompt:
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
+    purpose: str | None = None
+    preserve_text: bool = False
+
+    @property
+    def place(self) -> tuple[object, ...]:
+        return pose_place(self.kind, position_angle_deg(self), position_elevation_deg(self),
+                          self.distance_m, self.seat_offset_m)
 
     @property
     def wide(self) -> bool:
@@ -1381,7 +1389,7 @@ def _positioned_prompt(
     ``role`` are untouched, so a gated session's evidence stays comparable with
     a tape-measured one's.
     """
-    if shape is not None and shape.positions_gated:
+    if shape is not None and shape.positions_gated and not prompt.preserve_text:
         return remote_position_prompt(prompt)
     return prompt
 
@@ -1432,9 +1440,7 @@ def _candidate_batch_screens(
         return {}
     screens = {}
     for _pose, group in groupby(
-        enumerate(prompts), key=lambda row: (
-            position_angle_deg(row[1]), position_elevation_deg(row[1]),
-        ),
+        enumerate(prompts), key=lambda row: row[1].place,
     ):
         offsets = [offset for offset, _prompt in group]
         for ordinal, offset in enumerate(offsets, 1):
@@ -1497,6 +1503,7 @@ def build_v2_capture_plan(
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     lateral_candidate_ids: Sequence[str] | None = None,
+    branch_diagnostic: bool = False,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan.
 
@@ -1572,6 +1579,8 @@ def build_v2_capture_plan(
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     cloud_ms = _program_duration_ms(cloud) + CAPTURE_ENTRY_MARGIN_MS
+    if branch_diagnostic:
+        cloud_ms = _program_duration_ms(build_branch_program(cloud, {r.role: r.channel for r in roles})) + CAPTURE_ENTRY_MARGIN_MS
     measure_ms = _program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS
     # One policy for every entry of this plan. The first entry's value is inert:
     # the page starts round 1 from the spec's own begin button and only reads
@@ -1643,9 +1652,11 @@ def build_v2_capture_plan(
         prompt = _positioned_prompt(lateral_table[offset], shape)
         policy = _entry_policy(shape, prompt)
         batch = candidate_screens.get(capture_index, {})
+        if branch_diagnostic and not prompt.preserve_text:
+            batch = {**batch, "title": "Measure woofer, tweeter and both", "body": "Keep the mic still for all five sweeps. The repeated solo sweeps check the recording clock."}
         if batch:
             policy[POSITION_HAND_RELEASED_KEY] = str(not shape.externally_positioned).lower()
-            if int(batch[POSITION_BATCH_CONFIG_KEY]) > 1:
+            if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
                 policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
                               countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
         entries.append(
@@ -2103,6 +2114,7 @@ def build_v2_session_spec(
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     lateral_candidate_ids: Sequence[str] | None = None,
+    branch_diagnostic: bool = False,
     **spec_kwargs: Any,
 ) -> Any:
     """One stage-1 capture spec, optionally including the pre-apply cloud.
@@ -2126,6 +2138,7 @@ def build_v2_session_spec(
         include_entry_baseline=include_entry_baseline,
         lateral_prompts=lateral_prompts,
         lateral_candidate_ids=lateral_candidate_ids,
+        branch_diagnostic=branch_diagnostic,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     # EITHER group makes this a walk. The entry baseline is deliberately NOT a

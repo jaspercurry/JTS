@@ -269,6 +269,7 @@ def _driver_response(
     radiated_band_hz: tuple[float, float] | None = None,
     capture_segment: np.ndarray | None = None,
     gate_exempt_reason: str | None = None,
+    preserve_timing: bool = False,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
@@ -319,6 +320,8 @@ def _driver_response(
         validity_floor_hz = _gate_floor_hz(fragment)
 
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
+    if preserve_timing:
+        H = H * np.exp(-2j * np.pi * freqs * window[0] / sample_rate)
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
 
     snr_block = _driver_snr_block(

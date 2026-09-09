@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+plots = ["matplotlib>=3.8,<4"]
 streambox = [
     # Streambox = local renderers, CamillaDSP, and the assistant reached only
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
@@ -257,7 +258,7 @@ include = ["jasper", "jasper.*"]
 [tool.setuptools.package-data]
 "jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
-"jasper.active_speaker" = ["presets/*.json"]
+"jasper.active_speaker" = ["measurement_plans.json", "presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -356,7 +357,6 @@ module = [
     "jasper.active_speaker.topology_tone",
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
-    "jasper.audio_io",
     # calibration and peq: latent type debt kept on the baseline, not fixed
     # inside a relocation.
     "jasper.audio_measurement.calibration",
@@ -380,6 +380,7 @@ module = [
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
     "jasper.home_assistant",
+    "jasper.mic_capture",
     "jasper.multiroom.leader_config",
     "jasper.multiroom.member_config",
     "jasper.mux",
@@ -397,6 +398,7 @@ module = [
     "jasper.transit",
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
+    "jasper.tts_playout",
     "jasper.usage",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
@@ -443,7 +445,7 @@ layers = [
   "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_fusion : wake_models : weather",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
   "aec_engines : bluealsa_probe : identity.speaker_name : identity.speaker_name_discovery : mics : usb_network : usbgadget : xvf",
-  "airplay_mode : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
+  "airplay_mode : airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : percentiles : platform : secret_redaction : service_units : shell_env : transition_log : watchdog",
 ]
 exhaustive = true
@@ -459,7 +461,6 @@ exhaustive_ignores = [
   "audio_buffer",
   "audio_hardware",
   "audio_input_view",
-  "audio_io",
   "audio_lab",
   "audio_measurement",
   "audio_profile_state",
@@ -489,6 +490,7 @@ exhaustive_ignores = [
   "local_sources",
   "logging_setup",
   "measurement_window",
+  "mic_capture",
   "mic_presence",
   "model_downloads",
   "multiroom",
@@ -512,6 +514,7 @@ exhaustive_ignores = [
   "tools",
   "transit",
   "transport_coherence",
+  "tts_playout",
   "tts_routing",
   "usb_mic",
   "usbsink",

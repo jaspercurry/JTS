@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
 
 from .env_load import VOICE_GROUPING_ENV_FILE
+from .platform import wire
 from .tts_routing import (
     FANIN_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
@@ -49,7 +50,9 @@ class EffectiveVolumeContext:
     stamp_boot_ns: int
 
 
-VolumeContextPublisher = Callable[[EffectiveVolumeContext], Awaitable[None]]
+# Returns whether the context reached a consumer: a route whose mix stage is
+# unknown is published to nothing, and the caller's telemetry must say so.
+VolumeContextPublisher = Callable[[EffectiveVolumeContext], Awaitable[bool]]
 
 
 def volume_context_stamp_boot_ns() -> int:
@@ -60,11 +63,7 @@ def volume_context_stamp_boot_ns() -> int:
 
 def serialize_volume_context(context: EffectiveVolumeContext) -> bytes:
     """Serialize the one canonical Python representation of this command."""
-    return (
-        f"VOLUME_CONTEXT {context.canonical_db:.3f} "
-        f"{context.downstream_db:.3f} {context.tts_envelope_lufs:.3f} "
-        f"{1 if context.muted else 0} {int(context.stamp_boot_ns)}\n"
-    ).encode("ascii")
+    return wire.encode(wire.tts_volume_context(context))
 
 
 def _send_volume_context(
@@ -73,22 +72,11 @@ def _send_volume_context(
     *,
     timeout: float = 0.5,
 ) -> None:
-    payload = serialize_volume_context(context) + b"CLOSE\n"
+    payload = serialize_volume_context(context) + wire.encode(wire.TTS_CLOSE)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(socket_path)
         sock.sendall(payload)
-
-
-def make_volume_context_publisher(
-    socket_path: str = FANIN_TTS_SOCKET,
-) -> VolumeContextPublisher:
-    """Return a best-effort async publisher for one fan-in TTS socket."""
-
-    async def publish(context: EffectiveVolumeContext) -> None:
-        await asyncio.to_thread(_send_volume_context, socket_path, context)
-
-    return publish
 
 
 def _resolved_route_consumes_volume_context(
@@ -113,38 +101,33 @@ def volume_context_publisher_for_runtime(
     env: Mapping[str, str],
     *,
     grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
-    dynamic_topology: bool = False,
-) -> VolumeContextPublisher | None:
-    """Build a publisher when the active TTS route interprets VolumeContext.
+) -> VolumeContextPublisher:
+    """Return a publisher that resolves the TTS route on every publish.
 
-    That is the pre-DSP fan-in mix (solo/leader) or the confirmed post-DSP
-    outputd mix (a reconciled passive member). Both receive the SAME absolute
-    wire message on the socket the route resolved. Routes whose mix stage is
-    unknown fail closed — publishing pre-DSP compensation into an uncertain
-    stage can create a large level error.
+    The route is reconciler-owned state in a ``/var/lib/jasper`` env file that
+    changes while these daemons run (a speaker joins or leaves a group), so it
+    is read fresh per publish rather than frozen at construction.
+
+    A publish reaches the pre-DSP fan-in mix (solo/leader) or the CONFIRMED
+    post-DSP outputd mix (a reconciled passive member); both receive the SAME
+    absolute wire message on the socket the route resolved. A route whose mix
+    stage is unknown publishes nothing — pre-DSP compensation into an
+    uncertain stage can create a large level error.
     """
     process_env = dict(env)
-    if dynamic_topology:
-        async def publish(context: EffectiveVolumeContext) -> None:
-            current = resolve_tts_routing_snapshot(
-                process_env,
-                grouping_env_path=grouping_env_path,
-            )
-            if not _resolved_route_consumes_volume_context(current):
-                return
-            await asyncio.to_thread(
-                _send_volume_context,
-                current.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
-                context,
-            )
 
-        return publish
-    resolved = resolve_tts_routing_snapshot(
-        process_env,
-        grouping_env_path=grouping_env_path,
-    )
-    if not _resolved_route_consumes_volume_context(resolved):
-        return None
-    return make_volume_context_publisher(
-        resolved.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
-    )
+    async def publish(context: EffectiveVolumeContext) -> bool:
+        current = resolve_tts_routing_snapshot(
+            process_env,
+            grouping_env_path=grouping_env_path,
+        )
+        if not _resolved_route_consumes_volume_context(current):
+            return False
+        await asyncio.to_thread(
+            _send_volume_context,
+            current.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
+            context,
+        )
+        return True
+
+    return publish

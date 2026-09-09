@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 class CaptureRole(StrEnum):
     WOOFER_NEARFIELD = "woofer_nearfield"
+    # The seat-cube median, room gain included: the in-situ fit
+    # (ADR-0260 section 3).
+    SEAT_MEDIAN = "seat_median"
     PORT_NEARFIELD = "port_nearfield"
     PR_NEARFIELD = "pr_nearfield"
 
@@ -42,6 +45,28 @@ class CabinetInfo:
 
 
 COMMISSION_FLOOR_HZ = 20.0
+# Leave room for response-grid sampling and four-decimal CamillaDSP emission.
+TARGET_RESPONSE_RESERVE_DB = 0.01
+
+
+def target_response_grid() -> np.ndarray:
+    """Dense grid used to bound an emitted target's actual filter gain."""
+
+    return np.concatenate(([0.0], np.geomspace(1.0, 1_000.0, 8192)))
+
+
+def woofer_curve(
+    captures: Mapping[CaptureRole, MagnitudeCurve],
+) -> MagnitudeCurve | None:
+    """The curve every plant fit reads: the seat median (ADR-0260 section 3),
+    or a nearfield capture where one is supplied instead."""
+
+    return captures.get(
+        CaptureRole.SEAT_MEDIAN, captures.get(CaptureRole.WOOFER_NEARFIELD)
+    )
+
+
+MIN_CURVE_POINTS = 8
 
 
 def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
@@ -50,7 +75,7 @@ def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
     if (
         freqs.ndim != 1
         or len(freqs) != len(magnitude)
-        or len(freqs) < 8
+        or len(freqs) < MIN_CURVE_POINTS
         or not np.all(np.isfinite(freqs))
         or not np.all(np.isfinite(magnitude))
         or np.any(freqs <= 0.0)
@@ -60,7 +85,7 @@ def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
     return freqs, magnitude
 
 
-def _passband_normalize(freqs: np.ndarray, magnitude: np.ndarray) -> np.ndarray:
+def passband_normalize(freqs: np.ndarray, magnitude: np.ndarray) -> np.ndarray:
     passband = (freqs >= 200.0) & (freqs <= 400.0)
     if not np.any(passband):
         passband = np.arange(len(freqs)) >= max(0, int(0.8 * len(freqs)))

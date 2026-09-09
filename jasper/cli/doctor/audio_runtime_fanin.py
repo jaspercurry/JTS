@@ -32,7 +32,7 @@ from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _service_state_failure
+from ._shared import CheckResult, _service_state_failure, silence_unobserved
 from .audio_runtime_camilla import _loaded_device_fields
 
 
@@ -99,9 +99,7 @@ REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE = "host_clock_actuator_unavailable"
 REASON_HOST_CLOCK_L2_FALLBACK = "host_clock_l2_fallback"
 REASON_HOST_CLOCK_PROBING = "host_clock_probing"
 
-REASON_COUPLING_FILE_ABSENT = "coupling_file_absent"
 REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
-REASON_COUPLING_TOKEN_UNKNOWN = "coupling_token_unknown"
 REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
 REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
@@ -140,6 +138,9 @@ def check_fanin_binary_installed() -> CheckResult:
     return CheckResult(
         "jasper-fanin binary", "ok", f"{path} ({size_kb} KB)"
     )
+
+_ASOUND_CONF_PATH = Path("/etc/asound.conf")
+
 
 def _asound_non_comment_text(text: str) -> str:
     return "\n".join(
@@ -240,7 +241,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     `check_ring_platform_assets` and `check_ring_geometry_coherence`.
     """
     label = "fan-in ALSA wiring"
-    path = Path("/etc/asound.conf")
+    path = _ASOUND_CONF_PATH
     if not path.exists():
         return CheckResult(
             label,
@@ -380,7 +381,8 @@ def check_fanin_service() -> CheckResult:
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-            reason=REASON_FANIN_STATUS_UNREACHABLE, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_UNREACHABLE,
+            speaker_silent=silence_unobserved(),
         )
     data = status.payload
     if data is None:
@@ -397,7 +399,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
-            reason=REASON_FANIN_STATUS_MISSING_OUTPUT, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -413,6 +415,8 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
+            # Not gated on jasper-control: a fan-in on another transport
+            # still reports healthy to it, so no signal-path code names this.
             reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")
@@ -423,7 +427,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
-            reason=REASON_FANIN_STATUS_MISSING_RING, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_RING,
         )
 
     inputs = data.get("inputs")
@@ -691,7 +695,7 @@ def check_fanin_tts_drops() -> CheckResult:
     fan-in's TTS lane drops whole audio commands that arrive while its bounded
     pending queue is full (it cannot block the socket reader without stalling
     barge-in FLUSH behind queued audio). The Python writer paces itself to stay
-    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a
+    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/tts_playout.py), so a
     nonzero drop counter means assistant/cue audio audibly skipped.
 
     Every counter here is CUMULATIVE SINCE FAN-IN START, so the verdict keys on
@@ -852,50 +856,6 @@ def check_fanin_sched_policy() -> CheckResult:
     return CheckResult(name, "ok", policy)
 
 
-@doctor_check()
-def check_fanin_coupling_value() -> CheckResult:
-    """The persisted fan-in coupling must be a RECOGNIZED token.
-
-    jasper-fanin REFUSES an unrecognized value at start (exit 78) and the
-    ``--auto`` reconciler converges it; this surfaces the stale value until that
-    pass runs. An ABSENT key is not that state: fan-in serves the ring for it
-    (ADR-0100), so a box the reconciler has not written yet is ``ok``.
-    """
-    from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
-        COUPLING_SHM_RING,
-        coupling_value_removed,
-    )
-
-    label = "fan-in coupling value"
-    env = evidence.fanin_env()
-    if env is None:
-        return CheckResult(
-            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
-            reason=REASON_COUPLING_FILE_ABSENT,
-        )
-    # `coupling_value_removed` is the same predicate `persisted_coupling_feeds_ring`
-    # applies to fanin.env's own read, so this verdict cannot drift from what
-    # fan-in serves.
-    raw = env.get(COUPLING_ENV_VAR)
-    if coupling_value_removed(raw):
-        return CheckResult(
-            label,
-            "warn",
-            f"{COUPLING_ENV_VAR}={raw!r} in {FANIN_ENV_PATH} names a removed/unknown "
-            "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
-            "the file.",
-            reason=REASON_COUPLING_TOKEN_UNKNOWN,
-        )
-    return CheckResult(
-        label,
-        "ok",
-        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
-    )
-
-
 def _requires_roleful_graph() -> bool:
     """Does the saved topology need a per-driver (crossover) graph?
 
@@ -928,12 +888,8 @@ def check_fanin_coupling() -> CheckResult:
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
-    running fan-in is on the ring whatever that file says, and a healthy box's
-    key may not be written yet (coupling-auto runs
-    ``After=jasper-fanin.service``). The file's own legacy-token question
-    belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
-    what this graph writes to :func:`check_content_transport_coherence`.
+    KEYED ON THE LOADED GRAPH. Whether outputd consumes what this graph writes
+    belongs to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1020,7 +976,7 @@ def check_fanin_coupling() -> CheckResult:
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
-        from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+        from ...control.transport_eligibility import ACTIVE_ENDPOINT_REMEDY
 
         coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (

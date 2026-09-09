@@ -298,6 +298,29 @@ def _handler_cls(client_id="", mode="bounce", registry_path="/tmp/no.json"):
     })
 
 
+def test_the_callback_access_log_never_carries_the_authorization_code(caplog):
+    """Spotify returns the single-use authorization code as `?code=…` on the
+    callback request line, which the stdlib hands to `log_message` verbatim.
+    The query string is dropped before the record exists, so the code cannot
+    reach the journal even if no redaction pattern happened to match it."""
+    handler_cls = _handler_cls()
+    h = handler_cls.__new__(handler_cls)
+    h.address_string = lambda: "127.0.0.1"
+
+    with caplog.at_level(logging.INFO, logger=spotify_setup.logger.name):
+        h.log_message(
+            '"%s" %s %s',
+            "GET /callback?code=4-0AVMBsJgAbCdEf&state=xyz HTTP/1.1",
+            "302",
+            "-",
+        )
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "4-0AVMBsJgAbCdEf" not in logged
+    assert "code=" not in logged
+    assert "/callback" in logged  # the path itself still reaches the journal
+
+
 def test_post_reset_credentials_flashes_via_cookie_not_query_param(monkeypatch):
     """D.7: this route used to build its own `./?msg=...` redirect target;
     it must now answer 303 to a clean `./` with the status carried in the
