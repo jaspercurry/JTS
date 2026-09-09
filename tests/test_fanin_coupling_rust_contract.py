@@ -26,6 +26,9 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
     RING_SLOTS_MIN,
+    RING_WIRE_FORMAT,
+    RING_WIRE_FORMAT_ENV_VAR,
+    RING_WIRE_FORMAT_WIDE,
     resolve_ring_slots,
 )
 from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
@@ -163,6 +166,33 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     # The default slot count is a bare integer literal in the env_u32 fallback.
     assert f'"{RING_SLOTS_ENV_VAR}", {DEFAULT_FANIN_RING_SLOTS}' in text, (
         f"Rust must default JASPER_FANIN_RING_SLOTS to {DEFAULT_FANIN_RING_SLOTS}"
+    )
+
+
+def test_rust_refuses_the_narrow_ring_wire_format_token():
+    """Rust's accept-set for the wire-format key is ``None`` | ``""`` | S32_LE.
+
+    The two vocabularies diverge here on purpose:
+    :func:`jasper.fanin_coupling.resolve_ring_wire_format` still normalizes
+    ``S16_LE``, because the Python reconciler renders the ioplug conf.d and the
+    C plugin still parses that token. fan-in does not — it creates Ring A
+    S32_LE unconditionally, so a declaration it cannot honour is a config-class
+    park (exit 78) rather than a narrowed program. Nothing else holds the two
+    ends of that divergence together, so a Rust accept arm that grew ``S16_LE``
+    back would resolve a wire no writer produces with no test failing.
+    """
+    text = _config_rs_text()
+    _, sep, after = text.partition(f'std::env::var("{RING_WIRE_FORMAT_ENV_VAR}")')
+    assert sep, f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    accept_block, sep, _ = after.partition("\n\n")
+    assert sep, "could not delimit the wire-format match block"
+    assert f'None | Some("") | Some("{RING_WIRE_FORMAT_WIDE}") => {{}}' in accept_block, (
+        "the Rust accept arm must serve the undeclared key (None), a cleared "
+        f"key (empty) and {RING_WIRE_FORMAT_WIDE} — and nothing else"
+    )
+    assert RING_WIRE_FORMAT not in accept_block, (
+        f"{RING_WIRE_FORMAT} must stay REFUSED by fan-in; Python accepts the "
+        "token only to render the ioplug conf.d"
     )
 
 

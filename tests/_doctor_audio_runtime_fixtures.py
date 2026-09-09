@@ -51,7 +51,6 @@ def _seed_units(*, enabled="enabled", active="active"):
 _FANIN_RING_BLOCK = {
     "path": "/dev/shm/jts-ring/program.ring",
     "slots": 2,
-    "wire_format": "S32_LE",
     "channels": 2,
     "occupancy": 1,
     "published": 4242,

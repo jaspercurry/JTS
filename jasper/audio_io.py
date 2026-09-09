@@ -552,10 +552,9 @@ def _quantize_to_wire(arr, *, wide: bool):
 def tts_wire_is_wide() -> bool:
     """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
 
-    ONE RULE, TWO LANGUAGES. Delegates to
-    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
-    the shared crate's ``TtsWireWidth::from_box_declaration`` that
-    ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
+    ONE RULE, ONE OWNER. Delegates to
+    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, which owns the
+    sender's width decision — ``jasper-fanin`` accepts either verb. Both halves of
     the box's declaration are required — the ``S32_LE`` wire format AND a
     coupling that leaves fan-in on the ring (an UNDECLARED one does, ADR-0100)
     — and both are read file-fresh, not from ``os.environ``: ``jasper-voice``

@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import devices_playback_is_pipe
-from ...fanin_coupling import read_declared_ring_wire_format
+from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -46,7 +46,6 @@ REASON_ASOUND_LANE_MISSING = "asound_lane_missing"
 REASON_ASOUND_LANE_WRONG_SLAVE = "asound_lane_wrong_slave"
 REASON_ASOUND_LANE_WIDTH_SHEAR = "asound_lane_width_shear"
 REASON_ASOUND_STALE_TOPOLOGY_STATE = "asound_stale_topology_state"
-REASON_ASOUND_RING_WIRE_UNRESOLVED = "asound_ring_wire_unresolved"
 
 REASON_FANIN_UNIT_MISSING = "fanin_unit_missing"
 REASON_FANIN_UNIT_NOT_ENABLED = "fanin_unit_not_enabled"
@@ -273,13 +272,11 @@ def check_fanin_asound_wiring() -> CheckResult:
         "bluealsa_substream": "hw:Loopback,0,2",
         CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
-    # snd-aloop pins both halves of a cable to one format, and the reader half is
-    # jasper-fanin, which opens every capture side at the box's one resolved
-    # wire. So the expected lane width is that wire.
-    try:
-        wire = read_declared_ring_wire_format()
-    except ValueError as e:
-        return CheckResult(label, "fail", str(e), reason=REASON_ASOUND_RING_WIRE_UNRESOLVED)
+    # snd-aloop pins both halves of a cable to one format, and the reader half
+    # is jasper-fanin, whose capture opens are the constant
+    # `mixer::pcm_open::LANE_CAPTURE_FORMAT`. So the expected lane width is the
+    # program wire itself, not anything this box declares.
+    wire = RING_WIRE_FORMAT_WIDE
     missing: list[str] = []
     wrong: list[str] = []
     sheared: list[str] = []
@@ -305,7 +302,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             parts.append("wrong slave " + ", ".join(wrong))
         if sheared:
             parts.append(
-                f"lane width ≠ {wire} (this box's resolved wire): "
+                f"lane width ≠ {wire} (the program wire): "
                 + ", ".join(sheared)
             )
         # One row can carry several classes; the reason names the worst, so a

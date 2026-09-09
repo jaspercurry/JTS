@@ -257,9 +257,8 @@ def _assistant_width_token(env_path: str | Path) -> str:
     """The box's resolved ASSISTANT wire width, from the persisted files.
 
     Read through :func:`jasper.fanin_coupling.assistant_wire_is_wide` — the same
-    rule ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls and
-    ``jasper-voice`` resolves at start — so this observes the transition voice
-    would observe.
+    rule ``jasper-voice`` resolves at start — so this observes the transition
+    voice would observe.
 
     BOTH halves come from ``env_path`` when it declares them, and only then fall
     back to the standard ``jasper.env`` -> ``fanin.env`` chain (where the format

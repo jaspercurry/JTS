@@ -569,13 +569,13 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     monkeypatch, tmp_path
 ):
     """The renderer aliases are the PLAYBACK half of fan-in's aloop cables, and
-    snd-aloop pins both halves to one format. A box pinned narrow through the
-    rollback lever whose /etc/asound.conf still declares the wide wire cannot
-    have both ends open, so the deployed file is judged against the wire the box
-    actually resolves rather than a literal."""
-    _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
-    monkeypatch.setattr(
-        audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
+    snd-aloop pins both halves to one format. fan-in's capture half is the
+    constant `mixer::pcm_open::LANE_CAPTURE_FORMAT`, so a narrowed alias cannot
+    have both ends open."""
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace("format S32_LE", "format S16_LE", 1),
+        tmp_path,
     )
     r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"

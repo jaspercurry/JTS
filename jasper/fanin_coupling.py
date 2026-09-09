@@ -163,13 +163,14 @@ RING_WIRE_FORMAT = "S16_LE"
 RING_WIRE_FORMAT_WIDE = "S32_LE"
 RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 
-# THE BOX'S DECLARED RING WIRE — one key, read identically by both languages.
-# Rust reads it in ``jasper_fanin::config``'s ``RingWireFormat::from_env_value``;
-# Python reads it in :func:`resolve_ring_wire_format`, and
-# :func:`resolve_ring_wire` resolves the box's answer through that. It is the
-# ONLY input to the wire's format axis: nothing else in either language decides
-# it, so the control plane and the daemon cannot disagree about what this box's
-# ring carries.
+# THE BOX'S DECLARED RING WIRE — one key, read by both languages but a choice
+# on neither. ``jasper-fanin`` creates Ring A ``S32_LE`` unconditionally and
+# ``jasper_fanin::config`` REFUSES any other declared value as a config-class
+# fault (exit 78); Python reads it in :func:`resolve_ring_wire_format`, and
+# :func:`resolve_ring_wire` resolves the box's answer through that to render
+# the ioplug conf.d. It is the ONLY input to the wire's format axis, so the
+# control plane and the daemon cannot disagree about what this box's ring
+# carries.
 #
 # Every other end of the ring is DERIVED from that answer rather than declaring
 # its own: the conf.d ``format`` field (rendered by
@@ -180,15 +181,10 @@ RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 # (``ring_edge_width_ready``) because they land in files written at DIFFERENT
 # times — a half-applied render is exactly what that comparison catches.
 #
-# THE KEY HAS NO WRITER, AND THAT IS WHAT MAKES IT A ROLLBACK LEVER. Since the
-# resolver's default is wide, the only reason to set this key is to pin a box
-# NARROW — and a lever a reconciler could rewrite on the next boot, deploy or
-# udev pass would not be one. So nothing in this repo
-# writes it: every production site under jasper/, deploy/ and scripts/ that
-# names the key is a READ, a gate's error string, or prose. Adding a writer
-# would silently destroy the fleet's only way back to the narrow wire, so
-# ``tests/test_ring_wire_format_contract.py`` pins the empty writer set by
-# asserting no such line also names an env-write primitive.
+# THE KEY HAS NO WRITER. Every production site under jasper/, deploy/ and
+# scripts/ that names it is a READ, a gate's error string, or prose, so only a
+# hand edit reaches it — and a hand-edited ``S16_LE`` parks fan-in at exit 78
+# rather than narrowing anything.
 RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
 
 # Ring A's channel count. Everything upstream of CamillaDSP is a stereo program
@@ -450,10 +446,13 @@ class RingWire:
 def resolve_ring_wire_format(raw: str | None) -> str:
     """Normalize a raw :data:`RING_WIRE_FORMAT_ENV_VAR` value to a wire token.
 
-    THE PYTHON HALF OF A TWO-LANGUAGE PARSE. ``jasper-fanin`` normalizes the same
-    key in ``RingWireFormat::from_env_value``
-    (``rust/jasper-fanin/src/config.rs``) and this must classify every input the
-    same way, because the two resolve the SAME box's wire from the SAME file:
+    THE PYTHON HALF OF A TWO-LANGUAGE PARSE, AND THE WIDER HALF. This
+    normalizer serves the ioplug conf.d render, and the C plugin parses both
+    tokens, so ``S16_LE`` stays in the vocabulary here. ``jasper-fanin`` accepts
+    only ``S32_LE`` and parks at exit 78 on anything else
+    (``rust/jasper-fanin/src/config.rs``); that asymmetry is deliberate and is
+    pinned by ``tests/test_fanin_coupling_rust_contract.py``'s
+    ``test_rust_refuses_the_narrow_ring_wire_format_token``.
 
     - unset, or empty after trimming → :data:`RING_WIRE_FORMAT_WIDE`. Empty
       is how this repo's env-file writers CLEAR a key, so a cleared key and an
@@ -463,8 +462,7 @@ def resolve_ring_wire_format(raw: str | None) -> str:
       :data:`DEFAULT_PLAYBACK_FORMAT` (S32_LE),
       so arming a ring at S16_LE would narrow a hop that was wide before the
       arm. Nothing in this repo WRITES this key — see
-      :data:`RING_WIRE_FORMAT_ENV_VAR` — so an operator's ``S16_LE`` is a
-      rollback lever no boot, deploy or udev pass can overwrite;
+      :data:`RING_WIRE_FORMAT_ENV_VAR`;
     - exactly ``S16_LE`` / ``S32_LE`` after trimming → that token. The match is
       case-SENSITIVE because the C ioplug's own ``strcmp`` is: accepting a
       spelling the ioplug rejects would resolve a wire no reader can open;
@@ -473,9 +471,6 @@ def resolve_ring_wire_format(raw: str | None) -> str:
       not ask for, while fan-in — which treats the same value as a config-class
       fault and parks at exit 78 — would refuse to start. One typo, two verdicts
       is worse than one refusal.
-
-    ``tests/test_ring_wire_format_contract.py`` pins this against the Rust
-    source so the two normalizers cannot drift apart silently.
     """
     if raw is None:
         return RING_WIRE_FORMAT_WIDE
@@ -529,21 +524,18 @@ def assistant_wire_is_wide(
 ) -> bool:
     """Whether THIS BOX's ASSISTANT IPC wire is wide (S32 at the i32 spine scale).
 
-    THE PYTHON MIRROR OF ONE RULE. `jasper-fanin` resolves the identical
-    conjunction in `Config::program_wire_is_wide`, which calls
-    `jasper_tts_protocol::TtsWireWidth::from_box_declaration`; this restates that
-    function's verdict, and
-    :mod:`tests.test_ring_wire_format_contract` pins the two against each other
-    by reading the Rust source rather than by trusting this docstring.
+    THE SENDER'S OWN RULE. `jasper-fanin` accepts both assistant verbs (`AUDIO`
+    and `AUDIO32`) and promotes a narrow payload at its sum entry, so no Rust
+    side resolves a per-box assistant width: this predicate decides only which
+    verb Python's playout spells.
 
     **BOTH halves.** A wide wire needs the resolved ``S32_LE`` ring wire format
     AND a coupling that leaves fan-in on the ring.
 
     UNDECLARED IS THE RING on the transport half, which is why it asks
-    :func:`coupling_value_removed` rather than the ``shm_ring`` token: the Rust
-    side passes ``coupling_is_shm_ring: true`` unconditionally
-    (``Config::program_wire_is_wide``) because ADR-0100 left one transport and
-    ``jasper-fanin`` serves an absent key, an empty value and the token alike.
+    :func:`coupling_value_removed` rather than the ``shm_ring`` token: ADR-0100
+    left one transport and ``jasper-fanin`` serves an absent key, an empty
+    value and the token alike.
     Requiring the literal token here resolved NARROW on every box the reconciler
     had not written while the daemon on that same box ran WIDE — the two-language
     shear this predicate exists to prevent (#3655). Only a value the daemon
