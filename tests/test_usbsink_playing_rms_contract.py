@@ -7,8 +7,9 @@
 History: this threshold used to gate mux's source arbitration ("a Mac streaming
 digital silence must not seize the speaker"). The 2026-07-17 liveness rework
 removed that gate: USB liveness is now purely frames-based (see
-`jasper.mux.step_combo_liveness`). Removing the gate fixed dropped faint audio
-and level-driven quiet-passage dropouts on browser video. Since 2026-07-22, the
+`jasper.source_state.usbsink_direct_streaming`). Removing the gate fixed dropped
+faint audio and level-driven quiet-passage dropouts on browser video. Since
+2026-07-22, the
 frame-flow edge enters the same latest-start-wins policy as every other source;
 pinning a source or disabling USB are the explicit opt-outs. fan-in publishes
 that edge at 20 Hz and wakes mux directly, while the 1 Hz patrol is only a
