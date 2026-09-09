@@ -949,3 +949,21 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "hardware-validated floor the measurement doc §2 table ships"
     )
 
+
+
+@pytest.mark.parametrize("reason,ladder,held,expected", [
+    ("reused", "probing", 576, "applied"),
+    ("backoff", "l0_locked", 1088, "held"),
+])
+def test_usb_latency_reports_reuse_and_held_buffer(tmp_path, reason, ladder, held, expected):
+    airplay = {"current": {"fanin": {
+        "host_clock": {"ladder": ladder},
+        "inputs": {"usbsink": {"resampler": {
+            "locked": True, "held_target_frames": held,
+            "decay": {"enabled": True, "floor_frames": 576, "frozen_reason": reason},
+        }}},
+    }}}
+    state = lm.read_state(airplay, state_path=tmp_path / "usb.env")
+    assert state["selected_mode"] == "low"
+    assert state["state"] == expected
+    assert state["live_buffer_ms"] == round(held / 48, 1)

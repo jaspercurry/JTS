@@ -40,7 +40,7 @@ PRESETS = {
 
 LatencyPhase = Literal[
     "unavailable", "idle", "starting", "checking", "clock_adjusting",
-    "buffer_adjusting", "stable", "fallback",
+    "buffer_adjusting", "buffer_held", "stable", "fallback",
 ]
 
 
@@ -227,6 +227,8 @@ def classify_runtime(
         phase = "idle"
     elif not locked:
         phase = "starting"
+    elif _mapping(resampler.get("decay")).get("frozen_reason") == "backoff":
+        phase = "buffer_held"
     elif buffer_above_floor:
         phase = "buffer_adjusting"
     else:
@@ -291,11 +293,11 @@ def read_state(
         )
     elif applied is not None and runtime.phase in {"starting", "checking"}:
         state = "starting"
-        detail = (
-            "Checking USB host timing; waiting for the live buffer."
-            if runtime.phase == "checking"
-            else "USB audio is starting; waiting for the live buffer."
-        )
+        if effective is not None and resampler.get("locked") is True:
+            state = "applied"
+            detail = f"{PRESETS[effective].label} is active. Checking USB timing in the background."
+        else:
+            detail = "Checking USB timing." if runtime.phase == "checking" else "USB audio is starting."
     elif applied is not None:
         state = "applied"
         detail = f"{PRESETS[applied].label} is active."
@@ -324,6 +326,9 @@ def read_state(
                 )
             else:
                 detail = f"This USB session is using High ({live_ms:.1f} ms)."
+        elif runtime.phase == "buffer_held" and held_frames is not None:
+            state = "held"
+            detail = f"Keeping {held_frames * 1000 / SAMPLE_RATE:.1f} ms to prevent audio gaps. {selected_preset.label} remains your choice."
         elif runtime.buffer_above_floor and held_frames is not None:
             state = "recovery"
             active = (

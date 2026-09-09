@@ -351,26 +351,7 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
 /// `JASPER_FANIN_AUTO_TRIM=enabled`.
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
 
-/// Post-lock cushion-decay warm-up window: the continuous locked +
-/// DLL-`l0_locked` + calm duration required before the FIRST decay step. 10 s
-/// gives the outer host-clock DLL time to finish its per-session probe (up to
-/// 14 s worst case, but the fill is pinned well before that) and prove the
-/// steady regime before latency is reclaimed. Not an env knob — the three
-/// tunable decay knobs (floor/step/interval) are the operator surface.
-/// Converted to render periods by the lane from the live sample rate.
-const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
-
-/// Cascade-stability guard: decay pauses while the outer DLL's |commanded_ppm|
-/// exceeds this. Above it the DLL is working hard and the fill is in transient,
-/// so lowering the setpoint would fight the loop — the two-controller
-/// oscillation class the cascade design avoids. 400 ppm is well inside the
-/// ±1000 ppm servo authority: it flags "actively correcting" without tripping on
-/// the small steady-state trims a settled loop makes. The command compared here
-/// reflects genuine host-clock correction, not the descent — the decay's own
-/// demand is subtracted from the servo's observable at the source (#3466). A
-/// host whose genuine standing offset keeps |cmd| above the guard holds decay
-/// frozen for the session, by design: that host is being corrected hard and the
-/// cushion is load-bearing.
+const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
 const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
@@ -807,6 +788,8 @@ pub struct Mixer {
     /// no direct lane) these stay at their init (`false` / 0), so decay never
     /// leaves the ceiling — decay REQUIRES the DLL.
     host_clock_ladder_l0: Arc<AtomicBool>,
+    usb_connection_epoch: Arc<AtomicU64>,
+    host_clock_timing_failed: Arc<AtomicBool>,
     host_clock_commanded_milli_ppm: Arc<AtomicI64>,
 }
 
@@ -1539,6 +1522,8 @@ impl Mixer {
             // Init to the inert state (not-l0, 0 ppm) so decay never leaves the
             // ceiling until the servo thread actually reports `l0_locked`.
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
+            usb_connection_epoch: Arc::new(AtomicU64::new(0)),
+            host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
             host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         })
     }
@@ -1582,9 +1567,6 @@ impl Mixer {
             // i64-bits-in-u64). Written by the resampler on the mixer thread; the
             // servo thread only ever READS it.
             correction_milli_ppm: Arc::clone(&resampler.ratio_milli_ppm),
-            // The cushion decay's live demand gauge, published by the decay
-            // itself; `build_obs` subtracts it from the ratio above (#3466).
-            decay_demand_milli_ppm: Arc::clone(&resampler.decay_demand_milli_ppm),
             // The decay's declared refill window — `build_obs` clears
             // `Obs::steady` on it (ADR-0214).
             decay_refilling: Arc::clone(&resampler.decay_refilling),
@@ -1597,6 +1579,8 @@ impl Mixer {
             // The REVERSE signals: owned here so both sides share the same
             // atomics, and the servo thread only ever WRITES these two.
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
+            connection_epoch: Arc::clone(&self.usb_connection_epoch),
+            timing_failed: Arc::clone(&self.host_clock_timing_failed),
             commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
         })
     }
@@ -1697,10 +1681,15 @@ impl Mixer {
         // cascade guard. Both are inert (false / 0) when the servo thread is not
         // running, so decay never leaves the ceiling without the DLL.
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
+        let connection_epoch = self.usb_connection_epoch.load(Ordering::Relaxed);
+        let timing_failed = self.host_clock_timing_failed.load(Ordering::Relaxed);
         let decay_commanded_ppm_abs =
             (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
+            if let Some(r) = input.resampler.as_mut() {
+                r.latency_context(connection_epoch, timing_failed);
+            }
             let frames = if input.direct.is_some() {
                 // USB DIRECT lane: read hw:UAC2Gadget directly, narrow S32→S16,
                 // feed the SAME resampler, render one DAC-paced period. The aloop
@@ -2356,8 +2345,6 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     let decay_params = crate::lane_resampler::DecayParams {
         enabled: config.input_resampler_cushion_decay_enabled,
         floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
-        step_frames: config.input_resampler_cushion_decay_step_frames as u64,
-        interval_ms: config.input_resampler_cushion_decay_interval_ms as u64,
         stability_ms: CUSHION_DECAY_STABILITY_MS,
         cascade_guard_ppm: CUSHION_DECAY_CASCADE_GUARD_PPM,
     };
@@ -2380,10 +2367,8 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
             // stable.
             let decay_note = if config.input_resampler_cushion_decay_enabled {
                 format!(
-                    "decay=on floor={} step={} interval_ms={}",
-                    config.input_resampler_cushion_decay_floor_frames,
-                    config.input_resampler_cushion_decay_step_frames,
-                    config.input_resampler_cushion_decay_interval_ms,
+                    "decay=on floor={}",
+                    config.input_resampler_cushion_decay_floor_frames
                 )
             } else {
                 "decay=off".to_string()
