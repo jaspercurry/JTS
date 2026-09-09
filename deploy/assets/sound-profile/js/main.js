@@ -607,6 +607,17 @@ import {
       '</div></section>';
   }
 
+  // ./apply and ./live-draft refuse with the same typed body /state carries,
+  // so a refusal mid-session becomes the page's state too. Recorded whatever
+  // the request's sequence: it describes the loaded graph, not this request.
+  function noteCarrierRefusal(payload) {
+    eqCarrierBlock = {
+      status: 'blocked',
+      reason_code: payload.reason_code || '',
+      message: payload.message || EQ_BLOCKED_MESSAGE
+    };
+  }
+
   // The whole page when the loaded graph cannot host EQ: the editor would only
   // offer edits every save refuses, so it is replaced by the reason and the
   // one page that can change it.
@@ -3037,6 +3048,8 @@ import {
           // The loaded graph can't host EQ (e.g. an active crossover). Show
           // the server's honest hint; do not touch the draft/epoch state.
           status(payload.message || EQ_BLOCKED_MESSAGE, true);
+          noteCarrierRefusal(payload);
+          render();
         } else {
           if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
           if (payload.live_status === 'live') status('Listening to this draft live.');
@@ -3087,6 +3100,7 @@ import {
         // Refused (e.g. EQ over an active crossover). Surface the honest hint
         // and skip ingestState — a blocked body carries no profile state.
         if (sourceSeq === liveSourceSeq) status(payload.message || EQ_BLOCKED_MESSAGE, true);
+        noteCarrierRefusal(payload);   // the `finally` below renders it
       } else {
         ingestState(payload);
         if (sourceSeq === liveSourceSeq) status(okMsg || '');

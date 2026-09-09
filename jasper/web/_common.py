@@ -416,6 +416,7 @@ def canonical_header(
     right_html: str = "",
     back_id: str = "",
     tabs_html: str = "",
+    tabs_id: str = "",
 ) -> str:
     """The canonical sticky top bar (`.app-header`) for a migrated wizard.
 
@@ -427,11 +428,12 @@ def canonical_header(
     keeps the title optically centred, so the right slot defaults to an
     empty ``<span>`` placeholder rather than collapsing the grid.
 
-    ``back_id`` and ``tabs_html`` are opt-in, empty by default: the sole
-    consumer today is `sound_setup.py`'s EQ editor, whose JS binds the back
-    button by id and renders a segmented view strip that must stay inside
-    the sticky `.app-header` (`.app-header__tabs`, styled in `app.css`) to
-    keep scrolling with it.
+    ``back_id``, ``tabs_html`` and ``tabs_id`` are opt-in, empty by default:
+    the sole consumer today is `sound_setup.py`'s EQ editor, whose JS binds
+    the back button by id and renders a segmented view strip that must stay
+    inside the sticky `.app-header` (`.app-header__tabs`, styled in
+    `app.css`) to keep scrolling with it. ``tabs_id`` lands on that wrapper,
+    so a page that hides the strip hides the wrapper's border with it.
 
     ``title`` / ``back_href`` / ``back_label`` are escaped; ``right_html``
     and ``tabs_html`` are caller-trusted markup (it's the caller's job to
@@ -439,7 +441,12 @@ def canonical_header(
     ``canonical_page``'s body)."""
     right = right_html or "<span></span>"
     back_id_attr = f' id="{html.escape(back_id, quote=True)}"' if back_id else ""
-    tabs = f'<div class="app-header__tabs">{tabs_html}</div>' if tabs_html else ""
+    tabs_id_attr = f' id="{html.escape(tabs_id, quote=True)}"' if tabs_id else ""
+    tabs = (
+        f'<div class="app-header__tabs"{tabs_id_attr}>{tabs_html}</div>'
+        if tabs_html
+        else ""
+    )
     return (
         '<header class="app-header"><div class="app-header__row">'
         f'<a class="icon-button"{back_id_attr} '

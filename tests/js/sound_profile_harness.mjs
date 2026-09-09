@@ -631,7 +631,7 @@ function setupHarness(fetchHandler, options = {}) {
   const absent = new Set();
   for (const id of [
     "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
-    "plot", "plot-summary", "live-label", "status",
+    "now-playing", "plot", "plot-summary", "live-label", "status",
     "copy-driver-research-prompt-control",
   ]) {
     elements.set(id, makeEl(id));
@@ -661,7 +661,10 @@ function setupHarness(fetchHandler, options = {}) {
     // Setup and follower pages omit the content-EQ chrome. Making those ids
     // resolve to null exercises the module's mode guards as the browser does.
     // islandText lets a test inject malformed renderer data.
-    for (const id of ["tab-off", "tab-saved", "tab-draft", "eq-tabs", "plot", "plot-summary", "live-label"]) {
+    for (const id of [
+      "tab-off", "tab-saved", "tab-draft", "eq-tabs", "now-playing",
+      "plot", "plot-summary", "live-label",
+    ]) {
       elements.delete(id);
       absent.add(id);
     }
@@ -1134,21 +1137,29 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
 }
 
 // A graph that cannot host EQ is the PAGE's state, not a status line after the
-// user edits something the save will refuse: no tab strip, no editor body, and
-// the reason plus the page that can change it.
+// user edits something the save will refuse: no tab strip, no now-playing plot,
+// no editor body — the reason and the page that can change it. It clears as
+// soon as a payload stops refusing, and a mid-session refusal from ./apply
+// puts the page into that state without a reload.
 async function testBlockedEqCarrierIsThePageState() {
+  const editorState = (eqCarrier) => ({
+    ...basePayload,
+    profile: { ...flatProfile, enabled: false },
+    filter_count: 0,
+    dsp_write_epoch: "state-0",
+    eq_carrier: eqCarrier,
+  });
+  const eqChrome = ["eq-tabs", "now-playing"];
+
   const blocked = setupHarness(baseFetch({
-    "./state": () => Promise.resolve(response({
-      ...basePayload,
-      profile: { ...flatProfile, enabled: false },
-      filter_count: 0,
-      dsp_write_epoch: "state-0",
-      eq_carrier: {
-        status: "blocked",
-        reason_code: "unknown_config",
-        message: "CamillaDSP is running a configuration JTS did not generate.",
-      },
-    })),
+    "./state": () => Promise.resolve(response(editorState({
+      status: "blocked",
+      reason_code: "unknown_config",
+      message: "CamillaDSP is running a configuration JTS did not generate.",
+    }))),
+    // A successful apply carries eq_carrier too, so a graph that stopped
+    // refusing drops the block at the next ingest instead of at a reload.
+    "./apply": () => Promise.resolve(response(editorState({ status: "unknown" }))),
   }), { mode: "eq" });
   await blocked.flush(); await blocked.flush();
 
@@ -1165,15 +1176,36 @@ async function testBlockedEqCarrierIsThePageState() {
   if (html.includes("off-card") || html.includes("profile-row")) {
     fail("a blocked EQ carrier must not render the editor body", { html });
   }
-  if (blocked.elements.get("eq-tabs").hidden !== true) {
-    fail("a blocked EQ carrier should hide the tab strip", {
-      hidden: blocked.elements.get("eq-tabs").hidden,
-    });
+  for (const id of eqChrome) {
+    if (blocked.elements.get(id).hidden !== true) {
+      fail("a blocked EQ carrier should hide the EQ-only chrome", { id });
+    }
   }
 
-  // Fail-open half: /state without a probe (or with a hostable graph) keeps the
-  // editor, so an unreachable CamillaDSP never blanks the page.
-  const open = setupHarness(baseFetch(), { mode: "eq" });
+  blocked.elements.get("tab-saved").click();
+  await blocked.flush(); await blocked.flush(); await blocked.flush();
+  const cleared = blocked.elements.get("view-body").innerHTML;
+  if (cleared.includes("JTS did not generate") || !cleared.includes("Presets")) {
+    fail("a carrier that stopped refusing should give the editor back", {
+      html: cleared,
+    });
+  }
+  for (const id of eqChrome) {
+    if (blocked.elements.get(id).hidden) {
+      fail("a cleared EQ carrier should bring the EQ-only chrome back", { id });
+    }
+  }
+
+  // Fail-open half: "unknown" is what /state puts on the wire when nothing
+  // probed the graph, and it keeps the editor...
+  const open = setupHarness(baseFetch({
+    "./state": () => Promise.resolve(response(editorState({ status: "unknown" }))),
+    "./apply": () => Promise.resolve(response({
+      status: "blocked",
+      reason_code: "active_baseline_recompose_unavailable",
+      message: "This speaker runs an active crossover.",
+    })),
+  }), { mode: "eq" });
   await open.flush(); await open.flush();
   if (!open.elements.get("view-body").innerHTML.includes("off-card")) {
     fail("an unprobed EQ carrier should keep the editor", {
@@ -1182,6 +1214,21 @@ async function testBlockedEqCarrierIsThePageState() {
   }
   if (open.elements.get("eq-tabs").hidden) {
     fail("an unprobed EQ carrier should keep the tab strip", {});
+  }
+
+  // ...until a save is refused, which is the same page state, mid-session.
+  open.elements.get("tab-saved").click();
+  await open.flush(); await open.flush(); await open.flush();
+  const refused = open.elements.get("view-body").innerHTML;
+  if (!refused.includes("info-card") || !refused.includes("active crossover")) {
+    fail("a 200 refusal from ./apply should flip the page into the block", {
+      html: refused,
+    });
+  }
+  for (const id of eqChrome) {
+    if (open.elements.get(id).hidden !== true) {
+      fail("a refused save should hide the EQ-only chrome with the editor", { id });
+    }
   }
   return { blockedEqCarrierIsThePageState: true };
 }

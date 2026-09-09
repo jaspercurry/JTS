@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
+from jasper.active_speaker.runtime_contract import FLAT_PROGRAM_GRAPH_UNCONFIGURED
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
@@ -831,6 +832,9 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
 
     if page_mode == "eq":
         assert all(marker in html for marker in _EQ_ONLY_CHROME[:3])
+        # The id the editor hides sits on the header's tabs WRAPPER: hiding an
+        # inner div would leave the wrapper's bottom border behind.
+        assert '<div class="app-header__tabs" id="eq-tabs">' in html
     else:
         assert 'id="view-body"' in html
         assert not any(marker in html for marker in _EQ_ONLY_CHROME)
@@ -5577,20 +5581,33 @@ def test_state_filter_count_signals_effective_eq_for_initial_view():
 
 
 @pytest.mark.parametrize(
-    "config_name, expected",
+    "config_name, layout, expected",
     [
-        ("foreign.yml", {"status": "blocked", "reason_code": "unknown_config"}),
-        ("sound_current.yml", {"status": "ok"}),
+        ("foreign.yml", True, {"status": "blocked", "reason_code": "unknown_config"}),
+        ("sound_current.yml", True, {"status": "ok"}),
+        # Same hostable graph, no saved speaker layout: the runtime contract
+        # refuses it, and `can_host_eq` is what carries that — not the
+        # classifier — so the probe has to be the dry-run re-emit.
+        (
+            "sound_current.yml",
+            False,
+            {"status": "blocked", "reason_code": FLAT_PROGRAM_GRAPH_UNCONFIGURED},
+        ),
     ],
 )
 def test_state_reports_whether_the_loaded_graph_can_host_eq(
-    tmp_path: Path, monkeypatch, config_name: str, expected: dict,
+    tmp_path: Path, monkeypatch, config_name: str, layout: bool, expected: dict,
 ):
     """/sound/eq/ opens on the refusal instead of discovering it at save time,
     so /state says whether the LOADED graph can carry preference EQ."""
     import jasper.camilla
 
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    if layout:
+        _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    else:
+        monkeypatch.setenv(
+            "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "no_topology.json"),
+        )
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / config_name
@@ -5612,21 +5629,95 @@ def test_state_reports_whether_the_loaded_graph_can_host_eq(
         assert carrier["message"]
 
 
-def test_state_falls_open_when_camilla_cannot_be_read(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("failure", ["no_loaded_path", "controller_unreachable"])
+def test_state_falls_open_when_camilla_cannot_be_read(
+    tmp_path: Path, monkeypatch, failure: str,
+):
     """The POST refusal is the fail-closed gate; an unreachable CamillaDSP must
     not blank the editor."""
     import jasper.camilla
 
     class _Unreachable:
         async def get_config_file_path(self, *, best_effort: bool = False):
+            if failure == "controller_unreachable":
+                raise RuntimeError("CamillaDSP websocket is not answering")
             return None
 
     monkeypatch.setattr(jasper.camilla, "primary_controller", _Unreachable)
 
     with sound_server(tmp_path) as base:
+        with urllib.request.urlopen(f"{base}/state") as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+
+    assert payload["eq_carrier"] == {"status": "unknown"}
+
+
+def test_state_probes_the_carrier_with_the_household_output_trim(
+    tmp_path: Path, monkeypatch,
+):
+    """The emitter folds the trim into total_headroom_db, so a probe at 0 dB
+    would call a graph hostable that the save at the real trim refuses."""
+    import jasper.camilla
+    import jasper.sound.graph_carrier as graph_carrier
+
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text(json.dumps({"headroom_trim_db": 6.0}))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config())
+    monkeypatch.setattr(
+        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
+    )
+    probed: list[float] = []
+
+    def _record(_profile, *, current_path, config_dir, output_trim_db=0.0):
+        probed.append(output_trim_db)
+        return None
+
+    monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _record)
+
+    with sound_server(tmp_path) as base:
         payload = json.loads(
             urllib.request.urlopen(f"{base}/state").read().decode("utf-8")
         )
+
+    assert probed == [payload["output_trim_db"]] == [6.0]
+
+
+def test_state_skips_the_carrier_probe_off_the_eq_page(tmp_path: Path, monkeypatch):
+    """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
+    renders the editor, so no other page pays for it."""
+    import jasper.camilla
+    import jasper.sound.graph_carrier as graph_carrier
+
+    # A reachable controller with a real loaded config, so nothing but the page
+    # mode can be what stops the probe.
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config())
+    monkeypatch.setattr(
+        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
+    )
+
+    def _must_not_probe(*_args, **_kwargs):
+        raise AssertionError("the setup page must not probe the loaded graph")
+
+    monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _must_not_probe)
+
+    with sound_server(tmp_path) as base:
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base}/state", headers={"X-JTS-Sound-Page": "setup"},
+            )
+        ) as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
 
     assert payload["eq_carrier"] == {"status": "unknown"}
 
