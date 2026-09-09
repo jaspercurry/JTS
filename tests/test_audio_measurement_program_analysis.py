@@ -58,17 +58,17 @@ from jasper.audio_measurement.program import (
     KIND_SWEEP,
     PROGRAM_PHASE_MEASURE,
     RoleBand,
-    _finalize,
     _occurrence_suffix,
     _seconds_to_samples,
-    _silence,
     _stimulus,
     _sweep_meta,
     build_check_program,
     build_measure_program,
     build_verify_program,
+    finalize_program,
     mesm_gap_samples,
     render_program_pcm,
+    silence_segment,
 )
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
@@ -1241,7 +1241,7 @@ def _build_old_shaped_measure_program():
     segments = []
     cursor = 0
     guard_n = _seconds_to_samples(2.0, SR)
-    segments.append(_silence("guard", cursor, guard_n))
+    segments.append(silence_segment("guard", cursor, guard_n))
     cursor += guard_n
 
     def _sw(seg_id, rb, f1, f2, dur):
@@ -1255,14 +1255,14 @@ def _build_old_shaped_measure_program():
     segments.append(sweep_w)
     cursor += sweep_w.n_samples
     gap_w = mesm_gap_samples(w_meta, ir_tail_s=0.5)
-    segments.append(_silence("gap_w_t", cursor, gap_w))
+    segments.append(silence_segment("gap_w_t", cursor, gap_w))
     cursor += gap_w
 
     sweep_t = _sw("sweep_t", tweeter, t_f1, t_f2, t_dur)
     segments.append(sweep_t)
     cursor += sweep_t.n_samples
     gap_t = mesm_gap_samples(t_meta, ir_tail_s=0.5)
-    segments.append(_silence("gap_t_w", cursor, gap_t))
+    segments.append(silence_segment("gap_t_w", cursor, gap_t))
     cursor += gap_t
 
     sweep_w_rep = _sw("sweep_w_rep", woofer, w_f1, w_f2, w_dur)
@@ -1270,10 +1270,10 @@ def _build_old_shaped_measure_program():
     cursor += sweep_w_rep.n_samples
 
     tail_n = _seconds_to_samples(0.5, SR)
-    segments.append(_silence("tail", cursor, tail_n))
+    segments.append(silence_segment("tail", cursor, tail_n))
     cursor += tail_n
 
-    return _finalize(PROGRAM_PHASE_MEASURE, 2, segments, cursor)
+    return finalize_program(PROGRAM_PHASE_MEASURE, 2, segments, cursor)
 
 
 def test_measure_repeat_responses_recover_the_primary_magnitude():

@@ -95,11 +95,11 @@ class ExecutorError(RuntimeError):
 class PlayedStimulus:
     """One admitted stimulus role's complete on-device playback evidence.
 
-    There is deliberately no stimulus path here: the EXECUTOR generates and
-    pads the stimulus and hands the resulting file to
-    :meth:`PlayAndCapture.play` (``stimulus_path``) — by the time ``play()``
-    returns, the caller already knows exactly what was played (it built the
-    file). ``live_peak_all_samples`` is every ``get_playback_peak_all()``
+    There is deliberately no stimulus path here: the EXECUTOR generates, pads
+    and banks the stimulus before calling :meth:`PlayAndCapture.play`, so by
+    the time ``play()`` returns the caller already knows exactly what was
+    played (it built the artifact). ``live_peak_all_samples`` is every
+    ``get_playback_peak_all()``
     reading polled at the manifest's recorded interval across the playback
     (R10(c)); each entry is one snapshot, in channel order.
 
@@ -148,10 +148,12 @@ class PlayedStimulus:
 class PlayAndCapture(Protocol):
     """The one on-device seam (see module docstring): admit, play, capture.
 
-    ``stimulus_path`` is the ALREADY-GENERATED, ALREADY-PADDED artifact
-    (built and content-addressed by the executor, per R6) — a correct
-    implementation admits and plays exactly this file; it never generates or
-    modifies stimulus bytes itself. ``reference`` is ``None`` for every call
+    ``stimulus``, ``artifact`` and ``tag`` are the ALREADY-GENERATED,
+    ALREADY-PADDED artifact's bytes, identity and bundle name as the executor
+    already holds them (built and content-addressed per R6) — a correct
+    implementation admits and plays exactly that one artifact, resolved under
+    the sink it already owns; it never generates or modifies stimulus bytes
+    itself. ``reference`` is ``None`` for every call
     except the candidate phase's ``sweep_transparency`` play, where it is the
     phase-1 :class:`~jasper.bass_extension.bench.runner.ReferenceSweepCapture`
     to compare against — the implementation needs it to compute
@@ -176,7 +178,9 @@ class PlayAndCapture(Protocol):
         role: SweepOrSustain,
         request: StimulusRequest,
         stop: Stop,
-        stimulus_path: Path,
+        stimulus: stimulus.PaddedStimulus,
+        artifact: ArtifactIdentity,
+        tag: str,
         reference: ReferenceSweepCapture | None = None,
     ) -> PlayedStimulus: ...
 
@@ -451,13 +455,14 @@ class BenchRoleExecutor:
             minima.to_receipt(),
             kind="jts_bass_extension_bench_padding_receipt",
         )
-        padded_path = sink.bundle_dir / padded_identity.relative_path
         played = await self.play_and_capture.play(
             target=target,
             role=role,
             request=request,
             stop=stop,
-            stimulus_path=padded_path,
+            stimulus=padded,
+            artifact=padded_identity,
+            tag=tag,
             reference=reference,
         )
         return played, padded, padded_identity
@@ -1039,6 +1044,7 @@ class BenchRoleExecutor:
             reference_stimulus=padded_identity,
             reference_admission=played.admission,
             reference_acoustic_capture=played.acoustic_capture,
+            reference_signal_analysis=played.signal_analysis,
         )
 
     async def run_candidate(

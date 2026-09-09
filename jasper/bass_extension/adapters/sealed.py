@@ -19,6 +19,7 @@ from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
     linkwitz_transform_params,
     lt_response_db,
+    minus_six_corner_hz,
     second_order_highpass_db,
 )
 from .base import (
@@ -103,16 +104,6 @@ def declared_plant(f0_hz: float, q0: float) -> SealedPlantFit | FitRefusal:
         return FitRefusal("bass_extension_fit_quality_insufficient", str(exc))
 
 
-def _minus_six_estimate(freqs: np.ndarray, magnitude: np.ndarray) -> float:
-    candidates = np.flatnonzero((magnitude[:-1] <= -6.0) & (magnitude[1:] > -6.0))
-    if candidates.size:
-        i = int(candidates[-1])
-        fraction = (-6.0 - magnitude[i]) / (magnitude[i + 1] - magnitude[i])
-        return float(np.exp(
-            np.log(freqs[i]) + fraction * (np.log(freqs[i + 1]) - np.log(freqs[i]))
-        ))
-    return float(freqs[int(np.argmin(np.abs(magnitude + 6.0)))])
-
 
 def _fit_model(
     freqs: np.ndarray,
@@ -164,7 +155,7 @@ class SealedAdapter:
         freqs, magnitude = _curve_arrays(curve)
         normalized = passband_normalize(freqs, magnitude)
         smoothed = smooth_fractional_octave(freqs, normalized)
-        estimate = _minus_six_estimate(freqs, smoothed)
+        estimate = minus_six_corner_hz(freqs, smoothed)
         try:
             first, _ = _fit_model(freqs, smoothed, estimate, order=2)
             second, rms = _fit_model(freqs, smoothed, float(first[0]), order=2)

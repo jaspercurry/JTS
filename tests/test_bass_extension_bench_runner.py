@@ -103,6 +103,9 @@ class FakeFloor:
     async def assert_at_floor(self) -> None:
         pass
 
+    async def raise_to_level(self) -> None:
+        pass
+
 
 def _sweep_core(
     target_id: str,
@@ -244,6 +247,7 @@ class FakeExecutor:
             reference_stimulus=_artifact(f"{tid}-ref-stim", payload=f"{tid}-sweep-stimulus"),
             reference_admission=_artifact(f"{tid}-ref-adm", payload=f"{tid}-sweep-admission"),
             reference_acoustic_capture=_artifact(f"{tid}-ref-cap"),
+            reference_signal_analysis=_artifact(f"{tid}-ref-signal"),
         )
 
     async def run_candidate(
@@ -370,6 +374,7 @@ def _targets(*target_ids: str) -> list[TargetPlan]:
             owner_channels=(2,),
             profile_summary={"runtime_block_required": True},
             baseline_clip_limit_dbfs=BASELINE,
+            boost_headroom_db=6.0,
         )
         for tid in target_ids
     ]

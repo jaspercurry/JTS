@@ -79,6 +79,7 @@ def _deconvolve_window(
     epsilon: float = 0.0,
     pre_guard_s: float = DECONV_PRE_GUARD_S,
     tail_s: float = 0.5,
+    stimulus: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
     """Deconvolve one sweep → ``(full_ir, pre_guard_samples)``.
 
@@ -92,8 +93,11 @@ def _deconvolve_window(
     sweep is stretched by ``(1+ε)``, so the reference is resampled to match
     before inversion — keeping the deconvolution sharp (and the delay estimate
     accurate) under drift instead of smearing the IR.
+
+    ``stimulus`` replaces the schedule-regenerated reference with the bytes that
+    were actually played; the drift resample still applies to it.
     """
-    stim = segment_stimulus(segment)
+    stim = segment_stimulus(segment) if stimulus is None else stimulus
     if epsilon != 0.0:
         from scipy.signal import resample
 
