@@ -15,11 +15,11 @@
   reconcile plus an explicit `reset-failed` + `--no-block restart`; any other
   outcome, including a repeated 78 inside a window another class already
   spent, leaves the unit parked and writes the park record read by the
-  doctor and `/state`. Every other failing exit runs the plain reconciler
+  doctor. Every other failing exit runs the plain reconciler
   with `--no-restart` and does not park.
 - **Consequences:** The park path is uniform across failure classes instead
   of lane-keyed, and driven by exit status rather than a counted streak — the
   streak state and its lane classifier are gone along with the two remedies.
   The reboot escalation still stops being the system's answer to a stuck
-  unit; the doctor and `/state` reader are unchanged (they only read the
+  unit; the doctor reader is unchanged (it only reads the
   park record, not the window).
