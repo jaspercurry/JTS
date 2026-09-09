@@ -478,7 +478,7 @@ def _bass_gate(
     # gap: only the natural target is admissible until the limiter evidence a
     # boost rides on can be shown. The seam is banked beside the ladder's so
     # the take re-gates from exactly what the stage saw.
-    limiter_evidence: Mapping[str, Any] | None = None
+    limiter: Mapping[str, Any] | None = None
     ladder_evidence = _bass_ladder_evidence(
         path.parent,
         [entry for entry in requested if isinstance(entry, str)]
@@ -492,13 +492,13 @@ def _bass_gate(
         bass_fit_sha256=sha256,
         round_id=_packet_round_id(packet),
         ladder=ladder_evidence,
-        limiter=limiter_evidence,
+        limiter=limiter,
         expected_owner_role=owner_role,
     )
     return prescription, {
         "bass_fit": fit,
-        "ladder_evidence": ladder_evidence,
-        "limiter_evidence": limiter_evidence,
+        "ladder": ladder_evidence,
+        "limiter": limiter,
         "expected_owner_role": owner_role,
     }
 

@@ -2676,7 +2676,7 @@ def _stage_bass(*, targets: list[str] | None = None, **evidence: Any) -> None:
         classifications=None,
         bass_evidence={
             "bass_fit": _bass.bass_fit_document(),
-            "ladder_evidence": {_bass.DEEPEST: _bass.ladder_evidence(-6.0)},
+            "ladder": {_bass.DEEPEST: _bass.ladder_evidence(-6.0)},
             "expected_owner_role": "woofer",
             **evidence,
         },
