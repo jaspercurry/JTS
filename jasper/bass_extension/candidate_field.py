@@ -385,8 +385,21 @@ def _rungs(raw: Any, *, plant: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _check_order(rungs: Sequence[Mapping[str, Any]]) -> None:
-    """The family's own order: deepest first, natural last."""
+    """The family's own order: deepest first, natural last.
+
+    Also the hard stop's precondition: a transform that extends the corner
+    always spends headroom, so a target carrying filters and claiming to cost
+    nothing would slip past the boost-needs-evidence rule in ``_protection``.
+    """
     unordered = BassExtensionRefusal.TARGETS_UNORDERED
+    for position, rung in enumerate(rungs):
+        target = rung["target"]
+        if target["filters"] and target["boost_headroom_db"] <= 0.0:
+            _refuse(
+                BassExtensionRefusal.TARGET_INVALID,
+                f"rung {position} carries a transform and claims to spend no "
+                "boost headroom; an extended corner always costs level",
+            )
     corners = [float(rung["target"]["fp_hz"]) for rung in rungs]
     if any(later <= earlier for earlier, later in zip(corners, corners[1:])):
         _refuse(unordered, "rungs must run deepest first, by strictly rising fp_hz")

@@ -160,11 +160,14 @@ def test_a_boosted_family_carries_the_level_its_ladder_measured():
      BassExtensionRefusal.PROTECTION_INVALID),
     (True, ("rungs", 0, "protection", "ladder", "sha256"), "short",
      BassExtensionRefusal.PROTECTION_INVALID),
-    # THE hard stop, from both sides: boost with only one evidence attached.
+    # THE hard stop, from both sides: boost with only one evidence attached,
+    # and a real transform declaring it costs nothing to buy its way past it.
     (True, ("rungs", 0, "protection", "ladder"), None,
      BassExtensionRefusal.PROTECTION_INVALID),
     (True, ("rungs", 0, "protection", "limiter"), None,
      BassExtensionRefusal.PROTECTION_INVALID),
+    (True, ("rungs", 0, "target", "boost_headroom_db"), 0.0,
+     BassExtensionRefusal.TARGET_INVALID),
 ))
 def test_each_bound_refuses_under_its_own_name(boosted, path, value, reason):
     with pytest.raises(BassCandidateFieldError) as refusal:
