@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_SCHEMA_VERSION
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli.doctor import _evidence, _shared, aec
@@ -56,7 +57,11 @@ def _chip_window(*, ref: int, mic: int) -> dict:
 def _windows(entries: list[dict]) -> list:
     """Fixture entries read back through the real snapshot reader."""
     return aec._rms_windows_from_stats(
-        {"rms": {"windows": entries}}, _NOW_MONOTONIC,
+        {
+            "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
+            "rms": {"windows": entries},
+        },
+        _NOW_MONOTONIC,
     )
 
 
@@ -378,32 +383,6 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
-@pytest.mark.parametrize(
-    "snapshot",
-    [
-        None,
-        {"schema_version": 4},
-        {"schema_version": 4, "rms": {"windows": "malformed"}},
-    ],
-    ids=["no-snapshot", "pre-rms-schema", "malformed-rms"],
-)
-def test_check_aec_output_health_skips_when_no_windows_are_published(
-    monkeypatch, snapshot,
-):
-    """Rolling deploy: install.sh restarts a bridge older than this doctor,
-    whose snapshot carries no `rms` block. Its output content is then
-    unobserved — a skip, never a crash and never an unverified verdict."""
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
-    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: snapshot)
-    monkeypatch.setattr(aec, "_run", _no_subprocess)
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "skipped"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-
-
 def _fake_journalctl_failure() -> SimpleNamespace:
     """A failed ``journalctl`` invocation: non-zero exit, no stdout."""
     return SimpleNamespace(returncode=1, stdout="", stderr="journalctl: failed")
@@ -416,14 +395,13 @@ def _no_subprocess(*_args, **_kwargs):
 
 
 def _stage_bridge_windows(monkeypatch, entries: list[dict]) -> None:
-    stats = _bridge_reference_stats("outputd_udp", now=1_000.0)
-    stats["rms"] = {"windows": entries}
+    stats = _reference_input_stats(rms_entries=entries)
     monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "_run", _no_subprocess)
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
     monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: stats)
-    monkeypatch.setattr(aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
     monkeypatch.setattr(aec.time, "monotonic", lambda: _NOW_MONOTONIC)
 
 
@@ -500,7 +478,7 @@ def _reference_input_stats(
             ) * 1000,
         },
         "counters": {"ref_starved_frames": ref_starved_frames},
-        **({} if rms_entries is None else {"rms": {"windows": rms_entries}}),
+        "rms": {"windows": [] if rms_entries is None else rms_entries},
     }
 
 
@@ -557,6 +535,12 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = _NOW_MONOTONI
             },
             "ok", True, "REASON_REF_STARTUP_GRACE",
         ),
+        # The `reference_input` block is unchanged between schema 4 and 5, so
+        # a bridge that has not yet been restarted onto 5 keeps the verdict.
+        (
+            {"schema_version": 4, "last_frame_age_ms": 5_100},
+            "fail", False, "REASON_REF_RECEIVER_STALE",
+        ),
     ],
     ids=[
         "recent-receiver-ok",
@@ -565,6 +549,7 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = _NOW_MONOTONI
         "route-mismatch-wrong-udp-endpoint",
         "formerly-nonzero-now-frozen-fails",
         "young-process-explicit-grace",
+        "previous-schema-keeps-the-verdict",
     ],
 )
 def test_assess_reference_input_status_and_grace(
@@ -589,7 +574,7 @@ def test_assess_reference_input_status_and_grace(
     "stats",
     [
         {},
-        _reference_input_stats(schema_version=4),
+        _reference_input_stats(schema_version=3),
         _reference_input_stats(schema_version=6),
     ],
     ids=["missing-schema", "old-schema", "future-schema"],
@@ -616,8 +601,20 @@ def test_assess_reference_input_undeclared_schema_preserves_fallback(stats):
             _reference_input_stats(snapshot_age_sec=-0.1),
             "REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE",
         ),
+        # A snapshot declaring the RMS-window schema and publishing no usable
+        # block is malformed, not a rolling deploy: skipping it would hide
+        # the silent-reference regression this check exists for.
+        (
+            {**_reference_input_stats(), "rms": {"windows": "malformed"}},
+            "REASON_REF_CONTRACT_MISSING_FIELD",
+        ),
+        (
+            {k: v for k, v in _reference_input_stats().items() if k != "rms"},
+            "REASON_REF_CONTRACT_MISSING_FIELD",
+        ),
     ],
-    ids=["malformed", "writer-stale", "future-monotonic"],
+    ids=["malformed", "writer-stale", "future-monotonic",
+         "rms-block-malformed", "rms-block-absent"],
 )
 def test_assess_reference_input_declared_schema_fails_closed(stats, reason):
     assessed = _assess_reference_stats(stats)
@@ -820,44 +817,54 @@ def _install_reference_health_check_fakes(
 
 @pytest.mark.parametrize(
     (
-        "stats_kwargs", "loopback_active", "expected_status",
+        "stats", "loopback_active", "expected_status",
         "expected_reason", "outputd_status_calls",
     ),
     [
         (
-            {"last_frame_age_ms": 8_000}, False,
+            _reference_input_stats(last_frame_age_ms=8_000), False,
             "fail", "REASON_REF_RECEIVER_STALE", 1,
         ),
         (
-            {"last_frame_age_ms": 8_000, "rms_entries": _healthy_entries(8)},
+            _reference_input_stats(
+                last_frame_age_ms=8_000, rms_entries=_healthy_entries(8),
+            ),
             False, "fail", "REASON_REF_RECEIVER_STALE", 1,
         ),
+        # No readable snapshot at all: the bridge is running, so its silence
+        # is missing evidence rather than a bridge predating the windows.
+        ("not-json", False, "warn", "REASON_BRIDGE_OUTPUT_WINDOWS_UNREADABLE", 0),
         (
-            {"schema_version": 4}, False,
-            "skipped", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", 0,
+            _reference_input_stats(schema_version=4), False,
+            "skipped", "REASON_BRIDGE_OUTPUT_WINDOWS_UNPUBLISHED", 0,
+        ),
+        # An unknown-future schema forfeits the reference contract but its
+        # windows still read, so the content assessment keeps its verdict.
+        (
+            _reference_input_stats(schema_version=6), False,
+            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", 0,
         ),
         (
-            {"schema_version": 6}, False,
-            "skipped", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", 0,
-        ),
-        (
-            {"last_frame_age_ms": 100, "rms_entries": _silent_ref_entries(5)},
+            _reference_input_stats(
+                last_frame_age_ms=100, rms_entries=_silent_ref_entries(5),
+            ),
             True, "fail", "REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED", 1,
         ),
         (
-            {
-                "last_frame_age_ms": 100,
-                "rms_entries": _silent_ref_entries(5)
+            _reference_input_stats(
+                last_frame_age_ms=100,
+                rms_entries=_silent_ref_entries(5)
                 + [_window(ref=900, mic=2_500, level_db=-22.8)],
-            },
+            ),
             True, "ok", "REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY", 0,
         ),
     ],
     ids=[
         "usb-invisible-to-loopback",
         "rms-cannot-override-stale-receiver",
-        "undeclared-schema-old",
-        "undeclared-schema-future",
+        "no-snapshot",
+        "previous-schema-publishes-no-windows",
+        "future-schema-keeps-window-content",
         "fresh-receiver-silent-content-fails",
         "fresh-receiver-one-healthy-window-ok",
     ],
@@ -865,23 +872,23 @@ def _install_reference_health_check_fakes(
 def test_check_reference_freshness_and_content(
     monkeypatch,
     tmp_path: Path,
-    stats_kwargs,
+    stats,
     loopback_active,
     expected_status,
     expected_reason,
     outputd_status_calls,
 ):
-    """The exact-schema stats contract short-circuits the window content
-    entirely and can never be overridden by healthy RMS history (a stale
-    receiver fails even facing 8 healthy windows); a schema that publishes
-    no windows leaves the content unobserved; and a fresh receiver still
-    runs the content checks, where a silent reference fails even with
-    sustained mic activity but one healthy window proves the reference chain
-    works."""
+    """The stats contract short-circuits the window content entirely and can
+    never be overridden by healthy RMS history (a stale receiver fails even
+    facing 8 healthy windows); an unreadable snapshot and a bridge predating
+    the published windows separate missing evidence from a rolling deploy;
+    and a fresh receiver still runs the content checks, where a silent
+    reference fails even with sustained mic activity but one healthy window
+    proves the reference chain works."""
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(**stats_kwargs),
+        stats=stats,
     )
     monkeypatch.setattr(
         aec, "_loopback_playback_active", lambda: loopback_active
@@ -947,28 +954,26 @@ def test_check_malformed_declared_v4_fails_without_row_traceback(
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
-def test_check_oversized_json_integer_skips_without_a_row_traceback(
+def test_check_oversized_json_integer_fails_without_a_row_traceback(
     monkeypatch,
     tmp_path: Path,
 ):
-    """An older-schema snapshot whose integers are absurd is still just an
-    older-schema snapshot: unobserved, never a traceback."""
-    oversized = (
-        '{"schema_version":4,"reference_input":'
-        '{"snapshot_monotonic_ms":' + ("9" * 5_000) + "}}"
-    )
+    """A JSON-valid but absurd integer is an untrustworthy snapshot: the row
+    fails closed, never with a traceback."""
+    stats = _reference_input_stats()
+    stats["reference_input"]["snapshot_monotonic_ms"] = 10**4_000
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=oversized,
+        stats=stats,
     )
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
 
     result = aec.check_aec_bridge_output_health()
 
-    assert result.status == "skipped"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-    assert not any(command[0] == "outputd-status" for command in calls)
+    assert result.status == "fail"
+    assert result.reason == aec.REASON_REF_CONTRACT_INVALID_NUMERIC
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
 def test_applied_reference_source_reads_the_v4_receiver_not_the_legacy_plan():

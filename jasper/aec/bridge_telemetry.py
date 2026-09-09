@@ -45,8 +45,11 @@ OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 BRIDGE_STATS_PATH_ENV = "JASPER_AEC_BRIDGE_STATS_PATH"
 BRIDGE_STATS_SCHEMA_VERSION = 5
-# Six windows at the bridge's RMS_LOG_INTERVAL_SEC cadence span the ~90 s
-# jasper-doctor assesses for reference-path health.
+# Cadence of the bridge's RMS telemetry and the depth of the window history
+# the snapshot republishes. Their product is the span jasper-doctor assesses
+# for reference-path health, and the history must stay at or above doctor's
+# silent-reference alarm count (5) for that verdict to be reachable.
+RMS_LOG_INTERVAL_SEC = 15.0
 RMS_WINDOW_HISTORY = 6
 
 
@@ -191,10 +194,8 @@ class _BridgeStats:
         jasper-doctor's `check_aec_bridge_output_health` assesses.
 
         `mic` is the least-cancelled near-end level the running profile
-        offers: the AEC3 capture lane, or the chip's raw mic-0 channel where
-        every chip beam is already cancelled. `level_db` is AEC3 attenuation
-        and is None under chip AEC, whose beam-to-beam delta is not
-        canceller work.
+        offers: the AEC3 capture lane, or the chip's raw mic-0 channel.
+        `level_db` is AEC3 attenuation, None under chip AEC.
         """
 
         window = {

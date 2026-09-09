@@ -48,7 +48,11 @@ from ...aec.bridge_config import (
     REF_SOURCE_ENV,
 )
 from ...aec.bridge_engines import DTLN_ENABLED_ENV
-from ...aec.bridge_telemetry import read_bridge_stats
+from ...aec.bridge_telemetry import (
+    RMS_LOG_INTERVAL_SEC,
+    RMS_WINDOW_HISTORY,
+    read_bridge_stats,
+)
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -127,6 +131,10 @@ REASON_BRIDGE_OUTPUT_REF_SILENT_ENDPOINT_MISMATCH = (
 )
 REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED = "bridge_output_ref_silent_unconfirmed"
 REASON_BRIDGE_OUTPUT_NO_WINDOWS = "bridge_output_no_windows"
+# The bridge publishes no window this doctor can read: an older schema
+# (rolling deploy, skipped) or no readable block at all (missing evidence).
+REASON_BRIDGE_OUTPUT_WINDOWS_UNPUBLISHED = "bridge_output_windows_unpublished"
+REASON_BRIDGE_OUTPUT_WINDOWS_UNREADABLE = "bridge_output_windows_unreadable"
 REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = "bridge_output_ref_proven_healthy"
 REASON_BRIDGE_OUTPUT_CHIP_ONLY = "bridge_output_chip_only"
 REASON_BRIDGE_OUTPUT_IDLE = "bridge_output_idle"
@@ -682,24 +690,47 @@ class _RmsWindow(NamedTuple):
     chip: bool
 
 
+def _bridge_stats_schema(stats: dict | None) -> int | None:
+    """The schema version a snapshot declares, or None when it declares none."""
+    version = stats.get("schema_version") if isinstance(stats, dict) else None
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    return version
+
+
+def _rms_window_entries(stats: dict | None) -> list | None:
+    """The raw `rms.windows` list a snapshot at schema
+    `_AEC_RMS_WINDOWS_SCHEMA_VERSION` or newer owes, or None when it declares
+    an older schema or carries no usable block.
+    """
+    if not isinstance(stats, dict):
+        return None
+    schema_version = _bridge_stats_schema(stats)
+    if schema_version is None or schema_version < _AEC_RMS_WINDOWS_SCHEMA_VERSION:
+        return None
+    rms = stats.get("rms")
+    entries = rms.get("windows") if isinstance(rms, dict) else None
+    return entries if isinstance(entries, list) else None
+
+
 def _rms_windows_from_stats(
     stats: dict | None, now_monotonic: float,
 ) -> list[_RmsWindow] | None:
-    """The RMS windows the running bridge published, or None when it
-    publishes none: no snapshot, or a bridge older than schema
-    `_AEC_BRIDGE_STATS_SCHEMA_VERSION`.
+    """The RMS windows the running bridge published, or None when there are
+    none to read: no snapshot, a schema older than
+    `_AEC_RMS_WINDOWS_SCHEMA_VERSION`, or no usable `rms.windows` block.
 
     Windows older than `_AEC_RMS_WINDOW_SPAN_SEC` are dropped. The stats
     writer is its own thread, so a wedged processing loop keeps republishing
     the last windows it produced; ageing them out keeps that missing
     evidence instead of stale health.
     """
-    rms = stats.get("rms") if isinstance(stats, dict) else None
-    if not isinstance(rms, dict) or not isinstance(rms.get("windows"), list):
+    entries = _rms_window_entries(stats)
+    if entries is None:
         return None
     cutoff_ms = (now_monotonic - _AEC_RMS_WINDOW_SPAN_SEC) * 1000.0
     windows: list[_RmsWindow] = []
-    for entry in rms["windows"]:
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         level_db = entry.get("level_db")
@@ -734,10 +765,11 @@ _AEC_MIC_MUSIC_THRESHOLD = 1500  # RMS
 # music is 1000+ RMS.
 _AEC_REF_SILENT_THRESHOLD = 50
 
-# Span of published RMS windows the assessment reads. Long enough to ride
-# past the transient install.sh produces when it restarts the bridge, short
-# enough that a sustained outage is not diluted by older history.
-_AEC_RMS_WINDOW_SPAN_SEC = 90.0
+# Span of published RMS windows the assessment reads: the whole history the
+# bridge republishes. Long enough to ride past the transient install.sh
+# produces when it restarts the bridge, short enough that a sustained outage
+# is not diluted by older history.
+_AEC_RMS_WINDOW_SPAN_SEC = RMS_WINDOW_HISTORY * RMS_LOG_INTERVAL_SEC
 
 # The bridge rewrites its stats snapshot every 0.5 s. A snapshot older than
 # this belongs to a stopped/wedged writer.
@@ -746,8 +778,11 @@ _BRIDGE_STATS_FRESH_SEC = 30.0
 # Schema 4 added authoritative receiver-side progress for the reference input
 # (UDP send success is not delivery proof, so only the bridge's successful
 # conversion + bounded-queue enqueue advances it); schema 5 added the `rms`
-# windows this check assesses.
-_AEC_BRIDGE_STATS_SCHEMA_VERSION = 5
+# windows. `reference_input` is unchanged between the two, so the freshness
+# contract accepts either and a rolling deploy keeps its authoritative
+# verdict; only the windows need the 5 floor.
+_AEC_REFERENCE_INPUT_SCHEMA_VERSIONS = frozenset({4, 5})
+_AEC_RMS_WINDOWS_SCHEMA_VERSION = 5
 # A bridge younger than this has not necessarily bound its receiver yet.
 _AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC = 10.0
 # outputd publishes a 20 ms reference frame continuously, so a gap this long
@@ -805,12 +840,13 @@ def _assess_aec_reference_input_from_stats(
 ) -> tuple[CheckResult, bool] | None:
     """Assess current bridge-side reference receiver progress.
 
-    Returns ``(result, startup_grace)`` for the exact current schema.
-    ``None`` leaves the verdict to the published RMS windows for missing,
-    older, and unknown-future schemas. A malformed or stale snapshot of the
-    current schema fails closed instead of aging out of the contract. The
-    second element lets the caller suppress the window content assessment
-    during the explicit startup grace.
+    Returns ``(result, startup_grace)`` for every schema whose
+    ``reference_input`` block this doctor knows
+    (``_AEC_REFERENCE_INPUT_SCHEMA_VERSIONS``). ``None`` leaves the verdict
+    to the published RMS windows for missing and unknown-future schemas. A
+    malformed or stale snapshot of a known schema fails closed instead of
+    aging out of the contract. The second element lets the caller suppress
+    the window content assessment during the explicit startup grace.
 
     ``configured_source`` is the route the CALLER resolved from the env plus
     the bridge's own published snapshot, not the env value alone (see
@@ -822,12 +858,8 @@ def _assess_aec_reference_input_from_stats(
 
     if configured_source != "outputd_udp":
         return None
-    schema_version = stats.get("schema_version")
-    if (
-        isinstance(schema_version, bool)
-        or not isinstance(schema_version, int)
-        or schema_version != _AEC_BRIDGE_STATS_SCHEMA_VERSION
-    ):
+    schema_version = _bridge_stats_schema(stats)
+    if schema_version not in _AEC_REFERENCE_INPUT_SCHEMA_VERSIONS:
         return None
 
     localization = _outputd_reference_localization(
@@ -840,12 +872,20 @@ def _assess_aec_reference_input_from_stats(
         return (
             CheckResult(
                 "AEC bridge output", "fail",
-                f"bridge reference freshness schema "
-                f"v{_AEC_BRIDGE_STATS_SCHEMA_VERSION} is untrustworthy: "
+                f"bridge stats schema v{schema_version} is untrustworthy: "
                 f"{detail}. {localization}",
                 reason=reason,
             ),
             False,
+        )
+
+    if (
+        schema_version >= _AEC_RMS_WINDOWS_SCHEMA_VERSION
+        and _rms_window_entries(stats) is None
+    ):
+        return fail_contract(
+            "rms.windows is missing or not a list",
+            REASON_REF_CONTRACT_MISSING_FIELD,
         )
 
     reference_input = stats.get("reference_input")
@@ -1044,8 +1084,7 @@ def _assess_aec_bridge_output(
     open", NOT "the speaker is silent". Pass False when a check upstream
     has verified the loopback playback side is closed; the FAIL branch
     will then return OK with an explanatory message instead. Default
-    None preserves the old behavior (used by tests that exercise the
-    window assessment in isolation).
+    None leaves the loopback side unknown, so the FAIL stands.
     """
     silent_ref_count = 0
     healthy_ref_windows = 0
@@ -1157,8 +1196,8 @@ def _assess_aec_bridge_output(
     # Chip AEC: the bridge runs no canceller, so the line carries no
     # attenuation-equivalent to evaluate. Report the evidence that does
     # exist; the ref-path branches above remain the verdict-bearing part on
-    # this profile. Only when EVERY window is chip-shaped — a mixed journal
-    # (a restart across a profile change) still owes the AEC3 assessment.
+    # this profile. Only when EVERY window is chip-shaped — a snapshot
+    # spanning a profile change still owes the AEC3 assessment.
     if chip_windows == total_windows:
         return CheckResult(
             "AEC bridge output", "ok",
@@ -1207,16 +1246,16 @@ def check_aec_bridge_output_health() -> CheckResult:
     says ok, leaving the wake detector consuming an un-cancelled mic
     with music blasting through it.
 
-    Both halves read one file, the bridge's stats snapshot. The exact
-    current schema's monotonic stats are authoritative for outputd-UDP
-    receiver progress: a freshness failure returns before the RMS windows
-    or the USB-blind loopback heuristic can hide it. A freshness success
-    proves only transport/queue admission, so the published windows are
-    still assessed; a malformed or stale snapshot of the current schema
-    fails closed. A bridge older than the schema publishes no windows at
-    all (rolling deploy: install.sh restarts it minutes after this code
-    lands), which is missing evidence, not a fault — skipped. Both
-    assessments are pure functions over the snapshot."""
+    Both halves read one file, the bridge's stats snapshot. Its monotonic
+    stats are authoritative for outputd-UDP receiver progress: a freshness
+    failure returns before the RMS windows or the USB-blind loopback
+    heuristic can hide it. A freshness success proves only transport/queue
+    admission, so the published windows are still assessed; a malformed or
+    stale snapshot of a known schema fails closed. A bridge predating the
+    windows publishes none (rolling deploy: install.sh restarts it minutes
+    after this code lands) — skipped, not a fault; a running bridge with no
+    readable windows on a schema that owes them is missing evidence — warn.
+    Both assessments are pure functions over the snapshot."""
     parked = _parked_follower_result("AEC bridge output")
     if parked is not None:
         return parked
@@ -1280,7 +1319,7 @@ def check_aec_bridge_output_health() -> CheckResult:
             return stats_result
         if startup_grace:
             return stats_result
-        # A non-startup OK from the exact-schema assessor means it already
+        # A non-startup OK from the reference assessor means it already
         # proved that reference_input source/endpoint match this outputd
         # route. Carry that identity into content remediation; do not re-rank
         # it through the legacy epoch-based active_capture_plan fallback.
@@ -1288,17 +1327,29 @@ def check_aec_bridge_output_health() -> CheckResult:
 
     windows = _rms_windows_from_stats(bridge_stats, now_monotonic)
     if windows is None:
-        detail = (
-            "the running bridge publishes no RMS windows (stats snapshot "
-            f"predates schema {_AEC_BRIDGE_STATS_SCHEMA_VERSION}), so its "
-            "output content is unobserved"
-        )
+        schema_version = _bridge_stats_schema(bridge_stats)
+        if (
+            schema_version is not None
+            and schema_version < _AEC_RMS_WINDOWS_SCHEMA_VERSION
+        ):
+            status, reason, cause = (
+                "skipped",
+                REASON_BRIDGE_OUTPUT_WINDOWS_UNPUBLISHED,
+                f"its snapshot declares schema v{schema_version}, which "
+                f"predates the v{_AEC_RMS_WINDOWS_SCHEMA_VERSION} RMS windows",
+            )
+        else:
+            status, reason, cause = (
+                "warn",
+                REASON_BRIDGE_OUTPUT_WINDOWS_UNREADABLE,
+                "it published no readable stats snapshot"
+                if bridge_stats is None
+                else "its snapshot carries no usable rms.windows block",
+            )
+        detail = f"the running bridge's output content is unobserved: {cause}"
         if stats_assessment is not None:
             detail += f"; {stats_assessment[0].detail}"
-        return CheckResult(
-            "AEC bridge output", "skipped", detail,
-            reason=REASON_BRIDGE_OUTPUT_NO_WINDOWS,
-        )
+        return CheckResult("AEC bridge output", status, detail, reason=reason)
 
     now_epoch = time.time()
     legacy_provenance = (

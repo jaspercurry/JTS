@@ -126,6 +126,7 @@ from jasper.aec.bridge_telemetry import (
     LegEmitter,
     OUT_FRAME_BYTES,
     OUT_FRAME_SAMPLES,
+    RMS_LOG_INTERVAL_SEC,
     StatsIdentity,
     TimestampedLegEmitter,
     _BridgeStats,
@@ -179,12 +180,6 @@ OUT_PORT_AEC3_SWEEP = {
 # Drop-frame threshold: if queues fill faster than they drain (CPU
 # starvation, clock drift past the margin), log and drop rather than block.
 QUEUE_MAXSIZE = 32
-
-# Cadence of the `rms`/`chip_aec rms` INFO telemetry line. jasper/cli/doctor/aec.py
-# falls back to a rolling 90 s journal window when schema-v4 stats are
-# missing/stale, and its silent-reference thresholds (silent_ref_count >= 5)
-# need >=5 samples in that window to be reachable.
-RMS_LOG_INTERVAL_SEC = 15.0
 
 _shutdown = threading.Event()
 
@@ -1019,8 +1014,9 @@ def _aec_loop(  # noqa: PLR0915
                     _bridge_stats.record_rms_window(
                         ref=ref_rms,
                         mic=(
-                            (mic_rms if raw0_rms is None else raw0_rms)
+                            raw0_rms
                             if production_chip_aec_enabled
+                            and raw0_rms is not None
                             else mic_rms
                         ),
                         level_db=(
