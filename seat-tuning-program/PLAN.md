@@ -311,6 +311,15 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 08:35Z: Lane A opened row 1.2 (PR #4602, 191 files, +794/−41,111,
+  CI green, rebased onto current main across #4580/#4570/#4598/#4599–#4601).
+  Sonnet claim check and Opus design review running in parallel. Two owner
+  decisions the PR surfaces: the daemon's root-mounted calibration,
+  test-tone and healthz routes lost their only nginx path with the
+  `/sound/room/` block (no browser page registers a microphone now — a CLI
+  verb or a re-mount is needed for the toolbox's mic step); boxes that ran
+  room correction keep `/var/lib/jasper/correction/{sweeps,captures,sessions}`
+  on disk with no doctor row (deliberately not pruned: banked captures).
 - 2026-09-09 07:40Z: Lane D pre-review (Sonnet, read-only, branches not yet
   PRs; posted on #4502): both branches stale (3.1 102 commits behind, 3.2
   139; not stacked on each other); 3.1 ships `bench/wired_play.py` (a faithful
