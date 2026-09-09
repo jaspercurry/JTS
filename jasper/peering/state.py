@@ -107,7 +107,6 @@ class StartSession:
 @dataclass(frozen=True, slots=True)
 class StandDown:
     """Caller should ask jasper-voice to abort the pending wake."""
-    epoch: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +290,7 @@ class PeeringStateMachine:
                     "local wake (score=%.2f) ignored: suppressed by peer %s",
                     ev.score, self._foreign_peer,
                 )
-                return []
+                return [StandDown()]
             # Strong wake — break suppression, enter arbitration.
             log_event(
                 logger,
@@ -305,13 +304,13 @@ class PeeringStateMachine:
         if self._state in (PeerState.IDLE, PeerState.SUPPRESSED):
             return self._begin_candidate(ev)
 
-        # CANDIDATE (already arbitrating a previous wake): ignore the
+        # CANDIDATE (already arbitrating a previous wake): drop the
         # spurious second wake from voice. The detector's own
         # refractory period should prevent this in practice; this is
         # belt-and-braces.
-        # WINNER / ACTIVE: also ignore — we're already handling a
+        # WINNER / ACTIVE: also drop — we're already handling a
         # session.
-        return []
+        return [StandDown()]
 
     def _on_peer_wake(self, ev: PeerWake) -> list[Action]:
         # Peer is reporting their own wake. Three cases:
@@ -399,7 +398,7 @@ class PeeringStateMachine:
                 to=ev.peer_id,
                 epoch=ev.epoch,
             )
-            actions.append(StandDown(epoch=ev.epoch))
+            actions.append(StandDown())
             actions.append(CancelTimer(timer_id=TIMER_HEARTBEAT_SEND))
             self._reset_epoch()
 
@@ -407,8 +406,7 @@ class PeeringStateMachine:
         # down. Without the StandDown, the pending ARBITRATE RPC would
         # hang until its hard timeout.
         if self._state is PeerState.CANDIDATE:
-            if self._epoch and self._epoch.epoch == ev.epoch:
-                actions.append(StandDown(epoch=ev.epoch))
+            actions.append(StandDown())
             actions.append(CancelTimer(timer_id=TIMER_ARB_WINDOW))
             self._reset_epoch()
 
@@ -554,7 +552,7 @@ class PeeringStateMachine:
                 winner_score=f"{winner.score:.2f}",
                 my_score=f"{my_score.score:.2f}" if my_score else "n/a",
             )
-            actions: list[Action] = [StandDown(epoch=epoch)]
+            actions: list[Action] = [StandDown()]
             # Enter SUPPRESSED tracking the winner.
             self._reset_epoch()
             self._state = PeerState.SUPPRESSED

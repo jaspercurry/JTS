@@ -384,6 +384,61 @@ async def test_own_datagram_is_dropped_before_dispatch(daemon_setup):
     assert d._pending_epoch is None
 
 
+# ---------- terminal wake paths resolve the RPC ----------
+
+
+async def _arm_suppressed(d, transport):
+    """A peer CLAIMed first, so we are SUPPRESSED for its session."""
+    await transport.inject(IncomingClaim(epoch="ep-bob", peer_id="bob-uuid", ts_ns=0))
+
+
+async def _arm_already_winner(d, transport):
+    """We already won a round, so a second wake arrives in WINNER."""
+    first = await d._handle_arbitrate({
+        "score": 0.9, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
+    })
+    assert first["result"] == "WIN"
+
+
+async def _claim_for_another_epoch(d, transport):
+    """A peer CLAIMs an epoch that is not ours while we arbitrate."""
+    await _await_pending_epoch(d)
+    await transport.inject(IncomingClaim(epoch="ep-other", peer_id="bob-uuid", ts_ns=0))
+
+
+@pytest.mark.parametrize(("arm", "during"), (
+    (_arm_suppressed, None),
+    (_arm_already_winner, None),
+    (None, _claim_for_another_epoch),
+))
+async def test_terminal_wake_paths_resolve_arbitrate_as_lose(
+    daemon_setup, arm, during,
+):
+    """Every wake path that declines to arbitrate must still resolve
+    the ARBITRATE RPC as LOSE.
+
+    Leaving the future unresolved fails open to WIN once
+    ARBITRATE_RPC_TIMEOUT_SEC elapses, so the speaker that should have
+    stayed quiet answers alongside the one that won the round.
+    """
+    d, transport = daemon_setup
+    if arm is not None:
+        await arm(d, transport)
+
+    rpc = asyncio.ensure_future(d._handle_arbitrate({
+        # Under break_threshold=0.85, which the SUPPRESSED path keys
+        # off; the other two paths never look at the score.
+        "score": 0.60, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
+    }))
+    if during is not None:
+        await during(d, transport)
+
+    # Comfortably above the fail-open timeout: a regression shows up as
+    # "WIN", not as a hung test.
+    result = await asyncio.wait_for(rpc, timeout=daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC * 2)
+    assert result["result"] == "LOSE"
+
+
 # ---------- timeout fail-open ----------
 
 
