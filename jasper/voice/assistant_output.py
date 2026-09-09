@@ -102,7 +102,7 @@ class FanInDucker:
         if self._ducked:
             return
         worker = asyncio.create_task(
-            asyncio.to_thread(self._playout.program_duck, True),
+            self._playout.program_duck(True),
             name="fanin-program-duck-on",
         )
         deferred_cancel = False
@@ -140,7 +140,7 @@ class FanInDucker:
         if not self._ducked:
             return
         try:
-            ok = await asyncio.to_thread(self._playout.program_duck, False)
+            ok = await self._playout.program_duck(False)
             if ok:
                 log_event(logger, "fanin.duck", on="false")
         finally:

@@ -50,7 +50,13 @@ from .assistant_volume import (
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
-from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
+from .music_sources import (
+    MUSIC_SOURCES,
+    SOURCE_TO_ACTIVE_KEY,
+    Source,
+    VolumeMode,
+    volume_mode,
+)
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
@@ -1687,7 +1693,9 @@ class VolumeCoordinator:
         if publisher is None:
             return
         try:
-            await publisher(context)
+            if not await publisher(context):
+                # The active route names no mix stage, so nothing was sent.
+                return
             log_event(
                 logger,
                 "volume.context_published",
@@ -1949,6 +1957,8 @@ class VolumeCoordinator:
         self._deep_quiet_skipped = skipping
         return skipping
 
+    _SELECTABLE_SOURCE_VALUES = frozenset(s.value for s in MUSIC_SOURCES)
+
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
         (mux preempts in <1 s) but possible during transitions; pick
@@ -1964,7 +1974,11 @@ class VolumeCoordinator:
         if selected_source is not None:
             try:
                 selected = await selected_source()
-                if selected:
+                # Only a music source answers this question. Mux also says
+                # "idle" and, during a measurement lease, a fan-in lane label
+                # — neither is a source, and both must fall through to the
+                # raw probes rather than pinning the coordinator to IDLE.
+                if selected in self._SELECTABLE_SOURCE_VALUES:
                     return Source(selected)
             except (ValueError, TypeError):
                 logger.debug("mux selected_source was unknown; ignoring")

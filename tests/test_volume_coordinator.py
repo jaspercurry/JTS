@@ -2401,6 +2401,28 @@ async def test_observe_usbsink_initial_snapshot_cannot_clear_remote_mute(tmp_pat
 
 
 @pytest.mark.parametrize(
+    ("selected", "expected"),
+    [
+        ("airplay", Source.AIRPLAY),
+        # Mux's non-source answers — "idle", and a fan-in test-lease label
+        # during a measurement — must fall through to the raw probes rather
+        # than pinning the coordinator to IDLE while Spotify is playing.
+        ("idle", Source.SPOTIFY),
+        ("correction", Source.SPOTIFY),
+        (None, Source.SPOTIFY),
+    ],
+)
+async def test_active_source_falls_through_on_a_non_source_answer(
+    tmp_path, selected, expected,
+):
+    coord, _, _ = _real_coord(
+        tmp_path, active={"spotactive": True}, selected=selected,
+    )
+
+    assert await coord._active_source() is expected
+
+
+@pytest.mark.parametrize(
     ("active", "selected"),
     [
         pytest.param({"usbsinkactive": True}, None, id="raw_activity_probe"),

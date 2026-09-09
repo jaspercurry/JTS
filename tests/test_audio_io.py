@@ -60,9 +60,13 @@ class _CaptureOutputdStream:
         self.volume_contexts: list[object | None] = []
         self.meter_pauses = 0
         self.meter_resumes = 0
+        self.ducks: list[bool] = []
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
+
+    def program_duck(self, on: bool) -> None:
+        self.ducks.append(on)
 
     def prepare_assistant(
         self,
@@ -1161,6 +1165,35 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
     finally:
         adapter.close()
         child.close()
+
+
+async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
+    """Otherwise the first assistant turn after a fan-in restart plays over
+    undimmed music: the duck is the only command that never writes audio, so
+    nothing else would heal the connection first."""
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
+    parent, child = socket.socketpair()
+    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream.close()
+    child.close()
+    p._stream = closed_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    assert await p.program_duck(True) is True
+    assert p._stream is replacement
+    assert replacement.ducks == [True]
+
+
+async def test_program_duck_reports_a_failure_when_there_is_no_connection():
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
+
+    assert await p.program_duck(True) is False
 
 
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):

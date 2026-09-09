@@ -19,6 +19,7 @@ from typing import Any, Callable, Sequence, TypeVar
 from ..identity import identity_state
 from ..accessories import status as accessory_status
 from ..memory_policy import disk_usage
+from ..music_sources import MUSIC_SOURCES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -607,6 +608,11 @@ def _spotify_state() -> dict[str, Any]:
     }
 
 
+# Mux's ``active_source`` can also carry "idle" or a fan-in test-lease
+# label; only these are sources this surface may report.
+_MUSIC_SOURCE_VALUES = frozenset(source.value for source in MUSIC_SOURCES)
+
+
 def _active_source(
     *,
     voice_session: bool,
@@ -633,13 +639,14 @@ def _active_source(
     )
 
     # Mux's own answer to "what is audible now" — one field, not a second
-    # reconstruction from the manual pin and the raw winner. "idle" is mux
-    # saying nothing is audible, which must not short-circuit the raw-probe
-    # fallbacks below.
+    # reconstruction from the manual pin and the raw winner. Mux also answers
+    # "idle" and, while a measurement holds the fan-in test lease, that lane's
+    # label; neither is a source this surface may report, and both must fall
+    # through to the raw-probe fallbacks below.
     mux_effective_source = None
     if isinstance(mux_status, dict):
         raw_effective = mux_status.get("active_source")
-        if isinstance(raw_effective, str) and raw_effective != "idle":
+        if raw_effective in _MUSIC_SOURCE_VALUES:
             mux_effective_source = raw_effective
 
     if voice_session:

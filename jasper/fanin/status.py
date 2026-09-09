@@ -113,24 +113,20 @@ def read_fanin_status(
 def fanin_inputs_by_label(
     fanin_status: dict[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
-    """Project fan-in's input lanes into one ``{label: lane}`` mapping.
+    """Project a raw fan-in STATUS's ``inputs`` list into ``{label: lane}``.
 
-    Accepts either shape a caller may hold: the raw STATUS ``inputs`` list, or
-    an ``inputs`` already re-keyed by label (the shape the airplay-health
-    snapshot publishes). Fail-soft to ``{}`` — a missing / malformed STATUS,
-    an absent ``inputs``, and a lane with no string label all drop out rather
-    than raising, so every consumer keys off one projection.
+    Fail-soft to ``{}`` — a missing / malformed STATUS, an absent ``inputs``,
+    and a lane with no string label all drop out rather than raising, so every
+    consumer keys off one projection.
+
+    Takes the raw STATUS only. Health snapshots that republish lanes key them
+    by SOURCE ID, not by fan-in label (``bluealsa`` is the ``bluetooth``
+    source's lane), so passing one here would silently miss lanes.
     """
 
     if not isinstance(fanin_status, dict):
         return {}
     inputs = fanin_status.get("inputs")
-    if isinstance(inputs, dict):
-        return {
-            label: entry
-            for label, entry in inputs.items()
-            if isinstance(label, str) and isinstance(entry, dict)
-        }
     if not isinstance(inputs, list):
         return {}
     return {

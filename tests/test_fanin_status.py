@@ -88,11 +88,8 @@ def test_direct_sample_rejects_non_direct_and_malformed_lanes():
 @pytest.mark.parametrize(
     ("status", "expected_labels"),
     [
-        # Raw STATUS: a list of lanes.
         ({"inputs": [{"label": "spotify"}, {"label": "usbsink"}]},
          ["spotify", "usbsink"]),
-        # Already re-keyed by label (the airplay-health snapshot's shape).
-        ({"inputs": {"spotify": {}, "usbsink": {}}}, ["spotify", "usbsink"]),
         # Fail-soft: absent, malformed, and unlabelled lanes all drop out
         # rather than raising — every consumer keys off one projection.
         (None, []),
@@ -100,8 +97,13 @@ def test_direct_sample_rejects_non_direct_and_malformed_lanes():
         ({"inputs": "bad"}, []),
         ({"inputs": []}, []),
         ({"inputs": [{"label": 7}, "nope", {"no_label": 1}]}, []),
-        ({"inputs": {7: {}, "spotify": "nope"}}, []),
+        # A health snapshot re-keys lanes by SOURCE ID, not fan-in label.
+        # This projection takes raw STATUS only, so that shape yields nothing
+        # rather than silently answering for the wrong key space.
+        ({"inputs": {"bluetooth": {"label": "bluealsa"}}}, []),
     ],
 )
-def test_inputs_by_label_projects_both_shapes_fail_soft(status, expected_labels):
+def test_inputs_by_label_projects_the_raw_status_fail_soft(
+    status, expected_labels,
+):
     assert sorted(fanin_inputs_by_label(status)) == sorted(expected_labels)

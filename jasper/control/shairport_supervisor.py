@@ -284,9 +284,11 @@ class ShairportSupervisor:
         toward "a listener is there", and a genuine sender that publishes no
         track title must not be restarted out from under.
 
-        If the probe is unknown, fail safe to "active" only
-        while systemd still reports shairport-sync live or unknown. A
-        dead/inactive unit cannot be protecting a listener, so it
+        A shairport whose MPRIS name is absent from the bus answers a
+        definite "not playing" — there is no session for a wedge restart to
+        interrupt. Only a transport failure is unknown, and that fails safe
+        to "active" while systemd still reports shairport-sync live or
+        unknown. A dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
 
         A *deliberately disabled* unit is diverted before this gate:

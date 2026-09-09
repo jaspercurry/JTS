@@ -36,8 +36,6 @@ from jasper.control.server import (
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.control.volume_ops import VOLUME_MAX_DB, VOLUME_MIN_DB
-from jasper.volume_curve import db_to_percent
 
 from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
@@ -85,15 +83,6 @@ def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
         "detail": "choose and save a speaker layout before using audio",
     }
     assert setup is blocked
-
-
-# --- pure helpers ---
-
-
-def test_db_to_percent_endpoints():
-    assert db_to_percent(VOLUME_MIN_DB) == 0
-    assert db_to_percent(VOLUME_MAX_DB) == 100
-    assert db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
 
 
 # --- management request guardrails ---

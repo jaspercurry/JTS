@@ -1035,7 +1035,7 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
     release_off = threading.Event()
     commands: list[bool] = []
 
-    def program_duck(on: bool) -> bool:
+    def _blocking_duck(on: bool) -> bool:
         commands.append(on)
         if on:
             loop.call_soon_threadsafe(on_started.set)
@@ -1066,6 +1066,9 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
                 return False
             self.calls += 1
             return True
+
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
 
     ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     cues = _Cues()
@@ -1144,13 +1147,16 @@ async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
     commands: list[bool] = []
     worker_error = RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
 
-    def program_duck(on: bool) -> bool:
+    def _blocking_duck(on: bool) -> bool:
         commands.append(on)
         if on:
             if on_outcome == "false":
                 return False
             raise worker_error
         return True
+
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
 
     ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
 
@@ -1186,7 +1192,7 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
     release_off = threading.Event()
     commands: list[bool] = []
 
-    def program_duck(on: bool) -> bool:
+    def _blocking_duck(on: bool) -> bool:
         commands.append(on)
         if on:
             loop.call_soon_threadsafe(on_started.set)
@@ -1260,6 +1266,9 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         def close_session(self, *_args, **_kwargs) -> float:
             self.close_calls += 1
             return 0.0
+
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
 
     ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     tts = _Tts()

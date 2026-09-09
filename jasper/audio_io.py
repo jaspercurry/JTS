@@ -1421,16 +1421,17 @@ class TtsPlayout:
             except OSError as e:
                 logger.warning("fan-in TTS IPC gain update failed: %s", e)
 
-    def program_duck(self, on: bool) -> bool:
+    async def program_duck(self, on: bool) -> bool:
         """Switch fan-in's program duck on/off over this playout's connection.
 
-        Fan-in owns the duck depth; this only asks for the state. Returns
-        False when there is no live connection to ask on or the ask failed,
-        so the caller can own its own restore.
+        Fan-in owns the duck depth; this only asks for the state. Goes through
+        the same reconnect path as every other command, so the first turn
+        after a fan-in restart ducks rather than playing over undimmed music.
+        Returns False when there is no live connection to ask on or the ask
+        failed, so the caller can own its own restore.
         """
-        stream = self._stream
-        closed = isinstance(stream, _OutputdStreamAdapter) and stream.closed
-        duck = None if closed else getattr(stream, "program_duck", None)
+        stream = await self._current_outputd_stream()
+        duck = getattr(stream, "program_duck", None)
         if duck is None:
             # A silent duck failure means music does not step back under the
             # assistant, so say so rather than returning False quietly.
@@ -1443,7 +1444,7 @@ class TtsPlayout:
             )
             return False
         try:
-            duck(on)
+            await asyncio.to_thread(duck, on)
         except OSError as e:
             log_event(
                 logger,

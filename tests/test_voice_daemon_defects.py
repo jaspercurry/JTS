@@ -378,7 +378,10 @@ def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
 
     from jasper.voice_daemon import FanInDucker
 
-    ducker = FanInDucker(SimpleNamespace(program_duck=lambda _on: True))
+    async def program_duck(_on: bool) -> bool:
+        return True
+
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     ducker._ducked = True
     wl = wake_loop_for_tests(ducker=ducker)
 

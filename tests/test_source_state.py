@@ -270,24 +270,18 @@ async def test_airplay_metadata_transport_failure_is_unknown_to_mux():
 async def test_usbsink_predicates_split_level_from_arbitration(
     monkeypatch, lane, audible, streaming,
 ):
-    monkeypatch.setattr(
-        source_state,
-        "read_fanin_status",
-        lambda: {
-            "inputs": [{"label": "usbsink", "source": "direct", **lane}],
-        },
-    )
+    status = {"inputs": [{"label": "usbsink", "source": "direct", **lane}]}
+    monkeypatch.setattr(source_state, "read_fanin_status", lambda: status)
 
-    assert await source_state.usbsink_audible() is audible
+    assert source_state.usbsink_direct_playing(status) is audible
     assert await source_state.usbsink_streaming() is streaming
 
 
-async def test_usbsink_predicates_fail_soft_when_fanin_is_unavailable(
+async def test_usbsink_streaming_fails_soft_when_fanin_is_unavailable(
     monkeypatch,
 ):
     monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
 
-    assert await source_state.usbsink_audible() is False
     assert await source_state.usbsink_streaming() is False
 
 
