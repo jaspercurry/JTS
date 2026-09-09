@@ -25,7 +25,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -34,8 +34,6 @@ from jasper.control.system_supervisor import (
     SystemSupervisor,
     _control_health_response_alive,
     _read_reboot_state,
-    snapshot,
-    start_supervisor,
 )
 
 
@@ -533,97 +531,6 @@ async def test_snapshot_returns_expected_fields():
     assert "last_failed_probe" in snap
     assert "last_probe_at" in snap
     assert "suppressed_count" in snap
-
-
-# ---------- module-level start_supervisor / snapshot ----------
-
-
-def test_snapshot_disabled_when_no_supervisor():
-    """Module-level snapshot before start_supervisor() returns
-    {enabled: False}."""
-    # The module-level _supervisor singleton may have been set by
-    # a prior test in the suite. Force a clean slate.
-    import jasper.control.system_supervisor as mod
-    saved = mod._supervisor
-    saved_thread = mod._supervisor_thread
-    mod._supervisor = None
-    mod._supervisor_thread = None
-    try:
-        snap = snapshot()
-        assert snap == {"enabled": False}
-    finally:
-        mod._supervisor = saved
-        mod._supervisor_thread = saved_thread
-
-
-def test_start_supervisor_respects_disabled_env():
-    """Operator escape hatch: JASPER_SYSTEM_SUPERVISOR=disabled
-    must turn the supervisor off without changing the deploy."""
-    import jasper.control.system_supervisor as mod
-    saved = mod._supervisor
-    saved_thread = mod._supervisor_thread
-    mod._supervisor = None
-    mod._supervisor_thread = None
-    try:
-        with patch.dict(os.environ,
-                        {"JASPER_SYSTEM_SUPERVISOR": "disabled"}):
-            result = start_supervisor()
-        assert result is None
-        assert mod._supervisor is None
-    finally:
-        mod._supervisor = saved
-        mod._supervisor_thread = saved_thread
-
-
-def test_start_supervisor_idempotent():
-    """Calling start_supervisor twice doesn't spawn a second thread."""
-    import jasper.control.system_supervisor as mod
-    saved = mod._supervisor
-    saved_thread = mod._supervisor_thread
-    mod._supervisor = None
-    mod._supervisor_thread = None
-    try:
-        # Keep this a module-wrapper test; the shared runner owns its
-        # own direct event-loop contract tests.
-        with patch.object(
-            mod,
-            "build_asyncio_thread",
-            return_value=Mock(),
-        ):
-            with patch.dict(os.environ,
-                            {"JASPER_SYSTEM_SUPERVISOR": "auto"}):
-                t1 = start_supervisor()
-                t2 = start_supervisor()
-        assert t1 is t2   # same thread object on second call
-    finally:
-        mod._supervisor = saved
-        mod._supervisor_thread = saved_thread
-
-
-def test_start_supervisor_unrecognised_value_falls_back_to_auto():
-    """JASPER_SYSTEM_SUPERVISOR=on (or other unrecognised value) →
-    starts anyway with a warning. Same pattern as ShairportSupervisor.
-    Without this, a typo in the env file would silently disable
-    protection."""
-    import jasper.control.system_supervisor as mod
-    saved = mod._supervisor
-    saved_thread = mod._supervisor_thread
-    mod._supervisor = None
-    mod._supervisor_thread = None
-    try:
-        with patch.object(
-            mod,
-            "build_asyncio_thread",
-            return_value=Mock(),
-        ):
-            with patch.dict(os.environ,
-                            {"JASPER_SYSTEM_SUPERVISOR": "on"}):
-                t = start_supervisor()
-        assert t is not None   # started anyway
-        assert mod._supervisor is not None
-    finally:
-        mod._supervisor = saved
-        mod._supervisor_thread = saved_thread
 
 
 # ---------- /proc/loadavg probe ----------

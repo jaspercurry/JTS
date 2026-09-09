@@ -66,6 +66,26 @@ def test_check_camilla_service_failures(monkeypatch, enabled, active, reason, si
     )
 
 
+def test_check_camilla_service_a_load_error_is_not_missing(monkeypatch):
+    """``load_state == "error"`` pins the pre-existing verdict: it lands on
+    the same ``inactive`` fail as a clean stop, never ``missing`` (#2163) —
+    only ``"not-found"`` is missing."""
+    evidence.seed("units", {
+        "jasper-camilla.service": {
+            "unit": "jasper-camilla.service",
+            "load_state": "error",
+            "unit_file_state": "enabled",
+            "active_state": "inactive",
+        },
+    })
+
+    result = audio_runtime_camilla.check_camilla_service()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", audio_runtime_camilla.REASON_CAMILLA_INACTIVE, True,
+    )
+
+
 # ------------------------------------------------ CamillaDSP config dir posture
 #
 # Pins the jts3 2026-07-06 incident: a deploy left /var/lib/camilladsp/configs
@@ -975,6 +995,15 @@ def _silent_camilla_recover_park(monkeypatch, tmp_path):
             "status": "parked",
             "parked": True,
             "reason": "camilla_start_failed",
+            "parked_utc": "2026-01-15T12:00:00Z",
         },
     )
     return audio_runtime_camilla.check_camilla_recover_park
+
+
+def test_camilla_recover_park_detail_carries_the_writers_own_timestamp(
+    monkeypatch, tmp_path
+):
+    """A malformed parked_utc must still show up verbatim, never drop the line."""
+    result = _silent_camilla_recover_park(monkeypatch, tmp_path)()
+    assert "2026-01-15T12:00:00Z" in result.detail

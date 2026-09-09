@@ -705,3 +705,19 @@ def test_every_published_sigma_declares_the_kind_of_spread_it_is(
         entry["kind"] for entry in register["unseparated"].values()
     } == {feature_classification.UNCERTAINTY_UNSEPARATED}
     assert set(register["not_uncertainties"]) == {"sigma_growth_ratio"}
+
+
+def test_gate_sweep_never_pools_candidate_graphs_at_one_pose(tmp_path):
+    import json
+    root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=8) for i in range(len(AZIMUTHS_DEG))])
+    paths = sorted(root.glob("**/summed/summed_*.json"))
+    for index, path in enumerate(paths):
+        doc = json.loads(path.read_text())
+        doc.update(candidate_id="a" if index < 2 else "b", graph_fingerprint="same-entry-graph")
+        doc["provenance"]["graph"] = {"fingerprint": "played-a" if index < 2 else "played-b"}
+        path.write_text(json.dumps(doc))
+    with pytest.raises(RoundCapturesRefused) as caught:
+        sweep_round(root)
+    assert caught.value.reason == "gate_sweep_mixed_graphs"
+    selected = sweep_round(root, candidate_id="a", graph_fingerprint="played-a")
+    assert len(selected["poses"]) == 2

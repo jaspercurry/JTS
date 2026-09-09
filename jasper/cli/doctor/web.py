@@ -252,7 +252,7 @@ def check_conversation_history() -> CheckResult:
 
     Capture is default-off, so an absent DB is normal until the household
     enables history. Once configured on, the read-side store must open cleanly
-    or `/assistant/chat/` and `/state.chat` cannot show the log jasper-voice writes.
+    or `/assistant/chat/` cannot show the log jasper-voice writes.
     """
     from ...conversation_history import health
 

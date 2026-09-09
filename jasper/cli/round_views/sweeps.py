@@ -30,6 +30,8 @@ from typing import Any
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+from jasper.active_speaker.crossover_v2.window_view import window_view
+from .frequency import add_image_args, render_image
 from jasper.active_speaker.crossover_v2.round_views import spec_with_gate_sensitivity
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -102,6 +104,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
         report = stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
             rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
+            candidate_id=args.candidate, graph_fingerprint=args.graph,
         )
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
@@ -129,7 +132,26 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_windows(args: argparse.Namespace) -> int:
+    try:
+        report = window_view(Path(args.round_dir), capture_id=args.capture_id, rungs_ms=args.rungs_ms, role=args.role)
+    except RoundCapturesRefused as exc:
+        return refused_by_name(exc.reason, exc.detail)
+    written = _write(report, args.out, resolved_out(Path(args.round_dir), "window_view.json"))
+    image = render_image(args, report)
+    return answer(args.command, out=written, image=image, capture_id=args.capture_id,
+                  line=f"windows: {args.capture_id} -> {written}")
+
+
 def add_parser(sub: argparse._SubParsersAction) -> None:
+    windows = sub.add_parser("windows", help="overlay alternative windows and impulse for one exact recording")
+    windows.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
+    windows.add_argument("--capture-id", required=True, help="exact retained take ID or WAV stem")
+    windows.add_argument("--role", choices=("summed", "woofer", "tweeter"), default="summed", help="branch in a retained complete-tune diagnostic")
+    add_rungs_ms_argument(windows)
+    add_image_args(windows)
+    windows.add_argument("--out", default=None, help="write the shared frequency view here (- for stdout)")
+    windows.set_defaults(func=_cmd_windows)
     spec_sweep = sub.add_parser(
         "spec-sweep",
         help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
@@ -149,6 +171,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
     add_rungs_ms_argument(gate_sweep)
+    gate_sweep.add_argument("--candidate", help="only this candidate ID; mixed graphs are refused")
+    gate_sweep.add_argument("--graph", help="only this exact played graph fingerprint")
     gate_sweep.add_argument(
         "--at-hz", type=float, nargs="+", default=None, metavar="HZ",
         help=(

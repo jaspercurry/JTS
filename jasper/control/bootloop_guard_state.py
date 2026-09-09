@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read-only state snapshot for `/state.resilience.bootloop_guard`.
+"""Read-only state snapshot for jasper-doctor's boot-loop guard checks.
 
 The boot-loop guard (`deploy/bin/jasper-bootloop-guard`) is a
 `Type=oneshot` unit that runs once at boot — no resident daemon to ask
@@ -10,8 +10,8 @@ for state. It writes a marker JSON to `/run/jasper-bootloop-guard/
 state.json` on every run (`tripped: false` on a healthy boot,
 `tripped: true` after it has written the runtime drop-ins that disarm
 StartLimitAction=reboot). This module reads that marker fresh on every
-call so `/state` reflects the truth of the current boot, including a
-guard that never ran (fresh install, unit failed).
+call so the doctor row reflects the truth of the current boot, including
+a guard that never ran (fresh install, unit failed).
 
 Always returns a dict, never raises, with a top-level `ran`
 discriminator.

@@ -142,6 +142,9 @@ def check_fanin_binary_installed() -> CheckResult:
         "jasper-fanin binary", "ok", f"{path} ({size_kb} KB)"
     )
 
+_ASOUND_CONF_PATH = Path("/etc/asound.conf")
+
+
 def _asound_non_comment_text(text: str) -> str:
     return "\n".join(
         line for line in text.splitlines()
@@ -262,7 +265,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     `check_ring_platform_assets` and `check_ring_geometry_coherence`.
     """
     label = "fan-in ALSA wiring"
-    path = Path("/etc/asound.conf")
+    path = _ASOUND_CONF_PATH
     if not path.exists():
         return CheckResult(
             label,
@@ -1038,7 +1041,7 @@ def check_fanin_coupling() -> CheckResult:
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
-        from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+        from ...control.transport_eligibility import ACTIVE_ENDPOINT_REMEDY
 
         coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (

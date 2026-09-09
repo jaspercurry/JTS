@@ -8,7 +8,6 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-from jasper.control import state_aggregate
 from jasper.research import DONE, FAILED, RUNNING, ResearchJob, ResearchJobStore
 from jasper.research import state as research_state
 from jasper.research.state import snapshot
@@ -195,32 +194,3 @@ def test_runtime_provider_uses_catalog_lookup(monkeypatch) -> None:
     }
 
 
-def test_state_aggregate_research_helper_is_privacy_safe(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "research.db"
-    store = ResearchJobStore(str(db_path))
-    assert store.add(
-        _job(
-            "done1",
-            query="secret prompt",
-            status=DONE,
-            result="secret answer",
-            created_at=1_800_000_000.0,
-            finished_at=1_800_000_001.0,
-        ),
-    )
-    store.close()
-    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
-
-    snap = state_aggregate._research_state({
-        "configured": True,
-        "provider": "openai",
-        "model": "gpt-5.4",
-    })
-
-    # The helper reads process/env-load defaults, so this test pins the
-    # privacy side of the /state shape without depending on the host env.
-    assert "secret prompt" not in json.dumps(snap)
-    assert "secret answer" not in json.dumps(snap)

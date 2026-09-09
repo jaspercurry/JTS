@@ -930,6 +930,7 @@ class ProgramAnalysis:
     # `REASON_PILOT_LEVEL_COLLAPSE`, never `REASON_AGC_BEHAVIORAL_FAIL`.
     pilot_snr_ok: bool | None = None
     gain_plan: GainPlan | None = None
+    branch_diagnostic: dict[str, Any] | None = None
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
     # Notch depth at Fc below the shoulders on THIS capture's summed curve.
