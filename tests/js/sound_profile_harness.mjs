@@ -975,6 +975,35 @@ async function testEqSliderDragSendsNoLiveAudioUntilRelease() {
   return { eqSliderDragSendsNoLiveAudioUntilRelease: true };
 }
 
+// Every way INTO the name box re-seeds the whole naming record, so every way
+// out has to clear the same record: a cancel that dropped only part of it
+// leaves the box sitting over the footer's real actions.
+async function testCancellingTheNameBoxClosesIt() {
+  const harness = setupHarness(baseFetch(), { mode: "eq" });
+  await harness.flush(); await harness.flush();
+  harness.elements.get("tab-draft").click();
+  await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "begin-name" });
+  await harness.flush();
+  if (!harness.elements.get("view-body").innerHTML.includes('id="name-input"')) {
+    fail("saving a profile should open the name box", {
+      html: harness.elements.get("view-body").innerHTML,
+    });
+  }
+
+  harness.dispatchClick({ "data-act": "cancel-name" });
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('id="name-input"')) {
+    fail("cancelling should close the name box", { html });
+  }
+  if (!html.includes('data-act="begin-name"')) {
+    fail("cancelling should restore the draft footer actions", { html });
+  }
+  return { cancellingTheNameBoxClosesIt: true };
+}
+
 async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   const settingsPosts = [];
   const auditionPosts = [];
@@ -988,6 +1017,9 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
       volume_floor_db: -50,
     },
   };
+  // ./settings takes a patch and answers with the whole SoundSettings.to_dict()
+  // (jasper/sound/settings.py:to_dict), so the mock keeps the saved record.
+  const savedSettings = { ...statePayload.sound_settings };
   const fetchHandler = baseFetch({
     "./state": () => Promise.resolve(response(statePayload)),
     "./apply": (_path, options = {}) => Promise.resolve(response({
@@ -998,9 +1030,10 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
     "./settings": (_path, options = {}) => {
       const body = JSON.parse(options.body || "{}");
       settingsPosts.push(body);
+      Object.assign(savedSettings, body);
       return Promise.resolve(response({
         ...statePayload,
-        sound_settings: body,
+        sound_settings: { ...savedSettings },
         dsp_write_epoch: "settings-1",
       }));
     },
@@ -1056,22 +1089,35 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
 
 // A carrier that refuses to host EQ is page state on the settings card, not a
 // line of prose below the fold: the save succeeded, the sound did not change.
+// The re-render it forces is also the only place this harness sees the card
+// AFTER a settings save, so the patch-save survivors are pinned here too.
 async function testBlockedSettingsSaveRendersOnTheCard() {
   const statePayload = {
     ...basePayload,
     profile: { ...flatProfile, enabled: false },
     filter_count: 0,
     dsp_write_epoch: "state-0",
+    sound_settings: {
+      ...basePayload.sound_settings,
+      headroom_trim_db: 3,
+      volume_floor_db: -50,
+    },
   };
+  // ./settings takes a patch and answers with the whole SoundSettings.to_dict()
+  // (jasper/sound/settings.py:to_dict), so the mock keeps the saved record.
+  const savedSettings = { ...statePayload.sound_settings };
   const harness = setupHarness(baseFetch({
-    "./settings": (_path, options = {}) => Promise.resolve(response({
-      ...statePayload,
-      sound_settings: JSON.parse(options.body || "{}"),
-      status: "blocked",
-      reason_code: "active_baseline_recompose_unavailable",
-      message: "This speaker runs an active crossover.",
-      volume_warning: "Saved, but the volume floor lands on the next change.",
-    })),
+    "./settings": (_path, options = {}) => {
+      Object.assign(savedSettings, JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        ...statePayload,
+        sound_settings: { ...savedSettings },
+        status: "blocked",
+        reason_code: "active_baseline_recompose_unavailable",
+        message: "This speaker runs an active crossover.",
+        volume_warning: "Saved, but the volume floor lands on the next change.",
+      }));
+    },
   }), { mode: "output" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
@@ -1092,6 +1138,14 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
     fail("a blocked save should leave the status line to its other warning", {
       status: harness.elements.get("status").textContent,
     });
+  }
+  // The re-rendered card describes the SAVED settings: the toggle the operator
+  // moved, and the extra headroom the patch never mentioned.
+  if (!/id="set-match-loudness" checked/.test(html)) {
+    fail("the re-rendered card should keep Match loudness on", { html });
+  }
+  if (!html.includes('id="set-headroom-readout">\u2212' + "3.0 dB<")) {
+    fail("a patch save must not blank the settings it did not carry", { html });
   }
   return { blockedSettingsSaveRendersOnTheCard: true };
 }
@@ -8883,6 +8937,7 @@ async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
+results.push(await testCancellingTheNameBoxClosesIt());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testBlockedSettingsSaveRendersOnTheCard());
 results.push(await testBlockedEqCarrierIsThePageState());

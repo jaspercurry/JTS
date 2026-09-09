@@ -112,7 +112,8 @@ def test_the_deeplink_opens_the_owning_step_before_scrolling():
     source = _source()
     fn = source[source.index("function applySafetyLimitsDeepLink("):]
     fn = fn[: fn.index("\n  function renderDriverResearchCard(")]
-    assert "outputStepOverride = 'research';" in fn
+    # Which step it opens is pinned through the DOM by
+    # tests/js/sound_profile_harness.mjs's safetyLimitsDeepLinkOpensTheComponentStep.
     assert "render();" in fn
     assert "scrollIntoView" in fn
     # No-ops when there is nothing to review: a stale bookmark must not yank an

@@ -1568,7 +1568,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Main speakers" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
-    assert "var outputTemplateDraftAxes = {layout: '', speakerMode: ''};" in js
+    # The axis draft itself runs through the DOM in
+    # tests/js/sound_profile_harness.mjs: activeCrossoverFirstStepRendered (both
+    # axes offered on a fresh page) and activeRouteLimitsRenderedTemplates (a
+    # pick is held and narrows the grid).
     assert "function outputTemplateChoiceDisabled(count, axis, value, axes)" in js
     assert "function outputTemplateUnavailableReason(template, topology, hasSubwoofer)" in js
     assert "This install can test and apply up to " in js
@@ -5389,10 +5392,10 @@ def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
     assert "function requestLiveSource(options)" in js
     assert "function reconcileLiveSource()" in js
     assert "requestLiveSource({immediate: true});" in set_view_body
-    assert "if (view === 'saved')" in reconcile_body
+    assert "if (eqEditor.view === 'saved')" in reconcile_body
     assert "return applySavedSelection(options.okMsg, seq);" in reconcile_body
     assert "if (act === 'browse-presets') { setView('saved'); }" in js
-    assert "selectedId = fallbackSavedId();" in delete_body
+    assert "eqEditor.selectedId = fallbackSavedId();" in delete_body
     assert "requestLiveSource({immediate: true});" in delete_body
     assert "selectedId = findIdFor(applied);" in load_body
 
@@ -5493,7 +5496,7 @@ def test_sound_css_marks_live_sources_with_red_dots():
     js = sound_page_js()
     css = _SOUND_CSS.read_text()
 
-    assert "btn.classList.toggle('is-live', v === view);" in js
+    assert "btn.classList.toggle('is-live', v === eqEditor.view);" in js
     assert ".app-header__tabs .segmented__btn.is-live::after" in css
     assert ".profile-row__dot--on" in css
     assert "background: var(--destructive);" in css

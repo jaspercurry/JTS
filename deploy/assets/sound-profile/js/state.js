@@ -45,6 +45,57 @@ var driverResearch = {
 };
 var crossoverPreview = {payload: null, preparing: false, error: ''};
 
+// The EQ editor's record (/sound/eq/). resetEqEditor() serves the exits that
+// discard the naming UI outright — newDraft, editEntry, resetDraft,
+// cancel-name and Escape — so naming/nameMode/nameDraft go back as one unit.
+// finalizeName() deliberately clears `naming` alone and must not call it: it
+// reads nameMode and nameDraft afterwards to choose save vs rename.
+var eqEditor = {
+  view: 'off',            // off | saved | draft
+  mode: 'simple',         // simple | peq
+  selectedId: null,       // selected library id on the Saved tab
+  editing: {kind: 'new'}, // new | {kind:'user',id,name} | {kind:'preset',id,name}
+  activeBand: 0,
+  naming: false,
+  nameMode: 'save',       // 'save' (new/copy) | 'rename'
+  nameDraft: '',
+  library: [],            // [{id,name,kind,editable,description,profile,...}]
+  simpleBands: [],        // [{key,field,label,freq_hz,type}] from /state
+  curvesById: {},
+  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
+  // when it can host EQ (or nothing probed it). Whole-page state, not a status
+  // line: only a payload that stops refusing clears it, never an editor exit,
+  // so resetEqEditor() leaves it alone.
+  carrierBlock: null
+};
+
+function resetEqEditor() {
+  eqEditor.naming = false;
+  eqEditor.nameMode = 'save';
+  eqEditor.nameDraft = '';
+}
+
+// The /sound/output/ wizard's record: the saved sound settings it edits plus
+// the in-flight picks of its own steps.
+var outputPage = {
+  // volume_floor_db is absent until /state carries it: savedVolumeFloorDb()
+  // then falls back to volumeFloorDefault() (backend-owned) rather than this
+  // module keeping a second copy of the default.
+  soundSettings: {headroom_trim_db: 0, match_loudness: false},
+  blocked: false,          // ./settings: the graph refused to carry EQ
+  i2sHat: null,
+  volumeFloorDraftDb: null,
+  stepOverride: '',
+  templateDraftAxes: {layout: '', speakerMode: ''}
+};
+
+// Clears templateDraftAxes only — the layout wizard's in-flight axis pick,
+// dropped when a saved topology supersedes it. `stepOverride` is not part of
+// that draft: which step is open is cleared by the re-pin path alone.
+function resetOutputTemplateDraft() {
+  outputPage.templateDraftAxes = {layout: '', speakerMode: ''};
+}
+
 function el(id) { return document.getElementById(id); }
 // The crossover filters and slopes this page may OFFER, served on the island
 // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
@@ -109,7 +160,11 @@ export {
   crossoverVocabulary,
   driverResearch,
   el,
+  eqEditor,
   followerMode,
+  outputPage,
   outputTopology,
   pageMode,
+  resetEqEditor,
+  resetOutputTemplateDraft,
 };
