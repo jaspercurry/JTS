@@ -148,7 +148,12 @@ The room is measured on the seat cube, through the applied tune, ungated
    the room candidate reads.
 6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
    hold across the cube, and at what fraction of positions.
-7. The room candidate kind reads those two artifacts when it lands.
+7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
+   judges a room prescription (`kind: jts_room_prescription`) against
+   `room_median.json`; `compose --base <applied fingerprint>
+   --room-prescription <doc> --room-median <path>` banks the room candidate;
+   `jasper-measure --graph-scope room_candidate --candidate-id <fingerprint>`
+   plays it for its trial through the accepted tune.
 
 Nothing above the ceiling changes on this evidence.
 
