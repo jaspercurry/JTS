@@ -12,10 +12,9 @@ from typing import Any, ClassVar, Mapping, TYPE_CHECKING
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.bass_extension.alignment import boost_headroom_db
 from .base import (CabinetInfo, CaptureRole, FitRefusal, MagnitudeCurve,
-                   TargetSpec, _curve_arrays, woofer_curve)
-from .ported import (PortedPlantFit, _filters_response_db,
+                   TargetSpec, _curve_arrays, target_response_grid, woofer_curve)
+from .ported import (PortedPlantFit, _bounded_filter_response, _filters_response_db,
                      fit_ported_plant, generate_ported_family,
                      ported_predicted_response)
 
@@ -126,7 +125,7 @@ class PassiveRadiatorAdapter:
             _as_ported(plant), margin=margin, n_targets=n_targets
         )
         minimum_corner = 1.1 * plant.notch_hz
-        grid = np.unique(np.append(np.geomspace(10.0, 500.0, 512), plant.notch_hz))
+        grid = np.unique(np.append(target_response_grid(), plant.notch_hz))
         family: list[TargetSpec] = []
         for target in base_family:
             filters = tuple(
@@ -141,20 +140,17 @@ class PassiveRadiatorAdapter:
             )
             subsonic = dict(target.subsonic or {})
             subsonic["freq"] = max(float(subsonic["freq"]), minimum_corner)
+            filters, boost = _bounded_filter_response(
+                filters, margin.boost_cap_db, grid,
+            )
             response_delta = _filters_response_db(grid, filters)
             below_notch = grid <= plant.notch_hz
             if target.target_id != "natural" and np.max(
                 response_delta[below_notch]
             ) > 0.5:
                 continue
-            boost = (
-                0.0
-                if target.target_id == "natural"
-                else boost_headroom_db(
-                    response_delta,
-                    np.zeros_like(grid),
-                )
-            )
+            if target.target_id == "natural":
+                boost = 0.0
             family.append(TargetSpec(
                 target_id=target.target_id,
                 fp_hz=target.fp_hz,
