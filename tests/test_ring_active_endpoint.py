@@ -26,6 +26,10 @@ from jasper import ring_assets
 from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
+from .transport_camilla_fixtures import (
+    RETIRED_ALOOP_CAPTURE_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
+)
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.camilla_config_contract import (
@@ -58,11 +62,6 @@ from jasper.fanin_coupling import (
     resolve_ring_wire,
 )
 
-# The retired snd-aloop pair (ADR-0100, ADR-0262). No shared contract declares
-# either half any more; the spellings live here as the graph an unreconciled
-# box can still present.
-RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
-RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"

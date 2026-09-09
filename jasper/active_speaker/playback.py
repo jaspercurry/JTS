@@ -133,7 +133,6 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 FORBIDDEN_TEST_PCM_TOKENS = (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",
-    "outputd_content_capture",
     "outputd_active_content_capture",
     "outputd_dac",
     "jts_ring_capture",

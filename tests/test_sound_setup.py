@@ -2604,7 +2604,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     calls: list[dict] = []
     sentinel = {"ok": True, "action": "start"}
     grouping_env = tmp_path / "grouping-outputd.env"
-    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=/run/armed.fifo\n")
+    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n")
     grouping_complete = False
 
     def fake_manage_units(*units, **kwargs):
@@ -2617,7 +2617,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
                 call["units"] == ("jasper-audio-hardware-reconcile.service",)
                 for call in calls
             )
-            grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n")
+            grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=\n")
             grouping_complete = True
         if units == ("jasper-audio-hardware-reconcile.service",):
             assert grouping_complete is True
@@ -2642,7 +2642,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     # A topology replacement first parks audio, then waits for the root
     # reconciler to make outputd agree with the final saved topology.
     assert calls[1]["no_block"] is False
-    assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n"
+    assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_LANE=\n"
     assert saved["reconcile"] is sentinel
     assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
 

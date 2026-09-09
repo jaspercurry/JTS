@@ -67,14 +67,11 @@ from jasper.fanin_coupling import (
     TRANSPORT_RING,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
-from tests.transport_camilla_fixtures import FakeCamilla
+from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE, FakeCamilla
 
 ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
 
-# The snd-aloop tap ADR-0100 retired. No product module names it any more
-# (ADR-0262); it lives here as the pre-arm graph a box can still carry.
-RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 
 
 # --------------------------------------------------------------------------
