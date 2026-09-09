@@ -83,6 +83,7 @@ class PoseCapture:
     graph_fingerprint: str = ""
     capture_sha256: str = ""
     preprocessing: Mapping[str, Any] = field(default_factory=dict)
+    record_path: Path | None = None
 
     @property
     def pose_key(self) -> str:
@@ -380,6 +381,7 @@ def discover_captures(
                 graph_fingerprint=played_graph_fingerprint(doc),
                 capture_sha256=sha256_file(wav),
                 preprocessing=preprocessing,
+                record_path=sidecar,
             )
         )
     return tuple(sorted(captures, key=lambda cap: cap.capture_id))
@@ -433,13 +435,14 @@ def select_capture(
             if capture_id
             in (capture.capture_id, capture.wav.stem if capture.wav else None)
         ]
-        if not named:
+        if len(named) != 1:
             raise RoundCapturesRefused(
                 REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
                 {
                     "round_dir": str(root),
                     "capture_id": capture_id,
                     "captures": seen,
+                    "matches": len(named),
                 },
             )
         return named[0]
