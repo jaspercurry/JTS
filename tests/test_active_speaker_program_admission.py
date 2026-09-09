@@ -54,6 +54,7 @@ def _profile_and_targets(
     tweeter_peak: float = -65.0,
     max_sweep_duration_s: float = 6,
     woofer_floor: float = 500,
+    woofer_measurement_floor: float | None = None,
     woofer_highpass: float | None = None,
     woofer_upper: float = 20_000,
 ):
@@ -79,7 +80,10 @@ def _profile_and_targets(
             {
                 **common,
                 "hard_excitation_band_hz": [woofer_floor, woofer_upper],
-                "measurement_band_hz": [woofer_floor, min(10_000, woofer_upper)],
+                "measurement_band_hz": [
+                    woofer_floor if woofer_measurement_floor is None else woofer_measurement_floor,
+                    min(10_000, woofer_upper),
+                ],
                 "level_duration_limits": _limits(woofer_peak),
                 "target_id": "mono:woofer",
                 "role": "woofer",
@@ -698,6 +702,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
 def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, scope, damage):
     topology, safety, targets = _profile_and_targets(
         woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+        woofer_measurement_floor=60,
         woofer_upper=2000 if damage == "upper_band" else 4000,
     )
     assert not any(req["kind"] == "lowpass" for target in safety["targets"]
@@ -782,6 +787,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=2500,
         sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+        summed_sweep_band_hz=(20, 20000),
     ).verify_program()
     if scope == "candidate_branches":
         from jasper.audio_measurement.branch_program import build_branch_program
