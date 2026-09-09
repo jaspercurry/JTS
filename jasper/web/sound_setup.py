@@ -9,7 +9,7 @@ the routes this server answers are the bare paths listed in
 ``do_GET``/``do_POST`` below. EQ owns preference profiles, Speaker setup owns
 the driver/layout domain, Output owns the I2S HAT and volume shaping.
 
-The page is built on the canonical design system (jasper.web._common.
+The page is built on the canonical design system (jasper.web.chrome.
 canonical_page + /assets/app.css). The view's Off / Saved / Draft tabs
 ARE the live source: Off auditions bypass, Saved applies a chosen
 profile, Draft hot-loads the working bands via /live-draft while editing

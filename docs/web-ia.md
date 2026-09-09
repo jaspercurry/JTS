@@ -23,9 +23,10 @@ say the **same words**, and the back link targets the manifest parent. If they
 disagree the row label wins — it is what the user tapped. Name the surface,
 never the daemon or the module. No "— JTS speaker" suffix.
 
-`canonical_page()` + `canonical_header()` from `jasper/web/_common.py` own the
+`canonical_page()` + `canonical_header()` from `jasper/web/chrome.py` own the
 shell; a client-rendered page renders the same `.app-header`. A deep-linked
-page passes `?return_to=`, which the target resolves via `safe_back_href()`.
+page passes `?return_to=`, which the target resolves via `safe_back_href()`
+(same module).
 
 ## 3. Reuse before you write
 

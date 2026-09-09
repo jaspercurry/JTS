@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Page-shell markup for the canonical design system; no state reads.
+"""Page-shell markup for the canonical design system.
 
-`pair_banner_html` stays in `_common` because it reads multiroom state.
+Reads only the build manifest (the asset cache-bust version) and the
+control-token file; never multiroom or other mutable app state — which is
+why `pair_banner_html` stays in `_common`.
 """
 from __future__ import annotations
 
