@@ -57,7 +57,29 @@ def test_auto_flush_on_warning_includes_prior_context():
     out = s.getvalue()
     assert "reason=auto:warning" in out
     assert "ctx1" in out and "ctx2" in out and "boom" in out
-    assert len(ring.buffer) == 0
+    # An automatic (signature-scoped) flush leaves the ring itself intact
+    # (#4122) — only an explicit dump clears it.
+    assert len(ring.buffer) == 3
+
+
+def test_auto_flush_repeat_emits_only_lines_since_its_own_last_flush(monkeypatch):
+    """#4122: a repeat auto-flush of the SAME signature must not replay the
+    whole ring — only the lines appended since ITS OWN previous flush."""
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    now = [1_000.0]
+    monkeypatch.setattr(fr.time, "monotonic", lambda: now[0])
+    ring.emit(_rec(logging.WARNING, "churn"))  # first flush: records=1
+    now[0] += fr.AUTO_FLUSH_MIN_INTERVAL_SEC
+    ring.emit(_rec(logging.DEBUG, "unrelated context"))
+    ring.emit(_rec(logging.WARNING, "churn"))  # second flush: past the floor
+    dumps = s.getvalue().split("event=flightrec.dump ")[1:]
+    assert len(dumps) == 2
+    assert "records=1" in dumps[0]
+    # Only what's new since the first flush — the context line plus this
+    # warning — not the whole ring (which would replay the first "churn").
+    assert "records=2" in dumps[1]
+    assert dumps[1].count("churn") == 1
 
 
 def test_auto_flush_is_floored_per_signature(monkeypatch):
@@ -125,12 +147,15 @@ def test_auto_flush_floor_survives_redaction_flattening():
 
 def test_explicit_dump_is_never_floored():
     """The floor is for automatic dumps only — an operator's SIGUSR1 or
-    a 'flag that' must always write what is in the ring."""
+    a 'flag that' must always write the whole current ring, including a
+    line an automatic flush would have skipped as floored."""
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)
-    ring.emit(_rec(logging.WARNING, "churn"))
-    ring.emit(_rec(logging.WARNING, "churn"))  # floored
-    assert ring.flush_buffer("manual") == 1
+    ring.emit(_rec(logging.WARNING, "churn"))  # auto-flushed (records=1)
+    ring.emit(_rec(logging.WARNING, "churn"))  # floored — not auto-flushed
+    # Both lines are still in the ring (an auto-flush no longer clears it),
+    # and the explicit dump writes both — the second despite being floored.
+    assert ring.flush_buffer("manual") == 2
 
 
 def test_no_flush_on_info_or_debug():

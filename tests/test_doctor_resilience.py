@@ -80,8 +80,18 @@ def _unit_block(unit: str, active: str, sub: str, restarts: int = 0) -> str:
             "fail",
             resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
+        # #2802 item 3: a dead grouping/source-intent reconciler used to stay
+        # doctor-invisible except indirectly (via USB combo consistency).
+        (
+            [
+                ("jasper-grouping-reconcile.service", "failed", "failed", 0),
+                ("jasper-source-intent-reconcile.service", "failed", "failed", 0),
+            ],
+            "fail",
+            resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
+        ),
     ],
-    ids=["failed-unit", "restart-count", "failed-oneshot"],
+    ids=["failed-unit", "restart-count", "failed-oneshot", "failed-reconcilers"],
 )
 def test_check_service_runtime_state_verdicts(
     monkeypatch, blocks, status, reason

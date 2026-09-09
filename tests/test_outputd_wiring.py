@@ -644,6 +644,30 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
         assert seeded[key] == emitted[key], key
 
 
+def test_shipped_cutover_seed_is_byte_identical_to_the_emitter():
+    """The shipped fallback must equal the emitter's own bytes, in full.
+
+    The field-by-field check above only pins the ``devices:`` block. Nothing
+    pinned ``filters:``/``mixers:``/``pipeline:`` or the header comment, so
+    #4369's header reword drifted from this file unnoticed and the emitter's
+    filter chain (every `sound_*` identity stage, kept present so a live EQ
+    patch never needs a pipeline reload) is not in the shipped copy at all.
+    install.sh always re-renders this file at deploy time (`_render_
+    outputd_cutover_configs`), so a real box never plays the shipped bytes —
+    but the checked-in copy is what a reader, or a box whose render step
+    failed, actually sees. Regenerate deliberately, after review, with::
+
+        PYTHONPATH=$PWD .venv/bin/python -c \\
+            "from jasper.sound.camilla_yaml import \\
+             emit_flat_outputd_cutover_config as e; \\
+             open('deploy/camilladsp/outputd-cutover.yml', 'w').write(e())"
+    """
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    cutover = REPO / "deploy" / "camilladsp" / "outputd-cutover.yml"
+    assert cutover.read_text(encoding="utf-8") == emit_flat_outputd_cutover_config()
+
+
 def _run_ensure_outputd_camilla_statefile(
     tmp_path, *, graph_output: str, graph_status: int = 0, restart_knob: str = "0",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:

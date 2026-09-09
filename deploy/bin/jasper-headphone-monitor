@@ -16,14 +16,15 @@
 # (Debian #1093057), so nothing automatically re-pins the control.
 # Our own custom udev rule covers the hotplug path; this monitor
 # is belt-and-suspenders for any other source of drift (manual
-# amixer, a quirk we haven't anticipated, etc). Polls at 1 Hz, logs
-# every observed change, and resets to 100% if the value isn't
-# 100% — converting silent drift into a self-healing event with a
-# timestamped audit trail.
+# amixer, a quirk we haven't anticipated, etc). Blocks on `alsactl
+# monitor` rather than polling (#4121) — falling back to a 1 Hz amixer
+# poll only when that is unavailable — logs every observed change, and
+# resets to 100% if the value isn't 100% — converting silent drift into
+# a self-healing event with a timestamped audit trail.
 #
-# The first poll logs the current value as "initial"; subsequent
-# polls log only on change. Resets are also logged so the journal
-# shows what self-healing happened and when.
+# The first check logs the current value as "initial"; subsequent ones
+# log only on change. Resets are also logged so the journal shows what
+# self-healing happened and when.
 #
 # WHICH attached cards are Apple, and WHICH control they pin, are the
 # classifier's answer, asked through its env emitter (ADR-0235 R2).
@@ -46,6 +47,7 @@ if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_PYTHON="/opt/jasper/.venv/bin/python"
 fi
 PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_PYTHON}"
+ALSACTL="${JASPER_ALSACTL:-alsactl}"
 
 if [[ "$CONFIGURED_CARD" == "auto" ]] && ! command -v "$PYTHON" >/dev/null 2>&1; then
     echo "event=apple_dongle.headphone_monitor.failed reason=python_unavailable" >&2
@@ -156,6 +158,25 @@ card_index() {
     return 1
 }
 
+# Block on `alsactl monitor` (every card, no argument) instead of polling
+# at 1 Hz: it blocks in the kernel on the ALSA control-subscribe API, so an
+# idle box forks nothing between real changes (#4121; the bash analogue of
+# the event-driven rewrite already shipped for
+# jasper/usbsink/volume_bridge.py's _watch_mixer). Falls back to the poll
+# loop below when alsactl is unavailable, or if the monitor process ever
+# dies (the main loop's read gets EOF instead of timing out).
+ALSACTL_WAIT_TIMEOUT_SEC="${JASPER_ALSACTL_WAIT_TIMEOUT_SEC:-30}"
+USE_MONITOR=0
+if command -v "$ALSACTL" >/dev/null 2>&1; then
+    exec 8< <("$ALSACTL" monitor 2>/dev/null)
+    USE_MONITOR=1
+fi
+if [ "$USE_MONITOR" = "1" ]; then
+    echo "event=apple_dongle.headphone_monitor.trigger mode=alsactl_monitor"
+else
+    echo "event=apple_dongle.headphone_monitor.trigger mode=poll reason=alsactl_unavailable"
+fi
+
 absent_logged=0
 probe_failed_logged=0
 while true; do
@@ -218,5 +239,22 @@ while true; do
             card_last[idx]="$cur"
         fi
     done
-    sleep 1
+    if [[ "$USE_MONITOR" == "1" ]]; then
+        # Block for a real control-change event; a bounded timeout is only
+        # a defensive periodic re-check, not the trigger. `read -t`'s exit
+        # status tells the two apart: >128 is our own timeout firing (stay
+        # in monitor mode), anything else is EOF -- the alsactl process is
+        # gone, so fall back to polling rather than busy-loop on a read
+        # that now returns immediately every time.
+        read -r -t "$ALSACTL_WAIT_TIMEOUT_SEC" _ <&8
+        read_rc=$?
+        if [[ "$read_rc" -ne 0 && "$read_rc" -le 128 ]]; then
+            echo "event=apple_dongle.headphone_monitor.trigger mode=poll reason=alsactl_died" >&2
+            exec 8<&- 2>/dev/null
+            USE_MONITOR=0
+            sleep 1
+        fi
+    else
+        sleep 1
+    fi
 done
