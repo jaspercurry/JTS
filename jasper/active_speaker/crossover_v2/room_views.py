@@ -2,30 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room, read off a banked round's seat-cube takes below the ceiling.
-
-Three readers over the ungated seat-kind lateral takes a round banked
-(``seat/cube`` in :mod:`~jasper.active_speaker.measurement_programs`; the
-room is the measurement, ADR-0260), each one artifact of
-``jasper-round-views``:
-
-* :func:`room_ceiling` — where the room layer stops: the applied candidate's
-  trusted floor, clamped by :func:`~jasper.audio_measurement.room_boundary.room_ceiling_hz`,
-  with the fallback disclosed (ADR-0256 rule 1).
-* :func:`room_median` — the cube's common trend: per frequency the median
-  across positions, the spread (population sigma) and each position's
-  deviation, :data:`ROOM_FLOOR_HZ` to the ceiling. The contract a room
-  candidate reads.
-* :func:`room_persistence` — which peaks and dips hold across the cube:
-  each position's features against its own robust local level, clustered by
-  centre, with the fraction of positions carrying each at an agreeing depth.
-
-Nothing here corrects anything.
-"""
+"""Room statistics over one selected set of banked seat measurements."""
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,12 +23,8 @@ from jasper.audio_measurement.room_boundary import (
     room_ceiling_hz,
 )
 
-from ..measurement_programs import POSE_KIND_SEAT
 from .evidence_packet import applied_profile_source
-from .journey import PHASE_LATERAL
-from .position_cycle import parse_curve_magnitude, take_artifact_path
-from .record_index import bundle_measurements
-from .round_captures import doc_pose_key
+from .room_selection import SeatTake
 from .round_views import RoundViewsError, local_features
 from .spatial import cloud_trusted_floor_hz
 
@@ -138,60 +114,6 @@ def room_ceiling(applied_profile_path: Path | None) -> Ceiling:
     )
 
 
-# --------------------------------------------------------------------------- #
-# the seat takes
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class SeatTake:
-    take_id: str
-    pose_key: str
-    freqs_hz: np.ndarray
-    magnitude_db: np.ndarray
-    gating_applied: bool | None
-
-
-def seat_takes(bundle_dir: Path) -> tuple[SeatTake, ...]:
-    """The bundle's seat-kind takes, latest attempt per pose, in walk order.
-
-    Walked newest-first so a retake speaks for its pose, as
-    :func:`~.position_cycle.read_pose_curve_pair` does. A take with no
-    readable summed curve is passed over rather than refused: what is
-    MISSING is the caller's to say, from what came back.
-    """
-    latest: dict[str, SeatTake] = {}
-    for row in reversed(bundle_measurements(bundle_dir, phase=PHASE_LATERAL)):
-        path = take_artifact_path(bundle_dir, row.path)
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(record, Mapping) or record.get("pose_kind") != POSE_KIND_SEAT:
-            continue
-        pose_id = str(record.get("pose_id") or row.path)
-        if pose_id in latest:
-            continue
-        raw_curves = record.get("curves")
-        curves = raw_curves if isinstance(raw_curves, list) else []
-        summed = next(
-            (c for c in curves if isinstance(c, Mapping) and c.get("role") == "summed"), None,
-        )
-        parsed = parse_curve_magnitude(summed) if summed is not None else None
-        if parsed is None:
-            continue
-        freqs, magnitude, _band = parsed
-        gating = record.get("gating_applied")
-        latest[pose_id] = SeatTake(
-            take_id=str(record.get("take_id") or path.stem),
-            pose_key=doc_pose_key(record),
-            freqs_hz=freqs,
-            magnitude_db=magnitude,
-            gating_applied=gating if isinstance(gating, bool) else None,
-        )
-    return tuple(reversed(latest.values()))
-
-
 def _window(takes: Sequence[SeatTake]) -> str:
     """What the takes say about their own window, never assumed."""
     applied = {take.gating_applied for take in takes}
@@ -203,15 +125,18 @@ def _window(takes: Sequence[SeatTake]) -> str:
 def _stacked(
     takes: Sequence[SeatTake], lo_hz: float, hi_hz: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Every take on the first take's grid, cropped to ``[lo_hz, hi_hz]``."""
+    """Interpolate only within the band every selected take measured."""
+    lo_hz = max(lo_hz, *(take.band_hz[0] for take in takes))
+    hi_hz = min(hi_hz, *(take.band_hz[1] for take in takes))
     grid = takes[0].freqs_hz
     keep = (grid >= lo_hz) & (grid <= hi_hz)
     freqs = grid[keep]
-    if not freqs.size:
+    if lo_hz >= hi_hz:
         raise RoundViewsError(
             f"no seat take carries a bin between {lo_hz:g} and {hi_hz:g} Hz "
             f"(the takes span {float(grid[0]):g}-{float(grid[-1]):g} Hz)"
         )
+    freqs = np.unique(np.concatenate(([lo_hz], freqs, [hi_hz])))
     rows = np.vstack([
         np.interp(freqs, take.freqs_hz, take.magnitude_db) for take in takes
     ])
@@ -243,6 +168,8 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),
+        "coverage_hz": [max(ROOM_FLOOR_HZ, *(t.band_hz[0] for t in takes)),
+                        min(ceiling.ceiling_hz, *(t.band_hz[1] for t in takes))],
     }
 
 
@@ -338,6 +265,8 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),
+        "coverage_hz": [max(ROOM_FLOOR_HZ, *(t.band_hz[0] for t in takes)),
+                        min(ceiling.ceiling_hz, *(t.band_hz[1] for t in takes))],
         "thresholds": {
             "depth_db": FEATURE_DEPTH_DB,
             "min_width_octaves": FEATURE_MIN_WIDTH_OCTAVES,

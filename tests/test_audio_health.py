@@ -424,11 +424,14 @@ def _armed_active_camilla_devices() -> dict[str, str]:
     }
 
 
-def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
+def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **env_overrides):
     """Run ``_read_transport_state`` against the armed-ACTIVE-ring premise."""
     from jasper import audio_runtime_plan
 
     outputd_env = _armed_active_outputd_env(**env_overrides)
+    devices = _armed_active_camilla_devices()
+    if capture_device is not None:
+        devices["capture_device"] = capture_device
     env_file = tmp_path / "outputd.env"
     env_file.write_text(
         "".join(f"{key}={value}\n" for key, value in outputd_env.items()),
@@ -440,7 +443,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
-            devices=_armed_active_camilla_devices()
+            devices=devices
         ),
     )
     # outputd's live STATUS is unreachable in-test; a ring-coupled outputd opens
@@ -450,19 +453,12 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
     return audio_health._read_transport_state(_plan_for("shm_ring", outputd_env))
 
 
-def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> None:
-    """#2376: an armed roleful box must not be reported as parked.
-
-    Observed on jts3 while audio was demonstrably playing: ``/state.audio_health``
-    said "parked" with "transport plan is loopback but
-    JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" while the SAME ``/state`` reported
-    ``coupling.persisted=shm_ring``, ``live_transport=shm_ring``, both rings
-    armed. The health model passed ``plan.transport_topology.name`` where
-    ``transport_coherence_report`` wants a coupling TOKEN; on this box that name
-    is ``shm_ring_active``, which is not a coupling, so ``resolve_coupling``
-    fail-SAFED it to ``loopback`` and the detector then compared a ring-armed
-    outputd against a loopback plan it had invented.
-    """
+@pytest.mark.parametrize("capture_device, parked", [
+    ("jts_ring_capture", False), ("jts_ring_grouping", False), ("plug:jasper_capture", True),
+])
+def test_armed_active_ring_reports_only_broken_capture_routes(
+    monkeypatch, tmp_path, capture_device, parked,
+) -> None:
     from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.fanin_coupling import VALID_COUPLINGS
 
@@ -472,11 +468,11 @@ def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> N
     plan = _plan_for("shm_ring", _armed_active_outputd_env())
     assert plan.transport_topology.name == TRANSPORT_SHM_RING_ACTIVE
 
-    state = _armed_active_transport_read(monkeypatch, tmp_path)
+    state = _armed_active_transport_read(monkeypatch, tmp_path, capture_device=capture_device)
 
-    assert state["coherence_errors"] == []
+    assert bool(state["coherence_errors"]) is parked
     health = _compose(transport=state)
-    assert health["signal_path"]["code"] != "transport_parked"
+    assert (health["signal_path"]["code"] == "transport_parked") is parked
 
 
 def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(

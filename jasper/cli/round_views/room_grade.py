@@ -67,6 +67,8 @@ def _median(path: Path) -> RoomMedian:
 
 
 def _band_line(band: Mapping[str, Any]) -> str:
+    if band["rms_db"] is None:
+        return f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: unavailable"
     line = (
         f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: rms {band['rms_db']:.1f} dB "
         f"max {band['max_db']:.1f} dB spread {band['spread_db']:.1f} dB"
@@ -90,19 +92,23 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         else None
     )
     try:
-        grade = grade_room_median(
-            _median(candidate_path),
-            incumbent=None if incumbent_path is None else _median(incumbent_path),
-        )
+        median = _median(candidate_path)
+        incumbent = None if incumbent_path is None else _median(incumbent_path)
+        grade = grade_room_median(median, incumbent=incumbent)
     except RoomPrescriptionRefused as exc:
         # A document that will not read into a median is the INPUT failing, not
         # this view declining a round it read.
         return refused_by_name(exc.reason, exc.detail, code=EXIT_UNREADABLE)
 
+    scope = (median.evidence or {}).get("basis", {}).get("graph_scope")
     artifact = {
         **grade.to_dict(),
         "room_median": str(candidate_path),
-        "graph_scopes": bundle_graph_scopes(banked.session_dir),
+        "evidence": median.evidence,
+        "incumbent_evidence": None if incumbent is None else incumbent.evidence,
+        "graph_scopes": ([scope] if scope else []) if median.evidence is not None
+                        else bundle_graph_scopes(banked.session_dir),
+        "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
     }
     # Read before filed, as close-reference does: a grade survives an --out the
     # operator may not write.
@@ -110,16 +116,27 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         print(_band_line(band), file=sys.stderr)
     written = _write(artifact, args.out, _view_out(args, banked))
     regressed = artifact["regressed_bands"]
+    comparison = artifact["comparison"]
+    comparison_result = (
+        f"comparison unavailable: {comparison['unavailable_reason']}"
+        if comparison is not None and not comparison["available"]
+        else (
+            ", ".join(f"{low:g} Hz" for low in regressed) if regressed
+            else "none" if artifact["incumbent"] else "no baseline named"
+        )
+    )
     return answer(
         args.command, out=written, ceiling_hz=grade.ceiling_hz,
         ceiling_source=grade.ceiling_source, n_positions=grade.n_positions,
         bands=artifact["bands"], regressed_bands=regressed,
         incumbent=artifact["incumbent"], graph_scopes=artifact["graph_scopes"],
+        comparison=artifact["comparison"],
+        evidence=median.evidence, incumbent_evidence=artifact["incumbent_evidence"],
+        graph_scopes_source=artifact["graph_scopes_source"],
         line=(
             f"room-grade: {len(grade.bands)} band(s) to "
             f"{grade.ceiling_hz:g} Hz ({grade.ceiling_source}); regressed: "
-            + (", ".join(f"{low:g} Hz" for low in regressed) if regressed
-               else "none" if artifact["incumbent"] else "no baseline named")
+            + comparison_result
             + (f" -> {written}" if written else "")
         ),
     )

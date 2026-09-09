@@ -19,6 +19,7 @@ import subprocess
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from ...airplay_session import REASONS as AIRPLAY_CLEANUP_REASONS
 from ...config import Config
 from ...log_event import log_event
 
@@ -102,6 +103,7 @@ REASON_MUX_MODE_UNREADABLE = "mux_mode_unreadable"
 REASON_MUX_MODE_CORRUPT = "mux_mode_corrupt"
 REASON_MUX_MODE_UNKNOWN_SOURCE = "mux_mode_unknown_source"
 REASON_MUX_MODE_PINNED = "mux_mode_pinned"
+REASON_AIRPLAY_CLEANUP_UNAVAILABLE = "airplay_cleanup_unavailable"
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -1377,6 +1379,27 @@ def _classify_mux_mode(path: Path) -> CheckResult:
     return CheckResult(
         name, "ok", f"manual pin: {source.value}", reason=REASON_MUX_MODE_PINNED
     )
+
+
+@doctor_check()
+def check_airplay_session_cleanup() -> CheckResult:
+    payload = evidence.control_state().payload or {}
+    selection = payload.get("source_selection") or {}
+    fact = selection.get("airplay_session_cleanup")
+    name = "AirPlay session cleanup"
+    if not isinstance(fact, dict) or fact.get("reason") not in AIRPLAY_CLEANUP_REASONS:
+        return CheckResult(
+            name, "skipped", "mux cleanup outcome is unavailable",
+            reason=REASON_AIRPLAY_CLEANUP_UNAVAILABLE,
+        )
+    status = {"unobserved": "skipped", "ok": "ok", "degraded": "warn"}.get(
+        str(fact.get("status") or ""), "skipped",
+    )
+    reason = fact["reason"]
+    detail = f"last receiver cleanup: {reason}"
+    if status == "warn":
+        detail += "; if AirPlay cannot connect, use Restart AirPlay"
+    return CheckResult(name, status, detail, reason=reason)
 
 
 @doctor_check()

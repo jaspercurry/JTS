@@ -37,6 +37,7 @@ from ..volume_diagnostics import (
 from . import (
     debug_control,
     grouping_supervisor,
+    heal_supervisor,
     measurement_hold,
     shairport_supervisor,
     system_supervisor,
@@ -55,8 +56,9 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 
 # Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
 # so a consumer can branch on the number instead of probing for keys.
-# See ADR-0270 for the thirteen keys this version names.
-STATE_SCHEMA_VERSION = 4
+# See ADR-0270 for the thirteen keys version 4 named; 5 adds
+# `resilience.heal` (ADR-0271).
+STATE_SCHEMA_VERSION = 5
 
 # One deadline for the whole payload: the daemon fan-out and every section
 # read spend from it. NOT a latency control — the normal path finishes well
@@ -715,7 +717,7 @@ async def _get_state(
         # Final-output owner; jasper-doctor owns the actionable failure.
         "outputd": outputd,
         "source_selection": mux,
-        # The three supervisors this process runs, and nothing else: every
+        # The four supervisors this process runs, and nothing else: every
         # other resilience fact has a module of its own that jasper-doctor
         # reads directly (ADR-0270).
         "resilience": {
@@ -729,6 +731,9 @@ async def _get_state(
             # failures (rate-limited 1/24h). Off via
             # JASPER_SYSTEM_SUPERVISOR=disabled.
             "system_supervisor": system_supervisor.snapshot(),
+            # Observer of the two silences no unit state reveals;
+            # `would_act` is what it would have done (ADR-0271).
+            "heal": heal_supervisor.snapshot(),
         },
         # Which subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),

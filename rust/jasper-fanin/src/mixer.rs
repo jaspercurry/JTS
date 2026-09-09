@@ -27,7 +27,7 @@ mod pcm_open;
 mod ring_capture;
 
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
@@ -352,7 +352,6 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
 
 const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
-const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread — which OWNS the `LaneResampler` and performs the actual ring trim —
@@ -497,6 +496,7 @@ const PACE_MIN_SLEEP_NS: u64 = 100_000;
 /// within a second. An ABSENT reader is safe (it drops); a live-but-unpaced one
 /// is fatal.
 struct PeriodPacer {
+    nominal_ns: u64,
     /// The targeted period in nanoseconds — one nominal period
     /// (`period_frames / sample_rate`) less [`PACE_HEADROOM_PERCENT`],
     /// precomputed so the hot loop never divides.
@@ -508,8 +508,23 @@ struct PeriodPacer {
 impl PeriodPacer {
     fn new(period_ns: u64) -> Self {
         Self {
+            nominal_ns: period_ns,
             target_ns: period_ns * (100 - PACE_HEADROOM_PERCENT) / 100,
             deadline_ns: None,
+        }
+    }
+
+    fn set_nominal(&mut self, nominal: bool) {
+        // Snapcast consumes at wall-clock rate. DAC refill headroom would fill
+        // its FIFO, then stall USB capture whenever a whole pipe page drains.
+        let target = if nominal {
+            self.nominal_ns
+        } else {
+            self.nominal_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        };
+        if target != self.target_ns {
+            self.target_ns = target;
+            self.deadline_ns = None;
         }
     }
 
@@ -779,18 +794,9 @@ pub struct Mixer {
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
-    /// REVERSE host-clock signals (servo thread → mixer) for the DEFAULT-OFF
-    /// post-lock cushion decay. The `fanin-host-clock` thread only ever WRITES
-    /// these, every servo tick; the mixer's per-period decay tick only ever
-    /// READS them. `ladder_l0` = the DLL is `l0_locked` (decay's steady-state
-    /// gate); `commanded_milli_ppm` = the DLL's last commanded bias (× 1000) for
-    /// the cascade guard. When the servo thread is not running (host-clock off /
-    /// no direct lane) these stay at their init (`false` / 0), so decay never
-    /// leaves the ceiling — decay REQUIRES the DLL.
     host_clock_ladder_l0: Arc<AtomicBool>,
     usb_connection_epoch: Arc<AtomicU64>,
     host_clock_timing_failed: Arc<AtomicBool>,
-    host_clock_commanded_milli_ppm: Arc<AtomicI64>,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -813,6 +819,7 @@ struct AutoTrimLaneState {
 /// work loop writes. Distinct from `WriterMetrics`, which is a value snapshot.
 #[derive(Clone)]
 struct RingCounters {
+    nominal_clock: Arc<AtomicBool>,
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
     /// Live-but-STUCK reader drops (issue #1524) — the bounded-wait give-ups
@@ -844,6 +851,7 @@ struct RingCounters {
 impl RingCounters {
     fn new() -> Self {
         Self {
+            nominal_clock: Arc::new(AtomicBool::new(false)),
             published: Arc::new(AtomicU64::new(0)),
             full_waits: Arc::new(AtomicU64::new(0)),
             stuck_reader_drops: Arc::new(AtomicU64::new(0)),
@@ -864,6 +872,7 @@ impl RingCounters {
 /// life, so there is nothing for a later period to update.
 #[derive(Clone)]
 pub struct RingObservability {
+    pub nominal_clock: Arc<AtomicBool>,
     pub path: String,
     pub slots: u32,
     /// The OBSERVED wire vocabulary token (`S16_LE` / `S32_LE`), or `unknown`
@@ -1428,6 +1437,7 @@ impl Mixer {
             attached.channels,
         );
         let ring_observability = RingObservability {
+            nominal_clock: Arc::clone(&counters.nominal_clock),
             path: config.ring_path.clone(),
             slots: config.ring_slots,
             wire_format,
@@ -1524,7 +1534,6 @@ impl Mixer {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             usb_connection_epoch: Arc::new(AtomicU64::new(0)),
             host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
-            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -1581,7 +1590,6 @@ impl Mixer {
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
             connection_epoch: Arc::clone(&self.usb_connection_epoch),
             timing_failed: Arc::clone(&self.host_clock_timing_failed),
-            commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
         })
     }
 
@@ -1675,16 +1683,9 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         self.maybe_trim();
 
-        // Snapshot the REVERSE host-clock signals ONCE per period for the
-        // cushion-decay tick below (a per-input read would self-borrow). `l0`
-        // gates decay to the DLL's steady state; `commanded_ppm_abs` drives the
-        // cascade guard. Both are inert (false / 0) when the servo thread is not
-        // running, so decay never leaves the ceiling without the DLL.
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
         let connection_epoch = self.usb_connection_epoch.load(Ordering::Relaxed);
         let timing_failed = self.host_clock_timing_failed.load(Ordering::Relaxed);
-        let decay_commanded_ppm_abs =
-            (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
             if let Some(r) = input.resampler.as_mut() {
@@ -1771,7 +1772,7 @@ impl Mixer {
                 if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
                     r.force_decay_snap_back();
                 }
-                r.tick_decay(decay_l0, decay_commanded_ppm_abs);
+                r.tick_decay(decay_l0);
             }
             // Selection AND mute gate, applied at the SUM only: the per-lane
             // telemetry above is already accounted, so a de-selected OR muted
@@ -1882,6 +1883,11 @@ impl Mixer {
             &self.ring_wide_payload,
             self.period_frames,
         );
+        for input in &mut self.inputs {
+            if let Some(resampler) = &mut input.resampler {
+                resampler.output_published(published_frames);
+            }
+        }
         self.frames_written
             .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())
@@ -2071,6 +2077,8 @@ fn write_ring_period(
     // this sleep, so it is floored at `PACE_MIN_SLEEP_NS` even when the deadline
     // has already passed. Every other period is left exactly as the pacer found
     // it: a zero sleep after back-pressure, so the DAC keeps owning the rate.
+    ring.pace
+        .set_nominal(ring.counters.nominal_clock.load(Ordering::Relaxed));
     let mut sleep_ns = ring.pace.pace(now_ns);
     let clockless = !publish_blocked && !dropped_this_period;
     if clockless {
@@ -2346,7 +2354,6 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         enabled: config.input_resampler_cushion_decay_enabled,
         floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
         stability_ms: CUSHION_DECAY_STABILITY_MS,
-        cascade_guard_ppm: CUSHION_DECAY_CASCADE_GUARD_PPM,
     };
     match LaneResampler::new(
         CHANNELS as usize,
@@ -3895,6 +3902,7 @@ mod tests {
         let counters = RingCounters::new();
         let ring_observability = RingObservability {
             path: out_path.clone(),
+            nominal_clock: Arc::clone(&counters.nominal_clock),
             slots: 8,
             wire_format: RingWireFormat::S16Le.as_str(),
             channels: CHANNELS,
@@ -3937,7 +3945,6 @@ mod tests {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             usb_connection_epoch: Arc::new(AtomicU64::new(0)),
             host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
-            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         };
 
         // The UNATTENUATED TTS period: the same fixture, the same commands and
@@ -4247,6 +4254,24 @@ mod tests {
         let blocked = t0 + 10 * target;
         assert_eq!(pacer.pace(blocked), 0);
         assert_eq!(pacer.pace(blocked), target);
+    }
+
+    #[test]
+    fn nominal_clock_keeps_one_period_per_deadline_without_dac_headroom() {
+        let period_ns = 256 * 1_000_000_000 / 48_000;
+        let mut pacer = PeriodPacer::new(period_ns);
+        pacer.set_nominal(true);
+        let t0 = 1_000_000_000;
+        assert_eq!(pacer.pace(t0), 0);
+        for period in 0..1000 {
+            assert_eq!(pacer.pace(t0 + period * period_ns), period_ns);
+        }
+        pacer.set_nominal(false);
+        assert_eq!(
+            pacer.target_ns,
+            period_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        );
+        assert_eq!(pacer.deadline_ns, None);
     }
 
     /// Reader-absent: `write_ring_period` free-run-drops and paces (never

@@ -43,6 +43,7 @@ from jasper.active_speaker.graph_safety import (
     view_from_camilla_dict,
 )
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.camilla import CamillaUnavailable
 
 
 class ActivationError(RuntimeError):
@@ -179,19 +180,18 @@ async def snapshot_predecessor(controller: Any) -> PredecessorSnapshot:
         file_text = _read_text(path)
     except OSError as exc:
         raise ActivationError(f"could not read the config file {path!r}: {exc}") from exc
-    file_parsed = _parse_running_config(file_text)
+    # `raw` is already CamillaDSP's own default-filled serialization; `file_text`
+    # is the JTS-authored file straight off disk, which omits defaulted keys.
+    # Canonicalize it through the same ReadConfig path (issue #2202) so the two
+    # sides are compared on equal footing.
+    try:
+        normalized_file_text = await controller.normalize_config_raw(
+            file_text, best_effort=False,
+        )
+    except (ValueError, CamillaUnavailable) as exc:
+        raise ActivationError(f"config file {path!r} did not normalize: {exc}") from exc
+    file_parsed = _parse_running_config(normalized_file_text)
     running_fp = _graph_fingerprint(parsed)
-    # KNOWN DEFECT (issue #2202) — do not "fix" this line in isolation.
-    # `parsed` is CamillaDSP's default-filled `GetConfig` readback; `file_parsed`
-    # is the JTS-authored file straight off disk, which omits every defaulted
-    # key. So these fingerprints cannot agree on real hardware and this bench
-    # refuses on any real box. Same defect class as the live-graph boundary
-    # (runtime_contract.classify_active_bass_extension_graph, now canonicalized
-    # through CamillaDSP's ReadConfig) and as the two commissioning sites. The
-    # repair here is the same shape — canonicalize `file_text` via
-    # `controller.normalize_config_raw` before fingerprinting — but this
-    # module's harness feeds an echoing CamillaDSP double, so landing it alone
-    # would pass vacuously. Fourth of the four sites #2202 tracks.
     if running_fp != _graph_fingerprint(file_parsed):
         raise ActivationError(
             "running config does not match the on-disk file; refusing to mutate "

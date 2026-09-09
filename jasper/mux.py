@@ -90,8 +90,8 @@ from typing import Any, Callable, Optional
 from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
+from .airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
-from .busctl import system_busctl
 from .control import restart_broker
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .platform import wire
@@ -137,12 +137,6 @@ FANIN_TEST_OWNERS = frozenset({
 # correction renews every measurement_window.MEASUREMENT_GATE_REFRESH_SEC. A web
 # worker crash therefore self-recovers instead of pinning household music off.
 FANIN_TEST_LEASE_SEC = 60.0
-SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
-SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
-MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
-SHAIRPORT_NATIVE_BUS = "org.gnome.ShairportSync"
-SHAIRPORT_NATIVE_PATH = "/org/gnome/ShairportSync"
-SHAIRPORT_NATIVE_IFACE = "org.gnome.ShairportSync"
 
 
 ALERT_COALESCE_SEC = 0.05
@@ -205,6 +199,7 @@ class Mux:
         self._librespot_state_path = librespot_state_path
         self._mode_state_path = mode_state_path
         self._state = _State()
+        self._airplay_session = AirplaySessionCleanup()
         self._started_seq = 0
         self._observation_lock = asyncio.Lock()
         self._winner: Optional[Source] = None
@@ -589,6 +584,8 @@ class Mux:
                         await self._fanin_none_best_effort(
                             reason="handoff_prepare_failed",
                         )
+                else:
+                    await self._release_airplay_locked(target)
             if not selected:
                 return
 
@@ -597,7 +594,7 @@ class Mux:
             # Best-effort per source — one renderer's pause raising must not
             # abort pausing the rest.
             for source, is_playing in current.items():
-                if source != target and is_playing:
+                if source not in (target, Source.AIRPLAY) and is_playing:
                     await self._pause_best_effort(
                         source, reason=transition_reason,
                     )
@@ -699,6 +696,7 @@ class Mux:
                         await self._usbsink_set_preempt(
                             False, reason="auto_select",
                         )
+                    await self._release_airplay_locked(new_winner)
                 else:
                     self._pending_auto_target = new_winner
                     if self._winner is None:
@@ -714,7 +712,7 @@ class Mux:
                 )
                 return self._status_payload(current)
             for source in active_sources:
-                if source != new_winner:
+                if source not in (new_winner, Source.AIRPLAY):
                     await self._pause_best_effort(
                         source, reason="auto_select",
                     )
@@ -887,6 +885,7 @@ class Mux:
             "active_source": active,
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
+            "airplay_session_cleanup": self._airplay_session.snapshot(),
             "sources": {
                 source.value: self._source_status_payload(source, current)
                 for source in MUSIC_SOURCES
@@ -1252,6 +1251,13 @@ class Mux:
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         }
 
+    async def _release_airplay_locked(self, target: Source) -> None:
+        # A pause (or mux restart) can leave a receiver connection alive even
+        # without playback history. Holding _transition_lock prevents cleanup
+        # from running after a newer source selection.
+        if target != Source.AIRPLAY:
+            await self._airplay_session.release()
+
     async def _pause_best_effort(self, source: Source, *, reason: str) -> None:
         try:
             await self._pause(source)
@@ -1469,8 +1475,6 @@ class Mux:
                 "release of the fan-in spotify lane if still active",
             )
             await self._spotify_force_restart_librespot()
-        elif source == Source.AIRPLAY:
-            await self._airplay_drop_session_for_preempt()
         elif source == Source.BLUETOOTH:
             try:
                 await bluetooth_avrcp_call("Pause")
@@ -1489,64 +1493,6 @@ class Mux:
                 )
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
-
-    async def _airplay_drop_session_for_preempt(self) -> None:
-        """Drop the AirPlay receiver session after another source wins.
-
-        Keeping an AP2 session alive once another source owns the audible lane
-        leaves the sender routed to an inaudible receiver. ``DropSession`` is
-        receiver-owned and forcibly terminates that connection; MPRIS ``Stop``
-        is only a remote request the sender may ignore, so it is retained
-        solely as a compatibility fallback when the native method is
-        unavailable. This cleanup runs after fan-in has moved; failure never
-        rolls back or weakens the authoritative audible-lane handoff.
-        """
-        dropped = await _busctl(
-            "call",
-            SHAIRPORT_NATIVE_BUS,
-            SHAIRPORT_NATIVE_PATH,
-            SHAIRPORT_NATIVE_IFACE,
-            "DropSession",
-        )
-        if dropped is not None:
-            log_event(
-                logger,
-                "airplay.preempt_drop_session",
-                method="DropSession",
-                result="ok",
-            )
-            return
-
-        log_event(
-            logger,
-            "airplay.preempt_drop_session_failed",
-            method="DropSession",
-            action="mpris_stop_fallback",
-            level=logging.WARNING,
-        )
-        stopped = await _busctl(
-            "call",
-            SHAIRPORT_MPRIS_BUS,
-            SHAIRPORT_MPRIS_PATH,
-            MPRIS_PLAYER_IFACE,
-            "Stop",
-        )
-        if stopped is not None:
-            log_event(
-                logger,
-                "airplay.preempt_stop",
-                method="Stop",
-                result="fallback_ok",
-            )
-            return
-
-        log_event(
-            logger,
-            "airplay.preempt_stop_failed",
-            method="Stop",
-            action="new_source_remains_authoritative",
-            level=logging.WARNING,
-        )
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — MUTE/UNMUTE the fan-in usbsink lane.
@@ -1740,14 +1686,6 @@ class Mux:
             "(active-only Tier 2 escalation succeeded)",
         )
         return True
-
-
-async def _busctl(*args: str) -> Optional[str]:
-    """Run busctl on the system bus; stdout on success, None on any error."""
-    stdout = await system_busctl(*args)
-    if stdout is None:
-        return None
-    return stdout.decode("utf-8", "replace")
 
 
 def _fmt_db(value: float | None) -> str:

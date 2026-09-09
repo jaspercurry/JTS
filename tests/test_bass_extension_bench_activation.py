@@ -19,8 +19,10 @@ from jasper.bass_extension.bench.activation import (
     snapshot_predecessor,
     temporary_bass_activation,
 )
+from jasper.camilla import CamillaUnavailable
 
 from ._async_wait import wait_signalled
+from ._camilla_readback_double import camilla_canonicalize, camilla_readback
 
 PREDECESSOR_YAML = "filters: {}\npipeline: []\n"
 CANDIDATE_YAML = "filters:\n  baseline_limiter_woofer:\n    type: Limiter\npipeline: []\n"
@@ -46,6 +48,12 @@ class FakeController:
 
     async def get_config_file_path(self) -> str:
         return str(self.config_path)
+
+    async def normalize_config_raw(self, config: str, *, best_effort: bool = False) -> str:
+        # Echo: this fake's file text and active_raw are already identical
+        # text in every test below except the two canonicalization pins,
+        # which install their own default-filling double.
+        return config
 
     async def set_active_config_raw(self, raw: str) -> bool:
         self.calls.append("set_active_config_raw")
@@ -270,6 +278,67 @@ async def test_cancellation_still_restores(config_file: Path) -> None:
 async def test_snapshot_refuses_when_running_diverges_from_file(config_file: Path) -> None:
     controller = FakeController(config_file)
     controller.active_raw = CANDIDATE_YAML  # running != file
+    with pytest.raises(ActivationError):
+        await snapshot_predecessor(controller)
+
+
+async def test_snapshot_matches_when_file_differs_only_in_camilla_default_filling(
+    tmp_path: Path,
+) -> None:
+    # Issue #2202, site 4. The running graph is CamillaDSP's default-filled
+    # readback (extra keys like title/description/processors); the on-disk
+    # file is the bare JTS-authored text. normalize_config_raw canonicalizes
+    # the file through the same default-filling before fingerprinting, so a
+    # readback that differs from the file only in serialization must not
+    # refuse.
+    path = tmp_path / "active.yml"
+    path.write_text(PREDECESSOR_YAML, encoding="utf-8")
+    controller = FakeController(path)
+    controller.get_active_config_raw = camilla_readback(PREDECESSOR_YAML)
+
+    async def _normalize(config: str, *, best_effort: bool = False) -> str:
+        return await camilla_canonicalize(config)
+
+    controller.normalize_config_raw = _normalize
+
+    predecessor = await snapshot_predecessor(controller)
+
+    assert predecessor.graph_fingerprint
+
+
+async def test_snapshot_wraps_normalize_failure_as_activation_error(
+    config_file: Path,
+) -> None:
+    # normalize_config_raw(best_effort=False) can raise CamillaUnavailable (or
+    # its CamillaConfigRejected subclass) when CamillaDSP is down or rejects
+    # the file; the runner only catches BenchAborted, so this must surface as
+    # ActivationError rather than aborting the whole campaign.
+    controller = FakeController(config_file)
+
+    async def _normalize(config: str, *, best_effort: bool = False) -> str:
+        raise CamillaUnavailable("camilla is down")
+
+    controller.normalize_config_raw = _normalize
+
+    with pytest.raises(ActivationError):
+        await snapshot_predecessor(controller)
+
+
+async def test_snapshot_refuses_when_file_is_semantically_different(
+    tmp_path: Path,
+) -> None:
+    # Same double as above, but the file on disk is a genuinely different
+    # graph — canonicalization must not paper over a real mismatch.
+    path = tmp_path / "active.yml"
+    path.write_text(CANDIDATE_YAML, encoding="utf-8")
+    controller = FakeController(path)
+    controller.get_active_config_raw = camilla_readback(PREDECESSOR_YAML)
+
+    async def _normalize(config: str, *, best_effort: bool = False) -> str:
+        return await camilla_canonicalize(config)
+
+    controller.normalize_config_raw = _normalize
+
     with pytest.raises(ActivationError):
         await snapshot_predecessor(controller)
 

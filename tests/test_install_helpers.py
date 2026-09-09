@@ -854,6 +854,31 @@ def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_pat
     )
 
 
+@pytest.mark.parametrize("function", ["install_jasper", "install_streambox_jasper"])
+def test_runtime_install_keeps_shared_env_readable_during_upgrade(tmp_path, function):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(mode=0o755)
+    env_file = env_dir / "jasper.env"
+    env_file.write_text("JASPER_HOSTNAME=jts.local\n")
+    env_file.chmod(0o640)
+    script = f"""
+set -eu
+source {shlex.quote(str(_INSTALL_LIB_DIR / 'python-runtime.sh'))}
+ENV_DIR={shlex.quote(str(env_dir))}
+INSTALL_DIR={shlex.quote(str(tmp_path / 'install'))}
+ensure_state_dir() {{ :; }}
+install() {{
+    command install "$@"
+    if [[ "${{!#}}" == "$ENV_DIR" ]]; then exit 23; fi
+}}
+{function}
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=5)
+    assert result.returncode == 23
+    assert stat.S_IMODE(env_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
+
+
 def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_path):
     """The streambox refresh re-asserts JASPER_INSTALL_PROFILE on an EXISTING
     jasper.env. It used to `sed -i` the key out and append it back unquoted,
