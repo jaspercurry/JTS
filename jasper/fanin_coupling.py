@@ -579,7 +579,7 @@ def dac_content_lane_marker_armed(env: "Mapping[str, str]") -> bool:
     mere PRESENCE would call a cleared bond armed, since that writer clears by
     writing the key EMPTY.
     """
-    from jasper.multiroom.dac_content_ring import (  # lazy: cycle with jasper.multiroom.dac_content_ring via jasper.ring_assets
+    from jasper.multiroom.dac_content_ring import (  # lazy: cycle — that module imports this one at module scope
         DAC_CONTENT_LANE_ENV,
     )
 

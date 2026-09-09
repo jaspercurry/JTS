@@ -122,10 +122,13 @@ PROBE_UNIT_NOT_LOADED = "unit_not_loaded"
 class LaneOwner:
     """Who holds an EBUSY renderer lane. ``pid`` is the published writer."""
 
-    ok: bool
     code: str
     pid: int | None = None
     detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.code == LANE_OWNER_MATCHED
 
 
 @dataclass(frozen=True)
@@ -1232,25 +1235,21 @@ def _ring_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
     label = _ring_renderer_devices().get(device)
     if label is None:
         return LaneOwner(
-            False, LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in ring lane"
+            LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in ring lane"
         )
     from jasper.renderer_lanes import ring_writer_pid
 
     pid = ring_writer_pid(label)
     if pid is None:
         return LaneOwner(
-            False,
-            LANE_OWNER_NO_WRITER,
-            detail=f"ring for lane {label} names no writer",
+            LANE_OWNER_NO_WRITER, detail=f"ring for lane {label} names no writer"
         )
     owned, why = _cgroup_owner_is_unit(pid, unit)
     if owned:
         return LaneOwner(
-            True, LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid} (ring writer)"
+            LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid} (ring writer)"
         )
-    return LaneOwner(
-        False, LANE_OWNER_FOREIGN, pid, f"busy but ring writer pid={pid} {why}"
-    )
+    return LaneOwner(LANE_OWNER_FOREIGN, pid, f"busy but ring writer pid={pid} {why}")
 
 
 def _fanin_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
@@ -1273,29 +1272,25 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
         return LaneOwner(
-            False, LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in private lane"
+            LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in private lane"
         )
     text = evidence.loopback_substreams().get(substream)
     if text is None:
         return LaneOwner(
-            False,
             LANE_OWNER_NO_WRITER,
             detail=f"could not read Loopback substream {substream} status",
         )
     m = re.search(r"owner_pid\s*:\s*(\d+)", text)
     if not m:
         return LaneOwner(
-            False,
             LANE_OWNER_NO_WRITER,
             detail=f"Loopback substream {substream} status has no owner_pid",
         )
     pid = int(m.group(1))
     owned, why = _cgroup_owner_is_unit(pid, unit)
     if owned:
-        return LaneOwner(True, LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid}")
-    return LaneOwner(
-        False, LANE_OWNER_FOREIGN, pid, f"busy but owner pid={pid} {why}"
-    )
+        return LaneOwner(LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid}")
+    return LaneOwner(LANE_OWNER_FOREIGN, pid, f"busy but owner pid={pid} {why}")
 
 
 def renderer_probes() -> tuple[RendererProbe, ...]:

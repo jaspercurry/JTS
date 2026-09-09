@@ -16,9 +16,9 @@ and fail CLOSED, so a box whose ring cannot be proved is left exactly as
 it was found and the move is declined (never a fallback — ADR-0100); each
 gate's own docstring owns why.
 
-Every ``# lazy: import cost`` below defers the same two trees:
-:mod:`jasper.active_speaker` and :mod:`jasper.output_topology`.
-``tests/test_audio_runtime_plan.py`` pins them out of
+A ``# lazy: import cost`` below defers :mod:`jasper.active_speaker` or
+:mod:`jasper.output_topology` unless its own note names another tree.
+``tests/test_audio_runtime_plan.py`` pins those two out of
 :mod:`jasper.audio_runtime_plan`'s import closure, which reaches this module
 at module scope (ADR-0226).
 """
@@ -211,9 +211,14 @@ def load_topology_for_wire():
             OutputTopologyError,
             load_output_topology_strict,
         )
-
+    except ImportError:
+        # Bound outside the read's ``except`` on purpose: naming
+        # ``OutputTopologyError`` in that tuple while the import itself can fail
+        # would answer ``UnboundLocalError`` instead of ``None``.
+        return None
+    try:
         return load_output_topology_strict()
-    except (OutputTopologyError, OSError, ValueError, ImportError):
+    except (OutputTopologyError, OSError, ValueError):
         return None
 
 
