@@ -607,6 +607,24 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
         assert result.reason == reason
 
 
+def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
+    """A reachable but wedged sampler must not masquerade as
+    REASON_SNAPSHOT_UNAVAILABLE (ADR-0226) — that reason is for jasper-
+    control itself being unreachable."""
+    import jasper.platform.control_client as control
+
+    monkeypatch.setattr(resilience, "_read_system_metrics_current", lambda: None)
+    monkeypatch.setattr(
+        control, "get_system_snapshot",
+        lambda **kw: {"metrics": {"last_sample_at": 0}},
+    )
+
+    result = check_supply_voltage()
+
+    assert result.status == "warn"
+    assert result.reason == resilience.REASON_SUPPLY_VOLTAGE_SAMPLER_STALE
+
+
 @pytest.mark.parametrize(
     "check_name",
     [

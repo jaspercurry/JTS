@@ -17,24 +17,9 @@ import pytest
 from jasper import service_units
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor._evidence import Evidence, StatusRead
-from jasper.control.system_metrics import (
-    SAMPLE_INTERVAL_SEC,
-    SERVICE_STATE_INTERVAL_SEC,
-    VCGENCMD_INTERVAL_SEC,
-)
+from jasper.control.system_metrics import VCGENCMD_INTERVAL_SEC
 
 from .doctor_test_support import _fresh_cfg
-
-
-def _stub_snapshot(monkeypatch, metrics: dict) -> None:
-    """Make ``evidence.control_system_snapshot()`` answer with ``metrics``
-    under the ``/system/snapshot`` shape (ADR-0226: the doctor reads
-    jasper-control's already-sampled facts instead of polling itself)."""
-    import jasper.platform.control_client as control
-
-    monkeypatch.setattr(
-        control, "get_system_snapshot", lambda **kw: {"metrics": metrics},
-    )
 
 
 def _patch_systemctl(monkeypatch, stdout: str) -> None:
@@ -252,119 +237,35 @@ def test_unit_state_is_none_without_systemctl(monkeypatch):
     assert ev.unit_active("jasper-fanin.service") is None
 
 
-def test_unit_states_prefers_a_fresh_snapshot_and_forks_systemctl_when_stale(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "payload, expect_current",
+    [
+        ({"metrics": {"last_sample_at": time.time(), "current": {"a": 1}}}, True),
+        (
+            {
+                "metrics": {
+                    "last_sample_at": time.time() - 2 * VCGENCMD_INTERVAL_SEC - 1,
+                    "current": {"a": 1},
+                },
+            },
+            False,
+        ),
+        ({"metrics": {"last_sample_at": None, "current": {"a": 1}}}, False),
+        ({}, False),
+    ],
+    ids=["fresh", "stale", "warming_up", "absent_snapshot"],
+)
+def test_system_metrics_current_gates_on_sampler_freshness(
+    monkeypatch, payload, expect_current,
 ):
-    """ADR-0226: a snapshot covering the whole roster with the fields the
-    doctor reads is used as-is; a stale one falls back to today's single
-    ``systemctl show`` over the roster."""
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(
-        _evidence, "read_unit_states",
-        lambda units, *, timeout: calls.append(tuple(units)) or {},
-    )
-    services = [
-        {
-            "unit": unit, "active_state": "active", "sub_state": "running",
-            "load_state": "loaded", "n_restarts": 0,
-        }
-        for unit in service_units.DOCTOR_UNIT_ROSTER
-    ]
+    """``check_supply_voltage`` must not trust a wedged or still-warming-up
+    sampler's last throttled bits forever (ADR-0226)."""
+    import jasper.platform.control_client as control
 
-    _stub_snapshot(
-        monkeypatch,
-        {"last_sample_at": time.time(), "services": services},
-    )
-    states = Evidence().unit_states()
-    assert states is not None
-    assert states["jasper-fanin.service"]["active_state"] == "active"
-    assert calls == []
+    monkeypatch.setattr(control, "get_system_snapshot", lambda **kw: payload)
 
-    _stub_snapshot(
-        monkeypatch,
-        {
-            "last_sample_at": time.time() - SERVICE_STATE_INTERVAL_SEC - 1,
-            "services": services,
-        },
-    )
-    assert Evidence().unit_states() == {}
-    assert calls == [service_units.DOCTOR_UNIT_ROSTER]
-
-
-def test_mem_total_kb_prefers_a_fresh_snapshot_and_reads_meminfo_when_stale(
-    monkeypatch,
-):
-    reads: list[str] = []
-    monkeypatch.setattr(
-        "jasper.memory_policy.meminfo_kb",
-        lambda key: reads.append(key) or 123,
-    )
-
-    _stub_snapshot(
-        monkeypatch,
-        {"last_sample_at": time.time(), "current": {"mem_total_mb": 900}},
-    )
-    assert Evidence().mem_total_kb() == 900 * 1024
-    assert reads == []
-
-    _stub_snapshot(
-        monkeypatch,
-        {
-            "last_sample_at": time.time() - SAMPLE_INTERVAL_SEC - 1,
-            "current": {"mem_total_mb": 900},
-        },
-    )
-    assert Evidence().mem_total_kb() == 123
-    assert reads == ["MemTotal"]
-
-
-def test_disk_usage_prefers_a_fresh_snapshot_and_statvfs_when_stale(monkeypatch):
-    import jasper.memory_policy as memory_policy
-
-    reads: list[str] = []
-    monkeypatch.setattr(
-        memory_policy, "disk_usage",
-        lambda path: reads.append(path)
-        or memory_policy.DiskUsage(path, 1000, 250, 75.0),
-    )
-
-    _stub_snapshot(
-        monkeypatch,
-        {
-            "last_sample_at": time.time(),
-            "current": {"disk_used_pct": 40.0, "disk_total_gb": 10.0},
-        },
-    )
-    usage = Evidence().disk_usage("/")
-    assert reads == []
-    assert usage.percent_used == 40.0
-    assert usage.total_bytes == round(10.0 * (1024 ** 3))
-
-    _stub_snapshot(
-        monkeypatch,
-        {
-            "last_sample_at": time.time() - SAMPLE_INTERVAL_SEC - 1,
-            "current": {"disk_used_pct": 40.0, "disk_total_gb": 10.0},
-        },
-    )
-    usage = Evidence().disk_usage("/")
-    assert reads == ["/"]
-    assert usage == memory_policy.DiskUsage("/", 1000, 250, 75.0)
-
-
-def test_system_metrics_current_is_none_when_the_snapshot_is_stale(monkeypatch):
-    """``check_supply_voltage`` must not trust a wedged sampler's last
-    throttled bits forever — a stale snapshot reads the same as no snapshot."""
-    current = {"throttled_now": 0, "throttled_history": 0}
-
-    _stub_snapshot(monkeypatch, {"last_sample_at": time.time(), "current": current})
-    assert Evidence().system_metrics_current() == current
-
-    _stub_snapshot(
-        monkeypatch,
-        {"last_sample_at": time.time() - VCGENCMD_INTERVAL_SEC - 1, "current": current},
-    )
-    assert Evidence().system_metrics_current() is None
+    current = Evidence().system_metrics_current()
+    assert current == ({"a": 1} if expect_current else None)
 
 
 def test_unit_property_batches_and_memoizes(monkeypatch):

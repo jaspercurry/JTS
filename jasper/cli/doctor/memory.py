@@ -25,6 +25,7 @@ from ...memory_policy import (
     MEM_PSI_WARN_AVG60,
     ZRAM_TARGET_PERCENT,
     ZRAM_WARN_PERCENT,
+    disk_usage,
     meminfo_kb,
     memory_headroom_thresholds,
     memory_pressure,
@@ -430,7 +431,7 @@ def check_disk_space() -> CheckResult:
     it is inherently secret-free."""
     path = "/"
     try:
-        usage = evidence.disk_usage(path)
+        usage = disk_usage(path)
     except OSError as e:
         return CheckResult(
             "disk space", "warn",
