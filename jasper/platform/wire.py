@@ -27,11 +27,20 @@ class _EffectiveVolumeContext(Protocol):
     for ``jasper.assistant_volume.EffectiveVolumeContext`` so this bottom-layer
     module carries no upward import; callers pass the real dataclass."""
 
-    canonical_db: float
-    downstream_db: float
-    tts_envelope_lufs: float
-    muted: bool
-    stamp_boot_ns: int
+    @property
+    def canonical_db(self) -> float: ...
+
+    @property
+    def downstream_db(self) -> float: ...
+
+    @property
+    def tts_envelope_lufs(self) -> float: ...
+
+    @property
+    def muted(self) -> bool: ...
+
+    @property
+    def stamp_boot_ns(self) -> int: ...
 
 
 def encode(command: str) -> bytes:
