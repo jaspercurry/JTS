@@ -318,6 +318,20 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 15:15Z: **Orchestration handed off again** (owner switched agents
+  mid-session). `briefs/HANDOFF-ORCHESTRATOR.md` rewritten for the successor:
+  it carries the corrected branch topology, the seven rulings this session
+  made, the findings still open, the review pattern that produced them, and a
+  corrected container recipe (pycamilladsp must be installed WITH its
+  dependencies — the previous handoff's `--no-deps` fails on
+  `websocket-client` — plus a fifth tolerated uid-0 test,
+  `test_audio_hardware_reconcile.py::…[mid_stage_abort-1]`, confirmed on clean
+  main). State at handoff: row 3.2 (#4641) reviewed, fixed and merging; row
+  3.1 part 1 (#4643) open with four must-fixes and two adversarial blockers
+  whose fix round was in flight — **not mergeable as it stands**; rows 3.2b,
+  3.3, 3.4a, 3.4b, 3.1 part 2 and 3.5 not landed. Wave-4 brief written; waves
+  5 and 6 not written.
+
 - 2026-09-09 15:05Z: #4643 adversarial review (NN tier): **two blockers, both on
   the excitation path, both probed rather than argued**, sent to the fix agent
   with the design review's four.

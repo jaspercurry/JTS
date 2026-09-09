@@ -1,167 +1,155 @@
 # Orchestrator handoff — seat-matched tuning program
 
 You are taking over as the orchestrating session for the seat-matched tuning
-program (issue #4502). The previous orchestrator's context is spent; this file
-is the whole handoff. Read it, then `seat-tuning-program/PLAN.md` (§9 status
-log first, newest entries at the top), then the briefs it names. Everything
-below is true as of 2026-09-09 12:40Z, `origin/main` at `18cba5142`.
+program (issue #4502). Read this file, then `seat-tuning-program/PLAN.md` §9
+(status log, newest first — it carries every ruling below with its evidence),
+then `briefs/wave-3-bass.md` for the lane still landing.
+
+True as of 2026-09-09 ~15:15Z. This is the second handoff; the first one's
+plan for lane D was wrong about the branch topology, and §1 explains how.
 
 ## 1. Where the program stands
 
-Landed on main (all squash-merged, each reviewed against its brief):
+Lanes A, B and C are complete on main except the owner's hardware rows (1.6
+first wired seat-cube session, 2.4 first room round). **Lane D (bass) is the
+only unfinished lane and is mid-landing.**
 
-| Row | PR | What |
-|---|---|---|
-| Wave 0 / 0b | #4488, #4517 | ADR-0255…0260 (wired-only; room ceiling = applied tune's trusted floor; bass resumes; sides × roles; one toolbox; flexible categorized poses, no nearfield rung) |
-| 1.0 | #4510 | wired capture kernel in `jasper/audio_measurement/wired_capture.py` |
-| 1.4 (lane B) | #4522 | pose vocabulary; `seat/cube` (7 poses), `seat/express`, `close/spot` |
-| 1.5 (lane B) | #4524 | `room-ceiling`, `room-median`, `room-persistence` views; `room_median.json` |
-| 1.7 (lane B) | #4525 | methodology §11 "Room", runbook "Room" walk |
-| 2.3 (lane C) | #4520 | wall distances in declared geometry; `boundary-prior` view |
-| 2.1 (lane C) | #4544 | Layer-3 room candidate kind: `audio_measurement/room_limits.py`, `crossover_v2/room_prescription.py` door, `room_correction` candidate field, `room_candidate` graph scope |
-| 2.2 (lane C) | #4546 | `room-grade` view |
-| 1.1 (lane A) | #4557 | `level_match`, household-mic record, `SNR_BANDS_HZ` moved into `audio_measurement` |
-| 1.4 (lane A) | #4563 | bass wizard and parked apply pathway retired |
-| 1.3 (lane A) | #4567 | in-product LLM client (`jasper/calibration_agent/`) and room-wizard LLM hooks retired |
-| 1.2 (lane A) | #4602 | `jasper/correction/` and the room product retired (−41k lines) |
-| 1.5 (lane A) | #4604 | `jasper-mic-calibration models\|fetch\|upload\|show`; ADR-0265 amends ADR-0259 §4 |
-| 1.6 (lane A) | #4603 | doctor: a round-tripped active graph is managed |
+| Row | State |
+|---|---|
+| 3.2 `bass-fit` view | **PR #4641, merging** — reviewed, fixed, CI green |
+| 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE** — 4 must-fixes + 2 blockers, fix agent's round in flight |
+| 3.2b adapters honour the margin policy | **not started; gates 3.3** |
+| 3.3 candidate kind + emission | branch being built by an agent, stacked on 3.2; **NN** |
+| 3.4a rung graph | unopened branch `claude/seat-w3-3-4a-rung-graph`; **NN** |
+| 3.4b ladder view | unopened branch `claude/seat-w3-3-4b-ladder-view` |
+| 3.1 part 2 (`--live` binding) | unopened branch `claude/seat-w3-3-1b-bench-field` |
+| 3.5 docs | unopened branch `claude/seat-w3-3-5-bass-docs` |
 
-Lanes A, B and C are complete except the owner's hardware rows (1.6 first
-wired seat-cube session; 2.4 first room round through the candidate).
+**The branch topology the first handoff got wrong.** The eight lane D branches
+are one stack (`3-2 → 3-3a → 3-3b → 3-4a → 3-4b`), an independent `3-1`, and
+`3-1b-bench-field`, which is a *merge* of `3-1` and `3-4a` plus two commits
+that consume 3.3's candidate field and 3.4a's scope. So "3.1 with 3.1b" cannot
+land first. Landing order: **3.1 part 1 ∥ 3.2 → 3.2b → 3.3 → 3.4a → 3.4b →
+3.1 part 2 → 3.5.**
 
-## 2. What is open: lane D (bass), the only unfinished lane
+## 2. Rulings already made — do not relitigate, all recorded in §9
 
-The lane D session (title "JTS D") built rows 3.1–3.5 on eight stacked
-branches and never opened a PR. As of 12:40Z, none has moved since 11:31Z:
+1. **3.3 stays one PR** (candidate kind + emission). Splitting leaves a window
+   where a candidate carrying a bass field applies without its bass layer.
+2. **3.4 splits into two PRs** (3.4a rung graph, 3.4b ladder). The intermediate
+   state is fail-closed and it isolates the NN diff.
+3. **The sustain test is not duplicated in the ladder.** The bench owns
+   `sustain_stress` under the frozen limiter-evidence protocol. The ladder
+   discloses it carries swept-sine evidence only; the door already requires
+   ladder AND limiter evidence for any boost. This supersedes brief row 3.4's
+   wording. **The owner was told and has not objected.**
+4. **"The human starts each level" must be fixed before 3.4a merges** — one
+   level per invocation for the `bass_candidate` scope, with a refusal code,
+   or a per-level confirmation. Not a change to the shared session loop.
+5. **No `MeasurementProgram("bass","ladder")` registration** — levels are not
+   poses. What 3.4 must supply instead: each step records its position and
+   `grade_ladder` refuses a mixed-position ladder.
+6. **Per-driver caps come from the summed admission gate**, not from
+   `assert_stimulus_band_protected`. Where the design and adversarial reviews
+   disagreed on this, the adversarial reading won (see §4).
+7. **Wave 4 gained row 4.1b**, the contract-revision ADR, because the frozen
+   protocol blocks all production wiring until one names the accepted bundle's
+   fingerprint and authorizes a caller, and the tap amendment forbids "a
+   scheduler" by name.
 
-| Branch | Ahead / behind main | Content |
-|---|---|---|
-| `claude/seat-w3-3-1-bench-binding` | 2 / 177 | `bench/wired_play.py`: `WiredPlayAndCapture` mirroring `null_door._play_and_capture` (wired-only, faithful) |
-| `claude/seat-w3-3-1b-bench-field` | 15 / 166 | unknown; probably the CLI binding 3.1 lacked |
-| `claude/seat-w3-3-2-bass-fit` | 1 / 214 | `bass_extension/seat_fit.py`, `cli/round_views/bass_fit.py`, adapter parameter models |
-| `claude/seat-w3-3-3a-bass-candidate` | 6 / 166 | Layer-2 scheduled candidate kind (row 3.3) |
-| `claude/seat-w3-3-3b-bass-emission` | 8 / 166 | emitter stage for the bass candidate (row 3.3) |
-| `claude/seat-w3-3-4a-rung-graph` | 10 / 166 | protection ladder graph (row 3.4, NN) |
-| `claude/seat-w3-3-4b-ladder-view` | 12 / 166 | ladder view (row 3.4, NN) |
-| `claude/seat-w3-3-5-bass-docs` | 1 / 75 | docs (row 3.5) |
+## 3. Findings still open
 
-Pre-review findings (Sonnet, read-only, 07:40Z; posted on #4502, unanswered):
+- **#4643's six**: the sustain hold rendered as a sweep so admission judges it
+  by a per-sweep ceiling (no campaign can ever reach `accepted` — this would
+  have failed at the speaker during wave 4.1); the hand-composed play seam
+  reverting to the engine's binder (`confirm_graph_is_live` fingerprints a
+  *normalized read-back*, not bytes — the branch's stated reason was false);
+  a ~200 MB correlation peak on a 1 GB Pi; a defaulted `thd_max_ratio: 0.0`
+  the protocol forbids; plus the two blockers in §4.
+- **Row 3.2b** (gates 3.3): `sealed.generate_family` ignores
+  `subsonic_corner_ratio`/`subsonic_order` (ships 15 Hz 2nd-order where
+  `conservative` declares 21.8 Hz 4th-order — at 10 Hz that is −1.8 dB against
+  −21 dB, on a rung with +6 dB of infrasonic boost and no excursion model) and
+  `generate_ported_family` ignores `boost_cap_db`.
+  `_assert_bass_extension_safe` proves the `LT → subsonic → limiter` ORDER and
+  never the subsonic's values.
+- **`activation.py:186`** carries a pre-existing issue #2202 defect that will
+  block the first supervised campaign regardless of row 3.1. Out of scope
+  there; the owner needs it closed before wave 4.1 hardware time.
+- **No excursion margin is computable anywhere** — no Xmax, no Sd, no
+  displacement model. ADR-0260's protection basis names "declared plant facts"
+  as one of three legs and that leg cannot carry a number today; the in-room
+  ladder and the limiter evidence carry it alone. Owner should decide whether
+  that amends the ADR.
 
-- 3.1 as pushed is the capture kernel without the binding: `jasper/cli/bass_extension_bench.py --live` still refuses unconditionally, `TargetPlan` is not bound, `BenchRoleExecutor` has no caller, `require_wired_mic` is never reached from the live path, and `bass_extension` was not added to `PACKAGE_BOUNDARIES` in `tests/test_audio_measurement_boundary_ssot.py` (renamed from `test_correction_boundary_ssot.py` by #4602). Check whether `3-1b-bench-field` closes these.
-- 3.2 wrote a third `room_median.json` parser (`seat_fit.read_seat_median`) with no `window` check. Consume `crossover_v2/room_prescription.read_room_median` (refuses `window != "ungated"`, carries the normalized median and `level_reference_db`) and delete the duplicate.
-- Registration (`ARTIFACT_BY_VIEW`, `_FAMILIES`, `_VIEW_RUN`) and side-effects (reads no capture, changes no graph or candidate) were clean on 3.2.
-- Since these branched, main gained: `room_boundary.ROOM_MEDIAN_WINDOW`, the door reader, `room_limits.py`, the `room_candidate` scope (#4544); the bass wizard's apply pathway deletion, `_intent_payload` moved to `apply_intent.py`, `LADDER_INCOMPLETE` removed (#4563); `jasper/correction/` gone and the boundary test renamed (#4602); `jasper-mic-calibration` (#4604). Expect conflicts in `bass_extension/{__init__,apply_intent,profile}.py`, `bench/`, `crossover_v2/door.py`, `cli/round_views/{__init__,_common}.py`, `tests/test_cli_exit_vocabulary.py`, the runbook's generated menu cell (regenerate with `scripts/generate-tuning-tool-menu.py`, never hand-merge).
+## 4. What the reviews are for — the evidence they produced
 
-### Landing plan for lane D
+Every review round here found something reading alone would not have:
+the ported adapter admitting vented cabinets into a fit that needs a nearfield
+null (31 of 72 synthetic in-room medians produced a wrong family, one demanding
+9.03 dB under a 6.0 dB cap — the reviewer built the medians); the sustain hold
+that could never be admitted (reproduced against the repo's own fixture); two
+excitation-path blockers probed with real numbers (a band ending at `fc − ε`
+passing while driving the tweeter ~6 dB below the woofer's stress level with no
+cap of its own; the fader and graph proven three steps before audio is
+emitted). **Keep the three-review pattern for NN rows: Sonnet claim check,
+Opus design review, `/adversarial-review`.** Prompts that worked are visible in
+this session's history; they name the brief row, the ADRs, AGENTS.md, and ask
+for `file:line` evidence, a verdict, and findings tagged must-fix / follow-up /
+note.
 
-Precondition: the owner stops the "JTS D" session first (two authors on one
-branch collide). The owner has said rebasing is fine.
+## 5. Process and conventions (unchanged, still binding)
 
-1. One Opus agent per row, in order 3.1 (+3.1b), 3.2, 3.3 (3.3a+3.3b), 3.4
-   (3.4a+3.4b), 3.5. Each: worktree from the branch, `git rebase origin/main`
-   (force-push allowed on these branches now), resolve conflicts against the
-   landed code above, fix the pre-review findings for that row, run the
-   validation ladder (§4), open the PR with the standard body (§5).
-2. Per PR: Sonnet claim check (grep proofs, census, stale importers, collision
-   map, rebased, consumes `read_room_median`), then Opus design review against
-   `briefs/wave-3-bass.md` and ADR-0257/0258/0260. Rows 3.4 and anything
-   touching the DSP output path, `dsp_apply.py`, limiter or `install.sh` are
-   non-negotiable tier: `/adversarial-review` too, and the merge waits for
-   the owner's hardware pass (jts3, wired UMIK-2).
-3. Push review fixes via an Opus agent (one commit, no history rewriting once
-   a PR is open); merge (squash) on green; unsubscribe; update PLAN.md §5 row
-   and §9; comment on #4502 when a row lands.
-4. Fold 3.5 (docs) last, regenerating the menu.
+- Orchestrator adjudicates and merges; **Opus for every review and every commit,
+  Sonnet for read-only claim checks, CI triage and collision maps.**
+- Agent conventions file used all session (workspace, ladder, PR body shape,
+  trailers): recreate it from §5 of the previous handoff plus the container
+  notes below; every agent was pointed at it before doing anything.
+- Commit trailer, last lines: `Co-Authored-By: <your model> <noreply@anthropic.com>`
+  and `Claude-Session: <your session URL>`. No model identifier anywhere else.
+- PR body: Summary (with premises found false at HEAD); Line delta; Verdicts
+  with grep proof per deletion; Test plan checkboxes; Validation evidence with
+  sentinels verbatim; Notes for reviewer. Squash merge, PR title as commit title.
+- Never rewrite history on an open PR — add commits, merge main in for conflicts.
+- Post one review-round comment per PR before merging; comment on #4502 per row.
+- `tests/voice_eval/` is paid. Never run it.
 
-## 3. Process that worked (keep it)
+## 6. Container quirks (updated — the first handoff's recipe was incomplete)
 
-- Orchestrator: design judgment, adjudication, merging, PLAN.md, #4502
-  comments. Opus: design reviews and every fix/implementation commit. Sonnet:
-  read-only claim checks, CI-log triage, collision maps, pre-reviews.
-- Every review prompt names the brief row, the ADRs, `AGENTS.md`
-  non-negotiables and Defaults, `PACKAGE_BOUNDARIES`, and asks for
-  `file:line` evidence, a verdict, and findings tagged must-fix / follow-up /
-  note. Fix agents get the findings verbatim with file:line and "do not widen".
-- CI red: first rule out a failure that is not the PR's (a module the diff
-  does not touch; red on main at the base too). Known flakes: the wall-clock
-  `tests/test_airplay_volume_hook.py::test_a_session_start_fade_up_is_adopted_once_at_its_settled_level`
-  (re-run once after a standing-down comment; harden in its own PR if it
-  recurs); main was briefly red on `tests/test_audio_hardware_reconcile.py`
-  before #4512 (fixed).
-- Check-ins: `send_later` ~60 min while anything is open; subscribe to each
-  PR with `subscribe_pr_activity`; unsubscribe on merge.
-- Owner merges some PRs themselves; that is fine. Post-hoc review still runs.
+- Build a venv per worktree: Python 3.13, pip-install the `full`+`dev`+
+  `fast-landing` groups from PyPI, **skip `camilladsp` and `pyalsaaudio`**, and
+  install pycamilladsp from a git clone at its pinned commit **with its
+  dependencies** (`pip install <clone>`, not `--no-deps` — it needs
+  `websocket-client`; the first handoff said `--no-deps` and that fails).
+  Then `pip install -e . --no-deps`.
+- Ladder: `ruff check jasper tests scripts`; `lint-imports` (2 kept / 0 broken);
+  `mypy --python-version 3.13` on touched modules (bare mypy dies on numpy
+  stubs); `generate-tuning-tool-menu.py --check`; `docs-linkcheck.py --all`;
+  `docs-impact.py --validate-only`; affected suites; then `scripts/test-fast`.
+- **Tolerated failures under uid 0 (all reproduce on clean main):** the four
+  the first handoff lists, plus
+  `tests/test_audio_hardware_reconcile.py::test_every_pass_ends_with_one_exit_event_carrying_its_own_status[mid_stage_abort-1]`
+  (confirmed on a clean main worktree this session).
+- `mypy` reports 3 pre-existing errors in
+  `crossover_v2/feature_classifier.py` that no lane D branch touches.
+- The runbook's generated tool-menu cell conflicts on almost every rebase.
+  Regenerate it with `scripts/generate-tuning-tool-menu.py`, never hand-merge.
+- No `gh`; use `mcp__github__*`.
 
-## 4. Validation ladder and container quirks
+## 7. Owner decisions still open
 
-- No `.venv` in the container. Build one per worktree: `uv sync` fails
-  (the `camilladsp` GitHub archive is 403 through the proxy); create a Python
-  3.13 venv, pip-install the dependency groups from `pyproject.toml` from
-  PyPI (skip `camilladsp` and `pyalsaaudio`; `pycamilladsp` at its pinned
-  commit installs from a `git clone` of the public repo), install the system
-  `libportaudio2` if `sounddevice` import fails, then `pip install -e . --no-deps`.
-- Ladder: `ruff check jasper tests scripts`; `lint-imports` (2 kept / 0
-  broken); `mypy --python-version 3.13` on touched modules (bare mypy dies on
-  numpy stubs under the configured 3.11); `PYTHONPATH=. .venv/bin/python
-  scripts/generate-tuning-tool-menu.py --check`; `python scripts/docs-linkcheck.py --all`;
-  `python scripts/docs-impact.py --validate-only`; the affected suites; then
-  `scripts/test-fast` and quote the final `==> test-fast: …` sentinel.
-- Tolerated failures only under uid 0 in this container (all reproduce on
-  clean main): `tests/test_active_speaker_bundles.py::test_open_bundle_returns_none_and_warns_on_write_failure`,
-  `tests/test_tool_catalog.py::test_write_catalog_fail_soft_on_unwritable_path`,
-  `tests/test_install_helpers.py::test_streambox_env_refresh_writes_the_profile_through_the_shared_lib`
-  (no rsync), `tests/test_angle_capture_take.py::test_consumed_is_read_back_from_the_spool_not_asserted`.
-- `git merge-tree --write-tree origin/main <branch>` works here for conflict
-  probes. No `gh`; use the GitHub MCP tools (`mcp__github__*`). PR bodies over
-  ~10 KB: fetch and PATCH rather than retyping.
-- ADR numbers are reserved by comment on issue #4405; 0265 is the newest
-  used; #4405 carries a double reservation on 0262 (flagged, unresolved).
+- The crossover done screen can mint zero actions on a first tune (#4602):
+  mint a "Back to Sound" filler or accept the bare screen. Asked twice, no reply.
+- Hardware rows 1.6 and 2.4, then the hardware passes on 3.3, 3.4a, 3.4b.
+- Whether the missing excursion model amends ADR-0260 (§3 above).
+- #4405 carries a double reservation on ADR-0262, still unresolved.
 
-## 5. Conventions (non-negotiable for every PR)
+## 8. Briefs
 
-- Commit trailer, last lines: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
-  and `Claude-Session: <your session URL>`. No other model identifier in
-  code, commits, PR titles or bodies.
-- PR body: Summary; Line delta; Verdicts (SUPERSEDED / SPENT / PROMOTE with
-  grep proof for every deletion); Test plan checkboxes (hardware-free
-  validation; Hardware/Pi evidence or N/A with reason; no voice-eval);
-  Validation evidence with sentinels verbatim; Notes for reviewer (stale, not
-  fixed here; follow-ups); end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
-  and the session URL.
-- GitHub comments end with `---` and `_Generated by [Claude Code](https://claude.ai/code)_`.
-- Squash merge with the PR title as the commit title; branches auto-delete.
-- Never rewrite history on a branch with an open PR; add commits.
-- `tests/voice_eval/` is paid; never run it.
-
-## 6. Open items besides lane D
-
-- Owner decision: the crossover done screen can mint zero actions on a first
-  tune after #4602 (`crossover_envelope_v2.py` ~2738); mint a "Back to Sound"
-  filler (`{"id":"sound_hub","label":"Back to Sound","href":"/sound/"}`, the
-  shape the JS test fixture already uses) or accept the bare screen.
-- Owner hardware rows 1.6 and 2.4; then the plan's later waves (4 limiter
-  campaign and runtime scheduler; 5 one headroom budget; 6 per-side emission
-  and the cardioid variant) — briefs not yet written; write them the way
-  `briefs/wave-2-room-candidate.md` is written and review each against main
-  first (every brief so far had at least one false premise at HEAD).
-- Follow-ups parked in PLAN.md §9 (search "Follow-ups"): `baseline-reemit`
-  and `setup_status` recompose without `room_peqs`; multi-side room refusal
-  wants its own slug (ADR-0258); `_prescription_common.py` for the three
-  doors' shared privates; `DefaultSetupCalibration.from_household`; tuning
-  spend ledger consolidation; `jasper-correction-web` keeps a `jasper-secrets`
-  group membership it no longer needs (install.sh, NN tier); #4594 (another
-  program) still echoes `sound/room/` in `NGINX_PUBLIC_SURFACE`; eleven
-  producer-less `BassExtensionRefusal` members for lane D's 3.3 to prune.
-
-## 7. Kickoff for the fresh session
-
-Paste this, then this file's path:
-
-> You are the orchestrating session for the JTS seat-matched tuning program
-> (issue #4502). Fetch `claude/loudspeaker-tuning-architecture-iephfa` and read
-> `seat-tuning-program/briefs/HANDOFF-ORCHESTRATOR.md` first, then
-> `seat-tuning-program/PLAN.md` §9 and `briefs/wave-3-bass.md`. Land lane D
-> (rebasing is allowed; the owner has stopped the "JTS D" session), then keep
-> the program moving. Delegate: Opus for reviews and every commit, Sonnet for
-> read-only checks; you adjudicate and merge. Keep PLAN.md and #4502 current.
+`briefs/wave-4-bass-runtime.md` is written and fact-checked (it carries row
+4.1b and three corrected premises). Waves 5 and 6 are not written; a read-only
+fact-gathering pass for them was in flight when this session ended and its
+output, if it landed, is `/home/user/wt/FACTS-wave56.md` in that container —
+regenerate it rather than trusting it. Write them the way
+`briefs/wave-2-room-candidate.md` is written and verify every premise at HEAD
+first: **every brief in this program has shipped with at least one false one.**
