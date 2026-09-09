@@ -18,7 +18,7 @@
 //! (whose own header states the match is intentional "so Python can keep
 //! one playout implementation"): newline-framed text commands (GAIN /
 //! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
-//! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
+//! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer (command vocabulary +

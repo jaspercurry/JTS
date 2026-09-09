@@ -783,9 +783,8 @@ impl LaneResampler {
     /// Log the refill window's enter/leave edges and keep its period counter —
     /// the window's only observable surface, since the ladder gauges it freezes
     /// go quiet. MUST be called by every path that can move
-    /// `CushionDecay::refilling`, so a forced snap reports the same edges as a
-    /// real demotion. Edges are rare by construction (a window spans thousands
-    /// of periods), so this logs unconditionally.
+    /// `CushionDecay::refilling`. Edges are rare by construction (a window
+    /// spans thousands of periods), so this logs unconditionally.
     fn note_refill_edge(&mut self, was_refilling: bool, was_force_clears: u64) {
         match (was_refilling, self.decay.refilling()) {
             (false, true) => {

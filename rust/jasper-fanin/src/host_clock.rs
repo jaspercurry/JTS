@@ -45,8 +45,6 @@
 //!
 //! **`capture_frames` is the RAW `input_frames` counter and `playback_frames`
 //! the DAC-paced `output_frames`; the slope estimator differences the two.**
-//! Both advance on real audio alone, so any correction term subtracted here
-//! injects the divergence step it claims to cancel.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
