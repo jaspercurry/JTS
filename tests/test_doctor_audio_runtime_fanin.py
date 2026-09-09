@@ -652,6 +652,7 @@ def _fanin_payload_with_tts(tts: dict) -> bytes:
                 "budget_frames": 96000,
                 "dropped_commands": 82,
                 "dropped_audio_frames": 523200,
+                "last_drop_age_ms": 3_600_000,
             },
             audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED,
         ),
@@ -678,22 +679,84 @@ def _fanin_payload_with_tts(tts: dict) -> bytes:
     ids=[
         "quiet",
         "protocol-error",
-        "dropped-audio",
+        "dropped-audio-long-ago",
         "connections-rejected",
         "frame-timeouts",
         "lane-disabled",
     ],
 )
 def test_check_fanin_tts_counters_never_latch(monkeypatch, tts, reason):
-    """Cumulative-since-start counters are reported, never warned on: one drop
-    at boot would otherwise stay red until fan-in restarts, and a healer that
-    restarts fan-in to clear it costs the household more audio."""
+    """Cumulative-since-start counters are reported, never warned on without a
+    RECENT drop beside them: one drop at boot would otherwise stay red until
+    fan-in restarts, and a healer that restarts fan-in to clear it costs the
+    household more audio."""
     _patch_status_reader(monkeypatch, _fanin_payload_with_tts(tts))
 
     r = audio_runtime_fanin.check_fanin_tts_drops()
 
     assert r.status == "ok"
     assert r.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("last_drop_age_ms", "status", "reason"),
+    [
+        (0, "warn", audio_runtime_fanin.REASON_FANIN_TTS_DROPPED_RECENTLY),
+        (
+            audio_runtime_fanin.FANIN_TTS_DROP_RECENT_MS,
+            "warn",
+            audio_runtime_fanin.REASON_FANIN_TTS_DROPPED_RECENTLY,
+        ),
+        (
+            audio_runtime_fanin.FANIN_TTS_DROP_RECENT_MS + 1,
+            "ok",
+            audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED,
+        ),
+        (None, "ok", audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED),
+    ],
+)
+def test_check_fanin_tts_drops_keys_on_drop_recency(
+    monkeypatch, last_drop_age_ms, status, reason,
+):
+    tts = {
+        "enabled": True,
+        "pending_frames": 0,
+        "budget_frames": 96000,
+        "dropped_commands": 4,
+        "dropped_audio_frames": 12000,
+    }
+    if last_drop_age_ms is not None:
+        tts["last_drop_age_ms"] = last_drop_age_ms
+    _patch_status_reader(monkeypatch, _fanin_payload_with_tts(tts))
+
+    r = audio_runtime_fanin.check_fanin_tts_drops()
+
+    assert (r.status, r.reason) == (status, reason)
+
+
+@pytest.mark.parametrize(
+    ("policy", "status", "reason"),
+    [
+        ("SCHED_FIFO", "ok", ""),
+        ("SCHED_OTHER", "warn",
+         audio_runtime_fanin.REASON_FANIN_SCHED_POLICY_NOT_FIFO),
+        ("SCHED_RR", "warn",
+         audio_runtime_fanin.REASON_FANIN_SCHED_POLICY_NOT_FIFO),
+        ("unknown", "skipped",
+         audio_runtime_fanin.REASON_FANIN_SCHED_POLICY_UNREPORTED),
+        (None, "skipped",
+         audio_runtime_fanin.REASON_FANIN_SCHED_POLICY_UNREPORTED),
+    ],
+)
+def test_check_fanin_sched_policy(monkeypatch, policy, status, reason):
+    payload = json.loads(_fanin_status_payload().decode("utf-8"))
+    if policy is not None:
+        payload["sched_policy"] = policy
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    r = audio_runtime_fanin.check_fanin_sched_policy()
+
+    assert (r.status, r.reason) == (status, reason)
 
 
 def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
@@ -1160,9 +1223,9 @@ def test_check_fanin_coupling_value_reads_the_shared_predicate(
     fanin_env = tmp_path / "fanin.env"
     if raw is not None:
         fanin_env.write_text(f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
-    )
+    # The check's own read is the evidence-memoized `fanin_env()`, sourced
+    # from `env_load.FANIN_ENV_PATH`.
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     res = audio_runtime_fanin.check_fanin_coupling_value()
     assert res.status == status
     assert res.reason == reason

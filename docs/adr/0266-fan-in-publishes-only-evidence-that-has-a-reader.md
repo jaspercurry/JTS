@@ -29,8 +29,8 @@
   evidence is `inputs[].xrun_count`, `inputs[].last_xrun_age_ms` (a stale
   count must read differently from a live one) and the `event=fanin.xrun`
   journal line. Ring A's live latency term is
-  `output.ring.occupancy × output.period_frames`, ADR-0205's second tier,
-  which is now its first.
+  `output.ring.occupancy × slot frames (128)` — `occupancy` counts SLOTS, not
+  frames — ADR-0205's second tier, which is now its first.
 - **Consequences:** An xrun storm leaves counts, recency and journal lines
   rather than a JSONL file, and the mixer thread loses a channel send at each
   xrun site instead of gaining one. What this gives up: per-event forensic

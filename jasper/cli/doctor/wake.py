@@ -5,6 +5,7 @@
 """jasper-doctor checks — wake domain."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from ...audio_profile_state import (
     AEC_MODE_AUTO,
@@ -25,6 +26,9 @@ from .aec import (
     _wake_leg_setting,
 )
 
+# Warn threshold: a box can sit idle overnight, so under a day is not stale.
+WAKE_RECENCY_STALE_SEC = 24 * 60 * 60  # seconds
+
 # Machine-stable codes naming which branch of a wake check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_MODELS_DIR_MISSING = "models_dir_missing"
@@ -40,6 +44,11 @@ REASON_WAKE_LEGS_INTENT_ONLY = "wake_legs_intent_only"
 REASON_WAKE_LEGS_MISSING = "wake_legs_not_armed"
 REASON_WAKE_LEGS_UNEXPECTED = "wake_legs_unexpected_armed"
 REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
+
+REASON_WAKE_RECENCY_STALE = "wake_recency_stale"
+REASON_WAKE_RECENCY_FRESH = "wake_recency_fresh"
+REASON_WAKE_RECENCY_NO_WAKE_SINCE_START = "wake_recency_no_wake_since_start"
+REASON_WAKE_RECENCY_UNKNOWN = "wake_recency_unknown"
 
 @doctor_check(label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
@@ -144,16 +153,19 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
             "openWakeWord models", "fail", str(e), reason=REASON_MODEL_CHECK_CRASHED,
         )
 
+def _voice_state() -> "dict | None":
+    """/state.voice, or None if jasper-control is unreachable/absent."""
+    payload = evidence.control_state().payload
+    voice = payload.get("voice") if isinstance(payload, dict) else None
+    return voice if isinstance(voice, dict) else None
+
 def _voice_wake_legs_runtime() -> "set[str] | None":
     """Wake-leg tokens jasper-voice actually opened, from jasper-control's
     /state.voice.wake_legs. None when jasper-control is unreachable or the
     field is absent (older daemon / voice down) — callers treat None as
     "can't tell", not "no legs", and report configured intent instead."""
-    state = evidence.control_state().payload
-    if not isinstance(state, dict):
-        return None
-    voice = state.get("voice")
-    if not isinstance(voice, dict):
+    voice = _voice_state()
+    if voice is None:
         return None
     legs = voice.get("wake_legs")
     if not isinstance(legs, list):
@@ -326,3 +338,31 @@ def check_wake_legs_configured() -> CheckResult:
         chip_aec_210=effective.chip_aec_210_enabled,
         push_to_talk_only=_push_to_talk_only_speaker(),
     )
+
+@doctor_check()
+def check_wake_recency() -> CheckResult:
+    """Warns after WAKE_RECENCY_STALE_SEC of silence; unreachable voice is not a false stale."""
+    if _push_to_talk_only_speaker():
+        skip = _assess_wake_legs("auto", False, False, None, push_to_talk_only=True)
+        skip.name = "Wake recency"
+        return skip
+    voice = _voice_state()
+    if voice is None or not voice.get("reachable"):
+        return CheckResult(
+            "Wake recency", "skipped",
+            "voice unreachable; can't tell when it last heard a wake word",
+            reason=REASON_WAKE_RECENCY_UNKNOWN)
+    last_wake_at = voice.get("last_wake_at")
+    if last_wake_at is None:
+        return CheckResult(
+            "Wake recency", "ok", "no wake word heard since daemon start",
+            reason=REASON_WAKE_RECENCY_NO_WAKE_SINCE_START)
+    age = max(0.0, time.time() - last_wake_at)
+    if age > WAKE_RECENCY_STALE_SEC:
+        return CheckResult(
+            "Wake recency", "warn",
+            f"no wake word heard in over {WAKE_RECENCY_STALE_SEC // 3600} h",
+            reason=REASON_WAKE_RECENCY_STALE)
+    return CheckResult(
+        "Wake recency", "ok", f"last wake {age / 60:.0f} min ago",
+        reason=REASON_WAKE_RECENCY_FRESH)

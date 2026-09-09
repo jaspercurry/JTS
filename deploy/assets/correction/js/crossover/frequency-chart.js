@@ -28,21 +28,23 @@ function curvePoints(series, loHz, hiHz) {
   return points;
 }
 
-function dbDomain(pointSets, domainRangeHz, corridorBands, padDb, minSpanDb) {
+function dbDomain(pointSets, series, domainRangeHz, corridorBands, padDb, minSpanDb) {
   const [domainLo, domainHi] = domainRangeHz || [null, null];
-  let bound = minSpanDb / 2;
+  let bound = 0;
   for (const band of corridorBands) {
     const tolerance = Number(band && band.tolerance_db);
     if (Number.isFinite(tolerance)) bound = Math.max(bound, Math.abs(tolerance));
   }
-  for (const points of pointSets) {
+  for (const [index, points] of pointSets.entries()) {
+    const exclusions = series[index].excludedIntervals || [];
     for (const point of points) {
       if (domainLo !== null && point.frequency < domainLo) continue;
       if (domainHi !== null && point.frequency > domainHi) continue;
+      if (exclusions.some((band) => point.frequency >= band.f_lo_hz && point.frequency <= band.f_hi_hz)) continue;
       bound = Math.max(bound, Math.abs(point.deviation));
     }
   }
-  bound += padDb;
+  bound = Math.ceil(Math.max(minSpanDb / 2, bound + padDb));
   return [-bound, bound];
 }
 
@@ -51,7 +53,7 @@ export function drawFrequencyChart(canvas, payload) {
   const frequencyRangeHz = (payload && payload.frequencyRangeHz) || [20, 20000];
   const loHz = Number(frequencyRangeHz[0]);
   const hiHz = Number(frequencyRangeHz[1]);
-  const pointSets = series.map((item) => curvePoints(item, loHz, hiHz));
+  const pointSets = series.map((item) => item.draw === false ? [] : curvePoints(item, loHz, hiHz));
 
   const rect = canvas.getBoundingClientRect();
   if (rect.width < 10 || rect.height < 10) return false;
@@ -70,6 +72,7 @@ export function drawFrequencyChart(canvas, payload) {
   const corridorBands = (payload && payload.corridorBands) || [];
   const [dbMin, dbMax] = dbDomain(
     pointSets,
+    series,
     payload && payload.domainRangeHz,
     corridorBands,
     Number(payload && payload.padDb) || 3,
@@ -87,6 +90,7 @@ export function drawFrequencyChart(canvas, payload) {
   context.fillStyle = theme.text || '#888';
   context.font = '11px sans-serif';
   context.lineWidth = 1;
+  let labelRight = -Infinity;
   for (const frequency of GRID_FREQS_HZ) {
     if (frequency < loHz || frequency > hiHz) continue;
     const gridX = x(frequency);
@@ -95,9 +99,14 @@ export function drawFrequencyChart(canvas, payload) {
     context.lineTo(gridX, margins.top + height);
     context.stroke();
     const label = frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`;
-    context.fillText(label, gridX - 8, margins.top + height + 14);
+    const labelWidth = context.measureText(label).width;
+    const labelX = Math.min(rect.width - labelWidth, gridX - labelWidth / 2);
+    if (labelX >= labelRight + 6) {
+      context.fillText(label, labelX, margins.top + height + 14);
+      labelRight = labelX + labelWidth;
+    }
   }
-  const step = Math.max(1, Math.round((dbMax - dbMin) / 4));
+  const step = dbMax <= 5 ? 1 : Math.ceil(dbMax / 5);
   for (let db = Math.ceil(dbMin / step) * step; db <= dbMax; db += step) {
     const gridY = y(db);
     context.beginPath();
@@ -150,7 +159,6 @@ export function drawFrequencyChart(canvas, payload) {
   pointSets.forEach((points, index) => {
     if (!points.length) return;
     const style = series[index];
-    if (style.draw === false) return;
     context.strokeStyle = style.color;
     context.lineWidth = style.lineWidth || 2;
     context.globalAlpha = style.alpha == null ? 1 : style.alpha;

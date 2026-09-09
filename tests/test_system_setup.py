@@ -38,6 +38,9 @@ _OPTIONAL_FEATURES_HARNESS = (
 _TRANSPORT_PARK_HARNESS = (
     Path(__file__).resolve().parent / "js" / "system_transport_park_test.mjs"
 )
+_DIAGNOSTICS_RENDER_HARNESS = (
+    Path(__file__).resolve().parent / "js" / "system_diagnostics_render_test.mjs"
+)
 _MAIN_JS = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "system-status" / "js" / "main.js"
@@ -182,7 +185,6 @@ def upstream_control():
                     },
                 ],
             },
-            "airplay_health": {"status": "ok", "reason": "clean"},
             "audio_health": {
                 "schema_version": 1,
                 "sampled_at": 1_750_000_000.0,
@@ -428,7 +430,6 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
     assert payload["audio_health"]["overall"]["headline"] == "Audio is ready"
-    assert payload["airplay_health"]["status"] == "ok"
     assert payload["outputd"]["backend"] == "alsa"
     assert payload["audio_quality"]["converter"] == "samplerate_medium"
     assert ("GET", "/system/snapshot") in received
@@ -650,6 +651,19 @@ def test_usb_latency_control_reports_recovery_and_apply_failure() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_diagnostics_render_runtime_contract() -> None:
+    """SYS-2: the diagnostics table leads with its verdict and sorts rows
+    fail, warn, skipped, ok."""
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_DIAGNOSTICS_RENDER_HARNESS), str(_MODULE_DIR / "actions.js")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"ok": True}
 
 
 def test_modules_preserve_destructive_confirms_and_csrf() -> None:

@@ -194,6 +194,13 @@ def test_unit_caps_tasks_without_memorymax_kill_boundary():
     assert _value_for(unit, "MemoryMax") is None
 
 
+def test_unit_bounds_the_stop_grace_period():
+    """A wedged shutdown must not block whatever stopped the unit
+    (a reboot, a restart) indefinitely."""
+    unit = _read_unit()
+    assert _value_for(unit, "TimeoutStopSec") == "10s"
+
+
 def test_bind_failure_parks_the_unit_instead_of_rebooting_the_box():
     """The unit half of ADR-0251.
 

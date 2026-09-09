@@ -53,8 +53,8 @@ general = {
     //   -( (ring_a_frames + camilla_frames + ring_b_frames + outputd_frames)
     //      / samplerate + bonded_extra_sec )
     // ring_a_frames — Ring A (fan-in -> CamillaDSP), richest evidence
-    //   first: jasper-fanin STATUS output.ring.occupancy x
-    //   output.period_frames (the ring's LIVE fill, refreshed every render
+    //   first: jasper-fanin STATUS output.ring.occupancy (a SLOT count) x
+    //   RING_A_SLOT_FRAMES (the ring's LIVE fill, refreshed every render
     //   period — the only live Ring A evidence, since fan-in reaches
     //   CamillaDSP over SHM with no ALSA delay to sample, ADR-0100 and
     //   ADR-0266); else a jasper.ring_assets parse of the
