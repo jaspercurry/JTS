@@ -43,7 +43,7 @@ def build_grouped_profile(
             driver_domain=True,
             program_channel=program_channel,
             driver_domain_pair_trim_db=max(0.0, -float(trim_db)),
-            **({"validate": validate} if validate is not None else {}),
+            validate=validate or validate_camilla_config,
         )
 
     evaluation = evaluate_bass_extension_profile(
