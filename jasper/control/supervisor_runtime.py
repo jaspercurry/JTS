@@ -15,12 +15,15 @@ import asyncio
 import logging
 import os
 import random
+import sys
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
 from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
 
 
 async def run_supervisor_loop(
@@ -101,6 +104,14 @@ def _host_thread(loop: asyncio.AbstractEventLoop) -> None:
     try:
         loop.run_forever()
     finally:
+        # Nothing stops this loop, so reaching here means every supervisor
+        # and the peering daemon were abandoned: say so once, attributably.
+        log_event(
+            logger,
+            "control_loop.exit",
+            level=logging.ERROR,
+            exc_info=sys.exc_info()[0] is not None,
+        )
         loop.close()
 
 
@@ -117,17 +128,22 @@ def spawn_on_control_loop(
     logs `crash_event` and takes down only itself."""
 
     async def _guarded() -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            task.set_name(name)
         try:
             await target()
         except Exception:  # noqa: BLE001 - preserve a stable crash breadcrumb
             log_event(
                 logger,
                 crash_event,
+                name=name,
                 level=logging.ERROR,
                 exc_info=True,
             )
 
     return asyncio.run_coroutine_threadsafe(_guarded(), _control_loop())
+
+
+def signal_on_control_loop(event: asyncio.Event) -> None:
+    """Set an asyncio.Event owned by the control loop from another thread
+    (asyncio.Event.set touches loop-owned waiters, so a caller off the loop
+    must hop through it)."""
+    _control_loop().call_soon_threadsafe(event.set)

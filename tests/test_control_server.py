@@ -833,6 +833,33 @@ def test_stop_peering_daemon_runs_daemon_stop_before_returning(_peering_env, mon
         assert srv_mod._peering_task is None
 
 
+def test_stop_peering_daemon_returns_promptly_when_stop_races_the_start(
+    _peering_env, monkeypatch,
+):
+    """Stopping before the control loop has run the coroutine must not sit
+    out the whole stop budget."""
+    srv_mod, peering_daemon_mod = _peering_env
+
+    class FakePeeringDaemon:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    began = time.monotonic()
+    srv_mod.stop_peering_daemon(timeout=5)
+    assert time.monotonic() - began < 1.0
+    with srv_mod._peering_lock:
+        assert srv_mod._peering_task is None
+
+
 def test_peering_start_failure_clears_task_and_allows_retry(_peering_env, monkeypatch):
     """A start() failure clears `_peering_task` so the next start is a
     real retry."""

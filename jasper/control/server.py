@@ -60,7 +60,7 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from .supervisor_runtime import spawn_on_control_loop
+from .supervisor_runtime import signal_on_control_loop, spawn_on_control_loop
 from ..env_load import GROUPING_ENV_FILE
 from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -666,10 +666,11 @@ async def _dispatch_transport(action: str) -> dict:
 # HTTP. It runs as one coroutine on the shared control loop that also hosts
 # the supervisors (jasper/control/supervisor_runtime.py).
 _peering_task: concurrent.futures.Future[None] | None = None
-_peering_stopped = threading.Event()
+_peering_shutdown: asyncio.Event | None = None
 
 
-async def _run_peering() -> None:
+async def _run_peering(shutdown: asyncio.Event) -> None:
+    """Own the peering daemon until `shutdown` is set by stop_peering_daemon."""
     global _peering_task
     # lazy: import cost — these load on the control loop's thread rather
     # than on jasper-control's startup import path.
@@ -678,18 +679,9 @@ async def _run_peering() -> None:
 
     daemon = None
     try:
-        cfg = load_config()
-        if not cfg.enabled:
-            log_event(
-                logger,
-                "peering.thread.exit",
-                mode=cfg.mode.value,
-                note="daemon will not start",
-            )
-            return
-        daemon = PeeringDaemon(cfg)
+        daemon = PeeringDaemon(load_config())
         await daemon.start()
-        await asyncio.Event().wait()
+        await shutdown.wait()
     finally:
         if daemon is not None:
             try:
@@ -698,39 +690,47 @@ async def _run_peering() -> None:
                 logger.exception("peering daemon stop failed")
         with _peering_lock:
             _peering_task = None
-        _peering_stopped.set()
 
 
 def start_peering_daemon_if_enabled() -> None:
     """Start the peering daemon coroutine. Idempotent.
 
-    It reads /var/lib/jasper/peering.env and returns immediately when
-    peering is disabled.
+    PeeringDaemon.start() owns the enabled check: it reads
+    /var/lib/jasper/peering.env and opens no socket and installs no mDNS
+    advert when peering is off.
     """
-    global _peering_task
+    global _peering_task, _peering_shutdown
     with _peering_lock:
         if _peering_task is not None:
             return
-        _peering_stopped.clear()
+        shutdown = asyncio.Event()
+        _peering_shutdown = shutdown
         _peering_task = spawn_on_control_loop(
-            target=_run_peering,
+            target=lambda: _run_peering(shutdown),
             name="peering-daemon",
             logger=logger,
-            crash_event="peering.thread_crash",
+            crash_event="peering.daemon.crash",
         )
 
 
 def stop_peering_daemon(*, timeout: float = 5.0) -> None:
-    """Stop the peering coroutine so daemon.stop() can unpublish mDNS."""
+    """Stop the peering coroutine so daemon.stop() can unpublish mDNS.
+
+    Joins the coroutine's own cleanup — the future resolves only after it
+    has unwound — under a hard bound: a peering daemon that will not stop
+    must not hold jasper-control's shutdown open.
+    """
     with _peering_lock:
-        task = _peering_task
-    if task is None:
+        future, shutdown = _peering_task, _peering_shutdown
+    if future is None or shutdown is None:
         return
-    task.cancel()
-    if not _peering_stopped.wait(timeout):
+    signal_on_control_loop(shutdown)
+    try:
+        future.result(timeout)
+    except concurrent.futures.TimeoutError:
         log_event(
             logger,
-            "peering.thread.stop_timeout",
+            "peering.daemon.stop_timeout",
             timeout=f"{timeout:.1f}",
             level=logging.WARNING,
         )
