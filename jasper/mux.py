@@ -40,9 +40,9 @@ Renderer support:
             sender to honor a remote transport request, avoiding a hidden
             AirPlay session while another renderer owns the fan-in gate.
   Bluetooth (bluez-alsa):
-    detect: presence of an a2dpsnk source PCM (best-effort —
-            doesn't distinguish "phone connected, not playing"
-            from "phone connected and streaming")
+    detect: an A2DP-sink `org.bluez.MediaTransport1` on the system bus
+            (best-effort — a connected phone counts whether or not it
+            is streaming)
     pause:  BlueZ AVRCP MediaPlayer1 Pause when the source phone/player
             exposes a player object. If no AVRCP player exists, log and
             degrade to phone-side pause.
@@ -158,13 +158,13 @@ EVENT_BACKED_PROBE_SEC = UNKNOWN_ACTIVE_HOLD_SEC
 
 
 def event_backed_probes() -> dict[Source, Callable[[], Any]]:
-    """The only two source probes that fork a subprocess.
+    """The two probes whose source has a live D-Bus signal adapter.
 
-    busctl for the AirPlay MPRIS properties, bluealsa-cli for the A2DP PCM
-    list. Both sources also have a live system-D-Bus signal adapter in
-    jasper.source_events, so for them the patrol probe is a lost-signal repair
-    rather than the detection path. Resolved per call so the probes stay
-    patchable by name.
+    AirPlay forks busctl for the MPRIS properties; Bluetooth reads BlueZ
+    `MediaTransport1` over dbus_next. Both sources also have a signal adapter
+    in jasper.source_events, so for them the patrol probe is a lost-signal
+    repair rather than the detection path. Resolved per call so the probes
+    stay patchable by name.
     """
     return {
         Source.AIRPLAY: airplay_playing,

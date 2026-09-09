@@ -124,8 +124,8 @@ Ownership is deliberately split:
   fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
   1 Hz lost-alert patrol enter the same reconciler, which re-reads source
   state before applying policy; alert arrival order never chooses the winner.
-  The two probes that fork a subprocess (AirPlay over busctl, Bluetooth over
-  bluealsa-cli) are re-read on the patrol once per `EVENT_BACKED_PROBE_SEC`
+  The two event-backed probes (AirPlay over busctl, Bluetooth over BlueZ
+  `MediaTransport1`) are re-read on the patrol once per `EVENT_BACKED_PROBE_SEC`
   instead of every tick; an alert naming either source still probes it at once.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
