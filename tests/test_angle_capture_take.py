@@ -550,7 +550,7 @@ def _played_measure_spec(measure_spec, monkeypatch):
     return one
 
 
-def _banked(monkeypatch, **alignment):
+def _banked(monkeypatch, *, room_correction=None, **alignment):
     """A banked candidate whose corner is the preset ``_take`` is handed."""
     region = SimpleNamespace(
         fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
@@ -561,6 +561,7 @@ def _banked(monkeypatch, **alignment):
         candidate_bank, "find_banked_candidate",
         lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
             fingerprint=fingerprint, linearization={}, source_preset=preset,
+            room_correction=room_correction or {},
             alignment=SimpleNamespace(**alignment),
         )),
     )
@@ -683,18 +684,16 @@ def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
     ]
 
 
-def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(slot):
-    """The room stays in the read, and the banked take says where it was.
-
-    The exemption reaches the analyze seam for the WALK's captures only — the
-    session's own CHECK and MEASURE are gated as ever. Each pose banks its
-    category, the offset from the head it was stated from, no mark distance,
-    and whether its own analysis gated — so seven-of-these at one bearing key
-    apart instead of collapsing onto each other.
-    """
-    program = mp.program("seat", "express")
-    spool.stage_angle_request(ac.request_for_program(program))
-    prompts, consumer, specs, _trims, claims = _take()
+@pytest.mark.parametrize("coverage", ["express", "cube", "cloud"])
+@pytest.mark.parametrize("room_candidate", [False, True])
+def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
+    slot, monkeypatch, coverage, room_candidate,
+):
+    program = mp.program("seat", coverage)
+    preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
+    candidate_ids = ("room-fp",) if room_candidate else ()
+    spool.stage_angle_request(ac.request_for_program(program, candidates=candidate_ids))
+    prompts, consumer, specs, _trims, claims = _take(preset=preset)
     index_phases = _seat_index_phases(prompts)
     fakes = FakeSeams()
     records, analyses = [], []
@@ -734,6 +733,12 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(slot):
         for pose, analysis in zip(program.poses, analyses[-len(records):])
     ]
     assert len({doc_pose_key(record) for record in records}) == len(records)
+    assert [specs[index].graph_scope for index in lateral_indexes] == [
+        "room_candidate" if room_candidate else "speaker_tune"
+    ] * len(program.poses)
+    assert [record["candidate_id"] for record in records] == [
+        "room-fp" if room_candidate else ""
+    ] * len(program.poses)
 
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])

@@ -28,7 +28,7 @@ from typing import Any
 
 from . import librespot_state
 from .bluetooth.avrcp import a2dp_sink_playing
-from .busctl import run_busctl
+from .busctl import name_is_absent, run_busctl
 from .fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -54,13 +54,6 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # invariant that mux does not import this constant.
 USBSINK_PLAYING_RMS_DBFS = -60.0
 
-_DBUS_NAME_ABSENT_ERRORS = (
-    b"was not provided by any .service files",
-    b"name has no owner",
-    b"is not activatable",
-)
-
-
 def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
     """Classify a failed AirPlay property call without inventing a stop.
 
@@ -70,8 +63,7 @@ def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
     ``busctl`` writes the D-Bus error to stderr; its service-absent wording is
     stable under the system image's C locale.
     """
-    detail = stderr.lower()
-    if any(marker in detail for marker in _DBUS_NAME_ABSENT_ERRORS):
+    if name_is_absent(stderr):
         return False
     return None
 
@@ -197,16 +189,19 @@ async def airplay_playing() -> bool:
     return await airplay_playing_observed() is True
 
 
-async def usbsink_playing() -> bool:
-    """USB activity from the sole live ingress owner: fan-in DIRECT.
+async def usbsink_streaming() -> bool:
+    """Is the host feeding us frames right now — the ARBITRATION predicate.
 
-    Read fan-in's bounded STATUS probe off the event loop, then require both
-    current direct-capture health and audible pre-mute level. Missing/old
-    snapshots fail soft to ``False``.
+    No audio-level component: a faint passage and a loud one both stream, so
+    quiet content cannot drop the source. This is the answer mux arbitrates
+    on, and therefore the one every "which source owns the speaker" fallback
+    must use so the two cannot disagree. The LEVEL predicate is
+    :func:`usbsink_direct_playing`, which display and ``/state`` surfaces
+    apply to a STATUS they already hold. Missing/old snapshots fail soft.
     """
 
     status = await asyncio.to_thread(read_fanin_status)
-    return usbsink_direct_playing(status) is True
+    return usbsink_direct_streaming(status) is True
 
 
 def usbsink_direct_streaming(
@@ -301,29 +296,6 @@ def usbsink_direct_playing(
     if not isinstance(direct, dict):
         return False
     return direct.get("health") == "capturing" and audible
-
-
-def usbsink_direct_muted(
-    fanin_status: dict[str, Any] | None,
-) -> bool | None:
-    """Whether fan-in's USB DIRECT lane is currently MIX-muted, else ``None``.
-
-    Mirrors :func:`usbsink_direct_rms_dbfs`: a value is returned only when the
-    usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture — the fan-in lane MIX-mute is how mux silences USB.
-    ``None`` when there is no direct lane, the STATUS is missing /
-    malformed, or the lane predates the per-lane ``muted`` flag (older fan-in
-    build). This is the mute STATE, separate from the ``rms_dbfs`` /
-    ``frames_read`` telemetry the lane keeps reporting PRE-mute (so mux still
-    sees a muted-but-streaming host as active)."""
-    lane = fanin_usbsink_input(fanin_status)
-    if not (
-        isinstance(lane, dict)
-        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
-    ):
-        return None
-    value = lane.get("muted")
-    return value if isinstance(value, bool) else None
 
 
 async def bluetooth_playing_observed() -> bool | None:

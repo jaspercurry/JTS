@@ -181,7 +181,7 @@ def bind_program_composer(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
-    before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
+    before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
@@ -224,7 +224,7 @@ def bind_program_composer(
             role_targets=role_targets, session_volume_db=session_volume_db,
             declared_sensitivities=declared_sensitivities,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
-            phase=phase, before_play=before_play,
+            phase=phase, before_play=partial(before_play, spec) if before_play else None,
         ))
 
     return compose

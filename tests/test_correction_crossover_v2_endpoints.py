@@ -37,6 +37,8 @@ from typing import Any
 import numpy as np
 import pytest
 
+from jasper.audio_measurement.calibration import CalibrationCurve
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.driver_protection import (
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
 )
@@ -4394,7 +4396,7 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
-    curve_sentinel = object()
+    curve_sentinel = CalibrationCurve([20.0, 20000.0], [0.0, 1.0])
 
     class _Record:
         curve = curve_sentinel
@@ -4407,7 +4409,10 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
         return _Record()
 
     meta: dict[str, Any] = {}
-    analyze = v2host.bind_production_analyze(resolve_calibration=resolver, meta=meta)
+    evidence = v2host.CaptureEvidenceCarry()
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=resolver, meta=meta, evidence=evidence,
+    )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
     result = _FakeResult(setup={"calibration": {"mode": "serial"}}, device={"label": "UMIK-2"})
@@ -4427,7 +4432,12 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     # The evidence annotation records the applied calibration.
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": "cal-123",
+        "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
     }
+    assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
+    uncalibrated = v2host.bind_production_analyze(evidence=evidence)
+    uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
+    assert evidence.take()["capture_calibration"] == {"applied": False, "calibration_id": None}
 
 
 def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
@@ -4544,7 +4554,7 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
     class _Record:
-        curve = object()
+        curve = CalibrationCurve([20.0, 20000.0], [0.0, 1.0])
         calibration_id = "cal-umik2"
         model = "minidsp_umik2"
 
@@ -4874,6 +4884,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     assert seen["calibration"] is not None
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": record.calibration_id,
+        "curve_fingerprint": json_fingerprint(record.curve.to_dict()),
     }
     assert "crossover_v2_uncalibrated_capture" not in caplog.text
 

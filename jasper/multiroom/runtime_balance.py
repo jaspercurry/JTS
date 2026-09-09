@@ -13,8 +13,6 @@ truth still lives in ``grouping.env``.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import math
 from dataclasses import dataclass
@@ -23,6 +21,7 @@ from typing import Any, Awaitable, Callable, Literal
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.platform.uds import daemon_command
 
 from ..env_load import GROUPING_ENV_FILE
 from . import config
@@ -116,26 +115,10 @@ async def _outputd_command(
     socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout: float = 1.0,
 ) -> dict[str, Any]:
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(socket_path),
-        timeout=timeout,
+    """``timeout`` is seconds, TOTAL across connect, send and reply."""
+    return await daemon_command(
+        socket_path, command, timeout=timeout, daemon="jasper-outputd",
     )
-    try:
-        writer.write((command + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except (ConnectionError, OSError, RuntimeError):
-            pass
-    if not line:
-        raise RuntimeError("jasper-outputd returned no response")
-    payload = json.loads(line.decode("utf-8", errors="replace"))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-outputd returned non-object JSON")
-    return payload
 
 
 async def apply_local_trim(

@@ -19,8 +19,10 @@ from jasper.bass_extension.alignment import (
     low_shelf_response_db,
     peaking_response_db,
 )
-from .base import (COMMISSION_FLOOR_HZ, CabinetInfo, CaptureRole, FitRefusal,
-                   MagnitudeCurve, TargetSpec, _curve_arrays, _passband_normalize)
+from .base import (COMMISSION_FLOOR_HZ, TARGET_RESPONSE_RESERVE_DB, CabinetInfo,
+                   CaptureRole, FitRefusal, MagnitudeCurve, TargetSpec,
+                   _curve_arrays, passband_normalize, target_response_grid,
+                   woofer_curve)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.targets import MarginPolicy
@@ -103,7 +105,7 @@ class PortedPlantFit:
 
 def _normalized_curve(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
     freqs, magnitude = _curve_arrays(curve)
-    return freqs, _passband_normalize(freqs, magnitude)
+    return freqs, passband_normalize(freqs, magnitude)
 
 
 def _refine_extremum(freqs: np.ndarray, magnitude: np.ndarray, index: int) -> float:
@@ -174,10 +176,48 @@ def _filters_response_db(freqs: np.ndarray,
     return response
 
 
+def _bounded_filter_response(
+    filters: tuple[Mapping[str, Any], ...],
+    boost_cap_db: float,
+    freqs: np.ndarray,
+) -> tuple[tuple[Mapping[str, Any], ...], float]:
+    """Scale positive shaping gains until their complete response fits."""
+
+    def scaled(scale: float) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            {
+                **filter_spec,
+                "gain": float(filter_spec["gain"]) * scale,
+            }
+            if filter_spec["type"] in {"Lowshelf", "Peaking"}
+            else filter_spec
+            for filter_spec in filters
+        )
+
+    def boost(candidate: tuple[Mapping[str, Any], ...]) -> float:
+        response = _filters_response_db(freqs, candidate)
+        return boost_headroom_db(response, np.zeros_like(response))
+
+    limit = max(0.0, boost_cap_db - TARGET_RESPONSE_RESERVE_DB)
+    actual = boost(filters)
+    if actual <= limit:
+        return filters, actual
+
+    admitted, excessive = 0.0, 1.0
+    for _ in range(64):
+        candidate = (admitted + excessive) / 2.0
+        if boost(scaled(candidate)) > limit:
+            excessive = candidate
+        else:
+            admitted = candidate
+    bounded = scaled(admitted)
+    return bounded, boost(bounded)
+
+
 def fit_ported_plant(
     captures: Mapping[CaptureRole, MagnitudeCurve],
 ) -> PortedPlantFit | FitRefusal:
-    woofer = captures.get(CaptureRole.WOOFER_NEARFIELD)
+    woofer = woofer_curve(captures)
     if woofer is None:
         return FitRefusal("bass_extension_tuning_not_located",
                           "woofer nearfield capture is required")
@@ -207,7 +247,7 @@ def fit_ported_plant(
     rms = float(np.sqrt(np.mean((magnitude[fit_band] - model[fit_band]) ** 2)))
     natural_freqs, natural_db = resample_log(
         freqs, measured, f_min=10.0, f_max=500.0, n_points=96)
-    natural_db = _passband_normalize(natural_freqs, natural_db)
+    natural_db = passband_normalize(natural_freqs, natural_db)
     natural_curve = MagnitudeCurve(tuple(float(freq) for freq in natural_freqs),
                                    tuple(float(level) for level in natural_db))
     return PortedPlantFit(fb, knee, slope, rms, natural_curve)
@@ -273,7 +313,7 @@ def generate_ported_family(
     deep_filters = _deep_shaping_filters(plant)
     non_natural_count = n_targets - 1
     corners = np.geomspace(base_corner, plant.knee_hz, non_natural_count)
-    grid = np.geomspace(10.0, 500.0, 512)
+    grid = target_response_grid()
     family: list[TargetSpec] = []
     for index, corner in enumerate(corners):
         scale = (
@@ -295,10 +335,8 @@ def generate_ported_family(
                 "freq": float(corner),
                 "order": margin.subsonic_order,
             })
-        filter_tuple = tuple(filters)
-        boost = boost_headroom_db(
-            _filters_response_db(grid, filter_tuple),
-            np.zeros_like(grid),
+        filter_tuple, boost = _bounded_filter_response(
+            tuple(filters), margin.boost_cap_db, grid,
         )
         family.append(TargetSpec(
             target_id=f"t{float(corner):.2f}".rstrip("0").rstrip("."),
@@ -328,6 +366,9 @@ def ported_predicted_response(
 class PortedAdapter:
     adapter_id = "ported_v1"
     adapter_version = 1
+    #: ``fb`` is located as the port null (:func:`_locate_fb`), which exists in
+    #: a nearfield capture and not in a seat median, where the only minima that
+    #: deep are room modes. No in-room fit for this enclosure.
     required_captures = (CaptureRole.WOOFER_NEARFIELD,)
 
     def fit_plant(

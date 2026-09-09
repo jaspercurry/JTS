@@ -471,8 +471,39 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
                 expected_classification=(
                     runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
                 ),
+                settle_timeout_s=0.0,
             )
         )
+
+
+def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
+    monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", lambda: object())
+    expected = runtime_contract_mod.GraphSafety(
+        classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+        allowed=True, config_path="/tmp/paired.yml",
+    )
+    proofs = iter([
+        runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True, config_path="/tmp/solo.yml",
+        ),
+        runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_UNSAFE, allowed=False,
+            issues=({"code": "bass_extension_active_snapshot_unstable"},),
+        ),
+        expected,
+    ])
+
+    async def classify(*_args, **_kwargs):
+        return next(proofs)
+
+    monkeypatch.setattr(runtime_contract_mod, "classify_active_bass_extension_graph", classify)
+    result = asyncio.run(_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
+        _FakeCamilla(current="/tmp/paired.yml"),
+        expected_config_path="/tmp/paired.yml",
+        expected_classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+    ))
+    assert result == expected
 
 
 def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:

@@ -75,6 +75,12 @@ MUSIC_SOURCE_SPECS: tuple[MusicSourceSpec, ...] = (
 )
 
 MUSIC_SOURCES: tuple[Source, ...] = tuple(spec.id for spec in MUSIC_SOURCE_SPECS)
+# The wire spellings, for surfaces that read a source name back off a
+# daemon: mux's ``active_source`` also carries "idle" and, while a
+# measurement holds the fan-in test lease, that lane's label.
+MUSIC_SOURCE_VALUES: frozenset[str] = frozenset(
+    source.value for source in MUSIC_SOURCES
+)
 SOURCE_SPECS: dict[Source, MusicSourceSpec] = {
     spec.id: spec for spec in MUSIC_SOURCE_SPECS
 }

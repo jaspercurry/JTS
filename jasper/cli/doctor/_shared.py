@@ -273,7 +273,7 @@ def _parked_as_bonded_follower() -> bool:
         from ...multiroom.effective_role import (
             effective_local_sources_park_reason,
         )
-        from ._evidence import evidence
+        from ._evidence import evidence  # lazy: _evidence imports _shared
 
         cfg = evidence.grouping_config()
         return effective_local_sources_park_reason(cfg) is not None
@@ -300,17 +300,18 @@ def _service_state_failure(
     unit will not come up on its own. `journalctl -u <unit>` is the next step
     for every caller, so the detail says so rather than repeating a per-unit
     sentence."""
-    from ._evidence import evidence
+    from ._evidence import evidence  # lazy: _evidence imports _shared
 
     state = evidence.unit_state(unit)
     if state is None:
         return _systemctl_unavailable_result(label)
+    silent = silence_unobserved()
     code = unit_not_running(state)
     if code == "missing":
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
-            reason=missing, speaker_silent=True,
+            reason=missing, speaker_silent=silent,
         )
     if code == "not_enabled":
         enabled = state.get("unit_file_state")
@@ -318,7 +319,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
             f"sudo systemctl enable --now {unit}",
-            reason=not_enabled, speaker_silent=True,
+            reason=not_enabled, speaker_silent=silent,
         )
     if code is not None:
         active = state.get("active_state")
@@ -326,7 +327,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is enabled but state={active or 'unknown'}. "
             f"Check: journalctl -u {unit}",
-            reason=inactive, speaker_silent=True,
+            reason=inactive, speaker_silent=silent,
         )
     return None
 
@@ -336,7 +337,7 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     bonded follower, or None so the caller falls through to its real probe.
     The parked state is intended and was observed, so `ok` with a reason
     rather than a warn or a skip."""
-    from ._evidence import evidence
+    from ._evidence import evidence  # lazy: _evidence imports _shared
 
     if not evidence.parked_bonded_follower():
         return None
@@ -402,7 +403,7 @@ def _loopback_playback_active() -> bool:
     Delete once no renderer lane can use snd-aloop any more (#2285),
     together with its callers' music-active gates.
     """
-    from ._evidence import evidence
+    from ._evidence import evidence  # lazy: _evidence imports _shared
 
     def first_line(text: str) -> str:
         return text.splitlines()[0].strip() if text else ""
@@ -419,3 +420,85 @@ def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     for key in keys:
         payload = payload.get(key) if isinstance(payload, dict) else None
     return payload if isinstance(payload, dict) else None
+
+
+# jasper-control's signal-path vocabulary (audio_health.SIGNAL_PATH_CODES) split
+# three ways; the partition is pinned in tests/test_doctor_resilience.py.
+_SIGNAL_PATH_PLAYING_CODES = frozenset({
+    "clean",
+    "path_pressured",
+    "tts_queue_full",
+})
+_SIGNAL_PATH_UNKNOWN_CODES = frozenset({
+    "activity_unknown",
+    "path_unreported",
+    "starting",
+})
+_SIGNAL_PATH_SILENT_CODES = frozenset({
+    "camilla_not_installed",
+    "camilla_stopped",
+    "input_absent",
+    "input_broken",
+    "input_stalled",
+    "output_absent",
+    "output_backend_inactive",
+    "output_deaf",
+    "output_ring_stalled",
+    "output_stalled",
+    "path_stalled",
+    "transport_parked",
+    "transport_unservable",
+    "undeclared_hardware",
+})
+
+
+def _control_audio_health() -> dict[str, Any]:
+    from ._evidence import evidence  # lazy: _evidence imports _shared
+
+    return _nested_dict(
+        evidence.control_system_snapshot().payload, "audio_health",
+    ) or {}
+
+
+def _signal_path_code(audio_health: dict[str, Any]) -> str:
+    code = (_nested_dict(audio_health, "signal_path") or {}).get("code")
+    return code if isinstance(code, str) else ""
+
+
+def control_signal_path() -> dict[str, Any]:
+    """jasper-control's published ``audio_health.signal_path`` block, or ``{}``
+    when control is unreachable. The block does not always carry a ``code``:
+    the sampler's own stale override publishes a codeless "unavailable" shape.
+    """
+    return _nested_dict(_control_audio_health(), "signal_path") or {}
+
+
+def speaker_silence_code() -> str:
+    """The signal-path code proving the speaker emits nothing, or ``""``.
+
+    The doctor's ONE answer to "is the speaker silent, and why" whenever
+    jasper-control has one — the same verdict the /system dashboard headline
+    renders, so the two surfaces cannot disagree. A code outside the
+    vocabulary (version skew, a malformed payload) is no verdict at all.
+    """
+    code = _signal_path_code(_control_audio_health())
+    return code if code in _SIGNAL_PATH_SILENT_CODES else ""
+
+
+def silence_unobserved() -> bool:
+    """True when jasper-control published no usable verdict either way, so a
+    doctor row that directly observed a down audio-path daemon is the only
+    evidence of silence there is.
+
+    Includes the sampler's warmup window: `_signal_path` answers `starting` and
+    the stopped-DSP and `output_deaf` detectors are gated off under it, so
+    control reports a healthy path for a box that emits nothing.
+    """
+    audio_health = _control_audio_health()
+    sampler = _nested_dict(audio_health, "technical", "sampler") or {}
+    if sampler.get("warmup_active") is True:
+        return True
+    code = _signal_path_code(audio_health)
+    return not (
+        code in _SIGNAL_PATH_SILENT_CODES or code in _SIGNAL_PATH_PLAYING_CODES
+    )

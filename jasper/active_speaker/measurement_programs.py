@@ -59,8 +59,8 @@ def off_the_mark(kind: str) -> bool:
 
     return kind != POSE_KIND_BEARING
 
-#: The cube's half-edge and the close reference's standoff, both in metres.
-#: See ADR-0260.
+#: Seat spacing and the close reference's standoff, both in metres.
+#: See ADR-0260 and ADR-0277.
 SEAT_OFFSET_M = 0.30
 CLOSE_DISTANCE_M = 0.30
 
@@ -234,6 +234,17 @@ _SEAT_CUBE_POSES: tuple[ProgramPose, ...] = (
     _seat(0.0, 0.0, -SEAT_OFFSET_M),
 )
 
+# See ADR-0277: front to back, each row left to right, then above and below.
+_SEAT_CLOUD_POSES: tuple[ProgramPose, ...] = (
+    *(
+        _seat(right, forward, 0.0)
+        for forward in (SEAT_OFFSET_M, 0.0, -SEAT_OFFSET_M)
+        for right in (-SEAT_OFFSET_M, 0.0, SEAT_OFFSET_M)
+    ),
+    _seat(0.0, 0.0, SEAT_OFFSET_M),
+    _seat(0.0, 0.0, -SEAT_OFFSET_M),
+)
+
 _SEAT_EXPRESS_POSES: tuple[ProgramPose, ...] = (
     _seat(0.0, 0.0, 0.0),
     _seat(SEAT_OFFSET_M, 0.0, 0.0),
@@ -254,6 +265,7 @@ _PROGRAMS: Mapping[tuple[str, str], MeasurementProgram] = {
         MeasurementProgram("tournament", "full", _TOURNAMENT_FULL_POSES),
         MeasurementProgram("tournament", "express", _TOURNAMENT_EXPRESS_POSES),
         MeasurementProgram("branches", "express", _TOURNAMENT_EXPRESS_POSES),
+        MeasurementProgram("seat", "cloud", _SEAT_CLOUD_POSES),
         MeasurementProgram("seat", "cube", _SEAT_CUBE_POSES),
         MeasurementProgram("seat", "express", _SEAT_EXPRESS_POSES),
         MeasurementProgram("close", "spot", _CLOSE_SPOT_POSES),

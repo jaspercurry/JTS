@@ -642,7 +642,8 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
         finally:
             live.locked = False
 
-    async def before_play(program, artifact, actual_phase):
+    async def before_play(actual_spec, program, artifact, actual_phase):
+        assert actual_spec.graph_scope == scope
         assert actual_phase == phase
         assert live.locked
         events.append("before_play")

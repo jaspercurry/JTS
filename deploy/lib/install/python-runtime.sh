@@ -196,7 +196,7 @@ PY
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
-    install -d -m 0750 "${ENV_DIR}"
+    install -d -m 0755 "${ENV_DIR}"
     # Non-secret, manually inspectable validation reports for mic/DAC/profile
     # readiness. Writers use atomic timestamped JSON files.
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
@@ -507,7 +507,7 @@ PY
 install_streambox_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
-    install -d -m 0750 "${ENV_DIR}"
+    install -d -m 0755 "${ENV_DIR}"
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
     # Build manifest is written as the FINAL mutation in main(), not here —

@@ -44,7 +44,7 @@ from .airplay_health import (
     SAMPLE_INTERVAL_SEC,
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
-from .transport_park import (
+from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
@@ -114,7 +114,8 @@ _PARK_MESSAGES: dict[str, str] = {
 
 # What a park's household sentence adds when the class carries a recorded
 # command rather than a tracked issue: where the household finds it. The
-# command itself stays in doctor and `/state.resilience.transport_park` (#2472).
+# command itself stays in doctor and `/system/snapshot`'s `transport_park`
+# (#2472).
 _PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 
 # The one household-facing sentence for a stopped CamillaDSP (#2163), read by
@@ -197,7 +198,8 @@ _MONITOR_ERRORS = (
 
 # The shared-path units whose restart interrupts every source, and the incident
 # key stem each one reports under (the stems `_likely_area` already classifies).
-_RESTART_WATCH_UNITS = {
+# Public: `jasper.control.heal_supervisor` stands down when one is not active.
+RESTART_WATCH_UNITS = {
     "jasper-fanin.service": "path.fanin",
     CAMILLA_UNIT_FULL: "path.camilla",
     "jasper-outputd.service": "path.outputd",
@@ -358,6 +360,7 @@ def _transport_state(
         coupling=coupling,
         outputd_env=dict(outputd_env),
         camilla_devices=camilla_devices,
+        allow_grouping_capture=True,
     )
     gap = active_lane_capability_gap(topology)
     return {
@@ -1103,6 +1106,10 @@ def _usb_timing(
             status = "warn"
             headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
             detail = "Latency will fall after USB host timing stabilizes."
+        elif active and latency_runtime.phase == "buffer_held":
+            status = "warn"
+            headline = f"Extra buffer in use · {current_ms:.1f} ms input buffer"
+            detail = f"JTS keeps this buffer to prevent audio gaps. {preset.label} remains selected."
         elif active and latency_runtime.phase == "checking":
             status = "idle"
             headline = "Checking USB host timing"
@@ -1269,7 +1276,7 @@ def _state_issues(
                 continue
             # The park CLASS rides the key; the row's detail is THIS class's
             # household sentence. The operator's raw detail and the remedy
-            # command stay in doctor and `/state.resilience.transport_park`.
+            # command stay in doctor and `/system/snapshot`'s `transport_park`.
             park_class = str(park.get("park_class"))
             issues.append(_issue(
                 f"path.transport_park.{park_class}",
@@ -1832,6 +1839,8 @@ def _receiver_latency(
         mode_label = "clock adjusting"
     elif phase == "buffer_adjusting":
         mode_label = "latency adjusting"
+    elif phase == "buffer_held":
+        mode_label = "extra buffer in use"
     elif phase == "stable":
         label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
         mode_label = f"{label} latency stable"
@@ -1878,7 +1887,7 @@ def _reliability(
         ))
     restarts = sum(
         _as_int(_mapping(_mapping(service_states).get(unit)).get("n_restarts"))
-        for unit in _RESTART_WATCH_UNITS
+        for unit in RESTART_WATCH_UNITS
     )
     if restarts:
         details.append(_detail("Sound restarts since startup", str(restarts)))
@@ -2219,7 +2228,7 @@ def compose_audio_health(
     Both typed loosely because this module imports those layers lazily (same
     convention as ``topology`` in :func:`_transport_state`).
 
-    ``transport_park`` is ``jasper.control.transport_park.snapshot()`` (or
+    ``transport_park`` is ``jasper.control.transport_eligibility.snapshot()`` (or
     ``None`` before the first slow-cadence read), passed in rather than read
     here: the incident rows and this headline must be the SAME tick's verdict,
     and it is a file read that belongs on the slow cadence.
@@ -2660,7 +2669,7 @@ class AudioHealthSampler:
             # so a bad read lands as status="unavailable" rather than raising.
             # Imported here, not at module scope, so the name cannot shadow the
             # `transport_park` PARAMETER the composers below take.
-            from . import transport_park as transport_park_reader
+            from . import transport_eligibility as transport_park_reader
 
             self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
@@ -2806,14 +2815,14 @@ class AudioHealthSampler:
         """The transport-park verdict THIS sampler last computed.
 
         ``/state`` reads it from here rather than calling
-        ``transport_park.snapshot()`` again: the incident rows and the
+        ``transport_eligibility.snapshot()`` again: the incident rows and the
         signal-path headline in the same payload were built from this cached
         value, and a fresher read would let one response disagree with itself —
         the box parked in ``resilience`` and playing in ``audio_health``.
 
         Falls back to a fresh read only before the first slow tick.
         """
-        from . import transport_park as transport_park_reader
+        from . import transport_eligibility as transport_park_reader
 
         cached = self._transport_park
         if cached is not None:
@@ -3023,10 +3032,10 @@ class AudioHealthSampler:
             unit: _nonnegative_counter(
                 _mapping(self._service_states.get(unit)).get("n_restarts"),
             )
-            for unit in _RESTART_WATCH_UNITS
+            for unit in RESTART_WATCH_UNITS
         }
         if self._previous_service_restarts is not None:
-            for unit, stem in _RESTART_WATCH_UNITS.items():
+            for unit, stem in RESTART_WATCH_UNITS.items():
                 previous_restarts = self._previous_service_restarts.get(unit)
                 current_restarts = restarts[unit]
                 if previous_restarts is None or current_restarts is None:

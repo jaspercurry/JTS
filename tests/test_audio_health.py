@@ -254,13 +254,17 @@ def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
     assert usb["timing"]["status"] == "warn"
 
 
-def test_usb_runtime_preset_outranks_stale_route_label() -> None:
+@pytest.mark.parametrize("mode,held,floor,reason,headline,summary", [
+    ("medium", 2560, 1024, "", "Recovery buffer active · 53.3 ms input buffer", "latency adjusting"),
+    ("low", 1088, 576, "backoff", "Extra buffer in use · 22.7 ms input buffer", "extra buffer in use"),
+])
+def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason, headline, summary) -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
     usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
     usb["resampler"] = {
         "locked": True,
-        "held_target_frames": 2560,
-        "decay": {"enabled": True, "floor_frames": 1024},
+        "held_target_frames": held,
+        "decay": {"enabled": True, "floor_frames": floor, "frozen_reason": reason},
     }
 
     health = compose_audio_health(
@@ -271,13 +275,11 @@ def test_usb_runtime_preset_outranks_stale_route_label() -> None:
         sampled_at=1000.0,
     )
 
-    assert health["latency"]["runtime"]["preset"] == "medium"
-    assert health["latency"]["headline"] == (
-        "Recovery buffer active · 53.3 ms input buffer"
-    )
+    assert health["latency"]["runtime"]["preset"] == mode
+    assert health["latency"]["headline"] == headline
     assert health["latency"]["status"] == "warn"
     assert health["current_stream"]["latency"]["summary"].endswith(
-        "ms · latency adjusting"
+        f"ms · {summary}"
     )
 
 
@@ -422,11 +424,14 @@ def _armed_active_camilla_devices() -> dict[str, str]:
     }
 
 
-def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
+def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **env_overrides):
     """Run ``_read_transport_state`` against the armed-ACTIVE-ring premise."""
     from jasper import audio_runtime_plan
 
     outputd_env = _armed_active_outputd_env(**env_overrides)
+    devices = _armed_active_camilla_devices()
+    if capture_device is not None:
+        devices["capture_device"] = capture_device
     env_file = tmp_path / "outputd.env"
     env_file.write_text(
         "".join(f"{key}={value}\n" for key, value in outputd_env.items()),
@@ -438,7 +443,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
-            devices=_armed_active_camilla_devices()
+            devices=devices
         ),
     )
     # outputd's live STATUS is unreachable in-test; a ring-coupled outputd opens
@@ -448,19 +453,12 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
     return audio_health._read_transport_state(_plan_for("shm_ring", outputd_env))
 
 
-def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> None:
-    """#2376: an armed roleful box must not be reported as parked.
-
-    Observed on jts3 while audio was demonstrably playing: ``/state.audio_health``
-    said "parked" with "transport plan is loopback but
-    JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" while the SAME ``/state`` reported
-    ``coupling.persisted=shm_ring``, ``live_transport=shm_ring``, both rings
-    armed. The health model passed ``plan.transport_topology.name`` where
-    ``transport_coherence_report`` wants a coupling TOKEN; on this box that name
-    is ``shm_ring_active``, which is not a coupling, so ``resolve_coupling``
-    fail-SAFED it to ``loopback`` and the detector then compared a ring-armed
-    outputd against a loopback plan it had invented.
-    """
+@pytest.mark.parametrize("capture_device, parked", [
+    ("jts_ring_capture", False), ("jts_ring_grouping", False), ("plug:jasper_capture", True),
+])
+def test_armed_active_ring_reports_only_broken_capture_routes(
+    monkeypatch, tmp_path, capture_device, parked,
+) -> None:
     from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.fanin_coupling import VALID_COUPLINGS
 
@@ -470,11 +468,11 @@ def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> N
     plan = _plan_for("shm_ring", _armed_active_outputd_env())
     assert plan.transport_topology.name == TRANSPORT_SHM_RING_ACTIVE
 
-    state = _armed_active_transport_read(monkeypatch, tmp_path)
+    state = _armed_active_transport_read(monkeypatch, tmp_path, capture_device=capture_device)
 
-    assert state["coherence_errors"] == []
+    assert bool(state["coherence_errors"]) is parked
     health = _compose(transport=state)
-    assert health["signal_path"]["code"] != "transport_parked"
+    assert (health["signal_path"]["code"] == "transport_parked") is parked
 
 
 def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
@@ -645,10 +643,10 @@ def _sample_coherence_park(
     outputd: dict | None = None,
     transport_park_state: dict | None = None,
 ) -> dict:
-    from jasper.control import transport_park
+    from jasper.control import transport_eligibility
 
     monkeypatch.setattr(
-        transport_park,
+        transport_eligibility,
         "snapshot",
         lambda: transport_park_state or {"status": "clear", "parks": []},
     )
@@ -4291,8 +4289,8 @@ def _live_parks() -> tuple[dict, ...]:
     and each class's operator detail and remedy get their own chance to leak
     onto the household card.
     """
-    from jasper.control import transport_park as transport_park_reader
-    from tests.test_transport_park import _PARK_CASES
+    from jasper.control import transport_eligibility as transport_park_reader
+    from tests.test_transport_eligibility import _PARK_CASES
 
     return tuple(
         transport_park_reader.snapshot(case.values[0], case.values[1])

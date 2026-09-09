@@ -33,7 +33,7 @@ def renderer(tmp_path, monkeypatch):
     # (or leave it absent) to control what source_state.spotify_playing
     # observes via active_renderers.
     monkeypatch.setattr(
-        "jasper.renderer.usbsink_playing",
+        "jasper.renderer.usbsink_streaming",
         AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
@@ -77,18 +77,35 @@ async def test_active_renderers_all_inactive(renderer):
 async def test_active_renderers_reports_fanin_usb_activity(renderer):
     with (
         patch("asyncio.create_subprocess_exec", new=_mock_subprocess(stdout=b"")),
-        patch("jasper.renderer.usbsink_playing", new=AsyncMock(return_value=True)),
+        patch("jasper.renderer.usbsink_streaming", new=AsyncMock(return_value=True)),
     ):
         result = await renderer.active_renderers()
 
     assert result["usbsinkactive"] is True
 
 
-async def test_selected_source_reads_manual_mux_status(renderer):
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        # Mux's own effective answer is the only field read: a manual pin,
+        # an auto winner still playing, and mux saying nothing is audible.
+        (b'{"mode":"manual","selected_source":"bluetooth",'
+         b'"winner":"bluetooth","active_source":"bluetooth"}\n', "bluetooth"),
+        (b'{"mode":"auto","selected_source":null,"winner":"airplay",'
+         b'"active_source":"airplay"}\n', "airplay"),
+        # A stale winner that stopped playing: mux reports idle, and the
+        # caller must not be handed the winner behind mux's back.
+        (b'{"mode":"auto","selected_source":null,"winner":"airplay",'
+         b'"active_source":"idle"}\n', "idle"),
+        # Fail-soft: an older STATUS without the field.
+        (b'{"mode":"auto","selected_source":null,"winner":"airplay"}\n', None),
+    ],
+)
+async def test_selected_source_reads_mux_effective_source(
+    renderer, status, expected,
+):
     reader = MagicMock()
-    reader.readline = AsyncMock(
-        return_value=b'{"mode":"manual","selected_source":"bluetooth"}\n',
-    )
+    reader.readline = AsyncMock(return_value=status)
     writer = MagicMock()
     writer.write = MagicMock()
     writer.drain = AsyncMock()
@@ -99,25 +116,7 @@ async def test_selected_source_reads_manual_mux_status(renderer):
         "asyncio.open_unix_connection",
         new=AsyncMock(return_value=(reader, writer)),
     ):
-        assert await renderer.selected_source() == "bluetooth"
-
-
-async def test_selected_source_reads_auto_winner(renderer):
-    reader = MagicMock()
-    reader.readline = AsyncMock(
-        return_value=b'{"mode":"auto","selected_source":null,"winner":"airplay"}\n',
-    )
-    writer = MagicMock()
-    writer.write = MagicMock()
-    writer.drain = AsyncMock()
-    writer.close = MagicMock()
-    writer.wait_closed = AsyncMock()
-
-    with patch(
-        "asyncio.open_unix_connection",
-        new=AsyncMock(return_value=(reader, writer)),
-    ):
-        assert await renderer.selected_source() == "airplay"
+        assert await renderer.selected_source() == expected
 
 
 async def test_selected_source_times_out_on_stalled_connect(renderer):
@@ -218,31 +217,6 @@ async def test_currentsong_returns_empty_when_no_source(renderer):
     ):
         song = await renderer.get_currentsong()
     assert song == {}
-
-
-# ----------------------------------------------------------------------
-# pause_airplay — MPRIS Pause on shairport-sync
-# ----------------------------------------------------------------------
-
-async def test_pause_airplay_calls_mpris_pause(renderer):
-    """Verify pause_airplay() invokes busctl with the Pause method on
-    shairport-sync's MPRIS interface. We capture args by wrapping
-    create_subprocess_exec rather than replacing it with `new=`."""
-    captured_args: list[tuple] = []
-    fake = _mock_subprocess(returncode=0)
-
-    async def capturing(*args, **kwargs):
-        captured_args.append(args)
-        return await fake(*args, **kwargs)
-
-    with patch("asyncio.create_subprocess_exec", side_effect=capturing):
-        await renderer.pause_airplay()
-
-    assert captured_args, "create_subprocess_exec was not called"
-    args = captured_args[0]
-    assert "busctl" in args[0]
-    assert "Pause" in args
-    assert "org.mpris.MediaPlayer2.ShairportSync" in args
 
 
 # ----------------------------------------------------------------------

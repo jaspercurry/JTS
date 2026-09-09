@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import socket
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from inspect import isawaitable
@@ -77,15 +76,17 @@ async def capture_cleanup_error(
 class FanInDucker:
     """Voice-session duck transport for the pre-DSP TTS topology.
 
-    The voice loop still owns the duck/restore lifecycle; fan-in owns
-    where the attenuation happens. This keeps TTS out of the attenuated
-    program lane while sending the final mixed signal through CamillaDSP
-    crossover/protection.
+    The voice loop owns the duck/restore lifecycle; fan-in owns both where
+    the attenuation happens and how deep it goes. This keeps TTS out of the
+    attenuated program lane while sending the final mixed signal through
+    CamillaDSP crossover/protection.
+
+    The verb rides the TTS connection ``TtsPlayout`` already holds, so this
+    class opens no second socket to the same daemon.
     """
 
-    def __init__(self, socket_path: str, duck_db: float) -> None:
-        self._socket_path = socket_path
-        self._duck_db = duck_db
+    def __init__(self, playout: TtsPlayout) -> None:
+        self._playout = playout
         self._ducked = False
 
     @property
@@ -101,10 +102,7 @@ class FanInDucker:
         if self._ducked:
             return
         worker = asyncio.create_task(
-            asyncio.to_thread(
-                self._send_command,
-                b"PROGRAM_DUCK_ON\nCLOSE\n",
-            ),
+            self._playout.program_duck(True),
             name="fanin-program-duck-on",
         )
         deferred_cancel = False
@@ -121,10 +119,10 @@ class FanInDucker:
             raise asyncio.CancelledError
         error = worker.exception()
         ok = worker.result() if error is None else False
-        # Once the bounded worker ran, False/OSError and unexpected failures
-        # are ambiguous: connect/send may have delivered ON before CLOSE or
-        # the reported error. Conservatively own one idempotent OFF so every
-        # caller's cleanup restores the remote state before releasing output.
+        # Once the bounded worker ran, False and unexpected failures are
+        # ambiguous: the ON may have been delivered before the reported
+        # error. Conservatively own one idempotent OFF so every caller's
+        # cleanup restores the remote state before releasing output.
         self._ducked = True
         if error is not None:
             if deferred_cancel:
@@ -134,14 +132,7 @@ class FanInDucker:
             if deferred_cancel:
                 raise asyncio.CancelledError
             return
-        log_event(
-            logger,
-            "camilla.duck",
-            on="true",
-            transport="fanin",
-            socket=self._socket_path,
-            duck_db=f"{self._duck_db:.1f}",
-        )
+        log_event(logger, "voice.duck", on="true")
         if deferred_cancel:
             raise asyncio.CancelledError
 
@@ -149,37 +140,11 @@ class FanInDucker:
         if not self._ducked:
             return
         try:
-            ok = await asyncio.to_thread(
-                self._send_command, b"PROGRAM_DUCK_OFF\nCLOSE\n"
-            )
+            ok = await self._playout.program_duck(False)
             if ok:
-                log_event(
-                    logger,
-                    "camilla.duck",
-                    on="false",
-                    transport="fanin",
-                    socket=self._socket_path,
-                )
+                log_event(logger, "voice.duck", on="false")
         finally:
             self._ducked = False
-
-    def _send_command(self, payload: bytes) -> bool:
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1.0)
-                sock.connect(self._socket_path)
-                sock.sendall(payload)
-            return True
-        except OSError as e:
-            log_event(
-                logger,
-                "camilla.duck_failed",
-                transport="fanin",
-                socket=self._socket_path,
-                detail=str(e),
-                level=logging.WARNING,
-            )
-            return False
 
 
 async def await_output_cleanup_owned(

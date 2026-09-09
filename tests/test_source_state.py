@@ -232,27 +232,50 @@ async def test_airplay_metadata_transport_failure_is_unknown_to_mux():
 # ----------------------------------------------------------------------
 
 
-async def test_usbsink_playing_reads_fanin_direct_activity(monkeypatch):
-    monkeypatch.setattr(
-        source_state,
-        "read_fanin_status",
-        lambda: {
-            "inputs": [{
-                "label": "usbsink",
-                "source": "direct",
-                "rms_dbfs": -12.0,
-                "direct": {"health": "capturing"},
-            }],
-        },
-    )
+@pytest.mark.parametrize(
+    ("lane", "audible", "streaming"),
+    [
+        # Loud and streaming: both predicates agree.
+        (
+            {"rms_dbfs": -12.0, "direct": {"health": "capturing",
+                                           "streaming": True}},
+            True,
+            True,
+        ),
+        # A quiet passage on a streaming host: arbitration keeps the source,
+        # the level predicate does not claim it is audible. This split is the
+        # faint-audio fix — never re-couple them.
+        (
+            {"rms_dbfs": -90.0, "direct": {"health": "capturing",
+                                           "streaming": True}},
+            False,
+            True,
+        ),
+        # Host went away: neither.
+        (
+            {"rms_dbfs": -90.0, "direct": {"health": "idle",
+                                           "streaming": False}},
+            False,
+            False,
+        ),
+    ],
+)
+async def test_usbsink_predicates_split_level_from_arbitration(
+    monkeypatch, lane, audible, streaming,
+):
+    status = {"inputs": [{"label": "usbsink", "source": "direct", **lane}]}
+    monkeypatch.setattr(source_state, "read_fanin_status", lambda: status)
 
-    assert await source_state.usbsink_playing() is True
+    assert source_state.usbsink_direct_playing(status) is audible
+    assert await source_state.usbsink_streaming() is streaming
 
 
-async def test_usbsink_playing_fails_soft_when_fanin_is_unavailable(monkeypatch):
+async def test_usbsink_streaming_fails_soft_when_fanin_is_unavailable(
+    monkeypatch,
+):
     monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
 
-    assert await source_state.usbsink_playing() is False
+    assert await source_state.usbsink_streaming() is False
 
 
 def test_usbsink_direct_streaming_reads_new_fanin_edge_state():

@@ -6,8 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
-from typing import Any
+import threading
 
 import pytest
 
@@ -151,131 +150,78 @@ def test_snapshot_or_disabled_delegates_without_copying() -> None:
     assert supervisor_runtime.snapshot_or_disabled(lambda: state) is state
 
 
-class _InlineThread:
-    created: list[_InlineThread] = []
+def test_shared_loop_hosts_every_target_on_one_daemon_thread() -> None:
+    """Every jasper-control background coroutine shares one thread and one
+    loop (ADR-0226)."""
+    logger = logging.getLogger("test.supervisor")
+    seen: list[tuple[threading.Thread, asyncio.AbstractEventLoop]] = []
+    done = threading.Semaphore(0)
 
-    def __init__(
-        self,
-        *,
-        target: Callable[[], None],
-        name: str,
-        daemon: bool,
-    ) -> None:
-        self.target = target
-        self.name = name
-        self.daemon = daemon
-        self.started = False
-        self.created.append(self)
+    async def record() -> None:
+        seen.append((threading.current_thread(), asyncio.get_running_loop()))
+        done.release()
 
-    def start(self) -> None:
-        self.started = True
-        self.target()
-
-
-def test_build_asyncio_thread_hosts_target_in_named_daemon(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _InlineThread.created.clear()
-    running_loops: list[asyncio.AbstractEventLoop] = []
-
-    async def target() -> None:
-        running_loops.append(asyncio.get_running_loop())
-
-    monkeypatch.setattr(supervisor_runtime.threading, "Thread", _InlineThread)
-    try:
-        thread = supervisor_runtime.build_asyncio_thread(
-            target=target,
-            name="example-supervisor",
-            logger=logging.getLogger("test.supervisor"),
+    for index in range(2):
+        supervisor_runtime.spawn_on_control_loop(
+            target=record,
+            name=f"example-{index}",
+            logger=logger,
             crash_event="example.thread_crash",
         )
-        assert thread.started is False
-        thread.start()
-    finally:
-        asyncio.set_event_loop(None)
+    assert done.acquire(timeout=5)
+    assert done.acquire(timeout=5)
 
-    assert thread is _InlineThread.created[0]
-    assert thread.name == "example-supervisor"
-    assert thread.daemon is True
-    assert thread.started is True
-    assert len(running_loops) == 1
-    assert running_loops[0].is_closed()
+    assert len(seen) == 2
+    assert seen[0] == seen[1]
+    host, _loop = seen[0]
+    assert host.daemon is True
+    assert host is not threading.current_thread()
 
 
-def test_build_asyncio_thread_logs_target_crash(
+def test_target_crash_is_isolated_from_the_other_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _InlineThread.created.clear()
-    events: list[tuple[str, dict[str, object]]] = []
+    """One supervisor blowing up must not take the shared loop, or the
+    supervisors sharing it, down with it."""
+    logger = logging.getLogger("test.supervisor")
+    events: list[str] = []
+    monkeypatch.setattr(
+        supervisor_runtime,
+        "log_event",
+        lambda _logger, event, **_fields: events.append(event),
+    )
 
-    async def target() -> None:
-        raise RuntimeError("supervisor escaped")
+    async def resident() -> None:
+        await asyncio.Event().wait()
 
-    def fake_log_event(
-        _logger: logging.Logger,
-        event: str,
-        **fields: object,
-    ) -> None:
-        events.append((event, fields))
+    async def crashing() -> None:
+        raise RuntimeError("one broken supervisor")
 
-    monkeypatch.setattr(supervisor_runtime.threading, "Thread", _InlineThread)
-    monkeypatch.setattr(supervisor_runtime, "log_event", fake_log_event)
-    try:
-        thread = supervisor_runtime.build_asyncio_thread(
-            target=target,
-            name="example-supervisor",
-            logger=logging.getLogger("test.supervisor"),
-            crash_event="example.thread_crash",
-        )
-        thread.start()
-    finally:
-        asyncio.set_event_loop(None)
-
-    assert events == [
-        (
-            "example.thread_crash",
-            {"level": logging.ERROR, "exc_info": True},
-        ),
-    ]
-
-
-def test_build_asyncio_thread_tolerates_loop_close_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _InlineThread.created.clear()
-    set_loops: list[object] = []
-
-    class BrokenCloseLoop:
-        def run_until_complete(
-            self,
-            awaitable: Coroutine[Any, Any, None],
-        ) -> None:
-            awaitable.close()
-
-        def close(self) -> None:
-            raise RuntimeError("already broken")
-
-    loop = BrokenCloseLoop()
-
-    async def target() -> None:
+    async def probe() -> None:
         return None
 
-    monkeypatch.setattr(supervisor_runtime.threading, "Thread", _InlineThread)
-    monkeypatch.setattr(supervisor_runtime.asyncio, "new_event_loop", lambda: loop)
-    monkeypatch.setattr(
-        supervisor_runtime.asyncio,
-        "set_event_loop",
-        set_loops.append,
+    resident_future = supervisor_runtime.spawn_on_control_loop(
+        target=resident,
+        name="resident-supervisor",
+        logger=logger,
+        crash_event="resident.thread_crash",
     )
-
-    thread = supervisor_runtime.build_asyncio_thread(
-        target=target,
-        name="example-supervisor",
-        logger=logging.getLogger("test.supervisor"),
-        crash_event="example.thread_crash",
+    crash_future = supervisor_runtime.spawn_on_control_loop(
+        target=crashing,
+        name="crashing-supervisor",
+        logger=logger,
+        crash_event="crashing.thread_crash",
     )
-    assert thread.started is False
-    thread.start()
-
-    assert thread.started is True
-    assert set_loops == [loop]
+    try:
+        assert crash_future.result(timeout=5) is None
+        assert events == ["crashing.thread_crash"]
+        probe_future = supervisor_runtime.spawn_on_control_loop(
+            target=probe,
+            name="probe-supervisor",
+            logger=logger,
+            crash_event="probe.thread_crash",
+        )
+        assert probe_future.result(timeout=5) is None
+        assert not resident_future.done()
+    finally:
+        resident_future.cancel()

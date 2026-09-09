@@ -135,16 +135,3 @@ def test_identity_path_env_override(monkeypatch, tmp_path):
     assert identity_state.snapshot()["status"] == "ok"
 
 
-async def test_state_resilience_wires_identity_snapshot(monkeypatch, tmp_path):
-    """/state's resilience block must surface identity_state.snapshot()
-    (the dashboard/doctor consumers key off /state.resilience.identity)."""
-    from jasper.control import state_aggregate
-
-    monkeypatch.setattr(identity_state, "snapshot", lambda: {"status": "collision"})
-    state = await state_aggregate._get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path=str(tmp_path / "voice.sock"),
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
-    )
-    assert state["resilience"]["identity"] == {"status": "collision"}

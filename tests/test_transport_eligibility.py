@@ -20,8 +20,8 @@ import pytest
 
 from jasper import env_load
 from jasper.cli.doctor import audio_runtime_ring
-from jasper.control import transport_park
-from jasper.control.transport_park import (
+from jasper.control import transport_eligibility
+from jasper.control.transport_eligibility import (
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
@@ -253,7 +253,7 @@ _PARK_CASES = (
 def test_each_class_parks_naming_its_issue_or_remedy(
     topology, env, park_class, issue, remedy
 ):
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     assert state["status"] == "parked"
     assert state["parked"] is True
     park = _by_class(state["parks"], park_class)
@@ -271,7 +271,7 @@ def test_each_class_parks_naming_its_issue_or_remedy(
 def test_ring_armed_roleful_composite_does_not_park():
     """THE kill test: jts.local's shape today — a ring-armed composite whose
     roleful program rides the ACTIVE ring. No class may bite it."""
-    state = transport_park.snapshot(_composite_active_2way(), _ARMED)
+    state = transport_eligibility.snapshot(_composite_active_2way(), _ARMED)
     assert state["parks"] == []
     assert state["status"] == "ok"
 
@@ -281,7 +281,7 @@ def test_a_roleful_composite_with_no_active_ring_is_not_the_passive_park():
     ring width, so it reaches the composite branch — and must still not be
     reported as the PASSIVE shape #2982 tracks. It is outside ADR-0178's four
     classes and this module names no park for it."""
-    state = transport_park.snapshot(_composite_subwoofer_only(), {})
+    state = transport_eligibility.snapshot(_composite_subwoofer_only(), {})
     assert state["status"] == "unclassified"
     assert state["parks"] == []
 
@@ -289,7 +289,7 @@ def test_a_roleful_composite_with_no_active_ring_is_not_the_passive_park():
 def test_a_roleful_non_composite_shape_is_not_the_mono_park():
     """A subwoofer-only box reaches the no-ring gate too. #3117 is the
     1-channel FULL-RANGE shape; anything else there gets no mono park."""
-    state = transport_park.snapshot(_subwoofer_topology(), {})
+    state = transport_eligibility.snapshot(_subwoofer_topology(), {})
     assert state["status"] == "unclassified"
     assert state["parks"] == []
 
@@ -310,18 +310,18 @@ def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
 
     assert ring_channels_for_topology(topology) == RING_STEREO_PROGRAM_CHANNELS
     assert topology_supports_shm_ring(topology) is True
-    assert transport_park.snapshot(topology, {})["status"] == "ok"
+    assert transport_eligibility.snapshot(topology, {})["status"] == "ok"
 
 
 def test_snapshot_separates_clean_mono_from_mono_with_issues():
     """The status pair the operator surfaces read. A clean mono box is `ok`;
     one still awaiting its physical output is `parked`."""
-    clean = transport_park.snapshot(_full_range_mono(), {})
+    clean = transport_eligibility.snapshot(_full_range_mono(), {})
     assert clean["status"] == "ok"
     assert clean["parked"] is False
     assert clean["parks"] == []
 
-    unassigned = transport_park.snapshot(_mono_awaiting_its_output(), {})
+    unassigned = transport_eligibility.snapshot(_mono_awaiting_its_output(), {})
     assert unassigned["status"] == "parked"
     assert unassigned["parked"] is True
     assert PARK_MONO_FULL_RANGE in {
@@ -332,7 +332,7 @@ def test_snapshot_separates_clean_mono_from_mono_with_issues():
 def test_active_crossover_mono_does_not_park_as_mono_full_range():
     """A roleful mono box is 2+ channels on the ACTIVE ring, not the
     1-channel full-range shape #3117 tracks."""
-    state = transport_park.snapshot(_active_topology("mono", "active_2_way"), _ARMED)
+    state = transport_eligibility.snapshot(_active_topology("mono", "active_2_way"), _ARMED)
     assert state["status"] == "ok"
     assert state["parks"] == []
 
@@ -341,13 +341,13 @@ def test_a_passive_stereo_plus_subwoofer_box_does_not_park_on_the_endpoint():
     """`requires_roleful_graph` is True for a passive box that merely adds a
     sub, but there is no active-speaker baseline to re-emit — parking it would
     hand the household a remedy that cannot run."""
-    state = transport_park.snapshot(_stereo_plus_subwoofer(), {})
+    state = transport_eligibility.snapshot(_stereo_plus_subwoofer(), {})
     assert state["status"] == "ok"
     assert state["parks"] == []
 
 
 def test_converged_active_endpoint_does_not_park():
-    state = transport_park.snapshot(
+    state = transport_eligibility.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["status"] == "ok"
@@ -369,7 +369,7 @@ def test_a_marker_armed_member_is_served_and_does_not_park(env):
     sole content source. Parking that box would report a speaker that is audibly
     working, and hand its household "ungrouping it brings sound back".
     """
-    assert transport_park.snapshot(_full_range_stereo(), env)["status"] == "ok"
+    assert transport_eligibility.snapshot(_full_range_stereo(), env)["status"] == "ok"
 
 
 def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
@@ -379,14 +379,14 @@ def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
     bridge into the FIRST env layer on every pass, so a member whose grouping
     layer failed to clear it lands here (ADR-0220).
     """
-    parks = transport_park.snapshot(
+    parks = transport_eligibility.snapshot(
         _full_range_stereo(),
         {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring", _LANE_ENV: "1"},
     )["parks"]
-    assert _classes(parks) == {transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE}
-    park = _by_class(parks, transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE)
+    assert _classes(parks) == {transport_eligibility.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE}
+    park = _by_class(parks, transport_eligibility.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE)
     assert park["issue"] == "#3118"
-    assert park["remedy"] == transport_park.BRIDGE_BESIDE_MARKER_REMEDY
+    assert park["remedy"] == transport_eligibility.BRIDGE_BESIDE_MARKER_REMEDY
 
 
 @pytest.mark.parametrize(
@@ -399,7 +399,7 @@ def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
 )
 def test_an_unarmed_lane_does_not_park(env):
     """THE kill test for this class."""
-    assert transport_park.snapshot(_full_range_stereo(), env)["status"] == "ok"
+    assert transport_eligibility.snapshot(_full_range_stereo(), env)["status"] == "ok"
 
 
 def test_the_grouped_park_reads_the_key_the_ring_module_owns():
@@ -419,7 +419,7 @@ def test_unconfigured_topology_does_not_park():
     (#2135); re-reporting it here would double-count one fact."""
     from tests.test_active_speaker_runtime_contract import _topology
 
-    assert transport_park.snapshot(_topology([]), {})["status"] == "ok"
+    assert transport_eligibility.snapshot(_topology([]), {})["status"] == "ok"
 
 
 # --- the honest silence ------------------------------------------------------
@@ -436,7 +436,7 @@ def test_unconfigured_topology_does_not_park():
 def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
     """No ring geometry of either kind and no class names it. Saying "ok" here
     would tell an operator the ring can serve a box it demonstrably cannot."""
-    state = transport_park.snapshot(topology, {})
+    state = transport_eligibility.snapshot(topology, {})
     assert state["status"] == "unclassified"
     assert state["parked"] is False
     assert state["parks"] == []
@@ -445,7 +445,7 @@ def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
 def test_unclassified_reaches_no_household_surface():
     from jasper.control.audio_health import _state_issues, _transport_park_signal
 
-    state = transport_park.snapshot(_left_only(), {})
+    state = transport_eligibility.snapshot(_left_only(), {})
     assert _transport_park_signal(state) is None
     assert not _state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
@@ -455,7 +455,7 @@ def test_unclassified_reaches_no_household_surface():
 def test_a_ring_eligible_box_still_reports_ok():
     """The ok arm must stay reachable — otherwise `unclassified` has quietly
     become the answer for everything."""
-    state = transport_park.snapshot(_full_range_stereo(), {})
+    state = transport_eligibility.snapshot(_full_range_stereo(), {})
     assert state["status"] == "ok"
     assert state["parks"] == []
 
@@ -463,13 +463,13 @@ def test_a_ring_eligible_box_still_reports_ok():
 def test_a_box_in_two_classes_reports_both():
     """A bonded mono speaker waits on #3117 AND #3118; a first-match verdict
     would hide one of them from the operator who has to clear both."""
-    parks = transport_park.snapshot(
+    parks = transport_eligibility.snapshot(
         _mono_awaiting_its_output(),
         {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring", _LANE_ENV: "1"},
     )["parks"]
     assert _classes(parks) == {
         PARK_MONO_FULL_RANGE,
-        transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
+        transport_eligibility.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     }
 
 
@@ -484,7 +484,7 @@ def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
     corrupt.write_text("{not json at all", encoding="utf-8")
     monkeypatch.setattr(ot, "topology_path", lambda _p=None: corrupt)
 
-    state = transport_park.snapshot(env={})
+    state = transport_eligibility.snapshot(env={})
     assert state["status"] == "unavailable"
     assert state["parked"] is False
     assert state["parks"] == []
@@ -498,7 +498,7 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ot, "topology_path", lambda _p=None: tmp_path / "absent.json"
     )
-    assert transport_park.snapshot(env={})["status"] == "ok"
+    assert transport_eligibility.snapshot(env={})["status"] == "ok"
 
 
 @pytest.mark.parametrize("unreadable_layer", [None, "base", "outputd", "grouping"])
@@ -512,7 +512,7 @@ def test_snapshot_distinguishes_missing_and_unreadable_env(
     if unreadable_layer is not None:
         paths[unreadable_layer].mkdir()
 
-    state = transport_park.snapshot(_full_range_stereo())
+    state = transport_eligibility.snapshot(_full_range_stereo())
     assert state["status"] == ("ok" if unreadable_layer is None else "unavailable")
     assert state["parked"] is False
     assert state["parks"] == []
@@ -520,7 +520,7 @@ def test_snapshot_distinguishes_missing_and_unreadable_env(
     if unreadable_layer is not None:
         paths[unreadable_layer].rmdir()
         paths[unreadable_layer].write_text("", encoding="utf-8")
-        assert transport_park.snapshot(_full_range_stereo())["status"] == "ok"
+        assert transport_eligibility.snapshot(_full_range_stereo())["status"] == "ok"
 
 
 # --- doctor -----------------------------------------------------------------
@@ -539,7 +539,7 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
     from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     monkeypatch.setattr(
-        transport_park,
+        transport_eligibility,
         "snapshot",
         lambda *a, **k: {
             "status": status,
@@ -595,12 +595,12 @@ def test_an_unproven_endpoint_is_named_without_naming_a_park(
     """
     from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     assert state["unproven_endpoint"] is unproven
     assert state["status"] == "ok"
     assert state["parks"] == []
 
-    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    monkeypatch.setattr(transport_eligibility, "snapshot", lambda *a, **k: state)
     result = check_ring_transport_park()
     assert result.status == "ok", result
     assert result.reason == expected_reason
@@ -615,7 +615,7 @@ def test_no_named_park_also_reports_an_unproven_endpoint(
     """The seam signal is the COMPLEMENT of class (c) on the same two inputs,
     so a named park and the signal cannot describe one box — the double-report
     ADR-0178 refuses, refused again."""
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     assert state["unproven_endpoint"] is False
 
 
@@ -624,7 +624,7 @@ def test_an_unproven_endpoint_reaches_no_household_surface():
     silent afterwards; there is no household action either way."""
     from jasper.control.audio_health import _state_issues, _transport_park_signal
 
-    state = transport_park.snapshot(_stereo_plus_subwoofer(), {})
+    state = transport_eligibility.snapshot(_stereo_plus_subwoofer(), {})
     assert state["unproven_endpoint"] is True
     assert _transport_park_signal(state) is None
     issues = _state_issues(
@@ -669,7 +669,7 @@ def test_an_armed_endpoint_whose_graph_never_moved_names_itself(monkeypatch):
     nothing — so every surface read `parked: false` about a box going nowhere.
     """
     _loaded_graph(monkeypatch, converged=False, detail="plays hw:0,0")
-    state = transport_park.snapshot(
+    state = transport_eligibility.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
     # NOT a park: a refusal leaves the loaded graph running, so the "emits
@@ -693,10 +693,60 @@ def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
     An unreadable graph is unknown, and the surfaces that own THAT shape
     (`active_speaker_parked`, `camilla_recover`) are already loud about it."""
     _loaded_graph(monkeypatch, **kwargs)
-    state = transport_park.snapshot(
+    state = transport_eligibility.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["converge_refused"] is None
+
+
+@pytest.mark.parametrize("leader", [False, True])
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "capture_device", "capture_format", "capture_channels",
+              "playback_device", "playback_format", "playback_channels", "pipe"],
+)
+def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch, leader, fault):
+    import yaml
+
+    from jasper.fanin import ring_health
+    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    topology = _active_topology("stereo", "active_2_way")
+    monkeypatch.setattr(ring_health, "load_topology_for_wire", lambda: topology)
+    wire = resolve_ring_wire(topology)
+    endpoint = {
+        "capture": {"type": "Alsa", "device": "jts_ring_grouping", "format": "S16_LE", "channels": 2},
+        "playback": {"type": "Alsa", "device": "jts_ring_active_playback",
+                     "format": wire.sample_format, "channels": wire.ring_active_channels},
+    }
+    if fault not in (None, "missing", "pipe"):
+        lane, field = fault.split("_")
+        endpoint[lane][field] = 99 if field == "channels" else "wrong"
+    crossover = tmp_path / "crossover.yml"
+    crossover.write_text(yaml.safe_dump({"devices": endpoint}))
+    crossover_state = tmp_path / "crossover-state.yml"
+    crossover_state.write_text(yaml.safe_dump({"config_path": str(crossover)}))
+    monkeypatch.setenv("JASPER_CAMILLA2_STATEFILE", str(crossover_state))
+    primary = crossover
+    if leader:
+        primary = tmp_path / "primary.yml"
+        primary.write_text(yaml.safe_dump({"devices": {
+            "capture": {"type": "Alsa", "device": "jts_ring_capture",
+                        "format": wire.sample_format, "channels": wire.ring_a_channels},
+            "playback": {"type": "File", "filename": "/dev/null" if fault == "pipe" else SNAPFIFO,
+                         "format": "S16_LE", "channels": 2},
+        }}))
+    if fault == "missing":
+        crossover.unlink()
+    statefile = tmp_path / "primary-state.yml"
+    statefile.write_text(yaml.safe_dump({"config_path": str(primary)}))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    state = transport_eligibility.snapshot(topology, _ARMED)
+    # Missing primary evidence is unknown; a leader with no second stage is broken.
+    refused = fault is not None and not (not leader and fault in ("missing", "pipe"))
+    assert bool(state["converge_refused"]) is refused
+    assert state["parked"] is False
 
 
 @pytest.mark.parametrize(
@@ -720,7 +770,7 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
     pays nothing, which is what this test pins.
     """
     reads = _loaded_graph(monkeypatch, converged=False)
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     assert state["converge_refused"] is None
     assert reads == []
 
@@ -770,12 +820,12 @@ def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
     """
     from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     assert state["endpoint_armed_without_active_modes"] is armed_without_modes
     assert state["status"] == "ok"
     assert state["parks"] == []
 
-    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    monkeypatch.setattr(transport_eligibility, "snapshot", lambda *a, **k: state)
     result = check_ring_transport_park()
     assert result.status == "ok", result
     assert result.reason == expected_reason
@@ -788,7 +838,7 @@ def test_the_two_endpoint_signals_are_never_both_true():
     double-report objection from applying to the pair.
     """
     for env in ({}, _ARMED):
-        state = transport_park.snapshot(
+        state = transport_eligibility.snapshot(
             _stereo_plus_subwoofer(), env
         )
         assert not (
@@ -811,7 +861,7 @@ def test_the_two_endpoint_signals_are_never_both_true():
 def test_the_doctor_names_a_converge_refusal(monkeypatch, refusal, expected_reason):
     """Parity with the ADR-0184 seam's branch beside it.
 
-    The doctor is one of the surfaces ``transport_park``'s docstring promises
+    The doctor is one of the surfaces ``transport_eligibility``'s docstring promises
     cannot disagree; reading ``unproven_endpoint`` but not ``converge_refused``
     made ``ok`` speak for a box the converge pass keeps refusing. The refusal
     SENTENCE is the snapshot's own, carried through rather than re-composed,
@@ -826,7 +876,7 @@ def test_the_doctor_names_a_converge_refusal(monkeypatch, refusal, expected_reas
         "unproven_endpoint": False,
         "converge_refused": refusal,
     }
-    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    monkeypatch.setattr(transport_eligibility, "snapshot", lambda *a, **k: state)
     result = check_ring_transport_park()
     assert result.status == "ok", result
     assert result.reason == expected_reason
@@ -840,7 +890,7 @@ def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):
     from jasper.control.audio_health import _state_issues, _transport_park_signal
 
     _loaded_graph(monkeypatch, converged=False)
-    state = transport_park.snapshot(
+    state = transport_eligibility.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["converge_refused"]
@@ -860,7 +910,7 @@ def test_the_remedy_converges_the_marker_it_reads():
     """The park reads the endpoint marker, whose single writer is
     jasper-audio-hardware-reconcile. A remedy that stops at baseline-reemit
     would not clear the park it is recorded against."""
-    assert "jasper-audio-hardware-reconcile" in transport_park.ACTIVE_ENDPOINT_REMEDY
+    assert "jasper-audio-hardware-reconcile" in transport_eligibility.ACTIVE_ENDPOINT_REMEDY
 
 
 @pytest.mark.parametrize(
@@ -898,7 +948,7 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
     """#2575: the recorded remedy re-emits onto a ring endpoint and converges
     it — neither step has a DAC to drive while none is RECOGNIZED. Every
     reader of the park record (doctor, /state, the web card) shares this one
-    text, read at the snapshot altitude transport_park's docstring makes the
+    text, read at the snapshot altitude transport_eligibility's docstring makes the
     one place surfaces read the answer from."""
     from jasper.output_hardware import OutputHardwareState, write_state
 
@@ -914,7 +964,7 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
         )
     )
 
-    state = transport_park.snapshot(topology_factory(), {})
+    state = transport_eligibility.snapshot(topology_factory(), {})
     assert state["status"] == "parked"
     [park] = [
         p for p in state["parks"]
@@ -922,16 +972,10 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
     ]
     remedy = park["remedy"]
 
-    assert (remedy == transport_park.ACTIVE_ENDPOINT_REMEDY) is expect_normal_remedy
+    assert (remedy == transport_eligibility.ACTIVE_ENDPOINT_REMEDY) is expect_normal_remedy
     assert (
-        transport_park.I2S_DAC_OVERLAY_CHECK_NAME in remedy
+        transport_eligibility.I2S_DAC_OVERLAY_CHECK_NAME in remedy
     ) is expect_overlay_check_named
-
-
-def test_state_resilience_carries_the_park_reader():
-    from jasper.control import state_aggregate
-
-    assert state_aggregate.transport_park is transport_park
 
 
 @pytest.mark.parametrize(
@@ -942,7 +986,7 @@ def test_a_live_park_writes_one_household_incident_per_class(
 ):
     from jasper.control.audio_health import _state_issues
 
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     issues = _state_issues(
         {"warmup_active": True},
         None,
@@ -958,7 +1002,7 @@ def test_a_live_park_writes_one_household_incident_per_class(
 def test_a_live_park_takes_the_household_headline():
     from jasper.control.audio_health import PARKED_HEADLINE, _transport_park_signal
 
-    state = transport_park.snapshot(_mono_awaiting_its_output(), {})
+    state = transport_eligibility.snapshot(_mono_awaiting_its_output(), {})
     signal = _transport_park_signal(state)
     assert signal is not None
     assert signal["status"] == "issue"
@@ -982,7 +1026,7 @@ def test_a_live_park_says_which_shape_parked_the_box(
         _transport_park_signal,
     )
 
-    state = transport_park.snapshot(topology, env)
+    state = transport_eligibility.snapshot(topology, env)
     rows = {
         row["key"]: row
         for row in _state_issues(
@@ -1008,7 +1052,7 @@ def test_each_park_class_gets_its_own_household_sentence():
     details = set()
     for case in _PARK_CASES:
         topology, env, park_class = case.values[:3]
-        state = transport_park.snapshot(topology, env)
+        state = transport_eligibility.snapshot(topology, env)
         details.add(_park_detail(
             [park for park in state["parks"] if park["park_class"] == park_class]
         ))

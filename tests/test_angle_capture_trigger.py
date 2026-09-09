@@ -835,6 +835,33 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert taken.program == "baseline/express"
 
 
+@pytest.mark.parametrize(
+    ("program_id", "size_args", "expected_size"),
+    [
+        ("seat", [], "cloud"),
+        ("seat", ["--size", "cube"], "cube"),
+        ("seat", ["--size", "express"], "express"),
+        ("baseline", [], "express"),
+        ("tournament", [], "express"),
+    ],
+)
+def test_stage_program_defaults_preserve_explicit_sizes(
+    slot, capsys, program_id, size_args, expected_size,
+):
+    row = mp.program(program_id, expected_size)
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", program_id, "--mover", "human", *size_args]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+
+    assert (body["program"], body["size"]) == (program_id, expected_size)
+    assert body["stops_count"] == row.capture_count
+    assert body["price"]["captures"] == row.capture_count
+    assert body["price"]["mic_moves"] == row.mic_move_count
+    assert spool.take_staged_angle_request() == request_for_program(row, mover=MOVER_HUMAN)
+
+
 def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
