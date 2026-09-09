@@ -64,8 +64,6 @@ from ..env_file import write_env_file
 from . import rooms_peers
 from ._common import (
     begin_request,
-    canonical_header,
-    canonical_page,
     guard_read_request,
     guard_mutating_request,
     reject_csrf,
@@ -76,6 +74,7 @@ from ._common import (
     send_html_response,
     send_json_response,
 )
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

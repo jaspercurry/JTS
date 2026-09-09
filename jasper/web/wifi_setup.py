@@ -70,8 +70,6 @@ from ..secret_redaction import redact_secrets
 from ._common import (
     JsonBodyError,
     begin_request,
-    canonical_header,
-    canonical_page,
     json_body,
     reject_csrf,
     read_json_object,
@@ -81,6 +79,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

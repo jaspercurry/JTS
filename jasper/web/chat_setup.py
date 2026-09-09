@@ -17,7 +17,6 @@ from ..conversation_history import ConversationStore, read_settings, write_setti
 from ._common import (
     JsonBodyError,
     begin_request,
-    canonical_page,
     guard_mutating_request,
     guard_read_request,
     json_body,
@@ -27,6 +26,7 @@ from ._common import (
     send_html_response,
     send_proxy_json,
 )
+from .chrome import canonical_page
 
 logger = logging.getLogger(__name__)
 

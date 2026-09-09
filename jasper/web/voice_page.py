@@ -31,14 +31,12 @@ from jasper.usage import (
 )
 
 from ._common import (
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     mask_secret,
     pair_banner_html,
     value_for_env as _value_for,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

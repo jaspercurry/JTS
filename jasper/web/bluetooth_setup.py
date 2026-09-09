@@ -54,8 +54,6 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_park_reason,
-    canonical_header,
-    canonical_page,
     close_awaitable,
     guard_mutating_request,
     guard_read_request,
@@ -63,8 +61,8 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_json_response,
-    toggle_html,
 )
+from .chrome import canonical_header, canonical_page, toggle_html
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,

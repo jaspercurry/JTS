@@ -50,7 +50,6 @@ from typing import Any
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
-    canonical_page,
     forward_control_token_headers,
     proxy_get,
     proxy_post,
@@ -61,6 +60,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from .chrome import canonical_page
 
 logger = logging.getLogger(__name__)
 

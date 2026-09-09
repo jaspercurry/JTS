@@ -5,7 +5,7 @@
 """Invariants for the shared canonical design system.
 
 The redesigned management UI shares one stylesheet — deploy/assets/app.css —
-served static by nginx and linked via jasper.web._common.canonical_page().
+served static by nginx and linked via jasper.web.chrome.canonical_page().
 The landing page (deploy/index.html) links app.css rather than carrying its
 own design TOKENS; these tests enforce that single source of truth (no
 duplicated token block to drift) and that the stylesheet keeps the
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.web import _common
+from jasper.web import chrome
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_CSS = ROOT / "deploy" / "assets" / "app.css"
@@ -261,7 +261,7 @@ def test_web_css_only_uses_outline_to_suppress_focus_chrome():
 def test_asset_version_is_url_safe_and_failsoft():
     # Fail-soft: with no readable build.txt the token falls back to a
     # valid (un-busted) value rather than raising.
-    version = _common._asset_version()
+    version = chrome._asset_version()
     assert version
     assert re.fullmatch(r"[\w.-]+", version), version
 
@@ -272,9 +272,9 @@ def test_canonical_page_observes_manifest_replacement_in_warm_process(
     """A wizard activated mid-deploy must not keep the prior asset URL."""
     manifest = tmp_path / "build.txt"
     manifest.write_text("JASPER_GIT_SHA=old123\n")
-    monkeypatch.setattr(_common, "BUILD_MANIFEST_FILE", manifest)
+    monkeypatch.setattr(chrome, "BUILD_MANIFEST_FILE", manifest)
 
-    first = _common.canonical_page(
+    first = chrome.canonical_page(
         "Status", "", page_css_href="/assets/system-status/system.css",
     ).decode()
     assert '/assets/app.css?v=old123' in first
@@ -284,7 +284,7 @@ def test_canonical_page_observes_manifest_replacement_in_warm_process(
     replacement.write_text("JASPER_GIT_SHA=new456\n")
     replacement.replace(manifest)
 
-    second = _common.canonical_page(
+    second = chrome.canonical_page(
         "Status", "", page_css_href="/assets/system-status/system.css",
     ).decode()
     assert '/assets/app.css?v=new456' in second

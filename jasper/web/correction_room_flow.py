@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from ._common import canonical_header, canonical_page, json_island
+from .chrome import canonical_header, canonical_page, json_island
 
 
 # ----------------------------------------------------------------------

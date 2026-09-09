@@ -7,7 +7,7 @@
 `NAV` renders the landing page's settings groups, the `/sound/` and
 `/assistant/` hub pages (`render_hub`, rows whose `parent` is the hub path)
 and, as pages adopt `entry()`, feeds them their title and back link
-(docs/web-ia.md §1-§2). Stdlib only, like `_common`'s page shell it calls:
+(docs/web-ia.md §1-§2). Stdlib only, like `chrome`'s page shell it calls:
 this runs under the system interpreter at install time.
 `requires` lists a row's gates outermost first; a group whose rows share the
 outermost one carries it on the `<section>` and the rest gate the row.
@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from ._common import canonical_header, canonical_page, json_island
+from .chrome import canonical_header, canonical_page, json_island
 
 
 class NavRow(NamedTuple):

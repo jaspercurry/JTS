@@ -69,23 +69,25 @@ from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     form_guarded,
     header_guarded,
     read_guarded,
-    json_island,
     mask_secret,
     restart_voice_daemon,
     route_path,
-    safe_back_href,
     send_html_response,
     send_json_response,
     send_see_other,
     guard_read_request,
     SECRET_ENV_MODE,
+)
+from .chrome import (
+    canonical_banner,
+    canonical_header,
+    canonical_page,
+    json_island,
+    safe_back_href,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives

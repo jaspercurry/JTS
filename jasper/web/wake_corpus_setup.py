@@ -209,17 +209,14 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 # one-page chrome or dialog snippets.
 from jasper.web._common import (
     JsonBodyError,
-    canonical_header,
-    canonical_page,
     guard_mutating_host,
     guard_read_request,
-    json_island,
     json_body,
     read_json_object,
     route_path,
     send_json_response,
-    toggle_html,
 )
+from jasper.web.chrome import canonical_header, canonical_page, json_island, toggle_html
 from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper-wake-corpus-web")

@@ -46,9 +46,6 @@ from ..identity.speaker_name_discovery import NameConflict, find_name_conflicts
 from ..source_intent import kick_source_reconcile
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     form_guarded,
     route_path,
@@ -57,6 +54,7 @@ from ._common import (
     send_see_other,
     guard_read_request,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page
 from ._service_state import unit_active as _unit_active
 
 logger = logging.getLogger(__name__)

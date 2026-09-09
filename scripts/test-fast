@@ -190,6 +190,27 @@ add_tests_naming() {
   [[ "${matched}" == true ]]
 }
 
+# add_tests_importing <module-stem>
+#
+# Selects the tests that import the module by name, indented lazy imports
+# included. Deliberately narrower than add_tests_naming's fixed-string
+# scan, which is unusable here: a bare module stem is a common English
+# word, so "config" names 397 of this repo's tests/test_*.py files and
+# "nav" 198 -- an import is an unambiguous dependency, a word inside a
+# docstring is not. Returns whether anything matched.
+add_tests_importing() {
+  local module="$1"
+  local matched=false
+  local f
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    add_test_if_present "${f}"
+    matched=true
+  done < <(grep -lE "^[[:space:]]*(from|import) .*\b${module}\b" tests/test_*.py 2>/dev/null || true)
+
+  [[ "${matched}" == true ]]
+}
+
 while IFS= read -r changed; do
   case "${changed}" in
     tests/test_*.py)
@@ -279,6 +300,12 @@ while IFS= read -r changed; do
         add_test_if_present "tests/test_${sibling}_setup.py"
         add_test_if_present "tests/test_web_${sibling}_setup.py"
       fi
+      # On top of the name-convention tests above: whatever imports this
+      # module. The conventions only reach tests whose own filename carries
+      # the package/parent/module word, so a module that other files pin
+      # through an import -- jasper/web/chrome.py, pinned by
+      # tests/test_control_token.py -- routes to none of them.
+      add_tests_importing "${module}" || echo "==> no test imports ${changed}"
       ;;
     jasper/*.py)
       module="${changed#jasper/}"

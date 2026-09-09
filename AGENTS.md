@@ -102,8 +102,9 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   `mux.py` (source arbitration), `volume_coordinator.py`, `camilla.py`
   (DSP control), `output_topology.py`; packages: `voice/` (providers),
   `tools/` (LLM tool packs), `web/` (wizards; shared primitives in
-  `web/_common.py`), `control/` (jasper-control daemon), `fanin/`,
-  `multiroom/`, `transit/`, `cues/`, `cli/` (incl. `cli/doctor/`).
+  `web/_common.py`, page shell in `web/chrome.py`), `control/`
+  (jasper-control daemon), `fanin/`, `multiroom/`, `transit/`, `cues/`,
+  `cli/` (incl. `cli/doctor/`).
 - `jasper/active_speaker/`, `jasper/audio_measurement/`, `jasper/correction/`
   — the speaker tuning/measurement program (own doctrine:
   [docs/measurement-loop-doctrine.md](docs/measurement-loop-doctrine.md)).

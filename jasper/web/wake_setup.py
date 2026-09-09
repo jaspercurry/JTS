@@ -95,8 +95,6 @@ from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
     begin_request,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     form_guarded,
     forward_control_token_headers,
@@ -110,9 +108,9 @@ from ._common import (
     send_html_response,
     send_proxy_json,
     send_see_other,
-    toggle_html,
     guard_read_request,
 )
+from .chrome import canonical_header, canonical_page, toggle_html
 
 logger = logging.getLogger(__name__)
 

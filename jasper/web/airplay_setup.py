@@ -47,9 +47,6 @@ from ..env_file import read_env_file, write_env_file
 from ..log_event import log_event
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     form_guarded,
     route_path,
@@ -57,6 +54,7 @@ from ._common import (
     send_see_other,
     guard_read_request,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

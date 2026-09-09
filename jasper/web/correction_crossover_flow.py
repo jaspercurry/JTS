@@ -12,7 +12,7 @@ from http import HTTPStatus
 from typing import Any, Mapping
 
 from ..log_event import log_event
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

@@ -25,13 +25,8 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
-from ._common import (
-    canonical_header,
-    canonical_page,
-    close_awaitable,
-    reset_session_locked,
-    terminate_async_process,
-)
+from ._common import close_awaitable, reset_session_locked, terminate_async_process
+from .chrome import canonical_header, canonical_page
 from .pair_flow import members_by_channel, resolve_pair
 
 logger = logging.getLogger("jasper.web.sync")

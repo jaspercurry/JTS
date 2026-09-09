@@ -563,6 +563,7 @@ code = [
   "jasper/control/handlers/**",
   "jasper/tools/audio.py",
   "jasper/web/_common.py",
+  "jasper/web/chrome.py",
   "jasper/web/sources_setup.py",
   "jasper/web/bluetooth_setup.py",
   "jasper/web/airplay_setup.py",

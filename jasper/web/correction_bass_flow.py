@@ -20,7 +20,7 @@ import logging
 from http import HTTPStatus
 from typing import Any
 
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

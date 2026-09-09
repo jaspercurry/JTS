@@ -166,7 +166,7 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   output_topology.py Output topology / DAC selection
   voice/             Provider-agnostic LiveConnection + per-provider adapters
   tools/             LLM tool packs and the tool registry
-  web/               Setup wizards (shared primitives in web/_common.py)
+  web/               Setup wizards (primitives in web/_common.py, shell in web/chrome.py)
   control/           jasper-control: /state, management + automation HTTP API
   cli/               jasper-doctor, jasper-aec-*, measurement CLIs
   platform/          Control client, UDS + status-socket clients, systemd activation

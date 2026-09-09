@@ -56,18 +56,15 @@ from ..source_intent import request_source_intent, source_intent_enabled
 from ._common import (
     JsonBodyError,
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     reject_csrf,
     read_json_object,
     route_path,
     send_html_response,
     send_json_response,
-    toggle_html,
     guard_read_request,
     guard_mutating_request,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, toggle_html
 
 logger = logging.getLogger(__name__)
 
