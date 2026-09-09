@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper/correction/household_mic.py — the durable record of the
-household's remembered measurement microphone (Wave-2 persistence).
+"""Tests for jasper/audio_measurement/household_mic.py — the durable record
+of the household's remembered measurement microphone (Wave-2 persistence).
 
 Before this module, nothing about the measurement mic survived across
 sessions: the capture page's setup validated against a per-run
@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_measurement import calibration
-from jasper.correction import household_mic as hm
+from jasper.audio_measurement import household_mic as hm
 
 SAMPLE_CAL = "20 -1\n100 0\n1000 1\n20000 2\n"
 
@@ -87,7 +87,7 @@ def test_household_mic_record_mode_0644(tmp_path: Path):
 def test_read_household_mic_treats_malformed_json_as_absent(tmp_path: Path, caplog):
     path = tmp_path / "household_mic.json"
     path.write_text("not json at all")
-    caplog.set_level(logging.WARNING, logger="jasper.correction.household_mic")
+    caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
 
     assert hm.read_household_mic(path=path) is None
     assert "event=correction.household_mic_invalid" in caplog.text
@@ -96,7 +96,7 @@ def test_read_household_mic_treats_malformed_json_as_absent(tmp_path: Path, capl
 def test_read_household_mic_treats_wrong_schema_as_absent(tmp_path: Path, caplog):
     path = tmp_path / "household_mic.json"
     path.write_text(json.dumps({"schema": 99, "model_key": "x"}))
-    caplog.set_level(logging.WARNING, logger="jasper.correction.household_mic")
+    caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
 
     assert hm.read_household_mic(path=path) is None
     assert "event=correction.household_mic_invalid" in caplog.text
@@ -210,3 +210,38 @@ def test_resolve_household_mic_calibration_fails_soft_on_corrupt_metadata_file(
     # The exact-ID lookup hits the corrupt file (KeyError inside
     # CalibrationRecord.from_dict) and must fall through cleanly, not raise.
     assert hm.resolve_household_mic_calibration(household, root=root) is None
+
+
+# --- the read+resolve step the CLI and spec builders call ---------------------
+
+
+def test_resolved_household_mic_pairs_the_record_with_its_stored_calibration(
+    tmp_path: Path, monkeypatch
+):
+    """``resolved_household_mic`` is the env-rooted one-step form: it yields the
+    pair only while BOTH halves exist, and fail-soft ``None`` once the stored
+    calibration the record points at is gone from the store (neither the ID
+    lookup nor the content-hash fallback can reach it)."""
+    root = tmp_path / "calibrations"
+    path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(path))
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(root))
+
+    assert hm.resolved_household_mic() is None  # no record at all
+
+    record = _store(tmp_path, root=root)
+    hm.write_household_mic(
+        hm.household_mic_from_calibration(record, serial="SN-123456"), path=path
+    )
+
+    resolved = hm.resolved_household_mic()
+    assert resolved is not None
+    household, stored = resolved
+    assert household.calibration_id == record.calibration_id
+    assert household.file_sha256 == record.file_sha256
+    assert household.model_key == record.model
+    assert stored.calibration_id == record.calibration_id
+    assert stored.provider == record.provider
+
+    Path(record.metadata_path).unlink()
+    assert hm.resolved_household_mic() is None

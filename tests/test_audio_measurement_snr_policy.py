@@ -11,9 +11,9 @@ docs/active-crossover-information-design.md:
     ``jasper.correction.session._band_levels_dbfs`` (which now delegates
     through ``jasper.correction.acoustic_quality``) — the delegation's output
     must stay byte-equal.
-  - :data:`CROSSOVER_SNR_BANDS_HZ`'s first four rows equal
-    ``acoustic_quality.SNR_BANDS_HZ`` so the shipped room-correction table and
-    the new six-band crossover table never drift apart.
+  - :data:`CROSSOVER_SNR_BANDS_HZ`'s first four rows are :data:`SNR_BANDS_HZ`,
+    the one room-correction table ``acoustic_quality`` and the session alias
+    to, so the room and crossover tables cannot drift apart.
   - :func:`band_snr_verdicts` — magnitude/trim tiers at 25/20 dB (reusing
     ``QualityModel.snr_ok_db``/``snr_warn_db``), the stricter 35 dB alignment
     tier that rejects scalar-only evidence, and the worst-RELEVANT-band
@@ -56,10 +56,9 @@ def _bands(rows):
 
 
 def test_crossover_bands_first_four_match_room_correction_table():
-    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == (
-        acoustic_quality.SNR_BANDS_HZ
-    )
-    assert correction_session.SNR_BANDS_HZ is acoustic_quality.SNR_BANDS_HZ
+    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == snr_policy.SNR_BANDS_HZ
+    assert acoustic_quality.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
+    assert correction_session.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
 
 
 def test_band_levels_dbfs_matches_session_delegation():

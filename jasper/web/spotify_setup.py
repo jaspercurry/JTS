@@ -111,11 +111,10 @@ from ._common import (
     canonical_page,
     csrf_field_html,
     flash_error,
-    guard_mutating_request,
+    form_guarded,
     guard_read_request,
-    read_form,
     redirect_with_legacy_msg,
-    reject_csrf,
+    route_path,
     restart_systemd_units,
     safe_back_href,
     send_html_response,
@@ -772,10 +771,6 @@ def _management_html(
     )
 
 
-def _read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
-    return read_form(handler)
-
-
 _SHARE_PAGE_TIMEOUT_SEC = 5.0
 _OG_TITLE_RE = re.compile(r'<meta property="og:title" content="([^"]+)"')
 
@@ -949,7 +944,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
+            path = route_path(self.path)
             if path == "/oauth-callback":
                 if not guard_read_request(self, allow_cross_site_navigation=True):
                     return
@@ -968,17 +963,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = _read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            handler_fn(self)
 
         # --- route bodies ---
 
@@ -1009,6 +998,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 health_result=health, back_href=back_href,
             ))
 
+        @form_guarded
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:
             client_id = form.get("client_id", "").strip()
             mode = form.get("mode", "").strip() or "bounce"
@@ -1042,7 +1032,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
             )
 
-        def _handle_reset_credentials(self) -> None:
+        @form_guarded
+        def _handle_reset_credentials(self, _form: dict[str, str]) -> None:
             _delete_creds_file()
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
@@ -1051,6 +1042,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             log_event(logger, "spotify.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
+        @form_guarded
         def _handle_start(self, form: dict[str, str]) -> None:
             if not cfg["client_id"]:
                 self._redirect("./?msg=Set+up+Spotify+credentials+first.")
@@ -1126,6 +1118,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._exchange_and_finish(code, state)
 
+        @form_guarded
         def _handle_paste_callback(self, form: dict[str, str]) -> None:
             """Manual mode primary path, and bounce-mode-fallback path:
             the user pasted a URL or query-string fragment containing
@@ -1174,6 +1167,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
             )
 
+        @form_guarded
         def _handle_remove(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
@@ -1195,6 +1189,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             else:
                 self._redirect("./?msg=Account+not+found")
 
+        @form_guarded
         def _handle_default(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
@@ -1233,6 +1228,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"uri": uri, "name": name})
 
+        @form_guarded
         def _handle_playlist_add(self, form: dict[str, str]) -> None:
             account_name = form.get("account", "").strip()
             raw = form.get("url_or_uri", "").strip()
@@ -1263,6 +1259,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Added+{urllib.parse.quote(name)}+to+{urllib.parse.quote(account_name)}"
             )
 
+        @form_guarded
         def _handle_playlist_remove(self, form: dict[str, str]) -> None:
             account_name = form.get("account", "").strip()
             uri = form.get("uri", "").strip()
@@ -1331,7 +1328,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     }
     _POST_ROUTES = {
         "/setup-credentials": Handler._handle_setup_credentials,
-        "/reset-credentials": lambda h, f: h._handle_reset_credentials(),
+        "/reset-credentials": Handler._handle_reset_credentials,
         "/start": Handler._handle_start,
         "/paste-callback": Handler._handle_paste_callback,
         "/remove": Handler._handle_remove,

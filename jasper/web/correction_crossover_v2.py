@@ -132,6 +132,11 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
+from jasper.audio_measurement.calibration import configured_calibration_root
+from jasper.audio_measurement.household_mic import (
+    household_mic_path,
+    resolve_setup_calibration as resolve_household_setup_calibration,
+)
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
@@ -2391,15 +2396,11 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     through so that mismatch is caught where the calibration is resolved for
     THIS capture, not applied blind to whichever mic actually recorded.
     """
-    from jasper.correction.household_mic import resolve_setup_calibration as resolve
-
-    from .correction_capture import _calibration_root, _household_mic_path
-
-    return resolve(
+    return resolve_household_setup_calibration(
         setup if isinstance(setup, Mapping) else None,
         device=device if isinstance(device, Mapping) else None,
-        root=_calibration_root(),
-        path=_household_mic_path(),
+        root=configured_calibration_root(),
+        path=household_mic_path(),
     )
 
 

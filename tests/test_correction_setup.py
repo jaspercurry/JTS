@@ -1561,7 +1561,7 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
 def _stored_umik2(tmp_path, *, serial="810-8494"):
     """Establish a UMIK-2 calibration and remember it as the household mic."""
     from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -1602,7 +1602,7 @@ def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, capl
     caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
 
     from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import read_household_mic
+    from jasper.audio_measurement.household_mic import read_household_mic
 
     first = calibration.store_calibration(
         text="20 -1\n100 0\n1000 1\n",
@@ -1645,7 +1645,7 @@ def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, cap
 
     from jasper.audio_measurement import calibration
     from jasper.audio_measurement.calibration import serial_hash
-    from jasper.correction.household_mic import read_household_mic
+    from jasper.audio_measurement.household_mic import read_household_mic
 
     for serial in ("810-1111", "810-2222"):
         record = calibration.store_calibration(
@@ -1680,7 +1680,7 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
     caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
 
     from jasper.audio_measurement import calibration
-    from jasper.correction import household_mic
+    from jasper.audio_measurement import household_mic
 
     def boom(record, *, path):
         raise OSError("disk full")
@@ -1722,7 +1722,7 @@ def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch)
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
     from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -1787,7 +1787,7 @@ def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    caplog.set_level(logging.WARNING, logger="jasper.correction.household_mic")
+    caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
     from jasper.web import correction_crossover_v2 as v2host
 
     record = _stored_umik2(tmp_path)
@@ -1892,7 +1892,7 @@ def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch
         server.shutdown()
         server.server_close()
 
-    from jasper.correction.household_mic import read_household_mic
+    from jasper.audio_measurement.household_mic import read_household_mic
 
     record = read_household_mic(path=household_path)
     assert record is not None
@@ -1926,7 +1926,7 @@ def test_e2e_calibration_upload_success_saves_household_mic(tmp_path, monkeypatc
         server.shutdown()
         server.server_close()
 
-    from jasper.correction.household_mic import read_household_mic
+    from jasper.audio_measurement.household_mic import read_household_mic
 
     record = read_household_mic(path=household_path)
     assert record is not None
@@ -1944,7 +1944,7 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     assert correction_capture._default_setup_calibration_for_spec() is None
 
     from jasper.audio_measurement.calibration import store_calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -1978,7 +1978,7 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
     tmp_path, monkeypatch,
 ):
     """`resolvable` is deliberately a SECOND, independent resolver call, not
-    inferred from `_resolved_household_mic()` having just succeeded — so a
+    inferred from `resolved_household_mic()` having just succeeded — so a
     resolver hiccup between the two calls degrades to "no one-tap" (the hint
     still ships, just without `resolvable`) instead of dropping the whole
     hint or raising."""
@@ -1988,8 +1988,8 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
 
     from jasper.audio_measurement.calibration import store_calibration
-    from jasper.correction import household_mic
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement import household_mic
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         resolve_household_mic_calibration,
         write_household_mic,
@@ -2013,7 +2013,7 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
 
     def flaky_resolve(household, *, root=None):
         calls.append(household)
-        # First call is `_resolved_household_mic()` building the hint's other
+        # First call is `resolved_household_mic()` building the hint's other
         # fields; second is the dedicated `resolvable` check.
         if len(calls) == 1:
             return resolve_household_mic_calibration(household, root=root)
@@ -2045,7 +2045,7 @@ def test_render_page_prefills_household_mic_when_record_exists(tmp_path, monkeyp
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
 
     from jasper.audio_measurement.calibration import store_calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -2218,6 +2218,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
         hostname="jts.local", idle_hold=nullcontext,
     )
     handler = handler_cls.__new__(handler_cls)
+    handler.path = "/sync/analyze"
     handler.headers = Message()
     handler.headers["Content-Length"] = str(2 * 1024 * 1024 + 1)
     handler.rfile = io.BytesIO(b"")
@@ -2229,7 +2230,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 
     handler._send_json = _send_json
 
-    handler._dispatch_sync("/sync/analyze")
+    correction_setup._dispatch_sync(handler)
 
     assert sent["status"] == 400
     assert "WAV body too large" in sent["payload"]["error"]

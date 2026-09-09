@@ -93,7 +93,7 @@ to the Room handlers. The Pi owns stimulus, level, position sequence, analysis,
 and product decisions. Device and calibration identity must remain visible
 through measurement and verification; calibration does not synchronize clocks.
 
-[household_mic.py](../jasper/correction/household_mic.py) retains the last
+[household_mic.py](../jasper/audio_measurement/household_mic.py) retains the last
 successfully established microphone/calibration for local setup. The former
 work plan's `preferences.json` store for remembered position, target, and
 strategy choices is not implemented. Do not describe it as a shipped file,

@@ -91,6 +91,7 @@ from ._common import (
     reject_csrf,
     read_json_body,
     restart_voice_daemon,
+    route_path,
     restart_systemd_units,
     send_html_response,
     send_json_response,
@@ -1701,8 +1702,14 @@ def _get_rooms_json(handler: BaseHTTPRequestHandler) -> None:
     _send_json(handler, _build_rooms_payload())
 
 
+def _get_index(handler: BaseHTTPRequestHandler) -> None:
+    ctx = begin_request(handler)
+    send_html_response(handler, _render_page(csrf_token=ctx["csrf_token"]))
+
+
 # Unknown paths must return 404 before the read or CSRF guards run.
 _GET_ROUTES = {
+    "/": _get_index,
     "/rooms.json": _get_rooms_json,
 }
 _POST_ROUTES = {
@@ -1722,13 +1729,7 @@ class _Handler(BaseHTTPRequestHandler):
         logger.info("rooms-wizard: " + fmt, *args)
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/" or self.path.startswith("/?"):
-            if not guard_read_request(self):
-                return
-            ctx = begin_request(self)
-            send_html_response(self, _render_page(csrf_token=ctx["csrf_token"]))
-            return
-        handler_fn = _GET_ROUTES.get(self.path)
+        handler_fn = _GET_ROUTES.get(route_path(self.path))
         if handler_fn is None:
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
@@ -1740,7 +1741,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         # Route-check BEFORE the CSRF guard (project convention): a bogus
         # path 404s without revealing CSRF state.
-        handler_fn = _POST_ROUTES.get(self.path)
+        handler_fn = _POST_ROUTES.get(route_path(self.path))
         if handler_fn is None:
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
