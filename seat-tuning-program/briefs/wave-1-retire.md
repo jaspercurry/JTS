@@ -60,9 +60,11 @@ beside room-only readiness and household-mic helpers
 `snr_policy.CROSSOVER_SNR_BANDS_HZ`'s first four rows
 (`tests/test_audio_measurement_snr_policy.py:59-62`); `correction/variance_cap.py:53-59,196-266`
 (depth-cap rule) and `correction/target.py` (`flat_target` :19, `harman_target`
-:24, `house_curve` :48) — **lane C moves these two into
-`jasper/audio_measurement/room_limits.py` as its first commit**; check
-`origin/main` for that module before touching them (see 1.1 step 3).
+:24, `house_curve` :48) — **resolved by lane C's PR #4544**: the depth-cap
+rule now lives in `jasper/audio_measurement/room_limits.py` (identical
+formula, verified), and the target curves were NOT moved (verdict SUPERSEDED:
+their only readers are `correction/{__init__,strategy,target}.py` and
+`calibration_agent/response.py`, all in your deletion set). See 1.1 step 3.
 
 **The room product proper.** `jasper/correction/` 28 modules (`session.py`
 2,364 lines; `acceptance`, `autolevel`, `browser_audio`, `confidence`,
@@ -131,13 +133,13 @@ callers in `jasper/multiroom/`). Do not break that reader.
      unchanged. This also closes PR #4138's held-back item.
    - `SNR_BANDS_HZ` → `jasper/audio_measurement/snr_policy.py`; keep the
      prefix-equality pin, retarget the identity pin.
-3. **Coordinate with lane C on `room_limits.py`.** If `jasper/audio_measurement/room_limits.py`
-   exists on `origin/main`, consume it and delete `correction/variance_cap.py`
-   and `target.py` in 1.2. If it does not, create it here with exactly the shape
-   lane C's brief (`briefs/wave-2-room-candidate.md` §2.1 step 1) specifies —
-   the depth-cap rule and constants from `variance_cap.py`, `flat_target`/
-   `harman_target`/`house_curve` — and comment on #4502 so lane C consumes it
-   instead of writing its own. Never two copies alive across a merge.
+3. **`room_limits.py` is lane C's, already written.** PR #4544 (row 2.1) adds
+   `jasper/audio_measurement/room_limits.py` with the depth-cap rule; confirm it
+   is on `origin/main` (`git log --oneline -1 origin/main -- jasper/audio_measurement/room_limits.py`)
+   before 1.2, then delete `correction/variance_cap.py` (SUPERSEDED by
+   `room_limits`) and `correction/target.py` (SUPERSEDED: no reader outside the
+   deletion set) in 1.2. Do not move anything from them; nothing in 1.1 depends
+   on #4544, so start 1.1 regardless. Never two copies alive across a merge.
 
 Proof: boundary tests green (`tests/test_correction_boundary_ssot.py`); the
 crossover walk still opens a v2 session on a fixture; `scripts/test-merge`.
