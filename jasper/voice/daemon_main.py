@@ -787,13 +787,13 @@ async def run() -> None:
             volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
         )
         _arelease(stack, "volume_coordinator", volume_coordinator.aclose)
-        # Every duck holder in this process — CueDuck and the graph-swap bracket —
-        # releases against the coordinator's canonical target so their interleavings
-        # cannot strand the fader at a value one of them had ducked.
+        # Every duck holder in this process releases against the coordinator's
+        # canonical target so their interleavings cannot strand the fader at a
+        # value one of them had ducked.
         set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
-        # This daemon INJECTS its owner (CueDuck takes it as a constructor
-        # argument), so it needs no registration to work. It registers
-        # anyway, and registers the SAME instance: leaving `volume_owner()`
+        # This daemon INJECTS its owner, so it needs no registration to work.
+        # It registers anyway, and registers the SAME instance: leaving
+        # `volume_owner()`
         # answering None in a process that has an owner is precisely how a later
         # caller ends up minting the second one.
         install_volume_owner(volume_coordinator.volume_owner)
