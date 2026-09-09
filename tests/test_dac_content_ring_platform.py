@@ -7,9 +7,9 @@
 The platform is three files that ship together and open nothing:
 ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf`` declares the PCM,
 :mod:`jasper.multiroom.dac_content_ring` owns the same identity in Python, and
-``deploy/lib/install/ring-platform.sh`` places the conf.d on every box. Nothing
-consumes it yet — the lane is parked (ADR-0178 ``grouped_dac_content_lane``)
-and its transport arrives behind a hardware gate.
+``deploy/lib/install/ring-platform.sh`` places the conf.d on every box. Its one
+reader is outputd's round-trip arm (``rust/jasper-outputd/src/dac_content.rs``),
+which attaches the ring only when the lane marker is armed.
 
 Three contracts, in rising order of what they cost to get wrong:
 
