@@ -1978,8 +1978,6 @@ class VolumeCoordinator:
                 # raw probes rather than pinning the coordinator to IDLE.
                 if selected in MUSIC_SOURCE_VALUES:
                     return Source(selected)
-            except (ValueError, TypeError):
-                logger.debug("mux selected_source was unknown; ignoring")
             except Exception as e:  # noqa: BLE001
                 logger.debug("selected_source() failed (%s); using probes", e)
         try:
