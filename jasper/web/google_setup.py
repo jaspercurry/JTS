@@ -866,7 +866,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     @form_guarded
     def _post_reset_credentials(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
     ) -> None:
         try:
             _delete_creds_file(cfg["creds_path"])

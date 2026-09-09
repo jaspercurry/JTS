@@ -567,7 +567,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     @form_guarded
     def _post_clear(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
     ) -> None:
         current = _load_state(cfg["state_path"])
         new = _apply_clear(current)

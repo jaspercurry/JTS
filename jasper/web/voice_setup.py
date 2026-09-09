@@ -570,7 +570,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     level=logging.WARNING,
                 )
         restart_voice_daemon()
-        # Same save audit as _handle_save — the "Save & Test" button is the
+        # Same save audit as _post_save — the "Save & Test" button is the
         # other save path, so "voice provider saved" is logged either way.
         log_event(
             logger,

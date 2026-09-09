@@ -445,7 +445,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
 
     @form_guarded
     def _post_clear(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
     ) -> None:
         owned = _owned_env_keys()
 
