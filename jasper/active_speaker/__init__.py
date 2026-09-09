@@ -26,7 +26,6 @@ _LAZY_ATTRS: dict[str, str] = {
     "ActiveSpeakerConfigError": "profile",
     "ActiveSpeakerDesignDraftError": "design_draft",
     "ActiveSpeakerPreset": "profile",
-    "AplayTonePlaybackBackend": "playback",
     "BASELINE_HEADROOM_DB": "camilla_yaml",
     "BASELINE_LIMITER_CLIP_LIMIT_DB": "camilla_yaml",
     "BASELINE_PROFILE_KIND": "baseline_profile",
