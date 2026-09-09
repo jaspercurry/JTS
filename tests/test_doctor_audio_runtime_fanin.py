@@ -39,12 +39,11 @@ def _patch_asound_conf(
     real_path_cls = Path
 
     def fake_path(arg):
-        if arg == "/etc/asound.conf":
-            return target
         if arg == "/var/lib/jasper/audio_topology.env":
             return stale
         return real_path_cls(arg)
 
+    monkeypatch.setattr(audio_runtime_fanin, "_ASOUND_CONF_PATH", target)
     monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 

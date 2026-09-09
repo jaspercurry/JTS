@@ -1123,3 +1123,71 @@ def test_doctor_stale_warning_uses_the_household_threshold(
     )
 
     assert check().status == ("warn" if over else "ok")
+
+
+_OUTPUTD_DAC_HW = "pcm.outputd_dac {\n    type hw\n    card DAC8\n    device 0\n}\n"
+_OUTPUTD_DAC_NULL = "pcm.outputd_dac {\n    type null\n}\n"
+
+
+@pytest.mark.parametrize(
+    "backend,dac_pcm_env,conf,status,reason",
+    [
+        (
+            "alsa",
+            "outputd_dac",
+            _OUTPUTD_DAC_NULL,
+            "fail",
+            audio_runtime_outputd.REASON_OUTPUTD_DAC_RENDERED_NULL,
+        ),
+        ("alsa", "outputd_dac", _OUTPUTD_DAC_HW, "ok", ""),
+        (
+            "fake",
+            "outputd_dac",
+            _OUTPUTD_DAC_NULL,
+            "skipped",
+            audio_runtime_outputd.REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
+        ),
+        (
+            "alsa",
+            "outputd_dac",
+            None,
+            "skipped",
+            audio_runtime_outputd.REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
+        ),
+        (
+            # A composite sink opens the dual-Apple 4ch PCM, not outputd_dac,
+            # so the check must skip without ever reading /etc/asound.conf.
+            "alsa",
+            DUAL_APPLE_USB_C_DAC_4CH_ID,
+            _OUTPUTD_DAC_NULL,
+            "skipped",
+            audio_runtime_outputd.REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
+        ),
+    ],
+    ids=[
+        "null-under-alsa",
+        "real-device",
+        "not-alsa",
+        "conf-absent",
+        "composite-sink-skip",
+    ],
+)
+def test_outputd_dac_render_reads_the_rendered_alsa_config(
+    monkeypatch, tmp_path, backend, dac_pcm_env, conf, status, reason
+):
+    """A null-rendered DAC PCM is invisible in outputd's STATUS (#4605), so the
+    row keys on the rendered /etc/asound.conf instead."""
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text(
+        f"JASPER_OUTPUTD_BACKEND={backend}\nJASPER_OUTPUTD_DAC_PCM={dac_pcm_env}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    asound = tmp_path / "asound.conf"
+    if conf is not None:
+        asound.write_text(conf, encoding="utf-8")
+    monkeypatch.setattr(audio_runtime_outputd, "_ASOUND_CONF_PATH", asound)
+
+    r = audio_runtime_outputd.check_outputd_dac_render()
+
+    assert (r.status, r.reason) == (status, reason), r.detail
