@@ -485,12 +485,15 @@ class CamillaController:
                     error=type(e).__name__,
                 )
                 try:
-                    return await self._run_attempt(fn)
+                    result = await self._run_attempt(fn)
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
                     error = _transport_error(e2)
                     rejected = isinstance(error, CamillaConfigRejected)
-                    self._failed_at = None if rejected else time.monotonic()
+                    if rejected:
+                        self._failed_at, self._abandon_logged = None, False
+                    else:
+                        self._failed_at = time.monotonic()
                     raise error from e2
             self._failed_at, self._abandon_logged = None, False
             return result
