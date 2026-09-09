@@ -87,7 +87,7 @@ def self_addresses() -> set[str]:
     # NIC the route trick missed).
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            addrs.add(info[4][0])
+            addrs.add(str(info[4][0]))
     except OSError:
         pass
     return {a for a in addrs if a and not a.startswith("127.")}
