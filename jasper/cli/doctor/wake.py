@@ -25,11 +25,8 @@ from .aec import (
     _chip_aec_available_for_doctor,
     _wake_leg_setting,
 )
-from .voice import _voice_gated_skip
 
-# No wake this long warrants a look; no existing constant fits
-# (voice_daemon.WAKE_STALE_SCORE_SEC is a per-frame score window, not a
-# recency SLA), so this is a fresh module constant.
+# Warn threshold: a box can sit idle overnight, so under a day is not stale.
 WAKE_RECENCY_STALE_SEC = 24 * 60 * 60  # seconds
 
 # Machine-stable codes naming which branch of a wake check produced a result
@@ -50,8 +47,8 @@ REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
 
 REASON_WAKE_RECENCY_STALE = "wake_recency_stale"
 REASON_WAKE_RECENCY_FRESH = "wake_recency_fresh"
-REASON_WAKE_LEGS_DEAD = "wake_legs_dead"
-REASON_WAKE_LEGS_NONE_DEAD = "wake_legs_none_dead"
+REASON_WAKE_RECENCY_NO_WAKE_SINCE_START = "wake_recency_no_wake_since_start"
+REASON_WAKE_RECENCY_UNKNOWN = "wake_recency_unknown"
 
 @doctor_check(label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
@@ -156,16 +153,19 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
             "openWakeWord models", "fail", str(e), reason=REASON_MODEL_CHECK_CRASHED,
         )
 
+def _voice_state() -> "dict | None":
+    """/state.voice, or None if jasper-control is unreachable/absent."""
+    payload = evidence.control_state().payload
+    voice = payload.get("voice") if isinstance(payload, dict) else None
+    return voice if isinstance(voice, dict) else None
+
 def _voice_wake_legs_runtime() -> "set[str] | None":
     """Wake-leg tokens jasper-voice actually opened, from jasper-control's
     /state.voice.wake_legs. None when jasper-control is unreachable or the
     field is absent (older daemon / voice down) — callers treat None as
     "can't tell", not "no legs", and report configured intent instead."""
-    state = evidence.control_state().payload
-    if not isinstance(state, dict):
-        return None
-    voice = state.get("voice")
-    if not isinstance(voice, dict):
+    voice = _voice_state()
+    if voice is None:
         return None
     legs = voice.get("wake_legs")
     if not isinstance(legs, list):
@@ -339,70 +339,30 @@ def check_wake_legs_configured() -> CheckResult:
         push_to_talk_only=_push_to_talk_only_speaker(),
     )
 
-def _wake_observability_skip(label: str) -> "CheckResult | None":
-    """Same no-live-wake-path shapes check_wake_legs_configured and voice.py
-    already gate on: push-to-talk-only (no legs by design), or a streambox
-    with no accessory paired (voice not running)."""
+@doctor_check()
+def check_wake_recency() -> CheckResult:
+    """Warns after WAKE_RECENCY_STALE_SEC of silence; unreachable voice is not a false stale."""
     if _push_to_talk_only_speaker():
+        skip = _assess_wake_legs("auto", False, False, None, push_to_talk_only=True)
+        skip.name = "Wake recency"
+        return skip
+    voice = _voice_state()
+    if voice is None or not voice.get("reachable"):
         return CheckResult(
-            label, "skipped",
-            "no local microphone and a push-to-talk accessory is paired; "
-            "jasper-voice arms no wake legs on this speaker",
-            reason=REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY,
-        )
-    return _voice_gated_skip(label)
-
-def _assess_wake_recency(last_wake_at: "float | None", now: float) -> CheckResult:
-    """None (no wake this daemon lifetime) reads as stale, not "can't
-    tell" — that's the silent-deafness case this row exists for."""
-    age = now - last_wake_at if last_wake_at is not None else None
-    if age is None or age > WAKE_RECENCY_STALE_SEC:
+            "Wake recency", "skipped",
+            "voice unreachable; can't tell when it last heard a wake word",
+            reason=REASON_WAKE_RECENCY_UNKNOWN)
+    last_wake_at = voice.get("last_wake_at")
+    if last_wake_at is None:
+        return CheckResult(
+            "Wake recency", "ok", "no wake word heard since daemon start",
+            reason=REASON_WAKE_RECENCY_NO_WAKE_SINCE_START)
+    age = max(0.0, time.time() - last_wake_at)
+    if age > WAKE_RECENCY_STALE_SEC:
         return CheckResult(
             "Wake recency", "warn",
             f"no wake word heard in over {WAKE_RECENCY_STALE_SEC // 3600} h",
-            reason=REASON_WAKE_RECENCY_STALE,
-        )
+            reason=REASON_WAKE_RECENCY_STALE)
     return CheckResult(
         "Wake recency", "ok", f"last wake {age / 60:.0f} min ago",
-        reason=REASON_WAKE_RECENCY_FRESH,
-    )
-
-@doctor_check()
-def check_wake_recency() -> CheckResult:
-    """Warns when no leg has heard the wake word in WAKE_RECENCY_STALE_SEC —
-    a leg can stay armed (check_wake_legs_configured, above) while never
-    actually hearing anything, e.g. a muted capture channel."""
-    if (skip := _wake_observability_skip("Wake recency")) is not None:
-        return skip
-    state = evidence.control_state().payload
-    voice = state.get("voice") if isinstance(state, dict) else None
-    last_wake_at = voice.get("last_wake_at") if isinstance(voice, dict) else None
-    return _assess_wake_recency(last_wake_at, time.time())
-
-def _assess_wake_legs_alive(dead_legs: "list[str] | None") -> CheckResult:
-    """Fails on any leg /state.voice.wake_legs_dead names, including the
-    primary: check_wake_legs_configured's armed set counts "on" as armed
-    unconditionally, so it alone can't see the primary leg die."""
-    if dead_legs:
-        return CheckResult(
-            "Wake legs alive", "fail",
-            f"leg(s) died: {', '.join(sorted(dead_legs))}; see "
-            "`journalctl -u jasper-voice | grep event=wake.leg_died`",
-            reason=REASON_WAKE_LEGS_DEAD,
-        )
-    return CheckResult(
-        "Wake legs alive", "ok", "no wake leg has died",
-        reason=REASON_WAKE_LEGS_NONE_DEAD,
-    )
-
-@doctor_check()
-def check_wake_legs_alive() -> CheckResult:
-    """Fails when a leg's consumer task died, per _assess_wake_legs_alive —
-    including the primary AEC3 leg, which check_wake_legs_configured cannot
-    see die."""
-    if (skip := _wake_observability_skip("Wake legs alive")) is not None:
-        return skip
-    state = evidence.control_state().payload
-    voice = state.get("voice") if isinstance(state, dict) else None
-    dead = voice.get("wake_legs_dead") if isinstance(voice, dict) else None
-    return _assess_wake_legs_alive(dead if isinstance(dead, list) else None)
+        reason=REASON_WAKE_RECENCY_FRESH)

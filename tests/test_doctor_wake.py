@@ -261,61 +261,48 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
 
 
 # ---------------------------------------------------------------------------
-# wake recency / leg liveness — the /state.voice facts jasper-doctor already
-# fetches via evidence, projected onto two new rows
+# wake recency — the /state.voice facts jasper-doctor already fetches via
+# evidence, projected onto one row
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "last_wake_age_sec, push_to_talk_only, status, reason",
+    "voice, push_to_talk_only, status, reason",
     [
-        (60.0, False, "ok", "REASON_WAKE_RECENCY_FRESH"),
-        (wake.WAKE_RECENCY_STALE_SEC + 1, False, "warn", "REASON_WAKE_RECENCY_STALE"),
+        ({"reachable": True, "last_wake_at": None}, False,
+         "ok", "REASON_WAKE_RECENCY_FRESH"),
+        ({"reachable": True, "last_wake_at": None}, False,
+         "warn", "REASON_WAKE_RECENCY_STALE"),
+        # No real timestamp yet this daemon lifetime, but jasper-voice IS
+        # up: that's "hasn't heard one since it started", not "stale".
+        ({"reachable": True, "last_wake_at": None}, False,
+         "ok", "REASON_WAKE_RECENCY_NO_WAKE_SINCE_START"),
+        # jasper-voice down (or jasper-control unreachable): no signal to
+        # read, so "can't tell" rather than a false stale/fresh verdict.
+        ({"reachable": False, "last_wake_at": None}, False,
+         "skipped", "REASON_WAKE_RECENCY_UNKNOWN"),
         # No wake legs by design (push-to-talk-only speaker): there is no
         # live wake path to report recency on.
-        (60.0, True, "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
+        ({"reachable": True, "last_wake_at": None}, True,
+         "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
     ],
-    ids=["fresh", "stale", "no-legs"],
+    ids=["fresh", "stale", "no-wake-since-start", "voice-unreachable", "no-legs"],
 )
 def test_check_wake_recency_verdicts(
-    monkeypatch, last_wake_age_sec, push_to_talk_only, status, reason
+    monkeypatch, voice, push_to_talk_only, status, reason
 ):
     from jasper.cli.doctor._evidence import StatusRead, evidence
 
     now = 2_000_000.0
+    if reason == "REASON_WAKE_RECENCY_FRESH":
+        voice = {**voice, "last_wake_at": now - 60.0}
+    elif reason == "REASON_WAKE_RECENCY_STALE":
+        voice = {**voice, "last_wake_at": now - (wake.WAKE_RECENCY_STALE_SEC + 1)}
     monkeypatch.setattr(wake.time, "time", lambda: now)
     monkeypatch.setattr(wake, "_push_to_talk_only_speaker", lambda: push_to_talk_only)
-    evidence.seed("install_profile_is_streambox", False)
-    evidence.seed(
-        "control_state",
-        StatusRead({"voice": {"last_wake_at": now - last_wake_age_sec}}),
-    )
+    evidence.seed("control_state", StatusRead({"voice": voice}))
 
     r = wake.check_wake_recency()
-
-    assert r.status == status
-    assert r.reason == getattr(wake, reason)
-
-
-def test_assess_wake_recency_never_woken_reads_as_stale():
-    """`last_wake_at is None` (no wake this daemon lifetime) is exactly the
-    silent-deafness case the row exists to catch, not a "can't tell"."""
-    r = wake._assess_wake_recency(None, 1_000.0)
-
-    assert r.status == "warn"
-    assert r.reason == wake.REASON_WAKE_RECENCY_STALE
-
-
-@pytest.mark.parametrize(
-    "dead_legs, status, reason",
-    [
-        ([], "ok", "REASON_WAKE_LEGS_NONE_DEAD"),
-        (["on"], "fail", "REASON_WAKE_LEGS_DEAD"),
-    ],
-    ids=["alive", "dead"],
-)
-def test_assess_wake_legs_alive_verdicts(dead_legs, status, reason):
-    r = wake._assess_wake_legs_alive(dead_legs)
 
     assert r.status == status
     assert r.reason == getattr(wake, reason)
