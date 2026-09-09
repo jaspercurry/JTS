@@ -1811,9 +1811,9 @@ def main(argv: list[str] | None = None) -> int:
     # binaries — that is the grouping opt-in's job (jasper.multiroom.provision).
     # Runs BEFORE the active-endpoint gate so the active-leader precheck's
     # snapcast check sees a fresh install. TOTAL + fail-soft: a failed install is
-    # surfaced via /state.grouping.provision + the doctor and flips rc, but never
-    # raises — the snap units simply fail to start, the box stays solo-safe, and
-    # the next reconcile retries.
+    # surfaced via /grouping's `provision` field + the doctor and flips rc, but
+    # never raises — the snap units simply fail to start, the box stays
+    # solo-safe, and the next reconcile retries.
     if role.active:
         from .provision import ensure_snapcast_installed
 

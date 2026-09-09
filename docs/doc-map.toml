@@ -283,7 +283,6 @@ safety = "voice-runtime"
 code = [
   "jasper/conversation_history.py",
   "jasper/web/chat_setup.py",
-  "jasper/control/state_aggregate.py",
   "jasper/cli/doctor/web.py",
   "deploy/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
@@ -666,13 +665,11 @@ code = [
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
-  # The composite gadget adds a small additive `usb_network` /state block to
-  # that file, but the file is a multi-block aggregator already owned by
-  # conversation-history (/state.chat), volume-and-sound (/state.audio), and
-  # resilience-and-system-dashboard (/state.resilience). Routing the whole
-  # aggregator here too would spuriously flag AGENTS.md on every
-  # unrelated /state change; a real change to the usb_network block co-occurs
-  # with the gadget scripts/units/doctor globs above and still routes here.
+  # The file is a multi-block aggregator already owned by volume-and-sound
+  # (/state.audio) and resilience-and-system-dashboard (/state.resilience).
+  # Routing the whole aggregator here too would spuriously flag AGENTS.md on
+  # every unrelated /state change; a real usb-network change still routes
+  # here via the gadget scripts/units/doctor globs above.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
 ]
 docs = [
@@ -682,7 +679,7 @@ requires_docs_when = [
   "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
-  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_state_usb_network.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
+  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
 ]
 
 [[subsystem]]

@@ -928,12 +928,6 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
     ) is expect_overlay_check_named
 
 
-def test_state_resilience_carries_the_park_reader():
-    from jasper.control import state_aggregate
-
-    assert state_aggregate.transport_park is transport_park
-
-
 @pytest.mark.parametrize(
     "topology,env,park_class,issue,remedy", _PARK_CASES
 )

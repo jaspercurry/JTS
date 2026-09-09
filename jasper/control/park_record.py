@@ -6,7 +6,7 @@
 
 ``jasper-camilla-recover`` (ADR-0175) parks a daemon out-of-band on a ``/run``
 record, and :mod:`jasper.control.camilla_recover_state` reads it for
-jasper-doctor and ``/state.resilience``. This module owns the
+jasper-doctor. This module owns the
 open/absent/unreadable/parse preamble, including its posture: a record that
 cannot be read is reported distinctly from one that is not there, because a
 permissions regression must never read as a healthy speaker. Each reader
