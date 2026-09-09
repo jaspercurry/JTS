@@ -633,8 +633,13 @@ def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
 def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
     monkeypatch,
 ) -> None:
-    now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    # Fixed rather than the host's real CLOCK_MONOTONIC: a container whose
+    # own uptime is under 600s would otherwise see a negative timestamp.
+    now_us = 10_000.0 * 1e6
     started_us = int(now_us - 600.0 * 1e6)
+    monkeypatch.setattr(
+        time, "clock_gettime", lambda _clock: now_us / 1e6,
+    )
     monkeypatch.setattr(
         airplay_health,
         "read_unit_states",
