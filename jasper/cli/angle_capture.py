@@ -56,7 +56,6 @@ from jasper.active_speaker.angle_capture import (
     MOVERS,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
-    REGIMES,
     AngleCaptureRequest,
     AngleStop,
     announced_indexes,
@@ -193,10 +192,8 @@ def _expect_angles(raw: str) -> tuple[int, ...]:
 #: What each ``--regime`` value plays at each angle, in walk order. ``both`` is a
 #: pair at one angle rather than two walks -- the property ``both_at``'s
 #: docstring states, reproduced here as the data it is rather than as a branch.
-#: The two single-regime rows are keyed off :data:`REGIMES` itself, so a regime
-#: added to the seam is a ``KeyError`` here rather than a silently missing verb.
 _REGIME_STOPS: dict[str, tuple[str, ...]] = {
-    **{regime: (regime,) for regime in REGIMES},
+    **{regime: (regime,) for regime in (REGIME_PER_DRIVER, REGIME_SUMMED)},
     "both": (REGIME_PER_DRIVER, REGIME_SUMMED),
 }
 

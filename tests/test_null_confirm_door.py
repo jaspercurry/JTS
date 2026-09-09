@@ -12,6 +12,7 @@ gate actually emits, and every banked row carries enough to be graded alone.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 from dataclasses import replace
@@ -857,6 +858,51 @@ def test_a_clean_walk_answers_with_the_scalars_and_the_path(
     assert payload["next"].startswith("jasper-round-views delay-confirm")
 
 
+def test_successive_runs_retain_stimulus_and_capture_identities(
+    tmp_path, monkeypatch, capsys,
+):
+    _hardware_free_walk(monkeypatch)
+    _install_door(monkeypatch)
+    monkeypatch.setattr(null_door.time, "time", lambda: 1000.0)
+    context = _fake_context()
+    monkeypatch.setattr(null_door, "_context", lambda: context)
+    captures = iter([bytes([value]) * 8 for value in range(1, 5)])
+
+    async def _play(*_args, **_kwargs):
+        answer = _answer()
+        answer.wav = next(captures)
+        return answer
+
+    monkeypatch.setattr(null_door, "_play_and_capture", _play)
+    argv = ["--bundle-dir", str(tmp_path), "--delays", "0", "--fc-hz", "2000"]
+    assert null_door.main(argv) == null_door.EXIT_OK
+    first = json.loads(capsys.readouterr().out)
+    original = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    context.driver_caps_dbfs["tweeter"] -= 3.0
+
+    def _refuse(*_args):
+        raise null_door.NullDoorRefused(null_door.REFUSE_UNUSABLE_CAPTURE, "unusable")
+
+    monkeypatch.setattr(null_door, "_depth", _refuse)
+    assert null_door.main(argv) == null_door.EXIT_REFUSED
+    second = json.loads(capsys.readouterr().out)["detail"]
+    assert all(path.read_bytes() == raw for path, raw in original.items())
+    rows = [
+        json.loads((tmp_path / null_door.NULL_RUNS_DIR / row["row"]).read_text())
+        for payload in (first, second) for row in payload["rows"]
+    ]
+    assert len(list((tmp_path / null_door.NULL_RUNS_DIR).glob("*.json"))) == 4
+    assert len({row["stimulus_wav_path"] for row in rows}) == 2
+    assert len({row["capture_wav_path"] for row in rows}) == 4
+    for row in rows:
+        stimulus = (tmp_path / row["stimulus_wav_path"]).read_bytes()
+        capture = (tmp_path / row["capture_wav_path"]).read_bytes()
+        assert row["wav_sha256"] == row["stimulus_wav_sha256"] == hashlib.sha256(stimulus).hexdigest()
+        assert row["capture_wav_sha256"] == hashlib.sha256(capture).hexdigest()
+        assert row["capture_wav_sha256"] != row["stimulus_wav_sha256"]
+
+
 def test_a_row_that_could_not_be_read_refuses_and_carries_the_rows(
     tmp_path, monkeypatch, capsys,
 ):
@@ -934,14 +980,7 @@ def test_a_box_that_cannot_answer_refuses_as_a_document(monkeypatch, capsys):
 
 
 def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
-    """B2: a refused run must leave the bundle exactly as it found it.
-
-    The stimulus WAV has a FIXED name, so a run that published it before the
-    interlock would overwrite the bytes a LIVE run's artifact sha256 is bound
-    to — the live run's verified-WAV check then fails mid-session. The refusal
-    is what makes this observable: if the write still happens when the door
-    says no, it happens before the door is consulted.
-    """
+    """A refused run must leave the bundle exactly as it found it."""
     from jasper.active_speaker.crossover_v2 import door as door_mod
 
     context = SimpleNamespace(

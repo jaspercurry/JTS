@@ -114,6 +114,7 @@ def test_doctor_check_exception_becomes_fail_result():
 
     assert result.name == "explosive check"
     assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "RuntimeError: synthetic check failure" in result.detail
 
 
@@ -127,6 +128,8 @@ def test_doctor_check_exception_redacts_secret_like_values():
 
     result = _shared._run_doctor_check(("sensitive check", explode))
 
+    assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "super-secret-refresh" not in result.detail
     assert "super-secret-access-token" not in result.detail
     assert "sk-super-secret-openai-key" not in result.detail
@@ -146,6 +149,8 @@ def test_check_result_redacts_a_credential_left_in_its_own_detail():
         reason="some_reason",
     )
 
+    assert result.status == "warn"
+    assert result.reason == "some_reason"
     assert "sk-live-abc123" not in result.detail
     assert "<redacted>" in result.detail
 
@@ -160,6 +165,7 @@ def test_async_doctor_check_exception_becomes_fail_result():
 
     assert result.name == "async check"
     assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "RuntimeError: synthetic async failure" in result.detail
 
 
@@ -195,10 +201,10 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     results = asyncio.run(doctor.run_async(object()))
 
     assert ran == ["env", "web"]
-    assert [(r.name, r.status, r.detail) for r in results] == [
-        ("env file", "ok", "ran"),
-        ("wake model", "skipped", "not installed (streambox profile)"),
-        ("management surface", "ok", "ran"),
+    assert [(r.name, r.status, r.reason) for r in results] == [
+        ("env file", "ok", ""),
+        ("wake model", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("management surface", "ok", ""),
     ]
 
 
@@ -328,17 +334,13 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
     results = asyncio.run(doctor.run_async(SimpleNamespace()))
 
     assert ran == ["renderers", "correction"]
-    assert [(r.name, r.status, r.detail) for r in results] == [
-        ("provider key", "skipped", "not installed (streambox profile)"),
-        ("mic capture", "skipped", "not installed (streambox profile)"),
-        ("librespot.service", "ok", "ran"),
-        ("room correction service", "ok", "ran"),
-        ("crossover v2 cloud pipeline", "skipped", "not installed (streambox profile)"),
+    assert [(r.name, r.status, r.reason) for r in results] == [
+        ("provider key", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("mic capture", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("librespot.service", "ok", ""),
+        ("room correction service", "ok", ""),
+        ("crossover v2 cloud pipeline", "skipped", _harness.REASON_NOT_INSTALLED),
     ]
-    crossover_result = next(
-        r for r in results if r.name == "crossover v2 cloud pipeline"
-    )
-    assert crossover_result.reason == _harness.REASON_NOT_INSTALLED
 
 
 def test_run_async_parallelizes_blocking_checks_but_preserves_order(

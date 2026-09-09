@@ -93,42 +93,6 @@ function seriesSwatch(run, series, index) {
   }));
 }
 
-function addInterval(intervals, raw) {
-  const lo = Number(Array.isArray(raw) ? raw[0] : raw && raw.f_lo_hz);
-  const hi = Number(Array.isArray(raw) ? raw[1] : raw && raw.f_hi_hz);
-  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo) return;
-  const clippedLo = Math.max(20, lo);
-  const clippedHi = Math.min(20000, hi);
-  if (clippedHi >= clippedLo) intervals.push([clippedLo, clippedHi]);
-}
-
-function seriesExclusions(run, series) {
-  const intervals = [];
-  const metadata = run.metadata || {};
-  const floor = Math.max(Number(metadata.trusted_floor_hz) || 20, Number(series.validity_floor_hz) || 20);
-  if (floor > 20) addInterval(intervals, [20, floor]);
-  for (const band of metadata.excluded_bands_hz || []) addInterval(intervals, band);
-  for (const band of series.excluded_intervals_hz || []) addInterval(intervals, band);
-  return intervals.map(([lo, hi]) => ({ f_lo_hz: lo, f_hi_hz: hi }));
-}
-
-function chartExclusions(chartSeries) {
-  const intervals = [];
-  for (const series of chartSeries) {
-    if (series.draw) {
-      for (const band of series.excludedIntervals) addInterval(intervals, band);
-    }
-  }
-  intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
-  const merged = [];
-  for (const interval of intervals) {
-    const last = merged[merged.length - 1];
-    if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
-    else merged.push(interval.slice());
-  }
-  return merged.map(([lo, hi]) => ({ f_lo_hz: lo, f_hi_hz: hi }));
-}
-
 function draw() {
   if (!currentView) return;
   const chartSeries = [];
@@ -136,24 +100,23 @@ function draw() {
     run.series.forEach((series, index) => {
       chartSeries.push({
         curve: series,
-        referenceDb: series.reference_db,
         color: runColor(run),
         lineWidth: series.kind === 'average' ? 2.5 : 1.25,
         alpha: series.kind === 'average' ? 1 : 0.55,
         dash: seriesDash(series, index, run.series),
         draw: visibleSeries.has(seriesKey(run, series)),
-        excludedIntervals: seriesExclusions(run, series),
       });
     });
   }
   const visibleCount = chartSeries.filter((series) => series.draw).length;
-  const exclusions = chartExclusions(chartSeries);
+  const range = selectedRange();
+  const untrusted = chartSeries.some(({ curve, draw }) => draw &&
+    curve.display.untrusted_intervals_hz.some(([lo, hi]) => hi > range[0] && lo < range[1]));
   const drew = drawFrequencyChart(els.canvas, {
     series: chartSeries,
-    frequencyRangeHz: selectedRange(),
+    frequencyRangeHz: range,
     minSpanDb: 10,
     padDb: 1,
-    excludedIntervals: exclusions,
     theme: {
       grid: cssColor(els.canvas, '--border-strong', '#ccc'),
       text: cssColor(els.canvas, '--muted', '#888'),
@@ -163,7 +126,7 @@ function draw() {
   els.status.textContent = !drew
     ? 'No visible response data in this frequency range. Select a curve or widen the range.'
     : `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
-      exclusions.length ? ' · shaded areas are untrusted' : ''
+      untrusted ? ' · shaded areas are untrusted' : ''
     }`;
 }
 
