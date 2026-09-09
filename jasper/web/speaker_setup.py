@@ -50,14 +50,12 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    read_form,
+    form_guarded,
     route_path,
-    reject_csrf,
     send_html_response,
     send_rejected_form,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
 )
 from ._service_state import unit_active as _unit_active
 
@@ -434,13 +432,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             ),
         )
 
-    def _post_save(handler: BaseHTTPRequestHandler) -> None:
-        # Form CSRF: the token rides in the body, so the guard runs
-        # here rather than in do_POST, which route-checks first.
-        form = read_form(handler)
-        if not guard_mutating_request(handler, form):
-            reject_csrf(handler)
-            return
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
         name = form.get("name", "")
         room = form.get("room", "")
         page = functools.partial(

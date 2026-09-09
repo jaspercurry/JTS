@@ -427,7 +427,6 @@ def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
         assert b"cross_site_request" in req.wfile.getvalue()
 
 
-
 # --- Route tables, pinned at the request surface --------------------------
 #
 # Every converged wizard dispatches the same five steps: normalise the path,
@@ -522,6 +521,15 @@ TABLED_POST_WIZARDS = [
 ]
 
 
+# Wizards whose POST bodies parse through `_common.json_body`. The stub
+# backend the factory builds faults on any attribute, so a route body that
+# ran would surface as an exception rather than the decorator's 400.
+_JSON_BODY_POST_ROUTES = [
+    (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS
+    if name == "wake_corpus_setup" for path in posts
+]
+
+
 def _csrf_headers(module_name: str) -> dict[str, str]:
     if f"{module_name}.py" in _BESPOKE_CSRF_WIZARDS:
         return {"X-CSRF-Token": _WAKE_CORPUS_TOKEN}
@@ -587,6 +595,86 @@ def test_tabled_get_route_rejects_cross_site_reads(module_name, handler_cls, pat
     req.do_GET()
     assert req.status == int(http.HTTPStatus.FORBIDDEN)
     assert b"cross_site_request" in req.wfile.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    _JSON_BODY_POST_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in _JSON_BODY_POST_ROUTES],
+)
+def test_a_malformed_json_body_never_reaches_a_route_body(
+    module_name, handler_cls, path,
+):
+    """`json_body` parses before it dispatches: a token-bearing POST whose
+    body is not a JSON object is answered 400 by the decorator, so the route
+    body — which would fault on this stub backend — never runs."""
+    req = _WizardRequest(
+        handler_cls,
+        path,
+        headers={"Host": "jts.local", **_csrf_headers(module_name)},
+        body=b"{not json",
+    )
+    req.do_POST()
+    assert req.status == int(http.HTTPStatus.BAD_REQUEST)
+
+
+# --- Wizards not yet on a route table ------------------------------------
+#
+# The tabled wizards are pinned at the request surface above. Until the rest
+# join them these two source-level tripwires are the only thing holding the
+# read guard and the guard-before-work ordering in their hand-rolled
+# dispatchers.
+#
+# Removal condition: delete once every wizard is in
+# _TABLED_WIZARD_FACTORIES (routes part A).
+
+UNTABLED_WIZARD_FILES = [
+    path for path in sorted(WEB_SETUP_FILES)
+    if path.stem not in _TABLED_WIZARD_FACTORIES
+]
+
+# The first thing a do_POST does with the request that is not the CSRF guard's
+# own input. `read_form` is deliberately absent: a form wizard's token rides in
+# the body, so reading it is how the guard gets called at all.
+_POST_WORK_MARKERS = (
+    "self._read_json(",
+    "self._handle_",
+    "self._set_",
+    "self._clear_",
+)
+_POST_GUARD_MARKERS = ("guard_mutating_request(", "self._check_csrf(")
+
+
+def _dispatcher_source(path: Path, name: str) -> str | None:
+    source = path.read_text()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node)
+    return None
+
+
+@pytest.mark.parametrize(
+    "path", UNTABLED_WIZARD_FILES, ids=[p.stem for p in UNTABLED_WIZARD_FILES],
+)
+def test_untabled_wizard_dispatchers_guard_reads_and_guard_before_work(path):
+    get_source = _dispatcher_source(path, "do_GET")
+    if get_source is not None:
+        assert "guard_read_request" in get_source, (
+            f"{path}::do_GET never calls guard_read_request() — the shared "
+            "Host + Fetch Metadata read chokepoint in jasper/web/_common.py"
+        )
+    post_source = _dispatcher_source(path, "do_POST")
+    if post_source is None:
+        return
+    guards = [post_source.index(m) for m in _POST_GUARD_MARKERS if m in post_source]
+    work = [post_source.index(m) for m in _POST_WORK_MARKERS if m in post_source]
+    if not work:
+        return
+    assert guards and min(guards) < min(work), (
+        f"{path}::do_POST reads the body or dispatches a route before the "
+        "CSRF guard runs"
+    )
+
 
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
     """A form wizard's guard lives in the route body — it must read the

@@ -1180,11 +1180,9 @@ def test_envelope_route_is_registered_and_additive():
     )
 
     assert correction_setup._GET_ROUTES["/envelope"] is (
-        correction_setup._Handler._get_envelope
+        correction_setup._get_envelope
     )
-    assert correction_setup._GET_ROUTES["/status"] is (
-        correction_setup._Handler._get_status
-    )
+    assert correction_setup._GET_ROUTES["/status"] is correction_setup._get_status
 
 
 def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):

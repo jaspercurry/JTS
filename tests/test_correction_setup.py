@@ -2230,7 +2230,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 
     handler._send_json = _send_json
 
-    handler._dispatch_sync()
+    correction_setup._dispatch_sync(handler)
 
     assert sent["status"] == 400
     assert "WAV body too large" in sent["payload"]["error"]

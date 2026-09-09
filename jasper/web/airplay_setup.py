@@ -51,13 +51,11 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    read_form,
-    reject_csrf,
+    form_guarded,
     route_path,
     send_html_response,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,13 +196,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             status_msg=ctx["flash"],
         ))
 
-    def _post_save(handler: BaseHTTPRequestHandler) -> None:
-        # Form CSRF: the token rides in the body, so the guard runs
-        # here rather than in do_POST, which route-checks first.
-        form = read_form(handler)
-        if not guard_mutating_request(handler, form):
-            reject_csrf(handler)
-            return
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
         mode, err = _apply_save(form)
         if err is not None:
             send_see_other(handler, "./", flash=err)

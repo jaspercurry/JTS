@@ -148,6 +148,6 @@ def test_post_session_handler_refuses_while_muted(
         sent["msg"] = msg
 
     handler._send_error_json = _capture  # type: ignore[method-assign]
-    handler._post_session()
+    wake_corpus_setup._post_session(handler)
     assert sent["status"] == 409
     assert "muted" in str(sent["msg"])

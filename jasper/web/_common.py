@@ -63,6 +63,7 @@ See `tests/test_web_common.py` for the helpers' behavior contracts.
 """
 from __future__ import annotations
 
+import functools
 import html
 import http
 import json
@@ -922,7 +923,7 @@ def route_path(request_path: str) -> str:
     """Normalise a request line into the key a wizard route table uses:
     query string dropped, trailing slashes trimmed, "" mapped to "/".
     Every wizard dispatcher looks its route up by this, so `/save`,
-    `/save/` and `/save?x=1` are one route (ADR-0253 §6)."""
+    `/save/` and `/save?x=1` are one route."""
     return urllib.parse.urlparse(request_path).path.rstrip("/") or "/"
 
 
@@ -1273,6 +1274,38 @@ def reject_csrf(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def form_guarded(
+    fn: Callable[[BaseHTTPRequestHandler, dict[str, str]], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """Wrap a form route body as the bare `handler_fn(handler)` a wizard
+    route table holds. A form wizard's CSRF token rides in the body, so the
+    read has to happen before the guard; doing it here means no route body
+    can be written that mutates without one."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        form = read_form(handler)
+        if not guard_mutating_request(handler, form):
+            reject_csrf(handler)
+            return
+        fn(handler, form)
+    return route
+
+
+def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None]:
+    """Wrap a JSON route body as the bare `handler_fn(handler)` a wizard
+    route table holds. The wizard's own `_read_json()` adapter — the shared
+    `read_json_object` reader under that wizard's byte cap — returns None
+    having already answered the client, so a malformed body can never reach
+    `fn` and no route body can forget to check."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        body = handler._read_json()
+        if body is None:
+            return
+        fn(handler, body)
+    return route
 
 
 # ---------------------------------------------------------------------------
