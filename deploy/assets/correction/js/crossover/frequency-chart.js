@@ -153,7 +153,6 @@ export function drawFrequencyChart(canvas, payload) {
   pointSets.forEach((points, index) => {
     if (!points.length) return;
     const style = series[index];
-    if (style.draw === false) return;
     context.strokeStyle = style.color;
     context.lineWidth = style.lineWidth || 2;
     context.globalAlpha = style.alpha == null ? 1 : style.alpha;

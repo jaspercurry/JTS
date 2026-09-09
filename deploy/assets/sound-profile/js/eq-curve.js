@@ -11,7 +11,7 @@ import {
   GAINLESS_TYPES,
   magnitudeDb
 } from "/assets/sound-profile/js/eq-math.js";
-import { clamp, freqToSlider, sliderToFreq } from "/assets/sound-profile/js/format.js";
+import { clamp } from "/assets/sound-profile/js/format.js";
 import { ACTIVE_GAIN_EPSILON_DB } from "/assets/sound-profile/js/state.js";
 
 function bandType(s) { return s.type || s.biquad_type || 'Peaking'; }
@@ -93,7 +93,6 @@ export {
   advancedSpecs,
   drawArea,
   drawPath,
-  freqToSlider,
   gx,
   gy,
   padB,
@@ -101,7 +100,6 @@ export {
   padR,
   padT,
   pointsFor,
-  sliderToFreq,
   specActive,
   summedDbAt,
 };
