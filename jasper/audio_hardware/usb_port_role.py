@@ -391,6 +391,62 @@ def reconcile_boot_config(
     return state, changed, hat_changed, desired_profile, durability_failed, hat_collision
 
 
+def boot_role_events(
+    state: UsbPortRoleState,
+    *,
+    boot_config_changed: bool = False,
+    hat_profile: str = "",
+    hat_changed: bool = False,
+    hat_collision: I2sHatCollision | None = None,
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    """Ordered hardware events for a resolved USB role (ADR-0235 R4)."""
+    events: list[tuple[str, dict[str, object]]] = [
+        (
+            "hardware.usb_role_resolved",
+            {
+                "topology": state.board_topology,
+                "desired": state.desired_role,
+                "active": state.active_role,
+                "gadget_available": str(state.gadget_available).lower(),
+                "management_transport_available": str(
+                    state.management_transport_available
+                ).lower(),
+                "reason": state.reason,
+            },
+        )
+    ]
+    if boot_config_changed:
+        events.append(
+            (
+                "hardware.boot_config_changed",
+                {"reboot_required": int(state.reboot_required)},
+            )
+        )
+    if hat_changed:
+        # No `reboot_required` here: whether the running kernel already
+        # carries this overlay is desired-vs-observed, which only the
+        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
+        events.append(
+            (
+                "hardware.i2s_hat_boot_config_changed",
+                {"profile": hat_profile or "none"},
+            )
+        )
+    if hat_collision is not None:
+        events.append(
+            (
+                "hardware.i2s_hat_boot_config_conflict",
+                {
+                    "managed_overlay": hat_collision.managed_overlay,
+                    "colliding_overlays": ",".join(
+                        hat_collision.colliding_overlays
+                    ),
+                },
+            )
+        )
+    return tuple(events)
+
+
 if __name__ == "__main__":
     from jasper.cli.usb_port_role import main
 

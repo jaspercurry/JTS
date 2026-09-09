@@ -9,9 +9,9 @@
 single source of truth for the ALSA pcm alias ``"correction_substream"``.
 Before this test existed the literal was independently re-declared under
 five differently-named constants (and a few bare literals) across eleven
-files in ``jasper.correction``, ``jasper.active_speaker``, ``jasper.web``,
-and ``jasper.cli`` — nothing enforced that the copies agreed, so a rename
-would have silently diverged.
+files in ``jasper.active_speaker``, ``jasper.web``, and ``jasper.cli`` —
+nothing enforced that the copies agreed, so a rename would have silently
+diverged.
 
 Three checks:
 
@@ -19,8 +19,8 @@ Three checks:
      module declares a string constant whose value is EXACTLY
      ``"correction_substream"``. This is the test that fails when someone
      adds a sixth copy. Matched by VALUE from the parsed AST — the same
-     technique ``tests/test_correction_boundary_ssot.py`` uses for the
-     room-correction band edge — so prose that merely *mentions* the lane
+     technique ``tests/test_audio_measurement_boundary_ssot.py`` uses for
+     the room band edge — so prose that merely *mentions* the lane
      (docstrings, comments, diagnostic messages) is not a false positive,
      and neither are the differently-valued derived tags like
      ``"correction_substream_continuous_tone"``: those are different string
@@ -34,7 +34,7 @@ Three checks:
      override.
   3. **The placement promise, proven rather than merely stated.**
      ``correction_lane.py`` lives in ``jasper.audio_measurement`` instead of
-     ``jasper.correction.playback`` specifically so four socket-activated
+     beside the sweep/playback kernel specifically so the socket-activated
      modules never pay for ``numpy``. That promise had no test until a
      reviewer demonstrated the gap empirically: adding
      ``from .playback import play_wav as play_wav`` to
@@ -61,7 +61,6 @@ import pytest
 
 from jasper import renderer_lanes
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from jasper.correction import playback
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 JASPER_ROOT = REPO_ROOT / "jasper"
@@ -75,7 +74,7 @@ def _literal_occurrences(path: Path) -> list[tuple[int, str]]:
     literal, as (line number, source line) pairs.
 
     AST-based and matched by value rather than scanned as text, for the same
-    reason ``test_correction_boundary_ssot.py`` parses rather than
+    reason ``test_audio_measurement_boundary_ssot.py`` parses rather than
     text-searches: prose that merely names the lane is not a re-declaration
     (its literal is a longer string, not an exact match), and neither is a
     longer derived value like ``"correction_substream_continuous_tone"``.
@@ -121,8 +120,7 @@ def test_known_consuming_sites_resolve_to_the_ssot() -> None:
     transport reader, pinned by ``tests/test_renderer_ring_lanes.py``'s
     unitless device facts). What remains constant is the lane's NAME on the
     shipped snd-aloop transport, and exactly two consumers still hold a
-    named copy of it: ``jasper.correction.playback``'s Room-compat
-    re-export, and the ``correction`` row's ``aloop_device`` in
+    named copy of it: the ``correction`` row's ``aloop_device`` in
     ``jasper.renderer_lanes`` (which imports the SSOT rather than
     respelling the literal).
 
@@ -135,7 +133,6 @@ def test_known_consuming_sites_resolve_to_the_ssot() -> None:
     ``correction.playback.DEFAULT_ALSA_DEVICE`` — those surfaces resolve
     the device through the reader at call time instead of naming it.
     """
-    assert playback.CORRECTION_SUBSTREAM == CORRECTION_SUBSTREAM
     lane = renderer_lanes.lane_by_label("correction")
     assert lane is not None and lane.aloop_device == CORRECTION_SUBSTREAM
 
@@ -163,7 +160,7 @@ def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 # The consumers whose numpy-freeness is the whole reason the constant lives in
-# jasper.audio_measurement.correction_lane and not jasper.correction.playback.
+# jasper.audio_measurement.correction_lane and not beside the sweep kernel.
 _LIGHT_CONSUMERS = (
     "jasper.web.sound_setup",
     "jasper.web.sync_flow",
@@ -191,9 +188,9 @@ def test_lane_constant_consumers_stay_numpy_free(module: str) -> None:
         f"{module} cannot be imported with {_HEAVY_MODULES} poisoned — its "
         "import chain now transitively imports numpy or scipy. This is the "
         "placement promise jasper/audio_measurement/correction_lane.py's "
-        "docstring makes: the constant lives there, not in "
-        "jasper.correction.playback, precisely so this socket-activated "
-        "module never pays for numpy on a 1 GB Pi. Check whether "
+        "docstring makes: the constant lives there, not beside the sweep "
+        "kernel, precisely so this socket-activated module never pays for "
+        "numpy on a 1 GB Pi. Check whether "
         "jasper/audio_measurement/__init__.py grew a convenience re-export "
         "of a heavy sibling module.\n\n"
         f"{result.stderr}"

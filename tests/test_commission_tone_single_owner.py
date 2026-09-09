@@ -8,8 +8,8 @@ PR #969 forked the commission-tone helpers between the /sound/ page
 and the new ``jasper/active_speaker/web_commissioning.py``; the two copies had
 already begun to drift. The migration is finished by making
 ``web_commissioning`` the single owner and having ``/sound/`` import the helpers
-rather than keep a hand-copied fork (the sibling ``/sound/room/`` surface already
-routes through ``web_commissioning`` via ``correction_crossover_backend``).
+rather than keep a hand-copied fork (the measurement daemon already routes
+through ``web_commissioning`` via ``correction_crossover_backend``).
 
 These guards make a future re-fork fail CI: the shared helpers must be the *same
 function objects* on both surfaces (i.e. imported, not re-defined), the tone's
@@ -243,7 +243,7 @@ def test_constant_guard_accepts_imports_and_ignores_prose():
 
 
 def test_correction_routes_through_web_commissioning_owner():
-    """/sound/room/ keeps consuming the same owner module (no parallel fork)."""
+    """The measurement daemon keeps consuming the same owner module."""
 
     assert correction_backend.web_commissioning is web_commissioning
 

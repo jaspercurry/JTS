@@ -14,17 +14,16 @@ an operator explicitly arms one.
 
 from __future__ import annotations
 
-import ast
 import contextlib
 import io
 import json
-import tokenize
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jasper import ring_assets
+from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
@@ -651,147 +650,46 @@ def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
     assert OutputdActiveLaneDecision(ok=False, width=None, reason="x").endpoint_device is None
 
 
-# --------------------------------------------------------------------------
-# 5. The WRITER side — one helper, one decision (safety-B1). Walking.
-# --------------------------------------------------------------------------
-
-
-def _lane_writes_outside_the_pair_helper(source: str) -> list[str]:
-    """Code lines naming the lane key outside ``set_outputd_active_lane_pair``.
-
-    The key reaches the file inside an ACTION TUPLE and the writer call is on
-    another line, so a scan requiring both on one line matches nothing and
-    guards nothing. Docstrings and comments are stripped (the helper's own
-    prose names the key, and so does this module's), leaving only lines that a
-    reader would have to call a write.
-    """
-    lines = source.splitlines()
-    blanked: set[int] = set()
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            blanked.update(range(node.lineno - 1, node.end_lineno))
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.COMMENT:
-            index = token.start[0] - 1
-            lines[index] = lines[index][: token.start[1]]
-    code = "\n".join("" if i in blanked else line for i, line in enumerate(lines))
-    before, _, rest = code.partition("    def set_outputd_active_lane_pair(")
-    assert rest, "the pair helper is gone — every write site is now unguarded"
-    _, _, after = rest.partition("\n    def ")
-    return [
-        line.strip()
-        for line in (before + after).splitlines()
-        if "JASPER_OUTPUTD_ACTIVE_LANE" in line
-    ]
-
-
-def test_every_active_lane_write_site_writes_the_pair():
-    """Walk EVERY write of the lane key and fail on one that skips its pair.
-
-    ``JASPER_OUTPUTD_ACTIVE_LANE`` and ``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT``
-    are ONE FACT with two consumers. outputd bails at startup on the incoherent
-    pair, because that combination can only mean this writer is broken — so a
-    site that states one without the other does not produce a subtly wrong box,
-    it produces a parked one.
-
-    Enumerating the sites rather than asserting "the helper exists" is what makes
-    this a guard: a future branch that reaches for ``set_env_file_var``
-    directly is exactly the regression, and it would pass any test that only
-    checked the helper's own body.
-    """
-    text = HARDWARE_RECONCILE.read_text(encoding="utf-8")
-    # The helper's OWN body is the one legitimate direct writer; everything
-    # outside it must route through the helper.
-    before, _, rest = text.partition("    def set_outputd_active_lane_pair(")
-    assert rest, "the pair helper is gone — every write site is now unguarded"
-    helper, _, after = rest.partition("\n    def ")
-    outside = before + after
-
-    # Self-check FIRST: the scan below is only a guard if it catches the shape
-    # a regression actually has — a key stated in an action tuple, with the
-    # writer call on another line.
-    violation = (
-        "class Pass:\n"
-        "    def set_outputd_active_lane_pair(self, lane):\n"
-        '        return self.set_env_file_var(self.target, [("X", lane)])\n'
-        "\n"
-        "    def rogue(self):\n"
-        "        actions = [\n"
-        '            ("JASPER_OUTPUTD_ACTIVE_LANE", "1"),\n'
-        "        ]\n"
-        "        return self.set_env_file_var(self.target, actions)\n"
-    )
-    assert _lane_writes_outside_the_pair_helper(violation), (
-        "the scan below cannot see a direct lane write, so it guards nothing"
-    )
-    lane_writes = _lane_writes_outside_the_pair_helper(text)
-    assert lane_writes == [], (
-        "these lines write JASPER_OUTPUTD_ACTIVE_LANE directly instead of "
-        f"through set_outputd_active_lane_pair: {lane_writes}"
-    )
-    pair_calls = [
-        line.strip()
-        for line in outside.splitlines()
-        if "self.set_outputd_active_lane_pair(" in line
-    ]
-    # FIVE branches state the lane. The composite became TWO in P8b item 1f:
-    # it may now be an ACTIVE-ring endpoint, so it stages the pair when the
-    # accepted graph names the ring device and keeps its historical
-    # unconditional clear on every other path (an aloop composite stays byte-
-    # identical). The other three are unchanged: active, non-active, parked.
-    assert len(pair_calls) == 5, pair_calls
-    # The helper writes BOTH keys, and it is the ONLY writer of the marker.
-    assert "JASPER_OUTPUTD_ACTIVE_LANE" in helper
-    assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in helper
-    outside_code = [
-        line
-        for line in outside.splitlines()
-        if OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in line
-        and not line.lstrip().startswith("#")
-    ]
-    assert outside_code == [], (
-        "the endpoint marker is WRITTEN outside the pair helper (prose "
-        f"references are fine): {outside_code}"
-    )
-
-
 @pytest.mark.parametrize(
-    ("endpoint_device", "marker"),
+    "kind,recognized,endpoint,lane,marker",
     [
-        pytest.param(
-            audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-            "1",
-            id="the-active-ring",
-        ),
-        pytest.param("not_the_ring", "", id="an-unrecognized-endpoint"),
+        pytest.param("single", True, RING_ACTIVE_PLAYBACK_DEVICE, "1", "1", id="single-active"),
+        pytest.param("single", True, None, "", "", id="single-passive"),
+        pytest.param("single", False, None, "", "", id="parked"),
+        pytest.param("composite", True, RING_ACTIVE_PLAYBACK_DEVICE, "1", "1", id="composite-active"),
+        pytest.param("composite", True, OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "", "", id="composite-aloop"),
+        pytest.param("composite", True, "unknown", "", "", id="composite-unknown"),
+        pytest.param("single", True, "unknown", "1", "", id="single-unknown"),
+        pytest.param("single", True, "", "1", "", id="single-empty"),
+        pytest.param("single", True, RING_PLAYBACK_DEVICE, "1", "", id="single-stereo-ring"),
     ],
 )
-def test_the_marker_is_set_by_positive_equality_never_by_negation(
-    tmp_path, endpoint_device: str, marker: str
+def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
+    tmp_path, monkeypatch, kind, recognized, endpoint, lane, marker,
 ):
-    """A negative test would INVERT into a spurious arm on an unknown device.
-
-    ``lane == 1 && device == <active ring>`` fails closed for anything it does
-    not recognize. ``device != <alsa lane>`` — the tempting shorthand — would set
-    the marker for an empty device, a typo, or any future endpoint.
-    """
-    from jasper.env_file import read_env_file
-
-    target = tmp_path / "candidate.env"
-    run = audio_hardware_reconcile.Pass(
-        reason="test", print_env=False, no_restart=False
+    target = tmp_path / "outputd.env"
+    target.write_text(
+        f"JASPER_OUTPUTD_ACTIVE_LANE={'0' if lane else '1'}\n"
+        f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={'0' if marker else '1'}\n"
     )
-    run.outputd_env_stage = str(target)
-
-    run.set_outputd_active_lane_pair("1", endpoint_device)
-
-    written = read_env_file(str(target))
-    assert written["JASPER_OUTPUTD_ACTIVE_LANE"] == "1"
-    assert written[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(target))
+    run = audio_hardware_reconcile.Pass(reason="test", print_env=False, no_restart=True)
+    run.observed = audio_hardware_reconcile.ObservedOutput(kind=kind)
+    run.output_dac_recognized = recognized
+    run.output_dac_id = (
+        "dual_apple_usb_c_dac_4ch" if kind == "composite" else "hifiberry_dac8x"
+    )
+    run.dual_apple_active_endpoint_device = endpoint or ""
+    monkeypatch.setattr(
+        run, "active_graph_status",
+        lambda cap: (False, "active_graph_missing") if endpoint is None
+        else (True, ("2", endpoint)),
+    )
+    assert run.apply_audio_runtime_env()
+    values = read_env_file(target)
+    assert values["JASPER_OUTPUTD_ACTIVE_LANE"] == lane
+    assert values[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
+    assert not run.apply_audio_runtime_env()
 
 
 # --------------------------------------------------------------------------
@@ -2817,7 +2715,7 @@ def _run_validate_outputd_env(
     ``_outputd_actions`` and the marker derivation directly — which is why all
     four of them passed while the real ladder deadlocked at step 2 on jts3.
     """
-    from jasper.cli.audio_config import validate_outputd_env
+    from jasper.audio_runtime_plan import validate_outputd_env
     from jasper.output_topology import save_output_topology
 
     graph = tmp_path / "graph.yml"

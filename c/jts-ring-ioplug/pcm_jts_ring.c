@@ -543,8 +543,8 @@ static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     // constant, not a runaway: free-run drops the oldest slot, so occupancy
     // pins at n_slots and the value saturates at
     // n_slots*period_frames + (period_frames-1) — 45.3 ms worst case at the
-    // grouping ring's 16x128 (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md;
-    // the pacing governor bounds the writer storm this saturation permits).
+    // grouping ring's 16x128 (See ADR-0261; the pacing governor bounds the
+    // writer storm this saturation permits).
     // Discounting the delay here would still report one the writer's audio is
     // not behind, which is worse for a consumer that steers on it.
     uint64_t slots = p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;

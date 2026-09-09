@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure decoding of the graph/profile records shared by recovery and evidence."""
+"""The apply-intent record: its payload shape and pure decoding, shared by recovery and evidence."""
 
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
@@ -107,3 +109,60 @@ def decode_apply_intent(value: Any) -> ApplyIntent:
         predecessor_profile_bytes=predecessor,
         desired_profile_bytes=desired,
     )
+
+
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _profile_entry(raw: bytes | None) -> dict[str, Any]:
+    return {
+        "present": raw is not None,
+        "bytes": raw.decode("utf-8") if raw is not None else None,
+        "sha256": _sha256(raw) if raw is not None else None,
+    }
+
+
+def _normal_fingerprint(text: str) -> str:
+    try:
+        parsed = yaml.safe_load(text)
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError
+        return NormalizedActiveRawIdentity(parsed).active_raw_fingerprint
+    except (ValueError, yaml.YAMLError) as exc:
+        raise ValueError("CamillaDSP graph cannot be normalized") from exc
+
+
+def _intent_payload(
+    *,
+    predecessor_identity,
+    predecessor_profile_bytes: bytes | None,
+    desired_profile_bytes: bytes,
+    selected_path: Path,
+    selected_mode: int,
+    predecessor_graph_bytes: bytes,
+    desired_graph_bytes: bytes,
+    selector_target: Path,
+) -> dict[str, Any]:
+    predecessor_fp = _normal_fingerprint(predecessor_graph_bytes.decode("utf-8"))
+    desired_fp = _normal_fingerprint(desired_graph_bytes.decode("utf-8"))
+    return {
+        "kind": "jts_bass_extension_apply_intent",
+        "schema_version": 1,
+        "operation_id": uuid.uuid4().hex,
+        "predecessor_identity": predecessor_identity.to_dict(),
+        "profiles": {
+            "predecessor": _profile_entry(predecessor_profile_bytes),
+            "desired": _profile_entry(desired_profile_bytes),
+        },
+        "graphs": {"predecessor": predecessor_fp, "desired": desired_fp},
+        "config": {
+            "path": str(selected_path),
+            "mode": selected_mode,
+            "predecessor_bytes": predecessor_graph_bytes.decode("utf-8"),
+            "predecessor_sha256": _sha256(predecessor_graph_bytes),
+            "desired_bytes": desired_graph_bytes.decode("utf-8"),
+            "desired_sha256": _sha256(desired_graph_bytes),
+        },
+        "boot_selector_target": str(selector_target),
+    }

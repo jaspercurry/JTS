@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.reconcile_fixtures import fake_systemctl
+from tests.test_audio_hardware_reconcile import APPLE_LISTING, _run_reconcile
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -35,10 +37,6 @@ UNIT_PATH = (
 RECOVER_UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla-recover.service"
-)
-RECOVER_SCRIPT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "bin" / "jasper-camilla-recover"
 )
 INSTALL_SH = (
     Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
@@ -168,20 +166,10 @@ def test_recovery_unit_points_at_installed_helper():
     assert _assignments_for(body, "ExecStart") == (
         "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
-    # Both deadlines are load-bearing: the body must be able to finish its
-    # own restore ladder, and the EXIT trap that reruns it on a kill needs
-    # the ladder's share as its own budget.
-    assert _value_for(body, "TimeoutStartSec") == "600"
-    assert _value_for(body, "TimeoutStopSec") == "400"
-
-
-def test_recovery_helper_is_bounded_and_forensic():
-    body = RECOVER_SCRIPT_PATH.read_text()
-    assert "event=camilla.recover." in body
-    assert "capture_dev_snd_holders" in body
-    assert "capture_asound_status" in body
-    assert "JASPER_CAMILLA_RECOVER_COOLDOWN_SEC" in body
-    assert "systemctl reboot" not in body
+    # The deadline must cover the handler's own pass: bounded captures, one
+    # blocking camilla start behind every unit it pulls in, the liveness wait.
+    assert _value_for(body, "TimeoutStartSec") == "180"
+    assert _value_for(body, "TimeoutStopSec") == "5"
 
 
 def test_install_sh_installs_recovery_unit_and_helper():
@@ -262,34 +250,25 @@ def test_install_sh_routes_outputd_statefile_through_runtime_contract():
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
 
 
-def test_flat_cutover_has_exactly_one_writer():
-    """install, the root reconciler, and the reset all go through one entry.
-
-    The flat cutover graph is width-matched to the saved output topology, so
-    three different components write it at three different times (deploy, boot /
-    udev / topology-save, reset). If any of them emits its own copy, the graph a
-    box boots depends on which ran last — and one of them would inevitably ship
-    a different file mode or skip the width match.
-    `jasper.sound.camilla_yaml.render_flat_cutover_configs` is the single
-    writer; this fails if a second one (an inline heredoc, a direct emitter
-    call) reappears in either caller.
-    """
-    reconcile = (
-        Path(__file__).resolve().parent.parent
-        / "jasper" / "audio_hardware" / "reconcile.py"
-    ).read_text()
-    install = INSTALL_SH.read_text()
-
-    assert "render-flat-cutover" in install
-    assert "render_flat_cutover_configs" in reconcile
-    for name, body in (("install.sh", install), ("reconciler", reconcile)):
-        # The emitter is reached through the one entry, never spelled directly.
-        assert "emit_flat_outputd_cutover_config" not in body, name
-
-    # The reconciler renders BEFORE it can restart the audio graph, so a restart
-    # loads this pass's graph rather than the previous topology's.
-    render = reconcile.index("self.render_flat_cutover_if_needed()")
-    assert render < reconcile.index("self.restart_audio_if_needed()")
+def test_flat_cutover_is_published_before_the_audio_restart(tmp_path):
+    cutover = tmp_path / "camilladsp" / "outputd-cutover.yml"
+    systemctl, transcript = fake_systemctl(
+        tmp_path, name="witness-systemctl", witness="CUTOVER_WITNESS"
+    )
+    result = _run_reconcile(
+        tmp_path, APPLE_LISTING,
+        extra_env={
+            "JASPER_SYSTEMCTL": str(systemctl),
+            "JASPER_SYSTEMCTL_LOG": str(transcript),
+            "CUTOVER_WITNESS": str(cutover),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    restarts = [
+        line for line in transcript.read_text().splitlines()
+        if "restart" in line.split() and "jasper-outputd.service" in line.split()
+    ]
+    assert restarts == ["present=1 --no-block restart jasper-outputd.service"]
 
 
 def test_unit_documents_no_config_recovery_path():

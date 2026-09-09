@@ -502,15 +502,7 @@ def test_buffer_pair_refusal_does_not_misattribute_to_the_override_store(
     assert "overrides-clear" not in detail, why
 
 
-def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
-    """The CLI is the caller the reconciler runs — pin the wiring, not just the API.
-
-    Every provenance assertion above goes through `outputd_env_buffer_pair_error`
-    directly. That leaves the one thing an operator actually sees unpinned: a CLI
-    that stopped passing the store would keep every library test green while the
-    journal line lost the only field that explains the value.
-    """
-
+def test_validate_outputd_env_reads_the_override_store(tmp_path):
     base_env = tmp_path / "jasper.env"
     base_env.write_text("", encoding="utf-8")
     outputd_env = tmp_path / "outputd.env"
@@ -538,8 +530,8 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
+        validate_outputd_env,
     )
-    from jasper.cli.audio_config import validate_outputd_env
 
     ok, lines = validate_outputd_env(
         base_env=str(base_env),
@@ -560,11 +552,8 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
     )
 
 
-def test_audio_config_import_does_not_load_runtime_contract():
-    """The audio-hardware reconcile pass imports `jasper.cli.audio_config`;
-    `runtime_contract` is only needed on `validate_outputd_env`'s
-    active-endpoint branch, so it must stay a call-site import (ADR-0226).
-    """
+def test_audio_runtime_plan_import_does_not_load_runtime_contract():
+    """The active-endpoint validator keeps its heavy import lazy (ADR-0226)."""
     import subprocess
     import sys
 
@@ -572,7 +561,7 @@ def test_audio_config_import_does_not_load_runtime_contract():
         [
             sys.executable,
             "-c",
-            "import sys, jasper.cli.audio_config as m; "
+            "import sys, jasper.audio_runtime_plan; "
             "print('jasper.active_speaker.runtime_contract' in sys.modules)",
         ],
         capture_output=True,
@@ -983,7 +972,7 @@ def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
     """A grouped pipe SINK owns playback — and ONLY playback.
 
     Dropping the capture half too was a silent-bond hazard, not a no-op: this is
-    the path a bonded leader's /sound or /sound/room/ save re-emits camilla#1
+    the path a bonded leader's /sound save re-emits camilla#1
     through (graph_carrier -> apply_capture_precedence), and camilla#1 is the
     producer of the WHOLE bond's audio. Under an armed ring, keeping the
     emitter's `plug:jasper_capture` default there points the LIVE config at the

@@ -5,8 +5,8 @@
 """Active-speaker commissioning ↔ measurement mutual exclusion.
 
 Pins the cooperative serialization that keeps the active-crossover commission
-flow from running at the same time as room correction / pair sync (both
-measure through the production graph).
+flow from running at the same time as pair sync (both measure through the
+production graph).
 """
 from __future__ import annotations
 
@@ -57,31 +57,14 @@ def test_active_phase_idle_or_stopped_is_none(tmp_path, monkeypatch):
     assert active_speaker_flow.active_phase() is None
 
 
-def test_blocking_measurement_phase_reports_each_flow(monkeypatch):
-    from jasper.web import (
-        correction_capture,
-        sync_flow,
-    )
+def test_blocking_measurement_phase_reports_the_sync_flow(monkeypatch):
+    from jasper.web import sync_flow
 
     # Nothing active -> None.
     monkeypatch.setattr(sync_flow, "active_phase", lambda: None)
-    monkeypatch.setattr(correction_capture, "active_correction_phase", lambda: None)
     assert active_speaker_flow.blocking_measurement_phase() is None
 
-    monkeypatch.setattr(correction_capture, "active_correction_phase", lambda: "sweeping")
-    assert active_speaker_flow.blocking_measurement_phase() == "correction:sweeping"
-
     monkeypatch.setattr(sync_flow, "active_phase", lambda: "measuring")
-    # Sync is checked first.
     assert active_speaker_flow.blocking_measurement_phase() == "sync:measuring"
 
 
-def test_correction_reserve_slot_blocked_by_commissioning(tmp_path, monkeypatch):
-    from jasper.web import (
-        correction_capture,
-    )
-
-    monkeypatch.setattr(active_speaker_flow, "active_phase", lambda: "commissioning")
-    # _reserve_start_slot must refuse a correction /start while commissioning.
-    blocking = correction_capture._reserve_start_slot()
-    assert blocking == "active_speaker:commissioning"

@@ -143,6 +143,6 @@ def check_i2s_hat_block_orphaned() -> CheckResult:
         label,
         "warn",
         f"a managed I2S HAT block is still in {config_path} but no HAT is "
-        "detected or intended; select None under Sound setup",
+        "detected or intended; select None under Output (/sound/output/)",
         reason=REASON_ORPHAN_MANAGED_I2S_BLOCK,
     )

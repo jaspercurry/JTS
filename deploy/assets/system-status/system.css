@@ -4,7 +4,7 @@
    own visualisation vocabulary: vital-stat tiles, sparklines, per-core
    CPU bars, tables, the audio-health/source cards, the audio-conversion
    choices, and the collapsible. Token-based; served static and
-   cache-busted by build SHA (see jasper.web._common.canonical_page). */
+   cache-busted by build SHA (see jasper.web.chrome.canonical_page). */
 .app-main {
   max-width: 48rem;
   margin: 0 auto;

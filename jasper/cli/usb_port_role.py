@@ -19,7 +19,7 @@ from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
 from jasper.audio_hardware.i2s_hat import I2sHatCollision
 from jasper.audio_hardware.usb_port_role import (
     DEFAULT_MODEL_PATH,
-    UsbPortRoleState,
+    boot_role_events,
     reconcile_boot_config,
     resolve_system_usb_port_role,
 )
@@ -27,65 +27,6 @@ from jasper.log_event import render_logfmt
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
 
-def boot_role_events(
-    state: UsbPortRoleState,
-    *,
-    boot_config_changed: bool = False,
-    hat_profile: str = "",
-    hat_changed: bool = False,
-    hat_collision: I2sHatCollision | None = None,
-) -> tuple[tuple[str, dict[str, object]], ...]:
-    """The ``event=hardware.*`` lines one role resolution publishes, in order.
-
-    One owner of that vocabulary for its two sinks: this CLI prints them on
-    stderr (ADR-0235 R4) and :mod:`jasper.audio_hardware.reconcile` logs them
-    through :func:`jasper.log_event.log_event`.
-    """
-    events: list[tuple[str, dict[str, object]]] = [
-        (
-            "hardware.usb_role_resolved",
-            {
-                "topology": state.board_topology,
-                "desired": state.desired_role,
-                "active": state.active_role,
-                "gadget_available": str(state.gadget_available).lower(),
-                "management_transport_available": str(
-                    state.management_transport_available
-                ).lower(),
-                "reason": state.reason,
-            },
-        )
-    ]
-    if boot_config_changed:
-        events.append(
-            (
-                "hardware.boot_config_changed",
-                {"reboot_required": int(state.reboot_required)},
-            )
-        )
-    if hat_changed:
-        # No `reboot_required` here: whether the running kernel already
-        # carries this overlay is desired-vs-observed, which only the
-        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
-        events.append(
-            (
-                "hardware.i2s_hat_boot_config_changed",
-                {"profile": hat_profile or "none"},
-            )
-        )
-    if hat_collision is not None:
-        events.append(
-            (
-                "hardware.i2s_hat_boot_config_conflict",
-                {
-                    "managed_overlay": hat_collision.managed_overlay,
-                    "colliding_overlays": ",".join(
-                        hat_collision.colliding_overlays
-                    ),
-                },
-            )
-        )
-    return tuple(events)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # Event names with no `domain.action` dot — the sole exception to the shape
 # check. Most sit in the parked tuning zone (jasper/audio_measurement/,
-# jasper/correction/, jasper/active_speaker/), whose renames wait on unpark.
+# jasper/active_speaker/), whose renames wait on unpark.
 # Removal condition: shrinks as sites are renamed; delete when empty.
 FLAT_EVENT_NAMES: tuple[str, ...] = (
     "active_speaker_baseline_config_written",
@@ -20,25 +20,15 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "active_speaker_program_bake_config_written",
     "active_speaker_program_config_written",
     "active_speaker_startup_config_written",
-    "correction_autolevel_volume_restored",
     "correction_bundle_dependency_ignored",
     "correction_bundle_manifest_entry_dropped",
     "correction_bundle_manifest_reset",
     "correction_calibration_lookup",
     "correction_calibration_sign_migrated",
     "correction_calibration_sign_migration",
-    "correction_capture_timeout",
-    "correction_replay_artifacts_skipped",
-    "correction_replay_artifacts_written",
-    "correction_runtime_integrity_issue",
-    "correction_runtime_probe_failed",
     "level_feed_stream_reset",
     "level_lock_stored",
     "level_match_done",
-    "level_match_volume_reassert_failed",
-    "level_match_volume_reasserted",
-    "level_match_volume_restore_failed",
-    "level_match_volume_restored",
     "ramp_agc_indeterminate",
     "ramp_agc_marginal",
     "ramp_agc_suspected",
@@ -75,7 +65,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "barge": ("jasper", "voice"),
     "bluetooth": ("bluetooth", "jasper", "web"),
     "camilla": ("jasper", "voice"),
-    "correction": ("active_speaker", "correction", "jasper", "web"),
+    "correction": ("active_speaker", "audio_measurement", "jasper", "web"),
     "cue": ("cues", "voice"),
     "dsp": ("active_speaker", "jasper"),
     "ha": ("control", "jasper", "tools", "web"),

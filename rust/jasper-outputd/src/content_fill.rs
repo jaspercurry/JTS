@@ -8,7 +8,7 @@
 //! ZERO-FILL, not an error (D4 for the round-trip lane, `try_consume_slot` for
 //! the ring). That is the right audio behaviour, and the reason a fully deaf
 //! chain reads green everywhere else: the DAC keeps writing periods, the
-//! watchdog keeps progressing, and each source's starvation counter is
+//! watchdog keeps progressing, and what starvation counters remain are
 //! cumulative, so none of them can answer "right now".
 //!
 //! Detection only — no recovery, no fallback source (#3458).

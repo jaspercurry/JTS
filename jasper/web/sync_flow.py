@@ -25,13 +25,8 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
-from ._common import (
-    canonical_header,
-    canonical_page,
-    close_awaitable,
-    reset_session_locked,
-    terminate_async_process,
-)
+from ._common import close_awaitable, reset_session_locked, terminate_async_process
+from .chrome import canonical_header, canonical_page, follower_delegation_page
 from .pair_flow import members_by_channel, resolve_pair
 
 logger = logging.getLogger("jasper.web.sync")
@@ -378,7 +373,7 @@ def handle_apply(handler) -> tuple[dict, int]:
     gate-armed speaker — and since sync only writes self, a missing token
     fails the apply outright.
     """
-    from .rooms_setup import (
+    from .rooms_peers import (
         post_grouping_to_member,
         request_control_token,
         self_addresses,
@@ -467,6 +462,28 @@ def handle_stop() -> tuple[dict, int]:
         _reset_locked()
     log_event(logger, "sync.stopped")
     return {"ok": True}, HTTPStatus.OK
+
+
+def render_follower_page(csrf_token: str, *, leader_url: str | None) -> bytes:
+    """The `/sync` page a bonded follower gets instead of the wizard.
+
+    Timing is a property of the paired playback image, so it is measured
+    and applied on the leader while the pair is active.
+    """
+
+    return follower_delegation_page(
+        "Speaker timing",
+        canonical_header(
+            "Speaker timing", back_href="/sound/pair/", back_label="Stereo pair"
+        ),
+        "Speaker timing is set on the pair leader",
+        """This speaker is an active follower. Timing between
+    the two speakers is a measurement of the paired playback image, so run
+    it from the leader while the pair is active.""",
+        csrf_token=csrf_token,
+        leader_url=leader_url or "",
+        leader_label="Open leader timing",
+    )
 
 
 def render_page(csrf_token: str) -> bytes:

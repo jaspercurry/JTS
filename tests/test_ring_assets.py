@@ -784,7 +784,7 @@ def test_render_converges_a_wide_conf_back_to_the_narrow_wire(tmp_path):
     # while explaining why the wide one is spelled, so a whole-file scan would
     # assert about a comment rather than about the wire.
     for pcm in ring_assets.RING_CONF_PCMS:
-        body = ring_assets._ring_conf_block_body(after, pcm)
+        body = ring_assets.conf_block_body(after, pcm)
         assert body is not None, pcm
         assert "S32_LE" not in body, pcm
         assert "channels 6" not in body, pcm
@@ -814,6 +814,25 @@ pcm.jts_ring_playback {
     channels 4
 }
 """
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("pcm.outputd_dac { type null }", "null"),
+        ('pcm.outputd_dac { type "null" }', "null"),
+        ("pcm.outputd_dac { hint { type null } type hw }", "hw"),
+        ('pcm.outputd_dac { hint { description "} type null {" } type hw }', "hw"),
+        ("pcm.outputd_dac { slave { type null } }", None),
+        ("pcm.outputd_dac { # } type null\n type hw\n}", "hw"),
+        ("# pcm.outputd_dac { type null }\npcm.outputd_dac { type hw }", "hw"),
+        ("pcm.other { type null }", None),
+        ("pcm.outputd_dac { type null", None),
+        ('pcm.outputd_dac { hint { description "unterminated } }', None),
+    ],
+)
+def test_pcm_type_belongs_to_the_named_outer_block(text, expected):
+    assert ring_assets.conf_pcm_type(text, "outputd_dac") == expected
 
 
 def test_block_parsers_survive_a_nested_brace_block(tmp_path):

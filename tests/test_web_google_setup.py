@@ -307,7 +307,7 @@ def test_get_root_rejects_off_origin_return_link(patched_common):
     fake.do_GET()
     assert patched_common.send_html_response.called
     page = patched_common.send_html_response.call_args.args[1].decode()
-    assert 'href="/"' in page
+    assert 'href="/assistant/"' in page
     assert "evil.test" not in page
 
 

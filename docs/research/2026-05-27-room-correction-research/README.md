@@ -3,8 +3,8 @@
 > **Status: raw research archive plus synthesis.** User-provided LLM
 > research reports preserved for traceability, with one local synthesis
 > per topic. Do not treat raw reports or synthesis files as current
-> operational truth. Current implementation truth lives in
-> [`docs/calibration-agent/`](../../../jasper/calibration_agent/corpus/).
+> operational truth. The calibration-agent corpus it fed retired under
+> ADR-0259 §2; room doctrine now lives in `docs/room-correction-regime-plan.md`.
 
 ## Use Rules
 

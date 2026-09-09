@@ -70,6 +70,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_CLIPPED = "clipped"
+REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
@@ -556,6 +557,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Try that measurement again.",
         ),
     ),
+    REASON_MEASURE_GAIN_ADJUSTED: _retriable_reason(
+        REASON_MEASURE_GAIN_ADJUSTED, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy(
+            "The driver needs a clearer timing measurement.",
+            "JTS will keep this take and measure once more at a higher test level.",
+        ),
+        auto_retry=True,
+    ),
     REASON_CLIPPED: _retriable_reason(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy(
@@ -658,7 +667,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # callout under this exact id whenever the limits are unusable
             # (deploy/assets/sound-profile/js/main.js), and its boot path opens
             # the owning step for this fragment.
-            "href": "/sound/setup/#confirm-safety-limits",
+            "href": "/sound/speaker/#confirm-safety-limits",
         },
     ),
     REASON_MEASUREMENT_TARGETS_MISSING: ReasonSpec(
@@ -669,7 +678,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={
             "id": "speaker_setup",
             "label": "Finish speaker setup",
-            "href": "/sound/setup/",
+            "href": "/sound/speaker/",
         },
     ),
     REASON_SPEAKER_SHAPE_UNSUPPORTED: ReasonSpec(
@@ -680,7 +689,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={
             "id": "speaker_setup",
             "label": "Open speaker setup",
-            "href": "/sound/setup/",
+            "href": "/sound/speaker/",
         },
     ),
     REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
@@ -695,7 +704,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "label": "Finish speaker setup",
             # No fragment: ``/sound/`` renders no review callout in this state,
             # so a deep link would land on nothing.
-            "href": "/sound/setup/",
+            "href": "/sound/speaker/",
         },
     ),
     REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
@@ -711,7 +720,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "label": "Add the missing limits",
             # The callout DOES render for this state, naming the
             # add-the-values action, so the fragment lands on the explanation.
-            "href": "/sound/setup/#confirm-safety-limits",
+            "href": "/sound/speaker/#confirm-safety-limits",
         },
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(

@@ -177,8 +177,8 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
 ):
     """THE PIN for ADR-0100's capture seam: the answer is UNCONDITIONAL.
 
-    The emitters that reach this — jasper-web `/sound/`, jasper-correction-web
-    `/sound/room/`, and the correction session's mid-EQ-apply re-emit — do not
+    The emitters that reach this — jasper-web `/sound/` and the measurement
+    daemon's crossover apply — do not
     `EnvironmentFile=` fanin.env, so `os.environ` carries no coupling token, and
     a box that has never been written carries none on disk either. While the
     loopback route existed that resolved to `{}` and the caller kept its dsnoop

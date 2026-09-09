@@ -317,7 +317,7 @@ def test_startup_muted_prefers_fully_muted_gate_over_text_scan(tmp_path: Path) -
 # Excluding the parked classification from `restore_classifications` made
 # `rollback_target_available` false, which fails the `rollback_configs`
 # requirement, which blocks `evaluate_path_safety_evidence`, which makes
-# `/sound/setup/`'s commission-startup anchor return
+# `/sound/speaker/`'s commission-startup anchor return
 # `commission_startup_anchor_path_safety_blocked`. Net effect: a parked box
 # could not START commissioning — the first of the two exits parking tells the
 # household to take was itself refused.
@@ -357,7 +357,7 @@ def test_parked_rollback_target_reaches_the_commission_startup_anchor(
 ) -> None:
     """The whole chain, end to end: parked current config -> anchor not blocked.
 
-    `/sound/setup/`'s `_active_speaker_ensure_commission_startup_anchor` returns
+    `/sound/speaker/`'s `_active_speaker_ensure_commission_startup_anchor` returns
     `commission_startup_anchor_path_safety_blocked` whenever
     `evaluate_path_safety_evidence` raises. This walks the same two calls it
     makes, so a regression anywhere between the restore set and the load gate
