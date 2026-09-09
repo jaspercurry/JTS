@@ -21,6 +21,7 @@ import errno
 import logging
 import re
 import socket
+import time
 from typing import Any, Awaitable, Callable, Protocol
 
 from ..backoff import reconnect_delay, sleep_or_nudge
@@ -243,7 +244,7 @@ class OutageTracker:
     the first one either way, because the wake path reads it. One
     instance per connection. See ADR-0215."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.detail: str | None = None
         self.cue: str | None = None
         self._announced: str | None = None
@@ -253,6 +254,11 @@ class OutageTracker:
         # asyncio only holds a weak reference, so an uncollected task could
         # otherwise be garbage-collected mid-flight.
         self._tasks: set[asyncio.Task] = set()
+        self._clock = clock
+        # Monotonic time of the outage's first failure; None while healthy.
+        self._outage_started_at: float | None = None
+        # How long the outage `on_recovery` last cleared ran, in seconds.
+        self.last_outage_duration_s: float = 0.0
 
     @property
     def wake_cue(self) -> str:
@@ -304,6 +310,8 @@ class OutageTracker:
         through to `failure_detail` before this reaches ``/state``.
         """
         self.detail = failure_detail(exc, literals=literals)
+        if self._outage_started_at is None:
+            self._outage_started_at = self._clock()
         # Latest failure wins, so a transient failure after a terminal
         # one reads as transient again.
         cue = outage_cue(exc)
@@ -326,12 +334,30 @@ class OutageTracker:
         )
         self._announce(cue)
 
-    def on_recovery(self) -> None:
-        """A session opened: clear the outage and re-arm, silently."""
+    def on_recovery(self) -> float:
+        """A session opened: clear the outage and re-arm.
+
+        Silent unless a real outage was in progress, in which case
+        `event=voice.connection.restored` reports how long it ran.
+        Returns that duration (0.0 when there was nothing to recover
+        from, e.g. the first successful connect).
+        """
+        duration = 0.0
+        started = self._outage_started_at
+        if started is not None:
+            duration = max(0.0, self._clock() - started)
+            self._outage_started_at = None
+            log_event(
+                logger,
+                "voice.connection.restored",
+                duration_s=round(duration, 3),
+            )
+        self.last_outage_duration_s = duration
         self.detail = None
         self.cue = None
         self._announced = None
         self._network_streak = 0
+        return duration
 
 
 class Deferred:

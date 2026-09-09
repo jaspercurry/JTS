@@ -380,6 +380,22 @@ async def test_a_transient_failure_restarts_the_network_streak() -> None:
     assert calls == [NETWORK_DOWN_CUE_SLUG]
 
 
+async def test_on_recovery_records_the_outage_duration() -> None:
+    """A recovery after a real outage reports how long it ran; a
+    recovery with nothing preceding it (the first successful connect)
+    records zero rather than a stale or negative value."""
+    clock = iter([100.0, 137.5])
+    tracker = OutageTracker(clock=lambda: next(clock))
+
+    assert tracker.on_recovery() == 0.0
+    assert tracker.last_outage_duration_s == 0.0
+
+    tracker.on_failure(_Terminal())
+    duration = tracker.on_recovery()
+    assert duration == pytest.approx(37.5)
+    assert tracker.last_outage_duration_s == pytest.approx(37.5)
+
+
 async def test_announce_task_failure_is_logged_not_swallowed(caplog) -> None:
     """`_announce`'s fire-and-forget cue task must not vanish as an
     unretrieved-exception warning at GC time: a callback failure is
