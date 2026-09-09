@@ -43,6 +43,7 @@ __all__ = [
     "MeasureSpec",
     "CANDIDATE_SCOPES",
     "GRAPH_SCOPES",
+    "GRAPH_SCOPE_BASS_CANDIDATE",
     "GRAPH_SCOPE_DRIVERS",
     "inverted_roles_for",
     "level_trims_for",
@@ -122,10 +123,18 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
-GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate")
+#: The candidate's bass family, one named rung playing through the applied
+#: tune. The only scope whose graph carries a bass stage at all.
+GRAPH_SCOPE_BASS_CANDIDATE = "bass_candidate"
+GRAPH_SCOPES = (
+    GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate",
+    GRAPH_SCOPE_BASS_CANDIDATE,
+)
 #: The scopes whose graph is compiled FROM one named candidate, and which
 #: therefore cannot be selected without naming it.
-CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate"})
+CANDIDATE_SCOPES = frozenset(
+    {"candidate", "room_candidate", GRAPH_SCOPE_BASS_CANDIDATE}
+)
 
 
 @dataclass(frozen=True)
@@ -167,6 +176,11 @@ class MeasureSpec:
     inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
     candidate_id: str = ""
+    #: WHICH rung of the named candidate's bass family this take plays through.
+    #: Required by ``bass_candidate`` and refused by every other scope: a
+    #: target id on a scope that emits no bass stage would name a graph layer
+    #: the take never went through.
+    bass_target_id: str = ""
     #: R-1's delay coordinate: which branch carries it, and how much. The pair
     #: behaves like ``polarity``/``inverted_role`` — stating one without the
     #: other is a spec that means two things. Zero on every other capture, which
@@ -187,6 +201,15 @@ class MeasureSpec:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
             raise ValueError(f"{self.graph_scope} graph_scope requires candidate_id")
+        if (self.graph_scope == GRAPH_SCOPE_BASS_CANDIDATE) != bool(
+            self.bass_target_id.strip()
+        ):
+            raise ValueError(
+                f"bass_target_id names the rung a {GRAPH_SCOPE_BASS_CANDIDATE!r} "
+                f"take plays and belongs to no other scope; got "
+                f"graph_scope={self.graph_scope!r} with "
+                f"bass_target_id={self.bass_target_id!r}"
+            )
         if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
             self.polarity != POLARITY_NORMAL or self.inverted_role
             or self.delayed_role or self.delay_us or self.level_matched

@@ -29,7 +29,9 @@ __all__ = [
 class SessionGraph(Protocol):
     """Select and prove each take's graph, then restore the household graph."""
 
-    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+    def select_scope(
+        self, scope: str, candidate_id: str = "", bass_target_id: str = "",
+    ) -> None:
         """Select drivers, base, speaker_tune or an exact candidate before install."""
         raise NotImplementedError
 

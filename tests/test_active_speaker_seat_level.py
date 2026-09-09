@@ -66,6 +66,7 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTargetError,
     StimulusProvenance,
     load_seat_level_reference,
+    predicted_seat_spl_db,
     seat_level_reference_volume_db,
     write_seat_level_reference,
 )
@@ -401,6 +402,46 @@ def test_db_spl_conversion_matches_hand_computation():
     # The definition self-check: the calibrator level reads exactly the sens
     # factor, whatever the sens factor is.
     assert UMIK2.dbfs_from_db_spl(CALIBRATOR_REFERENCE_DB_SPL) == pytest.approx(-12.07)
+
+
+#: One banked pass, reduced to the four numbers a prediction reads.
+_REFERENCE = {
+    "measured_db_spl": 77.5,
+    "reference_volume_db": -20.0,
+    "stimulus": {"rms_dbfs": -26.0},
+}
+
+
+@pytest.mark.parametrize("fader_db, rms_dbfs, boost_db, expected", [
+    # The banked pass predicts itself, boost aside.
+    (-20.0, -26.0, 0.0, 77.5),
+    # Each term moves the prediction dB for dB, and the boost enters WHOLE.
+    (-14.0, -26.0, 0.0, 83.5),
+    (-20.0, -20.0, 0.0, 83.5),
+    (-20.0, -26.0, 6.0, 83.5),
+    (-14.0, -20.0, 6.0, 95.5),
+])
+def test_a_prediction_is_the_banked_pass_moved_by_every_difference(
+    fader_db, rms_dbfs, boost_db, expected,
+):
+    assert predicted_seat_spl_db(
+        _REFERENCE, fader_db=fader_db, stimulus_rms_dbfs=rms_dbfs,
+        boost_db=boost_db,
+    ) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("reference", [
+    None,
+    {"measured_db_spl": 77.5, "reference_volume_db": -20.0},
+    {"measured_db_spl": 77.5, "reference_volume_db": -20.0, "stimulus": None},
+    {"measured_db_spl": 77.5, "reference_volume_db": -20.0, "stimulus": {}},
+    {"measured_db_spl": None, "reference_volume_db": -20.0,
+     "stimulus": {"rms_dbfs": -26.0}},
+])
+def test_a_reference_that_cannot_predict_says_so_rather_than_guessing(reference):
+    assert predicted_seat_spl_db(
+        reference, fader_db=-20.0, stimulus_rms_dbfs=-26.0, boost_db=0.0,
+    ) is None
 
 
 def test_conversion_round_trips():

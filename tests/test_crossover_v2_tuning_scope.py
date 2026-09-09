@@ -35,6 +35,11 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     MeasureSpec,
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
+from jasper.active_speaker.graph_safety import (
+    bass_extension_block_valid,
+    view_from_emitted_text,
+)
+from jasper.bass_extension.candidate_field import graph_summary
 from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile,
@@ -65,6 +70,7 @@ from jasper.sound.profile import (
 )
 from tests.test_active_speaker_audition import ACTIVE_PCM, LINEARIZATION, _applied_profile
 from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+from tests.test_bass_extension_candidate_field import bass_extension_field
 from tests.test_active_speaker_runtime_contract import _active_topology
 
 FLAT = SoundProfile()
@@ -349,16 +355,30 @@ def test_saved_corrections_refuse_instead_of_becoming_defaults(tuning_profile, s
     assert exc.value.reason == "measurement_corrections_invalid"
 
 
-def test_the_room_candidate_scope_always_names_its_candidate():
-    """The new scope joins the candidate scopes, which never stand alone."""
+@pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
+def test_a_candidate_scope_never_stands_alone(scope):
+    """Every scope compiled FROM a candidate refuses to be selected without one."""
 
-    assert GRAPH_SCOPES[-1] == "room_candidate"
-    assert CANDIDATE_SCOPES == frozenset({"candidate", "room_candidate"})
+    assert set(CANDIDATE_SCOPES) <= set(GRAPH_SCOPES)
+    rung = {"bass_target_id": "deep"} if scope == "bass_candidate" else {}
     with pytest.raises(ValueError):
-        MeasureSpec(kind="baseline", graph_scope="room_candidate")
+        MeasureSpec(kind="baseline", graph_scope=scope, **rung)
     assert MeasureSpec(
-        kind="baseline", graph_scope="room_candidate", candidate_id="fp-a",
+        kind="baseline", graph_scope=scope, candidate_id="fp-a", **rung,
     ).candidate_id == "fp-a"
+
+
+@pytest.mark.parametrize(
+    "scope", sorted(set(GRAPH_SCOPES) - {"bass_candidate"})
+)
+def test_a_rung_belongs_only_to_the_scope_whose_graph_carries_one(scope):
+    """No other scope emits a bass stage, so none may name a rung."""
+
+    with pytest.raises(ValueError):
+        MeasureSpec(
+            kind="baseline", graph_scope=scope, candidate_id="fp-a",
+            bass_target_id="t31.86",
+        )
 
 
 def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
@@ -414,6 +434,76 @@ def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
     } == tune["filters"]
     assert not any(name.startswith("room_peq_") for name in tune["filters"])
     assert not set(room["filters"]) & sound_filter_slot_names()
+
+
+def _bass_candidate(tuning_profile, *, boosted=True, tune_match=True):
+    """A bass candidate whose speaker layer IS the fixture's applied tune."""
+
+    return replace(
+        _room_candidate(
+            tuning_profile, linearization_gain=None if tune_match else -9.0,
+        ),
+        program_id="bass-trial",
+        room_correction={},
+        bass_extension=bass_extension_field(
+            boosted=boosted, owner={"role": "woofer", "channels": [0]},
+        ),
+    )
+
+
+def test_a_bass_candidate_graph_is_the_applied_tune_plus_one_named_rung(
+    tuning_profile,
+):
+    """The one scope carrying a bass stage: the tune below it is untouched."""
+
+    candidate = _bass_candidate(tuning_profile)
+    target_id = candidate.bass_extension["rungs"][0]["target"]["target_id"]
+    text = compile_tuning_graph(
+        tuning_profile, scope="bass_candidate", candidate=candidate,
+        bass_target_id=target_id,
+    )
+    rung = yaml.safe_load(text)
+    tune = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="speaker_tune"))
+
+    assert bass_extension_block_valid(
+        view_from_emitted_text(text),
+        graph_summary(candidate.bass_extension, target_id=target_id),
+    ).valid is True
+    assert {
+        name: entry for name, entry in rung["filters"].items()
+        if not name.startswith("bass_ext_")
+    } == tune["filters"]
+    assert not any(name.startswith("bass_ext_") for name in tune["filters"])
+    # Every other scope still emits no bass stage from the same candidate.
+    assert not any(
+        name.startswith("bass_ext_")
+        for name in yaml.safe_load(compile_tuning_graph(
+            tuning_profile, scope="room_candidate",
+            candidate=_room_candidate(tuning_profile),
+        ))["filters"]
+    )
+
+
+@pytest.mark.parametrize("candidate, target_id, reason", [
+    (lambda profile: _bass_candidate(profile, boosted=False), "t31.86",
+     "measurement_candidate_bass_target_unknown"),
+    (lambda profile: _bass_candidate(profile), "",
+     "measurement_candidate_bass_target_unknown"),
+    (_trial_candidate, "natural", "measurement_candidate_no_bass"),
+    (lambda profile: _bass_candidate(profile, tune_match=False), "natural",
+     "measurement_candidate_tune_mismatch"),
+])
+def test_the_bass_scope_refuses_what_it_cannot_prove(
+    tuning_profile, candidate, target_id, reason,
+):
+    """A rung is only played through the tune that will carry it."""
+
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(
+            tuning_profile, scope="bass_candidate",
+            candidate=candidate(tuning_profile), bass_target_id=target_id,
+        )
+    assert exc.value.reason == reason
 
 
 @pytest.mark.parametrize("candidate, reason", [

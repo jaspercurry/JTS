@@ -111,6 +111,7 @@ def bind_program_playback_seams(
     timeout_s: float = 60.0,
     graph_yaml: str,
     summed: bool = False,
+    bass_profile_summary: Mapping[str, Any] | None = None,
     phase: str = "",
     before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
@@ -154,6 +155,8 @@ def bind_program_playback_seams(
         if not summed:
             readmit = partial(readmit_program_from_wav, program, wav_path, **arguments)
         else:
+            if bass_profile_summary is not None:
+                arguments["bass_profile_summary"] = bass_profile_summary
             readmit = partial(
                 readmit_summed_program_from_wav, program, wav_path,
                 graph_yaml=graph_yaml, **arguments,
@@ -183,11 +186,14 @@ def bind_program_composer(
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
+    bass_profile_summary: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
 
     ``graph_yaml`` supplies the installed graph, including any driver overlays.
     ``before_play`` runs after its live proof, inside the same writer lock.
+    ``bass_profile_summary`` answers, per spec, which bass rung that graph is
+    allowed to carry; unbound, admission requires no bass stage at all.
     """
     from jasper.audio_measurement.program import write_program_wav
 
@@ -224,6 +230,9 @@ def bind_program_composer(
             role_targets=role_targets, session_volume_db=session_volume_db,
             declared_sensitivities=declared_sensitivities,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
+            bass_profile_summary=(
+                None if bass_profile_summary is None else bass_profile_summary(spec)
+            ),
             phase=phase, before_play=before_play,
         ))
 

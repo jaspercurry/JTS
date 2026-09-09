@@ -320,7 +320,7 @@ def bind_measurement_graph(
     from .composition import confirm_graph_is_live
     from .session_graph import MeasurementSessionGraph
 
-    def emit_scoped(scope: str, candidate_id: str) -> str:
+    def emit_scoped(scope: str, candidate_id: str, bass_target_id: str) -> str:
         return compile_tuning_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
@@ -328,6 +328,7 @@ def bind_measurement_graph(
                 find_banked_candidate(candidate_id).candidate
                 if scope in CANDIDATE_SCOPES else None
             ),
+            bass_target_id=bass_target_id,
         )
 
     return MeasurementSessionGraph(

@@ -804,17 +804,80 @@ def bass_management_corner_matched(
     return float_matches(lp_freq, hp_freq)
 
 
+#: The ``LinkwitzTransform`` parameters a bass stage is proved against, in the
+#: order :func:`_bass_extension_lt_values` returns them.
+_BASS_EXTENSION_LT_KEYS = ("freq_act", "q_act", "freq_target", "q_target")
+
+
+def _bass_extension_lt_values(raw: Any) -> tuple[float, ...] | None:
+    """The four transform values a rung's summary discloses.
+
+    ``None`` where it discloses none — the natural target, whose transform is
+    the identity its own corner composes. ``()`` where it discloses something
+    this proof will not read: an unknown key set, a coercible type, or a value
+    outside the emitter's own bounds.
+    """
+    from jasper.camilla_emit import (
+        BASS_EXTENSION_FREQ_HZ_HI,
+        BASS_EXTENSION_FREQ_HZ_LO,
+        BASS_EXTENSION_Q_HI,
+        BASS_EXTENSION_Q_LO,
+    )
+
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != set(_BASS_EXTENSION_LT_KEYS):
+        return ()
+    values: list[float] = []
+    for key in _BASS_EXTENSION_LT_KEYS:
+        value = raw[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ()
+        number = float(value)
+        lo, hi = (
+            (BASS_EXTENSION_FREQ_HZ_LO, BASS_EXTENSION_FREQ_HZ_HI)
+            if key.startswith("freq")
+            else (BASS_EXTENSION_Q_LO, BASS_EXTENSION_Q_HI)
+        )
+        if not math.isfinite(number) or not lo <= number <= hi:
+            return ()
+        values.append(number)
+    return tuple(values)
+
+
+def _bass_extension_boost_cap(raw: Any) -> float | None:
+    """The boost bound a summary states, ``inf`` where it states none.
+
+    ``None`` for a stated bound this proof will not read: a cap nobody can
+    parse must not read as no cap at all.
+    """
+    if raw is None:
+        return math.inf
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    cap = float(raw)
+    return cap if math.isfinite(cap) and cap >= 0.0 else None
+
+
 def bass_extension_block_valid(
     view: GraphView,
     profile_summary: Mapping[str, Any],
 ) -> BassExtensionBlockEvidence:
-    """Prove the complete optional sealed natural-at-rest filter pair.
+    """Prove the complete optional sealed bass filter pair.
 
     Permission comes only from separately evaluated profile evidence. A missing,
     deferred, bypassed, or stale profile requires the complete absence of both
     definitions and references. An eligible sealed profile requires the exact
-    named pair, exact natural parameters, and one reference on exactly the
+    named pair, exact target parameters, and one reference on exactly the
     recorded bass-owner channels.
+
+    The ``natural`` slot is the target the graph is claimed to carry. Without
+    an ``lt`` key that target IS the plant's own corner, so its transform must
+    be the identity and it must spend NO boost. With one, the four
+    ``LinkwitzTransform`` values are matched against ``lt`` instead, and the
+    boost the rung spends is disclosed rather than forbidden: bounded by the
+    summary's ``boost_cap_db`` where it states one. A rung reaches a graph
+    only under the ladder's own protection; nothing here is that protection.
     """
 
     from jasper.camilla_emit import (
@@ -884,12 +947,24 @@ def bass_extension_block_valid(
         return BassExtensionBlockEvidence(
             False, True, definitions, (), "bass_extension_profile_evidence_invalid"
         )
+    lt_expected = _bass_extension_lt_values(natural.get("lt"))
+    if lt_expected is None:
+        lt_expected = (fp_hz, qp, fp_hz, qp)
+        boost_ok = boost == 0.0
+    else:
+        cap = _bass_extension_boost_cap(profile_summary.get("boost_cap_db"))
+        boost_ok = (
+            lt_expected != ()
+            and cap is not None
+            and math.isfinite(boost)
+            and 0.0 <= boost <= cap
+        )
     if (
         not math.isfinite(fp_hz)
         or not BASS_EXTENSION_FREQ_HZ_LO <= fp_hz <= BASS_EXTENSION_FREQ_HZ_HI
         or not math.isfinite(qp)
         or not BASS_EXTENSION_Q_LO <= qp <= BASS_EXTENSION_Q_HI
-        or boost != 0.0
+        or not boost_ok
         or not isinstance(subsonic, Mapping)
     ):
         return BassExtensionBlockEvidence(
@@ -923,12 +998,7 @@ def bass_extension_block_valid(
         and params.get("type") == "LinkwitzTransform"
         and all(
             float_matches(params.get(key), expected_value)
-            for key, expected_value in (
-                ("freq_act", fp_hz),
-                ("q_act", qp),
-                ("freq_target", fp_hz),
-                ("q_target", qp),
-            )
+            for key, expected_value in zip(_BASS_EXTENSION_LT_KEYS, lt_expected)
         )
         and hp is not None
         and hp.type == "BiquadCombo"

@@ -97,8 +97,10 @@ def _hp_stripping(original: Callable[..., list[str]]) -> Callable[..., list[str]
     return _stripped
 
 
-def _sealed_field(*, channels=(0, 2), role="woofer"):
-    return bass_extension_field(owner={"role": role, "channels": list(channels)})
+def _sealed_field(*, channels=(0, 2), role="woofer", boosted=False):
+    return bass_extension_field(
+        boosted=boosted, owner={"role": role, "channels": list(channels)}
+    )
 
 
 # --- the three required cases, at the shared-predicate layer ----------------- #
@@ -346,6 +348,63 @@ def test_natural_pair_tamper_is_unsafe_and_missing_subsonic_trips_emit_gate(
             preset,
             playback_device=ACTIVE_PCM,
             bass_extension=field,
+        )
+
+
+def test_a_named_rung_emits_its_own_transform_and_leaves_natural_untouched() -> None:
+    preset = _preset("stereo", 2)
+    field = _sealed_field(boosted=True)
+    rung = field["rungs"][0]["target"]
+    target_id = rung["target_id"]
+
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, bass_extension=field,
+        bass_target_id=target_id,
+    )
+    payload = yaml.safe_load(text)
+
+    assert payload["filters"]["bass_ext_lt"]["parameters"] == pytest.approx({
+        "type": "LinkwitzTransform",
+        **{k: v for k, v in rung["filters"][0].items() if k != "type"},
+    }, abs=5e-5)
+    assert payload["filters"]["bass_ext_subsonic"]["parameters"]["order"] == (
+        rung["subsonic"]["order"]
+    )
+    assert bass_extension_block_valid(
+        view_from_emitted_text(text), graph_summary(field, target_id=target_id)
+    ).valid is True
+    # The rung's own graph is NOT the natural one, and neither summary proves
+    # the other's bytes.
+    assert bass_extension_block_valid(
+        view_from_emitted_text(text), graph_summary(field)
+    ).valid is False
+    assert text != emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, bass_extension=field,
+    )
+
+
+@pytest.mark.parametrize("target_id", ["natural", None])
+def test_naming_the_natural_rung_emits_exactly_what_naming_nothing_does(
+    target_id,
+) -> None:
+    preset = _preset("stereo", 2)
+    field = _sealed_field(boosted=True)
+
+    assert emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, bass_extension=field,
+        bass_target_id=target_id,
+    ) == emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, bass_extension=field,
+    )
+
+
+def test_a_target_this_family_does_not_carry_refuses_the_whole_graph() -> None:
+    with pytest.raises(ActiveSpeakerConfigError, match="not in this candidate"):
+        emit_active_speaker_baseline_config(
+            _preset("stereo", 2),
+            playback_device=ACTIVE_PCM,
+            bass_extension=_sealed_field(boosted=True),
+            bass_target_id="t99.00",
         )
 
 

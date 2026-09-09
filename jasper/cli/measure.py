@@ -54,6 +54,13 @@ REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
 #: More than one ``--position`` in one invocation: this door has no mover seam,
 #: so N bearings would bank N ``position_deg`` values nothing moved to (S12).
 REFUSE_ONE_POSITION_PER_RUN = "measure_one_position_per_run"
+#: A bass rung was requested on a box whose seat-level reference cannot predict
+#: an SPL: none banked, or banked with no stimulus provenance to solve against.
+REFUSE_BASS_LADDER_UNBANKED = "bass_ladder_reference_unbanked"
+#: A rung of the requested ladder is predicted to reach the commissioning SPL
+#: stop. The request is refused WHOLE — a truncated ladder would play the
+#: quiet rungs and read as a completed one.
+REFUSE_BASS_LADDER_CEILING = "bass_ladder_spl_ceiling"
 
 #: ``--specs`` could not be read, or does not hold a non-empty list of mappings.
 REFUSE_SPECS_UNREADABLE = "measure_specs_file_unreadable"
@@ -328,6 +335,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             inverted_role=args.inverted_role,
             level_ladder_dbfs=tuple(args.level_dbfs),
             candidate_id=args.candidate_id.strip(),
+            bass_target_id=args.bass_target_id.strip(),
             delayed_role=args.delayed_role,
             delay_us=args.delay_us,
             level_matched=args.level_matched,
@@ -344,7 +352,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
 #: entry may omit.
 _PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
                    "delayed_role", "delay_us", "level_matched", "level_dbfs",
-                   "candidate_id")
+                   "candidate_id", "bass_target_id")
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -395,7 +403,7 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
 #: a whitespace-only candidate id cannot pass the variant rule.
 _STRING_FIELDS = (
     "kind", "position_axis", "regime", "polarity", "inverted_role",
-    "delayed_role", "candidate_id", "graph_scope",
+    "delayed_role", "candidate_id", "bass_target_id", "graph_scope",
 )
 
 
@@ -508,16 +516,100 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
     return {str(role): float(db) for role, db in trims.items()}
 
 
+def _bass_rung_summary(candidate_id: str, target_id: str) -> Mapping[str, Any]:
+    """The graph authority for one rung of one banked candidate's family."""
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+    from jasper.bass_extension.candidate_field import graph_summary
+
+    return graph_summary(
+        find_banked_candidate(candidate_id).candidate.bass_extension,
+        target_id=target_id,
+    )
+
+
+def _assert_bass_ladder_under_ceiling(
+    specs: tuple[Any, ...], box: BoxDeclaration,
+) -> None:
+    """Refuse a bass-rung request whose ladder would reach the SPL stop.
+
+    Before the door, because by the time a session is open the first rung has
+    already played. Each rung is predicted at the session's own fader against
+    the banked seat-level reference, with the WHOLE of that rung's boost added
+    — the ladder plays exactly where the boost is spent. Any rung at or above
+    this box's commissioning ceiling refuses the request whole.
+    """
+    from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        GRAPH_SCOPE_BASS_CANDIDATE,
+    )
+    from jasper.active_speaker.seat_level_reference import (
+        load_seat_level_reference,
+        predicted_seat_spl_db,
+    )
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+    from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
+
+    rungs = [spec for spec in specs if spec.graph_scope == GRAPH_SCOPE_BASS_CANDIDATE]
+    if not rungs:
+        return
+    try:
+        ceiling = commissioning_spl_ceiling_db(box.topology)
+    except (OSError, ValueError, KeyError, AttributeError) as exc:
+        raise BoxNotMeasurable(
+            REFUSE_BOX_NOT_READY,
+            "this box declares no commissioning SPL ceiling to bound a bass "
+            f"rung against: {exc}",
+        ) from exc
+    reference = load_seat_level_reference()
+    for spec in rungs:
+        summary = _bass_rung_summary(spec.candidate_id, spec.bass_target_id)
+        emitted = summary.get("natural")
+        boost_db = (
+            float(emitted.get("boost_headroom_db", 0.0))
+            if isinstance(emitted, Mapping) else 0.0
+        )
+        # An empty ladder is the one stimulus the program declares, and the
+        # rung's own dBFS is a sweep PEAK where the reference banks an RMS.
+        for peak_dbfs in spec.level_ladder_dbfs or (BASE_STIMULUS_PEAK_DBFS,):
+            predicted = predicted_seat_spl_db(
+                reference,
+                fader_db=box.session_volume_db,
+                stimulus_rms_dbfs=float(peak_dbfs) - SWEEP_PEAK_TO_RMS_DB,
+                boost_db=boost_db,
+            )
+            if predicted is None:
+                raise BoxNotMeasurable(
+                    REFUSE_BASS_LADDER_UNBANKED,
+                    "a bass rung may only play at a predicted seat SPL, and "
+                    "this box banks no seat-level reference measured against a "
+                    "recorded stimulus — run jasper-seat-level first",
+                )
+            if predicted >= ceiling:
+                raise BoxNotMeasurable(
+                    REFUSE_BASS_LADDER_CEILING,
+                    f"rung {spec.bass_target_id!r} at {float(peak_dbfs):g} dBFS "
+                    f"is predicted to reach {predicted:.1f} dB SPL at the seat, "
+                    f"at or above this box's commissioning ceiling of "
+                    f"{ceiling:g} dB SPL",
+                )
+
+
 def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
     config_dir: str, graph: Any,
 ) -> Any:
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
-    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        GRAPH_SCOPE_BASS_CANDIDATE,
+        GRAPH_SCOPE_DRIVERS,
+    )
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift, hold_fader_at
+    from jasper.bass_extension.candidate_field import (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
 
     excitation = SessionExcitation(
         roles=box.roles_bands, caps_dbfs=box.caps_dbfs,
@@ -530,6 +622,23 @@ def _bind_compose(
         if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
+
+    summaries: dict[tuple[str, str], Mapping[str, Any]] = {}
+
+    def bass_profile_summary(spec: Any) -> Mapping[str, Any]:
+        """The authority this take's graph is READMITTED against.
+
+        Resolved from the named candidate a second time rather than from the
+        graph the session installed, which is what keeps admission an
+        independent reader of the same evidence. Cached per rung: the lookup
+        is a bank scan and a batch plays one rung many times.
+        """
+        if spec.graph_scope != GRAPH_SCOPE_BASS_CANDIDATE:
+            return NO_BASS_EXTENSION_PROFILE_SUMMARY
+        key = (spec.candidate_id, spec.bass_target_id)
+        if key not in summaries:
+            summaries[key] = _bass_rung_summary(*key)
+        return summaries[key]
 
     async def before_play(program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
@@ -549,6 +658,7 @@ def _bind_compose(
         session_volume_db=box.session_volume_db,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
+        bass_profile_summary=bass_profile_summary,
     )
 
 
@@ -617,6 +727,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             "this box has banked no per-driver level evidence, so a "
             "level-matched take would measure unmatched branches",
         )
+    _assert_bass_ladder_under_ceiling(specs, box)
     try:
         device = require_wired_mic()
     except WiredMicMissing as exc:
@@ -1011,6 +1122,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-id",
         default="",
         help="required whenever a variant axis is set",
+    )
+    parser.add_argument(
+        "--bass-target-id",
+        default="",
+        help=(
+            "which rung of the named candidate's bass family to play; required "
+            "by --graph-scope bass_candidate and refused by every other scope"
+        ),
     )
     parser.add_argument(
         "--specs",

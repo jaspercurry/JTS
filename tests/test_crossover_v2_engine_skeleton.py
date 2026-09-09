@@ -92,8 +92,8 @@ class _Graph:
     level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
 
-    def select_scope(self, scope, candidate_id=""):
-        self.scopes.append((scope, candidate_id))
+    def select_scope(self, scope, candidate_id="", bass_target_id=""):
+        self.scopes.append((scope, candidate_id, bass_target_id))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
@@ -627,7 +627,10 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
     async with session:
         for spec in specs:
             await session.measure(spec)
-    assert parts["graph"].scopes == [("base", ""), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
+    assert parts["graph"].scopes == [
+        ("base", "", ""), ("candidate", "fp-a", ""), ("candidate", "fp-a", ""),
+        ("drivers", "", ""),
+    ]
     records = parts["records"].banked
     assert [record["graph_scope"] for record in records] == ["base", "candidate", "candidate", "drivers"]
     assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]

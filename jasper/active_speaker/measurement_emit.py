@@ -18,6 +18,7 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     CANDIDATE_SCOPES,
+    GRAPH_SCOPE_BASS_CANDIDATE,
     GRAPH_SCOPE_DRIVERS,
     GRAPH_SCOPES,
 )
@@ -34,6 +35,11 @@ from jasper.active_speaker.profile import (
     ActiveSpeakerPreset,
     required_driver_roles,
 )
+from jasper.bass_extension.candidate_field import (
+    BassCandidateFieldError,
+    emitted_rung,
+    validate_bass_extension_field,
+)
 
 __all__ = [
     "MeasurementGraphProfile",
@@ -43,7 +49,9 @@ __all__ = [
     "emit_measurement_graph",
 ]
 
-TuningGraphScope = Literal["base", "speaker_tune", "candidate", "room_candidate"]
+TuningGraphScope = Literal[
+    "base", "speaker_tune", "candidate", "room_candidate", "bass_candidate",
+]
 
 
 @dataclass(frozen=True)
@@ -80,11 +88,31 @@ def _filter_list(value: Any) -> bool:
     )
 
 
+def _carries_the_applied_tune(
+    candidate: MeasuredCrossoverCandidate, snapshot: Mapping[str, Any]
+) -> bool:
+    """Is this candidate's speaker layer the one the box already applies?
+
+    A room set and a bass rung are both proved THROUGH the accepted tune
+    (docs/measurement-loop-doctrine.md §1a), so the candidate that applies
+    afterwards must carry that same speaker layer or the trial measured
+    something else.
+    """
+    return (
+        driver_corrections(candidate) == snapshot.get("corrections")
+        and linearization_filters_by_role(candidate.linearization)
+        == snapshot.get("linearization", {})
+        and [dict(f) for f in candidate.blend_correction]
+        == snapshot.get("blend_correction", [])
+    )
+
+
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     *,
     scope: TuningGraphScope = "base",
     candidate: MeasuredCrossoverCandidate | None = None,
+    bass_target_id: str = "",
 ) -> str:
     """Compile a stereo graph for summed captures, clouds and confirmation.
 
@@ -93,9 +121,11 @@ def compile_tuning_graph(
     those corrections with its complete candidate layer, and ``room_candidate``
     plays the accepted speaker tune through that candidate's room set — the
     layer-3 capture of ``docs/measurement-loop-doctrine.md`` §1a, whose rule
-    also keeps preference and bass extension out of every scope here. Callers
-    must compare DSP readback with the emitted graph before attributing a
-    capture to it.
+    also keeps preference out of every scope here. ``bass_candidate`` is the
+    one scope carrying a bass stage: the accepted speaker tune with the named
+    rung of that candidate's family, which is how a rung is played in room at
+    all. Callers must compare DSP readback with the emitted graph before
+    attributing a capture to it.
     """
     if scope == GRAPH_SCOPE_DRIVERS or scope not in GRAPH_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
@@ -112,6 +142,7 @@ def compile_tuning_graph(
             "measurement_base_mismatch", "declared speaker differs from applied base",
         )
     room_peqs: tuple[PeqFilter, ...] = ()
+    bass_extension: Mapping[str, Any] | None = None
     if candidate is not None:
         if not isinstance(candidate, MeasuredCrossoverCandidate):
             raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
@@ -119,22 +150,36 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused(
                 "measurement_candidate_base_mismatch", candidate.fingerprint,
             )
-        if scope == "room_candidate":
+        if scope == GRAPH_SCOPE_BASS_CANDIDATE:
+            bass_extension = candidate.bass_extension or None
+            if bass_extension is None:
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_no_bass", candidate.fingerprint,
+                )
+            try:
+                family = validate_bass_extension_field(bass_extension)
+            except BassCandidateFieldError as exc:
+                # A family this reader refuses is no family to play: the
+                # emitter would refuse the same field a moment later, and a
+                # graph is never built from evidence that failed its check.
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_no_bass", str(exc),
+                ) from exc
+            if emitted_rung(family, bass_target_id) is None:
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_bass_target_unknown", bass_target_id,
+                )
+            if not _carries_the_applied_tune(candidate, snapshot):
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_tune_mismatch", candidate.fingerprint,
+                )
+        elif scope == "room_candidate":
             room_peqs = candidate_room_peqs(candidate)
             if not room_peqs:
                 raise MeasurementGraphRefused(
                     "measurement_candidate_no_room", candidate.fingerprint,
                 )
-            # A room trial proves the room set THROUGH the accepted tune
-            # (docs/measurement-loop-doctrine.md §1a), so the candidate that
-            # applies afterwards must carry that same speaker layer.
-            if (
-                driver_corrections(candidate) != snapshot.get("corrections")
-                or linearization_filters_by_role(candidate.linearization)
-                != snapshot.get("linearization", {})
-                or [dict(f) for f in candidate.blend_correction]
-                != snapshot.get("blend_correction", [])
-            ):
+            if not _carries_the_applied_tune(candidate, snapshot):
                 raise MeasurementGraphRefused(
                     "measurement_candidate_tune_mismatch", candidate.fingerprint,
                 )
@@ -198,7 +243,8 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused("measurement_filters_invalid", scope)
     text, issues = recompose_applied_baseline_yaml(
         profile.topology, applied_profile=profile.applied_profile or {},
-        playback_device=profile.playback_device, bass_extension=None,
+        playback_device=profile.playback_device, bass_extension=bass_extension,
+        bass_target_id=bass_target_id or None,
         room_peqs=room_peqs, drop_measured_correction=scope == "base",
         protection_sections_by_role=profile.protection_sections_by_role,
     )

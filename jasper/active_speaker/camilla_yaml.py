@@ -38,7 +38,9 @@ from jasper.camilla_config_contract import (
     total_positive_boost_db,
 )
 from jasper.bass_extension.candidate_field import (
+    NATURAL_TARGET_ID,
     BassCandidateFieldError,
+    emitted_rung,
     graph_summary,
     validate_bass_extension_field,
 )
@@ -527,12 +529,16 @@ def bass_owner_channels(preset: ActiveSpeakerPreset, role: str) -> tuple[int, ..
 def _bass_extension_emission(
     preset: ActiveSpeakerPreset,
     bass_extension: Mapping[str, Any] | None,
+    *,
+    target_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return the natural-at-rest block one candidate field composes.
+    """Return the block one candidate field composes for the rung it names.
 
-    Only the family's LAST rung — the natural target, which spends no boost —
-    reaches a graph. The deeper rungs are carried for the ladder and the
-    limiter bench, which own what may play above natural.
+    ``target_id`` is ``None`` for the natural target — the family's LAST rung,
+    which spends no boost and is the only member a saved profile emits. A
+    deeper rung reaches a graph only through the measurement scope that plays
+    it under the ladder's protection, and its transform comes from the rung's
+    own sealed ``filters`` rather than being recomputed here.
     """
 
     if not bass_extension:
@@ -545,8 +551,13 @@ def _bass_extension_emission(
         raise ActiveSpeakerConfigError(
             "sealed bass-extension profile requires subsonic protection on every target"
         )
-    natural = field["rungs"][-1]["target"]
-    if natural["qp"] is None:
+    rung = emitted_rung(field, target_id)
+    if rung is None:
+        raise ActiveSpeakerConfigError(
+            f"bass-extension target {target_id!r} is not in this candidate's family"
+        )
+    target = rung["target"]
+    if target["qp"] is None:
         raise ActiveSpeakerConfigError("sealed bass-extension natural target is invalid")
     role = str(field["owner"]["role"])
     channels = tuple(int(channel) for channel in field["owner"]["channels"])
@@ -554,7 +565,7 @@ def _bass_extension_emission(
         raise ActiveSpeakerConfigError(
             "bass-extension owner does not match the emitted active-speaker graph"
         )
-    subsonic = dict(natural["subsonic"])
+    subsonic = dict(target["subsonic"])
     if (
         subsonic.get("type") != "ButterworthHighpass"
         or type(subsonic.get("order")) is not int
@@ -564,7 +575,18 @@ def _bass_extension_emission(
         "kind": "local_sub" if role == "subwoofer" else "woofer_way",
         "role": role,
         "channels": channels,
-        "natural": natural,
+        "lt": (
+            {
+                "freq_act": target["fp_hz"], "q_act": target["qp"],
+                "freq_target": target["fp_hz"], "q_target": target["qp"],
+            }
+            if target["target_id"] == NATURAL_TARGET_ID
+            else {
+                key: value
+                for key, value in target["filters"][0].items()
+                if key != "type"
+            }
+        ),
         "subsonic": subsonic,
     }
 
@@ -572,15 +594,15 @@ def _bass_extension_emission(
 def _emit_bass_extension_definitions(block: dict[str, Any] | None) -> list[str]:
     if block is None:
         return []
-    natural = block["natural"]
+    lt = block["lt"]
     subsonic = block["subsonic"]
     return [
         *emit_linkwitz_transform_biquad(
             BASS_EXTENSION_LT_FILTER,
-            freq_act=natural["fp_hz"],
-            q_act=natural["qp"],
-            freq_target=natural["fp_hz"],
-            q_target=natural["qp"],
+            freq_act=lt["freq_act"],
+            q_act=lt["q_act"],
+            freq_target=lt["freq_target"],
+            q_target=lt["q_target"],
         ),
         *emit_butterworth_highpass(
             BASS_EXTENSION_SUBSONIC_FILTER,
@@ -615,9 +637,15 @@ def _assert_bass_extension_safe(
     preset: ActiveSpeakerPreset,
     bass_extension: Mapping[str, Any] | None,
     block: dict[str, Any] | None,
+    *,
+    target_id: str | None = None,
 ) -> None:
+    # The summary is rebuilt from the REQUEST, never from ``block``: a proof
+    # reading the emission's own choice of rung would agree with itself.
     view = view_from_emitted_text(yaml_text)
-    evidence = bass_extension_block_valid(view, graph_summary(bass_extension))
+    evidence = bass_extension_block_valid(
+        view, graph_summary(bass_extension, target_id=target_id)
+    )
     limiter_ok = True
     if block is not None:
         channels = frozenset(block["channels"])
@@ -3574,6 +3602,7 @@ def emit_active_speaker_baseline_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension: Mapping[str, Any] | None = None,
+    bass_target_id: str | None = None,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] | None = None,
@@ -3658,7 +3687,7 @@ def emit_active_speaker_baseline_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
-    bass_block = _bass_extension_emission(preset, bass_extension)
+    bass_block = _bass_extension_emission(preset, bass_extension, target_id=bass_target_id)
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
 
@@ -3758,7 +3787,9 @@ pipeline:
     # household plays through, so re-prove every tweeter output carries its
     # crossover / protective high-pass before it can leave the emitter.
     _assert_tweeter_outputs_protected(yaml, preset)
-    _assert_bass_extension_safe(yaml, preset, bass_extension, bass_block)
+    _assert_bass_extension_safe(
+        yaml, preset, bass_extension, bass_block, target_id=bass_target_id,
+    )
     # Reference-closure gate (fail-closed): the baseline assembles its
     # filters/mixer/pipeline from independent helper calls, exactly as the
     # program graph does.
@@ -3816,6 +3847,7 @@ def emit_active_speaker_driver_domain_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension: Mapping[str, Any] | None = None,
+    bass_target_id: str | None = None,
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.
 
@@ -3884,7 +3916,7 @@ def emit_active_speaker_driver_domain_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
-    bass_block = _bass_extension_emission(preset, bass_extension)
+    bass_block = _bass_extension_emission(preset, bass_extension, target_id=bass_target_id)
 
     # queuelimit reaches the YAML through an f-string, so an unvalidated value
     # is the one emitter input that can put arbitrary text into a CamillaDSP
@@ -3974,7 +4006,9 @@ pipeline:
     # corrected program, so its tweeter output must still carry the crossover /
     # protective high-pass.
     _assert_tweeter_outputs_protected(yaml, preset)
-    _assert_bass_extension_safe(yaml, preset, bass_extension, bass_block)
+    _assert_bass_extension_safe(
+        yaml, preset, bass_extension, bass_block, target_id=bass_target_id,
+    )
 
     if out_path is not None:
         out_path = Path(out_path)

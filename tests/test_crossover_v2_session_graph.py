@@ -393,26 +393,34 @@ def test_a_failed_restore_retains_the_entry_graph_for_retry(tmp_path, failure):
 def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tmp_path):
     emitted = []
 
-    def emit_scoped(scope, candidate_id):
-        emitted.append((scope, candidate_id))
-        return f"scope: {scope}\ncandidate: {candidate_id}\n"
+    def emit_scoped(scope, candidate_id, bass_target_id=""):
+        emitted.append((scope, candidate_id, bass_target_id))
+        return f"scope: {scope}\ncandidate: {candidate_id}{bass_target_id}\n"
 
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
-    for named in ("candidate", "room_candidate"):
+    for named in ("candidate", "room_candidate", "bass_candidate"):
         with pytest.raises(SessionGraphError):
             graph.select_scope(named, "")
+    # A rung named on a scope that emits no bass stage is not that scope's
+    # selection, and naming none on the scope that does is refused.
+    with pytest.raises(SessionGraphError):
+        graph.select_scope("bass_candidate", "a", "")
     scopes = [
-        ("drivers", ""), ("base", ""), ("speaker_tune", ""),
-        ("candidate", "a"), ("candidate", "b"), ("room_candidate", "a"),
+        ("drivers", "", ""), ("base", "", ""), ("speaker_tune", "", ""),
+        ("candidate", "a", ""), ("candidate", "b", ""),
+        ("room_candidate", "a", ""), ("bass_candidate", "a", "deep"),
+        ("bass_candidate", "a", "natural"),
     ]
     fingerprints = {}
-    for scope, candidate_id in scopes * 2:
-        graph.select_scope(scope, candidate_id)
+    for scope, candidate_id, bass_target_id in scopes * 2:
+        graph.select_scope(scope, candidate_id, bass_target_id)
         fingerprint = asyncio.run(graph.install())
-        assert fingerprint == fingerprints.setdefault((scope, candidate_id), fingerprint)
+        assert fingerprint == fingerprints.setdefault(
+            (scope, candidate_id, bass_target_id), fingerprint
+        )
         assert graph.installed_graph_yaml() == cam.live
         emitted_graph = yaml.safe_load(graph.graph_yaml())
         submitted_graph = yaml.safe_load(cam.live)

@@ -673,6 +673,7 @@ def readmit_summed_program_from_wav(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
+    bass_profile_summary: Mapping[str, Any] = NO_BASS_EXTENSION_PROFILE_SUMMARY,
 ) -> ProgramAdmission:
     """Admit a mono summed artifact through its complete protected tuning graph.
 
@@ -680,6 +681,11 @@ def readmit_summed_program_from_wav(
     declared HP/LP must protect any segment outside a driver's permitted input
     band; its full emitted band is retained in evidence. The caller must prove
     this exact graph live while holding the DSP writer lock through playback.
+
+    ``bass_profile_summary`` is the authority the graph's optional bass stage
+    is proved against, and defaults to the one that FORBIDS the stage: a
+    caller playing a bass rung states it, and every other graph is admitted
+    only with no bass stage in it at all.
     """
     if (
         not isinstance(program, ExcitationProgram)
@@ -705,7 +711,7 @@ def readmit_summed_program_from_wav(
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
     graph = classify_camilla_graph(
         topology=topology, text=graph_yaml,
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+        bass_profile_summary=bass_profile_summary,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)

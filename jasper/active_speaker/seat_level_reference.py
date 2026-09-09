@@ -35,7 +35,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_json
 
@@ -207,6 +207,53 @@ def seat_level_reference_volume_db(
     if not volume > EMERGENCY_MEASUREMENT_VOLUME_DB:
         return None
     return volume
+
+
+def predicted_seat_spl_db(
+    reference: Mapping[str, Any] | None,
+    *,
+    fader_db: float,
+    stimulus_rms_dbfs: float,
+    boost_db: float,
+) -> float | None:
+    """The seat SPL one stimulus would reach at ``fader_db``, or ``None``.
+
+    :class:`StimulusProvenance`'s relation — ``dB SPL = stimulus dBFS + chain
+    gain + volume`` — solved at a second point. Every term is a DIFFERENCE from
+    the banked pass, so the chain gain, the one term nothing here measures,
+    cancels.
+
+    RMS against RMS: a constant-amplitude swept sine's RMS sits 3.01 dB below
+    its peak while a band-limited noise reference's crest factor is ~10 dB
+    higher, so comparing the two peaks under-predicts a sweep by that
+    difference. Callers convert their own stimulus to RMS
+    (``program_analysis.model.SWEEP_PEAK_TO_RMS_DB``) before asking.
+
+    ``boost_db`` is added WHOLE — the boosted frequencies are exactly where a
+    rung's ladder plays, so the worst case is the only honest prediction.
+
+    ``None`` where no reference is banked, or where the banked one records no
+    stimulus provenance: without the level the reference was measured against
+    there is no second point to solve for, and a guessed one would look
+    absolute.
+    """
+    if not isinstance(reference, Mapping):
+        return None
+    stimulus = reference.get("stimulus")
+    if not isinstance(stimulus, Mapping):
+        return None
+    measured = finite_float(reference.get("measured_db_spl"))
+    volume = finite_float(reference.get("reference_volume_db"))
+    banked_rms = finite_float(stimulus.get("rms_dbfs"))
+    fader = finite_float(fader_db)
+    rms = finite_float(stimulus_rms_dbfs)
+    boost = finite_float(boost_db)
+    if (
+        measured is None or volume is None or banked_rms is None
+        or fader is None or rms is None or boost is None
+    ):
+        return None
+    return measured + (fader - volume) + (rms - banked_rms) + boost
 
 
 def write_seat_level_reference(

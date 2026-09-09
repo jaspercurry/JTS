@@ -3084,6 +3084,7 @@ def recompose_applied_baseline_yaml(
     out_path: str | Path | None = None,
     playback_device: str | None = None,
     bass_extension: Mapping[str, Any] | None | object = _APPLIED_BASS_EXTENSION,
+    bass_target_id: str | None = None,
     drop_measured_correction: bool = False,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
@@ -3254,6 +3255,7 @@ def recompose_applied_baseline_yaml(
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
         bass_extension=bass_extension,
+        bass_target_id=bass_target_id,
         linearization=linearization,
         blend_correction=blend_correction,
         protection_sections_by_role=protection_sections_by_role,

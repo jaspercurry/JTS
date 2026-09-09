@@ -240,6 +240,75 @@ def test_bass_extension_predicate_requires_subsonic_and_rejects_unknown_names():
     assert gs.bass_extension_block_valid(injected, _bass_summary()).valid is False
 
 
+#: The same pair with the deepest rung's transform in it: the plant's own
+#: corner acted on, the rung's corner targeted.
+_BASS_RUNG_GRAPH = _BASS_EXTENSION_GRAPH.replace(
+    "freq_target: 61.2, q_target: 0.72", "freq_target: 38.0, q_target: 0.6",
+)
+
+
+def _rung_summary():
+    summary = _bass_summary()
+    summary["natural"].update({
+        "fp_hz": 38.0,
+        "qp": 0.6,
+        "boost_headroom_db": 5.0,
+        "lt": {
+            "freq_act": 61.2, "q_act": 0.72,
+            "freq_target": 38.0, "q_target": 0.6,
+        },
+    })
+    summary["boost_cap_db"] = 6.0
+    return summary
+
+
+def test_a_rung_is_proved_against_its_own_transform_and_the_identity_rule_stands():
+    rung_graph = gs.view_from_emitted_text(_BASS_RUNG_GRAPH)
+    natural_graph = gs.view_from_emitted_text(_BASS_EXTENSION_GRAPH)
+
+    assert gs.bass_extension_block_valid(rung_graph, _rung_summary()).valid is True
+    # Each summary accepts EXACTLY its own transform and no other.
+    assert gs.bass_extension_block_valid(
+        rung_graph, _bass_summary()
+    ).valid is False
+    assert gs.bass_extension_block_valid(
+        natural_graph, _rung_summary()
+    ).valid is False
+    # A summary disclosing no transform still forbids spending any boost.
+    boosted_natural = _bass_summary()
+    boosted_natural["natural"]["boost_headroom_db"] = 5.0
+    assert gs.bass_extension_block_valid(
+        natural_graph, boosted_natural
+    ).valid is False
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("lt", {"freq_act": 61.2, "q_act": 0.72, "freq_target": 38.0}),
+        ("lt", {"freq_act": 61.2, "q_act": 0.72, "freq_target": 38.0,
+                "q_target": True}),
+        ("lt", {"freq_act": 61.2, "q_act": 0.72, "freq_target": 5.0,
+                "q_target": 0.6}),
+        ("boost_headroom_db", 9.0),
+        ("boost_headroom_db", -1.0),
+        ("boost_headroom_db", float("inf")),
+        ("boost_cap_db", "6"),
+        ("boost_cap_db", float("nan")),
+    ],
+)
+def test_a_rung_summary_this_proof_cannot_read_refuses_the_block(key, value):
+    summary = _rung_summary()
+    if key == "boost_cap_db":
+        summary[key] = value
+    else:
+        summary["natural"][key] = value
+
+    assert not gs.bass_extension_block_valid(
+        gs.view_from_emitted_text(_BASS_RUNG_GRAPH), summary
+    ).valid
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

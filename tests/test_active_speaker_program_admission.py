@@ -690,6 +690,56 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
         assert refusal in admission.refusals
 
 
+def test_a_bass_stage_is_admitted_only_against_the_rung_that_authorized_it(tmp_path):
+    """Admission is the independent reader of the SAME authority the graph
+    was emitted from — and its default forbids a bass stage outright."""
+    from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.bass_extension.candidate_field import (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY, graph_summary,
+    )
+    from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
+    from tests.test_bass_extension_candidate_field import bass_extension_field
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_floor=100, max_sweep_duration_s=4,
+    )
+    field = bass_extension_field(
+        boosted=True, owner={"role": "woofer", "channels": [0]},
+    )
+    target_id = field["rungs"][0]["target"]["target_id"]
+    graph_yaml, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=_applied_profile(topology),
+        playback_device=ACTIVE_PCM, bass_extension=field,
+        bass_target_id=target_id,
+    )
+    assert graph_yaml and not issues
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        session_volume_db=-20.0, fc_hz=2000,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "summed.wav"
+    write_program_wav(wav, program)
+
+    def admit(summary):
+        return readmit_summed_program_from_wav(
+            program, wav, graph_yaml=graph_yaml, topology=topology,
+            safety_profile=profile, role_targets=targets,
+            session_volume_db=-20.0, **summary,
+        )
+
+    assert admit({"bass_profile_summary": graph_summary(
+        field, target_id=target_id
+    )}).allowed
+    for refused in (
+        {},
+        {"bass_profile_summary": dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)},
+        {"bass_profile_summary": graph_summary(field)},
+    ):
+        assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admit(refused).refusals
+
+
 @pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
 @pytest.mark.parametrize("damage", [
     None, "missing", "wrong_output", "low_corner", "shallow_slope", "gain", "after_limiter",

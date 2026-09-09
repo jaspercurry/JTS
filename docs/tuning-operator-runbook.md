@@ -157,6 +157,16 @@ The room is measured on the seat cube, through the applied tune, ungated
 
 Nothing above the ceiling changes on this evidence.
 
+A bass rung plays the same way, at the seat and through the same accepted
+tune: `jasper-measure --graph-scope bass_candidate --candidate-id <fingerprint>
+--bass-target-id <target> --level-dbfs <rung>...` installs that one member of
+the candidate's bass family. Before any audio it predicts each ladder step's
+seat SPL from the banked `jasper-seat-level` reference, with the whole of the
+rung's boost added, and refuses the request entire — never truncated to its
+quiet steps — when any step reaches this box's commissioning ceiling
+(`bass_ladder_spl_ceiling`), or when no reference with a recorded stimulus is
+banked to predict against (`bass_ladder_reference_unbanked`).
+
 ## Evidence and recovery
 
 Measurement records own numbers and identities. An optional

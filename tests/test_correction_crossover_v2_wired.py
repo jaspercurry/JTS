@@ -2130,7 +2130,9 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path, a
     records = core_capture.CapturedRecordStore(inner, half)
     graph = MeasurementSessionGraph(
         emit=lambda *args: "temporary: drivers\n",
-        emit_scoped=lambda scope, candidate_id: f"temporary: {scope}\ncandidate: {candidate_id}\n",
+        emit_scoped=lambda scope, candidate_id, bass_target_id="": (
+            f"temporary: {scope}\ncandidate: {candidate_id}\n"
+        ),
         cam_factory=lambda: cam, writer_lock=_PlaySeams()._writer_lock, confirm_live=confirm_live,
     )
     fakes = _dc.replace(fakes, play=transaction, records=records, graph=graph)

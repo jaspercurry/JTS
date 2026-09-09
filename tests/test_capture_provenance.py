@@ -518,7 +518,7 @@ def _drive_one_capture(
             assert outcome.stimuli[0].incident == ""
 
     asyncio.run(run())
-    assert graph.scopes == [(scope, spec.candidate_id)]
+    assert graph.scopes == [(scope, spec.candidate_id, "")]
     assert played == [ROUTING_GRAPH_YAML if scope == "drivers" else APPLIED_GRAPH_YAML]
     assert cam.active_raw == entry_graph
     record, = records.banked

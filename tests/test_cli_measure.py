@@ -27,6 +27,8 @@ from jasper.cli.measure import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
+    REFUSE_BASS_LADDER_CEILING,
+    REFUSE_BASS_LADDER_UNBANKED,
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
@@ -292,6 +294,90 @@ def _declaration() -> BoxDeclaration:
         sweep_duration_limits_s={"woofer": 4.0, "tweeter": 4.0},
         fc_hz=1800.0,
         session_volume_db=-20.0,
+    )
+
+
+#: One banked seat-level pass: the reference every prediction below reads.
+_SEAT_REFERENCE = {
+    "measured_db_spl": 77.5,
+    "reference_volume_db": -20.0,
+    "stimulus": {"rms_dbfs": -26.0},
+}
+
+
+def _bass_specs(*levels_dbfs: float):
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+
+    return (MeasureSpec(
+        kind=MEASURE_KIND_CANDIDATE, graph_scope="bass_candidate",
+        candidate_id="fp-a", bass_target_id="t31.86",
+        level_ladder_dbfs=tuple(levels_dbfs),
+    ),)
+
+
+@pytest.mark.parametrize("levels, reference, ceiling, reason", [
+    # -6 dBFS peak is -9.01 dBFS RMS: 17.0 dB above the banked stimulus, plus
+    # the rung's whole 6 dB of boost, lands at 100.5 dB SPL. The quiet first
+    # rung does not save the request.
+    ((-26.0, -6.0), _SEAT_REFERENCE, 95.0, REFUSE_BASS_LADDER_CEILING),
+    # Empty ladder: the program's own single stimulus (-12 dBFS peak) is the
+    # rung, and predicts 94.5 dB SPL.
+    ((), _SEAT_REFERENCE, 94.0, REFUSE_BASS_LADDER_CEILING),
+    ((-40.0,), None, 95.0, REFUSE_BASS_LADDER_UNBANKED),
+    ((-40.0,), {k: v for k, v in _SEAT_REFERENCE.items() if k != "stimulus"},
+     95.0, REFUSE_BASS_LADDER_UNBANKED),
+])
+def test_a_bass_rung_is_refused_whole_before_any_audio(
+    monkeypatch, levels, reference, ceiling, reason,
+):
+    """The SPL stop runs on the REQUEST, and refuses it entire.
+
+    A ladder truncated to its quiet rungs would play and bank as a completed
+    one, so the loud rung refuses the whole batch rather than part of it.
+    """
+    from jasper.active_speaker import commission_wiring, seat_level_reference
+
+    monkeypatch.setattr(
+        measure, "_bass_rung_summary",
+        lambda *_: {"natural": {"boost_headroom_db": 6.0}},
+    )
+    monkeypatch.setattr(
+        commission_wiring, "commissioning_spl_ceiling_db", lambda _topology: ceiling
+    )
+    monkeypatch.setattr(
+        seat_level_reference, "load_seat_level_reference",
+        lambda **_kwargs: reference,
+    )
+
+    with pytest.raises(measure.BoxNotMeasurable) as exc:
+        measure._assert_bass_ladder_under_ceiling(_bass_specs(*levels), _declaration())
+    assert exc.value.reason == reason
+
+
+def test_a_ladder_under_the_stop_and_every_other_scope_pass_untouched(monkeypatch):
+    from jasper.active_speaker import commission_wiring, seat_level_reference
+
+    monkeypatch.setattr(
+        measure, "_bass_rung_summary",
+        lambda *_: {"natural": {"boost_headroom_db": 6.0}},
+    )
+    monkeypatch.setattr(
+        commission_wiring, "commissioning_spl_ceiling_db", lambda _topology: 95.0
+    )
+    monkeypatch.setattr(
+        seat_level_reference, "load_seat_level_reference",
+        lambda **_kwargs: _SEAT_REFERENCE,
+    )
+    box = _declaration()
+
+    measure._assert_bass_ladder_under_ceiling(_bass_specs(-40.0, -30.0), box)
+    # No bass rung in the batch: nothing to predict, and no reference needed.
+    monkeypatch.setattr(
+        seat_level_reference, "load_seat_level_reference",
+        lambda **_kwargs: None,
+    )
+    measure._assert_bass_ladder_under_ceiling(
+        (spec_from_args(_args("--level-dbfs", "-6")),), box,
     )
 
 

@@ -40,6 +40,7 @@ __all__ = [
     "BassCandidateFieldError",
     "applied_bass_extension_field",
     "bass_extension_summary",
+    "emitted_rung",
     "graph_summary",
     "validate_bass_extension_field",
 ]
@@ -544,12 +545,39 @@ def applied_bass_extension_field(
     return field if isinstance(field, Mapping) and field else None
 
 
-def graph_summary(field: Mapping[str, Any] | None) -> dict[str, Any]:
+def emitted_rung(
+    field: Mapping[str, Any], target_id: str | None
+) -> Mapping[str, Any] | None:
+    """The rung one graph carries, or ``None`` for a target this family lacks.
+
+    ``target_id`` is ``None`` for the natural rung — the family's last member,
+    which spends no boost and is the only one a saved profile emits. ``field``
+    is a :func:`validate_bass_extension_field` result.
+    """
+    if target_id is None:
+        return field["rungs"][-1]
+    for rung in field["rungs"]:
+        if rung["target"]["target_id"] == target_id:
+            return rung
+    return None
+
+
+def graph_summary(
+    field: Mapping[str, Any] | None, *, target_id: str | None = None
+) -> dict[str, Any]:
     """The authority evidence one emitted graph is proved against.
 
-    A field this module would refuse authorizes no stage at all, exactly as an
-    absent family does: the graph proof then requires the complete absence of
-    the bass block rather than trusting an unreadable family.
+    ``target_id`` names WHICH rung that graph carries (``None`` is the natural
+    one). The ``natural`` slot is THE EMITTED TARGET under either choice; a
+    rung that transforms the plant also discloses the four
+    ``LinkwitzTransform`` values under ``lt`` and the boost cap its margin
+    policy allows, which is what lets the proof accept a graph the identity
+    rule would refuse.
+
+    A field this module would refuse, or a target this family does not carry,
+    authorizes no stage at all, exactly as an absent family does: the graph
+    proof then requires the complete absence of the bass block rather than
+    trusting an unreadable family.
     """
     if not field:
         return dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)
@@ -557,19 +585,34 @@ def graph_summary(field: Mapping[str, Any] | None) -> dict[str, Any]:
         validated = validate_bass_extension_field(field)
     except BassCandidateFieldError:
         return dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)
-    natural = validated["rungs"][-1]["target"]
-    return {
+    rung = emitted_rung(validated, target_id)
+    if rung is None:
+        return dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    target = rung["target"]
+    emitted: dict[str, Any] = {
+        "target_id": target["target_id"],
+        "fp_hz": target["fp_hz"],
+        "qp": target["qp"],
+        "boost_headroom_db": target["boost_headroom_db"],
+        "subsonic": (
+            dict(target["subsonic"]) if target["subsonic"] is not None else None
+        ),
+    }
+    summary = {
         "authority_valid": True,
         "runtime_block_required": True,
         "bass_owner_channels": list(validated["owner"]["channels"]),
-        "natural": {
-            "fp_hz": natural["fp_hz"],
-            "qp": natural["qp"],
-            "boost_headroom_db": natural["boost_headroom_db"],
-            "subsonic": (
-                dict(natural["subsonic"])
-                if natural["subsonic"] is not None
-                else None
-            ),
-        },
+        "natural": emitted,
     }
+    if target["target_id"] != NATURAL_TARGET_ID:
+        # lazy: targets reaches scipy through adapters, and only a boosted rung
+        # needs the cap its margin policy sets.
+        from jasper.bass_extension.targets import MARGINS
+
+        emitted["lt"] = {
+            key: value
+            for key, value in target["filters"][0].items()
+            if key != "type"
+        }
+        summary["boost_cap_db"] = MARGINS[validated["margin_policy_name"]].boost_cap_db
+    return summary

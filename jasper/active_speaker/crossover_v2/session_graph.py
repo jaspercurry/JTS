@@ -19,7 +19,12 @@ from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
-from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+from .measure_spec import (
+    CANDIDATE_SCOPES,
+    GRAPH_SCOPE_BASS_CANDIDATE,
+    GRAPH_SCOPE_DRIVERS,
+    GRAPH_SCOPES,
+)
 
 logger = logging.getLogger(__name__)
 _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
@@ -32,11 +37,12 @@ __all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anch
 EmitYaml = Callable[
     [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
 ]
-EmitScopedYaml = Callable[[str, str], str]
+EmitScopedYaml = Callable[[str, str, str], str]
 #: ``(inverted_roles, delays, level trims)`` — what makes one graph variant
 #: distinct from another, and therefore what the emit cache is keyed by.
 _VariantKey = tuple[
-    str, str, tuple[str, ...], tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]
+    str, str, str, tuple[str, ...], tuple[tuple[str, float], ...],
+    tuple[tuple[str, float], ...],
 ]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
@@ -112,6 +118,7 @@ class MeasurementSessionGraph:
         self._emit_scoped = emit_scoped
         self._scope = GRAPH_SCOPE_DRIVERS
         self._candidate_id = ""
+        self._bass_target_id = ""
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
@@ -148,15 +155,22 @@ class MeasurementSessionGraph:
         """
         return self._comparability_boundary
 
-    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+    def select_scope(
+        self, scope: str, candidate_id: str = "", bass_target_id: str = "",
+    ) -> None:
         if scope not in GRAPH_SCOPES:
             raise SessionGraphError(f"unknown graph scope: {scope}")
         if scope in CANDIDATE_SCOPES and not candidate_id.strip():
             raise SessionGraphError(f"{scope} scope requires candidate_id")
+        if scope == GRAPH_SCOPE_BASS_CANDIDATE and not bass_target_id.strip():
+            raise SessionGraphError(f"{scope} scope requires bass_target_id")
         if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
             raise SessionGraphError("no scoped graph emitter is bound")
         self._scope = scope
         self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
+        self._bass_target_id = (
+            bass_target_id if scope == GRAPH_SCOPE_BASS_CANDIDATE else ""
+        )
 
     def graph_yaml(
         self,
@@ -170,7 +184,7 @@ class MeasurementSessionGraph:
         if self._scope != GRAPH_SCOPE_DRIVERS and (inverted_roles or delays or trims):
             raise SessionGraphError("graph overlays require drivers scope")
         key = (
-            self._scope, self._candidate_id,
+            self._scope, self._candidate_id, self._bass_target_id,
             inverted_roles,
             tuple(sorted(delays.items())),
             tuple(sorted(trims.items())),
@@ -181,7 +195,9 @@ class MeasurementSessionGraph:
                 cached = self._emit(inverted_roles, delays, trims)
             else:
                 assert self._emit_scoped is not None
-                cached = self._emit_scoped(self._scope, self._candidate_id)
+                cached = self._emit_scoped(
+                    self._scope, self._candidate_id, self._bass_target_id,
+                )
             self._yaml[key] = cached
         return cached
 

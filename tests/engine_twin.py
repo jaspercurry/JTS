@@ -127,8 +127,10 @@ class FakeGraph:
     level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
 
-    def select_scope(self, scope: str, candidate_id: str = "") -> None:
-        self.scopes.append((scope, candidate_id))
+    def select_scope(
+        self, scope: str, candidate_id: str = "", bass_target_id: str = "",
+    ) -> None:
+        self.scopes.append((scope, candidate_id, bass_target_id))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
