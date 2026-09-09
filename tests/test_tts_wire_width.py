@@ -15,8 +15,7 @@ Two bars, and they are not the same kind of claim:
   signal — because "the bits survived" means nothing on its own.
 
 The width itself comes from ONE input, ``JASPER_FANIN_RING_WIRE_FORMAT``,
-classified identically in both languages
-(``tests/test_ring_wire_format_contract.py`` pins that half).
+classified by ``jasper.fanin_coupling.resolve_ring_wire_format``.
 """
 
 from __future__ import annotations
@@ -347,9 +346,9 @@ def test_a_declared_wide_undeclared_coupling_box_speaks_the_wide_verb(
     """The pair of the row above, and the one #3655 adds.
 
     A box the reconciler has not written names no coupling, and `jasper-fanin`
-    runs it on the ring regardless (`Config::program_wire_is_wide` passes the
-    transport half as a hard-coded `true`). Voice must speak AUDIO32 to it or
-    every assistant payload takes a needless conversion at the mixer.
+    runs it on the ring regardless — the ring is its only transport (ADR-0100).
+    Voice must speak AUDIO32 to it or every assistant payload takes a needless
+    conversion at the mixer.
     """
     _declare(monkeypatch, tmp_path, wire_format="S32_LE", coupling=None)
     tts = TtsPlayout(socket_path="/nonexistent.sock")

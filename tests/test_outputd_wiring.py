@@ -609,37 +609,25 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     # renderer lanes duck while TTS/cues stay unattenuated.
     assert "program_target" in mixer_rs
     assert "ramp_program_duck(" in mixer_rs
-    # Both duck paths take the box's `program_width`: the gain stage's rails and
-    # mantissa are width-dependent, and a width-blind duck would clamp a
-    # spine-scale sum at the i32 rails before the duck could recover it.
-    duck_call = "apply_gain_to_sum(\n                &mut self.sum_buf,\n                self.program_duck_current,\n                self.program_width,\n            )"
+    # The duck runs on the renderer sum BEFORE the assistant enters it, so a
+    # ~25 dB duck attenuates music and not the speech spoken over it.
+    duck_call = "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
     assert duck_call in mixer_rs
-    assert "self.program_duck_release_step,\n                self.program_width,\n            );" in mixer_rs
-    assert "tts.mix_period(&mut self.sum_buf, self.program_width)" in mixer_rs
+    assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
     assert mixer_rs.index(duck_call) < mixer_rs.index(
-        "tts.mix_period(&mut self.sum_buf, self.program_width)"
+        "tts.mix_period(&mut self.sum_buf)"
     )
     # The wire layer (command vocabulary + parser) lives ONCE in the shared
     # crate; both daemons consume it as a path dependency.
     proto_rs = (
         REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
     ).read_text()
-    # The resolved assistant width, published at start. A Rust unit test covers
-    # the line's content but cannot see whether anything CALLS the renderer, so
-    # both halves are pinned here: invoked, and invoked from the startup path.
-    assert "config.assistant_wire_resolved_line()" in main_rs, (
-        "fan-in must emit its resolved assistant width at startup; without it a "
-        "support read cannot tell a converting mismatch from a coherent box "
-        "except by waiting for a once-per-lifetime warn"
-    )
-    assert 'info!("{}", config.assistant_wire_resolved_line());' in main_rs
-    assert "pub fn assistant_wire_resolved_line(" in config_rs
-    # The voice half of the pair, so the two lines a support read compares are
-    # pinned together rather than one of them drifting away silently.
+    # jasper-voice publishes the assistant width it resolved, so a support read
+    # can compare it against the `AUDIO32` verb fan-in expects.
     assert (
         '"tts_wire.resolved"'
         in (REPO / "jasper" / "audio_io.py").read_text()
-    ), "jasper-voice must publish the width it resolved, to pair with fan-in's"
+    ), "jasper-voice must publish the width it resolved"
 
     assert '"PROGRAM_DUCK_ON"' in proto_rs
     # The whole-stereo-frame rule is stated ONCE, in the shared payload reader,
