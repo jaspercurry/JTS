@@ -294,7 +294,7 @@ function usbLatencyLabel(mode) {
 function effectiveUsbLatencyLabel(state) {
   const mode = state && state.effective_mode;
   if (state && state.state === "idle") return "Not active";
-  if (state && state.state === "starting") return "Starting";
+  if (state && ["starting", "applying"].includes(state.state)) return "Starting";
   if (state && state.state === "fallback") {
     return mode ? usbLatencyLabel(mode) + " · stable fallback" : "Stable fallback";
   }
@@ -315,7 +315,10 @@ export function updateUsbLatency(refs, state) {
     else if (state && state.detail) refs.status.textContent = state.detail;
   }
   refs.buttons.forEach((button) => {
-    button.el.setAttribute("aria-pressed", button.mode === effective ? "true" : "false");
+    const chosen = button.mode === selected;
+    button.el.setAttribute("aria-pressed", chosen ? "true" : "false");
+    button.el.dataset.latencyPending = String(chosen &&
+      (effective !== selected || state.state !== "applied"));
     if (!button.el.dataset.applying) button.el.disabled = false;
   });
 }
