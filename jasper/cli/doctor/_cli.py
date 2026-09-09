@@ -8,14 +8,12 @@ run against, the ANSI report and the JSON report the /system dashboard reads.
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
     sudo /opt/jasper/.venv/bin/jasper-doctor --core      # post-deploy subset
-    sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
-    sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
     sudo /opt/jasper/.venv/bin/jasper-doctor --only network  # one module
     sudo /opt/jasper/.venv/bin/jasper-doctor --failing   # fail/warn rows only
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
 ``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
-checks pass, 1 otherwise; --watch exits 0 on Ctrl-C."""
+checks pass, 1 otherwise."""
 from __future__ import annotations
 
 import argparse
@@ -170,26 +168,6 @@ def render_json(
         return 0
     return 1 if payload["fails"] else 0
 
-def _watch_line(results: list[CheckResult]) -> str:
-    """One-line summary for --watch mode: timestamp, counts, first non-ok
-    name."""
-    fails = [r for r in results if r.status == "fail"]
-    warns = [r for r in results if r.status == "warn"]
-    ts = time.strftime("%H:%M:%S")
-    if fails:
-        first = fails[0].name
-        return (
-            f"{ts}  {RED}{len(fails)} fail{RESET} "
-            f"{YELLOW}{len(warns)} warn{RESET}  first-fail: {first}"
-        )
-    if warns:
-        first = warns[0].name
-        return (
-            f"{ts}  {GREEN}ok{RESET} "
-            f"{YELLOW}{len(warns)} warn{RESET}  first-warn: {first}"
-        )
-    return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
-
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
@@ -226,42 +204,10 @@ def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
         return _local_audio_config_from_env()
     return Config.from_env()
 
-async def _watch_loop(
-    cfg: Config | SimpleNamespace,
-    interval: float,
-    *,
-    core_only: bool = False,
-    only: str | None = None,
-) -> int:
-    """Run checks every `interval` seconds, print one line per pass.
-    Returns 0 on Ctrl-C."""
-    print(
-        f"jasper-doctor --watch (interval={interval:.1f}s, "
-        f"Ctrl-C to exit)\n",
-        flush=True,
-    )
-    try:
-        while True:
-            results = await run_async(cfg, core_only=core_only, only=only)
-            print(_watch_line(results), flush=True)
-            await asyncio.sleep(interval)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\nexiting", flush=True)
-        return 0
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jasper-doctor",
         description="JTS preflight diagnostics. Run as root.",
-    )
-    parser.add_argument(
-        "--watch", action="store_true",
-        help="Loop the checks until Ctrl-C; one summary line per pass.",
-    )
-    parser.add_argument(
-        "-i", "--interval", type=float, default=5.0,
-        help="Seconds between iterations in --watch mode (default 5).",
     )
     parser.add_argument(
         "--core", action="store_true",
@@ -323,10 +269,6 @@ def main() -> None:
             sys.exit(0 if args.out else 1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
-    if args.watch:
-        sys.exit(asyncio.run(
-            _watch_loop(cfg, args.interval, core_only=args.core, only=args.only)
-        ))
     started_at = time.monotonic()
     try:
         results = asyncio.run(run_async(cfg, core_only=args.core, only=args.only))
