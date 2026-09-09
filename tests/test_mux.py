@@ -20,7 +20,7 @@ import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import DEFAULT, AsyncMock
 
 import pytest
 
@@ -103,17 +103,19 @@ class _FakeVolumeCoordinator:
 
 
 @pytest.fixture
-def mux(tmp_path):
+def mux(tmp_path, monkeypatch):
     # State file paths are per-test (tmp_path) so we don't accidentally
     # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
     # test forgets to stub the probes.
+    monkeypatch.setattr(mux_module, "fanin_command", AsyncMock(return_value={}))
     m = Mux(
         librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
-    m._fanin_select = AsyncMock(return_value={})
-    m._fanin_none = AsyncMock(return_value={})
+    # wraps, not replaces: the gate latch lives in the real methods.
+    m._fanin_select = AsyncMock(wraps=m._fanin_select)
+    m._fanin_none = AsyncMock(wraps=m._fanin_none)
     return m
 
 
@@ -1926,15 +1928,37 @@ async def test_winner_stopping_holds_fanin_none(
     assert mux._winner is None
 
 
-async def test_steady_idle_asserts_fanin_none_once(mux, patched_probes):
-    """Idle is an edge, not a 1 Hz heartbeat: the patrol re-asserts NONE
-    only when the arbiter enters idle, not on every tick after."""
+@pytest.mark.parametrize(
+    "side_effect, awaits, consecutive_failures",
+    [
+        (None, 1, None),
+        ([RuntimeError("fanin down"), RuntimeError("fanin down"), DEFAULT],
+         3, "2"),
+    ],
+    ids=["lands_first_try", "retried_through_outage"],
+)
+async def test_idle_fanin_none_is_asserted_until_it_lands(
+    mux, patched_probes, caplog, side_effect, awaits, consecutive_failures,
+):
+    """Idle is an edge, not a 1 Hz heartbeat: NONE repeats only while it
+    fails, and the failure episode is reported on its two edges."""
     _stub_probes(patched_probes)
+    mux._fanin_none.side_effect = side_effect
 
-    await mux._tick()
-    await mux._tick()
+    with caplog.at_level(logging.INFO, logger=mux_module.__name__):
+        for _ in range(3):
+            await mux._tick()
 
-    assert mux._fanin_none.await_count == 1
+    assert mux._fanin_none.await_count == awaits
+    failed = event_field_maps(caplog, "mux.fanin_gate_failed")
+    recovered = event_field_maps(caplog, "mux.fanin_gate_recovered")
+    if consecutive_failures is None:
+        assert (failed, recovered) == ([], [])
+    else:
+        assert [fields["reason"] for fields in failed] == ["auto_idle"]
+        assert [fields["consecutive_failures"] for fields in recovered] == [
+            consecutive_failures,
+        ]
 
 
 async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):

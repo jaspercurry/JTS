@@ -84,6 +84,7 @@ import logging
 import os
 import signal
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -255,10 +256,11 @@ class Mux:
         self._patrol_repairs = 0
         self._last_reconcile: dict[str, Any] | None = None
         self._last_alert_reconcile_at = 0.0
-        # True once an idle NONE assert has landed and no SELECT has been
-        # issued since. Steady idle then re-asserts nothing at the 1 Hz tick.
+        # True when the last landed gate command was NONE, so steady idle
+        # re-asserts nothing at the 1 Hz tick. SELECT clears it before its
+        # command and NONE sets it after: never believe idle when unsure.
         self._fanin_none_asserted = False
-        self._fanin_none_failures = 0
+        self._fanin_gate_failures = 0
 
     async def run(self) -> None:
         log_event(logger, "mux.ready", patrol_s=self.POLL_INTERVAL_SEC,
@@ -598,10 +600,11 @@ class Mux:
         elif target is None:
             if self._winner is not None and current.get(self._winner, False):
                 await self._reassert_auto_winner(current)
-            elif self._winner is not None or not self._fanin_none_asserted:
+            else:
                 self._winner = None
                 self._pending_auto_target = None
-                await self._fanin_none_best_effort(reason="auto_idle")
+                if not self._fanin_none_asserted:
+                    await self._fanin_none_best_effort(reason="auto_idle")
 
         # Release USB preempt once all other sources are idle; without this the
         # speaker would stay silent after AirPlay/Spotify stop while the host
@@ -994,8 +997,9 @@ class Mux:
             source = self._manual_source
             if source is None:
                 return
-            await self._fanin_select_best_effort(
-                source, reason="manual_tick",
+            await self._fanin_gate_best_effort(
+                self._fanin_select(source), reason="manual_tick",
+                source=source.value,
             )
             if self._usbsink_preempted:
                 await self._usbsink_set_preempt(False, reason="manual_mode")
@@ -1011,15 +1015,19 @@ class Mux:
             winner = self._winner
             if winner is None or not current.get(winner, False):
                 return
-            await self._fanin_select_best_effort(winner, reason="auto_tick")
+            await self._fanin_gate_best_effort(
+                self._fanin_select(winner), reason="auto_tick",
+                source=winner.value,
+            )
 
     async def _reassert_test_fanin_label(self) -> None:
         async with self._transition_lock:
             label = self._test_fanin_label
             if label is None:
                 return
-            await self._fanin_select_label_best_effort(
-                label, reason="test_tick",
+            await self._fanin_gate_best_effort(
+                self._fanin_select_label(label), reason="test_tick",
+                label=label,
             )
 
     def _ensure_volume_coordinator(self) -> Any:
@@ -1258,7 +1266,9 @@ class Mux:
         )
 
     async def _fanin_none(self) -> dict[str, Any]:
-        return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
+        result = await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
+        self._fanin_none_asserted = True
+        return result
 
     async def _fanin_lane_mute(
         self, label: str, muted: bool,
@@ -1273,47 +1283,30 @@ class Mux:
             f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
         )
 
-    async def _fanin_select_best_effort(
-        self, source: Source, *, reason: str,
+    async def _fanin_gate_best_effort(
+        self, gate: Awaitable[Any], *, reason: str, **fields: Any,
     ) -> None:
-        try:
-            await self._fanin_select(source)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "fanin source gate reassert failed source=%s reason=%s: %s",
-                source.value, reason, e,
-            )
+        """Assert one fan-in gate command, reported on its episode edges.
 
-    async def _fanin_select_label_best_effort(
-        self, label: str, *, reason: str,
-    ) -> None:
+        Every caller retries at the 1 Hz patrol tick, so a held fault says
+        nothing the first report did not."""
         try:
-            await self._fanin_select_label(label)
+            await gate
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "fanin test gate reassert failed label=%s reason=%s: %s",
-                label, reason, e,
-            )
+            if not self._fanin_gate_failures:
+                log_event(logger, "mux.fanin_gate_failed",
+                          level=logging.WARNING, reason=reason,
+                          error=f"{type(e).__name__}: {e}", **fields)
+            self._fanin_gate_failures += 1
+        else:
+            if self._fanin_gate_failures:
+                log_event(logger, "mux.fanin_gate_recovered", reason=reason,
+                          consecutive_failures=self._fanin_gate_failures,
+                          **fields)
+                self._fanin_gate_failures = 0
 
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
-        # Reported on its edges only: the retry is every tick (1 Hz) and a
-        # held fault says nothing the first one did not.
-        try:
-            await self._fanin_none()
-        except Exception as e:  # noqa: BLE001
-            if not self._fanin_none_failures:
-                log_event(logger, "mux.fanin_none_failed",
-                          level=logging.WARNING,
-                          reason=reason,
-                          error=f"{type(e).__name__}: {e}")
-            self._fanin_none_failures += 1
-        else:
-            self._fanin_none_asserted = True
-            if self._fanin_none_failures:
-                log_event(logger, "mux.fanin_none_recovered",
-                          reason=reason,
-                          consecutive_failures=self._fanin_none_failures)
-                self._fanin_none_failures = 0
+        await self._fanin_gate_best_effort(self._fanin_none(), reason=reason)
 
     async def _run_control_server(self) -> None:
         try:
