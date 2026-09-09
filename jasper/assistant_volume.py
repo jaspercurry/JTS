@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
 
 from .env_load import VOICE_GROUPING_ENV_FILE
+from .platform import wire
 from .tts_routing import (
     FANIN_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
@@ -62,11 +63,7 @@ def volume_context_stamp_boot_ns() -> int:
 
 def serialize_volume_context(context: EffectiveVolumeContext) -> bytes:
     """Serialize the one canonical Python representation of this command."""
-    return (
-        f"VOLUME_CONTEXT {context.canonical_db:.3f} "
-        f"{context.downstream_db:.3f} {context.tts_envelope_lufs:.3f} "
-        f"{1 if context.muted else 0} {int(context.stamp_boot_ns)}\n"
-    ).encode("ascii")
+    return wire.encode(wire.tts_volume_context(context))
 
 
 def _send_volume_context(
@@ -75,7 +72,7 @@ def _send_volume_context(
     *,
     timeout: float = 0.5,
 ) -> None:
-    payload = serialize_volume_context(context) + b"CLOSE\n"
+    payload = serialize_volume_context(context) + wire.encode(wire.TTS_CLOSE)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(socket_path)

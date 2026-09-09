@@ -94,6 +94,7 @@ from .airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command, fanin_command, local_status_json
 from .source_state import (
@@ -1279,11 +1280,11 @@ class Mux:
         # never leave the gate believed idle.
         self._fanin_none_asserted = False
         return await self._fanin_gate(
-            f"SELECT {label}", reason=reason, label=label,
+            wire.fanin_select(label), reason=reason, label=label,
         )
 
     async def _fanin_none(self, *, reason: str) -> dict[str, Any]:
-        result = await self._fanin_gate("NONE", reason=reason)
+        result = await self._fanin_gate(wire.FANIN_NONE, reason=reason)
         self._fanin_none_asserted = True
         return result
 
@@ -1322,9 +1323,9 @@ class Mux:
         A per-lane silence on the same mux→fan-in control channel as the
         selected-input gate (SELECT/NONE), orthogonal to selection and to
         volume. Lane-general, like SELECT."""
-        verb = "MUTE" if muted else "UNMUTE"
         return await fanin_command(
-            f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
+            wire.fanin_lane_mute(label, muted=muted),
+            socket_path=FANIN_CONTROL_SOCKET,
         )
 
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
@@ -1701,7 +1702,7 @@ def _make_duck_active_probe() -> Any:
             # Seconds, TOTAL: voice STATUS is a synchronous attribute read,
             # so a slower answer means the daemon is wedged.
             response = await daemon_command(
-                socket_path, "STATUS", timeout=1.0, daemon="voice_daemon",
+                socket_path, wire.STATUS, timeout=1.0, daemon="voice_daemon",
             )
         except (OSError, RuntimeError, ValueError):
             return None

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .platform import wire
 from .platform.uds import mux_socket_command
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ async def stop_renderers(names: list[str]) -> None:
         try:
             if name == "airplay":
                 await mux_socket_command(
-                    f"PREEMPT {Source.AIRPLAY.value}",
+                    wire.mux_preempt(Source.AIRPLAY.value),
                     # mux awaits the drop inline: DropSession then the MPRIS
                     # Stop fallback, two 2 s busctl calls. The default 2 s
                     # would time out here and start librespot while

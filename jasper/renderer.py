@@ -30,6 +30,7 @@ from typing import Any
 from . import librespot_state
 from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .platform import wire
 from .platform.uds import mux_socket_command
 from .source_state import (
     airplay_playing,
@@ -114,7 +115,7 @@ class RendererClient:
         try:
             # Seconds, TOTAL deadline. One bounded exchange per observer tick;
             # mux STATUS is a synchronous snapshot on the daemon's side.
-            payload = await mux_socket_command("STATUS", timeout=1.0)
+            payload = await mux_socket_command(wire.STATUS, timeout=1.0)
         except (OSError, RuntimeError, ValueError) as e:
             logger.debug("mux STATUS unavailable: %s", e)
             return None
