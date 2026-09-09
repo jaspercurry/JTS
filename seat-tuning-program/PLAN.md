@@ -316,6 +316,71 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 14:05Z: Lane D pre-reads done (two Sonnet read-only passes over
+  3.3 and over 3.4+3.1b at their tips vs main). Findings and the
+  orchestrator's rulings, all to be carried into the PRs:
+  - **PR shape.** 3.3 stays ONE PR (3.3a candidate kind + door, 3.3b
+    emission): landing 3.3a alone would leave a window where a candidate
+    carrying a bass field applies without its bass layer, the failure lane C
+    had to close with `measurement_candidate_room_scope`. 3.4 SPLITS into two
+    PRs (3.4a rung graph, 3.4b ladder evidence + `bass-ladder` view): the
+    intermediate state is fail-closed (the door refuses a boosted rung with no
+    evidence) and it isolates the NN-tier diff — admission arithmetic and the
+    `graph_safety` widening — for the adversarial review.
+  - **3.4's `graph_safety` widening is real and must be named:**
+    `bass_extension_block_valid` goes from "boost must be exactly 0" to
+    "0..`boost_cap_db`". Gated by the door's admission rule, but it is the
+    NN-tier hunk the adversarial review exists for.
+  - **The sustain test is NOT built and will not be duplicated in the
+    ladder.** The bench already owns `sustain_stress` (frozen
+    `limiter-evidence-protocol.md`, rows 3.1/4.1); a second implementation in
+    the ladder would be the third rule of Defaults broken. Ruling: the ladder
+    document discloses that it carries swept-sine evidence only, and the
+    door's hard stop (ladder AND limiter evidence for any boost > 0) already
+    prevents admission on sweep evidence alone. The wave-4 brief names the
+    sustain contract's home. Brief row 3.4's wording is superseded here.
+  - **"The human starts each level" is NOT satisfied and must be fixed
+    before 3.4a merges.** `--level-dbfs` is repeatable and the session plays
+    the whole ladder back-to-back unattended; the SPL-ceiling check is a
+    whole-request preflight, not a per-level gate. Required: for
+    `graph_scope=bass_candidate` only, one level per invocation with a
+    refusal code (or a per-level operator confirmation if separate
+    invocations cannot bank into one round). Not a change to the shared
+    session loop other scopes use.
+  - **No `MeasurementProgram("bass","ladder")` registration, and none is
+    wanted:** levels are not poses, and a pose-list would be machinery for
+    its own sake. What the row must supply instead, and does not yet: each
+    banked step records its position and `grade_ladder` refuses a
+    mixed-position ladder — that is the substance of "at the seat, head-centre
+    pose" (3.4b's own test proves the step binding is deliberately
+    pose-agnostic).
+  - **`BassExtensionRefusal.LADDER_INCOMPLETE` must survive the rebase.**
+    #4563 deleted it from `profile.py` as producer-less; 3.4b's
+    `round_views/bass_ladder.py` uses it live. The `profile.py` conflict
+    (lane D moved the enum to a new `refusals.py`, main edited it in place)
+    is delete-vs-modify and must not be resolved by taking a side.
+  - **3.3 carries an accommodation that main has since killed:**
+    `classify_bass_extension_graph`'s dual authority (`desired_bass_extension`
+    or the legacy `desired_profile`) existed only for
+    `bass_extension.apply_bass_extension`, gutted by #4563 an hour after 3.3
+    was written. It rebases into provably dead code and goes in the same PR,
+    with the stale "until that applier retires" docstring in
+    `sound/graph_carrier.py`.
+  - **Field-name deviation, accepted:** the shipped bass field has no
+    `rung_id`/`lt`/`boost_db`/`level_cost_db`; the cost is
+    `target.boost_headroom_db` and the filters are a validated list. The PR
+    body carries the brief-name → shipped-name mapping so a reviewer can diff
+    the two.
+  - Rebase collisions, all rows: `docs/tuning-operator-runbook.md` (generated
+    menu cell — regenerate, never hand-merge), `bass_extension/profile.py`,
+    `cli/round_views/__init__.py`, `tests/test_cli_exit_vocabulary.py`,
+    `tests/test_bass_extension_{profile,runtime_gate_ssot}.py`, and for 3.1b
+    `cli/bass_extension_bench.py` (its docstring still names the deleted
+    `apply_bass_extension`; take main's wording).
+  - Sizes are 1.4k–1.9k changed lines per row against the 400-line target;
+    the split above is as far as they divide without leaving an unsafe
+    intermediate state.
+
 - 2026-09-09 13:30Z: Orchestration taken over by a fresh session (owner stopped
   "JTS D"; rebasing its branches is allowed). Topology of the eight lane D
   branches, verified with `merge-base --is-ancestor`: one stack
