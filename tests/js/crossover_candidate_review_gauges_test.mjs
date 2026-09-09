@@ -18,7 +18,7 @@
 //     pre-existing disclosure for older/ineligible candidates.
 // Audit item 4i (silent-deadends-gain-pointers) added a fourth case: an
 // undeclared driver_class's LIMITED_BY_CLASS_PRIOR band gains one remedy
-// sentence naming /sound/setup/, gated so an ALREADY-declared class's own
+// sentence naming /sound/speaker/, gated so an ALREADY-declared class's own
 // real prior — or a candidate with no driver_class at all — never gets a
 // remedy it cannot honestly attach.
 
@@ -367,7 +367,7 @@ render({
 // --- 7. Audit item 4i: an undeclared driver_class gets a remedy pointer ---
 // LIMITED_BY_CLASS_PRIOR still shows its number (unlike OUT_OF_BAND above,
 // which suppresses it) — this is a real, measured residual, only capped by
-// the class prior — and gains ONE extra sentence naming /sound/setup/.
+// the class prior — and gains ONE extra sentence naming /sound/speaker/.
 render({
   ...baseEnvelope,
   candidate_review: baseCandidateReview({
@@ -395,10 +395,10 @@ render({
       "measurement): 8k -0.2 dB, 12k -6.5 dB, 16k -11.0 dB; " +
       "tweeter: this driver's technology class is not declared, so " +
       "correction above this range is capped conservatively — declare it " +
-      "at /sound/setup/ for a less conservative limit."
+      "at /sound/speaker/ for a less conservative limit."
     ),
     "an undeclared driver_class keeps its residual numbers AND gains one " +
-    "remedy sentence naming /sound/setup/",
+    "remedy sentence naming /sound/speaker/",
     { got: text },
   );
 }
@@ -436,8 +436,8 @@ render({
     { got: text },
   );
   check(
-    !text.includes("/sound/setup/"),
-    "no /sound/setup/ pointer renders for a class the household already named",
+    !text.includes("/sound/speaker/"),
+    "no /sound/speaker/ pointer renders for a class the household already named",
     { got: text },
   );
 }
@@ -462,7 +462,7 @@ render({
 {
   const text = technicalDetailsText();
   check(
-    !text.includes("/sound/setup/"),
+    !text.includes("/sound/speaker/"),
     "no driver_class at all also renders no remedy sentence",
     { got: text },
   );

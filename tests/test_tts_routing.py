@@ -4,11 +4,13 @@
 
 """Pre-DSP vs post-DSP TTS-route classification (issue #1547).
 
-Outputd now interprets ``VOLUME_CONTEXT`` (a first-class post-DSP consumer), so
+Outputd interprets ``VOLUME_CONTEXT`` (a first-class post-DSP consumer), so
 the producer must publish the same wire message to a CONFIRMED post-DSP member.
 These tests pin the classifier logic that both the coordinator publisher and
 the voice daemon's PREPARE_ASSISTANT gate share.
 """
+
+import pytest
 
 from jasper.tts_routing import (
     resolved_tts_socket_feeds_post_dsp_outputd,
@@ -17,70 +19,44 @@ from jasper.tts_routing import (
     tts_socket_feeds_pre_dsp_fanin,
 )
 
+_OUTPUTD_SOCKET = "/run/jasper-outputd/tts.sock"
 
-def test_explicit_post_dsp_stage_is_post_dsp_only():
-    resolved = {"JASPER_TTS_MIX_STAGE": "post_dsp"}
-    assert resolved_tts_socket_feeds_post_dsp_outputd(
-        resolved, grouping_socket_override=False
+
+@pytest.mark.parametrize(
+    ("resolved", "pre_dsp", "post_dsp"),
+    [
+        ({"JASPER_TTS_MIX_STAGE": "post_dsp"}, False, True),
+        ({"JASPER_TTS_MIX_STAGE": "pre_dsp"}, True, False),
+        # Unknown stage fails closed both ways: pre-DSP compensation into an
+        # uncertain mix stage is a large level error.
+        ({"JASPER_TTS_MIX_STAGE": "sideways"}, False, False),
+        # Solo default: no socket, no stage.
+        ({}, True, False),
+        ({"JASPER_TTS_OUTPUTD_SOCKET": _OUTPUTD_SOCKET}, False, False),
+    ],
+)
+def test_stage_classification(resolved, pre_dsp, post_dsp):
+    assert resolved_tts_socket_feeds_pre_dsp_fanin(resolved) is pre_dsp
+    assert resolved_tts_socket_feeds_post_dsp_outputd(resolved) is post_dsp
+
+
+@pytest.mark.parametrize(
+    ("grouping_file", "pre_dsp", "post_dsp"),
+    [
+        (
+            f"JASPER_TTS_MIX_STAGE=post_dsp\nJASPER_TTS_OUTPUTD_SOCKET={_OUTPUTD_SOCKET}\n",
+            False,
+            True,
+        ),
+        ("", True, False),
+    ],
+)
+def test_env_reader_layers_the_grouping_file(
+    tmp_path, grouping_file, pre_dsp, post_dsp,
+):
+    path = tmp_path / "grouping-voice.env"
+    path.write_text(grouping_file)
+    assert tts_socket_feeds_pre_dsp_fanin({}, grouping_env_path=str(path)) is pre_dsp
+    assert (
+        tts_socket_feeds_post_dsp_outputd({}, grouping_env_path=str(path)) is post_dsp
     )
-    assert not resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolved, grouping_socket_override=False
-    )
-    # The override flag does not change a stage-explicit classification.
-    assert resolved_tts_socket_feeds_post_dsp_outputd(
-        resolved, grouping_socket_override=True
-    )
-
-
-def test_explicit_pre_dsp_stage_is_pre_dsp_only():
-    resolved = {"JASPER_TTS_MIX_STAGE": "pre_dsp"}
-    assert resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolved, grouping_socket_override=True
-    )
-    assert not resolved_tts_socket_feeds_post_dsp_outputd(
-        resolved, grouping_socket_override=True
-    )
-
-
-def test_missing_stage_is_never_post_dsp():
-    # Solo default (no socket, no stage) is pre-DSP fan-in, not post-DSP.
-    resolved: dict[str, str] = {}
-    assert resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolved, grouping_socket_override=False
-    )
-    assert not resolved_tts_socket_feeds_post_dsp_outputd(
-        resolved, grouping_socket_override=False
-    )
-
-
-def test_legacy_socket_only_override_fails_closed_both_ways():
-    # A grouping file that carries only the socket (no stage) is ambiguous:
-    # neither classifier claims it, so no pre-DSP compensation is published to a
-    # possibly-post-DSP mixer during an upgrade window.
-    resolved = {"JASPER_TTS_OUTPUTD_SOCKET": "/run/jasper-outputd/tts.sock"}
-    assert not resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolved, grouping_socket_override=True
-    )
-    assert not resolved_tts_socket_feeds_post_dsp_outputd(
-        resolved, grouping_socket_override=True
-    )
-
-
-def test_env_reader_classifies_post_dsp_and_legacy(tmp_path):
-    confirmed = tmp_path / "grouping-voice.env"
-    confirmed.write_text(
-        "JASPER_TTS_MIX_STAGE=post_dsp\n"
-        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
-    )
-    assert tts_socket_feeds_post_dsp_outputd({}, grouping_env_path=str(confirmed))
-    assert not tts_socket_feeds_pre_dsp_fanin({}, grouping_env_path=str(confirmed))
-
-    legacy = tmp_path / "legacy.env"
-    legacy.write_text("JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n")
-    assert not tts_socket_feeds_post_dsp_outputd({}, grouping_env_path=str(legacy))
-    assert not tts_socket_feeds_pre_dsp_fanin({}, grouping_env_path=str(legacy))
-
-    solo = tmp_path / "solo.env"
-    solo.write_text("")
-    assert not tts_socket_feeds_post_dsp_outputd({}, grouping_env_path=str(solo))
-    assert tts_socket_feeds_pre_dsp_fanin({}, grouping_env_path=str(solo))

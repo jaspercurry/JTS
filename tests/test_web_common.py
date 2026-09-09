@@ -17,7 +17,7 @@ from io import BytesIO
 
 import pytest
 
-from jasper.web import _common
+from jasper.web import _common, chrome
 
 
 class _FakeHandler:
@@ -281,48 +281,6 @@ def test_send_rejected_form_rerenders_at_422_with_token_and_message():
     }
 
 
-def test_redirect_with_legacy_msg_cleans_query_and_preserves_fragment():
-    h = _FakeHandler()
-    _common.redirect_with_legacy_msg(
-        h,
-        "./next?msg=%20Saved+now%20&tag=one&tag=two&empty=#details",
-    )
-
-    assert h._status == http.HTTPStatus.SEE_OTHER
-    assert h.header_values("Location") == [
-        "./next?tag=one&tag=two&empty=#details",
-    ]
-    assert "jts_flash=Saved%20now" in h.set_cookies()[0]
-
-
-def test_redirect_with_legacy_msg_uses_first_message_and_removes_all_messages():
-    h = _FakeHandler()
-    _common.redirect_with_legacy_msg(
-        h,
-        "./?msg=First&keep=yes&msg=Second",
-    )
-
-    assert h.header_values("Location") == ["./?keep=yes"]
-    assert "jts_flash=First" in h.set_cookies()[0]
-
-
-@pytest.mark.parametrize(
-    "location",
-    (
-        "./?msg=++&keep=yes&msg=Second#details",
-        "https://accounts.example/authorize?client_id=abc#consent",
-    ),
-)
-def test_redirect_with_legacy_msg_preserves_original_without_nonblank_message(
-    location: str,
-):
-    h = _FakeHandler()
-    _common.redirect_with_legacy_msg(h, location)
-
-    assert h.header_values("Location") == [location]
-    assert h.set_cookies() == []
-
-
 # ----------------------------------------------------------------------
 # CSRF: cookie minting + verification
 # ----------------------------------------------------------------------
@@ -584,7 +542,7 @@ def test_restart_voice_daemon_restarts_when_provider_set(monkeypatch):
 
 
 def test_canonical_page_links_shared_stylesheet_with_cache_bust():
-    out = _common.canonical_page("Sound", "<main></main>").decode()
+    out = chrome.canonical_page("Sound", "<main></main>").decode()
     assert out.startswith("<!doctype html>")
     # Links the shared stylesheet, cache-busted by a version token.
     assert 'rel="stylesheet"' in out
@@ -594,43 +552,43 @@ def test_canonical_page_links_shared_stylesheet_with_cache_bust():
 
 
 def test_canonical_page_includes_shared_icon_sprite():
-    out = _common.canonical_page("Sound", "<main></main>").decode()
+    out = chrome.canonical_page("Sound", "<main></main>").decode()
     assert 'id="icon-sound"' in out
     assert 'id="icon-chevron"' in out
 
 
 def test_canonical_page_embeds_csrf_meta_only_when_token_given():
-    with_token = _common.canonical_page(
+    with_token = chrome.canonical_page(
         "S", "<main></main>", csrf_token="abc",
     ).decode()
     assert 'meta name="jts-csrf"' in with_token
     assert 'content="abc"' in with_token
 
-    without = _common.canonical_page("S", "<main></main>").decode()
+    without = chrome.canonical_page("S", "<main></main>").decode()
     assert "jts-csrf" not in without
 
 
 def test_canonical_page_escapes_title():
-    out = _common.canonical_page("<script>x</script>", "<main></main>").decode()
+    out = chrome.canonical_page("<script>x</script>", "<main></main>").decode()
     assert "<title><script>" not in out
     assert "&lt;script&gt;" in out
 
 
 def test_canonical_page_includes_page_specific_css():
-    out = _common.canonical_page(
+    out = chrome.canonical_page(
         "S", "<main></main>", page_css=".eq-graph{height:200px}",
     ).decode()
     assert "<style>.eq-graph{height:200px}</style>" in out
 
 
 def test_canonical_page_omits_style_block_when_no_page_css():
-    out = _common.canonical_page("S", "<main></main>").decode()
+    out = chrome.canonical_page("S", "<main></main>").decode()
     assert "<style>" not in out
 
 
 def test_canonical_page_links_page_stylesheet_with_cache_bust():
     # The preferred form: a real static .css file, cache-busted like app.css.
-    out = _common.canonical_page(
+    out = chrome.canonical_page(
         "S", "<main></main>", page_css_href="/assets/system-status/system.css",
     ).decode()
     assert 'rel="stylesheet" href="/assets/system-status/system.css?v=' in out
@@ -643,7 +601,7 @@ def test_canonical_page_links_page_stylesheet_with_cache_bust():
 
 
 def test_canonical_header_renders_app_header_with_back_and_title():
-    out = _common.canonical_header("Speaker name")
+    out = chrome.canonical_header("Speaker name")
     assert 'class="app-header"' in out
     assert '<h1 class="app-header__title">Speaker name</h1>' in out
     # Back affordance: an icon-button linking home, drawn from the shared sprite.
@@ -656,7 +614,7 @@ def test_canonical_header_renders_app_header_with_back_and_title():
 
 
 def test_canonical_header_escapes_title_and_back_attrs():
-    out = _common.canonical_header(
+    out = chrome.canonical_header(
         "<script>x</script>", back_href='"/evil', back_label='<b>L</b>',
     )
     assert "<script>" not in out
@@ -668,13 +626,13 @@ def test_canonical_header_escapes_title_and_back_attrs():
 
 
 def test_canonical_header_honours_custom_back_target():
-    out = _common.canonical_header("Sound", back_href="/sound/", back_label="Back")
+    out = chrome.canonical_header("Sound", back_href="/sound/", back_label="Back")
     assert 'href="/sound/"' in out
     assert 'aria-label="Back"' in out
 
 
 def test_canonical_header_places_right_html_in_right_slot():
-    out = _common.canonical_header(
+    out = chrome.canonical_header(
         "T", right_html='<button class="btn">Edit</button>',
     )
     assert '<button class="btn">Edit</button>' in out
@@ -683,7 +641,7 @@ def test_canonical_header_places_right_html_in_right_slot():
 
 
 def test_safe_back_href_accepts_local_paths_with_query():
-    assert _common.safe_back_href("/assistant/tools/pack/spotify/?q=1") == (
+    assert chrome.safe_back_href("/assistant/tools/pack/spotify/?q=1") == (
         "/assistant/tools/pack/spotify/?q=1"
     )
 
@@ -700,7 +658,7 @@ def test_safe_back_href_accepts_local_paths_with_query():
     ],
 )
 def test_safe_back_href_rejects_non_local_or_obfuscated_values(raw):
-    assert _common.safe_back_href(raw, default="/fallback/") == "/fallback/"
+    assert chrome.safe_back_href(raw, default="/fallback/") == "/fallback/"
 
 
 # ----------------------------------------------------------------------
@@ -709,24 +667,24 @@ def test_safe_back_href_rejects_non_local_or_obfuscated_values(raw):
 
 
 def test_canonical_banner_blank_renders_nothing():
-    assert _common.canonical_banner("") == ""
-    assert _common.canonical_banner("   ") == ""
+    assert chrome.canonical_banner("") == ""
+    assert chrome.canonical_banner("   ") == ""
 
 
 def test_canonical_banner_ok_for_saved_and_cleared():
     for msg in ("Saved. Speaker renamed.", "Cleared the cache."):
-        out = _common.canonical_banner(msg)
+        out = chrome.canonical_banner(msg)
         assert 'class="banner banner--ok"' in out
         assert 'role="status"' in out
 
 
 def test_canonical_banner_danger_for_error_or_fail():
     for msg in ("Could not save: disk error", "That request failed"):
-        assert 'class="banner banner--danger"' in _common.canonical_banner(msg)
+        assert 'class="banner banner--danger"' in chrome.canonical_banner(msg)
 
 
 def test_canonical_banner_info_for_neutral_message():
-    out = _common.canonical_banner("Name unchanged.")
+    out = chrome.canonical_banner("Name unchanged.")
     assert 'class="banner banner--info"' in out
 
 
@@ -740,11 +698,11 @@ def test_canonical_banner_classing_matches_flash_contract():
         "Name unchanged.": "info",
     }
     for msg, expected in cases.items():
-        assert f"banner--{expected}" in _common.canonical_banner(msg)
+        assert f"banner--{expected}" in chrome.canonical_banner(msg)
 
 
 def test_canonical_banner_escapes_message():
-    out = _common.canonical_banner("<script>alert(1)</script>")
+    out = chrome.canonical_banner("<script>alert(1)</script>")
     assert "<script>" not in out
     assert "&lt;script&gt;" in out
 

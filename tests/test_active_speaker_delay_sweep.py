@@ -457,3 +457,28 @@ def test_confirm_refuses_rows_it_cannot_compare(tmp_path, capsys) -> None:
     assert payload["status"] == "refused"
     assert payload["reason"] == "delay_confirm_no_measured_rows"
     assert not (bundle / "delay_confirmation.json").exists()
+
+
+def test_complete_tune_delay_proposal_selects_one_take_and_cannot_grade_neutral_rows(tmp_path, capsys):
+    _bank(tmp_path, curves=[_curve("woofer", arrival_us=100), _curve("tweeter")],
+          phase="lateral", composition="complete_tune_measured", take_id="p0_a01")
+    _bank(tmp_path, curves=[_curve("woofer", arrival_us=-100), _curve("tweeter")],
+          phase="lateral", composition="complete_tune_measured", take_id="p0_a02")
+    take = "crossover_v2/capture-1/positions/p0_a01.json"
+    code, payload, _err = _propose(tmp_path, capsys, "--phase", "lateral", "--take-path", take)
+    assert code == 0
+    assert payload["take_path"] == take
+    assert payload["best_coordinate_us"] == pytest.approx(100)
+    assert _banked(payload)["delay_coordinates"] == "residual addition to measured tune"
+    code, payload, _err = _confirm(tmp_path, capsys, "--phase", "lateral", "--take-path", take)
+    assert code == 1
+    assert payload["reason"] == "delay_confirm_graph_mismatch"
+
+
+def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):
+    lower, upper = _curve("woofer"), _curve("tweeter")
+    lower["validity_floor_hz"] = FC_HZ + 100
+    _bank(tmp_path, curves=[lower, upper])
+    code, payload, _err = _propose(tmp_path, capsys)
+    assert code == 1
+    assert payload["reason"] == "shoulder_overlap_excludes_fc"

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from jasper.install_profile import system_capabilities_for_profile
-from jasper.web._common import CANONICAL_ICON_SPRITE
+from jasper.web.chrome import CANONICAL_ICON_SPRITE
 from jasper.web.landing import render_landing, substitutions, write_hub_pages
 from jasper.web.nav import children, entry, hub_paths, render_hub
 
@@ -125,6 +125,14 @@ def test_landing_settings_rows_are_the_nav_manifest_in_order() -> None:
     assert rendered == [
         (row.path, row.label, row.status_id) for row in children("/")
     ]
+
+
+def test_the_manifest_has_exactly_two_hubs() -> None:
+    """ADR-0253 §2. A row hanging under a daemon-served page —
+    `/sound/pair/sync/`, `/sound/speaker/crossover/` — makes that page a parent
+    but not a hub: only a landing row that is also a parent gets a static
+    settings-group page written at install time."""
+    assert hub_paths() == ("/sound/", "/assistant/")
 
 
 @pytest.mark.parametrize("profile", PROFILES)

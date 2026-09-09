@@ -152,6 +152,16 @@ def test_summed_capture_curve_refuses_a_capture_below_its_validity_floor(
         path, sweep_meta.to_dict(), crossover_fc_hz=2000.0,
         capture_geometry="reference_axis",
     ) is None
+    with pytest.raises(da.SummedCaptureUnusable) as caught:
+        da.summed_capture_curve(path, sweep_meta.to_dict(), crossover_fc_hz=2000,
+                                capture_geometry="reference_axis", raise_on_unusable=True)
+    assert caught.value.diagnostics["reason"] == "gate_excludes_lower_shoulder"
+    assert caught.value.diagnostics["gating"]["f_valid_floor_hz"] == 1500
+    assert caught.value.diagnostics["required_lower_shoulder_hz"] == 1000
+    readable = da.summed_capture_curve(path, sweep_meta.to_dict(), crossover_fc_hz=2000,
+                                      capture_geometry="reference_axis", overlap_hz=(1600, 4000))
+    assert readable is not None
+    assert readable.shoulders.used_hz[0] >= 1600
 
 
 def test_write_driver_sweep_wav_targets_one_channel(tmp_path):
@@ -215,7 +225,7 @@ def test_driver_in_its_band_reads_present(tmp_path):
 
 def test_overlong_capture_is_bounded_before_analysis(tmp_path, monkeypatch):
     """A driver capture longer than the cap is bounded before assess/deconv
-    (mirrors the /sound/room/ session path) so it can't drive the FFT to OOM,
+    so it can't drive the FFT to OOM,
     and an otherwise-good over-long capture still reads 'present'."""
     monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 1.5)
     sig, meta = _reference_sweep()  # 1 s sweep

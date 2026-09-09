@@ -41,6 +41,7 @@ import grp
 import os
 import pwd
 import stat as _stat
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
@@ -184,7 +185,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("audio", "jts-ring"),
         paths=(
-            # The graphs /sound/room/ validates, applies, and rolls back.
+            # The graphs the measurement daemon validates, applies and rolls back.
             "/var/lib/camilladsp/configs/*.yml",
             # Written by whichever commissioning arm measured first — /sound/
             # as jasper-web, or this unit. An unreadable one reads as "no
@@ -192,12 +193,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/active_speaker_measurements.json",
             "/var/lib/jasper/active_speaker_design_draft.json",
             "/var/lib/jasper/active_speaker_crossover_preview.json",
-            # The tuning surface reads the provider file fresh for its spend
-            # settings and sums BOTH ledgers for the household cap, so an
-            # unreadable one under-counts spend against a paid API.
-            "/var/lib/jasper/voice_provider.env",
-            "/var/lib/jasper/usage.db",
-            "/var/lib/jasper/usage-tuning.db",
         ),
     ),
     DaemonReadSpec(
@@ -524,72 +519,36 @@ def _check_daemon(unit: str) -> CheckResult:
     return _classify_readable_inputs(label, spec.paths, uid, gids, user)
 
 
-@doctor_check()
-def check_control_readable_inputs() -> CheckResult:
-    """jasper-control must be able to read its runtime inputs: the CamillaDSP
-    configs, the SSOT files it re-reads fresh, and the CSRF token."""
-    return _check_daemon("jasper-control")
+# skipped < ok < warn: a unit skipped (not installed for this profile, runs
+# as root, systemctl unavailable, ...) must never outrank an actual warn, nor
+# stop the row from being ok when nothing else is wrong.
+_STATUS_RANK: dict[str, int] = {"skipped": 0, "ok": 1, "warn": 2, "fail": 3}
 
 
 @doctor_check()
-def check_web_readable_inputs() -> CheckResult:
-    """jasper-web must be able to read the camilla configs + wizard SSOT/status
-    files it renders. Skips on streambox, where jasper-web runs as root."""
-    return _check_daemon("jasper-web")
-
-
-@doctor_check()
-def check_chat_web_readable_inputs() -> CheckResult:
-    """jasper-chat-web must be able to read the conversation-history settings
-    and SQLite store it renders and mutates."""
-    return _check_daemon("jasper-chat-web")
-
-
-@doctor_check()
-def check_correction_web_readable_inputs() -> CheckResult:
-    """jasper-correction-web must be able to read the graphs it applies, the
-    commissioning stores /sound/ shares with it, and both spend ledgers."""
-    return _check_daemon("jasper-correction-web")
-
-
-@doctor_check()
-def check_bluetooth_web_readable_inputs() -> CheckResult:
-    """jasper-bluetooth-web must be able to read the shared source intent."""
-    return _check_daemon("jasper-bluetooth-web")
-
-
-@doctor_check()
-def check_system_web_readable_inputs() -> CheckResult:
-    """jasper-system-web must be able to read the control token it embeds; the
-    reader fails safe to gate-OFF, so unreadable = the CSRF gate silently off."""
-    return _check_daemon("jasper-system-web")
-
-
-@doctor_check()
-def check_mux_readable_inputs() -> CheckResult:
-    """jasper-mux must be able to read its source-policy state (manual-source pin
-    + persisted volume)."""
-    return _check_daemon("jasper-mux")
-
-
-@doctor_check()
-def check_voice_readable_inputs() -> CheckResult:
-    """jasper-voice must be able to read the cross-daemon-written files it reads
-    fresh (tool state, active provider, mic-mute privacy state)."""
-    return _check_daemon("jasper-voice")
-
-
-@doctor_check()
-def check_input_readable_inputs() -> CheckResult:
-    """The accessory bridge process must be able to read the published accessory
-    mic sources — that file is what decides whether it runs the mic adapter."""
-    return _check_daemon("jasper-input")
-
-
-@doctor_check()
-def check_usbmic_readable_inputs() -> CheckResult:
-    """The USB mic relay must be able to read its explicit export intent."""
-    return _check_daemon("jasper-usbmic")
+def check_daemon_readable_inputs() -> CheckResult:
+    """Every non-root daemon in MANIFEST must be able to read its declared
+    runtime inputs. One row for the whole manifest: `ok` unless some daemon's
+    inputs are unreadable, in which case `warn` names every offending daemon.
+    A daemon skipped (not installed for this profile, runs as root, ...)
+    never drags the row down by itself."""
+    label = "daemon reads"
+    results = [(unit, _check_daemon(unit)) for unit in _MANIFEST_UNITS]
+    worst = max((r.status for _, r in results), key=_STATUS_RANK.__getitem__)
+    offenders = [(unit, r) for unit, r in results if r.status == worst]
+    if worst == "ok":
+        skipped = len(results) - len(offenders)
+        return CheckResult(
+            label, "ok",
+            f"{len(offenders)} readable, {skipped} skipped",
+            reason=offenders[0][1].reason,
+        )
+    # Offenders can carry different reasons (e.g. one not-installed, another
+    # systemctl-unavailable) — report whichever reason covers the most units,
+    # and keep every offender's own detail instead of only the first's.
+    reason = Counter(r.reason for _, r in offenders).most_common(1)[0][0]
+    detail = "; ".join(f"{unit}: {r.detail}" for unit, r in offenders)
+    return CheckResult(label, worst, detail, reason=reason)
 
 
 @doctor_check()

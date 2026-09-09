@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared backend for preference EQ at /sound/eq/ and hardware setup at /sound/setup/.
+"""Shared backend for three Sound pages: /sound/eq/, /sound/speaker/, /sound/output/.
 
-Both public prefixes are stripped by nginx, so the routes this server answers
-are the bare paths listed in ``do_GET``/``do_POST`` below.
+nginx names the page in ``X-JTS-Sound-Page`` and strips the public prefix, so
+the routes this server answers are the bare paths listed in
+``do_GET``/``do_POST`` below. EQ owns preference profiles, Speaker setup owns
+the driver/layout domain, Output owns the I2S HAT and volume shaping.
 
-The page is built on the canonical design system (jasper.web._common.
+The page is built on the canonical design system (jasper.web.chrome.
 canonical_page + /assets/app.css). The view's Off / Saved / Draft tabs
 ARE the live source: Off auditions bypass, Saved applies a chosen
 profile, Draft hot-loads the working bands via /live-draft while editing
@@ -19,7 +21,6 @@ lives in the backend and is untouched here.
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import os
@@ -40,22 +41,30 @@ from jasper.sound.profile import (
     rename_named_profile,
     save_named_profile,
 )
+from jasper.sound.settings import (
+    load_sound_settings,
+    output_trim_db as _output_trim,  # aliased so the probe's kwarg can't shadow it
+)
 
+from . import nav
 from ._common import (
     JsonBodyError,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    canonical_header,
-    canonical_page,
     guard_mutating_request,
     guard_read_request,
-    json_island,
     read_json_object,
     reject_csrf,
     send_html_response,
     send_json_response,
     send_route_failure,
+)
+from .chrome import (
+    canonical_header,
+    canonical_page,
+    follower_delegation_page,
+    json_island,
 )
 from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
 from .sound_active_speaker import (
@@ -111,12 +120,11 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_tuning_handoff_payload,
 )
 
-# The crossover writer and the audition entry point are reached through this
-# module by jasper/web/correction_crossover_v2.py and
-# jasper/calibration_agent/sound_actions.py.
+# The crossover writer is reached through this module by
+# jasper/web/correction_crossover_v2.py.
 from .sound_active_speaker import apply_measured_crossover_geometry  # noqa: F401
-from .sound_profile_apply import audition_profile  # noqa: F401
 from .sound_profile_apply import (
+    _EQ_CARRIER_NOT_PROBED,
     _apply_profile,
     _apply_settings,
     _audition_profile,
@@ -143,9 +151,40 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
 
+#: The public path of each ``X-JTS-Sound-Page`` mode nginx may set. Any other
+#: header value renders EQ, the one page every profile serves.
+_PAGE_PATHS = {
+    "eq": "/sound/eq/",
+    "speaker": "/sound/speaker/",
+    "output": "/sound/output/",
+}
+
+
+def _coerce_page_mode(page_mode: str) -> str:
+    return page_mode if page_mode in _PAGE_PATHS else "eq"
+
+
+#: /sound/speaker/ renders the link to its own child row (docs/web-ia.md §1),
+#: on a follower too — the crossover wizard is the driver domain a follower
+#: keeps. Label and href come from the row itself so the two cannot drift. The
+#: href is RELATIVE (the path minus its parent) so it stays on the origin the
+#: household is already on; an absolute one would land on the self-signed 443
+#: origin (issue #2632).
+_CROSSOVER_ROW = nav.entry("/sound/speaker/crossover/")
+_CROSSOVER_HREF = _CROSSOVER_ROW.path.removeprefix(_CROSSOVER_ROW.parent)
+_CROSSOVER_CHILD_LINK = f"""<section class="info-card">
+    <p class="form-hint">Measure the crossover between this speaker's drivers
+    and set the filters that protect them.</p>
+    <div class="form-actions"><a class="btn" href="{_CROSSOVER_HREF}">{_CROSSOVER_ROW.label}</a></div>
+  </section>"""
+
+
+def _crossover_child_link(page_mode: str) -> str:
+    return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
+
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
-    """The one ``sound-page-data`` island both /sound/ shells render.
+    """The one ``sound-page-data`` island every /sound/ shell renders.
 
     The editor's filter and slope pickers are built from the crossover
     vocabulary carried here, read from the compiler rather than restated, so a
@@ -180,79 +219,68 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     )
 
 
-def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
+def _follower_sound_html(
+    csrf_token: str = "", *, page_mode: str, title: str
+) -> bytes:
     """Render one split Sound page for a bonded active follower.
 
     A bonded follower delegates the PROGRAM domain (content EQ, room
     correction, volume shaping) to the pair leader but still owns its LOCAL
     driver domain (the per-driver crossover / limiter / tweeter high-pass that
-    protects the DAC it drives). Setup keeps the delegation card and mounts the
-    same active-speaker UI as a solo box; EQ is a delegation-only page with a
-    path back to local Setup.
+    protects the DAC it drives). Speaker setup keeps the delegation card and
+    mounts the same active-speaker UI as a solo box; EQ and Output are
+    delegation-only pages with a path back to local Speaker setup.
 
-    The page island tells main.js to boot in follower Setup mode: only the
+    The page island tells main.js to boot in follower speaker mode: only the
     active-speaker section, no Off/Saved/Draft editor or now-playing plot.
     Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``); the
     active-speaker commissioning/crossover endpoints are allowed.
     """
-    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
-    leader_path = "/sound/eq/" if page_mode == "eq" else "/sound/setup/"
-    leader_sound_url = bonded_follower_leader_web_url(leader_path)
-    leader_link = (
-        '<a class="btn btn--primary" href="'
-        + html.escape(leader_sound_url)
-        + '">Open leader sound</a>'
-        if leader_sound_url
-        else ""
-    )
-    page_island = _sound_page_island(page_mode=page_mode, follower=True)
-    title = "EQ" if page_mode == "eq" else "Sound setup"
+    page_mode = _coerce_page_mode(page_mode)
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
         '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
         '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
-        if page_mode == "setup"
+        if page_mode == "speaker"
         else ""
     )
     local_setup_link = (
-        '<a class="btn" href="/sound/setup/">Open local sound setup</a>'
-        if page_mode == "eq"
+        '<a class="btn" href="/sound/speaker/">Open local speaker setup</a>'
+        if page_mode != "speaker"
         else ""
     )
-    header = canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
-    body = f"""
-{header}
-<main class="page">
-  <section class="info-card info-card--accent" role="note">
-    <h2 class="section__title">Sound is controlled by the pair leader</h2>
-    <p class="form-hint">This speaker is an active follower, so content EQ,
+    return follower_delegation_page(
+        title,
+        canonical_header(
+            title, back_href="/sound/", back_label="Sound", back_id="back"
+        ),
+        "Sound is controlled by the pair leader",
+        """This speaker is an active follower, so content EQ,
     room correction, and volume shaping are rendered by the leader while the
     pair is active. Local crossover and driver-protection work stays with the
-    speaker that owns the DAC path.</p>
-    <div class="form-actions">
-      {leader_link}
-      {local_setup_link}
-      <a class="btn" href="/sound/pair/">Manage pair</a>
-    </div>
-  </section>
-  {local_setup}
-</main>
-{page_island}
-"""
-    return canonical_page(
-        title,
-        body,
+    speaker that owns the DAC path.""",
         csrf_token=csrf_token,
-        page_css_href="/assets/sound-profile/sound.css",
+        leader_url=bonded_follower_leader_web_url(_PAGE_PATHS[page_mode]),
+        leader_label="Open leader sound",
+        extra_actions=[local_setup_link],
+        main_extra=f"\n  {local_setup}\n  {_crossover_child_link(page_mode)}",
+        page_extra=f"\n{_sound_page_island(page_mode=page_mode, follower=True)}",
+        css_href="/assets/sound-profile/sound.css",
     )
 
 
 def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
-    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
+    page_mode = _coerce_page_mode(page_mode)
+    # One title chain for both renderers: the §5.1 conventions guard reads
+    # these literals out of the scope that calls the page shell.
+    title = (
+        "EQ" if page_mode == "eq"
+        else "Speaker setup" if page_mode == "speaker"
+        else "Output"
+    )
     if bonded_follower_active():
-        return _follower_sound_html(csrf_token, page_mode=page_mode)
-    title = "EQ" if page_mode == "eq" else "Sound setup"
+        return _follower_sound_html(csrf_token, page_mode=page_mode, title=title)
     eq_tabs_html = (
         '<div><div class="segmented" role="tablist" aria-label="Sound source">'
         '<button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>'
@@ -263,11 +291,11 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     editor_chrome = (
         canonical_header(
             title, back_href="/sound/", back_label="Sound", back_id="back",
-            tabs_html=eq_tabs_html,
+            tabs_html=eq_tabs_html, tabs_id="eq-tabs",
         )
         + """
 <main class="page">
-  <section class="now-playing">
+  <section class="now-playing" id="now-playing">
     <div class="row-between">
       <h2 class="eyebrow">Now playing</h2>
       <span class="now-playing__label" id="live-label">Bypass</span>
@@ -284,10 +312,11 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 """
         if page_mode == "eq"
         else canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
-        + """
+        + f"""
 <main class="page">
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
+  {_crossover_child_link(page_mode)}
 </main>
 """
     )
@@ -370,6 +399,48 @@ def _json_route_payload(builder: str) -> dict[str, Any]:
     return fn()
 
 
+def _requested_page_mode(headers: Any) -> str:
+    """Which split page a request is for: nginx sets the header per location."""
+    return _coerce_page_mode(headers.get("X-JTS-Sound-Page", "eq"))
+
+
+def _eq_carrier_block(
+    profile: SoundProfile,
+    *,
+    config_dir: str | Path,
+    camilla_factory: Callable[[], Any],
+    output_trim_db: float,
+) -> Any:
+    """Probe the LOADED graph for /state: a refusal, ``None``, or "not probed".
+
+    ``output_trim_db`` is the household's real trim, computed as the apply path
+    computes it: the emitter folds the trim into ``total_headroom_db`` against
+    ``MAX_PROGRAM_HEADROOM_DB``, so probing at 0 dB would report a graph
+    hostable that the save then refuses.
+
+    Fail-OPEN: an unreachable CamillaDSP, an empty path, or a probe that blows
+    up returns "not probed" and the page keeps its editor. The /apply and
+    /settings refusals stay the fail-closed gate.
+    """
+    from jasper.sound.graph_carrier import eq_block_for_loaded_config
+
+    try:
+        current_path = asyncio.run(
+            camilla_factory().get_config_file_path(best_effort=True)
+        )
+        if not current_path:
+            return _EQ_CARRIER_NOT_PROBED
+        return eq_block_for_loaded_config(
+            profile,
+            current_path=current_path,
+            config_dir=config_dir,
+            output_trim_db=output_trim_db,
+        )
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("sound: eq-carrier probe unavailable", exc_info=True)
+        return _EQ_CARRIER_NOT_PROBED
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -421,16 +492,31 @@ def _make_handler(
                 self._send_html(
                     _index_html(
                         ctx["csrf_token"],
-                        page_mode=self.headers.get("X-JTS-Sound-Page", "eq"),
+                        page_mode=_requested_page_mode(self.headers),
                     )
                 )
                 return
             if path == "/state":
+                profile = load_profile(profile_path)
+                settings = load_sound_settings()
+                # Only /sound/eq/ renders the editor, and the probe is a
+                # dry-run recompose of the loaded graph, so no other page pays
+                # for it — it keeps the "not probed" default.
+                eq_block: Any = _EQ_CARRIER_NOT_PROBED
+                if _requested_page_mode(self.headers) == "eq":
+                    eq_block = _eq_carrier_block(
+                        profile,
+                        config_dir=config_dir,
+                        camilla_factory=camilla_factory,
+                        output_trim_db=_output_trim(profile, settings),
+                    )
                 self._send_json(
                     _state_payload(
-                        load_profile(profile_path),
+                        profile,
                         library_path=library_path,
                         include_library=True,
+                        settings_snapshot=settings,
+                        eq_block=eq_block,
                     )
                 )
                 return

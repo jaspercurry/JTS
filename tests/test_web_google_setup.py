@@ -29,9 +29,11 @@ The public surface (`_index_html` analogue render fns, `make_server`,
 from __future__ import annotations
 
 import importlib
+import http
 import logging
 import urllib.parse
 from email.message import Message
+from io import BytesIO
 from types import SimpleNamespace
 from unittest import mock
 
@@ -168,45 +170,74 @@ def test_connection_details_client_id_not_in_inline_js():
 
 
 class _FakeHandler:
-    """Minimal stand-in that satisfies the closures in google_setup's
-    Handler methods. We bind the real methods to this instance so the
-    routing/branch logic runs, but the I/O helpers are patched at the
-    module level."""
+    """Minimal stand-in for the request I/O the wizard's dispatcher and
+    route bodies touch. The route bodies are closures over `cfg`, so only
+    `do_GET` / `do_POST` are bound onto this instance; everything below the
+    dispatcher runs for real (including the CSRF guard `@form_guarded`
+    applies), which is why POSTs carry a real body and cookie."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, body: bytes = b"", cookie: str = ""):
         self.path = path
         self.headers = Message()
         self.headers["Host"] = "jts.local"
+        if body:
+            self.headers["Content-Type"] = "application/x-www-form-urlencoded"
+            self.headers["Content-Length"] = str(len(body))
+        if cookie:
+            self.headers["Cookie"] = f"{web_common.CSRF_COOKIE_NAME}={cookie}"
+        self.rfile = BytesIO(body)
+        self.wfile = BytesIO()
         self.sent_html: list[bytes] = []
         self.redirects: list[str] = []
         self.errors: list[int] = []
+        self.status: int | None = None
+        # Only populated when a test leaves `send_see_other` unpatched, to
+        # inspect the actual response headers (e.g. the Set-Cookie value).
+        self.response_headers: list[tuple[str, str]] = []
 
     def address_string(self) -> str:  # used by log_message
         return "test"
 
     def send_error(self, code, *a, **k):
+        self.status = int(code)
         self.errors.append(int(code))
 
+    def send_response(self, status, *a, **k):
+        self.status = int(status)
 
-def _bind(HandlerClass, path):
-    """Return a _FakeHandler with the real do_GET/do_POST/route bodies bound
-    to it."""
-    fake = _FakeHandler(path)
-    # Bind the methods we exercise onto the fake instance.
-    bound = {}
-    for attr in dir(HandlerClass):
-        fn = getattr(HandlerClass, attr)
-        if callable(fn) and (attr.startswith("do_") or attr.startswith("_handle_")
-                             or attr in {"_render_index", "_exchange_code",
-                                         "_redirect", "_send_html"}):
-            bound[attr] = fn.__get__(fake, HandlerClass)
-    for name, m in bound.items():
-        setattr(fake, name, m)
+    def send_header(self, name, value):
+        self.response_headers.append((name, value))
+
+    def end_headers(self):
+        pass
+
+
+def _bind(HandlerClass, path, *, body: bytes = b"", cookie: str = ""):
+    """Return a _FakeHandler with the real do_GET/do_POST bound to it."""
+    fake = _FakeHandler(path, body=body, cookie=cookie)
+    for attr in ("do_GET", "do_POST"):
+        setattr(fake, attr, getattr(HandlerClass, attr).__get__(fake, HandlerClass))
     return fake
 
 
-def _make_bound_handler(cfg, path):
-    return _bind(google_setup._make_handler(cfg), path)
+def _make_bound_handler(cfg, path, *, body: bytes = b"", cookie: str = ""):
+    return _bind(google_setup._make_handler(cfg), path, body=body, cookie=cookie)
+
+
+def _form_body(form: dict[str, str] | None, *, token: str | None = CSRF) -> bytes:
+    """Encode a form the way the rendered page posts it: the fields plus the
+    hidden double-submit `csrf_token`. `token=None` omits the token, which is
+    what an off-origin forgery looks like on the wire."""
+    fields = dict(form or {})
+    if token is not None:
+        fields[web_common.CSRF_FORM_FIELD] = token
+    return urllib.parse.urlencode(fields).encode()
+
+
+def _post_handler(cfg, path, form=None, *, token: str | None = CSRF, cookie=CSRF):
+    return _make_bound_handler(
+        cfg, path, body=_form_body(form, token=token), cookie=cookie,
+    )
 
 
 def _write_creds(path, *, client_id=GOOD_CLIENT_ID, client_secret="secret"):
@@ -226,20 +257,19 @@ def _no_google_creds_env(monkeypatch):
 
 @pytest.fixture
 def patched_common():
-    """Patch the I/O surface the handler relies on."""
+    """Patch the I/O surface the handler relies on. The CSRF guard is NOT
+    patched — it moved into `_common.form_guarded`, so the POST pins below
+    carry a real token and the rejection cases are asserted on the wire."""
     send_see_other = mock.Mock()
     with mock.patch.object(google_setup, "begin_request",
                            return_value={"csrf_token": CSRF, "flash": ""}) as br, \
          mock.patch.object(google_setup, "send_html_response") as shr, \
+         mock.patch.object(google_setup, "send_see_other", send_see_other), \
          mock.patch.object(web_common, "send_see_other", send_see_other), \
-         mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
-         mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
-         mock.patch.object(google_setup, "reject_csrf") as rc, \
          mock.patch.object(google_setup, "restart_voice_daemon") as rvd:
         yield SimpleNamespace(
             begin_request=br, send_html_response=shr,
-            send_see_other=send_see_other,
-            read_form=rf, guard_mutating_request=vc, reject_csrf=rc, restart_voice_daemon=rvd,
+            send_see_other=send_see_other, restart_voice_daemon=rvd,
         )
 
 
@@ -253,27 +283,12 @@ def _cfg(**over):
     return base
 
 
-def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        google_setup,
-        "redirect_with_legacy_msg",
-        lambda handler, location: calls.append((handler, location)),
-    )
-    fake = _make_bound_handler(_cfg(), "/")
-
-    fake._redirect("./?msg=Saved")
-
-    assert calls == [(fake, "./?msg=Saved")]
-
-
 def _flash(send_see_other_mock) -> str:
     """Return the user-visible message from the most recent send_see_other
-    call. The handler routes most messages through `_redirect("./?msg=…")`,
-    which the flash-cookie compat shim turns into
-    `send_see_other(self, "./", flash="…")` — so the text lands in the
-    `flash` kwarg, not the URL. A direct `send_see_other(self, url)` has no
-    flash; this returns the URL in that case so callers can match either."""
+    call. Most routes call `send_see_other(self, "./", flash="…")`, so the
+    text lands in the `flash` kwarg, not the URL. A direct
+    `send_see_other(self, url)` (the OAuth-start redirect) has no flash;
+    this returns the URL in that case so callers can match either."""
     call = send_see_other_mock.call_args
     if call.kwargs.get("flash"):
         return call.kwargs["flash"]
@@ -307,7 +322,7 @@ def test_get_root_rejects_off_origin_return_link(patched_common):
     fake.do_GET()
     assert patched_common.send_html_response.called
     page = patched_common.send_html_response.call_args.args[1].decode()
-    assert 'href="/"' in page
+    assert 'href="/assistant/"' in page
     assert "evil.test" not in page
 
 
@@ -339,25 +354,31 @@ def test_unknown_get_404s(patched_common):
 
 
 def test_unknown_post_404s_before_csrf(patched_common):
-    fake = _make_bound_handler(_cfg(), "/bogus")
+    fake = _post_handler(_cfg(), "/bogus", {"client_id": "x"})
     fake.do_POST()
     assert 404 in fake.errors
-    # guard_mutating_request must NOT be consulted for an unknown path.
-    assert not patched_common.guard_mutating_request.called
+    # The route check runs first, so the body is still unread: an unknown
+    # path can neither consume the request nor reveal the CSRF state.
+    assert fake.rfile.tell() == 0
 
 
 def test_post_bad_csrf_rejected(patched_common):
-    patched_common.guard_mutating_request.return_value = False
-    fake = _make_bound_handler(_cfg(), "/setup-credentials")
-    fake.do_POST()
-    assert patched_common.reject_csrf.called
+    fake = _post_handler(
+        _cfg(), "/setup-credentials",
+        {"client_id": GOOD_CLIENT_ID, "client_secret": "GOCSPX-abc"},
+        token=None,
+    )
+    with mock.patch.object(google_setup, "_write_creds_file") as wcf:
+        fake.do_POST()
+    assert fake.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"Session expired" in fake.wfile.getvalue()
+    assert not wcf.called  # the route body never ran
 
 
 def test_setup_credentials_rejects_bad_client_id(patched_common):
-    patched_common.read_form.return_value = {
+    fake = _post_handler(_cfg(), "/setup-credentials", {
         "client_id": "not-a-google-id", "client_secret": "GOCSPX-abc",
-    }
-    fake = _make_bound_handler(_cfg(), "/setup-credentials")
+    })
     with mock.patch.object(google_setup, "_write_creds_file") as wcf:
         fake.do_POST()
     # Redirected with a validation message; creds NOT persisted.
@@ -366,11 +387,10 @@ def test_setup_credentials_rejects_bad_client_id(patched_common):
 
 
 def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
-    patched_common.read_form.return_value = {
-        "client_id": GOOD_CLIENT_ID, "client_secret": "GOCSPX-abc",
-    }
     cfg = _cfg(creds_path=str(tmp_path / "creds.env"))
-    fake = _make_bound_handler(cfg, "/setup-credentials")
+    fake = _post_handler(cfg, "/setup-credentials", {
+        "client_id": GOOD_CLIENT_ID, "client_secret": "GOCSPX-abc",
+    })
     with mock.patch.object(google_setup, "_write_creds_file") as wcf:
         fake.do_POST()
     assert wcf.call_args.args == (GOOD_CLIENT_ID, "GOCSPX-abc")
@@ -379,12 +399,18 @@ def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
 
 
 def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
+    """D.7: this route used to build `./?msg=Credentials+cleared.`; it must
+    now redirect to a clean `./` with the message in the flash cookie."""
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    fake = _make_bound_handler(cfg, "/reset-credentials")
+    fake = _post_handler(cfg, "/reset-credentials")
     with mock.patch.object(google_setup, "_delete_creds_file") as dcf:
         fake.do_POST()
     assert dcf.call_args.args == (cfg["creds_path"],)
     assert patched_common.restart_voice_daemon.called
+    location = patched_common.send_see_other.call_args.args[1]
+    assert location == "./"
+    assert "msg=" not in location
+    assert patched_common.send_see_other.call_args.kwargs["flash"] == "Credentials cleared."
 
 
 def test_setup_credentials_failure_flashes_instead_of_raising(patched_common, tmp_path):
@@ -392,11 +418,10 @@ def test_setup_credentials_failure_flashes_instead_of_raising(patched_common, tm
     # file into a bogus second line), so a pasted secret can reach the save
     # site as a ValueError, not only an OSError.
     creds = tmp_path / "creds.env"
-    patched_common.read_form.return_value = {
-        "client_id": GOOD_CLIENT_ID, "client_secret": "abc\ndef",
-    }
     cfg = _cfg(creds_path=str(creds))
-    _make_bound_handler(cfg, "/setup-credentials").do_POST()
+    _post_handler(cfg, "/setup-credentials", {
+        "client_id": GOOD_CLIENT_ID, "client_secret": "abc\ndef",
+    }).do_POST()
 
     assert patched_common.send_see_other.call_args.args[1] == "./"
     assert _flash(patched_common.send_see_other)
@@ -413,7 +438,7 @@ def test_reset_credentials_failure_does_not_report_a_cleared_secret(
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"),
                registry_path=str(tmp_path / "accounts.json"))
     with mock.patch.object(google_setup.os, "unlink", side_effect=failure):
-        _make_bound_handler(cfg, "/reset-credentials").do_POST()
+        _post_handler(cfg, "/reset-credentials").do_POST()
 
     assert _flash(patched_common.send_see_other)
     assert not patched_common.restart_voice_daemon.called
@@ -433,7 +458,7 @@ def test_reset_beats_the_systemd_env_snapshot(patched_common, tmp_path, monkeypa
     cfg = _cfg(creds_path=_write_creds(creds),
                registry_path=str(tmp_path / "accounts.json"))
 
-    _make_bound_handler(cfg, "/reset-credentials").do_POST()
+    _post_handler(cfg, "/reset-credentials").do_POST()
     assert not creds.exists()
 
     _make_bound_handler(cfg, "/").do_GET()
@@ -441,16 +466,14 @@ def test_reset_beats_the_systemd_env_snapshot(patched_common, tmp_path, monkeypa
     assert b"setup-steps" in page  # state 1: paste credentials
     assert GOOD_CLIENT_ID.encode() not in page
 
-    patched_common.read_form.return_value = {"name": "jasper"}
     with mock.patch.object(google_setup, "_build_flow") as bf:
-        _make_bound_handler(cfg, "/start").do_POST()
+        _post_handler(cfg, "/start", {"name": "jasper"}).do_POST()
     assert not bf.called
 
 
 def test_start_redirects_to_google_authorize(patched_common, tmp_path):
-    patched_common.read_form.return_value = {"name": "jasper"}
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    fake = _make_bound_handler(cfg, "/start")
+    fake = _post_handler(cfg, "/start", {"name": "jasper"})
     fake_registry = mock.Mock()
     fake_flow = SimpleNamespace(
         authorization_url=lambda **k: ("https://accounts.google.com/o/oauth2/auth?x=1", "jasper"),
@@ -487,8 +510,10 @@ def test_start_uses_creds_rewritten_under_a_running_server(patched_common, tmp_p
     server.server_close()
     rotated = "999999999999-rotated.apps.googleusercontent.com"
     _write_creds(creds, client_id=rotated)
-    patched_common.read_form.return_value = {"name": "jasper"}
-    fake = _bind(server.RequestHandlerClass, "/start")
+    fake = _bind(
+        server.RequestHandlerClass, "/start",
+        body=_form_body({"name": "jasper"}), cookie=CSRF,
+    )
     google_setup._PENDING_FLOWS.clear()
     with mock.patch.object(google_setup.GoogleRegistry, "load",
                            return_value=mock.Mock()), \
@@ -502,19 +527,14 @@ def test_start_uses_creds_rewritten_under_a_running_server(patched_common, tmp_p
 
 
 def test_start_rejects_bad_name(patched_common, tmp_path):
-    patched_common.read_form.return_value = {"name": "has spaces!"}
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    fake = _make_bound_handler(cfg, "/start")
+    fake = _post_handler(cfg, "/start", {"name": "has spaces!"})
     fake.do_POST()
-    # The route calls self._redirect("./?msg=Invalid+name…"); the flash-cookie
-    # compat shim splits that into send_see_other(self, "./", flash="Invalid name…")
-    # — so the human message lands in the `flash` kwarg, not the URL.
     assert "Invalid name" in _flash(patched_common.send_see_other)
 
 
 def test_default_sets_default_when_account_exists(patched_common):
-    patched_common.read_form.return_value = {"name": "britt"}
-    fake = _make_bound_handler(_cfg(), "/default")
+    fake = _post_handler(_cfg(), "/default", {"name": "britt"})
     reg = mock.Mock()
     reg.get.return_value = object()  # account exists
     with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg):
@@ -524,8 +544,7 @@ def test_default_sets_default_when_account_exists(patched_common):
 
 
 def test_remove_deletes_account_and_token(patched_common, tmp_path):
-    patched_common.read_form.return_value = {"name": "jasper"}
-    fake = _make_bound_handler(_cfg(), "/remove")
+    fake = _post_handler(_cfg(), "/remove", {"name": "jasper"})
     tok = tmp_path / "jasper.json"
     tok.write_text("{}")
     reg = mock.Mock()
@@ -544,20 +563,33 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     google_setup._PENDING_FLOWS.clear()
     google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
-    with mock.patch.object(fake, "_exchange_code") as ex, \
+    flow = SimpleNamespace(
+        code_verifier=None,
+        fetch_token=mock.Mock(),
+        credentials=SimpleNamespace(
+            refresh_token="refresh", scopes=None, token_uri=None, token="",
+        ),
+    )
+    reg = mock.Mock()
+    reg.get.return_value = SimpleNamespace(token_path=str(tmp_path / "tok.json"))
+    with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg), \
+         mock.patch.object(google_setup, "_build_flow", return_value=flow) as bf, \
+         mock.patch.object(google_setup, "save_token") as st, \
+         mock.patch.object(google_setup, "_fetch_userinfo", return_value={}), \
          mock.patch.object(google_setup, "_gc_pending"):  # don't expire our 0.0 ts
         fake.do_GET()
-        assert ex.called
-        # Nonce resolved to the account name + stashed PKCE verifier, and the
-        # creds the guard already read ride along (the file is read once).
-        assert ex.call_args.args == (
-            "jasper", "abc", "verifier123", (GOOD_CLIENT_ID, "secret"),
-        )
+    # Nonce resolved to the account name + stashed PKCE verifier, and the
+    # creds read for this request ride along (the file is read once).
+    assert bf.call_args.args[1] == (GOOD_CLIENT_ID, "secret")
+    assert bf.call_args.kwargs["state"] == "jasper"
+    assert flow.code_verifier == "verifier123"
+    assert flow.fetch_token.call_args.kwargs == {"code": "abc"}
+    assert st.call_args.args == (str(tmp_path / "tok.json"),)
     # Nonce consumed (single-use).
     assert "nonce123" not in google_setup._PENDING_FLOWS
     assert patched_common.restart_voice_daemon.called
-    # Redirected back to / with a success flash (via the _redirect shim, so the
-    # "Linked …" text is in the flash kwarg, and the URL is the cleaned "./").
+    # Redirected back to / with a success flash: "Linked …" lands in the
+    # flash kwarg, and the URL is the plain "./".
     assert "Linked" in _flash(patched_common.send_see_other)
 
 
@@ -571,9 +603,11 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path, c
     google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
     leaked = "GOCSPX-fakefake1234"
-    with mock.patch.object(
-        fake, "_exchange_code",
-        side_effect=RuntimeError(f"400 invalid_client: client_secret={leaked}"),
+    with mock.patch.object(google_setup.GoogleRegistry, "load",
+                           return_value=mock.Mock()), \
+        mock.patch.object(
+            google_setup, "_build_flow",
+            side_effect=RuntimeError(f"400 invalid_client: client_secret={leaked}"),
     ), mock.patch.object(google_setup, "_gc_pending"), caplog.at_level(
         logging.WARNING, logger="jasper.web.google_setup"
     ):
@@ -591,16 +625,31 @@ def test_callback_rejects_unknown_state_without_exchange(patched_common, tmp_pat
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     google_setup._PENDING_FLOWS.clear()
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=forged")
-    with mock.patch.object(fake, "_exchange_code") as ex:
+    with mock.patch.object(google_setup, "_build_flow") as bf:
         fake.do_GET()
-        assert not ex.called
+        assert not bf.called
     assert not patched_common.restart_voice_daemon.called
     assert "expired" in _flash(patched_common.send_see_other)
 
 
 def test_callback_with_error_redirects_without_exchange(patched_common):
     fake = _make_bound_handler(_cfg(), "/callback?error=access_denied")
-    with mock.patch.object(fake, "_exchange_code") as ex:
+    with mock.patch.object(google_setup, "_build_flow") as bf:
         fake.do_GET()
-        assert not ex.called
+        assert not bf.called
     assert patched_common.send_see_other.called
+
+
+def test_callback_with_long_error_caps_the_flash_cookie():
+    # An unauthenticated GET can carry an arbitrary ?error= value. It must
+    # be redacted and length-capped the same as any exception-derived
+    # flash (google_setup routes it through the same `flash_error` helper),
+    # so it can't inflate the Set-Cookie header. `send_see_other` is left
+    # unpatched here so the real cookie-building code runs end to end.
+    fake = _make_bound_handler(_cfg(), "/callback?error=" + "x" * 2000)
+    with mock.patch.object(google_setup, "_build_flow") as bf:
+        fake.do_GET()
+        assert not bf.called
+    cookie = next(v for n, v in fake.response_headers if n == "Set-Cookie")
+    flash = urllib.parse.unquote(cookie.split(";", 1)[0].split("=", 1)[1])
+    assert len(flash) <= len("Google returned error: ") + web_common._FLASH_DETAIL_CAP

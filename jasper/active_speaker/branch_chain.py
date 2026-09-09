@@ -144,14 +144,17 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
 
 
 def confirmed_protection_sections(
-    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
+    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str] | None = None,
 ) -> dict[str, tuple[CrossoverSection, ...]]:
     """Resolve confirmed role protection; unrepresentable shapes fail closed."""
     targets = safety_profile.get("targets")
     if not isinstance(targets, list):
         raise ValueError("confirmed safety profile has no target list")
     out: dict[str, tuple[CrossoverSection, ...]] = {}
-    for role, fingerprint in sorted(role_targets.items()):
+    requested = (role_targets.items() if role_targets is not None else (
+        (target["role"], target["target_fingerprint"]) for target in targets
+    ))
+    for role, fingerprint in sorted(requested):
         matches = [
             target for target in targets
             if isinstance(target, Mapping)
@@ -175,7 +178,7 @@ def confirmed_protection_sections(
             if not (math.isfinite(cutoff) and math.isfinite(slope)) or cutoff <= 0 or not order:
                 raise ValueError(f"confirmed protection filter is unsupported for {role}")
             sections.append(CrossoverSection(cutoff, order, raw["kind"] == "highpass"))
-        out[role] = tuple(sections)
+        out[role] = tuple(dict.fromkeys((*out.get(role, ()), *sections)))
     return out
 
 

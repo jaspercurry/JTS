@@ -49,7 +49,13 @@ from jasper.active_speaker.crossover_preview import (
     crossover_preview_fingerprint,
 )
 from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.graph_safety import protection_requirement_present, view_from_emitted_text
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
+from jasper.audio_measurement.program import write_program_wav
+from tests.test_active_speaker_program_admission import _profile_and_targets, _roles
 from jasper.active_speaker.measurement import (
     load_measurement_state,
     record_driver_measurement,
@@ -67,6 +73,7 @@ from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUM
 from jasper.dsp_apply import CamillaConfigValidationResult
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
+from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -4885,6 +4892,88 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
     assert payload["candidate_fingerprint"] is not None
 
 
+_ROOM_CORRECTION: dict[str, Any] = {
+    "sides": {
+        "mono": [
+            {"freq": 48.0, "q": 3.0, "gain": -4.0},
+            {"freq": 120.0, "q": 2.0, "gain": -2.5},
+            {"freq": 62.0, "q": 4.0, "gain": 3.0},
+        ]
+    },
+    "ceiling_hz": 350.0,
+    "ceiling_source": "applied_candidate",
+    "basis": {
+        "round_id": "round-7",
+        "room_median_sha256": "b" * 64,
+        "admitted_boosts_hz": [62.0],
+    },
+    "boost_db_total": 3.0,
+    "level_cost_db": 3.0,
+}
+
+
+def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
+    tmp_path: Path,
+) -> None:
+    """A v2 candidate's own room set reaches the graph it applies: the PEQs
+    round-trip back out of the emitted config text, their boost is absorbed by
+    active_baseline_headroom, and the applied-now record lands on the payload's
+    top level (never inside the fingerprinted recomposition_snapshot). A
+    candidate without the field emits no room stage at all."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    def _candidate_payload(
+        candidate: MeasuredCrossoverCandidate, name: str
+    ) -> dict[str, Any]:
+        return build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=True,
+            state_path=tmp_path / f"{name}.json",
+            config_path=tmp_path / f"{name}.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+            created_at="2026-07-18T12:20:00Z",
+        )
+
+    def _headroom_gain_db(config_text: str) -> float:
+        filters = yaml_lib.safe_load(config_text)["filters"]
+        return float(filters["active_baseline_headroom"]["parameters"]["gain"])
+
+    candidate = _v2_candidate(preset, room_correction=_ROOM_CORRECTION)
+    payload = _candidate_payload(candidate, "room")
+    plain = _candidate_payload(_v2_candidate(preset), "plain")
+
+    assert payload["status"] == "ready_to_apply", payload["issues"]
+    config_text = Path(payload["config"]["path"]).read_text()
+    assert extract_room_peqs_from_config_text(config_text) == [
+        PeqFilter(freq=48.0, q=3.0, gain=-4.0),
+        PeqFilter(freq=120.0, q=2.0, gain=-2.5),
+        PeqFilter(freq=62.0, q=4.0, gain=3.0),
+    ]
+    plain_text = Path(plain["config"]["path"]).read_text()
+    assert _headroom_gain_db(config_text) == pytest.approx(
+        _headroom_gain_db(plain_text) - 3.0
+    )
+    assert payload["room_correction"] == candidate.room_correction
+    assert "room_correction" not in payload["recomposition_snapshot"]
+
+    assert plain["status"] == "ready_to_apply", plain["issues"]
+    assert plain["room_correction"] == {}
+    assert [
+        name
+        for name in yaml_lib.safe_load(plain_text)["filters"]
+        if name.startswith("room_peq_")
+    ] == []
+
+
 def test_build_baseline_profile_candidate_threads_linearization_outcome(
     tmp_path: Path,
 ) -> None:
@@ -5113,12 +5202,11 @@ def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
 async def test_apply_baseline_profile_applies_v2_measured_candidate(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """End-to-end: publish a v2 candidate with delay+polarity, apply it through
-    the existing atomic DSP transaction, and confirm the emitted config
-    carries both — through the SAME rollback-capable apply_baseline_profile
-    used for every other candidate shape."""
-    topology = _dual_apple_topology()
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=40, woofer_highpass=40, woofer_upper=4000, max_sweep_duration_s=4,
+    )
     draft = _draft(topology)
+    draft["driver_safety_profile"] = safety
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
     assert preset is not None, issues
@@ -5161,15 +5249,52 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
         "delay_ms": 0.25,
         "inverted": True,
     }
-    # #1666: the applied candidate lands on its own source-fingerprinted
-    # sibling (what load_config was actually called with); the canonical file at
-    # tmp_path/active_speaker_baseline.yml is a POST-success promoted copy, so
-    # it independently carries the same content.
     config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
     assert "as_tweeter_delay" in config_text
     assert "delay: 0.2500" in config_text
     assert calls == [payload["profile"]["config"]["path"]]
     assert calls != [str(tmp_path / "active_speaker_baseline.yml")]
+    applied = load_applied_baseline_profile_state(tmp_path / "baseline_profile.json")
+    assert applied["recomposition_snapshot"]["driver_protection"]["profile_fingerprint"] == safety["profile_fingerprint"]
+    emitted, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=applied, bass_extension_profile=None,
+    )
+    assert issues == []
+    assert emitted is not None
+    verify_graph = compile_tuning_graph(MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
+        topology, {"woofer": 0, "tweeter": 1}, applied["recomposition_snapshot"]["playback_device"],
+        applied_profile=applied,
+    ), scope="speaker_tune")
+    requirement = safety["targets"][0]["required_protection_filters"][0]
+    for text in (config_text, emitted, verify_graph):
+        assert protection_requirement_present(
+            view_from_emitted_text(text), output_index=0, allowed_channels={0}, requirement=requirement,
+        )
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=2500,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "verify.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=verify_graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+    )
+    assert admission.allowed, admission.to_dict()
+    _, changed_safety, _ = _profile_and_targets(
+        woofer_floor=80, woofer_highpass=80, woofer_upper=4000, max_sweep_duration_s=4,
+    )
+    draft["driver_safety_profile"] = changed_safety
+    changed = build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        tuning_owner="automatic", measured_candidate=candidate,
+    )
+    assert changed["candidate_fingerprint"] != applied["candidate_fingerprint"]
+    assert changed["config"]["path"] != applied["config"]["path"]
 
 
 async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(

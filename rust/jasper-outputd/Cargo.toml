@@ -12,7 +12,6 @@ rust-version.workspace = true
 jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 jasper-env = { path = "../jasper-env" }
-jasper-clock = { path = "../jasper-clock" }
 jasper-resampler = { path = "../jasper-resampler" }
 jasper-ring = { path = "../jasper-ring" }
 alsa.workspace = true

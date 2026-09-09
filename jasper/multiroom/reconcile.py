@@ -39,6 +39,7 @@ from ..fanin_coupling import (
 )
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
+from ..service_units import run_systemctl
 from ..source_intent import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -157,9 +158,8 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # snd-aloop (snapclient's snd_pcm_delay would lie, inv-2) and never the raw DAC,
 # which outputd owns.
 
-# Both derived keys are written as empty strings when this speaker is not an
+# The derived key is written as an empty string when this speaker is not an
 # active member, so a stale file can never leave the lane half-configured.
-OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 OUTPUTD_UNIT = "jasper-outputd.service"
@@ -383,11 +383,6 @@ def snapclient_argv(
     NOT write blank: without the marker outputd reads this key with ``env_str``,
     whose blank is a value it parks on, so they inherit layer 1 verbatim.
 
-    THE FIFO KEY IS CLEARED, NEVER SET. Arming both round-trip transports at once
-    is outputd's most fundamental refusal — two content sources on one DAC — and
-    this writer must never emit a combination the validator rejects across all
-    env LAYERS.
-
     Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
     mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
     also "2 channels", so arming that socket would send full-range assistant
@@ -544,11 +539,6 @@ def outputd_grouping_env(
     without the marker outputd reads this key with ``env_str``, whose blank is a
     value it parks on, so an unarmed box has to inherit layer 1 verbatim.
 
-    THE FIFO KEY IS CLEARED, NEVER SET. Arming both round-trip transports at
-    once is outputd's most fundamental refusal — two content sources on one DAC
-    — and this writer must never emit a combination the validator rejects across
-    all env LAYERS.
-
     Active-mode TTS stays upstream of the crossover in fan-in: the outputd TTS
     mixer is stereo-only and post-crossover, and on an active lane a 2-way
     speaker is also "2 channels", so arming that socket would send full-range
@@ -566,7 +556,6 @@ def outputd_grouping_env(
         ).armed:
             return {
                 DAC_CONTENT_LANE_ENV: "",
-                OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
                 OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
                 # Empty = unset to outputd's env_f32 (default 0.0).
@@ -580,7 +569,6 @@ def outputd_grouping_env(
             # BLANK, not absent: this layer loads AFTER outputd.env, where
             # jasper-fanin-coupling-auto writes shm_ring on every pass.
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "",
-            OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
             # Pair-balance trim (validated <= 0 by load_config; outputd
@@ -590,7 +578,6 @@ def outputd_grouping_env(
         }
     return {
         DAC_CONTENT_LANE_ENV: "",
-        OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
         # Empty = unset to outputd's env_f32 (default 0.0).
@@ -877,10 +864,8 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     masquerade as disabled or inactive.
     """
     try:
-        proc = subprocess.run(
-            ["systemctl", query, unit],
-            capture_output=True,
-            text=True,
+        proc = run_systemctl(
+            [query, unit],
             timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
         )
     except FileNotFoundError:

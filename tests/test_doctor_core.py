@@ -114,6 +114,7 @@ def test_doctor_check_exception_becomes_fail_result():
 
     assert result.name == "explosive check"
     assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "RuntimeError: synthetic check failure" in result.detail
 
 
@@ -127,6 +128,8 @@ def test_doctor_check_exception_redacts_secret_like_values():
 
     result = _shared._run_doctor_check(("sensitive check", explode))
 
+    assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "super-secret-refresh" not in result.detail
     assert "super-secret-access-token" not in result.detail
     assert "sk-super-secret-openai-key" not in result.detail
@@ -146,6 +149,8 @@ def test_check_result_redacts_a_credential_left_in_its_own_detail():
         reason="some_reason",
     )
 
+    assert result.status == "warn"
+    assert result.reason == "some_reason"
     assert "sk-live-abc123" not in result.detail
     assert "<redacted>" in result.detail
 
@@ -160,6 +165,7 @@ def test_async_doctor_check_exception_becomes_fail_result():
 
     assert result.name == "async check"
     assert result.status == "fail"
+    assert result.reason == _shared.REASON_CHECK_CRASHED
     assert "RuntimeError: synthetic async failure" in result.detail
 
 
@@ -195,10 +201,10 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     results = asyncio.run(doctor.run_async(object()))
 
     assert ran == ["env", "web"]
-    assert [(r.name, r.status, r.detail) for r in results] == [
-        ("env file", "ok", "ran"),
-        ("wake model", "skipped", "not installed (streambox profile)"),
-        ("management surface", "ok", "ran"),
+    assert [(r.name, r.status, r.reason) for r in results] == [
+        ("env file", "ok", ""),
+        ("wake model", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("management surface", "ok", ""),
     ]
 
 
@@ -249,10 +255,13 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
         by_name["check_crossover_v2_cloud_pipeline"],
         "streambox",
     )
-    assert _harness._doctor_skip_detail(
-        by_name["check_crossover_v2_applied_is_graded"],
-        "streambox",
-    )
+    # Cloud-integration rows the voice module also owns: a streambox has no
+    # assistant, so these never register a tool either.
+    for name in (
+        "check_google_tokens", "check_google_routes",
+        "check_home_assistant", "check_citibike",
+    ):
+        assert _harness._doctor_skip_detail(by_name[name], "streambox"), name
     assert not _harness._doctor_skip_detail(
         by_name["check_camilla_websocket"],
         "streambox",
@@ -325,17 +334,13 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
     results = asyncio.run(doctor.run_async(SimpleNamespace()))
 
     assert ran == ["renderers", "correction"]
-    assert [(r.name, r.status, r.detail) for r in results] == [
-        ("provider key", "skipped", "not installed (streambox profile)"),
-        ("mic capture", "skipped", "not installed (streambox profile)"),
-        ("librespot.service", "ok", "ran"),
-        ("room correction service", "ok", "ran"),
-        ("crossover v2 cloud pipeline", "skipped", "not installed (streambox profile)"),
+    assert [(r.name, r.status, r.reason) for r in results] == [
+        ("provider key", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("mic capture", "skipped", _harness.REASON_NOT_INSTALLED),
+        ("librespot.service", "ok", ""),
+        ("room correction service", "ok", ""),
+        ("crossover v2 cloud pipeline", "skipped", _harness.REASON_NOT_INSTALLED),
     ]
-    crossover_result = next(
-        r for r in results if r.name == "crossover v2 cloud pipeline"
-    )
-    assert crossover_result.reason == _harness.REASON_NOT_INSTALLED
 
 
 def test_run_async_parallelizes_blocking_checks_but_preserves_order(
@@ -415,7 +420,9 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
 def _summary_line(results, capsys) -> tuple[int, str]:
     exit_code = doctor.render(results)
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
-    return exit_code, lines[-1]
+    # render() prints the summary directly under the "jasper-doctor" header,
+    # above the table (SYS-2) — it is the second non-blank line.
+    return exit_code, lines[1]
 
 
 def test_summary_never_calls_a_silent_speaker_non_critical(capsys):
@@ -541,6 +548,28 @@ def test_a_silent_failure_does_not_pin_its_silence_on_a_cosmetic_warning(capsys)
         "the speaker is silent — 1 failed, 1 warning(s).\x1b[0m"
     )
     assert "of them" not in line
+
+
+def test_render_puts_the_verdict_above_the_table_sorted_worst_first(capsys):
+    """SYS-2: the verdict leads the report, and rows sort fail, warn, ok."""
+    results = [
+        CheckResult("alpha", "ok", "up"),
+        CheckResult("bravo", "fail", "down", reason="bravo_down"),
+        CheckResult("charlie", "warn", "flaky", reason="charlie_flaky"),
+    ]
+
+    doctor.render(list(results))
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+
+    row_index = {
+        name: next(i for i, ln in enumerate(lines) if name in ln)
+        for name in ("alpha", "bravo", "charlie")
+    }
+    summary_index = next(
+        i for i, ln in enumerate(lines) if "1 failed" in ln
+    )
+    assert summary_index < min(row_index.values())
+    assert row_index["bravo"] < row_index["charlie"] < row_index["alpha"]
 
 
 def test_an_ok_result_cannot_claim_the_speaker_is_silent():

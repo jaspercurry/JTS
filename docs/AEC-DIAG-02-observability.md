@@ -202,34 +202,6 @@ The patch does not change the samples written to the DAC, the samples sent over 
 - Update cadence: every state snapshot from the latest stored counters.
 - Diagnostic use: estimates how many outputd reference publishes the chip-ref writer is behind. If this grows while UDP consumers see current packets, the lag is chip-ref-specific.
 
-`diagnostic_tee_path`
-
-- Unit: path string or `null`.
-- Source: `JASPER_OUTPUTD_CHIP_REF_TEE_PATH`.
-- Update cadence: fixed at process start.
-- Diagnostic use: confirms whether the optional raw sample tee was requested.
-
-`diagnostic_tee_active`
-
-- Unit: boolean.
-- Source: true only while the optional diagnostic tee file is open in the chip-ref writer process.
-- Update cadence: set true after a successful tee open; set false after a tee open failure or write failure.
-- Diagnostic use: distinguishes "tee requested" from "tee actually recording." If `diagnostic_tee_path` is non-null but this is false, use `diagnostic_tee_open_error_count`, `diagnostic_tee_write_error_count`, and the outputd journal event to find the failure.
-
-`diagnostic_tee_open_error_count`
-
-- Unit: count.
-- Source: failures to create/truncate the optional diagnostic tee file at outputd startup.
-- Update cadence: when the configured tee path cannot be opened.
-- Diagnostic use: makes systemd sandbox/path/permission failures visible in `/state` instead of relying only on the journal.
-
-`diagnostic_tee_write_error_count`
-
-- Unit: count.
-- Source: write failures to the optional diagnostic tee file.
-- Update cadence: when a tee write fails. After the first write failure, outputd disables the tee for that process.
-- Diagnostic use: prevents a broken diagnostic file from being mistaken for missing chip-ref samples.
-
 ## Optional Chip-Ref Tee
 
 Set `JASPER_OUTPUTD_CHIP_REF_TEE_PATH=/run/jasper-outputd/chip-ref.s16le` or another path writable by the outputd systemd sandbox to write the exact 16 kHz S16_LE stereo dual-mono packets dequeued by the chip-ref writer. The packaged unit currently allows writes under `/run/jasper-outputd` and `/var/lib/jasper`; arbitrary home or source-tree paths are expected to fail under `ProtectSystem=full` / `ProtectHome=read-only`. The file is created/truncated at outputd start.
@@ -241,7 +213,7 @@ Important boundaries:
 - Disabled by default.
 - Diagnostic only; it is not read by outputd, the AEC bridge, or the chip.
 - It does not replace UDP or XVF USB-IN reference paths.
-- Tee open/write failures are non-fatal. An open failure increments `diagnostic_tee_open_error_count`; a write failure increments `diagnostic_tee_write_error_count` and disables the tee. `diagnostic_tee_active` is the `/state` truth for whether the tee is currently recording.
+- Tee open/write failures are non-fatal and journal-only: `event=outputd.chip_ref.tee.enabled`, `.open_failed`, `.write_failed`. A write failure disables the tee for that process.
 - The tee is attached to the chip-ref writer side, not the main DAC loop. Enabling it can add diagnostic file I/O to the chip-ref worker, so it should be used for controlled captures, not normal production.
 
 Capture format:

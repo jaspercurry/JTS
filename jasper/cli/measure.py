@@ -554,17 +554,13 @@ def _bind_compose(
 
 def _wired_setup_reference() -> Mapping[str, Any] | None:
     from jasper.active_speaker.crossover_v2.sweep_spec import DefaultSetupCalibration
+    from jasper.audio_measurement.household_mic import resolved_household_mic
     from jasper.audio_measurement.wired_capture import setup_from_hint
-    from jasper.correction.household_mic import (
-        read_household_mic, resolve_household_mic_calibration,
-    )
 
-    household = read_household_mic()
-    if household is None:
+    found = resolved_household_mic()
+    if found is None:
         return None
-    calibration = resolve_household_mic_calibration(household)
-    if calibration is None:
-        return None
+    household, calibration = found
     return setup_from_hint(DefaultSetupCalibration(
         mode="upload" if household.provider == "manual_upload" else "serial",
         model=household.model_key, calibration_id=calibration.calibration_id,
@@ -951,7 +947,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
-    parser.add_argument("--graph-scope", choices=GRAPH_SCOPES, default=GRAPH_SCOPE_DRIVERS)
+    parser.add_argument("--graph-scope", choices=[scope for scope in GRAPH_SCOPES if scope != "candidate_branches"], default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here
         # and can be refused by name; taking the last one silently would let an

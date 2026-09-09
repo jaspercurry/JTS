@@ -49,8 +49,10 @@ REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 # Files the ban covers, in three groups — every entry is a place a fixed
 # ceiling could live, and the group says why.
 #
-#   DEFINE the shared gain policy (4). Where the removed ceiling was
-#   declared, and the modules re-exporting that policy.
+#   DEFINE the shared gain policy (2). Where the removed ceiling was
+#   declared, and the module re-exporting that policy. Both daemons now
+#   import `jasper_tts_protocol::loudness` directly, so there is one
+#   definition site and no per-daemon copy to police.
 #
 #   APPLY the policy to samples (3). A ceiling reintroduced at an
 #   application site never touches a policy module, so covering only the
@@ -65,18 +67,17 @@ REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 #   here before (deep-audit DA-0590: a private `db_to_linear` duplicating
 #   the shared helper).
 #
-# Of these eight, 6304556a4 deleted ceiling references from five — and not
+# Of these six, 6304556a4 deleted ceiling references from five — and not
 # uniformly, which is itself the argument for banning both symbols rather
 # than one: tts-protocol/loudness.rs (which declared them), outputd/mixer.rs
 # (which re-exported them) and fanin/tts.rs carried BOTH; outputd/tts.rs
 # carried only the MAX_ constant; core.rs carried only the clamp helper. A
 # one-symbol ban would have missed a file either way round.
 #
-# The other three are covered structurally, not historically: the two daemon
-# loudness.rs files re-export the shared policy wholesale, and
-# assistant_source.rs postdates the removal — created later by 2ac841f24
-# (#2063) — so it is covered because it applies gain today, not because it
-# ever carried a ceiling.
+# The sixth is covered structurally, not historically: assistant_source.rs
+# postdates the removal — created later by 2ac841f24 (#2063) — so it is
+# covered because it applies gain today, not because it ever carried a
+# ceiling.
 #
 # Deliberately NOT covered: fanin/state.rs and outputd/state.rs. They are
 # pure STATUS renderers — they read a decided gain and serialize it, and
@@ -84,18 +85,11 @@ REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 # it can honestly claim to guard.
 RUST_TTS_GAIN_FILES = (
     "rust/jasper-tts-protocol/src/loudness.rs",
-    "rust/jasper-fanin/src/loudness.rs",
-    "rust/jasper-outputd/src/loudness.rs",
     "rust/jasper-outputd/src/mixer.rs",
     "rust/jasper-fanin/src/tts.rs",
     "rust/jasper-outputd/src/assistant_source.rs",
     "rust/jasper-outputd/src/core.rs",
     "rust/jasper-outputd/src/tts.rs",
-)
-
-RUST_SHARED_LOUDNESS_SHIMS = (
-    "rust/jasper-fanin/src/loudness.rs",
-    "rust/jasper-outputd/src/loudness.rs",
 )
 
 RUST_OUTPUTD_MIXER = "rust/jasper-outputd/src/mixer.rs"
@@ -131,17 +125,6 @@ def test_fixed_tts_gain_ceiling_is_removed() -> None:
                 "universal source-gain clamp."
             )
     assert not hasattr(TtsPlayout, REMOVED_TTS_MAX_SYMBOL)
-
-
-def test_rust_daemon_loudness_modules_reexport_shared_tts_gain_policy() -> None:
-    for rel in RUST_SHARED_LOUDNESS_SHIMS:
-        text = (REPO / rel).read_text()
-        assert "pub use jasper_tts_protocol::loudness::*;" in text, (
-            f"{rel}: daemon loudness module no longer re-exports the "
-            "shared Rust policy. If this is intentional, update the safety "
-            "pin and explain how fan-in/outputd loudness policy still cannot "
-            "drift between daemons."
-        )
 
 
 def test_outputd_mixer_reexports_shared_tts_gain_helpers() -> None:

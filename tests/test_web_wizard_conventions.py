@@ -14,28 +14,51 @@ from __future__ import annotations
 import ast
 import functools
 import http
-import inspect
 import json
 import re
+import tempfile
 import textwrap
 import urllib.parse
+from contextlib import nullcontext
 from email.message import Message
+from http.server import BaseHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
 from jasper.web import (
+    airplay_setup,
+    bluetooth_setup,
+    chat_setup,
+    correction_setup,
     google_setup,
     home_assistant_setup,
+    rooms_setup,
+    sources_setup,
+    speaker_setup,
     spotify_setup,
     system_setup,
+    tools_setup,
+    transit_setup,
+    voice_setup,
+    wake_corpus_setup,
+    wake_setup,
+    weather_setup,
     wifi_setup,
 )
+from jasper.web._common import CSRF_COOKIE_NAME
 from jasper.web.nav import NAV, hub_paths, render_hub
+
+# Every handler factory below points its state and secret files here. A fixed
+# /tmp path is shared by every concurrent lane on one machine; one directory
+# per process cannot collide.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="jts-wizard-conventions-"))
 
 
 WEB_SETUP_FILES = (
     *Path("jasper/web").glob("*_setup.py"),
-    Path("jasper/web/correction_room_flow.py"),
+    *Path("jasper/web").glob("*_page.py"),
 )
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
@@ -44,6 +67,7 @@ _SHARED_JSON_OBJECT_READERS = {
     "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
     "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
+    "tools_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 
@@ -134,66 +158,6 @@ def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
         assert "json.loads" not in adapter
 
 
-def test_migrated_json_body_reads_remain_after_csrf_guard():
-    direct_readers = {
-        "chat_setup.py": ("guard_mutating_request", "self._set_capture()"),
-        "wifi_setup.py": ("guard_mutating_request", "body = self._read_json()"),
-        "sources_setup.py": ("guard_mutating_request", "body = self._read_json()"),
-        "wake_corpus_setup.py": ("self._check_csrf()", "body = self._read_json()"),
-    }
-    for filename, (guard, body_read) in direct_readers.items():
-        path = Path("jasper/web") / filename
-        source = path.read_text(encoding="utf-8")
-        handlers = [
-            node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
-        ]
-        assert len(handlers) == 1, f"expected one do_POST in {path}"
-        handler = ast.get_source_segment(source, handlers[0]) or ""
-        assert handler.index(guard) < handler.index(body_read)
-
-    correction_source = Path("jasper/web/correction_setup.py").read_text(
-        encoding="utf-8",
-    )
-    correction_handlers = [
-        node for node in ast.walk(ast.parse(correction_source))
-        if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
-    ]
-    assert len(correction_handlers) == 1
-    correction_handler = (
-        ast.get_source_segment(correction_source, correction_handlers[0]) or ""
-    )
-    assert correction_handler.index(
-        "guard_mutating_request",
-    ) < correction_handler.index("getattr(self, _POST_ROUTES[path])")
-
-    delegated_readers = {
-        "bluetooth_setup.py": ("handler_fn(self)",),
-        "wake_setup.py": (
-            "self._handle_layer(",
-            "self._handle_profile()",
-            "self._handle_sensitivity()",
-        ),
-        "rooms_setup.py": (
-            # do_POST dispatches through the module-level _POST_ROUTES
-            # table (path -> handler); the invariant this pins is that
-            # no dispatch happens before the CSRF guard.
-            "handler_fn(self)",
-        ),
-    }
-    for filename, dispatches in delegated_readers.items():
-        path = Path("jasper/web") / filename
-        source = path.read_text(encoding="utf-8")
-        handlers = [
-            node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
-        ]
-        assert len(handlers) == 1, f"expected one do_POST in {path}"
-        handler = ast.get_source_segment(source, handlers[0]) or ""
-        for dispatch in dispatches:
-            assert handler.index("guard_mutating_request") < handler.index(dispatch)
-
-
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels
 # through the shared CSRF seam, and route-checks unknown paths FIRST.
 #
@@ -242,36 +206,7 @@ def _mutating_handlers():
                 yield path, node.name, ast.get_source_segment(text, node)
 
 
-def _get_handlers():
-    """Yield (path, func_name, source_segment) for every real wizard do_GET."""
-    for path in WEB_PY_FILES:
-        text = path.read_text()
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, ast.FunctionDef) and node.name == "do_GET":
-                yield path, node.name, ast.get_source_segment(text, node)
-
-
-def test_every_wizard_get_handler_uses_the_read_guard():
-    handlers = list(_get_handlers())
-    assert handlers, "expected wizard do_GET handlers to scan"
-    offenders = []
-    for path, name, seg in handlers:
-        if path.name == "__main__.py":
-            assert "_delegate" in seg, (
-                f"{path}::{name} no longer delegates — it must call "
-                "guard_read_request() itself"
-            )
-            continue
-        if "guard_read_request" not in seg:
-            offenders.append(f"{path}::{name}")
-    assert offenders == [], (
-        "wizard GET handlers that never call guard_read_request() "
-        "(the shared Host + Fetch Metadata read chokepoint in "
-        "jasper/web/_common.py):\n" + "\n".join(offenders)
-    )
-
-
-class _WizardGetRequest:
+class _WizardRequest:
     """Drive a real wizard Handler instance without opening a socket."""
 
     def __init__(
@@ -280,47 +215,65 @@ class _WizardGetRequest:
         path: str,
         *,
         headers: dict[str, str] | None = None,
+        body: bytes = b"",
     ) -> None:
         h = handler_cls.__new__(handler_cls)
         h.path = path
         h.headers = Message()
-        h.headers["Content-Length"] = "0"
+        h.headers["Content-Length"] = str(len(body))
         for key, value in (headers or {}).items():
             h.headers[key] = value
-        h.rfile = BytesIO()
+        h.rfile = BytesIO(body)
         h.wfile = BytesIO()
         h.client_address = ("127.0.0.1", 0)
 
         self.status: int | None = None
         self.sent_headers: list[tuple[str, str]] = []
         self.wfile = h.wfile
+        self.rfile = h.rfile
 
         h.send_response = self._record_status
         h.send_response_only = self._record_status
         h.send_header = lambda name, value: self.sent_headers.append((name, value))
         h.end_headers = lambda: None
-        h.send_error = self._record_status
+        h.send_error = functools.partial(BaseHTTPRequestHandler.send_error, h)
         h.address_string = lambda: "127.0.0.1"
         h.log_message = lambda *a, **k: None
         self._handler = h
 
     def _record_status(self, status, *args, **kwargs):  # noqa: ANN001
+        """Latch the FIRST status, and refuse a second.
+
+        Keeping the last status would let a body that answers before its
+        guard pass the CSRF pin: the guard's later 403 would overwrite the
+        body's own reply and the pin could not tell the two orders apart.
+        """
+        if self.status is not None:
+            raise AssertionError(
+                f"handler responded twice: {self.status} then {int(status)} "
+                "— a route body answered before or after its guard",
+            )
         self.status = int(status)
 
     def do_GET(self):
+        self._handler.command = "GET"
         self._handler.do_GET()
+
+    def do_POST(self):
+        self._handler.command = "POST"
+        self._handler.do_POST()
 
 
 def test_wizard_get_rejects_dns_rebinding_host():
     for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
-        req = _WizardGetRequest(handler_cls, "/", headers={"Host": "evil.example"})
+        req = _WizardRequest(handler_cls, "/", headers={"Host": "evil.example"})
         req.do_GET()
         assert req.status == int(http.HTTPStatus.FORBIDDEN)
         assert b"host_not_allowed" in req.wfile.getvalue()
 
 
 def test_wizard_get_rejects_cross_site_fetch_metadata():
-    req = _WizardGetRequest(
+    req = _WizardRequest(
         wifi_setup._make_handler(),
         "/",
         headers={
@@ -336,7 +289,7 @@ def test_wizard_get_rejects_cross_site_fetch_metadata():
 
 def test_wizard_get_unknown_route_404s_before_read_guard():
     for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
-        req = _WizardGetRequest(
+        req = _WizardRequest(
             handler_cls,
             "/not-a-route",
             headers={"Host": "evil.example"},
@@ -347,13 +300,13 @@ def test_wizard_get_unknown_route_404s_before_read_guard():
 
 def test_wizard_get_allows_normal_management_host():
     for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
-        req = _WizardGetRequest(handler_cls, "/", headers={"Host": "jts.local"})
+        req = _WizardRequest(handler_cls, "/", headers={"Host": "jts.local"})
         req.do_GET()
         assert req.status == int(http.HTTPStatus.OK)
 
 
 def test_wizard_get_allows_cross_site_top_level_navigation():
-    req = _WizardGetRequest(
+    req = _WizardRequest(
         system_setup._make_handler(),
         "/",
         headers={
@@ -368,8 +321,8 @@ def test_wizard_get_allows_cross_site_top_level_navigation():
 
 
 def test_state_changing_get_can_reject_cross_site_top_level_navigation():
-    req = _WizardGetRequest(
-        home_assistant_setup._make_handler({"state_path": "/tmp/jts-test-ha.env"}),
+    req = _WizardRequest(
+        home_assistant_setup._make_handler({"state_path": str(_SCRATCH / "ha.env")}),
         "/reset",
         headers={
             "Host": "jts.local",
@@ -396,7 +349,7 @@ def test_wifi_polling_state_get_still_works_with_normal_host(monkeypatch):
             "saved": [],
         },
     )
-    req = _WizardGetRequest(
+    req = _WizardRequest(
         wifi_setup._make_handler(),
         "/state",
         headers={"Host": "jts.local"},
@@ -410,7 +363,7 @@ def _spotify_handler_cls():
     return spotify_setup._make_handler({
         "client_id": "",
         "mode": "bounce",
-        "registry_path": "/tmp/jts-test-spotify-accounts.json",
+        "registry_path": str(_SCRATCH / "spotify-accounts.json"),
         "bounce_redirect_uri": (
             "https://jaspercurry.github.io/spotify-oauth-callback/?host=jts.local"
         ),
@@ -420,33 +373,12 @@ def _spotify_handler_cls():
 
 def _google_handler_cls():
     return google_setup._make_handler({
-        "creds_path": "/tmp/jts-test-google-credentials.env",
+        "creds_path": str(_SCRATCH / "google-credentials.env"),
         "redirect_uri": (
             "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
         ),
-        "registry_path": "/tmp/jts-test-google-accounts.json",
+        "registry_path": str(_SCRATCH / "google-accounts.json"),
     })
-
-
-def test_legacy_msg_redirect_handlers_are_thin_shared_helper_delegates():
-    for handler_cls in (_spotify_handler_cls(), _google_handler_cls()):
-        source = textwrap.dedent(inspect.getsource(handler_cls._redirect))
-        function = ast.parse(source).body[0]
-        assert isinstance(function, ast.FunctionDef)
-        assert len(function.body) == 1
-        statement = function.body[0]
-        assert isinstance(statement, ast.Expr)
-        call = statement.value
-        assert isinstance(call, ast.Call)
-        assert isinstance(call.func, ast.Name)
-        assert call.func.id == "redirect_with_legacy_msg"
-        assert len(call.args) == 2
-        assert all(isinstance(arg, ast.Name) for arg in call.args)
-        assert [arg.id for arg in call.args] == [
-            "self",
-            "location",
-        ]
-        assert call.keywords == []
 
 
 def test_oauth_callbacks_allow_cross_site_top_level_navigation():
@@ -461,7 +393,7 @@ def test_oauth_callbacks_allow_cross_site_top_level_navigation():
         (_google_handler_cls(), "/callback"),
     )
     for handler_cls, path in cases:
-        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req = _WizardRequest(handler_cls, path, headers=headers)
         req.do_GET()
         assert req.status == int(http.HTTPStatus.SEE_OTHER)
 
@@ -474,11 +406,11 @@ def test_oauth_redirect_follow_index_allows_cross_site_top_level_navigation():
         "Sec-Fetch-Dest": "document",
     }
     cases = (
-        (_spotify_handler_cls(), "/?msg=Linked+Spotify"),
-        (_google_handler_cls(), "/?msg=Linked+Google"),
+        (_spotify_handler_cls(), "/"),
+        (_google_handler_cls(), "/"),
     )
     for handler_cls, path in cases:
-        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req = _WizardRequest(handler_cls, path, headers=headers)
         req.do_GET()
         assert req.status == int(http.HTTPStatus.OK)
 
@@ -494,17 +426,474 @@ def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
         (_google_handler_cls(), "/callback"),
     )
     for handler_cls, path in cases:
-        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req = _WizardRequest(handler_cls, path, headers=headers)
         req.do_GET()
         assert req.status == int(http.HTTPStatus.FORBIDDEN)
         assert b"cross_site_request" in req.wfile.getvalue()
 
 
+# --- Route tables, pinned at the request surface --------------------------
+#
+# Every converged wizard dispatches the same five steps: normalise the path,
+# look it up in a table, 404 if absent, guard, call. These pins drive real
+# handler instances instead of reading a dispatcher's source, so a wizard is
+# free to hold its table in a closure, on the class, or at module level.
+
+# The recorder's bespoke scheme compares a server-held token, so the pins
+# hand it back the same one _make_handler_class was built with.
+_WAKE_CORPUS_TOKEN = "wake-corpus-test-token"
+# Syntactically valid double-submit token (base64url, 32..128 chars).
+_VALID_CSRF_TOKEN = "A" * 43
+
+_TABLED_WIZARD_FACTORIES = {
+    "airplay_setup": lambda: airplay_setup._make_handler(
+        {"state_path": str(_SCRATCH / "airplay.env")},
+    ),
+    "bluetooth_setup": lambda: bluetooth_setup._make_handler(),
+    "chat_setup": chat_setup._make_handler,
+    "correction_setup": lambda: correction_setup._make_handler_class(
+        hostname="jts.local", idle_hold=nullcontext,
+    ),
+    "google_setup": _google_handler_cls,
+    "home_assistant_setup": lambda: home_assistant_setup._make_handler(
+        {"state_path": str(_SCRATCH / "ha.env")},
+    ),
+    "rooms_setup": rooms_setup._make_handler,
+    "sources_setup": sources_setup._make_handler,
+    "speaker_setup": lambda: speaker_setup._make_handler(
+        {"state_path": str(_SCRATCH / "speaker.env")},
+    ),
+    "spotify_setup": _spotify_handler_cls,
+    "system_setup": system_setup._make_handler,
+    "tools_setup": lambda: tools_setup._make_handler({
+        "catalog_path": str(_SCRATCH / "tools-catalog.json"),
+        "state_path": str(_SCRATCH / "tool-state.env"),
+        "prompt_overrides_path": str(_SCRATCH / "tool-prompt-overrides.json"),
+    }),
+    "transit_setup": lambda: transit_setup._make_handler({
+        "state_path": str(_SCRATCH / "transit.env"),
+        "routes_secret_path": str(_SCRATCH / "transit-routes.env"),
+        "weather_path": str(_SCRATCH / "transit-weather.env"),
+    }),
+    "voice_setup": lambda: voice_setup._make_handler({
+        "state_path": str(_SCRATCH / "voice-provider.env"),
+        "keys_path": str(_SCRATCH / "voice-keys.env"),
+        "discovery_cache_path": str(_SCRATCH / "voice-models.json"),
+        "discovery_http_client": None,
+        "pricing_path": str(_SCRATCH / "voice-pricing.json"),
+        "assistant_loudness_profile_path": str(_SCRATCH / "voice-loudness.json"),
+        "loudness_seed_fn": lambda *a, **k: None,
+    }),
+    "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
+        object(), _WAKE_CORPUS_TOKEN,
+    ),
+    "wake_setup": lambda: wake_setup._make_handler(
+        {
+            "state_path": str(_SCRATCH / "wake.env"),
+            "control_base": "http://127.0.0.1:8780",
+        },
+    ),
+    "weather_setup": lambda: weather_setup._make_handler({
+        "state_path": str(_SCRATCH / "weather.env"),
+        "transit_path": str(_SCRATCH / "weather-transit.env"),
+    }),
+    "wifi_setup": wifi_setup._make_handler,
+}
+
+# Wizards whose CSRF token rides in a header, so the guard runs before any
+# body read. The rest are form wizards, which cannot guard before reading
+# the body the token is in. Shrinks as a wizard moves to header CSRF.
+_HEADER_CSRF_WIZARDS = frozenset({
+    "bluetooth_setup",
+    "chat_setup",
+    "correction_setup",
+    "rooms_setup",
+    "sources_setup",
+    "system_setup",
+    "tools_setup",
+    "wifi_setup",
+})
+
+
+def _route_table_paths(source_path: Path) -> dict[str, list[str]]:
+    """The paths a wizard's `_GET_ROUTES` / `_POST_ROUTES` dict literals
+    declare, wherever in the module they are assigned — AST, not import, so
+    a closure-local table counts the same as a module-level one."""
+    tables: dict[str, list[str]] = {"_GET_ROUTES": [], "_POST_ROUTES": []}
+    for node in ast.walk(ast.parse(source_path.read_text())):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in tables:
+                tables[target.id].extend(
+                    key.value for key in node.value.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                )
+    return tables
+
+
+def _resolve_samples(dispatch_fn) -> dict:
+    """`{sample path: route}` for each prefix family a dispatcher's `resolve=`
+    hook answers. `_common.resolve_samples` stamps the mapping on the hook,
+    and the hook is reachable from the dispatcher the same two ways a route
+    table is: a closure cell, or a module global it names."""
+    if dispatch_fn is None:
+        return {}
+    reachable = [cell.cell_contents for cell in dispatch_fn.__closure__ or ()]
+    reachable += [
+        dispatch_fn.__globals__[name]
+        for name in dispatch_fn.__code__.co_names
+        if name in dispatch_fn.__globals__
+    ]
+    for value in reachable:
+        samples = getattr(value, "resolve_samples", None)
+        if isinstance(samples, dict):
+            return samples
+    return {}
+
+
+def _sample_paths(handler_cls, dispatcher: str) -> list[str]:
+    return list(_resolve_samples(getattr(handler_cls, dispatcher, None)))
+
+
+def _tabled_wizards():
+    """(module name, handler class, GET paths, POST paths) per tabled wizard.
+
+    Paths are the dict-literal keys plus one sample per prefix family the
+    dispatcher's `resolve=` hook declares, so `/layer/<name>` is covered by
+    the same generic pins an exact key is."""
+    out = []
+    for source_path in sorted(WEB_SETUP_FILES):
+        tables = _route_table_paths(source_path)
+        if not (tables["_GET_ROUTES"] or tables["_POST_ROUTES"]):
+            continue
+        module_name = source_path.stem
+        factory = _TABLED_WIZARD_FACTORIES.get(module_name)
+        assert factory is not None, (
+            f"{source_path} grew a route table with no entry in "
+            "_TABLED_WIZARD_FACTORIES — add one so its routes are covered"
+        )
+        handler_cls = factory()
+        out.append((
+            module_name,
+            handler_cls,
+            tables["_GET_ROUTES"] + _sample_paths(handler_cls, "do_GET"),
+            tables["_POST_ROUTES"] + _sample_paths(handler_cls, "do_POST"),
+        ))
+    return out
+
+
+TABLED_WIZARDS = _tabled_wizards()
+TABLED_GET_ROUTES = [
+    (name, cls, path) for name, cls, gets, _ in TABLED_WIZARDS for path in gets
+]
+# POST routes guarded by the READ guard rather than by CSRF: read-only
+# probes that change no state. A missing CSRF token is not what rejects
+# them, so they are pinned against a cross-site read instead.
+_READ_GUARDED_POST_ROUTES = frozenset({
+    ("home_assistant_setup", "/discover"),
+    ("home_assistant_setup", "/ready"),
+    ("home_assistant_setup", "/verify"),
+})
+TABLED_POST_ROUTES = [
+    (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS for path in posts
+    if (name, path) not in _READ_GUARDED_POST_ROUTES
+]
+READ_GUARDED_POST_ROUTES = [
+    (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS for path in posts
+    if (name, path) in _READ_GUARDED_POST_ROUTES
+]
+TABLED_POST_WIZARDS = [
+    (name, cls) for name, cls, _, posts in TABLED_WIZARDS if posts
+]
+
+
+# wifi_setup's `_read_json` coerces a malformed body to {} on purpose, so its
+# routes run their bodies instead of the decorator's 400 — pinned in
+# tests/test_web_wifi_setup.py, excluded here.
+_COERCES_MALFORMED_BODY = frozenset({"wifi_setup"})
+
+
+def _post_route_table(handler_cls) -> dict:
+    """The wizard's live POST table plus its prefix-family samples — a
+    closure cell on `do_POST` when the table is closure-local (it captures
+    per-server cfg), else a module global. Same reach the header-CSRF pins
+    use to drive the real callables."""
+    fn = handler_cls.do_POST
+    freevars = fn.__code__.co_freevars
+    if "_POST_ROUTES" in freevars:
+        table = fn.__closure__[freevars.index("_POST_ROUTES")].cell_contents
+    else:
+        table = fn.__globals__["_POST_ROUTES"]
+    return {**table, **_resolve_samples(fn)}
+
+
+# `csrf_mode` per POST route — the marker `form_guarded` / `header_guarded` /
+# `read_guarded` stamp on the wrapper they return, so a wizard whose guard
+# varies per route declares its axis there rather than in a list kept here.
+_POST_ROUTE_CSRF_MODES = {
+    (name, path): mode
+    for name, cls, _, posts in TABLED_WIZARDS if posts
+    for path, fn in _post_route_table(cls).items()
+    if (mode := getattr(fn, "csrf_mode", None)) is not None
+}
+
+
+# POST routes whose body parses through `_common.json_body` — the decorator
+# marks its wrapper, so this tracks the routes themselves rather than a
+# hand-kept wizard list.
+_JSON_BODY_POST_ROUTES = [
+    (name, cls, path)
+    for name, cls, _, posts in TABLED_WIZARDS
+    if posts and name not in _COERCES_MALFORMED_BODY
+    for path in posts
+    if getattr(_post_route_table(cls).get(path), "reads_json_body", False)
+]
+
+
+def _csrf_headers(module_name: str) -> dict[str, str]:
+    if f"{module_name}.py" in _BESPOKE_CSRF_WIZARDS:
+        return {"X-CSRF-Token": _WAKE_CORPUS_TOKEN}
+    return {
+        "Cookie": f"{CSRF_COOKIE_NAME}={_VALID_CSRF_TOKEN}",
+        "X-CSRF-Token": _VALID_CSRF_TOKEN,
+    }
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    TABLED_POST_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in TABLED_POST_ROUTES],
+)
+def test_tabled_post_route_without_a_csrf_token_is_forbidden(
+    module_name, handler_cls, path,
+):
+    req = _WizardRequest(
+        handler_cls, path, headers={"Host": "jts.local"}, body=b'{"on": true}',
+    )
+    req.do_POST()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    if (
+        module_name in _HEADER_CSRF_WIZARDS
+        or _POST_ROUTE_CSRF_MODES.get((module_name, path)) == "header"
+    ):
+        # The guard runs before any body read, so a rejected POST leaves the
+        # request body unconsumed and cannot have mutated anything. Header
+        # CSRF is a per-module fact for the wizards that guard in their
+        # dispatcher and a per-route one for those that guard per body.
+        assert req.rfile.tell() == 0
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls"),
+    TABLED_POST_WIZARDS,
+    ids=[name for name, _ in TABLED_POST_WIZARDS],
+)
+def test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token(
+    module_name, handler_cls,
+):
+    for token_headers in ({}, _csrf_headers(module_name)):
+        req = _WizardRequest(
+            handler_cls,
+            "/not-a-route",
+            headers={"Host": "jts.local", **token_headers},
+            body=b'{"on": true}',
+        )
+        req.do_POST()
+        assert req.status == int(http.HTTPStatus.NOT_FOUND)
+        # The seam 404s through the stdlib error page, so the miss carries a
+        # body and a content type rather than a bare status line.
+        assert any(
+            name == "Content-Type" and value.startswith("text/html")
+            for name, value in req.sent_headers
+        )
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    READ_GUARDED_POST_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in READ_GUARDED_POST_ROUTES],
+)
+def test_read_guarded_post_route_rejects_cross_site_reads(
+    module_name, handler_cls, path,
+):
+    req = _WizardRequest(
+        handler_cls,
+        path,
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "cors",
+        },
+    )
+    req.do_POST()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"cross_site_request" in req.wfile.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    TABLED_GET_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in TABLED_GET_ROUTES],
+)
+def test_tabled_get_route_rejects_cross_site_reads(module_name, handler_cls, path):
+    req = _WizardRequest(
+        handler_cls,
+        path,
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "cors",
+        },
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"cross_site_request" in req.wfile.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    _JSON_BODY_POST_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in _JSON_BODY_POST_ROUTES],
+)
+def test_a_malformed_json_body_never_reaches_a_route_body(
+    module_name, handler_cls, path,
+):
+    """`json_body` parses before it dispatches: a token-bearing POST whose
+    body is not a JSON object is answered 400 by the wizard's `_read_json`,
+    so the route body never runs."""
+    req = _WizardRequest(
+        handler_cls,
+        path,
+        headers={"Host": "jts.local", **_csrf_headers(module_name)},
+        body=b"{not json",
+    )
+    req.do_POST()
+    assert req.status == int(http.HTTPStatus.BAD_REQUEST)
+
+
+# --- Wizards not yet on a route table ------------------------------------
+#
+# The tabled wizards are pinned at the request surface above. Until the rest
+# join them these two source-level tripwires are the only thing holding the
+# read guard and the guard-before-work ordering in their hand-rolled
+# dispatchers.
+#
+# Removal condition: delete once every wizard is in
+# _TABLED_WIZARD_FACTORIES (routes part A).
+
+UNTABLED_WIZARD_FILES = [
+    path for path in sorted(WEB_SETUP_FILES)
+    if path.stem not in _TABLED_WIZARD_FACTORIES
+]
+
+# The first thing a do_POST does with the request that is not the CSRF guard's
+# own input. `read_form` is deliberately absent: a form wizard's token rides in
+# the body, so reading it is how the guard gets called at all.
+_POST_WORK_MARKERS = (
+    "self._read_json(",
+    "self._handle_",
+)
+_POST_GUARD_MARKERS = ("guard_mutating_request(", "self._check_csrf(")
+
+
+def _dispatcher_source(path: Path, name: str) -> str | None:
+    source = path.read_text()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node)
+    return None
+
+
+@pytest.mark.parametrize(
+    "path", UNTABLED_WIZARD_FILES, ids=[p.stem for p in UNTABLED_WIZARD_FILES],
+)
+def test_untabled_wizard_dispatchers_guard_reads_and_guard_before_work(path):
+    get_source = _dispatcher_source(path, "do_GET")
+    if get_source is not None:
+        assert "guard_read_request" in get_source, (
+            f"{path}::do_GET never calls guard_read_request() — the shared "
+            "Host + Fetch Metadata read chokepoint in jasper/web/_common.py"
+        )
+    post_source = _dispatcher_source(path, "do_POST")
+    if post_source is None:
+        return
+    guards = [post_source.index(m) for m in _POST_GUARD_MARKERS if m in post_source]
+    work = [post_source.index(m) for m in _POST_WORK_MARKERS if m in post_source]
+    if not work:
+        return
+    assert guards and min(guards) < min(work), (
+        f"{path}::do_POST reads the body or dispatches a route before the "
+        "CSRF guard runs"
+    )
+
+
+def test_bespoke_csrf_scheme_guards_the_host_before_the_token_compare():
+    """The sanctioned bespoke scheme is exempt from the shared
+    double-submit chokepoint, not from the Host/Origin allowlist axis
+    `guard_mutating_request` also applies."""
+    for file_name in _BESPOKE_CSRF_WIZARDS:
+        path = next(p for p in WEB_PY_FILES if p.name == file_name)
+        source = path.read_text()
+        check_csrf_defs = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
+        ]
+        assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
+        csrf_calls = [
+            node for node in ast.walk(check_csrf_defs[0])
+            if isinstance(node, ast.Call)
+        ]
+        # AST-walk for a real Call node, not a regex over the source
+        # text — a docstring/comment reading "guard_mutating_host(handler)"
+        # must not satisfy this.
+        guard_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "guard_mutating_host"
+        ]
+        assert guard_calls, (
+            f"{path}::_check_csrf must call guard_mutating_host() first — "
+            "the shared Host/Origin allowlist axis is not part of the "
+            "bespoke-CSRF-scheme exception"
+        )
+        compare_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "compare_digest"
+        ]
+        assert compare_calls, (
+            f"{path}::_check_csrf must compare the token with "
+            "secrets.compare_digest()"
+        )
+        # Ordering invariant guard_mutating_request's docstring documents
+        # (_common.py): the host/Origin guard runs before the token
+        # compare. AST line positions, not string indexes.
+        assert (
+            min(c.lineno for c in guard_calls)
+            < min(c.lineno for c in compare_calls)
+        ), (
+            f"{path}::_check_csrf must call guard_mutating_host() before "
+            "the compare_digest() token compare"
+        )
+
+
+# The chokepoint reach a do_POST may have: the guard called in the
+# dispatcher, the shared `dispatch_post` seam that calls it there, or
+# wake_corpus_setup's sanctioned bespoke scheme (pinned above).
+_CHOKEPOINT_CALLS = ("guard_mutating_request", "dispatch_post", "_check_csrf")
+
+
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
+    """A form wizard's guard lives in the route body — it must read the
+    body to find the token — so it is pinned behaviourally above instead.
+    Every other do_POST still reaches the chokepoint itself."""
     handlers = list(_mutating_handlers())
     assert handlers, "expected wizard do_POST handlers to scan"
+    body_guarded = {
+        f"{name}.py" for name, _, _, _ in TABLED_WIZARDS
+        if name not in _HEADER_CSRF_WIZARDS
+    }
     offenders = []
     for path, name, seg in handlers:
+        if path.name in body_guarded:
+            continue
         if path.name == "__main__.py":
             # The colocated-server router only delegates to the per-wizard
             # handlers (which each guard themselves) — assert it stays a
@@ -514,81 +903,39 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
                 "guard_mutating_request() itself"
             )
             continue
-        if path.name in _BESPOKE_CSRF_WIZARDS:
-            # Call syntax, not just a docstring/comment mention: match the
-            # invocation shape, same as _CSRF_GUARD_CALL_RE above.
-            assert re.search(r"\b_check_csrf\s*\(", seg), (
-                f"{path}::{name} lost its bespoke _check_csrf() call"
-            )
-            source = path.read_text()
-            check_csrf_defs = [
-                node for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
-            ]
-            assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
-            csrf_def = check_csrf_defs[0]
-            csrf_calls = [
-                node for node in ast.walk(csrf_def) if isinstance(node, ast.Call)
-            ]
-            # AST-walk for a real Call node, not a regex over the source
-            # text — a docstring/comment reading "guard_mutating_host(handler)"
-            # must not satisfy this.
-            guard_calls = [
-                c for c in csrf_calls
-                if _call_target_name(c) == "guard_mutating_host"
-            ]
-            assert guard_calls, (
-                f"{path}::_check_csrf must call guard_mutating_host() first — "
-                "the shared Host/Origin allowlist axis is not part of the "
-                "bespoke-CSRF-scheme exception"
-            )
-            compare_calls = [
-                c for c in csrf_calls if _call_target_name(c) == "compare_digest"
-            ]
-            assert compare_calls, (
-                f"{path}::_check_csrf must compare the token with "
-                "secrets.compare_digest()"
-            )
-            # Ordering invariant guard_mutating_request's docstring documents
-            # (_common.py): the host/Origin guard runs before the token
-            # compare. AST line positions, not string indexes.
-            assert (
-                min(c.lineno for c in guard_calls)
-                < min(c.lineno for c in compare_calls)
-            ), (
-                f"{path}::_check_csrf must call guard_mutating_host() before "
-                "the compare_digest() token compare"
-            )
-            continue
         # AST Call, not a substring — a comment naming the guard must not
-        # satisfy the chokepoint, same rule as the bespoke branch above.
+        # satisfy the chokepoint.
         handler_fn = ast.parse(textwrap.dedent(seg)).body[0]
         if not any(
             isinstance(node, ast.Call)
-            and _call_target_name(node) == "guard_mutating_request"
+            and _call_target_name(node) in _CHOKEPOINT_CALLS
             for node in ast.walk(handler_fn)
         ):
             offenders.append(f"{path}::{name}")
     assert offenders == [], (
-        "wizard mutating handlers that never call guard_mutating_request() "
+        "wizard mutating handlers that never reach guard_mutating_request() "
         "(the shared Host/Origin + CSRF chokepoint in jasper/web/_common.py):\n"
         + "\n".join(offenders)
     )
 
 
 def test_mutating_handlers_route_check_before_csrf_guard():
-    """The first conditional in a do_POST/do_DELETE must be routing, never
-    the CSRF guard: 'Route-check unknown POST paths before
+    """The first conditional in a hand-rolled do_POST/do_DELETE must be
+    routing, never the CSRF guard: 'Route-check unknown POST paths before
     guard_mutating_request() so bogus paths return 404 without revealing
     CSRF state' (AGENTS.md / jasper/web/_common.py). In every compliant
     handler the first `if` tests the request path or a route-table lookup
     of it; a handler whose first branch is the guard 403s on bogus paths
-    instead."""
+    instead. A dispatcher on the shared `dispatch_post` seam has no branch
+    of its own — the seam looks the route up first, pinned behaviourally by
+    test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token."""
     branch_re = re.compile(r"^\s*(?:if|elif)\b")
     offenders = []
     for path, name, seg in _mutating_handlers():
         if path.name == "__main__.py":
             continue  # pure delegator, asserted above
+        if "dispatch_post(" in seg:
+            continue  # on the seam; ordering is the seam's, pinned there
         for line in seg.splitlines():
             if not branch_re.match(line):
                 continue
@@ -1021,26 +1368,15 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
     )
 
 
-# docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py
-# HTML (recurrence: 21 in correction_room_flow.py, 8 in google_setup.py —
-# B.4's --tone/.badge promotion cleared one of google's, so the live count
-# below is 7; C.S5's title/header/back pass moved all 21 of
-# correction_room_flow.py's into classes, clearing that entry entirely;
-# measured at HEAD, not the audit snapshot).
+# docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py HTML.
 #
 # Shrink-only: each entry is today's real style="/style=' count for that
 # module. The test fails if a count GROWS (a new inline style=) and fails
 # if a count SHRINKS without this table being lowered to match — a fix must
 # update the allowlist in the same PR, never pass by accident. Delete an
 # entry outright once its module reaches 0.
-_INLINE_STYLE_ALLOWLIST = {
-    # Services cluster (C.A5): the four /assistant/ service pages each get an
-    # app.css-token pass as part of that row.
-    "google_setup.py": 7,
-    "home_assistant_setup.py": 1,
-    "transit_setup.py": 3,
-    "weather_setup.py": 2,
-}
+# Shrink-only ratchet: a new page never adds an entry (ADR-0253 section 4).
+_INLINE_STYLE_ALLOWLIST = {}
 
 _INLINE_STYLE_RE = re.compile(r"""style=["']""")
 
@@ -1053,8 +1389,8 @@ def test_web_pages_inline_style_counts_match_the_shrink_only_allowlist():
             counts[path.name] = n
     assert counts == _INLINE_STYLE_ALLOWLIST, (
         "inline style= counts drifted from the shrink-only allowlist "
-        "(docs/UX-AUDIT-2026-09-03.md §5.5) — lower an entry as its page is "
-        f"cleaned up, never raise one without a ledger row: {counts}"
+        "(inline-style guard; see ADR-0253 and #4635) — lower an entry as "
+        f"its page is cleaned up, never raise one without a ledger row: {counts}"
     )
 
 
@@ -1069,17 +1405,17 @@ _PAGE_MODULE = {
     "/bluetooth/": "bluetooth_setup",
     "/airplay/": "airplay_setup",
     "/sound/eq/": "sound_setup",
-    "/sound/setup/": "sound_setup",
+    "/sound/speaker/": "sound_setup",
+    "/sound/output/": "sound_setup",
     "/sound/speaker/crossover/": "correction_crossover_flow",
-    "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
-    "/assistant/voice/": "voice_setup",
+    "/assistant/voice/": "voice_page",
     "/assistant/wake/": "wake_setup",
     "/assistant/chat/": "chat_setup",
     "/assistant/tools/": "tools_setup",
     "/assistant/weather/": "weather_setup",
-    "/assistant/transit/": "transit_setup",
+    "/assistant/transit/": "transit_page",
     "/assistant/google/": "google_setup",
     "/assistant/ha/": "home_assistant_setup",
     "/wifi/": "wifi_setup",
@@ -1090,17 +1426,13 @@ _PAGE_MODULE = {
     "/wake-corpus/": "wake_corpus_setup",
 }
 
-# Shrink-only: every row whose page disagrees with its label today, against the
-# ledger row (docs/UX-AUDIT-2026-09-03.md §7) that retires the entry. Drop an
-# entry when its page is fixed; never add one without a ledger row. A `back`
+# Shrink-only: every row whose page disagrees with its label today, against
+# the ledger row (issue #4635) that retires the entry. Drop an entry when its
+# page is fixed; never add one without a ledger row. A `back`
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
-_TITLE_ALLOWLIST = {
-    ("/assistant/weather/", "Weather"): {"back"},                   # C.A5
-    ("/assistant/transit/", "Transit"): {"back"},                   # C.A5
-    ("/assistant/google/", "Google"): {"back", "title", "header"},  # C.A5
-    ("/assistant/ha/", "Home Assistant"): {"back"},                 # C.A5
-}
+# Shrink-only ratchet: a new page never adds an entry (ADR-0253 section 4).
+_TITLE_ALLOWLIST = {}
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}
 

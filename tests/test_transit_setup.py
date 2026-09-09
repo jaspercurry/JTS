@@ -32,7 +32,7 @@ import pytest
 
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
-from jasper.web import transit_setup
+from jasper.web import transit_page, transit_setup
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -51,26 +51,13 @@ def test_owned_env_keys_includes_coords_and_provider_keys():
 
 
 def test_coords_returns_none_when_missing():
-    assert transit_setup._coords({}) is None
-    assert transit_setup._coords({"JASPER_TRANSIT_LAT": "not-a-number"}) is None
+    assert transit_page._coords({}) is None
+    assert transit_page._coords({"JASPER_TRANSIT_LAT": "not-a-number"}) is None
 
 
 def test_coords_returns_tuple_when_set():
     state = {"JASPER_TRANSIT_LAT": "40.646", "JASPER_TRANSIT_LON": "-73.994"}
-    assert transit_setup._coords(state) == (40.646, -73.994)
-
-
-def test_has_bus_key_only_checks_persisted_state(monkeypatch):
-    """`_has_bus_key` must NOT consult os.environ. The wizard is a
-    long-lived process; an operator-set value in /etc/jasper/jasper.env
-    is captured at process start and won't reflect a post-startup
-    migration. Reading only the persisted state file keeps render
-    decisions consistent with save decisions."""
-    monkeypatch.setenv("JASPER_MTA_BUSTIME_KEY", "ghost-value-in-env")
-    # Empty state → no key, regardless of os.environ.
-    assert not transit_setup._has_bus_key({})
-    # State value → key present.
-    assert transit_setup._has_bus_key({"JASPER_MTA_BUSTIME_KEY": "from-state"})
+    assert transit_page._coords(state) == (40.646, -73.994)
 
 
 # ---------- Geocode action -------------------------------------------------
@@ -203,7 +190,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     # Start with only a foreign key: no coords, so the seed is eligible.
     env_file.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
 
-    # A transit save that writes an explicit coord set (as _handle_geocode
+    # A transit save that writes an explicit coord set (as _post_geocode
     # would after resolving an address).
     london = {
         transit_setup.LAT_ENV: "51.500",
@@ -774,10 +761,8 @@ def test_handler_post_clear_wipes_owned_keys(wizard_server):
 
 def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):
     """After /clear, the next GET of / must render the bus card in
-    its locked (no-key) state again. Locks in the BLOCKER fix
-    (_has_bus_key not consulting os.environ) from a second angle:
-    even with an env-var ghost present, the rendered page reflects
-    persisted state only."""
+    its locked (no-key) state again: even with an env-var ghost
+    present, the rendered page reflects persisted state only."""
     base_url, state_path, _restarts = wizard_server
     env_file.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",

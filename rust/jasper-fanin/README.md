@@ -37,8 +37,7 @@ pytest suite under `tests/test_fanin_*.py` and
 
 Production default as of 2026-05-26. The daemon opens renderer capture
 lanes, sums active inputs into Ring A, exposes STATUS over
-`/run/jasper-fanin/control.sock`, logs xruns to
-`/var/lib/jasper/fanin/xrun_history.jsonl`, and participates in systemd
+`/run/jasper-fanin/control.sock`, and participates in systemd
 watchdog supervision. Source selection is controlled by jasper-mux over
 the same socket with `SELECT <label>` or `NONE`; fan-in only gates
 lanes and does not own source or volume policy. The mixer starts

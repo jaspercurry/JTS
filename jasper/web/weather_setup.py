@@ -38,21 +38,17 @@ from ..log_event import log_event
 from ..env_file import read_env_file
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
-    read_form,
-    reject_csrf,
+    form_guarded,
     restart_voice_daemon,
-    safe_back_href,
+    route_path,
     send_html_response,
     send_rejected_form,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
     value_for_env as _value_for,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 logger = logging.getLogger(__name__)
 
@@ -238,21 +234,21 @@ def _current_location_html(
     if loc is not None:
         if source == "weather":
             source_text = "Saved weather location."
-            tone = "var(--status-ok)"
+            badge_class = "badge--ok"
             badge = "Saved"
         else:
             source_text = (
                 "Using the transit location until a "
                 "weather-specific location is saved."
             )
-            tone = "var(--status-idle)"
+            badge_class = "badge--idle"
             badge = "From transit"
         display = loc.display_name or "(saved location)"
         return f"""
-<div class="info-card info-card--accent" style="--tone: {tone};">
+<div class="info-card info-card--accent">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(display)}</strong>
-    <span class="badge">{badge}</span>
+    <span class="badge {badge_class}">{badge}</span>
   </div>
   <p class="loc-coords">{loc.lat:.3f}, {loc.lon:.3f} (~110&nbsp;m precision)</p>
   <p class="info-card__hint">{html.escape(source_text)}</p>
@@ -261,10 +257,10 @@ def _current_location_html(
     legacy = _value_for(weather_state, DEFAULT_LOCATION_ENV).strip()
     if legacy:
         return f"""
-<div class="info-card info-card--accent" style="--tone: var(--status-warn);">
+<div class="info-card info-card--accent">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(legacy)}</strong>
-    <span class="badge">Legacy</span>
+    <span class="badge badge--warn">Legacy</span>
   </div>
   <p class="info-card__hint">Legacy place-name default. Save this page to
   store rounded coordinates for faster, more reliable bare weather
@@ -289,7 +285,7 @@ def _index_html(
     csrf_token: str,
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
     submitted: dict[str, str] | None = None,
 ) -> bytes:
     csrf = csrf_field_html(csrf_token)
@@ -387,117 +383,120 @@ def _index_html(
 
 
 def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
+    # The route tables live in this closure so the bodies can read `cfg`.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        ctx = begin_request(handler)
+        weather_state = _load_state(cfg["state_path"])
+        transit_state = read_env_file(cfg["transit_path"])
+        send_html_response(handler, _index_html(
+            weather_state,
+            transit_state,
+            ctx["csrf_token"],
+            status_msg=ctx["flash"],
+            back_href=safe_back_href(
+                (qs.get("return_to") or [""])[0], default="/assistant/",
+            ),
+        ))
+
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        transit_state = read_env_file(cfg["transit_path"])
+        page = functools.partial(
+            _index_html, current, transit_state, submitted=form,
+        )
+        new, err = _apply_save(form, current, transit_state=transit_state)
+        if err is not None:
+            send_rejected_form(handler, page, flash=err)
+            return
+        # weather.env has two writers in this process: this save/clear
+        # and transit_setup's _seed_weather_from_transit_if_missing. Both
+        # read-then-replace, so an unlocked write can lose a concurrent
+        # location write. Recompute the owned keys under the shared flock,
+        # preserving whatever non-owned keys the in-lock file carries.
+        owned = _owned_env_keys()
+        owned_values = {k: v for k, v in new.items() if k in owned}
+
+        def _save_transform(current_locked: dict[str, str]) -> dict[str, str]:
+            result = {
+                k: v for k, v in current_locked.items() if k not in owned
+            }
+            result.update(owned_values)
+            return result
+
+        try:
+            locked_transform_env_file(
+                cfg["state_path"], _save_transform, mode=WEATHER_FILE_MODE,
+            )
+            _seed_transit_from_weather_if_missing(
+                new, transit_path=cfg["transit_path"],
+            )
+        except OSError as e:
+            logger.exception("could not write weather.env")
+            send_rejected_form(handler, page, flash=f"Could not save: {e}")
+            return
+        restart_voice_daemon()
+        # No coords in the log — they're the household's home location.
+        log_event(logger, "weather.save", client=handler.address_string())
+        send_see_other(handler, "./", flash="Saved. Voice daemon restarting.")
+
+    @form_guarded
+    def _post_clear(
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
+    ) -> None:
+        owned = _owned_env_keys()
+
+        def _clear_transform(
+            current_locked: dict[str, str],
+        ) -> dict[str, str] | None:
+            remaining = {
+                k: v for k, v in current_locked.items() if k not in owned
+            }
+            # None => delete the file (parity with delete_env_file when
+            # nothing non-owned remains); serialized under the same flock
+            # as the transit seed writer.
+            return remaining or None
+
+        try:
+            locked_transform_env_file(
+                cfg["state_path"], _clear_transform, mode=WEATHER_FILE_MODE,
+            )
+        except OSError as e:
+            logger.exception("could not clear weather.env")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        restart_voice_daemon()
+        log_event(logger, "weather.clear", client=handler.address_string())
+        send_see_other(
+            handler, "./",
+            flash="Cleared weather default. Voice restarting.",
+        )
+
+    _GET_ROUTES = {"/": _get_index}
+    _POST_ROUTES = {"/save": _post_save, "/clear": _post_clear}
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: D401
             logger.info("%s - " + fmt, self.address_string(), *args)
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                weather_state = _load_state(cfg["state_path"])
-                transit_state = read_env_file(cfg["transit_path"])
-                body = _index_html(
-                    weather_state,
-                    transit_state,
-                    ctx["csrf_token"],
-                    status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
-                )
-                send_html_response(self, body)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path not in ("/save", "/clear"):
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
+            if not guard_read_request(self):
                 return
-            if path == "/save":
-                self._handle_save(form)
+            handler_fn(self)
+
+        def do_POST(self) -> None:  # noqa: N802
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if path == "/clear":
-                self._handle_clear()
-                return
-
-        def _handle_save(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
-            transit_state = read_env_file(cfg["transit_path"])
-            page = functools.partial(
-                _index_html, current, transit_state, submitted=form,
-            )
-            new, err = _apply_save(form, current, transit_state=transit_state)
-            if err is not None:
-                send_rejected_form(self, page, flash=err)
-                return
-            # weather.env has two writers in this process: this save/clear
-            # and transit_setup's _seed_weather_from_transit_if_missing. Both
-            # read-then-replace, so an unlocked write can lose a concurrent
-            # location write. Recompute the owned keys under the shared flock,
-            # preserving whatever non-owned keys the in-lock file carries.
-            owned = _owned_env_keys()
-            owned_values = {k: v for k, v in new.items() if k in owned}
-
-            def _save_transform(current_locked: dict[str, str]) -> dict[str, str]:
-                result = {
-                    k: v for k, v in current_locked.items() if k not in owned
-                }
-                result.update(owned_values)
-                return result
-
-            try:
-                locked_transform_env_file(
-                    cfg["state_path"], _save_transform, mode=WEATHER_FILE_MODE,
-                )
-                _seed_transit_from_weather_if_missing(
-                    new, transit_path=cfg["transit_path"],
-                )
-            except OSError as e:
-                logger.exception("could not write weather.env")
-                send_rejected_form(self, page, flash=f"Could not save: {e}")
-                return
-            restart_voice_daemon()
-            # No coords in the log — they're the household's home location.
-            log_event(logger, "weather.save", client=self.address_string())
-            send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
-
-        def _handle_clear(self) -> None:
-            owned = _owned_env_keys()
-
-            def _clear_transform(
-                current_locked: dict[str, str],
-            ) -> dict[str, str] | None:
-                remaining = {
-                    k: v for k, v in current_locked.items() if k not in owned
-                }
-                # None => delete the file (parity with delete_env_file when
-                # nothing non-owned remains); serialized under the same flock
-                # as the transit seed writer.
-                return remaining or None
-
-            try:
-                locked_transform_env_file(
-                    cfg["state_path"], _clear_transform, mode=WEATHER_FILE_MODE,
-                )
-            except OSError as e:
-                logger.exception("could not clear weather.env")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            restart_voice_daemon()
-            log_event(logger, "weather.clear", client=self.address_string())
-            send_see_other(
-                self, "./",
-                flash="Cleared weather default. Voice restarting.",
-            )
+            handler_fn(self)
 
     return Handler
 

@@ -11,7 +11,7 @@ event=` show what changed, when, and from which device. This test enforces that
 convention so a NEW wizard (a future DAC / mic / LLM-provider setup page) can't
 silently ship a restart-without-audit handler — the gap that #561/#572/#574
 closed by hand across the existing wizards, and that this guard itself caught in
-`voice_setup` (`_handle_save`/`_handle_clear`/`_handle_spend_cap` restarted
+`voice_setup` (`_post_save`/`_post_clear_credentials`/`_post_spend_cap` restarted
 jasper-voice with no audit line).
 
 Detection is AST-based and deliberately COARSE: a `_handle_*` / `_post_*` method
@@ -153,8 +153,9 @@ def test_deliberately_unlogged_allowlist_is_not_stale():
 
 def test_correction_event_literals_use_dotted_domain_names():
     flat = []
-    for stem in ("correction_setup.py", "correction_handlers.py", "correction_capture.py"):
-        tree = ast.parse((WEB_DIR / stem).read_text())
+    # Every correction_* module, so a future one is covered the day it lands.
+    for path in sorted(WEB_DIR.glob("correction_*.py")):
+        tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -165,5 +166,5 @@ def test_correction_event_literals_use_dotted_domain_names():
             event = node.args[1]
             if isinstance(event, ast.Constant) and isinstance(event.value, str):
                 if "." not in event.value:
-                    flat.append(f"{stem}:{node.lineno}:{event.value}")
+                    flat.append(f"{path.name}:{node.lineno}:{event.value}")
     assert flat == []

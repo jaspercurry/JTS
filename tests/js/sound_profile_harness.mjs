@@ -26,6 +26,7 @@ const runner = buildFunction(
   [
     { path: repoPath("deploy/assets/shared/js/escape.js") },
     { path: repoPath("deploy/assets/shared/js/http.js") },
+    { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",
@@ -592,12 +593,12 @@ function summedSummary(latestSummedTests, overrides = {}) {
 }
 
 function setupHarness(fetchHandler, options = {}) {
-  const pageMode = options.mode || "setup";
+  const pageMode = options.mode || "speaker";
   const elements = new Map();
   const absent = new Set();
   for (const id of [
-    "tab-off", "tab-saved", "tab-draft", "back", "view-body",
-    "plot", "plot-summary", "live-label", "status",
+    "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
+    "now-playing", "plot", "plot-summary", "live-label", "status",
     "copy-driver-research-prompt-control",
   ]) {
     elements.set(id, makeEl(id));
@@ -623,11 +624,14 @@ function setupHarness(fetchHandler, options = {}) {
         },
     });
   elements.set("sound-page-data", island);
-  if (pageMode === "setup" || options.follower) {
-    // Setup and follower pages omit the content-EQ chrome. Making those ids
-    // resolve to null exercises the module's mode guards as the browser does.
+  if (pageMode !== "eq" || options.follower) {
+    // The hardware and follower pages omit the content-EQ chrome. Making those
+    // ids resolve to null exercises the module's mode guards as the browser does.
     // islandText lets a test inject malformed renderer data.
-    for (const id of ["tab-off", "tab-saved", "tab-draft", "plot", "plot-summary", "live-label"]) {
+    for (const id of [
+      "tab-off", "tab-saved", "tab-draft", "eq-tabs", "now-playing",
+      "plot", "plot-summary", "live-label",
+    ]) {
       elements.delete(id);
       absent.add(id);
     }
@@ -733,10 +737,8 @@ function setupHarness(fetchHandler, options = {}) {
       open: attrs.open !== undefined ? attrs.open : true,
       getAttribute(name) { return attrs[name] || ""; },
       matches(selector) {
-        return (selector === "[data-active-speaker-setup]" &&
-          Object.prototype.hasOwnProperty.call(attrs, "data-active-speaker-setup")) ||
-          (selector === "[data-driver-advanced]" &&
-            Object.prototype.hasOwnProperty.call(attrs, "data-driver-advanced"));
+        return selector === "[data-driver-advanced]" &&
+          Object.prototype.hasOwnProperty.call(attrs, "data-driver-advanced");
       },
       classList: {
         contains(name) {
@@ -974,6 +976,35 @@ async function testEqSliderDragSendsNoLiveAudioUntilRelease() {
   return { eqSliderDragSendsNoLiveAudioUntilRelease: true };
 }
 
+// Every way INTO the name box re-seeds the whole naming record, so every way
+// out has to clear the same record: a cancel that dropped only part of it
+// leaves the box sitting over the footer's real actions.
+async function testCancellingTheNameBoxClosesIt() {
+  const harness = setupHarness(baseFetch(), { mode: "eq" });
+  await harness.flush(); await harness.flush();
+  harness.elements.get("tab-draft").click();
+  await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "begin-name" });
+  await harness.flush();
+  if (!harness.elements.get("view-body").innerHTML.includes('id="name-input"')) {
+    fail("saving a profile should open the name box", {
+      html: harness.elements.get("view-body").innerHTML,
+    });
+  }
+
+  harness.dispatchClick({ "data-act": "cancel-name" });
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('id="name-input"')) {
+    fail("cancelling should close the name box", { html });
+  }
+  if (!html.includes('data-act="begin-name"')) {
+    fail("cancelling should restore the draft footer actions", { html });
+  }
+  return { cancellingTheNameBoxClosesIt: true };
+}
+
 async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   const settingsPosts = [];
   const auditionPosts = [];
@@ -987,6 +1018,9 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
       volume_floor_db: -50,
     },
   };
+  // ./settings takes a patch and answers with the whole SoundSettings.to_dict()
+  // (jasper/sound/settings.py:to_dict), so the mock keeps the saved record.
+  const savedSettings = { ...statePayload.sound_settings };
   const fetchHandler = baseFetch({
     "./state": () => Promise.resolve(response(statePayload)),
     "./apply": (_path, options = {}) => Promise.resolve(response({
@@ -997,9 +1031,10 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
     "./settings": (_path, options = {}) => {
       const body = JSON.parse(options.body || "{}");
       settingsPosts.push(body);
+      Object.assign(savedSettings, body);
       return Promise.resolve(response({
         ...statePayload,
-        sound_settings: body,
+        sound_settings: { ...savedSettings },
         dsp_write_epoch: "settings-1",
       }));
     },
@@ -1015,7 +1050,7 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
       }));
     },
   });
-  const harness = setupHarness(fetchHandler);
+  const harness = setupHarness(fetchHandler, { mode: "output" });
   await harness.flush();
   await harness.flush();
 
@@ -1055,23 +1090,36 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
 
 // A carrier that refuses to host EQ is page state on the settings card, not a
 // line of prose below the fold: the save succeeded, the sound did not change.
+// The re-render it forces is also the only place this harness sees the card
+// AFTER a settings save, so the patch-save survivors are pinned here too.
 async function testBlockedSettingsSaveRendersOnTheCard() {
   const statePayload = {
     ...basePayload,
     profile: { ...flatProfile, enabled: false },
     filter_count: 0,
     dsp_write_epoch: "state-0",
+    sound_settings: {
+      ...basePayload.sound_settings,
+      headroom_trim_db: 3,
+      volume_floor_db: -50,
+    },
   };
+  // ./settings takes a patch and answers with the whole SoundSettings.to_dict()
+  // (jasper/sound/settings.py:to_dict), so the mock keeps the saved record.
+  const savedSettings = { ...statePayload.sound_settings };
   const harness = setupHarness(baseFetch({
-    "./settings": (_path, options = {}) => Promise.resolve(response({
-      ...statePayload,
-      sound_settings: JSON.parse(options.body || "{}"),
-      status: "blocked",
-      reason_code: "active_baseline_recompose_unavailable",
-      message: "This speaker runs an active crossover.",
-      volume_warning: "Saved, but the volume floor lands on the next change.",
-    })),
-  }));
+    "./settings": (_path, options = {}) => {
+      Object.assign(savedSettings, JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        ...statePayload,
+        sound_settings: { ...savedSettings },
+        status: "blocked",
+        reason_code: "active_baseline_recompose_unavailable",
+        message: "This speaker runs an active crossover.",
+        volume_warning: "Saved, but the volume floor lands on the next change.",
+      }));
+    },
+  }), { mode: "output" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
   harness.dispatchChange({ id: "set-match-loudness", checked: true });
@@ -1092,7 +1140,112 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
       status: harness.elements.get("status").textContent,
     });
   }
+  // The re-rendered card describes the SAVED settings: the toggle the operator
+  // moved, and the extra headroom the patch never mentioned.
+  if (!/id="set-match-loudness" checked/.test(html)) {
+    fail("the re-rendered card should keep Match loudness on", { html });
+  }
+  if (!html.includes('id="set-headroom-readout">\u2212' + "3.0 dB<")) {
+    fail("a patch save must not blank the settings it did not carry", { html });
+  }
   return { blockedSettingsSaveRendersOnTheCard: true };
+}
+
+// A graph that cannot host EQ is the PAGE's state, not a status line after the
+// user edits something the save will refuse: no tab strip, no now-playing plot,
+// no editor body — the reason and the page that can change it. It clears as
+// soon as a payload stops refusing, and a mid-session refusal from ./apply
+// puts the page into that state without a reload.
+async function testBlockedEqCarrierIsThePageState() {
+  const editorState = (eqCarrier) => ({
+    ...basePayload,
+    profile: { ...flatProfile, enabled: false },
+    filter_count: 0,
+    dsp_write_epoch: "state-0",
+    eq_carrier: eqCarrier,
+  });
+  const eqChrome = ["eq-tabs", "now-playing"];
+
+  const blocked = setupHarness(baseFetch({
+    "./state": () => Promise.resolve(response(editorState({
+      status: "blocked",
+      reason_code: "unknown_config",
+      message: "CamillaDSP is running a configuration JTS did not generate.",
+    }))),
+    // A successful apply carries eq_carrier too, so a graph that stopped
+    // refusing drops the block at the next ingest instead of at a reload.
+    "./apply": () => Promise.resolve(response(editorState({ status: "unknown" }))),
+  }), { mode: "eq" });
+  await blocked.flush(); await blocked.flush();
+
+  const html = blocked.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "info-card", "a configuration JTS did not generate", 'href="/sound/speaker/"',
+  ]) {
+    if (!html.includes(expected)) {
+      fail("a blocked EQ carrier should render the refusal as the page", {
+        expected, html,
+      });
+    }
+  }
+  if (html.includes("off-card") || html.includes("profile-row")) {
+    fail("a blocked EQ carrier must not render the editor body", { html });
+  }
+  for (const id of eqChrome) {
+    if (blocked.elements.get(id).hidden !== true) {
+      fail("a blocked EQ carrier should hide the EQ-only chrome", { id });
+    }
+  }
+
+  blocked.elements.get("tab-saved").click();
+  await blocked.flush(); await blocked.flush(); await blocked.flush();
+  const cleared = blocked.elements.get("view-body").innerHTML;
+  if (cleared.includes("JTS did not generate") || !cleared.includes("Presets")) {
+    fail("a carrier that stopped refusing should give the editor back", {
+      html: cleared,
+    });
+  }
+  for (const id of eqChrome) {
+    if (blocked.elements.get(id).hidden) {
+      fail("a cleared EQ carrier should bring the EQ-only chrome back", { id });
+    }
+  }
+
+  // Fail-open half: "unknown" is what /state puts on the wire when nothing
+  // probed the graph, and it keeps the editor...
+  const open = setupHarness(baseFetch({
+    "./state": () => Promise.resolve(response(editorState({ status: "unknown" }))),
+    "./apply": () => Promise.resolve(response({
+      status: "blocked",
+      reason_code: "active_baseline_recompose_unavailable",
+      message: "This speaker runs an active crossover.",
+    })),
+  }), { mode: "eq" });
+  await open.flush(); await open.flush();
+  if (!open.elements.get("view-body").innerHTML.includes("off-card")) {
+    fail("an unprobed EQ carrier should keep the editor", {
+      html: open.elements.get("view-body").innerHTML,
+    });
+  }
+  if (open.elements.get("eq-tabs").hidden) {
+    fail("an unprobed EQ carrier should keep the tab strip", {});
+  }
+
+  // ...until a save is refused, which is the same page state, mid-session.
+  open.elements.get("tab-saved").click();
+  await open.flush(); await open.flush(); await open.flush();
+  const refused = open.elements.get("view-body").innerHTML;
+  if (!refused.includes("info-card") || !refused.includes("active crossover")) {
+    fail("a 200 refusal from ./apply should flip the page into the block", {
+      html: refused,
+    });
+  }
+  for (const id of eqChrome) {
+    if (open.elements.get(id).hidden !== true) {
+      fail("a refused save should hide the EQ-only chrome with the editor", { id });
+    }
+  }
+  return { blockedEqCarrierIsThePageState: true };
 }
 
 // An unsaved Draft is live in CamillaDSP and persisted nowhere, so leaving the
@@ -1167,9 +1320,9 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       fail("EQ mode omitted an owned Saved control", { expected, eqHtml });
     }
   }
-  for (const forbidden of ["Volume floor", "Extra headroom", "Speaker setup", "Match loudness"]) {
+  for (const forbidden of ["Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness"]) {
     if (eqHtml.includes(forbidden)) {
-      fail("EQ mode rendered a Setup-owned control", { forbidden, eqHtml });
+      fail("EQ mode rendered a hardware-page control", { forbidden, eqHtml });
     }
   }
   if (eqFetched.includes("./output-topology") ||
@@ -1185,14 +1338,14 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
     }
   }
 
-  const setupFetched = [], hatPosts = [];
+  const outputFetched = [], hatPosts = [];
   const hat = {
     visibility: "visible", available: true, reason: "", intent_error: "",
     profiles: [{ id: "innomaker_hifi_amp_pro", label: "InnoMaker HiFi AMP Pro" }],
     desired_profile_id: null, detected_profile_id: null, detected_label: "",
     warnings: [], restart_required: false,
   };
-  const setupBase = baseFetch({
+  const hardwareBase = baseFetch({
     "./output-topology": () => response({
       output_topology: topologyPayload(), i2s_hat: hat,
     }),
@@ -1206,45 +1359,53 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       }, !failed, failed ? 502 : 200);
     },
   });
-  const setup = setupHarness((path, options = {}) => {
-    setupFetched.push(path);
-    return setupBase(path, options);
-  }, { mode: "setup" });
-  await setup.flush(); await setup.flush(); await setup.flush();
-  const setupHtml = setup.elements.get("view-body").innerHTML;
+  const output = setupHarness((path, options = {}) => {
+    outputFetched.push(path);
+    return hardwareBase(path, options);
+  }, { mode: "output" });
+  await output.flush(); await output.flush(); await output.flush();
+  const outputHtml = output.elements.get("view-body").innerHTML;
   for (const expected of [
-    "Volume floor", "Extra headroom", "Speaker setup", "I²S audio HAT", "Match loudness",
+    "Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness",
   ]) {
-    if (!setupHtml.includes(expected)) {
-      fail("Setup mode omitted an owned control", { expected, setupHtml });
+    if (!outputHtml.includes(expected)) {
+      fail("Output mode omitted an owned control", { expected, outputHtml });
     }
   }
-  for (const forbidden of ["Your profiles", "Simple", "PEQ"]) {
-    if (setupHtml.includes(forbidden)) {
-      fail("Setup mode rendered an EQ-owned control", { forbidden, setupHtml });
+  for (const forbidden of ["Your profiles", "Simple", "PEQ", "Active crossover setup"]) {
+    if (outputHtml.includes(forbidden)) {
+      fail("Output mode rendered another page's control", { forbidden, outputHtml });
     }
   }
-  if (!setupFetched.includes("./output-topology")) {
-    fail("Setup mode should load local topology", { setupFetched });
+  // The HAT reading rides the topology payload, so Output loads it too --
+  // and nothing else: the crossover/commissioning reads paint no control on
+  // this page, so booting them is six round trips of nothing.
+  if (!outputFetched.includes("./output-topology")) {
+    fail("Output mode should load the I2S HAT reading", { outputFetched });
+  }
+  const outputExtras = outputFetched.filter(
+    (path) => path.indexOf("./active-speaker/") === 0);
+  if (outputExtras.length) {
+    fail("Output mode must boot no commissioning reads", { outputExtras });
   }
   // Nothing detected: the picker is rendered, on the saved value, offering
   // only the HATs that cannot identify themselves.
-  if (!setupHtml.includes('<option value="" selected>None / unmanaged</option>') ||
-      !setupHtml.includes('<option value="innomaker_hifi_amp_pro">')) {
+  if (!outputHtml.includes('<option value="" selected>None / unmanaged</option>') ||
+      !outputHtml.includes('<option value="innomaker_hifi_amp_pro">')) {
     fail("the select must offer the undetectable HATs on the saved value",
-      { setupHtml });
+      { outputHtml });
   }
-  setup.dispatchChange({ id: "set-i2s-hat", value: "innomaker_hifi_amp_pro" });
-  await loadAndSetActiveState(setup);
-  let hatHtml = setup.elements.get("view-body").innerHTML;
+  output.dispatchChange({ id: "set-i2s-hat", value: "innomaker_hifi_amp_pro" });
+  await loadAndSetActiveState(output);
+  let hatHtml = output.elements.get("view-body").innerHTML;
   if (hatPosts[0].profile_id !== "innomaker_hifi_amp_pro")
     fail("the HAT control must POST the selected profile id", { hatPosts });
   if (!hatHtml.includes("Restart required."))
     fail("the HAT response must add its restart callout", { hatHtml });
-  setup.dispatchChange({ id: "set-i2s-hat", value: "" });
-  await loadAndSetActiveState(setup);
-  hatHtml = setup.elements.get("view-body").innerHTML;
-  const message = setup.elements.get("status").textContent;
+  output.dispatchChange({ id: "set-i2s-hat", value: "" });
+  await loadAndSetActiveState(output);
+  hatHtml = output.elements.get("view-body").innerHTML;
+  const message = output.elements.get("status").textContent;
   if (hatPosts[1].profile_id !== null ||
       message !== "Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics." ||
       hatHtml.includes("Restart required.")) {
@@ -1253,12 +1414,34 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   // A detected HAT is reported, not offered: no control to change it.
   hat.detected_profile_id = "hifiberry_dac8x_studio";
   hat.detected_label = "HiFiBerry DAC8x Studio";
-  const detectedSetup = setupHarness(setupBase, { mode: "setup" });
-  await detectedSetup.flush(); await detectedSetup.flush(); await detectedSetup.flush();
-  const detectedHtml = detectedSetup.elements.get("view-body").innerHTML;
+  const detectedOutput = setupHarness(hardwareBase, { mode: "output" });
+  await detectedOutput.flush(); await detectedOutput.flush(); await detectedOutput.flush();
+  const detectedHtml = detectedOutput.elements.get("view-body").innerHTML;
   if (!detectedHtml.includes("HiFiBerry DAC8x Studio") ||
       detectedHtml.includes('id="set-i2s-hat"')) {
     fail("a detected HAT must be reported without a picker", { detectedHtml });
+  }
+
+  const speakerFetched = [];
+  const speaker = setupHarness((path, options = {}) => {
+    speakerFetched.push(path);
+    return hardwareBase(path, options);
+  }, { mode: "speaker" });
+  await speaker.flush(); await speaker.flush(); await speaker.flush();
+  const speakerHtml = speaker.elements.get("view-body").innerHTML;
+  if (!speakerHtml.includes("Active crossover setup")) {
+    fail("Speaker mode omitted the layout/driver surface", { speakerHtml });
+  }
+  for (const forbidden of [
+    "Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness", "Your profiles",
+  ]) {
+    if (speakerHtml.includes(forbidden)) {
+      fail("Speaker mode rendered another page's control", { forbidden, speakerHtml });
+    }
+  }
+  // The leader owns the program domain on this page too: no content-EQ /state.
+  if (speakerFetched.includes("./state")) {
+    fail("Speaker mode must not fetch the content-EQ /state", { speakerFetched });
   }
   return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
 }
@@ -2302,27 +2485,6 @@ async function testThreeWayRendersEveryPhysicalComponentChoice() {
     });
   }
   return { threeWayRendersEveryPhysicalComponentChoice: true };
-}
-
-async function testActiveSpeakerSetupTogglePersistsAcrossRender() {
-  const harness = setupHarness(baseFetch());
-  await loadAndSetActiveState(harness);
-
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (initialHtml.includes("data-active-speaker-setup open")) {
-    fail("settled passive setup should start collapsed", { initialHtml });
-  }
-
-  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
-  harness.dispatchClick({ "data-act": "browse-presets" });
-  await harness.flush();
-  await harness.flush();
-
-  const rerenderedHtml = harness.elements.get("view-body").innerHTML;
-  if (!rerenderedHtml.includes("data-active-speaker-setup open")) {
-    fail("opening speaker setup should survive the next render", { rerenderedHtml });
-  }
-  return { activeSpeakerSetupTogglePersistsAcrossRender: true };
 }
 
 async function testActiveRouteLimitsRenderedTemplates() {
@@ -7099,7 +7261,7 @@ async function testCommissionAutoRampResetsRunningFlagOnThrow() {
   // is re-rendered. We read it from the last successful render inside runCommission.
   // Actually the throw happened inside render(), so view-body innerHTML may be stale.
   // Force a fresh render by invoking a harmless action:
-  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
+  harness.dispatchToggle({ "data-driver-advanced": true, open: true });
   await harness.flush(); await harness.flush();
 
   // After the throw the card must show the Play button again, NOT a disabled
@@ -7751,8 +7913,7 @@ async function testFollowerModeRendersLocalDriverUi() {
   await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
-  // The local driver/crossover/commissioning surface renders as primary content,
-  // expanded (not tucked behind the solo box's "Speaker setup" disclosure).
+  // The local driver/crossover/commissioning surface renders as primary content.
   for (const expected of ["Active crossover setup", "Test combined drivers"]) {
     if (!html.includes(expected)) {
       fail("follower /sound/ should render the local active-speaker UI", { expected, html });
@@ -7762,7 +7923,6 @@ async function testFollowerModeRendersLocalDriverUi() {
     "Create custom profile",
     "Try a stock profile",
     "data-act=\"new-draft\"",
-    "Speaker setup",
     "Match loudness",
     "Volume floor",
     "Extra headroom",
@@ -8778,8 +8938,10 @@ async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
+results.push(await testCancellingTheNameBoxClosesIt());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testBlockedSettingsSaveRendersOnTheCard());
+results.push(await testBlockedEqCarrierIsThePageState());
 results.push(await testLeavingAnUnsavedDraftRestoresThePersistedProfile());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
@@ -8794,7 +8956,6 @@ results.push(await testPartialSavePreservesUnchosenEnclosure());
 results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
-results.push(await testActiveSpeakerSetupTogglePersistsAcrossRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());

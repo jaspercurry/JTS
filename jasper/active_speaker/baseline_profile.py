@@ -80,11 +80,13 @@ from .driver_base_trim import (
     write_base_trim,
 )
 from .driver_pad import effective_sensitivity_db
+from .driver_safety import evaluate_driver_safety_profile
 from .level_trim import (
     MAX_ATTENUATION_DB,
     LevelTrimError,
     attenuation_from_group_deltas,
 )
+from .measured_crossover_candidate import candidate_room_peqs
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -392,6 +394,7 @@ def _source_payload(
     measurements: Mapping[str, Any],
     *,
     measured_candidate_fingerprint: str | None = None,
+    driver_protection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
 
@@ -460,6 +463,8 @@ def _source_payload(
     }
     if measured_candidate_fingerprint is not None:
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
+    if driver_protection is not None:
+        source["driver_protection_fingerprint"] = _fingerprint(driver_protection)
     return {**source, "fingerprint": _fingerprint(source)}
 
 
@@ -1438,10 +1443,10 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
     first-session residual.
 
     Deliberately NOT the whole program-domain headroom: ``baseline_headroom_db``
-    is a module constant and the room-PEQ / preference-EQ terms are
-    recompose-time inputs that an active-crossover apply does not touch, so
-    their contributions cancel in the difference this exists to serve
-    (:func:`applied_program_level_delta_db`).
+    is a module constant and preference EQ is a recompose-time input an
+    active-crossover apply does not touch, so those cancel in the difference
+    this exists to serve; a candidate's own room boost does NOT cancel, and is
+    the incompleteness :func:`applied_program_level_delta_db` discloses.
     """
     linearization = profile_linearization(profile)
     if not linearization:
@@ -1619,12 +1624,12 @@ def applied_program_level_delta_db(
     complete for everything the apply commands.
 
     **One known incompleteness, deliberate, caught downstream.**
-    Room-PEQ and preference-EQ headroom are excluded because an
-    active-crossover candidate is emitted without them
-    (``build_baseline_profile_candidate`` passes no ``room_peqs`` /
-    ``preference_filters``), so a household that has either can see a real
-    level move this reader cannot see. That remainder is exactly what the
-    probe's ``residual_offset_db`` measures and what
+    Room-PEQ and preference-EQ headroom are excluded. The candidate's own room
+    set IS emitted (``build_baseline_profile_candidate`` passes ``room_peqs``,
+    whose boost the graph absorbs) and the household's preference layer is not
+    emitted at all; neither term is read here, so a round that changes either
+    can see a real level move this reader cannot see. That remainder is
+    exactly what the probe's ``residual_offset_db`` measures and what
     ``delta_probe.VERDICT_LEVEL_MISMATCH`` names — which is why this function
     is allowed to be an honest partial account rather than having to be a
     complete one.
@@ -2022,6 +2027,21 @@ def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     )
 
 
+def _snapshot_protection_sections(
+    snapshot: Mapping[str, Any], preset: ActiveSpeakerPreset,
+) -> Mapping[str, Sequence[Any]] | None:
+    protection = snapshot.get("driver_protection")
+    if protection is None:
+        return None
+    from .branch_chain import confirmed_protection_sections  # lazy: graph compilation imports NumPy
+
+    try:
+        sections = confirmed_protection_sections(protection)
+        return {role: sections[role] for role in required_driver_roles(preset.way_count)}
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ActiveSpeakerConfigError("saved driver protection is invalid") from exc
+
+
 def build_baseline_profile_candidate(
     topology: OutputTopology,
     *,
@@ -2102,6 +2122,24 @@ def build_baseline_profile_candidate(
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
     now = created_at or _utc_now()
+    saved = _load_saved_state(state_target)
+    applied_anchor = _applied_profile_anchor(saved)
+    protection_anchor = preserved_applied_profile or applied_anchor or {}
+    protection = (protection_anchor.get("recomposition_snapshot") or {}).get("driver_protection")
+    safety_profile = design_draft.get("driver_safety_profile")
+    if evaluate_driver_safety_profile(safety_profile, topology).confirmed_and_current:
+        protection = {
+            "profile_fingerprint": safety_profile["profile_fingerprint"],
+            "targets": [{
+                "role": target["role"],
+                "target_fingerprint": target["target_fingerprint"],
+                "required_protection_filters": [
+                    dict(requirement) for requirement in target["required_protection_filters"]
+                ],
+            } for target in safety_profile["targets"]],
+        }
+    if driver_domain:
+        protection = None
     source = _source_payload(
         topology,
         design_draft,
@@ -2110,6 +2148,7 @@ def build_baseline_profile_candidate(
         measured_candidate_fingerprint=(
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        driver_protection=protection,
     )
     resolved_playback_device, playback_device_source = (
         resolve_active_playback_device(
@@ -2169,7 +2208,6 @@ def build_baseline_profile_candidate(
     emit_capture_format = (
         devices.capture_format if capture_format is None else capture_format
     )
-    saved = _load_saved_state(state_target)
     candidate_graph_context = {
         "playback_device": resolved_playback_device,
         "domain": "driver" if driver_domain else "full",
@@ -2182,6 +2220,7 @@ def build_baseline_profile_candidate(
         "measured_candidate_fingerprint": (
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
+        **({"driver_protection": protection} if protection is not None else {}),
     }
     saved_snapshot = (
         saved.get("recomposition_snapshot")
@@ -2189,7 +2228,6 @@ def build_baseline_profile_candidate(
         and isinstance(saved.get("recomposition_snapshot"), Mapping)
         else {}
     )
-    applied_anchor = _applied_profile_anchor(saved)
     applied_profile_context_id = ""
     if isinstance(applied_anchor, Mapping):
         applied_snapshot = applied_anchor.get("recomposition_snapshot")
@@ -2641,6 +2679,12 @@ def build_baseline_profile_candidate(
         dict(entry)
         for entry in (getattr(measured_candidate, "blend_correction", ()) or ())
     ]
+    # The candidate's own room PEQ set, reduced to the emitter's single list by
+    # ``candidate_room_peqs``. ``getattr`` with a default for the same eras as
+    # its neighbours above; the helper needs the candidate's layout, so it only
+    # runs once the field is known to be there.
+    room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
+    room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -2795,6 +2839,8 @@ def build_baseline_profile_candidate(
                 bass_extension_profile=bass_extension_profile,
                 linearization=linearization,
                 blend_correction=blend_correction,
+                room_peqs=room_peqs,
+                protection_sections_by_role=_snapshot_protection_sections(candidate_graph_context, preset),
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -2940,6 +2986,16 @@ def build_baseline_profile_candidate(
         # one is what a "what is applied right now" read (`/state`, the apply
         # observability line) uses without unpacking the snapshot.
         "blend_correction": blend_correction,
+        # The room layer this candidate applies. Top level only, NOT inside
+        # recomposition_snapshot: baseline_candidate_fingerprint hashes that
+        # snapshot. The applied config text is the room PEQs' durable copy, and
+        # only a seam that re-reads it carries them forward --
+        # jasper.sound.graph_carrier's preference-EQ and bass-extension
+        # recomposes, and audition.build_reduced_yaml off the anchor. A
+        # recompose that passes no room_peqs (jasper-active-speaker
+        # baseline-reemit, the setup_status readiness compare) re-emits without
+        # the room layer.
+        "room_correction": room_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
         # An unmeasured per-driver trim is explicitly provisional. Surfaced in
@@ -3273,7 +3329,10 @@ def recompose_applied_baseline_yaml(
         ),
         linearization=linearization,
         blend_correction=blend_correction,
-        protection_sections_by_role=protection_sections_by_role,
+        protection_sections_by_role=(
+            protection_sections_by_role if protection_sections_by_role is not None
+            else _snapshot_protection_sections(snapshot, preset)
+        ),
     )
     return yaml, []
 

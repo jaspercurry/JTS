@@ -525,6 +525,69 @@ def test_supervisor_snapshots_quiet_is_ok():
 
 
 @pytest.mark.parametrize(
+    "uptime_sec, resilience_state, expected_status, expected_reason",
+    [
+        (
+            5.0,
+            {},
+            "ok",
+            resilience.REASON_SUPERVISOR_COUNTERS_RESET,
+        ),
+        (
+            3600.0,
+            {},
+            "ok",
+            "",
+        ),
+        (
+            5.0,
+            {"shairport": {"enabled": True, "restart_count": 2}},
+            "warn",
+            resilience.REASON_SUPERVISOR_ISSUES,
+        ),
+        (
+            None,
+            {},
+            "ok",
+            "",
+        ),
+    ],
+    ids=[
+        "quiet-within-reset-window",
+        "quiet-settled",
+        "nonzero-counter-always-warns",
+        "uptime-property-absent",
+    ],
+)
+def test_supervisor_snapshots_check_uses_control_uptime_for_counter_reset(
+    monkeypatch, uptime_sec, resilience_state, expected_status, expected_reason,
+):
+    """A jasper-control restart zeroes every supervisor counter with no
+    marker of its own. A QUIET row within jasper-control's own unit uptime
+    (`ActiveEnterTimestampMonotonic`, in the doctor's shared unit-state
+    batch) says the quiet reading only covers time since that restart. A
+    nonzero counter always `warn`s regardless of uptime: the shairport
+    supervisor alone needs a 60s cold start plus 3x30s probe failures
+    before it restarts anything, so it cannot be benign accumulation."""
+    monkeypatch.setattr(resilience, "_read_resilience_state", lambda: resilience_state)
+    overrides = {}
+    if uptime_sec is not None:
+        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+        started_us = int(now_us - uptime_sec * 1e6)
+        overrides = {
+            "jasper-control.service": {
+                "active_enter_timestamp_monotonic": started_us,
+            },
+        }
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(overrides))
+
+    res = check_supervisor_runtime_snapshots()
+
+    assert res.status == expected_status
+    assert res.reason == expected_reason
+
+
+@pytest.mark.parametrize(
     "grouping_supervisor",
     [
         {"enabled": True, "last_poll_starved": True, "consecutive_starved": 4},
@@ -605,6 +668,24 @@ def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
     assert result.status == status
     if reason:
         assert result.reason == reason
+
+
+def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
+    """A reachable but wedged sampler must not masquerade as
+    REASON_SNAPSHOT_UNAVAILABLE (ADR-0226) — that reason is for jasper-
+    control itself being unreachable."""
+    import jasper.platform.control_client as control
+
+    monkeypatch.setattr(resilience, "_read_system_metrics_current", lambda: None)
+    monkeypatch.setattr(
+        control, "get_system_snapshot",
+        lambda **kw: {"metrics": {"last_sample_at": 0}},
+    )
+
+    result = check_supply_voltage()
+
+    assert result.status == "warn"
+    assert result.reason == resilience.REASON_SUPPLY_VOLTAGE_SAMPLER_STALE
 
 
 @pytest.mark.parametrize(

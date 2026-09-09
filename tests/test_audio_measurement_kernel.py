@@ -5,7 +5,7 @@
 """Characterization tests for the extracted measurement kernel.
 
 P1b moved the pure measurement primitives (sweep / deconv / analysis /
-calibration / quality) out of ``jasper.correction`` into the shared
+calibration / quality) into the shared
 ``jasper.audio_measurement`` package and parameterized the previously-forked
 capture-quality thresholds into a :class:`QualityModel`. That move is meant to
 be **behavior-preserving** — no threshold value changed, no DSP math changed.
@@ -306,19 +306,14 @@ def test_quality_model_profiles_carry_preextraction_values():
         assert model.clip_abs_threshold == 0.999
         assert model.clip_fraction_fail == 1e-4
 
-    # ROOM — the room-correction capture-quality + SNR thresholds. Pinned
-    # here (not just retuned in place) because jasper.correction.acoustic_quality
-    # reads exactly these two fields for its own SNR_OK_DB/SNR_WARN_DB aliases —
-    # a future crossover-motivated retune of ROOM would silently move room
-    # correction's thresholds too if this pin didn't exist.
+    # ROOM — the room capture-quality + SNR thresholds.
     assert ROOM.peak_too_low_dbfs == -45.0
     assert ROOM.rms_too_low_dbfs == -65.0
     assert ROOM.snr_ok_db == 25.0
     assert ROOM.snr_warn_db == 20.0
     # The band-specific SNR gate's decision-class split (P1b, "Level control
     # and SNR") lives on every profile as new fields with pre-existing-behavior
-    # defaults — no profile overrides them, so room correction (which does not
-    # yet call jasper.audio_measurement.snr_policy) is unaffected.
+    # defaults — no profile overrides them.
     assert ROOM.alignment_snr_ok_db == 35.0
     assert ROOM.null_cap_margin_db == 10.0
 
@@ -342,11 +337,6 @@ def test_quality_model_profiles_carry_preextraction_values():
 def test_consumed_module_level_aliases_match_profiles():
     """Aliases still consumed across package boundaries stay profile-backed."""
     assert quality.DBFS_FLOOR == ROOM.dbfs_floor
-
-    from jasper.correction import acoustic_quality
-
-    assert acoustic_quality.SNR_OK_DB == ROOM.snr_ok_db
-    assert acoustic_quality.SNR_WARN_DB == ROOM.snr_warn_db
 
     from jasper.active_speaker import driver_acoustics
 

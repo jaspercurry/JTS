@@ -18,9 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli.doctor import _evidence, _shared, correction
-from jasper.correction import bundles
-
-from .correction_bundle_fixtures import write_golden_correction_bundle
 
 from .doctor_test_support import (
     _make_unit_states_fake,
@@ -29,45 +26,6 @@ from .doctor_test_support import (
     _stub_unit_active_states,
     _write_identity_env,
 )
-
-
-def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
-    _stub_unit_active_states(
-        monkeypatch, {"jasper-correction-web.socket": "active"},
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-@pytest.mark.parametrize(
-    "service_state, reason",
-    [
-        ("active", correction.REASON_WEB_SOCKET_INACTIVE),
-        ("inactive", correction.REASON_WEB_INACTIVE),
-    ],
-    ids=["service-up-socket-down", "both-down"],
-)
-def test_check_correction_web_service_warns_without_the_socket(
-    monkeypatch, service_state, reason
-):
-    _stub_unit_active_states(
-        monkeypatch, {"jasper-correction-web.service": service_state},
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "warn"
-    assert r.reason == reason
-
-
-def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
-    """Neither unit answered at all — nothing about the socket/service pair
-    was observed, so this must not read as the socket genuinely being down."""
-    monkeypatch.setattr(
-        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "skipped"
-    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 # ---------- #1860: long-outstanding idle-exit holds
@@ -103,52 +61,6 @@ def _journal(stdout="", *, returncode=0, stderr=""):
     )
 
 
-@pytest.mark.parametrize(
-    "active, journal, status, reason",
-    [
-        (
-            "inactive", _journal(), "skipped",
-            correction.REASON_IDLE_HOLDS_SERVICE_INACTIVE,
-        ),
-        # Nothing was observed, so these are `skipped`, never a green tick. A
-        # broken invocation also stays distinguishable from a clean run: the
-        # exception and the non-zero exit are separate reasons.
-        (
-            "active", FileNotFoundError("journalctl not found"), "skipped",
-            correction.REASON_IDLE_HOLDS_JOURNAL_UNAVAILABLE,
-        ),
-        (
-            "active", _journal(returncode=1, stderr="invalid option -- since"),
-            "skipped", correction.REASON_IDLE_HOLDS_JOURNAL_UNREADABLE,
-        ),
-        ("active", _journal(), "ok", correction.REASON_IDLE_HOLDS_NONE),
-        (
-            "active", _journal(_LEAKED_HOLD_LINE + "\n"), "warn",
-            correction.REASON_IDLE_HOLD_LEAKED,
-        ),
-    ],
-    ids=["service-inactive", "journalctl-raises", "journalctl-rc", "clean", "leaked"],
-)
-def test_check_correction_idle_exit_holds_verdicts(
-    monkeypatch, active, journal, status, reason
-):
-    _idle_exit_journal(monkeypatch, journal=journal, active=active)
-    r = correction.check_correction_idle_exit_holds()
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_idle_exit_holds_skips_without_systemctl(monkeypatch):
-    """systemctl answered nothing at all — a probe failure, not the unit
-    genuinely being inactive (that is REASON_IDLE_HOLDS_SERVICE_INACTIVE)."""
-    monkeypatch.setattr(
-        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
-    )
-    r = correction.check_correction_idle_exit_holds()
-    assert r.status == "skipped"
-    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
-
-
 def test_latest_deferred_hold_keeps_the_newest_line():
     """journalctl returns oldest-first; an older (possibly since-resolved)
     line must not shadow the most recent evidence."""
@@ -167,67 +79,13 @@ def test_latest_deferred_hold_keeps_the_newest_line():
     assert correction._latest_deferred_hold("nothing to see\n") is None
 
 
-# ---------- /sound/room/ HTTPS assets
+# ---------- measurement-page HTTPS assets
 
 
 def _web_root_with_app_css(tmp_path: Path) -> Path:
     (tmp_path / "assets").mkdir()
     (tmp_path / "assets" / "app.css").write_text("/* x */", encoding="utf-8")
     return tmp_path
-
-
-@pytest.mark.parametrize(
-    "probe, status, reason",
-    [
-        (lambda *a, **k: (200, ""), "ok", ""),
-        # The bug signature: an HTTPS asset downgraded to http:// → browsers
-        # mixed-content-block it.
-        (
-            lambda *a, **k: (308, "http://jts.local/assets/app.css"),
-            "warn", correction.REASON_HTTPS_ASSETS_HTTP_REDIRECT,
-        ),
-        (
-            lambda *a, **k: (404, ""),
-            "warn", correction.REASON_HTTPS_ASSETS_UNEXPECTED_STATUS,
-        ),
-    ],
-    ids=["served", "http-downgrade", "unexpected-status"],
-)
-def test_check_correction_https_assets_verdicts(
-    monkeypatch, tmp_path, probe, status, reason
-):
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-    monkeypatch.setattr(correction, "_probe_https_status", probe)
-    r = correction.check_correction_https_assets()
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_path):
-    # Dev checkout: no /usr/share/jasper-web/assets/app.css → skip, never probes.
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-
-    def _boom(*a, **k):
-        raise AssertionError("must not probe when the web root is absent")
-
-    monkeypatch.setattr(correction, "_probe_https_status", _boom)
-    r = correction.check_correction_https_assets()
-    assert r.status == "skipped"
-    assert r.reason == correction.REASON_HTTPS_ASSETS_NOT_INSTALLED
-
-
-def test_check_correction_https_assets_skips_when_443_unreachable(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-
-    def _refused(*a, **k):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(correction, "_probe_https_status", _refused)
-    r = correction.check_correction_https_assets()
-    assert r.status == "skipped"
-    assert r.reason == correction.REASON_HTTPS_ASSETS_UNREACHABLE
 
 
 # ---------- state dirs
@@ -265,46 +123,31 @@ def test_not_writable_by_group_verdicts(tmp_path, mode, group, expect_flagged):
     assert (str(d) in flagged) is expect_flagged
 
 
-def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
-    r = correction.check_correction_state_dirs()
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_STATE_DIRS_MISSING
-
-
-def test_check_correction_state_dirs_warns_when_locked_out_by_mode(
-    monkeypatch, tmp_path
-):
-    """_pretend_group_is_jasper pins the group match so MODE ALONE (0700 — the
-    fresh-install shape) is what fails this, not an incidental group mismatch
-    with the dev/CI box's own group. The group-mismatch and setgid-loss arms are
-    covered by test_not_writable_by_group_verdicts above."""
-    _pretend_group_is_jasper(monkeypatch)
-    root = tmp_path / "correction"
-    root.mkdir()
-    os.chmod(root, 0o700)
-    for name in ("sweeps", "captures", "sessions", "calibration_mics"):
-        d = root / name
-        d.mkdir()
-        os.chmod(d, 0o700)
-    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
-
-    r = correction.check_correction_state_dirs()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_STATE_DIRS_NOT_WRITABLE
-
-
-def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
+def test_check_correction_state_dirs_flags_uploaded_calibrations_needing_review(
     monkeypatch,
     tmp_path,
 ):
     """Vendor records are repaired automatically on deploy; an UPLOADED
     record's convention is the household's own declaration, so the doctor
-    surfaces it for review instead of anyone flipping it silently."""
+    surfaces it for review instead of anyone flipping it silently. This
+    advisory rides the state-dirs row (both inspect the correction root) and
+    only shows once the dirs themselves are healthy."""
     from jasper.audio_measurement import calibration as cal
 
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    _pretend_group_is_jasper(monkeypatch)
+    root = tmp_path / "correction"
+    root.mkdir()
+    os.chmod(root, 0o2770)
+    for name in ("calibration_mics", "tones"):
+        d = root / name
+        d.mkdir()
+        os.chmod(d, 0o2770)
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
+    cal_dir = tmp_path / "calibrations"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_dir))
+
+    assert correction.check_correction_state_dirs().reason == ""
+
     cal.store_calibration(
         text="20 -1\n1000 0\n20000 2\n",
         provider="manual_upload",
@@ -312,7 +155,7 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         label="Lab mic",
         source="uploaded:lab.txt",
         sign_convention="correction",
-        root=tmp_path,
+        root=cal_dir,
     )
     cal.store_calibration(  # a vendor record: not this check's business
         text="20 -1\n1000 0\n20000 2\n",
@@ -322,15 +165,16 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         source="vendor_lookup",
         serial="810-8494",
         sign_convention="correction",
-        root=tmp_path,
+        root=cal_dir,
     )
 
-    r = correction.check_correction_uploaded_calibration_sign()
+    r = correction.check_correction_state_dirs()
     assert r.status == "ok"
     assert r.reason == correction.REASON_UPLOADED_CALIBRATION_SIGN_REVIEW
 
     # An upload that already declares the response convention is clean, and
     # the check never fails the doctor either way.
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "clean"))
     cal.store_calibration(
         text="20 -3\n1000 0\n20000 4\n",
         provider="manual_upload",
@@ -338,219 +182,68 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         label="Other mic",
         source="uploaded:other.txt",
         sign_convention="response",
-        root=tmp_path,
+        root=tmp_path / "clean",
     )
-    assert correction.check_correction_uploaded_calibration_sign().status == "ok"
-
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "empty"))
-    clean = correction.check_correction_uploaded_calibration_sign()
+    clean = correction.check_correction_state_dirs()
     assert clean.status == "ok"
     assert clean.reason == ""
 
 
-_JTS_SOUND_CONFIG = (
-    "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
-    "filters:\n"
-    "  flat:\n"
-    "    type: Gain\n"
-)
+def _sound_config_text(room_peqs=()):
+    """A real ``emit_sound_config`` graph, so the fixture cannot drift from
+    what the reader under test parses."""
 
-_JTS_BASELINE_CONFIG = (
-    "# Source: jasper.active_speaker.camilla_yaml."
-    "emit_active_speaker_baseline_config\n"
-    "filters:\n"
-    "  active_baseline_headroom:\n"
-    "    type: Gain\n"
-)
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
 
-_JTS_PROGRAM_BAKE_CONFIG = (
+    return emit_sound_config(SoundProfile(), room_peqs=list(room_peqs))
+
+
+def _room_peq(freq=63.0, q=2.0, gain=-4.5):
+    from jasper.sound.camilla_yaml import PeqFilter
+
+    return PeqFilter(freq=freq, q=q, gain=gain)
+
+
+_ACTIVE_STAGED_CONFIG = (
     "# Source: jasper.active_speaker.camilla_yaml."
-    "emit_active_speaker_program_bake_config\n"
+    "emit_active_speaker_startup_config\n"
     "devices:\n"
     "  playback:\n"
-    "    type: File\n"
+    "    device: jts_active\n"
 )
 
 
-@pytest.mark.parametrize(
-    "relative_path, text, status, reason",
-    [
-        (
-            "does-not-exist.yml", None, "fail",
-            correction.REASON_CAMILLA_CONFIG_MISSING,
-        ),
-        (
-            "v1.yml", "# base\n", "warn",
-            correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
-        ),
-        (
-            "configs/sound_current.yml", _JTS_SOUND_CONFIG, "ok",
-            correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/active_speaker_baseline.yml", _JTS_BASELINE_CONFIG, "ok",
-            correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/grouping_active_leader_bake.yml", _JTS_PROGRAM_BAKE_CONFIG,
-            "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/correction_abc_1700000000.yml",
-            "filters:\n  room_peq_1:\n    type: Biquad\n",
-            "ok", correction.REASON_CURRENT_CONFIG_ROOM_CORRECTION,
-        ),
-    ],
-    ids=[
-        "missing-config", "unclassified", "jts-sound", "active-speaker-baseline",
-        "active-leader-bake", "generated-correction",
-    ],
-)
-def test_check_correction_current_config_verdicts(
-    monkeypatch, tmp_path, relative_path, text, status, reason
-):
-    config = tmp_path / relative_path
-    if text is not None:
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(text)
-    statefile = tmp_path / "statefile.yml"
-    statefile.write_text(f"config_path: {config}\n")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+def _round_tripped_active_config():
+    """An active-speaker graph as CamillaDSP hands it back: the YAML round-trip
+    drops every comment, so the `# Source:` marker is gone and only the split
+    mixer is left to prove the graph is JTS-generated."""
 
-    r = correction.check_correction_current_config()
+    import yaml
 
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_current_config_warns_on_an_unreadable_statefile(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
-    r = correction.check_correction_current_config()
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
-
-
-# ---------- correction bundles
-
-
-def test_check_correction_latest_bundle_warns_without_calibration(
-    monkeypatch,
-    tmp_path,
-):
-    sessions = tmp_path / "sessions"
-    bundle = sessions / "abc"
-    bundle.mkdir(parents=True)
-    bundles.write_json_artifact(
-        bundle,
-        "info.json",
-        {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": "abc",
-            "state": "ready",
-            "started_at": 1000,
-            "capture_quality": [],
-        },
-        kind="session_metadata",
-        sensitivity="private_metadata",
-        recomputable=False,
-        generated_by="tests.test_doctor",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    return yaml.safe_dump(
+        yaml.safe_load(
+            _ACTIVE_STAGED_CONFIG
+            + "mixers:\n  split_active_2way:\n    channels: { in: 2, out: 4 }\n"
+        )
     )
-    bundles.write_json_artifact(
-        bundle,
-        "result.json",
-        {"bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION},
-        kind="analysis_result",
-        sensitivity="private_metadata",
-        recomputable=True,
-        generated_by="tests.test_doctor",
-        dependencies=["info.json"],
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+
+
+def _hand_written_config_on_the_jts_ring():
+    """An operator config with no JTS provenance that plays out of the ring
+    JTS itself uses — naming the device is not provenance."""
+
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
+
+    return (
+        "devices:\n"
+        "  playback:\n"
+        f"    device: {DEFAULT_PLAYBACK_DEVICE}\n"
+        "  volume_limit: 0.0\n"
     )
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_UNCALIBRATED_MIC
 
 
-def test_check_correction_latest_bundle_warns_on_bundle_issues(
-    monkeypatch,
-    tmp_path,
-):
-    sessions = tmp_path / "sessions"
-    bundle = sessions / "failed"
-    bundle.mkdir(parents=True)
-    bundles.write_json_artifact(
-        bundle,
-        "info.json",
-        {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": "failed",
-            "state": "failed",
-            "started_at": 1000,
-            "error": "analysis failed: capture clipped",
-            "capture_quality": [],
-        },
-        kind="session_metadata",
-        sensitivity="private_metadata",
-        recomputable=False,
-        generated_by="tests.test_doctor",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_ISSUES
-
-
-def test_check_correction_latest_bundle_ok_on_a_golden_collection(
-    monkeypatch,
-    tmp_path,
-):
-    """The collection's own counts and sizes are pinned at their owner
-    (tests/test_correction_bundles.py); here only the verdict is."""
-    sessions = tmp_path / "sessions"
-    write_golden_correction_bundle(sessions, "old", started_at=1000)
-    write_golden_correction_bundle(sessions, "new", started_at=2000)
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_correction_latest_bundle_warns_when_the_walk_was_capped(
-    monkeypatch,
-    tmp_path,
-):
-    """A capped walk makes the storage totals a lower bound, so the row says
-    so rather than reporting the undercount as fact."""
-    sessions = tmp_path / "sessions"
-    write_golden_correction_bundle(sessions, "new", started_at=2000)
-    monkeypatch.setattr(bundles, "BUNDLE_WALK_MAX_ENTRIES", 1)
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
-
-    r = correction.check_correction_latest_bundle()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_SUMMARY_TRUNCATED
-
-
-def test_check_correction_latest_bundle_ok_when_none_recorded(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "sessions"))
-    r = correction.check_correction_latest_bundle()
-    assert r.status == "ok"
-    assert r.reason == correction.REASON_LATEST_BUNDLE_NONE
-
-
-# ---------- crossover v2 cloud pipeline
+# ---------- crossover v2 cloud pipeline (+ folded-in applied-grade finding)
 
 
 def _patch_v2_state(monkeypatch, state):
@@ -582,59 +275,6 @@ def _cloud_group_unavailable(*, reason, locked=True):
     }
 
 
-@pytest.mark.parametrize(
-    "state, status, reason",
-    [
-        (None, "ok", correction.REASON_CLOUD_NOT_RUN),
-        ({"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN),
-        # Only cloud_verify (the post-apply, household-actionable grade) gates
-        # the warn: cloud_measure is the uncorrected pre-apply baseline, and
-        # gating on it warns forever on a perfectly corrected speaker.
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=True, locked=True,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=False),
-            }},
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-        ),
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=False,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=True),
-            }},
-            "ok", "",
-        ),
-        ({"cloud": {"cloud_measure": _cloud_group(passed=True)}}, "ok", ""),
-        # A closed group whose pipeline never became available is not itself a
-        # spec failure.
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group_unavailable(reason="combine_failed"),
-            }},
-            "ok", "",
-        ),
-    ],
-    ids=[
-        "never-run", "no-groups", "verify-failed", "pre-apply-failed-only",
-        "all-passing", "pipeline-unavailable",
-    ],
-)
-def test_check_crossover_v2_cloud_pipeline_verdicts(
-    monkeypatch, state, status, reason
-):
-    _patch_v2_state(monkeypatch, state)
-
-    r = correction.check_crossover_v2_cloud_pipeline()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
-# ---------- crossover v2: is the applied profile graded?
-
-
 def _v2_applied_state(**overrides):
     state = {"applied": True, "session_id": "sess-graded"}
     state.update(overrides)
@@ -664,97 +304,142 @@ def _verify_cloud(*, passed, flatness):
 
 
 @pytest.mark.parametrize(
-    "overrides, status, reason",
+    "state, status, reason",
     [
-        # Nothing applied: never a manufactured finding.
+        # ---- no correction applied: the row is the cloud-only verdict.
         pytest.param(
-            {"applied": False}, "ok",
-            correction.REASON_APPLIED_GRADE_NOT_APPLIED, id="not-applied",
-        ),
-        # Applied with no post-apply group and no VERIFY outcome — the silence
-        # `check_crossover_v2_cloud_pipeline` structurally cannot see.
-        pytest.param(
-            {}, "ok", correction.REASON_APPLIED_GRADE_NEVER_GRADED,
-            id="never-graded",
-        ),
-        # Express tier omits the post-apply position group, so a passing VERIFY
-        # outcome is the whole grade and satisfies the check on its own.
-        pytest.param(
-            {"verify": {"outcome": "pass"}}, "ok", "", id="verify-alone",
+            None, "ok", correction.REASON_CLOUD_NOT_RUN, id="never-run",
         ),
         pytest.param(
-            {"verify": {"outcome": "inconclusive"}}, "ok",
+            {"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN, id="no-groups",
+        ),
+        # Only cloud_verify (the post-apply, household-actionable grade) gates
+        # the warn: cloud_measure is the uncorrected pre-apply baseline, and
+        # gating on it warns forever on a perfectly corrected speaker.
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group(passed=True, locked=True,
+                                              excluded=[[8000.0, 9000.0]]),
+                "cloud_verify": _cloud_group(passed=False),
+            }},
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
+            id="verify-failed",
+        ),
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group(passed=False,
+                                              excluded=[[8000.0, 9000.0]]),
+                "cloud_verify": _cloud_group(passed=True),
+            }},
+            "ok", "", id="pre-apply-failed-only",
+        ),
+        pytest.param(
+            {"cloud": {"cloud_measure": _cloud_group(passed=True)}}, "ok", "",
+            id="all-passing",
+        ),
+        # A closed group whose pipeline never became available is not itself a
+        # spec failure.
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group_unavailable(reason="combine_failed"),
+            }},
+            "ok", "", id="pipeline-unavailable",
+        ),
+        # ---- applied: the folded-in grade finding takes the row's reason —
+        # an un-warned cloud spec cannot see a correction that never got
+        # graded, so this is exactly the gap the fold-in closes (#2160).
+        # Nothing applied yet: the grade finding is not itself a finding, so
+        # it never competes with the cloud verdict's own reason.
+        pytest.param(
+            _v2_applied_state(applied=False), "ok",
+            correction.REASON_CLOUD_NOT_RUN, id="not-applied",
+        ),
+        # Applied with no post-apply group and no VERIFY outcome — the
+        # silence the cloud verdict alone structurally cannot see.
+        pytest.param(
+            _v2_applied_state(), "ok",
+            correction.REASON_APPLIED_GRADE_NEVER_GRADED, id="never-graded",
+        ),
+        # Express tier omits the post-apply position group, so a passing
+        # VERIFY outcome is the whole grade and satisfies the finding on its
+        # own — no cloud session either, so the cloud reason shows through.
+        pytest.param(
+            _v2_applied_state(verify={"outcome": "pass"}), "ok",
+            correction.REASON_CLOUD_NOT_RUN, id="verify-alone",
+        ),
+        pytest.param(
+            _v2_applied_state(verify={"outcome": "inconclusive"}), "ok",
             correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             id="verify-inconclusive",
         ),
         # #2160: a grade that EXISTS is not a grade that PASSED. This printed
-        # "applied and graded" beside a cloud line reading spec=fail.
+        # "applied and graded" beside a cloud line reading spec=fail. The
+        # cloud_verify failure here also gates the row's own status, and its
+        # reason wins the row's reason on a WARN; the spatial-failed grade
+        # detail still rides the detail text.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_FAILED,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-failed",
         ),
         # passed=False with evaluable=False means "could not be measured", not
         # "failed" — SpecFlatness.passed's own read-it-with-evaluable rule.
+        # The cloud reason still wins the row's reason on this WARN.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-unmeasurable",
         ),
         # #2098: a Full session verified only at the mark is not the claim Full
         # promised.
         pytest.param(
-            {"tier": "full", "verify": {"outcome": "pass"}}, "ok",
+            _v2_applied_state(tier="full", verify={"outcome": "pass"}), "ok",
             correction.REASON_APPLIED_GRADE_MARK_ONLY, id="full-mark-only",
         ),
         # A group that closed but could not combine reaches the same arm — the
         # wording claims delivered evidence only, never "never closed".
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": {
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud={
                     "cloud_verify": _cloud_group_unavailable(
                         reason="combine_failed"
                     ),
                 },
-            },
+            ),
             "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY,
             id="full-closed-but-unavailable",
         ),
         # The mark IS express's whole promise; a finding here would fire on
         # every express session ever run.
         pytest.param(
-            {"tier": "express", "verify": {"outcome": "pass"}}, "ok", "",
-            id="express-mark",
+            _v2_applied_state(tier="express", verify={"outcome": "pass"}),
+            "ok", correction.REASON_CLOUD_NOT_RUN, id="express-mark",
         ),
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", "", id="spatial-passed",
         ),
         # #2464: a failed mark-VERIFY names verify_failed whatever the
         # spatial group says.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "fail",
                     "claims": {"integration": {"status": "fail", "max_db": 4.2}},
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="verify-failed-behind-a-passing-group",
         ),
@@ -762,43 +447,45 @@ def _verify_cloud(*, passed, flatness):
         # tolerance: verify.outcome grades capture health alone, so the claims
         # record is what sees it.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "fail", "max_db": 4.31},
                     },
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
+        # The cloud spec failure wins the row's reason on a WARN — it is why
+        # the row warned, and the mark-VERIFY finding must not hide that
+        # cause even though it also found something.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "inconclusive"},
-                "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "inconclusive"},
+                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="inconclusive-behind-a-closed-group",
         ),
         # The result code is DISCLOSED beside the grade and never gates it:
-        # this check grades the CHECKING, which passed completely here, while
-        # the household badge honestly reads "Keep the previous sound."
+        # the finding grades the CHECKING, which passed completely here,
+        # while the household badge honestly reads "Keep the previous sound."
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "pass", "max_db": 0.8},
                     },
                 },
-                "verify_priors": {
+                verify_priors={
                     "predicted_spec": {
                         "comparison": {
                             "reason": "not_an_improvement",
@@ -807,8 +494,8 @@ def _verify_cloud(*, passed, flatness):
                         },
                     },
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", "", id="keep-previous-result-does-not-gate",
         ),
         # The same posture one tier over: every instrument that grades the
@@ -816,9 +503,9 @@ def _verify_cloud(*, passed, flatness):
         # the crossover region carried no spec tolerance for an absolute
         # verdict. A finding here would fire on a healthy commission.
         pytest.param(
-            {
-                "tier": "express",
-                "verify": {
+            _v2_applied_state(
+                tier="express",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
@@ -828,17 +515,18 @@ def _verify_cloud(*, passed, flatness):
                         },
                     },
                 },
-            },
-            "ok", "", id="express-inconclusive-result-does-not-gate",
+            ),
+            "ok", correction.REASON_CLOUD_NOT_RUN,
+            id="express-inconclusive-result-does-not-gate",
         ),
     ],
 )
-def test_check_crossover_v2_applied_is_graded_verdicts(
-    monkeypatch, overrides, status, reason
+def test_check_crossover_v2_cloud_pipeline_verdicts(
+    monkeypatch, state, status, reason
 ):
-    _patch_v2_state(monkeypatch, _v2_applied_state(**overrides))
+    _patch_v2_state(monkeypatch, state)
 
-    r = correction.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_cloud_pipeline()
 
     assert r.status == status
     assert r.reason == reason
@@ -868,7 +556,7 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
         },
     )
 
-    r = correction.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_cloud_pipeline()
 
     assert r.status == "ok"
     assert r.reason == correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED
@@ -884,9 +572,9 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     until someone teaches each dispatch site the new word by hand.
 
     If this fails because you added a member: teach
-    ``check_crossover_v2_applied_is_graded`` and the done-screen branches the
-    new word (or confirm the existing fallthrough is what you want), then
-    extend the pinned sets below.
+    ``_applied_grade_finding`` and the done-screen branches the new word (or
+    confirm the existing fallthrough is what you want), then extend the
+    pinned sets below.
     """
     from jasper.web import correction_crossover_v2 as v2host
 
@@ -1095,7 +783,7 @@ def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_
     assert result.reason == correction.REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE
 
 
-# ---------- /sound/room/ TLS cert
+# ---------- measurement-page TLS cert
 #
 # check_correction_cert_hostname compares the cert's SAN against the name the
 # speaker actually advertises, so a collision-renamed box stops serving a cert
@@ -1209,3 +897,160 @@ def test_cert_check_warns_when_openssl_exits_nonzero(monkeypatch, tmp_path):
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
+
+
+# ===========================================================================
+# check_correction_web_service / check_correction_idle_exit_holds /
+# check_correction_https_assets / check_correction_state_dirs /
+# check_correction_current_config — one seed/patch setup per behavior, one
+# status+reason assertion tail (AGENTS.md: one altitude per behavior, prefer
+# one parametrized test over an example cluster). Test ids equal the old
+# per-behavior function names so `pytest -k` and CI history keep working.
+# ===========================================================================
+
+
+def _corr_case_web_service_ok(monkeypatch, tmp_path):
+    _stub_unit_active_states(monkeypatch, {"jasper-correction-web.socket": "active"})
+    return correction.check_correction_web_service()
+
+
+def _corr_case_web_service_warns(service_state):
+    def _case(monkeypatch, tmp_path):
+        _stub_unit_active_states(monkeypatch, {"jasper-correction-web.service": service_state})
+        return correction.check_correction_web_service()
+
+    return _case
+
+
+def _corr_case_web_service_skips_no_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(unavailable=True))
+    return correction.check_correction_web_service()
+
+
+def _corr_case_idle_exit_holds(active, journal):
+    def _case(monkeypatch, tmp_path):
+        _idle_exit_journal(monkeypatch, journal=journal, active=active)
+        return correction.check_correction_idle_exit_holds()
+
+    return _case
+
+
+def _corr_case_idle_exit_holds_skips_no_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(unavailable=True))
+    return correction.check_correction_idle_exit_holds()
+
+
+def _corr_case_https_assets(probe):
+    def _case(monkeypatch, tmp_path):
+        monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+        monkeypatch.setattr(correction, "_probe_https_status", probe)
+        return correction.check_correction_https_assets()
+
+    return _case
+
+
+def _corr_case_https_assets_skips_no_web_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise AssertionError("must not probe when the web root is absent")
+
+    monkeypatch.setattr(correction, "_probe_https_status", _boom)
+    return correction.check_correction_https_assets()
+
+
+def _corr_case_https_assets_skips_443_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+
+    def _refused(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(correction, "_probe_https_status", _refused)
+    return correction.check_correction_https_assets()
+
+
+def _corr_case_state_dirs_warns_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
+    return correction.check_correction_state_dirs()
+
+
+def _corr_case_state_dirs_warns_locked_out(monkeypatch, tmp_path):
+    _pretend_group_is_jasper(monkeypatch)
+    root = tmp_path / "correction"
+    root.mkdir()
+    os.chmod(root, 0o700)
+    for name in ("calibration_mics", "tones"):
+        d = root / name
+        d.mkdir()
+        os.chmod(d, 0o700)
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
+    return correction.check_correction_state_dirs()
+
+
+def _corr_case_current_config(relative_path, text):
+    def _case(monkeypatch, tmp_path):
+        config = tmp_path / relative_path
+        if text is not None:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(text)
+        statefile = tmp_path / "statefile.yml"
+        statefile.write_text(f"config_path: {config}\n")
+        monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+        return correction.check_correction_current_config()
+
+    return _case
+
+
+def _corr_case_current_config_unreadable_config(monkeypatch, tmp_path):
+    config = tmp_path / "configs" / "sound_current.yml"
+    config.mkdir(parents=True)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return correction.check_correction_current_config()
+
+
+def _corr_case_current_config_unreadable_statefile(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    return correction.check_correction_current_config()
+
+
+_C = correction
+
+
+@pytest.mark.parametrize(
+    "setup, expected_status, expected_reason",
+    [
+        pytest.param(_corr_case_web_service_ok, "ok", "", id="test_check_correction_web_service_ok_when_socket_active"),
+        pytest.param(_corr_case_web_service_warns("active"), "warn", _C.REASON_WEB_SOCKET_INACTIVE, id="test_check_correction_web_service_warns_without_the_socket[service-up-socket-down]"),
+        pytest.param(_corr_case_web_service_warns("inactive"), "warn", _C.REASON_WEB_INACTIVE, id="test_check_correction_web_service_warns_without_the_socket[both-down]"),
+        pytest.param(_corr_case_web_service_skips_no_systemctl, "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, id="test_check_correction_web_service_skips_without_systemctl"),
+        pytest.param(_corr_case_idle_exit_holds("inactive", _journal()), "skipped", _C.REASON_IDLE_HOLDS_SERVICE_INACTIVE, id="test_check_correction_idle_exit_holds_verdicts[service-inactive]"),
+        pytest.param(_corr_case_idle_exit_holds("active", FileNotFoundError("journalctl not found")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-raises]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal(returncode=1, stderr="invalid option -- since")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNREADABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-rc]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal()), "ok", _C.REASON_IDLE_HOLDS_NONE, id="test_check_correction_idle_exit_holds_verdicts[clean]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal(_LEAKED_HOLD_LINE + "\n")), "warn", _C.REASON_IDLE_HOLD_LEAKED, id="test_check_correction_idle_exit_holds_verdicts[leaked]"),
+        pytest.param(_corr_case_idle_exit_holds_skips_no_systemctl, "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_skips_without_systemctl"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (200, "")), "ok", "", id="test_check_correction_https_assets_verdicts[served]"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (308, "http://jts.local/assets/app.css")), "warn", _C.REASON_HTTPS_ASSETS_HTTP_REDIRECT, id="test_check_correction_https_assets_verdicts[http-downgrade]"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (404, "")), "warn", _C.REASON_HTTPS_ASSETS_UNEXPECTED_STATUS, id="test_check_correction_https_assets_verdicts[unexpected-status]"),
+        pytest.param(_corr_case_https_assets_skips_no_web_root, "skipped", _C.REASON_HTTPS_ASSETS_NOT_INSTALLED, id="test_check_correction_https_assets_skips_without_web_root"),
+        pytest.param(_corr_case_https_assets_skips_443_unreachable, "skipped", _C.REASON_HTTPS_ASSETS_UNREACHABLE, id="test_check_correction_https_assets_skips_when_443_unreachable"),
+        pytest.param(_corr_case_state_dirs_warns_missing, "warn", _C.REASON_STATE_DIRS_MISSING, id="test_check_correction_state_dirs_warns_on_missing"),
+        pytest.param(_corr_case_state_dirs_warns_locked_out, "warn", _C.REASON_STATE_DIRS_NOT_WRITABLE, id="test_check_correction_state_dirs_warns_when_locked_out_by_mode"),
+        pytest.param(_corr_case_current_config("does-not-exist.yml", None), "fail", _C.REASON_CAMILLA_CONFIG_MISSING, id="test_check_correction_current_config_verdicts[missing-config]"),
+        pytest.param(_corr_case_current_config("v1.yml", "# base\n"), "warn", _C.REASON_CURRENT_CONFIG_UNCLASSIFIED, id="test_check_correction_current_config_verdicts[unclassified]"),
+        pytest.param(_corr_case_current_config("configs/sound_current.yml", _sound_config_text()), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[jts-sound]"),
+        pytest.param(_corr_case_current_config("configs/active_speaker_staged_startup.yml", _ACTIVE_STAGED_CONFIG), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[active-speaker-staged]"),
+        pytest.param(_corr_case_current_config("configs/correction_abc_1700000000.yml", _sound_config_text([_room_peq()])), "ok", _C.REASON_CURRENT_CONFIG_ROOM_CORRECTION, id="test_check_correction_current_config_verdicts[generated-correction]"),
+        pytest.param(_corr_case_current_config("configs/active_speaker_startup.yml", _round_tripped_active_config()), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[round-tripped-active-graph]"),
+        pytest.param(_corr_case_current_config("configs/operator.yml", _hand_written_config_on_the_jts_ring()), "warn", _C.REASON_CURRENT_CONFIG_UNCLASSIFIED, id="test_check_correction_current_config_verdicts[hand-written-on-the-jts-ring]"),
+        pytest.param(_corr_case_current_config_unreadable_config, "warn", _C.REASON_CAMILLA_CONFIG_UNREADABLE, id="test_check_correction_current_config_warns_when_the_config_cannot_be_read"),
+        pytest.param(_corr_case_current_config_unreadable_statefile, "warn", _C.REASON_CAMILLA_STATEFILE_UNREADABLE, id="test_check_correction_current_config_warns_on_an_unreadable_statefile"),
+    ],
+)
+def test_check_correction_status(monkeypatch, tmp_path, setup, expected_status, expected_reason):
+    r = setup(monkeypatch, tmp_path)
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason

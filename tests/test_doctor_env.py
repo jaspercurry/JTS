@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor import env, grouping
+from jasper.cli.doctor import env
 from jasper.cli.doctor.env import _classify_state_group_write
 from jasper.env_load import parse_env_file
 
@@ -42,17 +42,6 @@ def test_parse_env_file_basic(tmp_path: Path):
 def test_parse_env_file_missing_returns_empty(tmp_path: Path):
     out = parse_env_file(str(tmp_path / "does-not-exist"))
     assert out == {}
-
-
-def test_grouping_env_parser_uses_canonical_quote_handling():
-    out = grouping._parse_env_file(
-        '# comment\nJASPER_GROUPING_ROLE="leader"\nEMPTY=\n',
-    )
-
-    assert out == {
-        "JASPER_GROUPING_ROLE": "leader",
-        "EMPTY": "",
-    }
 
 
 def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
@@ -147,7 +136,7 @@ def os_environ_get(name: str) -> str | None:
 
 
 # JASPER_MTA_BUSTIME_KEY is a documented jasper.env key (see
-# jasper/web/transit_setup.py's _bus_key_source) rather than a compartment
+# jasper/web/transit_page.py's _bus_key_source) rather than a compartment
 # escapee, so it alone must read "ok" non-empty too.
 _NONEMPTY_STATUS = {
     k: ("ok" if k == "JASPER_MTA_BUSTIME_KEY" else "fail") for k in SECRET_ENV_NAMES
@@ -282,7 +271,8 @@ def test_state_group_write_checks_configured_volume_path(
 # ---------- check_state_dir: os.access(W_OK) always reports jasper-doctor's
 # own root access, not the non-root jasper-voice/-mux writers'. Converged
 # onto the same _shared._group_writable_dir predicate as
-# audio.check_camilla_configs_writable and correction.check_correction_state_dirs,
+# audio_runtime_camilla.check_camilla_configs_writable and
+# correction.check_correction_state_dirs,
 # but require_setgid=False: ensure_state_dir (install.sh) leaves STATE_DIR
 # itself plain root:jasper 0770, not setgid, because every writer here
 # already declares Group=jasper in its own unit rather than relying on

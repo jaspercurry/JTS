@@ -18,7 +18,7 @@ from jasper.active_speaker.measurement_archive import (
     load_measurement,
 )
 
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 CATALOG_SCHEMA = "jts_frequency_catalog/1"
 
@@ -56,6 +56,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div class="measurement-chart-wrap">
       <canvas id="measurement-chart" aria-label="Saved frequency response measurements"></canvas>
     </div>
+    <div id="measurement-frequency-window"></div>
     <p id="measurement-chart-status" class="info-card__note" role="status" aria-live="polite">Loading measurements…</p>
     <div id="measurement-series" class="measurement-series"></div>
   </section>

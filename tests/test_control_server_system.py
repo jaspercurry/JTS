@@ -779,38 +779,66 @@ def test_usb_forensics_rejects_malformed_toggle(
     assert body["error"] == "enabled must be a boolean"
 
 
-def test_system_action_reboot_audits_and_invokes_systemctl(
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_system_action_reboot_audits_and_asks_the_broker(
     monkeypatch,
     server_with_coordinator,
     caplog,
+    verb,
 ):
     """A destructive /system/ action emits an `event=system.action` audit line
-    (so a dashboard-triggered reboot is distinguishable from a watchdog/crash
-    reset when debugging "the speaker restarted on its own") and shells out to
-    the right systemctl command. The broker has no reboot verb and the box goes
-    down before any verdict, so the answer is 202 accepted — never a claim that
-    the reboot happened. subprocess.Popen is mocked so no test machine
-    reboots."""
+    (so a dashboard-triggered reboot/poweroff is distinguishable from a
+    watchdog/crash reset when debugging "the speaker restarted on its own")
+    and reaches systemd only through the restart broker — never its own
+    subprocess. The box goes down before any verdict, so the answer is 202
+    accepted, never a claim that the action happened."""
     import logging
 
-    import jasper.control.server as srv_mod
+    base, _ = server_with_coordinator
+    broker_calls = _record_broker(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="jasper.control"):
+        status, body = _post(f"{base}/system/{verb}", {})
+
+    assert status == 202
+    assert body["action"] == verb
+    assert body["status"] == "accepted"
+    assert broker_calls == [(verb, [])]
+    assert any(
+        f"event=system.action action={verb}" in rec.getMessage()
+        for rec in caplog.records
+    ), f"{verb} must emit an event=system.action audit line"
+
+
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_system_action_reboot_survives_a_dead_broker(
+    monkeypatch,
+    server_with_coordinator,
+    verb,
+):
+    """The broker's socket bind is deliberately non-fatal, so the dashboard
+    reboot/poweroff must not hard-depend on it: with the socket unreachable
+    jasper-control still spawns the action itself and answers 202."""
+    import jasper.control.restart_broker as rb
 
     base, _ = server_with_coordinator
     popens: list[list[str]] = []
 
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
+    def _no_socket(*_a, **_kw):
+        raise rb.BrokerUnavailable("no such file")
 
-    with caplog.at_level(logging.INFO, logger="jasper.control"):
-        status, body = _post(f"{base}/system/reboot", {})
+    monkeypatch.setattr(rb, "request_restart", _no_socket)
+    monkeypatch.setattr(rb.subprocess, "Popen", _recording_popen(popens))
+    # The dead-broker fallback is gated the same way as the broker itself;
+    # grant this process's own euid rather than relying on the runner being
+    # root or jasper-control.
+    monkeypatch.setattr(rb, "_power_verb_uids", lambda: (os.geteuid(),))
+
+    status, body = _post(f"{base}/system/{verb}", {})
 
     assert status == 202
-    assert body["action"] == "reboot"
     assert body["status"] == "accepted"
-    assert popens == [["systemctl", "reboot"]]
-    assert any(
-        "event=system.action action=reboot" in rec.getMessage()
-        for rec in caplog.records
-    ), "reboot must emit an event=system.action audit line"
+    assert popens == [["systemctl", verb]]
 
 
 def test_system_snapshot_audio_quality_fails_soft(
@@ -1756,13 +1784,10 @@ def test_state_usbsink_section_populated_when_enabled(
     status, body = _get(f"{base}/state")
     assert status == 200
     section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
     assert section["playing"] is True
-    assert section["preempted"] is False
     assert section["muted"] is False
     assert section["host_connected"] is True
     assert section["rms_dbfs"] == -12.3
-    assert section["updated_at"] is None
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(

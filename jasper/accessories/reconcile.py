@@ -45,7 +45,7 @@ from jasper.install_profile import (
 from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
 from jasper.music_sources import Source
-from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC
+from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl as _systemctl
 from jasper.source_intent import source_intent_enabled
 
 from ._dbus import variant_value
@@ -274,17 +274,6 @@ def write_manual_mic_env(
 
 
 Systemctl = Callable[[Sequence[str]], subprocess.CompletedProcess]
-
-
-def _systemctl(args: Sequence[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["systemctl", *args],
-        check=False,
-        timeout=SYSTEMCTL_TIMEOUT_SEC,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
 
 
 def _invoke_systemctl(

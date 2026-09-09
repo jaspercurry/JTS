@@ -36,12 +36,8 @@ from jasper.control.server import (
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.control.volume_ops import (
-    VOLUME_MAX_DB,
-    VOLUME_MIN_DB,
-    _clamp_db,
-    _db_to_percent,
-)
+from jasper.control.volume_ops import VOLUME_MAX_DB, VOLUME_MIN_DB
+from jasper.volume_curve import db_to_percent
 
 from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
@@ -94,16 +90,10 @@ def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
 # --- pure helpers ---
 
 
-def test_clamp_db_endpoints():
-    assert _clamp_db(-100.0) == VOLUME_MIN_DB
-    assert _clamp_db(50.0) == VOLUME_MAX_DB
-    assert _clamp_db(-10.0) == -10.0
-
-
 def test_db_to_percent_endpoints():
-    assert _db_to_percent(VOLUME_MIN_DB) == 0
-    assert _db_to_percent(VOLUME_MAX_DB) == 100
-    assert _db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
+    assert db_to_percent(VOLUME_MIN_DB) == 0
+    assert db_to_percent(VOLUME_MAX_DB) == 100
+    assert db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
 
 
 # --- management request guardrails ---
@@ -766,6 +756,9 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
             pass
 
         def service_states_snapshot(self):
+            return {}
+
+        def pressure_snapshot(self):
             return {}
 
     monkeypatch.setattr(flight_recorder, "install", lambda *a, **k: False)

@@ -1339,21 +1339,17 @@ def test_role_apply_hands_all_sources_to_canonical_owner(
 
 def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkeypatch):
     """The outputd lane env carries the ring MARKER + channel while bonded and
-    explicit empty strings after disband (disable-clears-stale). The legacy FIFO
-    key is cleared on BOTH paths — arming the marker beside a path is the
-    two-content-sources shape outputd refuses."""
+    explicit empty strings after disband (disable-clears-stale)."""
     _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
     assert main([]) == 0
     env = (tmp_path / "grouping-outputd.env").read_text()
     assert f"{DAC_CONTENT_LANE_ENV}=1\n" in env
-    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=left" in env
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     assert main([]) == 0
     env = (tmp_path / "grouping-outputd.env").read_text()
     assert f"{DAC_CONTENT_LANE_ENV}=\n" in env
-    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=\n" in env
     assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
 
@@ -2359,8 +2355,6 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
     assert "leader_restore" not in order
     assert "follower_restore" not in order
     assert "passive_restore" not in order
-    outputd_env = (tmp_path / "grouping-outputd.env").read_text()
-    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in outputd_env
     events = [
         record.message
         for record in caplog.records
@@ -3225,11 +3219,7 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
 
     def fake_run(argv, **kw):
         calls.append(list(argv))
-        assert kw == {
-            "capture_output": True,
-            "text": True,
-            "timeout": reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        }
+        assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
         returncode, stdout = next(results)
         return sp.CompletedProcess(
             argv,
@@ -3764,9 +3754,6 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
         outputd_period_frames=period,
     )
     assert dac_content_lane_marker_armed(dumb) is fits
-    # The FIFO key is cleared on BOTH cells: arming two round-trip transports at
-    # once is outputd's most fundamental refusal.
-    assert dumb[reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
 
     # ...and the snapclient this box actually gets. A refused member is the
     # DISABLED cfg `fall_back_to_solo` installs, which is why the argv flips

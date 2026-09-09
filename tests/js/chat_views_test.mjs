@@ -142,8 +142,8 @@ const { appHeader } = await loadEsm(repoPath("deploy/assets/shared/js/chrome.js"
 
 const header = appHeader({
   title: "EQ",
-  backHref: "/sound/setup/",
-  backLabel: "Sound setup",
+  backHref: "/sound/speaker/",
+  backLabel: "Speaker setup",
 });
 assert.equal(header.tag, "header");
 assert.equal(header.className, "app-header");
@@ -153,8 +153,8 @@ assert.equal(row.className, "app-header__row");
 const [back, title, right] = row.children;
 assert.equal(back.tag, "a");
 assert.equal(back.className, "icon-button");
-assert.equal(back.attributes.href, "/sound/setup/");
-assert.equal(back.attributes["aria-label"], "Sound setup");
+assert.equal(back.attributes.href, "/sound/speaker/");
+assert.equal(back.attributes["aria-label"], "Speaker setup");
 const [icon] = back.children;
 assert.equal(icon.tag, "svg");
 assert.equal(icon.attributes.class, "ico");

@@ -104,6 +104,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "forward-model": ViewArtifact("forward_model.json"),
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
+    "windows": ViewArtifact("window_view.json", (TAKES_THIS_ROUND, "--capture-id", "<take-id>")),
     "frequency": ViewArtifact("frequency_view.json"),
     "delay-landscape": ViewArtifact("delay_landscape.json", TAKES_BUNDLE_AND_FC),
     "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
@@ -121,6 +122,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         CLASSIFICATION_ARTIFACT, (TAKES_THIS_BUNDLE,), in_artifact_dir=True
     ),
     "findings": ViewArtifact("findings.json"),
+    "room-grade": ViewArtifact("room_grade.json"),
     # No view writes this one: the banker does, as it files the session. It is
     # inventoried anyway because "does this round carry its pose index" is the
     # same question as the rest, asked of the same directory.

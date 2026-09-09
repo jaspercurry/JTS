@@ -27,13 +27,10 @@ def test_renderer_projects_direct_lane_and_udc_connection():
     )
 
     assert state == {
-        "combo": True,
         "playing": True,
-        "preempted": False,
         "muted": False,
         "host_connected": True,
         "rms_dbfs": -8.5,
-        "updated_at": None,
     }
 
 

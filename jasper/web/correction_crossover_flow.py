@@ -12,7 +12,7 @@ from http import HTTPStatus
 from typing import Any, Mapping
 
 from ..log_event import log_event
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     header = canonical_header(
         "Active speaker",
-        back_href=f"http://{html.escape(hostname, quote=True)}/sound/",
-        back_label="Sound",
+        back_href=f"http://{html.escape(hostname, quote=True)}/sound/speaker/",
+        back_label="Speaker setup",
     )
     body = f"""
 {header}
@@ -34,7 +34,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div class="crossover-card__footer">
       <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
       <p class="form-hint">
-        <a href="http://{html.escape(hostname, quote=True)}/sound/setup/">Remove the active crossover entirely</a>
+        <a href="http://{html.escape(hostname, quote=True)}/sound/speaker/">Remove the active crossover entirely</a>
         — this returns the speaker to a plain stereo crossover.
       </p>
     </div>
@@ -72,7 +72,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
       <li id="crossover-chart-legend-predicted" hidden><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--predicted"></span>Expected after correction (not measured)</li>
       <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
-      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Excluded (interference)</li>
+      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Untrusted</li>
     </ul>
     <p id="crossover-cloud-pending" class="form-hint" hidden></p>
     <p id="crossover-cloud-geometry" class="form-hint" hidden></p>

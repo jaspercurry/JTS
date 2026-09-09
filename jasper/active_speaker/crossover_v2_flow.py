@@ -73,6 +73,7 @@ from jasper.active_speaker.crossover_v2 import (
 from jasper.active_speaker.crossover_v2 import durable_state as _durable_state
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
+from jasper.audio_measurement.branch_program import build_branch_program, is_branch_program
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2 import verification as _verification
@@ -104,6 +105,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
+    KIND_SWEEP,
     STIMULUS_KINDS,
     ExcitationProgram,
     RoleBand,
@@ -118,6 +120,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
 )
+from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -254,6 +257,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
+    REASON_MEASURE_GAIN_ADJUSTED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
@@ -787,6 +791,8 @@ class CrossoverV2Session:
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
+        measure_gain_ceiling_db: Mapping[str, float] | None = None,
+        measure_gain_retry_used: bool = False,
         index_phase_map: Mapping[int, str] | None = None,
         post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
@@ -919,6 +925,8 @@ class CrossoverV2Session:
             applied=applied,
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
+        self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
+        self._measure_gain_retry_used = measure_gain_retry_used
         # CHECK's measured room floor, held until ``_measure_priors`` reads it (#1830).
         # In-memory only: §5.6 invalidates CHECK/MEASURE evidence across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
@@ -991,6 +999,11 @@ class CrossoverV2Session:
         self._verify_program = self._excitation.verify_program()
         # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
+        self._branch_program = (
+            build_branch_program(self._cloud_program, {r.role: r.channel for r in self._roles})
+            if any(s.graph_scope == "candidate_branches" for s in self._measure_specs_by_index.values())
+            else None
+        )
 
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot (owner ruling #2086).
@@ -1757,6 +1770,8 @@ class CrossoverV2Session:
             session_phases=self._journey.plan.phases,
             applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
+            measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
+            measure_gain_retry_used=self._measure_gain_retry_used,
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
@@ -1803,6 +1818,8 @@ class CrossoverV2Session:
                 accepted_phases=snapshot.accepted_phases,
                 applied=snapshot.applied,
                 gain_plan_db=snapshot.gain_plan_db,
+                measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
+                measure_gain_retry_used=snapshot.measure_gain_retry_used,
                 **journey,
                 **kwargs,
             )
@@ -1908,7 +1925,11 @@ class CrossoverV2Session:
         ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
         if decision.spends_extra:
             try:
-                ledger.spend(decision.initiator)
+                ledger.spend(
+                    _admission.ATTEMPT_INITIATOR_SPEAKER
+                    if self._last_reason.get(slot) == REASON_MEASURE_GAIN_ADJUSTED
+                    else decision.initiator
+                )
             except _admission.AttemptOverspendError as exc:
                 # The flow's own error type is what every caller already handles;
                 # the ledger is pure and has no business knowing it.
@@ -1949,6 +1970,8 @@ class CrossoverV2Session:
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
         """The composed program this session plays for ``phase``."""
+        if phase == PHASE_LATERAL and self._branch_program is not None:
+            return self._branch_program
         if phase == PHASE_LATERAL and any(
             index in self._journey.plan.group_offsets(phase)
             and spec.graph_scope != GRAPH_SCOPE_DRIVERS
@@ -2352,6 +2375,10 @@ class CrossoverV2Session:
         # here proves one exists — restated because the checker cannot see it.
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
+        self._measure_gain_ceiling_db = {
+            role: solve.flat_target_gain_db
+            for role, solve in gain_plan.role_solves.items()
+        }
         # HOLD the ambient report, don't just publish it (#1830): without it MEASURE's
         # per-driver SNR verdict has no noise floor to grade against.
         self._check_ambient_report = (
@@ -2364,9 +2391,24 @@ class CrossoverV2Session:
     def _consume_measure(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
+        verdict = self._measure_verdict(analysis)
+        if verdict.code == REASON_MEASURE_GAIN_ADJUSTED:
+            # Bank with the program that made THIS response before composing its retry.
+            self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
+            self._gain_plan_db = verdict.payload["gain_adjustment"]["next_gain_db"]
+            self._measure_gain_retry_used = True
+            self._rearm_measure_after_transient()
+            verdict.payload["gain_adjustment"]["next_program_id"] = (
+                self.program_for_phase(PHASE_MEASURE).program_id
+            )
+            log_event(
+                logger, "correction.crossover_v2_measure_gain_adjusted",
+                session_id=self.session_id,
+                **verdict.payload["gain_adjustment"],
+            )
         return self._consume_unprompted(
             PHASE_MEASURE, index, attempt, analysis, result,
-            self._measure_verdict(analysis), self._log_measure_diag,
+            verdict, self._log_measure_diag,
         )
 
     def _bank_phase_capture(
@@ -2541,6 +2583,28 @@ class CrossoverV2Session:
                     extra_backoff_db=screen.rearm_backoff_db
                 )
             return PhaseVerdict(False, _screen_refusal_code(screen.kind))
+        ledger = self._slot_attempts.get(PHASE_MEASURE)
+        if not self._measure_gain_retry_used and (ledger is None or ledger.extras_left > 0):
+            program = self.program_for_phase(PHASE_MEASURE)
+            gains = {seg.role: seg.gain_db for seg in program.segments
+                     if seg.kind == KIND_SWEEP and seg.role is not None}
+            ceilings = {
+                role: _programs.back_off_gain(
+                    ceiling, self._excitation.session_volume_db,
+                    self._excitation.caps_dbfs.get(role, 0.0),
+                )
+                for role, ceiling in self._measure_gain_ceiling_db.items()
+            }
+            adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
+            if adjusted:
+                return PhaseVerdict(False, REASON_MEASURE_GAIN_ADJUSTED, payload={
+                    "gain_adjustment": {
+                        "source_program_id": program.program_id,
+                        "previous_gain_db": gains,
+                        "next_gain_db": {**gains, **adjusted},
+                    },
+                    "kept_measurement": True,
+                })
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
         # does not refuse.** The capture is ACCEPTED and carries a reservation, which
         # changes what the household is TOLD and nothing about what is built.
@@ -2647,6 +2711,9 @@ class CrossoverV2Session:
             if response is None:
                 return PhaseVerdict(False, _screen_refusal_code(_spatial.SCREEN_LOCATE_FAILED))
             curves = [lateral_pose_curve(response, summed_band)]
+            if is_branch_program(program):
+                bands = _primary_sweep_bands(program)
+                curves = [lateral_pose_curve(r, bands[r.role]) for r in analysis.driver_responses] + curves
             kind = None
         else:
             bands = _primary_sweep_bands(program)
@@ -2702,7 +2769,7 @@ class CrossoverV2Session:
         summed = analysis.summed_response
         self._seams.bank_take(
             result,
-            _spatial.lateral_pose_record(
+            {**_spatial.lateral_pose_record(
                 pose,
                 geometry=position_geometry(prompt),
                 lateral_consumer=self._lateral_consumer,
@@ -2714,7 +2781,7 @@ class CrossoverV2Session:
                     bool((summed.gating or {}).get("applied")) if summed is not None else None
                 ),
                 **self._capture_stamp(result),
-            ),
+            ), **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
         )
 
     def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":
@@ -4352,6 +4419,16 @@ class CrossoverV2Session:
             self._measure_program = self._compose_measure_program(
                 self._gain_plan_db, extra_backoff_db=extra_backoff_db
             )
+            self._gain_plan_db = {
+                seg.role: seg.gain_db for seg in self._measure_program.segments
+                if seg.kind == KIND_SWEEP and seg.role is not None
+            }
+            if extra_backoff_db > 0:
+                # A stronger SNR retry must not undo a measured clipping backoff.
+                self._measure_gain_ceiling_db = {
+                    role: min(ceiling, self._gain_plan_db[role])
+                    for role, ceiling in self._measure_gain_ceiling_db.items()
+                }
 
     def _measure_binding_response(self, analysis: ProgramAnalysis) -> Any | None:
         """The driver response whose gate window BINDS MEASURE — the shortest."""

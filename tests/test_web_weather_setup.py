@@ -157,7 +157,7 @@ def test_render_saved_weather_location_card():
     out = _render(weather_state=state)
     assert "Brooklyn, NY" in out
     assert 'class="info-card info-card--accent"' in out
-    assert ">Saved<" in out
+    assert 'class="badge badge--ok">Saved<' in out
 
 
 def test_render_transit_fallback_card():
@@ -237,7 +237,7 @@ def test_get_root_rejects_off_origin_return_link(live_server):
     body = urllib.request.urlopen(
         live_server["url"] + "/?return_to=%2F%2Fevil.test%2F",
     ).read().decode()
-    assert 'href="/"' in body
+    assert 'href="/assistant/"' in body
     assert "evil.test" not in body
 
 
@@ -350,7 +350,7 @@ def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
 
     def weather_save():
         # Owned-key replace that must preserve in-lock non-owned keys, exactly
-        # like weather_setup._handle_save's transform.
+        # like weather_setup._post_save's transform.
         def transform(cur):
             result = {k: v for k, v in cur.items() if k not in owned}
             result.update(london)

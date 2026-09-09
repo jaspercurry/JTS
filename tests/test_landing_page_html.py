@@ -117,6 +117,24 @@ def _nginx_location_block(nginx: str, location: str) -> str:
     raise AssertionError(f"missing nginx block: {location}")
 
 
+def _conf_locations(conf: str) -> dict[frozenset[int], set[str]]:
+    """Every `location` header in a conf, grouped by its server's listeners.
+
+    Rendered back as written — `"= /sound"`, `"~* ^/assets/.+\\.js$"`, bare
+    prefix `"/mic"` — so a conf that narrows a prefix block to an exact one
+    reads as a difference rather than as parity. Keyed per listener because
+    ADR-0253 §3 moves the `:80` and `:443` blocks alike: a union would read a
+    route mounted on one listener only as parity with a conf that mounts it
+    on both.
+    """
+    by_listener: dict[frozenset[int], set[str]] = {}
+    for ports, locations in _nginx_servers(conf):
+        by_listener.setdefault(ports, set()).update(
+            f"{modifier} {path}".strip() for modifier, path in locations
+        )
+    return by_listener
+
+
 def _assert_strong_no_cache(block: str) -> None:
     assert (
         'add_header Cache-Control "no-store, no-cache, max-age=0, must-revalidate" always;'
@@ -208,15 +226,13 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
 
     assert 'id="volume-safety-note" hidden' in html
     assert "Speaker output is locked until active crossover setup is complete." in html
-    assert 'href="/sound/setup/"' in html
+    assert 'href="/sound/speaker/"' in html
     assert ".volume-wrap.safety-muted" in style
     assert "cursor: not-allowed;" in style
     assert "fetch('/system/data.json', {cache: 'no-store'})" in script
     assert "active_speaker_output_safety" in script
     assert "typeof safety.safety_muted === 'boolean'" in script
     assert "typeof safety.volume_allowed === 'boolean'" in script
-    assert "camilla.config_path" in script
-    assert "active_speaker_staged_startup\\.yml" in script
     assert "var safetyMuted = false" in script
     assert "if (safetyMuted) return;" in script
     assert "aria-disabled" in script
@@ -479,13 +495,13 @@ def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
     conf = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
     # An exact-match block serves that one path (`= /` is the landing page,
     # `= /sound/` the hub); a prefix block serves everything under it, except
-    # the `/` catch-all, which is exactly what a dead link falls to.
-    exact = set(re.findall(r"location\s+=\s*(/[^\s{]*)", conf))
-    served = {
-        prefix
-        for prefix in re.findall(r"location\s+(/[^\s{]*)", conf)
-        if prefix != "/"
+    # the `/` catch-all, which is exactly what a dead link falls to. A link is
+    # served if any listener serves it, so the listener groups are unioned.
+    headers = {
+        header for entries in _conf_locations(conf).values() for header in entries
     }
+    exact = {h.removeprefix("= ") for h in headers if h.startswith("= ")}
+    served = {h for h in headers if h.startswith("/") and h != "/"}
 
     class _Gates(HTMLParser):
         """Collect hrefs whose whole enclosing data-requires stack is granted."""
@@ -607,33 +623,28 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
     install = _INSTALL_PATH.read_text(encoding="utf-8")
     assert "deploy/correction-preflight.html" not in install
 
-    correction_js = (
-        _REPO / "deploy" / "assets" / "correction" / "js" / "main.js"
-    ).read_text(encoding="utf-8")
-    assert "/proceed" not in correction_js
-
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         nginx = path.read_text(encoding="utf-8")
         http_nginx = nginx[: nginx.index("listen 443")]
         assert "correction-preflight.html" not in nginx
-        assert "/sound/room/proceed" not in nginx
         assert "/sound/proceed" not in nginx
         # No plain-HTTP route may bounce a browser to https:// on this host.
         assert "return 302 https://$host" not in http_nginx
 
 
-def test_nginx_serves_the_room_wizard_over_plain_http() -> None:
+def test_nginx_serves_the_measurement_pages_over_plain_http() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     http_nginx = nginx[:nginx.index("# HTTPS server block")]
     https_nginx = nginx[nginx.index("listen 443") :]
-    http_proxy_block = _nginx_location_block(http_nginx, "location /sound/room/")
-    https_block = _nginx_location_block(https_nginx, "location /sound/room/")
+    location = "location /sound/speaker/crossover/"
+    http_proxy_block = _nginx_location_block(http_nginx, location)
+    https_block = _nginx_location_block(https_nginx, location)
 
     # The views that do not capture audio stay reachable on plain HTTP — no
     # static interception, no scheme change (issue #2632).
-    assert "proxy_pass http://127.0.0.1:8770/;" in http_proxy_block
+    assert "proxy_pass http://127.0.0.1:8770/crossover/;" in http_proxy_block
     assert "client_max_body_size 32m;" in http_proxy_block
-    assert "proxy_pass http://127.0.0.1:8770/;" in https_block
+    assert "proxy_pass http://127.0.0.1:8770/crossover/;" in https_block
     assert "return 302 http://$host$request_uri;" in nginx
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
@@ -642,12 +653,14 @@ def test_nginx_serves_the_room_wizard_over_plain_http() -> None:
     assert "Strict-Transport-Security" not in nginx
 
 
-def test_streambox_nginx_matches_plain_http_room_entry() -> None:
+def test_streambox_nginx_matches_plain_http_measurement_entry() -> None:
     nginx = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
     http_nginx = nginx[: nginx.index("listen 443")]
-    proxy_block = _nginx_location_block(http_nginx, "location /sound/room/")
+    proxy_block = _nginx_location_block(
+        http_nginx, "location /sound/speaker/crossover/"
+    )
 
-    assert "proxy_pass http://127.0.0.1:8770/;" in proxy_block
+    assert "proxy_pass http://127.0.0.1:8770/crossover/;" in proxy_block
     https_nginx = nginx[nginx.index("listen 443") :]
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
@@ -656,9 +669,7 @@ def test_streambox_nginx_matches_plain_http_room_entry() -> None:
 
 def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
     # Public prefix -> what nginx leaves of it for the measurement backend.
-    # Room's routes are unprefixed there, so it is mounted on the root.
     measurement_routes = {
-        "room/": "",
         "speaker/crossover/": "crossover/",
         "bass/": "bass/",
         "measurements/": "measurements/",
@@ -674,15 +685,15 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in https_catchall
         _assert_strong_no_cache(https_catchall)
 
-        eq = _nginx_location_block(http_nginx, "location /sound/eq/")
-        setup = _nginx_location_block(http_nginx, "location /sound/setup/")
         compat = _nginx_location_block(http_nginx, "location /sound/")
-        for block in (eq, setup, compat):
+        assert "proxy_pass http://127.0.0.1:8784/;" in compat
+        assert "127.0.0.1:8770" not in compat
+        assert "return 302" not in compat
+        for mode in ("eq", "speaker", "output"):
+            block = _nginx_location_block(http_nginx, f"location /sound/{mode}/")
             assert "proxy_pass http://127.0.0.1:8784/;" in block
             assert "127.0.0.1:8770" not in block
-        assert "proxy_set_header X-JTS-Sound-Page eq;" in eq
-        assert "proxy_set_header X-JTS-Sound-Page setup;" in setup
-        assert "return 302" not in compat
+            assert f"proxy_set_header X-JTS-Sound-Page {mode};" in block
 
         for public_prefix, backend_prefix in measurement_routes.items():
             location = f"location /sound/{public_prefix}"
@@ -698,6 +709,66 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
 
         # The alias namespace is deleted for good (audit §2, decision 4).
         assert not re.search(r"location\s+=?\s*/correction", nginx)
+
+
+# The streambox profile ships no wake stack, so its conf mounts none of the
+# wake surfaces; every other `location` must exist in both, on the same
+# listener. Keyed by listener ports: all four are plain-HTTP mounts.
+# Removal condition and the rest of the rule: ADR-0253 §7, ADR-0268.
+_CONF_LOCATION_DIFF_ALLOWLIST = {
+    frozenset({80}): frozenset({
+        "/assistant/wake/",
+        "/mic",
+        "/wake-corpus/",
+        "/wake/",
+    }),
+}
+
+
+def test_both_nginx_profiles_mount_the_same_locations() -> None:
+    """One conf may not gain a route the other silently misses.
+
+    Per listener, because ADR-0253 §3 moves the `:80` and `:443` blocks
+    alike: a route that reaches only one listener in one conf is drift, not
+    parity. Every documented difference is speaker-only, so the streambox
+    conf holds no location the speaker conf lacks in either direction.
+    """
+    speaker = _conf_locations(_NGINX_PATH.read_text(encoding="utf-8"))
+    streambox = _conf_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
+
+    assert sorted(map(sorted, speaker)) == sorted(map(sorted, streambox)), (
+        "the two confs do not declare the same listeners"
+    )
+    for ports in speaker:
+        allowed = _CONF_LOCATION_DIFF_ALLOWLIST.get(ports, frozenset())
+        assert speaker[ports] - streambox[ports] == allowed, (
+            f"speaker-only locations on {sorted(ports)}: "
+            f"{sorted(speaker[ports] - streambox[ports])}"
+        )
+        assert streambox[ports] - speaker[ports] == set(), (
+            f"streambox-only locations on {sorted(ports)}: "
+            f"{sorted(streambox[ports] - speaker[ports])}"
+        )
+
+
+def test_every_proxying_block_includes_the_shared_proxy_headers() -> None:
+    """A block that proxies carries the shared header snippet, not its own.
+
+    The parity guard above sees the location set, not the bodies, so a block
+    that hand-rolls `proxy_set_header` reads as parity while drifting from
+    the snippet. Delete when the confs are generated from one source.
+    """
+    include = "include /etc/nginx/snippets/jts-proxy-headers.conf;"
+    for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
+        missing = sorted(
+            f"{sorted(ports)} " + f"{modifier} {location}".strip()
+            for ports, locations in _nginx_servers(path.read_text(encoding="utf-8"))
+            for (modifier, location), body in locations.items()
+            if "proxy_pass" in body and include not in body
+        )
+        assert not missing, (
+            f"{path.name} blocks proxy without the shared headers: {missing}"
+        )
 
 
 # Every Assistant page whose URL moved under the hub prefix (C.A1), and the
@@ -820,9 +891,8 @@ def test_nginx_serves_static_management_assets() -> None:
 
 
 def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
-    # The /sound/room/ measurement UI is the one wizard served over HTTPS
-    # (getUserMedia needs a secure context) and links /assets/app.css + its
-    # ES module by absolute path. The 443 server block must serve /assets/
+    # The measurement UI is served over HTTPS (getUserMedia needs a secure
+    # context) and links /assets/app.css + its ES module by absolute path. The 443 server block must serve /assets/
     # itself; otherwise those subresources fall through to the downgrade
     # catch-all, 302 to HTTP, and browsers block them as mixed content —
     # leaving the page unstyled and its JS (mic capture, sweep) dead.
@@ -843,23 +913,23 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
 )
 def test_speaker_timing_is_mounted_on_both_listeners(conf_path: Path) -> None:
     """`/sound/pair/sync/` rides both listeners in both profiles, on the same
-    correction backend as `/sound/room/` (docs/UX-AUDIT-2026-09-03.md §2).
+    measurement backend as the crossover walk (docs/UX-AUDIT-2026-09-03.md §2).
 
     Mic capture needs the HTTPS origin, but a page mounted only there 404s on
     the plain-HTTP journey and invites a redirect into the self-signed origin
-    (issue #2632) — so it is mounted on both, exactly as `/sound/room/` is.
+    (issue #2632) — so it is mounted on both, exactly as the walk is.
     """
     servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
     listeners = set()
     for ports, locations in servers:
-        room = locations.get(("", "/sound/room/"))
-        if room is None:
+        crossover = locations.get(("", "/sound/speaker/crossover/"))
+        if crossover is None:
             continue
         sync = locations.get(("", "/sound/pair/sync/"))
         assert sync is not None, f"no /sound/pair/sync/ on listeners {set(ports)}"
-        assert _proxy_upstream(sync) == _proxy_upstream(room)
+        assert _proxy_upstream(sync) == _proxy_upstream(crossover)
         assert "proxy_pass http://127.0.0.1:8770/sync/;" in sync
-        # A short mono marker capture, deliberately below the correction cap.
+        # A short mono marker capture, deliberately below the capture cap.
         assert "client_max_body_size 2m;" in sync
         assert "proxy_buffering off;" in sync
         assert "proxy_read_timeout 600s;" in sync
@@ -869,6 +939,70 @@ def test_speaker_timing_is_mounted_on_both_listeners(conf_path: Path) -> None:
         listeners |= set(ports)
 
     assert listeners == {80, 443}
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> None:
+    """`/sound/speaker/` and `/sound/output/` are prefix blocks with the slash,
+    plus a `location =` 308 for the bare path (ADR-0253 §3).
+
+    The slash is load-bearing: a bare `location /sound/output` would also match
+    /sound/output-topology, the live API the `/sound/` compat proxy serves, and
+    a bare `location /sound/speaker` would swallow nothing today but has the
+    same shape. The 308 is what makes the no-slash URL usable.
+    """
+    listeners = set()
+    for ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8")):
+        if ("", "/sound/speaker/crossover/") in locations:
+            # The child page rides both listeners, so its normaliser does too.
+            assert locations[("=", "/sound/speaker/crossover")].strip() == (
+                "return 308 /sound/speaker/crossover/;"
+            )
+            listeners |= set(ports)
+        if ("", "/sound/") not in locations:
+            continue
+        for page in ("/sound/speaker/", "/sound/output/"):
+            bare = page.rstrip("/")
+            assert ("", page) in locations
+            assert ("", bare) not in locations
+            assert locations[("=", bare)].strip() == f"return 308 {page};"
+
+    assert listeners == {80, 443}
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_the_old_sound_setup_page_redirects_but_its_subtree_still_proxies(
+    conf_path: Path,
+) -> None:
+    """`/sound/setup/` was printed and bookmarked, so the PAGE 301s instead of
+    being cut outright (ADR-0253 §3).
+
+    Its subtree does not: a tab opened before the move POSTs
+    `./active-speaker/summed-test/stop` and `./volume-floor/stop` at its own
+    origin on pagehide, and a 301 turns a keepalive POST into a GET that never
+    stops the tone. So the prefix stays proxied, with the page header the
+    speaker page is served under.
+    """
+    blocks = {
+        (mod, path): body
+        for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
+        for (mod, path), body in locations.items()
+        if path == "/sound/setup" or path.startswith("/sound/setup/")
+    }
+
+    assert set(blocks) == {
+        ("=", "/sound/setup"), ("=", "/sound/setup/"), ("", "/sound/setup/"),
+    }
+    for exact in (("=", "/sound/setup"), ("=", "/sound/setup/")):
+        assert blocks[exact].strip() == "return 301 /sound/speaker/;"
+    stale = blocks[("", "/sound/setup/")]
+    assert _proxy_upstream(stale) == "127.0.0.1:8784"
+    assert "proxy_set_header X-JTS-Sound-Page speaker;" in stale
+    assert "return 30" not in stale
 
 
 @pytest.mark.parametrize(
@@ -927,10 +1061,6 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert "location = /grouping" in nginx
 
 
-def _nginx_locations(nginx: str) -> set[str]:
-    return set(re.findall(r"^    location (?:= )?(/[^\s{]*)", nginx, re.M))
-
-
 def test_mic_pause_card_follows_wake_detection() -> None:
     """The /mic card is the always-on listen state, not the assistant.
 
@@ -950,6 +1080,3 @@ def test_mic_pause_card_follows_wake_detection() -> None:
     # The /mic poll and mute POST short-circuit on this card being hidden, so
     # the control living inside it is what ties them to the gate above.
     assert 'id="mic-toggle"' in card.group("body")
-    assert "/mic" not in _nginx_locations(
-        _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
-    )

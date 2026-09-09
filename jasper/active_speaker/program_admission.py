@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -32,10 +33,14 @@ from jasper.audio_measurement.program import (
     ProgramSegment,
     segment_emitted_band_hz,
 )
+import yaml
+
+from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from .driver_safety import evaluate_driver_safety_profile
+from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from .graph_safety import protection_requirement_present, view_from_emitted_text
 from .measurement import active_driver_targets
 from .runtime_contract import (
@@ -677,11 +682,12 @@ def readmit_summed_program_from_wav(
     """Admit a mono summed artifact through its complete protected tuning graph.
 
     The runtime contract re-proves branch boost compensation and routing. A
-    declared HP/LP must protect any segment outside a driver's permitted input
-    band; its full emitted band is retained in evidence. The caller must prove
+    declared HP/LP or proven protective-slope crossover LP must cover an out-of-band
+    segment; its full emitted band stays in evidence. The caller must prove
     this exact graph live while holding the DSP writer lock through playback.
     """
-    if (
+    branches = isinstance(program, ExcitationProgram) and is_branch_program(program)
+    if not branches and (
         not isinstance(program, ExcitationProgram)
         or program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1
         or not program.stimulus_segments()
@@ -708,11 +714,29 @@ def readmit_summed_program_from_wav(
         bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                  program_id=program.program_id, classification=graph.classification,
+                  issues=graph.issues)
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     view = view_from_emitted_text(graph_yaml)
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
+    channels_by_role = {segment.role: segment.channel for segment in program.stimulus_segments()
+                        if segment.role in role_targets} if branches else {}
+    if branches:
+        payload = yaml.safe_load(graph_yaml)
+        mapping = [entry for name, mixer in payload["mixers"].items()
+                   if name.startswith("split_active_") for entry in mixer["mapping"]]
+        if set(channels_by_role) != set(role_targets) or set(channels_by_role.values()) != {0, 1}:
+            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
+        for role, fingerprint in role_targets.items():
+            entries = [entry for entry in mapping if entry["dest"] == physical[fingerprint]["output_index"]]
+            if len(entries) != 1 or entries[0].get("mute", False) or len(entries[0]["sources"]) != 1:
+                return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+            source = entries[0]["sources"][0]
+            if source["channel"] != channels_by_role[role] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
+                return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     caps: list[float] = []
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
@@ -729,11 +753,17 @@ def readmit_summed_program_from_wav(
         caps.append(cap)
         output = physical[fingerprint]["output_index"]
         requirements = declared[fingerprint]["required_protection_filters"]
-        if not all(protection_requirement_present(
-            view, output_index=output, allowed_channels={output}, requirement=requirement,
-        ) for requirement in requirements):
-            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+        for requirement in requirements:
+            if not protection_requirement_present(
+                view, output_index=output, allowed_channels={output}, requirement=requirement,
+            ):
+                log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                          program_id=program.program_id, role=role, output_index=output,
+                          required_protection=requirement)
+                return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         for segment in program.stimulus_segments():
+            if branches and segment.channel != channels_by_role[role]:
+                continue
             low, high = segment_emitted_band_hz(segment)
             low_ok = low >= band.lower_hz or any(
                 requirement["kind"] == "highpass"
@@ -744,6 +774,13 @@ def readmit_summed_program_from_wav(
                 requirement["kind"] == "lowpass"
                 and requirement["cutoff_hz"] <= band.upper_hz
                 for requirement in requirements
+            ) or protection_requirement_present(
+                view, output_index=output, allowed_channels={output},
+                requirement={
+                    "kind": "lowpass", "cutoff_hz": band.upper_hz,
+                    "family_or_equivalent": "equivalent_or_steeper",
+                    "minimum_slope_db_per_octave": PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
+                },
             )
             peak = float(segment.gain_db) + session_volume_db
             allowed = (
@@ -751,19 +788,23 @@ def readmit_summed_program_from_wav(
                 and segment.n_samples / program.sample_rate_hz <= duration
             )
             reasons = () if allowed else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value,)
+            assert segment.channel is not None
             segments.append(SegmentAdmission(
-                segment.segment_id, role, 0, (low, high), peak, allowed, reasons,
+                segment.segment_id, role, segment.channel, (low, high), peak, allowed, reasons,
             ))
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
-    facts, channel_refusals = _channel_facts(
-        program, pcm, channel=0, role="summed", cap_dbfs=min(caps),
-        session_volume_db=session_volume_db,
-    )
-    refusals.extend(channel_refusals)
+    channel_facts = []
+    for channel in range(program.channels):
+        facts, channel_refusals = _channel_facts(
+            program, pcm, channel=channel, role="summed", cap_dbfs=min(caps),
+            session_volume_db=session_volume_db,
+        )
+        channel_facts.append(facts)
+        refusals.extend(channel_refusals)
     admission = ProgramAdmission(
         program.program_id, program.phase, session_volume_db,
-        tuple(segments), (facts,), tuple(dict.fromkeys(refusals)),
+        tuple(segments), tuple(channel_facts), tuple(dict.fromkeys(refusals)),
     )
     if not admission.allowed:
         log_event(

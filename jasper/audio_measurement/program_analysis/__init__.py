@@ -8,8 +8,8 @@
 derives segment locations, per-segment integrity, in-capture clock drift,
 per-driver gated responses, tweeter-vs-woofer alignment and the crossover
 candidate from the ``(program, capture)`` pair alone. No I/O, no product
-policy, and no ``jasper.correction`` / ``jasper.active_speaker`` import
-(``tests/test_correction_boundary_ssot.py`` pins that boundary), so product
+policy, and no ``jasper.active_speaker`` import
+(``tests/test_audio_measurement_boundary_ssot.py`` pins that boundary), so product
 crossover transfers arrive as host-evaluated per-role callables on
 :class:`MeasurementPriors`.
 

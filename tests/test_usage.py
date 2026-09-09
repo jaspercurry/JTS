@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,8 +19,8 @@ import pytest
 from jasper.usage import (
     AggregateUsageReader,
     BillableActivityMeter,
-    DEFAULT_TUNING_USAGE_DB,
-    DEFAULT_USAGE_DB,
+    USAGE_RETENTION_DAYS,
+    _CONNECTION_INTERVALS_TABLE_DDL,
     _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
     Pricing,
@@ -331,6 +332,64 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
         conn.commit()
 
     assert store.spend_last_24h_usd() == 0.0
+
+
+def test_spend_window_query_uses_started_at_index(tmp_path: Path):
+    """The 24h spend window range-scans the started_at index instead of
+    running strftime() over every row, on the path production reads through
+    (the buffered writer's periodic disk snapshot)."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    store._snapshot([])  # creates the TEMP VIEW the buffered writer reads through
+    plan = store._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
+        "WHERE started_at >= ?", ("2020-01-01",),
+    ).fetchall()
+    detail = " ".join(row[-1] for row in plan)
+    assert "USING INDEX" in detail
+    assert "idx_sessions_started_at" in detail
+
+
+def test_expired_rows_are_pruned_on_open(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=USAGE_RETENTION_DAYS + 1)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(_SESSIONS_TABLE_DDL)
+        conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
+        conn.executemany(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            [(old, 1.0), (recent, 2.0)],
+        )
+        conn.executemany(
+            "INSERT INTO connection_intervals (provider, opened_at) VALUES (?, ?)",
+            [("grok", old), ("grok", recent)],
+        )
+
+    store = UsageStore(str(db))  # opening the writer runs the one-time prune
+    assert store._conn.execute(
+        "SELECT started_at FROM sessions",
+    ).fetchall() == [(recent,)]
+    assert store._conn.execute(
+        "SELECT opened_at FROM connection_intervals",
+    ).fetchall() == [(recent,)]
+
+
+def test_read_only_store_reads_existing_spend(tmp_path: Path):
+    """A read-only reopen of a DDL-only DB (created by another surface, no
+    rows written yet) must resolve spend without error once rows exist."""
+    db = tmp_path / "usage.db"
+    UsageStore(str(db))._conn.close()
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            (datetime.now(timezone.utc).isoformat(), 0.42),
+        )
+        conn.commit()
+
+    reader = UsageStore(str(db), read_only=True)
+    assert reader.spend_last_24h_usd() == pytest.approx(0.42)
 
 
 # ---------------------------------------------------------------------------
@@ -869,8 +928,6 @@ def test_tuning_db_is_sibling_of_usage_db():
     assert tuning_usage_db_path("/var/lib/jasper/usage.db") == (
         "/var/lib/jasper/usage-tuning.db"
     )
-    # The module default is derived, not hardcoded separately.
-    assert DEFAULT_TUNING_USAGE_DB == tuning_usage_db_path(DEFAULT_USAGE_DB)
 
 
 def test_aggregate_sums_across_two_dbs(tmp_path: Path):
@@ -947,40 +1004,13 @@ def test_aggregate_unreadable_member_counts_zero_not_raise(tmp_path: Path, caplo
     assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
 
 
-def test_tuning_path_record_prices_above_zero(tmp_path: Path):
-    """THE $0 GUARD at the usage layer: the default tuning model is priced
-    (not the 'unpriced:' sentinel), and recording through record_background_usage
-    with synthesized text-modality details yields cost_usd > 0. 1000 in + 1000
-    out at gpt-5.4 text rates (2.5 / 15.0 per MTok) = $0.0175."""
-    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
-
-    model = resolve_tuning_model()
-    assert not pricing_for_model(model).label.startswith("unpriced:"), (
-        f"tuning model {model!r} has no rate — cost would read $0 and the "
-        "spend cap could not bound it"
-    )
-
-    db = str(tmp_path / "usage-tuning.db")
-    store = UsageStore(db)
-    usage = {
-        "input_tokens": 1000,
-        "output_tokens": 1000,
-        "input_token_details": {"text_tokens": 1000},
-        "output_token_details": {"text_tokens": 1000},
-    }
-    cost = store.record_background_usage(
-        provider="openai", model="gpt-5.4",
-        input_tokens=1000, output_tokens=1000, usage=usage,
-    )
-    assert cost == pytest.approx(0.0175)
-    assert store.spend_last_24h_usd() == pytest.approx(0.0175)
-
-
-def test_tuning_path_without_details_would_be_zero_dollars(tmp_path: Path):
-    """Proves WHY the synthesis is load-bearing: the SAME token counts priced
-    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0. This
-    is the trap the synthesized details avoid."""
-    db = str(tmp_path / "usage-tuning.db")
+def test_background_usage_without_modality_details_would_be_zero_dollars(
+    tmp_path: Path,
+):
+    """Proves WHY the caller-side synthesis is load-bearing (the background
+    recorder in ``jasper.research.scheduler``): the SAME token counts priced
+    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0."""
+    db = str(tmp_path / "usage.db")
     store = UsageStore(db)
     naive = store.record_background_usage(
         provider="openai", model="gpt-5.4",
@@ -1175,7 +1205,7 @@ async def test_buffered_household_refresh_is_read_only_and_keeps_last_good_spend
         await store.aclose()
 
 
-async def test_buffered_start_recovers_history_without_rebilling_crash_interval(tmp_path):
+async def test_buffered_start_recovers_history_without_rebilling_crash_interval(tmp_path, monkeypatch):
     db = str(tmp_path / "usage.db")
     _record_cost(db, 0.25)
     disk = UsageStore(db)
@@ -1184,16 +1214,33 @@ async def test_buffered_start_recovers_history_without_rebilling_crash_interval(
     lock = sqlite3.connect(db, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
     store = await VoiceUsageStore.start(db)
+    refreshing, release = threading.Event(), threading.Event()
+    snapshot = UsageStore._snapshot
+
+    def delayed_snapshot(writer, excluded):
+        closed_at = writer._conn.execute(
+            "SELECT closed_at FROM connection_intervals"
+        ).fetchone()[0]
+        if closed_at is not None:
+            refreshing.set()
+            assert release.wait(2)
+        return snapshot(writer, excluded)
+
+    monkeypatch.setattr(UsageStore, "_snapshot", delayed_snapshot)
     try:
         BillableActivityMeter(store, "grok", 3600)
         assert store.write_degraded
         sid = store.open_session("openai")
         cost = store.close_session(sid, 1000, 1000)
         lock.close()
+        await _wait_usage(refreshing.is_set)
+        assert store.write_degraded
+        release.set()
         await _wait_usage(lambda: not store.write_degraded)
         assert store.spend_last_24h_usd() == pytest.approx(0.25 + cost)
         assert store.session_count_today_utc() == 2
     finally:
+        release.set()
         lock.close()
         await store.aclose()
 
@@ -1262,14 +1309,19 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
     first = await VoiceUsageStore.start(db)
     second = await VoiceUsageStore.start(db)
     try:
-        assert first.spend_last_24h_usd() == pytest.approx(1)
+        await _wait_usage(lambda: first.spend_last_24h_usd() == pytest.approx(1))
         assert first.session_count_today_utc() == 1000
         ids = [s.open_session("concurrent") for s in (first, second)]
         assert len(set(ids)) == 2
         costs = [s.close_session(sid, 1000, 1000) for s, sid in zip((first, second), ids)]
         expected = 1 + sum(costs)
         for s in (first, second):
-            await _wait_usage(lambda: abs(s.spend_last_24h_usd() - expected) < 1e-9)
+            # Spend is unchanged by the retire (the memory row leaves as the
+            # durable one enters), so only an empty ledger orders the count.
+            await _wait_usage(
+                lambda: not s._pending
+                and abs(s.spend_last_24h_usd() - expected) < 1e-9,
+            )
             assert s.spend_month_to_date_usd() == pytest.approx(expected)
             assert s.session_count_today_utc() == 1002
             assert s._conn.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
@@ -1278,7 +1330,7 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
         await second.aclose()
     restarted = await VoiceUsageStore.start(db)
     try:
-        assert restarted.spend_last_24h_usd() == pytest.approx(expected)
+        await _wait_usage(lambda: restarted.spend_last_24h_usd() == pytest.approx(expected))
         with sqlite3.connect(db) as conn:
             assert {r[0] for r in conn.execute("SELECT id FROM sessions WHERE provider = 'concurrent'")} == set(ids)
     finally:

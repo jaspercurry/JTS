@@ -7,24 +7,11 @@
 // browser dependency; layout remains covered by the static CSS guards.
 
 import assert from "node:assert/strict";
-import { buildFunction } from "./_loader.mjs";
+import { buildFunction, flatten, h } from "./_loader.mjs";
 
 const modulePath = process.argv[2];
 if (!modulePath) throw new Error("usage: node system_audio_sections_test.mjs <audio-sections.js>");
 
-function flatten(items) {
-  return items.flatMap((item) => Array.isArray(item) ? flatten(item) : [item]);
-}
-
-function h(tag, props, ...children) {
-  return {
-    tag,
-    props: props || {},
-    dataset: (props && props.dataset) || {},
-    children: flatten(children).filter((child) => child != null && child !== false),
-    textContent: "",
-  };
-}
 const badge = (label, badgeTone) => h("badge", { badgeTone }, label);
 const defList = (rows) => h("deflist", null,
   rows.map(([label, value]) => h("row", null, label, value)));
@@ -119,14 +106,14 @@ const PARKED = {
   headline: "Sound cannot come out of the speaker",
   detail:
     "InnoMaker HiFi AMP Pro cannot drive an active speaker layout, so " +
-    "nothing can play. Choose a passive speaker layout at /sound/setup/ " +
+    "nothing can play. Choose a passive speaker layout at /sound/speaker/ " +
     "(passive sends full-range to every output; requires a built-in passive " +
     "crossover) or attach an active-capable DAC.",
   active_source: null,
 };
 const parkedStreamText = strings(api.currentStreamBody({ overall: PARKED })).join(" | ");
 assert.match(parkedStreamText, /Sound cannot come out/);
-assert.match(parkedStreamText, /\/sound\/setup\//);
+assert.match(parkedStreamText, /\/sound\/speaker\//);
 assert.doesNotMatch(parkedStreamText, /No active stream/,
   "a speaker that cannot reach its drivers never renders as confident idle");
 
