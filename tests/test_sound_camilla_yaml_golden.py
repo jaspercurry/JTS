@@ -139,10 +139,8 @@ def _emit(name: str) -> str:
     return emit_sound_config(profile, **kwargs)
 
 
-def test_emit_sound_config_byte_identical_goldens(regenerate_goldens):
-    """Full-output equality for every representative profile. A diff here
-    means the refactor changed emitted bytes — investigate, do not
-    regenerate blindly."""
+def test_emit_sound_config_byte_identical_goldens(regenerate_goldens, monkeypatch):
+    monkeypatch.setattr("jasper.sound.camilla_yaml.os.sysconf", lambda _: 4096)
     if regenerate_goldens:
         FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
         for name in GOLDEN_CASES:
