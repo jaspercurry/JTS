@@ -1393,7 +1393,7 @@ def check_airplay_session_cleanup() -> CheckResult:
             reason=REASON_AIRPLAY_CLEANUP_UNAVAILABLE,
         )
     status = {"unobserved": "skipped", "ok": "ok", "degraded": "warn"}.get(
-        fact.get("status"), "skipped",
+        str(fact.get("status") or ""), "skipped",
     )
     reason = fact["reason"]
     detail = f"last receiver cleanup: {reason}"
