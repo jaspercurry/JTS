@@ -318,6 +318,49 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 15:20Z: Wave 5/6 fact base gathered and banked at
+  `facts/wave-5-6-facts.md` (verified at main `d112fa5a1`); wave 4's is at
+  `facts/wave-4-facts.md`. Both are raw material for the briefs, not doctrine
+  — re-verify before writing. The four findings that change what those waves
+  are:
+  - **5.1's real problem is units, not plumbing.** Room correction and
+    linearization disclose their cost in dB; bass discloses only a 0-100
+    `max_listening_level` and a margin-policy name, never dB. "One disclosed
+    gain with its cost in maximum level" first needs the three layers to speak
+    one unit.
+  - **5.2 writes from nothing.** The runbook has a speaker flow and a Room
+    section and zero bass guidance.
+  - **6.3 (cardioid) is not merely undesigned, it is blocked in code.**
+    `ActiveChannelMap.validate_for_way` requires the output set to equal
+    exactly one output per `(side, role)` pair and raises on a duplicate — and
+    a cardioid bass role is a second output of the same role. That validator
+    is the design conversation's first subject.
+  - **Two contradictions with ADR-0258**, both recorded for the owner:
+    per-role facts (crossover, delay, gain, polarity) apply identically across
+    sides today, contradicting ADR-0258 rule 3's claim that level trim is a
+    per-cabinet fact; and the flat emitter's `room_peqs_right` is documented
+    as a multi-room leader/follower axis, not the stereo-pair side axis
+    ADR-0258 frames it as. 6.1 cannot converge with it until that is settled.
+  Also confirmed: wave 5's stop-and-report condition (a boosted rung reaching
+  CamillaDSP with no headroom charge) **cannot fire at HEAD**, closed three
+  independent ways — the profile invariant forcing the natural target to zero
+  boost, the emitter reading only `targets[-1]`, and `graph_safety`'s own
+  `boost != 0.0` re-proof from the rendered graph text. It becomes live only
+  when row 3.3's emission lands, which is exactly why the wave-4 brief carries
+  it as a stop-and-report.
+- 2026-09-09 15:12Z: #4641 went red on the merge-in, and it was the
+  orchestrator's own error, not the branch's: the runbook conflict was
+  resolved by staging one side and regenerating afterwards, but `git commit`
+  during a merge commits the index, so the regeneration never landed and the
+  committed cell carried `bass-fit` without main's `windows`. Both failures
+  (`test_the_committed_runbook_table_equals_the_regenerated_one`,
+  `test_check_mode_agrees_and_writes_nothing`) had that one cause. Fixed in a
+  follow-up commit, verified against the committed tree rather than the
+  working tree. **Note for every future rebase in this lane:** after
+  regenerating the menu, `git add` it before committing, and verify with
+  `git show HEAD:docs/tuning-operator-runbook.md`, not with a working-tree
+  check — a working-tree `--check` passes while the commit is still wrong.
+
 - 2026-09-09 15:15Z: **Orchestration handed off again** (owner switched agents
   mid-session). `briefs/HANDOFF-ORCHESTRATOR.md` rewritten for the successor:
   it carries the corrected branch topology, the seven rulings this session

@@ -133,7 +133,12 @@ note.
 - `mypy` reports 3 pre-existing errors in
   `crossover_v2/feature_classifier.py` that no lane D branch touches.
 - The runbook's generated tool-menu cell conflicts on almost every rebase.
-  Regenerate it with `scripts/generate-tuning-tool-menu.py`, never hand-merge.
+  Regenerate it with `scripts/generate-tuning-tool-menu.py`, never hand-merge —
+  **then `git add` it before committing, and verify with
+  `git show HEAD:docs/tuning-operator-runbook.md`.** This session lost a CI
+  cycle to exactly this: `git commit` during a merge commits the index, so a
+  regeneration done after `git add` never lands, and a working-tree `--check`
+  passes while the commit is still wrong.
 - No `gh`; use `mcp__github__*`.
 
 ## 7. Owner decisions still open
@@ -147,9 +152,13 @@ note.
 ## 8. Briefs
 
 `briefs/wave-4-bass-runtime.md` is written and fact-checked (it carries row
-4.1b and three corrected premises). Waves 5 and 6 are not written; a read-only
-fact-gathering pass for them was in flight when this session ended and its
-output, if it landed, is `/home/user/wt/FACTS-wave56.md` in that container —
-regenerate it rather than trusting it. Write them the way
-`briefs/wave-2-room-candidate.md` is written and verify every premise at HEAD
-first: **every brief in this program has shipped with at least one false one.**
+4.1b and three corrected premises). Waves 5 and 6 are **not** written, but
+their fact base is banked on this branch: `facts/wave-4-facts.md` (main
+`a1994ef69`) and `facts/wave-5-6-facts.md` (main `d112fa5a1`), each with
+`file:line` evidence. Treat them as raw material, not doctrine — re-verify
+before writing, because **every brief in this program has shipped with at
+least one false premise.** PLAN.md §9 (2026-09-09 15:20Z) summarizes the four
+findings that change what waves 5 and 6 are, including a code-level blocker
+for the cardioid row and two contradictions with ADR-0258 the owner should
+settle first. Write them the way `briefs/wave-2-room-candidate.md` is
+written.
