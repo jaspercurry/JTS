@@ -2317,6 +2317,22 @@ def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
+def _bass_owner_role(profile: Mapping[str, Any]) -> str | None:
+    """Which declared driver owns the bass, or ``None`` when nothing says.
+
+    :func:`~jasper.bass_extension.seat_fit.bass_owner_target` is the one answer
+    to that question and is consumed rather than re-spelled.
+    """
+    # lazy: seat_fit reaches scipy through the enclosure adapters, and the
+    # packet is built in a web worker.
+    from jasper.bass_extension.seat_fit import SeatFitRefused, bass_owner_target
+
+    try:
+        return str(bass_owner_target(profile).get("role") or "") or None
+    except SeatFitRefused:
+        return None
+
+
 def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     """Each role's own declared band — the bound a per-driver filter sits inside.
 
@@ -2340,6 +2356,9 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
         "passbands_hz": {
             role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
         },
+        # WHOSE bass this speaker extends, stated once here so the bass door
+        # and its spool re-gate ask the same question of the same declaration.
+        "bass_owner_role": _bass_owner_role(profile),
         "source": (
             "design_draft.driver_safety_profile.targets[].measurement_band_hz, "
             "floored/capped by that target's own required_protection_filters"

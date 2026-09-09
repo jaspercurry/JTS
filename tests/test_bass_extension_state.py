@@ -7,11 +7,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
+from jasper.active_speaker import setup_status
 from jasper.bass_extension import profile as profile_mod
+from jasper.bass_extension.candidate_field import bass_extension_summary
 from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
 from jasper.cli.doctor import active_speaker as doctor_audio
 from jasper.cli.doctor.active_speaker import check_bass_extension_profile
 from jasper.control import state_aggregate
+
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
 
 def _doctor_result(monkeypatch, evaluation: BassExtensionEvaluation):
@@ -129,27 +133,53 @@ async def _state_snapshot(monkeypatch, tmp_path):
     )
 
 
-async def test_state_bass_extension_section_is_populated(monkeypatch, tmp_path):
-    summary = {
-        "commissioned": True,
-        "status": "accepted",
-        "profile_id": "bex-123456789abc",
-    }
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
+def _applied_setup(monkeypatch, tmp_path, field, *, recovery: bool = False) -> None:
+    """The setup snapshot `/state` projects its bass block from."""
+    intent = tmp_path / "apply_intent.json"
+    if recovery:
+        intent.write_text("{}")
+    monkeypatch.setattr(setup_status, "BASS_EXTENSION_APPLY_INTENT_PATH", intent)
+    monkeypatch.setattr(
+        state_aggregate,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {"protected_profile": {"bass_extension": field}},
+    )
+
+
+async def test_state_bass_extension_is_the_applied_familys_block(
+    monkeypatch, tmp_path
+):
+    field = bass_extension_field()
+    _applied_setup(monkeypatch, tmp_path, field)
 
     state = await _state_snapshot(monkeypatch, tmp_path)
 
     section = dict(state["bass_extension"])
     section.pop("observed_at")  # every /state section is stamped (issue #4197)
-    assert section == summary
+    assert section["status"] == "accepted"
+    assert section["runtime_eligible"] is True
+    assert section["apply_recovery_required"] is False
+    assert section["natural_hz"] == field["rungs"][-1]["target"]["fp_hz"]
+    assert section["family"] == bass_extension_summary(field)
 
 
-async def test_state_bass_extension_section_is_fail_soft(monkeypatch, tmp_path):
-    def boom():
-        raise RuntimeError("profile read failed")
-
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
+async def test_state_bass_extension_is_null_without_an_applied_family(
+    monkeypatch, tmp_path
+):
+    _applied_setup(monkeypatch, tmp_path, None)
 
     state = await _state_snapshot(monkeypatch, tmp_path)
 
     assert state["bass_extension"] is None
+
+
+async def test_state_bass_extension_still_reports_an_interrupted_apply(
+    monkeypatch, tmp_path
+):
+    """The recovery banner outlives the profile it was applying."""
+    _applied_setup(monkeypatch, tmp_path, None, recovery=True)
+
+    state = await _state_snapshot(monkeypatch, tmp_path)
+
+    assert state["bass_extension"]["commissioned"] is False
+    assert state["bass_extension"]["apply_recovery_required"] is True

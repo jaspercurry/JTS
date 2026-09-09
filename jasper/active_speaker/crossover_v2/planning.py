@@ -8,9 +8,10 @@ Owns the build: the eligibility gate, the planner request this candidate's
 sections imply, the cloud evidence its envelope consumed, and the emitted
 ``MeasuredCrossoverCandidate``. Two rules: the crossover corner is derived
 from the candidate's own sections, never a session Fc; and this module logs
-nothing itself except ONE guarded ``log_event`` call — the guard for a
-``journal`` port that raised being handed a record (#2361), the one channel
-a broken port cannot also take down.
+nothing itself except TWO ``log_event`` calls, each the only channel its own
+failure has — the guard for a ``journal`` port that raised being handed a
+record (#2361), and the bass family this preset could not bind, which is
+dropped rather than failing an otherwise complete candidate.
 """
 
 from __future__ import annotations
@@ -27,8 +28,17 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.log_event import log_event
 
+from jasper.bass_extension.candidate_field import BASS_EXTENSION_CANDIDATE_FIELD
+
 from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
+from ..camilla_yaml import bass_owner_channels
 from ..linearization_fit import linearization_filters_by_role
+from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
+from .bass_prescription import (
+    BassPrescription,
+    BassPrescriptionRefused,
+    bass_prescription_to_candidate_fields,
+)
 from .candidates import CloudFitEvidence, LinearizationState
 from .contracts import CandidateAcousticContext
 from .driver_prescription import (
@@ -413,6 +423,7 @@ def build_candidate(
     journal: Callable[[Any], None],
     blend_correction: Sequence[Mapping[str, Any]] = (),
     driver_prescription: DriverPrescription | None = None,
+    bass_prescription: BassPrescription | None = None,
 ) -> tuple[Any, LinearizationState]:
     """Build one candidate, and return what its linearization produced.
 
@@ -426,7 +437,9 @@ def build_candidate(
     merges HERE because the merge needs the fit and the fit is only final
     inside this function: ``MeasuredCrossoverCandidate.fingerprint`` is
     ``field(init=False)``, so a value stamped on afterwards is refused as
-    ``candidate_tampered``.
+    ``candidate_tampered``. ``bass_prescription`` enters here for the second
+    half of that reason alone — its family needs no fit, only the same
+    construction-time seat.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverAlignment,
@@ -597,6 +610,8 @@ def build_candidate(
     # decision that made it — ``committed_side`` is that dataclass's own
     # derivation, not a second one here. ``state`` is only the gate: a pin
     # clears its strategy, and this block drops with it.
+    bass_extension = _bass_extension_field(bass_prescription, source_preset)
+
     trim_decision: Mapping[str, Any] = {}
     decision = None if fit_plan is None else fit_plan.trim
     if state.trim_strategy is not None and decision is not None:
@@ -631,4 +646,37 @@ def build_candidate(
         # derivation here would be a second owner of a filter that reaches
         # hardware. Empty on the first round of a series.
         blend_correction=[dict(entry) for entry in blend_correction],
+        bass_extension=bass_extension,
     ), state
+
+
+def _bass_extension_field(
+    prescription: BassPrescription | None, source_preset: ActiveSpeakerPreset
+) -> Mapping[str, Any]:
+    """The adopted family this preset can carry, or nothing.
+
+    Re-validated by the door's own composer against the owner channels THIS
+    preset emits, so the field can never name a channel the graph beside it
+    does not. A document a round cannot bind — the owner reaches no output on
+    this preset, or the family no longer validates — is DROPPED with its
+    reason logged rather than failing the round: the bass family is an
+    addition to a candidate that is otherwise complete.
+    """
+    if prescription is None:
+        return {}
+    try:
+        return bass_prescription_to_candidate_fields(
+            prescription,
+            owner_channels=bass_owner_channels(
+                source_preset, prescription.owner_role
+            ),
+        )[BASS_EXTENSION_CANDIDATE_FIELD]
+    except (ActiveSpeakerConfigError, BassPrescriptionRefused) as exc:
+        log_event(
+            logger, "crossover_v2.bass_prescription_dropped",
+            level=logging.WARNING,
+            reason=getattr(exc, "reason", type(exc).__name__),
+            detail=str(getattr(exc, "detail", exc)),
+            owner_role=prescription.owner_role,
+        )
+        return {}

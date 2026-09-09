@@ -2648,6 +2648,7 @@ def build_baseline_profile_candidate(
     # runs once the field is known to be there.
     room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
     room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
+    bass_extension = dict(getattr(measured_candidate, "bass_extension", None) or {})
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -3013,6 +3014,11 @@ def build_baseline_profile_candidate(
             # It is: dropping it here would silently revert the blend
             # correction on the next preference-EQ save.
             "blend_correction": blend_correction,
+            # Layer 2's adopted bass family, in the snapshot on the same test
+            # its two neighbours pass and NOT at the top level: the `/state`
+            # summary reads it here, and the emitter's read lands with row
+            # 3.3b. Absent on every profile saved before the field existed.
+            "bass_extension": bass_extension,
             **candidate_graph_context,
         },
     }

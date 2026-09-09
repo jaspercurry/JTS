@@ -7,7 +7,7 @@
 A mailbox: an operator PLACES one already-validated prescription, the next
 round TAKES it — one file, one writer (``save_v2_state``), staged from a CLI
 in another process. Read and consume are one call, before validation, so a
-refused document cannot refuse round after round. Two staged classes share
+refused document cannot refuse round after round. Every staged class shares
 ONE slot via :data:`ENVELOPE_KIND_FIELD`; ``accepts`` is fail-closed, and
 staleness is the round ordinal, re-derived at the take.
 """
@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -27,6 +27,11 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
+from .bass_prescription import (
+    BASS_PRESCRIPTION_KIND,
+    BassPrescription,
+    read_bass_prescription,
+)
 from .blend_prescription import (
     PRESCRIPTION_KIND,
     PRESCRIPTION_MAX_BYTES,
@@ -101,7 +106,9 @@ SPOOL_SCHEMA_VERSION = 1
 ENVELOPE_KIND_FIELD = "prescription_kind"
 
 #: The classes this slot can carry.
-STAGEABLE_KINDS = frozenset({PRESCRIPTION_KIND, DRIVER_PRESCRIPTION_KIND})
+STAGEABLE_KINDS = frozenset({
+    PRESCRIPTION_KIND, DRIVER_PRESCRIPTION_KIND, BASS_PRESCRIPTION_KIND,
+})
 
 #: The default ``accepts`` set: the blend class alone, so a caller that has not
 #: learned the per-driver class keeps the fail-closed answer unedited.
@@ -206,8 +213,8 @@ class StagedPrescription:
     """One validated prescription, and the three facts the round needs about it."""
 
     #: Re-validated at take time, never rehydrated from the banked class. Which
-    #: of the two types it is, is :attr:`prescription_kind`.
-    prescription: BlendPrescription | DriverPrescription
+    #: type it is, is :attr:`prescription_kind`.
+    prescription: BlendPrescription | DriverPrescription | BassPrescription
     #: The digest of the document bytes, re-proved against the stored document
     #: before this object exists.
     prescription_sha256: str
@@ -236,13 +243,17 @@ class StagedPrescription:
 
 
 def _anchors(
-    prescription: BlendPrescription | DriverPrescription,
+    prescription: BlendPrescription | DriverPrescription | BassPrescription,
     classifications: Sequence[FeatureVerdict] | None,
+    bass_evidence: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """The evidence anchors the take cannot re-derive, from the step that could.
 
     One per class: the blend document is bounded by ONE region, the per-driver
-    document by a band per role plus the round's WHOLE banked classification.
+    document by a band per role plus the round's WHOLE banked classification,
+    the bass document by the gate's own INPUTS — the fit it read, the ladder
+    evidence beside it, and the owner the round declared — never by the
+    answer, which a re-gate must be free to reach differently.
     The whole row set, not the vouching subset — the vouch is
     ``defect_cuttable_at``/``defect_boostable_at``'s nearest-verdict-decides
     rule, so a subset would report a different count from the one the operator
@@ -252,6 +263,22 @@ def _anchors(
     envelope is one operator-writable 0640 file, so whoever can edit the
     document can edit the verdicts and recompute the digest in the same pass.
     """
+    if isinstance(prescription, BassPrescription):
+        evidence = dict(bass_evidence or {})
+        fit = evidence.get("bass_fit") or {}
+        return {
+            ENVELOPE_KIND_FIELD: BASS_PRESCRIPTION_KIND,
+            # The fit AS THE GATE READ IT, minus the curve it published for a
+            # human eye: the file is gone by the take, no bound is read off
+            # that curve, and :data:`SPOOL_MAX_BYTES` bounds what is left.
+            "bass_fit": {
+                key: value for key, value in fit.items() if key != "curve"
+            },
+            "bass_fit_sha256": prescription.bass_fit_sha256,
+            "round_id": prescription.round_id,
+            "ladder_evidence": dict(evidence.get("ladder_evidence") or {}),
+            "expected_owner_role": evidence.get("expected_owner_role"),
+        }
     if isinstance(prescription, DriverPrescription):
         return {
             ENVELOPE_KIND_FIELD: DRIVER_PRESCRIPTION_KIND,
@@ -270,10 +297,11 @@ def _anchors(
 
 def stage_prescription(
     document: bytes,
-    prescription: BlendPrescription | DriverPrescription,
+    prescription: BlendPrescription | DriverPrescription | BassPrescription,
     *,
     for_round_ordinal: int,
     classifications: Sequence[FeatureVerdict] | None,
+    bass_evidence: Mapping[str, Any] | None = None,
 ) -> Path:
     """Bank one ALREADY-VALIDATED prescription for the next round.
 
@@ -283,6 +311,9 @@ def stage_prescription(
     unfiltered, and is REQUIRED rather than defaulted — a caller that forgot it
     would look fine at staging and disagree with the operator's vouch count a
     round later. The blend class has no such evidence and passes ``None``.
+    ``bass_evidence`` is the bass gate's own INPUTS -- the fit it read, the
+    ladder evidence beside it, and the owner role the packet declared -- so the
+    take re-runs the same gate rather than re-deriving it from the answer.
 
     ``document`` is stored VERBATIM: the digest is over these bytes, and a
     re-serialized copy would hash differently on every formatting difference.
@@ -301,7 +332,7 @@ def stage_prescription(
         "for_round_ordinal": int(for_round_ordinal),
         # The anchors the take cannot re-derive, from the step that could.
         "packet_fingerprint": prescription.packet_fingerprint,
-        **_anchors(prescription, classifications),
+        **_anchors(prescription, classifications, bass_evidence),
         "prescription_sha256": prescription_sha256(document),
         "staged_at": time.time(),
         "document": document.decode("utf-8"),
@@ -526,8 +557,26 @@ def _validate(
             actual_sha256=actual,
         )
     # The gate itself, re-run — same function, same bounds, one per class.
-    prescription: BlendPrescription | DriverPrescription | None
-    if staged_kind == DRIVER_PRESCRIPTION_KIND:
+    prescription: BlendPrescription | DriverPrescription | BassPrescription | None
+    if staged_kind == BASS_PRESCRIPTION_KIND:
+        banked_ladder = envelope.get("ladder_evidence")
+        prescription = read_bass_prescription(
+            read_prescription_bytes(payload),
+            packet_fingerprint=envelope.get("packet_fingerprint"),
+            bass_fit=envelope.get("bass_fit"),
+            bass_fit_sha256=envelope.get("bass_fit_sha256"),
+            round_id=envelope.get("round_id"),
+            ladder=(
+                banked_ladder if isinstance(banked_ladder, Mapping) else {}
+            ),
+            # `None` because the packet is gone and inventing a limiter
+            # evidence would be a self-certifying read. A boosted target
+            # tampered into the document then refuses on
+            # `bass_prescription_protection_missing`.
+            limiter=None,
+            expected_owner_role=envelope.get("expected_owner_role"),
+        )
+    elif staged_kind == DRIVER_PRESCRIPTION_KIND:
         # The stat above bounded the envelope; this bounds the document inside
         # it, before it is parsed at all.
         check_driver_document_size(payload)

@@ -64,6 +64,7 @@ __all__ = [
     "BOOST_MIN_DIP_DB",
     "BOOST_MIN_TESTIFYING_POSITIONS",
     "BOOST_ROUTE_UNAVAILABLE",
+    "EXECUTION_BOUNDARY",
     "PRESCRIPTION_KIND",
     "PRESCRIPTION_MAX_BOOST_Q",
     "PRESCRIPTION_MAX_BYTES",
@@ -71,6 +72,8 @@ __all__ = [
     "PRESCRIPTION_MAX_TOTAL_BOOST_DB",
     "PRESCRIPTION_SCHEMA_VERSION",
     "PROHIBITED_PRESCRIPTION_KEYS",
+    "RATIONALE_HELP",
+    "RATIONALE_MAX_CHARS",
     "BlendPrescription",
     "BlendPrescriptionRefused",
     "PositionalEvidence",
@@ -115,6 +118,25 @@ PRESCRIPTION_MAX_BYTES = 64 * 1024
 #: discloses rather than refusing (ADR-0207): nothing reads the prose, so a
 #: document whose only fault was saying too much should not lose its round.
 RATIONALE_MAX_CHARS = 1_200
+
+#: What every class's contract says about its ``rationale``. One sentence for
+#: every door, so a prescriber reading two of them cannot infer a difference
+#: that is not there.
+RATIONALE_HELP = (
+    f"free text; the first {RATIONALE_MAX_CHARS} characters are banked and the "
+    "excess is dropped, with its count disclosed on the receipt. It is stored "
+    "for a human reader and is NEVER parsed for behaviour: no argument made "
+    "here can widen a bound below"
+)
+
+#: Where the prescriber's authority ends. Identical for every class -- a door
+#: restating it would be a second place to change it.
+EXECUTION_BOUNDARY = {
+    "model_may_propose": True,
+    "model_may_execute": False,
+    "model_may_grade_itself": False,
+    "jts_validates_and_measures": True,
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -461,15 +483,7 @@ def prescription_response_format() -> dict[str, Any]:
                 "gain: <dB>}"
             ),
         },
-        "optional_top_level": {
-            "rationale": (
-                f"free text; the first {RATIONALE_MAX_CHARS} characters are "
-                "banked and any excess is dropped, with the dropped count on "
-                "the receipt. It is stored for a human reader and is NEVER "
-                "parsed for behaviour: no argument made here can widen a "
-                "bound below."
-            ),
-        },
+        "optional_top_level": {"rationale": RATIONALE_HELP},
         "filters_are_a_total": (
             "prescribe the WHOLE correction the next round should apply, not a "
             "delta against the incumbent. The packet states the incumbent the "
@@ -526,10 +540,7 @@ def prescription_response_format() -> dict[str, Any]:
         "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
         "execution_boundary": {
-            "model_may_propose": True,
-            "model_may_execute": False,
-            "model_may_grade_itself": False,
-            "jts_validates_and_measures": True,
+            **EXECUTION_BOUNDARY,
             "note": (
                 "an accepted prescription becomes an ordinary measured "
                 "candidate: the same admission, safety-envelope, headroom, "

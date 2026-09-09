@@ -81,6 +81,10 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MAX,
     ROOM_PEQ_Q_MIN,
 )
+from jasper.bass_extension.candidate_field import (
+    BassCandidateFieldError,
+    validate_bass_extension_field,
+)
 from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
@@ -136,6 +140,7 @@ _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "exclusion_evidence": dict,
     "blend_correction": list,
     "room_correction": dict,
+    "bass_extension": dict,
 }
 
 _ROOM_CORRECTION_KEYS = frozenset({
@@ -434,6 +439,15 @@ class MeasuredCrossoverCandidate:
     room layer's limits. Per-side sets are DATA today — the emitter takes one
     list (:func:`candidate_room_peqs`) and per-side emission arrives later.
 
+    ``bass_extension`` is Layer-2's target family, keyed by listening level:
+    ``{"owner", "adapter_id", "margin_policy_name", "effective_plant",
+    "rungs", "basis"}``, each rung pairing one target with the level it may
+    play at and the protection evidence that measured that level. The bass
+    prescription door is its only writer;
+    :func:`~jasper.bass_extension.candidate_field.validate_bass_extension_field`
+    re-checks it here and owns the admission a prescriber cannot move: a
+    target spending boost headroom needs both protection evidences.
+
     Every optional field above is frozen through the same exact-JSON-data walk,
     participates in the fingerprint when non-empty, and is omitted from the
     fingerprinted core when empty so a candidate from before the field existed
@@ -452,6 +466,7 @@ class MeasuredCrossoverCandidate:
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     blend_correction: Sequence[Mapping[str, Any]] = ()
     room_correction: Mapping[str, Any] = field(default_factory=dict)
+    bass_extension: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -529,6 +544,14 @@ class MeasuredCrossoverCandidate:
                 layout_sides=SIDES_BY_LAYOUT[self.source_preset.channel_map.layout],
             ),
         )
+        if self.bass_extension:
+            # The composed value is NOT written back: the field is persisted
+            # exactly as it arrived, which is what ``from_mapping``'s tamper
+            # comparison reads.
+            try:
+                validate_bass_extension_field(self.bass_extension)
+            except BassCandidateFieldError as exc:
+                _refuse("bass_extension_invalid", f"{exc.reason}: {exc.detail}")
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
@@ -590,6 +613,8 @@ class MeasuredCrossoverCandidate:
             core["blend_correction"] = [dict(f) for f in self.blend_correction]
         if self.room_correction:
             core["room_correction"] = dict(self.room_correction)
+        if self.bass_extension:
+            core["bass_extension"] = dict(self.bass_extension)
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -608,6 +633,7 @@ class MeasuredCrossoverCandidate:
             "exclusion_evidence": dict(self.exclusion_evidence),
             "blend_correction": [dict(f) for f in self.blend_correction],
             "room_correction": dict(self.room_correction),
+            "bass_extension": dict(self.bass_extension),
             "fingerprint": self.fingerprint,
         }
 
@@ -704,6 +730,12 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "room_correction_malformed", "candidate room_correction is malformed"
             )
+        # Absent -> {} (era tolerance); present -> validated by __post_init__.
+        bass_extension_raw = raw.get("bass_extension", {})
+        if not isinstance(bass_extension_raw, Mapping):
+            _refuse(
+                "bass_extension_malformed", "candidate bass_extension is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -721,6 +753,7 @@ class MeasuredCrossoverCandidate:
                 exclusion_evidence=dict(exclusion_evidence_raw),
                 blend_correction=list(blend_correction_raw),
                 room_correction=dict(room_correction_raw),
+                bass_extension=dict(bass_extension_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(

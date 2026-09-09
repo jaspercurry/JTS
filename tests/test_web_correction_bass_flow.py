@@ -68,12 +68,15 @@ def test_status_payload_is_display_only_no_control_keys(monkeypatch):
 def test_status_payload_includes_bass_extension_section(monkeypatch):
     """The Bass Extension status (a separate, not-yet-launched feature) rides
     the same /bass/status payload as the long-shipped bass-management
-    section, verbatim from bass_extension_state_summary()."""
-    import jasper.bass_extension.profile as profile_mod
+    section, verbatim from the applied profile's own bass block."""
+    import jasper.active_speaker.setup_status as setup_mod
 
     _corner(monkeypatch)  # the corner is irrelevant here
     summary = {"commissioned": True, "status": "accepted"}
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
+    monkeypatch.setattr(setup_mod, "bass_extension_state", lambda _setup: summary)
+    monkeypatch.setattr(
+        setup_mod, "read_active_speaker_setup_status", lambda **_kwargs: {}
+    )
 
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK
@@ -84,14 +87,14 @@ def test_status_payload_bass_extension_section_is_fail_soft(monkeypatch):
     """A broken bass-extension read must not take down the long-shipped
     bass-management payload it shares a page with — the section is null,
     everything else stays intact."""
-    import jasper.bass_extension.profile as profile_mod
+    import jasper.active_speaker.setup_status as setup_mod
 
     _corner(monkeypatch, 80.0)
 
-    def boom():
-        raise RuntimeError("profile read failed")
+    def boom(**_kwargs):
+        raise RuntimeError("applied profile read failed")
 
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
+    monkeypatch.setattr(setup_mod, "read_active_speaker_setup_status", boom)
 
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK

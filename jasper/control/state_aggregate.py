@@ -42,7 +42,10 @@ from ..usb_network import (
     load_plan as load_usb_network_plan,
     observe_ipv4_cidr,
 )
-from ..active_speaker.setup_status import read_active_speaker_setup_status
+from ..active_speaker.setup_status import (
+    bass_extension_state,
+    read_active_speaker_setup_status,
+)
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
@@ -684,12 +687,6 @@ def _read_audition_state() -> dict[str, Any] | None:
     return state
 
 
-def _read_bass_extension() -> dict[str, Any] | None:
-    from ..bass_extension.profile import bass_extension_state_summary
-
-    return bass_extension_state_summary()
-
-
 def _read_output_hardware() -> dict[str, Any] | None:
     from ..output_hardware import load_state
 
@@ -917,7 +914,7 @@ async def _get_state(
     # serial submission spends one worker and the deadline a read at a time.
     (
         volume_state, sound_profile, airplay_playing, aec_status, audio_health,
-        usb_forensics, audition_state, bass_extension_state, transit_state,
+        usb_forensics, audition_state, transit_state,
         output_hardware_state, service_states, tools_state, chat_state,
         grouping_state, active_speaker_setup, research_state,
     ) = await asyncio.gather(
@@ -936,13 +933,6 @@ async def _get_state(
         _soft_read(
             "audition", _read_audition_state,
             exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
-        ),
-        _soft_read(
-            "bass_extension", _read_bass_extension,
-            exc=(
-                ImportError, OSError, RuntimeError, TypeError, ValueError,
-                KeyError, AttributeError,
-            ),
         ),
         _soft_read("transit", read_transit_state_func),
         _soft_read("output_hardware", _read_output_hardware),
@@ -974,6 +964,15 @@ async def _get_state(
             exc=(ImportError, OSError, RuntimeError, ValueError),
         ),
     )
+    # AFTER the gather, and projected from its own setup snapshot rather than
+    # read again: the applied profile is one file and this is its second
+    # reader.
+    bass_extension = await _soft_read(
+        "bass_extension",
+        lambda: bass_extension_state(active_speaker_setup),
+        exc=(OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError),
+    )
+
     listening_level, persisted_main_volume_db = volume_state or (None, None)
 
     spotify = _spotify_state()
@@ -1073,7 +1072,7 @@ async def _get_state(
         },
         "active_speaker_setup": active_speaker_setup,
         "audition": audition_state,
-        "bass_extension": bass_extension_state,
+        "bass_extension": bass_extension,
         "renderers": {
             "spotify": spotify,
             "airplay": (

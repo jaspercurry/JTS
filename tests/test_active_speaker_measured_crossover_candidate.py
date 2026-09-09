@@ -36,7 +36,10 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_config_contract import PeqFilter
 
+from jasper.bass_extension.refusals import BassExtensionRefusal
+
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
 
 def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
@@ -58,6 +61,7 @@ def _candidate(
     trim_decision: dict | None = None,
     exclusion_evidence: dict | None = None,
     room_correction: dict | None = None,
+    bass_extension: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -74,6 +78,8 @@ def _candidate(
         kwargs["exclusion_evidence"] = exclusion_evidence
     if room_correction is not None:
         kwargs["room_correction"] = room_correction
+    if bass_extension is not None:
+        kwargs["bass_extension"] = bass_extension
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -904,6 +910,38 @@ def test_from_mapping_rejects_non_mapping_room_correction():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
     assert excinfo.value.code == "room_correction_malformed"
+
+
+# --- bass_extension ---------------------------------------------------------
+
+
+def test_non_empty_bass_extension_is_fingerprinted_and_reopens():
+    preset = _preset()
+    without = _candidate(preset=preset)
+    extended = _candidate(preset=preset, bass_extension=bass_extension_field())
+    assert extended.fingerprint != without.fingerprint
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(extended.to_dict())
+    assert reopened.bass_extension == bass_extension_field()
+    assert reopened.fingerprint == extended.fingerprint
+
+
+def test_an_unprotected_boost_cannot_be_persisted_on_a_candidate():
+    """THE hard stop at the persistence boundary: a boosted target with no
+    protection is refused here even though nothing on the way in refused it."""
+    field = bass_extension_field(boosted=True)
+    field["rungs"][0]["protection"]["limiter"] = None
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        _candidate(bass_extension=field)
+    assert excinfo.value.code == "bass_extension_invalid"
+    assert BassExtensionRefusal.PROTECTION_INVALID in excinfo.value.detail
+
+
+def test_from_mapping_rejects_non_mapping_bass_extension():
+    raw = {**_candidate().to_dict(), "bass_extension": ["not-a-mapping"]}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "bass_extension_malformed"
 
 
 # --- effective_preset / driver_corrections: backward-compat trims-only ------

@@ -29,6 +29,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.alignment_prescription import (
         AlignmentPrescription,
     )
+    from jasper.active_speaker.crossover_v2.bass_prescription import (
+        BassPrescription,
+    )
     from jasper.active_speaker.crossover_v2.blend_prescription import (
         BlendPrescription,
     )
@@ -816,6 +819,7 @@ class CrossoverV2Session:
         blend_prescription: "BlendPrescription | None" = None,
         blend_prescription_sha256: str = "",
         driver_prescription: "DriverPrescription | None" = None,
+        bass_prescription: "BassPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
         lateral_claims: Sequence["_spatial.TakeClaim"] = (),
@@ -856,6 +860,9 @@ class CrossoverV2Session:
         # A9/PR-B. Per-ROLE rather than per-region: its door is the candidate's
         # ``linearization`` map, merged where the fit is final.
         self._prescribed_driver = driver_prescription
+        # Per-FAMILY: its door is the candidate's ``bass_extension`` field, and
+        # the admission it rides is code's, never this session's.
+        self._prescribed_bass = bass_prescription
         # PR-4: computed once so every group-close event uses the SAME bands.
         self._cloud_signal_band_hz = _programs.measurement_band_hz(roles)
         # Band AND provenance as one value (#1763): the payload cannot publish a band
@@ -4409,6 +4416,7 @@ class CrossoverV2Session:
             # Handed over RAW: the blend field has three sources to rank, this has
             # none, and merge-by-role IS the precedence, decided where the fit is final.
             driver_prescription=self._prescribed_driver,
+            bass_prescription=self._prescribed_bass,
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
