@@ -311,6 +311,43 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 00:35Z: Lane C opened row 2.1 (PR #4544, the room candidate kind,
+  +3028/−153, CI green) and row 2.2 (PR #4546, `room-grade`, stacked on 2.1).
+  Lane D pushed `claude/seat-w3-3-2-bass-fit` (row 3.2; no PR yet; no 3.1
+  bench-binding branch seen — ask the PR body why). Opus reviews:
+  - #4544 APPROVE WITH FIXES; the orchestrator's agent is pushing them: refuse a
+    median whose `window` is not `ungated`; `_validated_room_correction` must
+    return the frozen mapping, not `dict(raw)` (post-fingerprint mutation);
+    refuse a room-carrying candidate compiled under `scope="candidate"`
+    (`measurement_candidate_room_scope`) instead of emitting without its room
+    PEQs; refuse a repeated normalized side name; narrow the baseline_profile
+    comment about which seam re-reads room PEQs. Verified true: door never
+    designs; constants live once in `room_limits.py`; taper is 0 dB at the
+    ceiling and full at ceiling/2^(1/3); `room_limits` is a pure leaf whose
+    depth rule is identical to `correction/variance_cap.py` (lane A deletes
+    the latter); room PEQs reach only the `room_candidate` recompose and the
+    apply emit; boost charged as the sum of positive gains (upper bound); no
+    clamp touched; tune-mismatch gate compares reduced projections, not whole
+    dicts. Landed shape: `room_correction = {sides:{side:[{freq,q,gain}]},
+    ceiling_hz, ceiling_source, basis:{round_id, room_median_sha256,
+    admitted_boosts_hz}, boost_db_total, level_cost_db}`.
+    Follow-ups (not blocking, for a later row): `baseline-reemit` and
+    `jasper-audition` recompose with `room_peqs=()` and would drop an applied
+    room layer (only `sound/graph_carrier.py` re-reads it) — thread the
+    extraction or make the drop explicit; the multi-side refusal uses the
+    generic `room_correction_invalid` (wants its own slug when per-side
+    emission lands, ADR-0258); `level_reference_db` is a bin-count median on
+    the take's native grid, not octave-weighted (disclosed); the three
+    private helpers imported across doors want a `_prescription_common.py`.
+  - #4546 APPROVE WITH FIXES (applied after 2.1 lands, with its two mechanical
+    conflicts against #4520): an incumbent band with no bins grades as
+    perfectly flat and reads `regressed: true` (return `None` metrics and add
+    `incumbent_n_bins`); `ROOM_GRADE_RESOLUTION_DB` decides `regressed` but is
+    not in the artifact. Follow-ups: pin the half-open band-mask change with a
+    grid containing 60/120 Hz; a fixture whose `level_reference_db` is
+    non-zero; record the median's sha256 in `room_grade.json`. Note: 2.2
+    modifies lane B's `room-median` answer (band table moved to
+    `room_views.py`, masks half-open) — accepted as the one-owner fix.
 - 2026-09-09 00:15Z: Row 2.3 LANDED: PR #4520 squash-merged at `d7d5fdc1e` by
   the orchestrator after CI went green on the merged-and-fixed head.
 - 2026-09-08 23:45Z: Lane B rows 1.4, 1.5, 1.7 LANDED (owner merged #4522 at
