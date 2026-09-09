@@ -3632,36 +3632,122 @@ def test_low_memory_park_reuses_the_shared_core_graph_park_list():
         )
 
 
-def test_install_removes_the_retired_audio_topology_state():
-    """The doctor's remedy for the ghost topology file must name a real remover.
+# Seeds every `file` target the retirement table names (iterating the table, not
+# a second copy of its paths), reports what the sandbox could actually create,
+# then runs the retirement.
+_RETIRE_DRIVER = r"""
+for path in $(
+    for row in "${JASPER_RETIRED_LEFTOVERS[@]}"; do
+        IFS='|' read -r kind targets _ <<<"${row}"
+        [[ "${kind}" == file ]] && printf '%s\n' ${targets}
+    done
+); do
+    touch "${path}" 2>/dev/null || true
+    [[ -e "${path}" ]] && echo "SEEDED ${path}"
+done
+retire_leftovers
+"""
 
-    `jasper-doctor`'s `check_fanin_asound_wiring` WARNs when
-    `/var/lib/jasper/audio_topology.env` is present and tells the operator to
-    re-run the installer. #2285 deleted the migration that used to remove it and
-    very nearly shipped the WARN with nothing behind it — a warning no operator
-    action could ever clear, which is worse than either half alone.
+# Overrides the real table (sourced beforehand) with a fixture confined to
+# tmp_path -- the real table's `file` row names an absolute host path, and
+# this test must never touch anything outside tmp_path.
+_RETIRE_TEST_TABLE = r"""
+JASPER_RETIRED_LEFTOVERS=(
+    "unit|jasper-retired-test-a.service jasper-retired-test-b.timer|fixture: two retired units"
+    "file|${STATE_DIR}/retired_test_a.json ${SYSTEMD_DIR}/retired_test_b.service|fixture: two retired files"
+)
+"""
 
-    So this pins the PAIR, not the function: the doctor's promise on one side,
-    an installer step that actually deletes the file on the other, wired into
-    BOTH profiles. Asserting only that the function exists would still pass if it
-    were never called.
+
+def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
+    """Behavioural: the retirement table's units are disabled and stopped, its
+    files are gone, and the not-found tombstone a removed unit leaves is reset
+    only AFTER the daemon-reload that made systemd forget the unit file -- a
+    reset-failed before the reload clears nothing.
     """
-    migrations = (_INSTALL_LIB_DIR / "env-migrations.sh").read_text(
-        encoding="utf-8"
+    bindir, state_dir, systemd_dir = (
+        tmp_path / "bin",
+        tmp_path / "state",
+        tmp_path / "systemd",
     )
-    body = migrations.split("remove_retired_audio_topology_state() {", 1)[1].split(
-        "\n}\n", 1
-    )[0]
-    assert 'rm -f "${STATE_DIR}/audio_topology.env"' in body
+    for directory in (bindir, state_dir, systemd_dir):
+        directory.mkdir()
+    log = tmp_path / "systemctl.log"
+    stub = bindir / "systemctl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
 
-    # That it actually RUNS, on both profiles (a box only carries the ghost
-    # file if it predates the retirement, which is true on either tier), is
-    # pinned by _ON_EVERY_PROFILE in test_install_profile_tiers.
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH={shlex.quote(str(bindir))}:$PATH && "
+            f"source {_INSTALL_LIB_DIR / 'retirements.sh'} && "
+            f"{_RETIRE_TEST_TABLE}{_RETIRE_DRIVER}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "STATE_DIR": str(state_dir),
+            "SYSTEMD_DIR": str(systemd_dir),
+        },
+    )
 
-    # The doctor's side of the pair: the remedy still names re-running the
-    # installer, which the step above is what makes true.
-    doctor_src = (
-        REPO_ROOT / "jasper" / "cli" / "doctor" / "audio_runtime_fanin.py"
-    ).read_text(encoding="utf-8")
-    assert "audio_topology.env" in doctor_src
-    assert "Re-run " in doctor_src
+    assert result.returncode == 0, result.stderr
+    # Self-check: a driver that seeded nothing passes every "it is gone" below
+    # for the wrong reason.
+    seeded = {
+        Path(line.split(" ", 1)[1]).name
+        for line in result.stdout.splitlines()
+        if line.startswith(f"SEEDED {tmp_path}")
+    }
+    assert seeded == {
+        "retired_test_a.json",
+        "retired_test_b.service",
+    }, seeded
+    assert [p for d in (state_dir, systemd_dir) for p in d.iterdir()] == []
+
+    calls = [line.split() for line in log.read_text(encoding="utf-8").splitlines()]
+    reload_at = next(i for i, call in enumerate(calls) if call[0] == "daemon-reload")
+    retired_units = {
+        "jasper-retired-test-a.service",
+        "jasper-retired-test-b.timer",
+    }
+    for verb, before_reload in (
+        ("disable", True),
+        ("stop", True),
+        ("reset-failed", False),
+    ):
+        seen = {
+            (index < reload_at, unit)
+            for index, call in enumerate(calls)
+            if call[0] == verb
+            for unit in call[1:]
+            if unit != "--now"
+        }
+        assert seen == {(before_reload, unit) for unit in retired_units}, (
+            verb,
+            calls,
+        )
+
+
+def test_retired_leftovers_table_file_targets_are_scoped():
+    """Static pin: every `file` row's targets live under a managed directory
+    or /etc -- never an arbitrary absolute path -- and both row kinds exist."""
+    text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
+    rows = re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
+    kinds = {kind for kind, _ in rows}
+    assert kinds == {"unit", "file"}
+    for kind, body in rows:
+        if kind != "file":
+            continue
+        targets = body.split("|", 1)[0].split()
+        assert targets
+        for target in targets:
+            assert target.startswith(("${STATE_DIR}/", "${SYSTEMD_DIR}/", "/etc/")), target

@@ -24,15 +24,6 @@ WIZARD_UNITS=(
     jasper-chat-web
 )
 
-# Legacy migration cleanup: the removed endpoint tier served /sources/ from a
-# standalone socket on 8773, the port both profiles now serve from the combined
-# jasper-web bundle. Retire it before any jasper-web.socket enable; a
-# `systemctl disable --now` is never part of a unit-staging transaction.
-retire_legacy_sources_web_socket() {
-    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
-        >/dev/null 2>&1 || true
-}
-
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
@@ -109,21 +100,8 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
 )
 
 install_local_audio_graph_unit_files() {
-    retire_legacy_sources_web_socket
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
-    # The former combo-health timer inferred capture failure from successful
-    # reopen counters and could withdraw the entire UAC2 function. Its alternate
-    # capture fallback no longer exists, so upgrades retire the destructive
-    # observer before staging the remaining graph units. Fresh installs no-op.
-    systemctl disable --now jasper-fanin-combo-health.timer \
-        >/dev/null 2>&1 || true
-    systemctl stop jasper-fanin-combo-health.service \
-        >/dev/null 2>&1 || true
-    rm -f "${SYSTEMD_DIR}/jasper-fanin-combo-health.timer" \
-          "${SYSTEMD_DIR}/jasper-fanin-combo-health.service"
-    rm -f /var/lib/jasper/usb_combo_fallback.json \
-          /var/lib/jasper/combo_health_tick.json 2>/dev/null || true
     # The guards below are a coupled runtime set. Do not continue to overwrite
     # either consumer when its required library could not be staged.
     if ! install -m 0644 \
@@ -151,11 +129,6 @@ install_local_audio_graph_unit_files() {
     # rather than waiting for the next reboot. Best-effort (the caller reloads
     # again centrally; a transient reload miss here must not mask a row failure).
     systemctl daemon-reload 2>/dev/null || true
-    # A tick that raced the upgrade can finish after the stop and leave the now
-    # removed service as a not-found/failed tombstone. Clear that terminal state
-    # only after daemon-reload has forgotten the old unit files.
-    systemctl reset-failed jasper-fanin-combo-health.service \
-        jasper-fanin-combo-health.timer >/dev/null 2>&1 || true
     if [[ -n "${failed}" ]]; then
         echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
         return 1
