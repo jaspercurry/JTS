@@ -936,6 +936,7 @@ def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None
 RouteFn = Callable[[Any], None]
 RouteTable = Mapping[str, RouteFn]
 Resolver = Callable[[str], RouteFn | None]
+Runner = Callable[[Any, RouteFn, str], None]
 
 
 def resolve_samples(samples: RouteTable) -> Callable[[Resolver], Resolver]:
@@ -985,16 +986,25 @@ def dispatch_post(
     *,
     guard: Literal["header", "per-body"] = "header",
     resolve: Resolver | None = None,
+    run: Runner | None = None,
 ) -> None:
     """Route a wizard POST. Unknown paths 404 before any guard, never
     revealing CSRF state. `guard="header"` runs the mutating chokepoint
     here, ahead of any body read; `guard="per-body"` guards nothing — each
-    route body wears `@form_guarded` / `@header_guarded` / `@read_guarded`."""
+    route body wears `@form_guarded` / `@header_guarded` / `@read_guarded`.
+
+    `run=` is the guarded-call hook for a dispatcher that owns a policy no
+    route body can (correction_setup blocks content DSP on a bonded
+    follower and nets a whole path family's exceptions): it is handed
+    `(handler, route, path)` after the guard and calls the route itself."""
     route = _route_for(handler, table, resolve)
     if route is None:
         return
     if guard == "header" and not guard_mutating_request(handler):
         reject_csrf(handler)
+        return
+    if run is not None:
+        run(handler, route, route_path(handler.path))
         return
     route(handler)
 
