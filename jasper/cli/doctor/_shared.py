@@ -41,6 +41,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
 )
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
+from ...service_units import unit_not_running
 
 GREEN = "\033[32m"
 
@@ -292,32 +293,35 @@ def _service_state_failure(
     failure, or ``None`` when it is installed, enabled and active.
 
     One ladder for jasper-fanin, jasper-camilla and jasper-outputd — each
-    passes its own three reason codes. All three units carry an ``[Install]``
-    section, so anything other than ``enabled``/``enabled-runtime`` (including
-    ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
-    come up on its own. `journalctl -u <unit>` is the next step for every
-    caller, so the detail says so rather than repeating a per-unit sentence."""
+    passes its own three reason codes into
+    :func:`jasper.service_units.unit_not_running`. All three units carry an
+    ``[Install]`` section, so anything other than ``enabled``/``enabled-runtime``
+    (including ``static``, ``disabled``, ``indirect``, ``masked``) means the
+    unit will not come up on its own. `journalctl -u <unit>` is the next step
+    for every caller, so the detail says so rather than repeating a per-unit
+    sentence."""
     from ._evidence import evidence
 
     state = evidence.unit_state(unit)
     if state is None:
         return _systemctl_unavailable_result(label)
-    if state.get("load_state") == "not-found":
+    code = unit_not_running(state)
+    if code == "missing":
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
             reason=missing, speaker_silent=True,
         )
-    enabled = state.get("unit_file_state")
-    if enabled not in ("enabled", "enabled-runtime"):
+    if code == "not_enabled":
+        enabled = state.get("unit_file_state")
         return CheckResult(
             label, "fail",
             f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
             f"sudo systemctl enable --now {unit}",
             reason=not_enabled, speaker_silent=True,
         )
-    active = state.get("active_state")
-    if active != "active":
+    if code is not None:
+        active = state.get("active_state")
         return CheckResult(
             label, "fail",
             f"{unit} is enabled but state={active or 'unknown'}. "
