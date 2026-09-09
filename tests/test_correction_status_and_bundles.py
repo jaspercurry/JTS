@@ -54,6 +54,7 @@ from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from jasper.web import (
     correction_capture,
     correction_handlers,
+    correction_runtime,
     correction_setup,
 )
 from ._web_test_helpers import json_post_with_csrf
@@ -195,7 +196,7 @@ async def test_room_startup_recovers_owned_graph_and_current_household_intent(
         cam.path_readable = False
     fresh = _make_session(tmp_path)
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: fresh)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
     await correction_handlers.recover_room_startup_state(fresh, cam)
 
     if outcome.startswith("later"):
@@ -1233,10 +1234,10 @@ def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
         captured.update(kwargs)
         return _READY_ROOM_CORRECTION_SETUP
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: FakeCamilla())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: FakeCamilla())
     monkeypatch.setattr(
-        correction_capture,
-        "_run_async",
+        correction_runtime,
+        "run_async",
         lambda awaitable, *, timeout: asyncio.run(awaitable),
     )
     monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", fake_status)
@@ -1596,7 +1597,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         encoding="utf-8",
     )
     fake_cam = _FakeCamilla(current_path=str(prior_path))
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: fake_cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: fake_cam)
 
     # Hold the sweep entirely — we just want to observe the reset
     # call ordering. The first-sweep task fires-and-forgets onto the
@@ -1964,7 +1965,7 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         encoding="utf-8",
     )
     fake_cam = _FakeCamilla(current_path=str(prior_path), reset_ok=False)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: fake_cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: fake_cam)
     captured: dict = {}
     monkeypatch.setattr(
         correction_capture,
@@ -1972,8 +1973,8 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         _stub_replace_to_tmp(correction_setup, tmp_path, captured),
     )
     monkeypatch.setattr(
-        correction_capture,
-        "_run_async",
+        correction_runtime,
+        "run_async",
         lambda coro, timeout=10.0: asyncio.run(coro),
     )
 
@@ -2042,8 +2043,8 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
     monkeypatch.setattr(correction_capture, "_session", None)
     monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_capture,
-        "_camilla",
+        correction_runtime,
+        "camilla_controller",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
     captured: dict = {}
@@ -2086,8 +2087,8 @@ def test_start_rejects_non_household_strategy_before_dsp(
     )
     monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_capture,
-        "_camilla",
+        correction_runtime,
+        "camilla_controller",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
 
@@ -2126,8 +2127,8 @@ def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
     )
     monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_capture,
-        "_camilla",
+        correction_runtime,
+        "camilla_controller",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
 
@@ -2165,7 +2166,7 @@ def test_start_passes_the_disclosed_run_contract_to_session_admission(
         return sess
 
     monkeypatch.setattr(correction_capture, "_replace_session", replace_session)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: object())
 
     # Stop the handler at the next real step after session admission, so the
     # assertions below are about what /start passed into _replace_session and
@@ -2228,7 +2229,7 @@ def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
         "_replace_session",
         lambda **_kwargs: SimpleNamespace(browser_audio_report={"failed": False}),
     )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: object())
 
     def _unsafe(*_args, **_kwargs):
         raise CorrectionRuntimeSafetyError("graph would be unsafe")
@@ -2344,7 +2345,7 @@ def test_start_discloses_unproven_speaker_readiness_instead_of_refusing(
     )
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(correction_capture.RequestConflict):
+        with pytest.raises(correction_runtime.RequestConflict):
             correction_handlers._handle_start(_DummyJsonHandler())
 
     assert reserved == ["reached"]

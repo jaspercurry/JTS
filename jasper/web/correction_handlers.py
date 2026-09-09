@@ -44,17 +44,18 @@ from ..log_event import log_event
 from . import correction_tuning
 from ..platform.systemd import no_hold
 
-from . import correction_capture
+from . import correction_capture, correction_runtime
 from .correction_capture import (
-    BadRequest,
     CaptureKind,
-    MAX_CALIBRATION_UPLOAD_JSON_BYTES,
-    MAX_WAV_BODY_BYTES,
     REQUIRED_SAMPLE_RATE,
-    RequestConflict,
-    TuningSetupUnavailable,
     _BUNDLE_DELETE_BLOCKED_STATES,
     _session_lock,
+)
+from .correction_runtime import (
+    BadRequest,
+    MAX_CALIBRATION_UPLOAD_JSON_BYTES,
+    RequestConflict,
+    TuningSetupUnavailable,
     logger,
 )
 
@@ -112,7 +113,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     authority_binding = readiness.authority_binding
 
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     blocking_state = correction_capture._reserve_start_slot()
     if blocking_state is not None:
         log_event(
@@ -214,19 +215,19 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 or "browser audio path is not safe for measurement"
             )
 
-        cam = correction_capture._camilla()
+        cam = correction_runtime.camilla_controller()
         prior_session = correction_capture._get_or_create_session()
         if (getattr(prior_session, "startup_recovery", None) or {}).get("required"):
-            correction_capture._run_graph_mutation(
+            correction_runtime.run_graph_mutation(
                 recover_room_startup_state(prior_session, cam),
             )
             if prior_session.startup_recovery["required"]:
                 raise RequestConflict("Room recovery is incomplete; retry Reset")
-        if not correction_capture._run_async(
+        if not correction_runtime.run_async(
             prior_session._restore_listening_volume_if_ramped(), timeout=5.0,
         ):
             raise RequestConflict("speaker volume could not be restored; retry Reset")
-        correction_capture._run_async(
+        correction_runtime.run_async(
             prior_session.restore_level_match_volume(correction_capture._household_level_door()),
             timeout=5.0,
         )
@@ -255,7 +256,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         from jasper.sound.graph_carrier import CarrierCannotHostEq
 
         try:
-            baseline_payload = correction_capture._run_graph_mutation(
+            baseline_payload = correction_runtime.run_graph_mutation(
                 _load_measurement_baseline(
                     sess,
                     cam,
@@ -287,7 +288,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
         try:
-            correction_capture._run_async(sess.begin_noise_capture(), timeout=3.0)
+            correction_runtime.run_async(sess.begin_noise_capture(), timeout=3.0)
             state_started = sess.state == SessionState.NEEDS_NOISE_CAPTURE
         except concurrent.futures.TimeoutError:
             state_started = False
@@ -621,7 +622,7 @@ def _handle_next_position(
             f"cannot advance to next position from state {sess.state.value}"
         )
 
-    correction_capture._run_async(sess.begin_noise_capture(), timeout=3.0)
+    correction_runtime.run_async(sess.begin_noise_capture(), timeout=3.0)
 
     return {
         "session_id": sess.session_id,
@@ -641,7 +642,7 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.correction.session import SessionState
 
     sess = correction_capture._get_or_create_session()
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
 
     async def _run_verify_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
@@ -658,10 +659,10 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     asyncio.run_coroutine_threadsafe(
         correction_capture._run_session_background_audio(sess, _run_verify_sweep),
-        correction_capture._ensure_loop(),
+        correction_runtime.ensure_loop(),
     )
 
-    correction_capture._run_async(
+    correction_runtime.run_async(
         sess.state_changed_from(
             {SessionState.APPLIED, SessionState.VERIFIED},
         ),
@@ -688,7 +689,7 @@ def _wait_for_new_autolevel_run(
             break
         time.sleep(0.05)
     try:
-        correction_capture._run_async(sess.cancel_autolevel(), timeout=1.0)
+        correction_runtime.run_async(sess.cancel_autolevel(), timeout=1.0)
     except Exception:  # noqa: BLE001
         logger.warning("could not cancel a stalled autolevel start", exc_info=True)
     raise RequestConflict("the measurement level check could not start")
@@ -735,7 +736,7 @@ def _handle_autolevel_start(
         )
     previous_data = sess.autolevel
 
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
     from jasper.volume_owner import ClaimKind, volume_owner
 
     owner = volume_owner()
@@ -810,15 +811,15 @@ def _handle_autolevel_start(
             finally:
                 await sess.release_autolevel_run_reservation(reserved)
 
-    reserved = correction_capture._run_async(sess.reserve_autolevel_run(), timeout=2.0)
+    reserved = correction_runtime.run_async(sess.reserve_autolevel_run(), timeout=2.0)
     if not reserved:
         raise RequestConflict("the measurement level check is already running")
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _run_autolevel(), correction_capture._ensure_loop()
+            _run_autolevel(), correction_runtime.ensure_loop()
         )
     except RuntimeError:
-        correction_capture._run_async(
+        correction_runtime.run_async(
             sess.release_autolevel_run_reservation(reserved),
             timeout=2.0,
         )
@@ -835,7 +836,7 @@ def _handle_autolevel_lock(
     ramping and freeze main_volume at its current value. The
     locked level is what subsequent sweeps will play through."""
     sess = correction_capture._get_or_create_session()
-    fired = correction_capture._run_async(sess.lock_autolevel(), timeout=2.0)
+    fired = correction_runtime.run_async(sess.lock_autolevel(), timeout=2.0)
     return {"locked": bool(fired), "autolevel": sess.autolevel.snapshot()}
 
 
@@ -845,7 +846,7 @@ def _handle_autolevel_cancel(
     """POST /autolevel/cancel: abort the autolevel run and restore
     main_volume to whatever it was before the ramp started."""
     sess = correction_capture._get_or_create_session()
-    fired = correction_capture._run_async(sess.cancel_autolevel(), timeout=2.0)
+    fired = correction_runtime.run_async(sess.cancel_autolevel(), timeout=2.0)
     snapshot = sess.autolevel.snapshot()
     return {
         "cancel_requested": bool(fired),
@@ -867,14 +868,14 @@ def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.correction import playback
     from jasper.measurement_window import measurement_window
 
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     duration_s = max(1.0, min(15.0, float(body.get("duration_s", 5.0))))
 
     async def _run_test_tone() -> None:
         async with measurement_window():
             await playback.play_test_tone(duration_s=duration_s)
 
-    correction_capture._run_async(_run_test_tone(), timeout=duration_s + 30.0)
+    correction_runtime.run_async(_run_test_tone(), timeout=duration_s + 30.0)
     return {"played": True, "duration_s": duration_s}
 
 
@@ -893,7 +894,7 @@ def _handle_calibration_fetch(
 ) -> dict[str, Any]:
     from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     model = str(body.get("model") or "").strip()
     serial = str(body.get("serial") or "").strip()
     orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
@@ -915,7 +916,7 @@ def _handle_calibration_upload(
         store_calibration,
     )
 
-    body = correction_capture._read_json_body(
+    body = correction_runtime.read_json_body(
         handler,
         max_bytes=MAX_CALIBRATION_UPLOAD_JSON_BYTES,
     )
@@ -975,9 +976,9 @@ def _current_config_presentation(sess: Any) -> tuple[dict[str, Any], dict[str, A
         describe_current_config,
     )
 
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
     try:
-        path = correction_capture._run_async(
+        path = correction_runtime.run_async(
             cam.get_config_file_path(best_effort=True), timeout=2.0,
         )
     except Exception:  # noqa: BLE001
@@ -1102,7 +1103,7 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from . import correction_report
 
     sess = correction_capture._get_or_create_session()
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     session_id = str(body.get("id") or "")
     try:
         bundle_dir = correction_report.resolve_session_bundle_dir(
@@ -1129,25 +1130,6 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"deleted": True, "session_id": session_id}
 
 
-def _read_wav_body(
-    handler: BaseHTTPRequestHandler,
-    *,
-    max_bytes: int = MAX_WAV_BODY_BYTES,
-) -> bytes:
-    try:
-        length = int(handler.headers.get("Content-Length") or "0")
-    except ValueError as e:
-        raise BadRequest("invalid Content-Length") from e
-    if length <= 0:
-        raise BadRequest("empty body")
-    if length > max_bytes:
-        raise BadRequest(f"WAV body too large ({length} bytes)")
-    raw = handler.rfile.read(length)
-    if len(raw) != length:
-        raise BadRequest("incomplete WAV body")
-    return raw
-
-
 def _handle_local_capture_setup(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -1164,7 +1146,7 @@ def _handle_local_capture_setup(
     if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
         raise RequestConflict("microphone setup is not available now")
 
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     requested_session_id = str(body.get("session_id") or "")
     if requested_session_id != sess.session_id:
         raise RequestConflict("this room-correction run is no longer current")
@@ -1183,7 +1165,7 @@ def _handle_local_capture_setup(
         raise ValueError(mismatch)
 
     try:
-        browser_report = correction_capture._run_async(
+        browser_report = correction_runtime.run_async(
             sess.bind_local_capture_setup(
                 mic_calibration=mic_calibration,
                 input_device=input_device,
@@ -1236,15 +1218,15 @@ def _handle_upload_noise(
             "complete and lock the measurement level check before measuring"
         )
 
-    correction_capture._run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
-    body = _read_wav_body(handler)
+    correction_runtime.run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
+    body = correction_runtime.read_wav_body(handler)
     captured_path = sess.noise_capture_path_for_position(sess.current_position)
     captured_path.parent.mkdir(parents=True, exist_ok=True)
     captured_path.write_bytes(body)
-    correction_capture._run_async(sess.on_noise_capture_uploaded(captured_path), timeout=10.0)
+    correction_runtime.run_async(sess.on_noise_capture_uploaded(captured_path), timeout=10.0)
     correction_capture._schedule_measurement_sweep(
         sess,
-        correction_capture._camilla(),
+        correction_runtime.camilla_controller(),
         from_state=SessionState.NEEDS_NOISE_CAPTURE,
     )
     return {
@@ -1274,7 +1256,7 @@ def _handle_repeat_position(
         )
     correction_capture._schedule_repeat_sweep(
         sess,
-        correction_capture._camilla(),
+        correction_runtime.camilla_controller(),
         from_state=SessionState.NEEDS_REPEAT_CAPTURE,
     )
     return {
@@ -1298,7 +1280,7 @@ def _handle_upload_capture(
     if sess is None:
         raise RuntimeError("no session — POST /start first")
 
-    body = _read_wav_body(handler)
+    body = correction_runtime.read_wav_body(handler)
 
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
         captured_path = sess.verify_capture_path()
@@ -1311,7 +1293,7 @@ def _handle_upload_capture(
 
     auto_reverted = False
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
-        correction_capture._run_async(
+        correction_runtime.run_async(
             sess.on_verify_capture_uploaded(captured_path), timeout=30.0,
         )
         # P4: a CONFIRMED-regression verdict auto-reverts. The verdict was
@@ -1321,11 +1303,11 @@ def _handle_upload_capture(
         # DSP + preference preserved). Every other verdict is a no-op.
         auto_reverted = _maybe_auto_revert(sess)
     elif sess.state == SessionState.AWAITING_REPEAT_CAPTURE:
-        correction_capture._run_async(
+        correction_runtime.run_async(
             sess.on_repeat_capture_uploaded(captured_path), timeout=30.0,
         )
     else:
-        correction_capture._run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
+        correction_runtime.run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
 
     # The upload response is a mechanism acknowledgement, not a second
     # presentation contract. The browser refreshes the server envelope for
@@ -1371,7 +1353,7 @@ def _handle_crossover_v2_position_ready(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
     """Release only the capture attempt whose pose the mover confirmed."""
-    raw = correction_capture._read_json_body(handler)
+    raw = correction_runtime.read_json_body(handler)
     for key in ("index", "attempt"):
         if key not in raw:
             raise BadRequest(f"{key} is required")
@@ -1399,7 +1381,7 @@ def _handle_crossover_v2_complete(
     a finished session drops it with the slot — so "nothing waiting" is a conflict
     (stale caller), the position-ready shape.
     """
-    correction_capture._read_json_body(handler)  # no fields consumed; drains the request body
+    correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_complete = correction_capture._capture_complete_request
     if request_complete is None:
@@ -1440,7 +1422,7 @@ def _handle_crossover_v2_retake(
     leaves the household with the take they already had, which is why it is
     never a session death.
     """
-    correction_capture._read_json_body(handler)  # no fields consumed; drains the request body
+    correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_retake = correction_capture._capture_retake_request
     if request_retake is None:
@@ -1473,7 +1455,7 @@ def _handle_crossover_v2_capture(
     household POST served in-request, so the tracker's ordinary
     in-flight-request accounting holds the process for it.
     """
-    raw = correction_capture._read_json_body(handler)
+    raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host
 
@@ -1487,8 +1469,8 @@ def _handle_crossover_v2_capture(
     prepared = v2host.prepare_v2_session(
         raw,
         status=status,
-        run_async=correction_capture._run_async,
-        camilla_factory=correction_capture._camilla,
+        run_async=correction_runtime.run_async,
+        camilla_factory=correction_runtime.camilla_controller,
         verify_only=verify_only,
     )
     kind = CaptureKind(
@@ -1511,14 +1493,14 @@ def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any
     commission work order D3): a speaker that cannot open its post-apply check
     must not be corrected and left ungraded.
     """
-    raw = correction_capture._read_json_body(handler)
+    raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host
 
     return v2host.handle_v2_apply(
         raw,
-        correction_capture._run_async,
-        correction_capture._camilla,
+        correction_runtime.run_async,
+        correction_runtime.camilla_controller,
         status=correction_crossover_backend.status_payload(),
     )
 
@@ -1531,11 +1513,11 @@ def _handle_crossover_v2_republish(
     Touches no DSP and holds no capture — it replaces the durable session
     document around the published-candidate slot (host-owned apply keys
     carried forward) and moves no graph — so unlike its apply sibling it
-    needs neither ``_run_async`` nor ``_camilla`` nor the stage-2
+    needs neither ``run_async`` nor ``camilla_controller`` nor the stage-2
     ``status_payload()``. The apply door still runs every gate it always did,
     on the next request.
     """
-    raw = correction_capture._read_json_body(handler)
+    raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_v2_republish as republish
 
@@ -1548,11 +1530,11 @@ def _handle_crossover_v2_decline(
     """POST /crossover/v2/decline: the review screen's "Keep current sound".
 
     Touches no DSP and holds no capture, so unlike its apply/restore siblings it
-    needs neither ``_run_async`` nor ``_camilla`` — it records a decision and
+    needs neither ``run_async`` nor ``camilla_controller`` — it records a decision and
     re-renders. The capture snapshot rides the response for the same reason
     ``/crossover/reset``'s does: the page renders one envelope per round trip.
     """
-    raw = correction_capture._read_json_body(handler)
+    raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_flow
 
@@ -1602,7 +1584,7 @@ def _maybe_restore_main_volume(sess, cam) -> None:
             if callable(restore_level_match):
                 await restore_level_match(correction_capture._household_level_door())
 
-        correction_capture._run_async(resilient_restore(_restore()), timeout=5.0)
+        correction_runtime.run_async(resilient_restore(_restore()), timeout=5.0)
     except Exception:  # noqa: BLE001
         logger.exception("main_volume restore after autolevel workflow failed")
 
@@ -1613,7 +1595,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = correction_capture._get_or_create_session()
     # No confidence pre-check here. Until the nanny burn-down
     # (docs/measurement-loop-doctrine.md deviation (d)) this raised a 422
-    # before ``_camilla()`` whenever the confidence report held a
+    # before ``camilla_controller()`` whenever the confidence report held a
     # ``fail``-severity finding — a prediction about how good the evidence was
     # refusing a reversible, measurable experiment, which is not on the
     # doctrine's closed hard-stop list. The doubt now rides to the household as
@@ -1621,7 +1603,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     # and the apply proceeds. What still bounds this path is structural and
     # unchanged: the session state machine, the room-authority binding checked
     # in ``prepare_guard``, and the volume restore below.
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
 
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
@@ -1630,7 +1612,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.get_config_file_path(best_effort=True)
 
     try:
-        correction_capture._run_graph_mutation(
+        correction_runtime.run_graph_mutation(
             sess.apply(
                 _set,
                 camilla_get_config=_get,
@@ -1678,7 +1660,7 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     user_message = body.get("message")
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
@@ -1718,7 +1700,7 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     user_message = body.get("message")
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
@@ -1764,7 +1746,7 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.calibration_agent import proposal_sim, response as advisor_response
     from jasper.correction.session import PEQJSON, SessionState
 
-    body = correction_capture._read_json_body(handler)
+    body = correction_runtime.read_json_body(handler)
     if body.get("confirm") is not True:
         raise BadRequest("apply requires explicit confirm: true")
     raw_peqs = body.get("correction_peqs")
@@ -1883,11 +1865,11 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     preserving topology-owned speaker DSP and current preference EQ.
     """
     sess = correction_capture._get_or_create_session()
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
 
     reset_intent = None
     if hasattr(sess, "begin_autolevel_reset"):
-        reset_intent = correction_capture._run_async(sess.begin_autolevel_reset(), timeout=45.0)
+        reset_intent = correction_runtime.run_async(sess.begin_autolevel_reset(), timeout=45.0)
     else:
         # Duck-typed test/legacy sessions retain the old seam. Production
         # MeasurementSession uses the atomic reset intent above.
@@ -1902,12 +1884,12 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             )
         )
         if autolevel_active:
-            correction_capture._run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
+            correction_runtime.run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
 
     try:
         if hasattr(sess, "stop_background_audio_for_reset"):
-            correction_capture._run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
-        correction_capture._run_graph_mutation(_run_locked_room_reset(sess, cam))
+            correction_runtime.run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
+        correction_runtime.run_graph_mutation(_run_locked_room_reset(sess, cam))
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
@@ -1915,7 +1897,7 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             _maybe_restore_main_volume(sess, cam)
         finally:
             if reset_intent is not None:
-                correction_capture._run_async(sess.end_autolevel_reset(reset_intent), timeout=2.0)
+                correction_runtime.run_async(sess.end_autolevel_reset(reset_intent), timeout=2.0)
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
@@ -2220,11 +2202,11 @@ def _maybe_auto_revert(sess: Any) -> bool:
     """
     if getattr(sess, "acceptance_verdict", None) != "revert":
         return False
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
 
     try:
         return bool(
-            correction_capture._run_graph_mutation(
+            correction_runtime.run_graph_mutation(
                 _run_locked_room_reset(sess, cam, automatic=True)
             )
         )

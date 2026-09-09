@@ -31,6 +31,7 @@ import pytest
 from jasper.web import (
     correction_capture,
     correction_handlers,
+    correction_runtime,
     correction_setup,
 )
 from tests._web_test_helpers import assert_canonical_page
@@ -71,7 +72,7 @@ def test_run_async_timeout_cancels_loop_task():
             cancelled.set()
 
     with pytest.raises(concurrent.futures.TimeoutError):
-        correction_capture._run_async(never_finishes(), timeout=0.01)
+        correction_runtime.run_async(never_finishes(), timeout=0.01)
     assert cancelled.wait(timeout=2)
 
 
@@ -87,9 +88,9 @@ def test_room_graph_mutation_has_no_cancelling_outer_deadline(monkeypatch):
         seen["timeout"] = timeout
         return asyncio.run(coro)
 
-    monkeypatch.setattr(correction_capture, "_run_async", run)
+    monkeypatch.setattr(correction_runtime, "run_async", run)
 
-    assert correction_capture._run_graph_mutation(operation()) == "done"
+    assert correction_runtime.run_graph_mutation(operation()) == "done"
     assert seen == {"timeout": None}
 
 
@@ -104,7 +105,7 @@ def test_all_room_graph_mutation_callers_use_terminal_runner():
     )
     for caller in callers:
         source = inspect.getsource(caller)
-        assert "_run_graph_mutation(" in source
+        assert "run_graph_mutation(" in source
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +895,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     # borrows from exempts it no more than a typed refusal.
     caplog.clear()
     monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
-        correction_capture.BadRequest("apply body must be an object")
+        correction_runtime.BadRequest("apply body must be an object")
     ))
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
@@ -1044,7 +1045,7 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
         (mutated, "correction.crossover_v2_program_mutated_recovered"),
     ):
         cam = Cam(active)
-        monkeypatch.setattr(correction_capture, "_camilla", lambda cam=cam: cam)
+        monkeypatch.setattr(correction_runtime, "camilla_controller", lambda cam=cam: cam)
         with caplog.at_level(logging.INFO):
             caplog.clear()
             asyncio.run(correction_setup._restore_protected_neutral_program_graph())
@@ -1055,13 +1056,13 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
         )
 
     unrelated = Cam("devices: {}\n")
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: unrelated)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: unrelated)
     asyncio.run(correction_setup._restore_protected_neutral_program_graph())
     assert unrelated.calls == ["raw"]
 
     stuck = Cam(program_yaml)
     stuck.loaded = False
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: stuck)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: stuck)
     with pytest.raises(RuntimeError, match="was not confirmed"):
         asyncio.run(correction_setup._restore_protected_neutral_program_graph())
 
@@ -1181,7 +1182,7 @@ def _patch_no_op_camilla(monkeypatch) -> None:
         async def get_config_file_path(self, *, best_effort=False):
             return "/etc/camilladsp/outputd-cutover.yml"
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _FakeCam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _FakeCam())
     # Resolve target without touching the topology-aware carrier.
     async def resolve(_sess, _cam):
         return Path("/etc/camilladsp/no-room.yml")
@@ -1196,7 +1197,7 @@ def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch, tmp_path):
 
     # Run the async helper on a fresh event loop for the test.
     monkeypatch.setattr(
-        correction_capture, "_run_async",
+        correction_runtime, "run_async",
         # asyncio.run, not new_event_loop().run_until_complete — the latter
         # never closes the loop it makes, leaking 3 fds per call.
         lambda coro, timeout=None: asyncio.run(coro),
@@ -1225,7 +1226,7 @@ def test_maybe_auto_revert_swallows_errors(monkeypatch, tmp_path):
 
     _patch_no_op_camilla(monkeypatch)
     monkeypatch.setattr(
-        correction_capture, "_run_async",
+        correction_runtime, "run_async",
         # asyncio.run, not new_event_loop().run_until_complete — the latter
         # never closes the loop it makes, leaking 3 fds per call.
         lambda coro, timeout=None: asyncio.run(coro),
@@ -1305,7 +1306,7 @@ def _session_primed_for_confirmed_revert(tmp_path):
         # Arm the confirmatory verify; the handler does the upload.
         await sess.start_verify_sweep(fake_play)
 
-    correction_capture._run_async(_prime(), timeout=60.0)
+    correction_runtime.run_async(_prime(), timeout=60.0)
 
     sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
     regressed = _synthesize_room_capture(
@@ -1335,9 +1336,9 @@ def test_upload_handler_runs_auto_revert_on_confirmed_regression(
     cam = _RecordingCam()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
+        correction_runtime, "read_wav_body", lambda handler: wav_bytes,
     )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
     async def resolve(_sess, _cam):
         return Path("/tmp/no-room-test.yml")
 
@@ -1370,9 +1371,9 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     cam = _RecordingCam()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
+        correction_runtime, "read_wav_body", lambda handler: wav_bytes,
     )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
 
     async def _boom(s, c):
         raise RuntimeError("target resolution exploded")
@@ -1478,7 +1479,7 @@ def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
         async def get_volume_db(self, best_effort=False):
             return live["db"]
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _Cam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _Cam())
 
     class _Lease:
         unresolved_volume_safety = {"status": "unresolved"}
@@ -1534,7 +1535,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         async def get_volume_db(self, best_effort=False):
             return -15.0
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _Cam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _Cam())
     # Production installs a fader owner before serving, and the v2 drains now
     # refuse without one rather than falling back to a second authority.
     _owned = _Cam()

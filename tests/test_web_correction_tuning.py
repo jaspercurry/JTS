@@ -23,6 +23,7 @@ import pytest
 from jasper.web import (
     correction_capture,
     correction_handlers,
+    correction_runtime,
     correction_tuning,
 )
 from .correction_session_fixtures import make_measurement_session
@@ -94,7 +95,7 @@ def test_interpret_without_key_conflicts(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: False,
     )
-    with pytest.raises(correction_capture.RequestConflict):
+    with pytest.raises(correction_runtime.RequestConflict):
         correction_handlers._handle_interpret(_FakeHandler())
 
 
@@ -103,7 +104,7 @@ def test_propose_without_key_conflicts(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: False,
     )
-    with pytest.raises(correction_capture.RequestConflict):
+    with pytest.raises(correction_runtime.RequestConflict):
         correction_handlers._handle_propose(_FakeHandler())
 
 
@@ -149,7 +150,7 @@ def test_interpret_rejects_non_string_message(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    with pytest.raises(correction_capture.BadRequest):
+    with pytest.raises(correction_runtime.BadRequest):
         correction_handlers._handle_interpret(_FakeHandler(b'{"message":123}'))
 
 
@@ -173,9 +174,9 @@ def test_paid_call_min_interval_gate(monkeypatch):
     # First paid call passes and stamps the gate...
     correction_handlers._handle_interpret(_FakeHandler())
     # ...an immediate second paid call (either handler) is refused honestly.
-    with pytest.raises(correction_capture.RequestConflict, match="paid call"):
+    with pytest.raises(correction_runtime.RequestConflict, match="paid call"):
         correction_handlers._handle_interpret(_FakeHandler())
-    with pytest.raises(correction_capture.RequestConflict, match="paid call"):
+    with pytest.raises(correction_runtime.RequestConflict, match="paid call"):
         correction_handlers._handle_propose(_FakeHandler())
     # Once the window has passed, calls flow again.
     correction_tuning._tuning_last_paid_call[0] = 0.0
@@ -330,21 +331,21 @@ def test_paid_adapter_translates_backend_provider_error(
         raise model_client.AdvisorModelError("provider refused")
 
     monkeypatch.setattr(correction_advisor, advisor_name, fail_provider)
-    with pytest.raises(correction_capture.BadRequest, match="provider refused"):
+    with pytest.raises(correction_runtime.BadRequest, match="provider refused"):
         getattr(correction_handlers, handler_name)(_FakeHandler())
 
 
 # --- /propose/apply: the safety core ----------------------------------
 
 def test_propose_apply_requires_confirm():
-    with pytest.raises(correction_capture.BadRequest):
+    with pytest.raises(correction_runtime.BadRequest):
         correction_handlers._handle_propose_apply(
             _FakeHandler(b'{"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}')
         )
 
 
 def test_propose_apply_requires_peqs():
-    with pytest.raises(correction_capture.BadRequest):
+    with pytest.raises(correction_runtime.BadRequest):
         correction_handlers._handle_propose_apply(_FakeHandler(b'{"confirm":true}'))
 
 
@@ -354,7 +355,7 @@ def test_propose_apply_conflicts_when_not_ready(monkeypatch):
         lambda: _fake_session("applied"),
     )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
-    with pytest.raises(correction_capture.RequestConflict):
+    with pytest.raises(correction_runtime.RequestConflict):
         correction_handlers._handle_propose_apply(_FakeHandler(body))
 
 
@@ -543,7 +544,7 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
     sess = _real_ready_session(tmp_path)
     cam = _RejectingCam()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
 
     async def admitted_authority(_cam, _expected):
         return NO_BASS_EXTENSION_PROFILE_SUMMARY

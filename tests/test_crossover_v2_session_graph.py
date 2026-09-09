@@ -435,7 +435,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     tmp_path, tuning_profile, scope, change, monkeypatch,
 ):
     from jasper.active_speaker.measurement_emit import compile_tuning_graph
-    from jasper.web import correction_capture, correction_setup
+    from jasper.web import correction_runtime, correction_setup
     from jasper import dsp_apply
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
@@ -491,7 +491,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
         yield
 
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
     await correction_setup._restore_protected_neutral_program_graph()
     assert cam.live == ("entry: graph\n" if change == "none" else before)
     assert fingerprint == hashlib.sha256(text.encode()).hexdigest()[:16]
