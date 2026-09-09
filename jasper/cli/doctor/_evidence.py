@@ -22,6 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from ...control.system_metrics import (
+    SAMPLE_INTERVAL_SEC,
+    SERVICE_STATE_INTERVAL_SEC,
+    VCGENCMD_INTERVAL_SEC,
+)
 from ...env_load import parse_env_mapping
 from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
@@ -169,15 +174,75 @@ class Evidence:
 
     # -- systemd -----------------------------------------------------------
 
+    def _fresh_snapshot_metrics(self, max_age_sec: float) -> dict[str, Any] | None:
+        """This run's ``/system/snapshot`` sampler metrics (ADR-0226:
+        jasper-control already polls these; a one-shot CLI must not poll a
+        second time). None when the snapshot is unavailable or its
+        ``last_sample_at`` is older than ``max_age_sec`` — always one of
+        ``system_metrics``'s own cadence constants, never a new one."""
+        payload = self.control_system_snapshot().payload
+        metrics = payload.get("metrics") if isinstance(payload, dict) else None
+        if not isinstance(metrics, dict):
+            return None
+        sampled_at = metrics.get("last_sample_at")
+        if not isinstance(sampled_at, (int, float)):
+            return None
+        if time.time() - sampled_at > max_age_sec:
+            return None
+        return metrics
+
+    # Fields a doctor consumer actually reads off a unit record (service_units
+    # duplicates the union of `unit_failed`/`unit_unstable`/`unit_loaded`/
+    # `unit_active` plus the NRestarts callers here read directly). The
+    # sampler's projected per-service row carries these but not every
+    # `parse_systemctl_show_units` column, so a row missing one still fails
+    # this gate and the caller falls back to `systemctl show`.
+    _UNIT_STATE_SNAPSHOT_FIELDS = ("active_state", "sub_state", "load_state", "n_restarts")
+
+    def _unit_states_from_snapshot(self) -> dict[str, dict[str, Any]] | None:
+        """``DOCTOR_UNIT_ROSTER`` served entirely from the snapshot's
+        projected per-service state, when EVERY rostered unit is present
+        there with the fields above; else None so the caller runs the one
+        ``systemctl show`` covering the whole roster, as today. The sampler
+        only tracks (and only surfaces a quiet unit at all — see
+        ``SystemSampler._service_state_should_surface``) a subset of the
+        roster, so this is commonly None; that is a correct, safe fallback,
+        not a bug."""
+        metrics = self._fresh_snapshot_metrics(SERVICE_STATE_INTERVAL_SEC)
+        if metrics is None:
+            return None
+        services = metrics.get("services")
+        if not isinstance(services, list):
+            return None
+        by_unit: dict[str, dict[str, Any]] = {
+            row["unit"]: row
+            for row in services
+            if isinstance(row, dict) and isinstance(row.get("unit"), str)
+        }
+        out: dict[str, dict[str, Any]] = {}
+        for unit in DOCTOR_UNIT_ROSTER:
+            record = by_unit.get(unit)
+            if record is None or any(
+                field not in record for field in self._UNIT_STATE_SNAPSHOT_FIELDS
+            ):
+                return None
+            out[unit] = record
+        return out
+
     def unit_states(self) -> dict[str, dict[str, Any]] | None:
-        """Every rostered unit's state from one ``systemctl show``; None when
-        systemctl is unavailable on this host."""
-        return self.get(
-            "units",
-            lambda: read_unit_states(
+        """Every rostered unit's state, preferring a fresh
+        ``/system/snapshot`` over a fresh ``systemctl show``; None when
+        neither source can answer (systemctl unavailable on this host)."""
+
+        def read() -> dict[str, dict[str, Any]] | None:
+            projected = self._unit_states_from_snapshot()
+            if projected is not None:
+                return projected
+            return read_unit_states(
                 DOCTOR_UNIT_ROSTER, timeout=UNIT_SHOW_TIMEOUT_SECONDS,
-            ),
-        )
+            )
+
+        return self.get("units", read)
 
     def unit_state(self, unit: str) -> dict[str, Any] | None:
         """One unit's state (see ``service_units.parse_systemctl_show_units``
@@ -235,10 +300,67 @@ class Evidence:
         is transiently depressing it — a value captured here by an unlaned
         caller (``check_ram``) could already be stale by the time that
         lane's turn comes.
+
+        Prefers the snapshot's ``mem_total_mb`` (ADR-0226) when fresh; MemTotal
+        is a boot-time constant, so the MiB-rounded figure round-trips exactly
+        through every consumer's own ``// 1024`` division.
         """
         from ...memory_policy import meminfo_kb
 
-        return self.get("mem_total_kb", lambda: meminfo_kb("MemTotal"))
+        def read() -> int | None:
+            metrics = self._fresh_snapshot_metrics(SAMPLE_INTERVAL_SEC)
+            current = metrics.get("current") if metrics else None
+            mb = current.get("mem_total_mb") if isinstance(current, dict) else None
+            if isinstance(mb, (int, float)) and mb > 0:
+                return int(mb) * 1024
+            return meminfo_kb("MemTotal")
+
+        return self.get("mem_total_kb", read)
+
+    def disk_usage(self, path: str = "/") -> Any:
+        """Fullness of ``path``: the snapshot's already-sampled root-filesystem
+        reading (ADR-0226) when fresh — the only path the sampler tracks —
+        else today's direct ``os.statvfs`` read. ``OSError`` from that direct
+        read still propagates, matching ``memory_policy.disk_usage``."""
+        from ...memory_policy import DiskUsage
+        from ...memory_policy import disk_usage as _read_disk_usage
+
+        def read() -> DiskUsage | None:
+            if path == "/":
+                metrics = self._fresh_snapshot_metrics(SAMPLE_INTERVAL_SEC)
+                current = metrics.get("current") if metrics else None
+                if isinstance(current, dict):
+                    pct = current.get("disk_used_pct")
+                    total_gb = current.get("disk_total_gb")
+                    if (
+                        isinstance(pct, (int, float))
+                        and isinstance(total_gb, (int, float))
+                        and total_gb > 0
+                    ):
+                        total_bytes = round(total_gb * (1024 ** 3))
+                        free_bytes = round(total_bytes * (100 - pct) / 100)
+                        return DiskUsage(path, total_bytes, free_bytes, float(pct))
+            return _read_disk_usage(path)
+
+        return self.get(f"disk_usage:{path}", read)
+
+    def system_metrics_current(self) -> dict[str, Any] | None:
+        """The snapshot's ``metrics.current`` block (throttled bits and the
+        rest) when fresh within ``VCGENCMD_INTERVAL_SEC`` — the slowest
+        cadence anything in it samples at; None when the snapshot is absent,
+        stale, or carries no ``current``. jasper-control is the only vcgencmd
+        poller (ADR-0226); a stale block is treated the same as no block so a
+        wedged sampler cannot report a supply-voltage verdict.
+
+        The mapping lives here, not in the check, so
+        ``resilience.check_supply_voltage`` reads exactly this either way."""
+
+        def read() -> dict[str, Any] | None:
+            metrics = self._fresh_snapshot_metrics(VCGENCMD_INTERVAL_SEC)
+            current = metrics.get("current") if metrics else None
+            return current if isinstance(current, dict) else None
+
+        return self.get("system_metrics_current", read)
 
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)

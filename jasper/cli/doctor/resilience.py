@@ -370,9 +370,7 @@ _UNDER_VOLTAGE_HISTORY_BIT = 0x1
 
 
 def _read_system_metrics_current() -> dict[str, Any] | None:
-    return _nested_dict(
-        evidence.control_system_snapshot().payload, "metrics", "current",
-    )
+    return evidence.system_metrics_current()
 
 
 @doctor_check()
