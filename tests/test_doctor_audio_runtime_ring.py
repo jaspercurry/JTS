@@ -1961,10 +1961,10 @@ def _silent_ring_path_projection(monkeypatch, tmp_path):
 
 
 def _silent_ring_transport_park(monkeypatch, tmp_path):
-    from jasper.control import transport_park
+    from jasper.control import transport_eligibility
 
     monkeypatch.setattr(
-        transport_park,
+        transport_eligibility,
         "snapshot",
         lambda *a, **k: {
             "status": "parked",

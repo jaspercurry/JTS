@@ -44,7 +44,7 @@ from .airplay_health import (
     SAMPLE_INTERVAL_SEC,
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
-from .transport_park import (
+from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
@@ -2226,7 +2226,7 @@ def compose_audio_health(
     Both typed loosely because this module imports those layers lazily (same
     convention as ``topology`` in :func:`_transport_state`).
 
-    ``transport_park`` is ``jasper.control.transport_park.snapshot()`` (or
+    ``transport_park`` is ``jasper.control.transport_eligibility.snapshot()`` (or
     ``None`` before the first slow-cadence read), passed in rather than read
     here: the incident rows and this headline must be the SAME tick's verdict,
     and it is a file read that belongs on the slow cadence.
@@ -2667,7 +2667,7 @@ class AudioHealthSampler:
             # so a bad read lands as status="unavailable" rather than raising.
             # Imported here, not at module scope, so the name cannot shadow the
             # `transport_park` PARAMETER the composers below take.
-            from . import transport_park as transport_park_reader
+            from . import transport_eligibility as transport_park_reader
 
             self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
@@ -2813,14 +2813,14 @@ class AudioHealthSampler:
         """The transport-park verdict THIS sampler last computed.
 
         ``/state`` reads it from here rather than calling
-        ``transport_park.snapshot()`` again: the incident rows and the
+        ``transport_eligibility.snapshot()`` again: the incident rows and the
         signal-path headline in the same payload were built from this cached
         value, and a fresher read would let one response disagree with itself —
         the box parked in ``resilience`` and playing in ``audio_health``.
 
         Falls back to a fresh read only before the first slow tick.
         """
-        from . import transport_park as transport_park_reader
+        from . import transport_eligibility as transport_park_reader
 
         cached = self._transport_park
         if cached is not None:

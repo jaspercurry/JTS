@@ -22,6 +22,7 @@ deliberately not renderable).
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -627,9 +628,10 @@ def check_camilla_recover_park() -> CheckResult:
         f"PARKED — the core DSP graph was stopped after a failed recovery "
         f"({state.get('reason')})",
     ]
-    parked_utc = state.get("parked_utc")
-    if parked_utc:
-        parts.append(f"at {parked_utc}")
+    parked_at = state.get("parked_at")
+    if parked_at is not None:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(parked_at))
+        parts.append(f"at {stamp}")
     for field, prefix in (
         ("detail", ""),
         ("action", "ACTION: "),

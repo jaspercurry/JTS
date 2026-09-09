@@ -86,7 +86,7 @@ def transport_topology_for_coupling(
     active_endpoint = ring_active_endpoint_armed(outputd_values)
     # SERVED, not merely armed: the marker beside a DECLARED bridge is the pair
     # outputd refuses at startup, so it is not this shape. It resolves off-ring
-    # and `jasper.control.transport_park` names it under its own class.
+    # and `jasper.control.transport_eligibility` names it under its own class.
     dac_content_lane = dac_content_ring_served(outputd_values)
     # Read the saved topology ONLY where an axis actually depends on it: the
     # ACTIVE ring's width, which only the ring arm publishes. Every other axis —

@@ -1106,14 +1106,16 @@ def test_dashboard_transport_park_keys_exist_in_park_snapshot():
     own key set on the other — so neither direction can be satisfied by a
     longer name that merely contains the pinned one.
     """
-    from jasper.control import transport_park
+    from jasper.control import transport_eligibility
 
     js = _js_property_accesses(_system_status_js_text())
-    names = _payload_key_names(transport_park.snapshot(env={}))
+    names = _payload_key_names(transport_eligibility.snapshot(env={}))
     # The unavailable branch: an object `_assess` cannot classify.
-    names |= _payload_key_names(transport_park.snapshot(topology=object(), env={}))
     names |= _payload_key_names(
-        transport_park.TransportPark(
+        transport_eligibility.snapshot(topology=object(), env={})
+    )
+    names |= _payload_key_names(
+        transport_eligibility.TransportPark(
             park_class="a_shape", issue="#1", remedy="run this", detail="why",
         ).to_dict()
     )
@@ -1127,7 +1129,7 @@ def test_dashboard_transport_park_keys_exist_in_park_snapshot():
             )
         if key not in names:
             problems.append(
-                f"the park card reads {spelling} but transport_park.snapshot() "
+                f"the park card reads {spelling} but transport_eligibility.snapshot() "
                 f"builds no {key!r} key — that row goes silently blank"
             )
     assert not problems, "\n".join(problems)

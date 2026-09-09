@@ -1041,7 +1041,7 @@ def check_fanin_coupling() -> CheckResult:
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
-        from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+        from ...control.transport_eligibility import ACTIVE_ENDPOINT_REMEDY
 
         coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (

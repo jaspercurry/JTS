@@ -113,7 +113,7 @@ class SystemRoutes(ControlHandlerMixin):
         cached verdict when it has one, so every row in the payload is the
         same observation; the module's own fail-soft read otherwise, because
         the route must keep answering without a sampler."""
-        from ..transport_park import snapshot
+        from ..transport_eligibility import snapshot
 
         return getattr(
             self._audio_health_sampler, "transport_park_snapshot", None,
