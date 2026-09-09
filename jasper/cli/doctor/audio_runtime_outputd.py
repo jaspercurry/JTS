@@ -219,7 +219,7 @@ def _outputd_dual_apple_health(
         # Cumulative group counters. A nonzero value is history outputd
         # recovered from (a bail on the pair restarts the daemon and them).
         counters = ", ".join(
-            f"dual_{name}={dual.get(name)}"
+            f"dual_{name}={dual.get(name, 0)}"
             for name in (
                 "dac_a_xruns",
                 "dac_b_xruns",
