@@ -26,19 +26,16 @@ instead of opening a real socket.
 from __future__ import annotations
 
 import asyncio
-import logging
 import socket
-import sys
 import threading
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-import jasper.audio_io as audio_io_mod
+import jasper.tts_playout as tts_mod
 from jasper.assistant_loudness import AssistantLoudnessProfile, LoudnessMeasurement
-from jasper.audio_io import TtsPlayout
+from jasper.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
 
@@ -267,8 +264,8 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
     ending a turn *early* is the failure mode this primitive defends
     against, not sleeping "too long" under contention.
 
-    So pin the mechanism instead of the wall clock: jasper/audio_io.py
-    imports `asyncio` as a full module, so `audio_io_mod.asyncio.sleep`
+    So pin the mechanism instead of the wall clock: jasper/tts_playout.py
+    imports `asyncio` as a full module, so `tts_mod.asyncio.sleep`
     is patchable from the test side. Recording the requested duration
     instead of actually sleeping removes the flaky scheduler dependency
     entirely while still asserting the one thing wait_drained computes
@@ -285,7 +282,7 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
     async def spy_sleep(delay: float) -> None:
         requested.append(delay)
 
-    monkeypatch.setattr(audio_io_mod.asyncio, "sleep", spy_sleep)
+    monkeypatch.setattr(tts_mod.asyncio, "sleep", spy_sleep)
     await p.wait_drained()
 
     assert len(requested) == 1
@@ -331,10 +328,10 @@ async def test_drain_anchors_fresh_after_idle_gap(monkeypatch):
     first_deadline = p.expected_drain_at()
 
     # Fast-forward our notion of "now" past the first deadline. The
-    # write code only reads time.monotonic() in audio_io, so patching
+    # write code only reads time.monotonic() in tts_playout, so patching
     # there is sufficient.
     fake_now = first_deadline + 1.0
-    monkeypatch.setattr(audio_io_mod.time, "monotonic", lambda: fake_now)
+    monkeypatch.setattr(tts_mod.time, "monotonic", lambda: fake_now)
 
     await p.write(_silence_pcm(sec=chunk_sec))
     second_deadline = p.expected_drain_at()
@@ -379,7 +376,7 @@ async def test_write_segment_reports_transport_acceptance(monkeypatch, state):
 
 
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=TtsPlayout.MIN_TTS_GAIN_DB,
@@ -407,8 +404,8 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
 
 async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkeypatch):
 
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -442,8 +439,8 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
                 raise OSError("second AUDIO command failed")
             super().write(data)
 
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -543,7 +540,7 @@ async def test_unconfirmed_flush_preserves_the_drain_deadline(ack):
 
 
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -565,7 +562,7 @@ async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
 
 
 async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     profile = AssistantLoudnessProfile(
         provider="openai",
         model="gpt-realtime-2",
@@ -583,7 +580,7 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
         calls += 1
         return profile
 
-    monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fake_profile)
+    monkeypatch.setattr(tts_mod, "profile_for_outputd", fake_profile)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -605,12 +602,12 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
 
 
 async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
 
     def fail_profile_lookup(*_args, **_kwargs):
         raise AssertionError("explicit profile should skip voice profile lookup")
 
-    monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fail_profile_lookup)
+    monkeypatch.setattr(tts_mod, "profile_for_outputd", fail_profile_lookup)
     profile = AssistantLoudnessProfile(
         provider="jts",
         model="synthetic-mute-click",
@@ -644,7 +641,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
 
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -735,7 +732,7 @@ async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypat
         saved.append((provider, model, voice, measurement))
 
     monkeypatch.setattr(
-        audio_io_mod, "update_profile_from_measurement", fake_update_profile,
+        tts_mod, "update_profile_from_measurement", fake_update_profile,
     )
 
     measurement = LoudnessMeasurement(
@@ -782,7 +779,7 @@ def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
     """The exact verb fan-in already parses. Depth is fan-in's — the wire
     carries the requested state and nothing else."""
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     seen: list[bytes] = []
 
     def serve() -> None:
@@ -802,7 +799,7 @@ def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
 
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     errors: list[BaseException] = []
 
     def serve() -> None:
@@ -832,8 +829,8 @@ def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
 def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
     parent, child = socket.socketpair()
     child.settimeout(0.5)
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC", 0.01)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC", 0.01)
 
     start = time.monotonic()
     try:
@@ -851,9 +848,9 @@ def test_outputd_adapter_lock_timeout_poisons_and_preserves_owner(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     adapter._lock.acquire()
     try:
         with pytest.raises(TimeoutError, match="adapter lock timed out"):
@@ -872,12 +869,12 @@ def test_outputd_lock_timeout_shutdown_unblocks_nonreading_sendall(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.02)
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 0.5)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.02)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 0.5)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     writer_errors: list[BaseException] = []
 
     def write_until_poisoned() -> None:
@@ -910,7 +907,7 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC", 0.01)
     connect_entered = threading.Event()
     closed = threading.Event()
 
@@ -931,7 +928,7 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
             closed.set()
 
     fake_socket = _BlockingSocket()
-    monkeypatch.setattr(audio_io_mod.socket, "socket", lambda *_a, **_k: fake_socket)
+    monkeypatch.setattr(tts_mod.socket, "socket", lambda *_a, **_k: fake_socket)
     p = TtsPlayout(socket_path="/tmp/nonresponsive-outputd.sock")
 
     with pytest.raises(TimeoutError, match="connect timed out"):
@@ -945,9 +942,9 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
 async def test_meter_control_recovers_on_access_after_stuck_lock(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = adapter  # type: ignore[assignment]
     adapter._lock.acquire()
@@ -975,7 +972,7 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     """Concurrent callers share the replacement published under the lock."""
 
     parent, child = socket.socketpair()
-    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream = tts_mod._OutputdStreamAdapter(parent)
     closed_stream.close()
     child.close()
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
@@ -1025,7 +1022,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
             raise AssertionError("a waiter must not release unowned lock")
 
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     lock = _RefusingLock()
     adapter._lock = lock  # type: ignore[assignment]
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
@@ -1038,7 +1035,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
 
     assert len(lock.timeouts) == 1
     assert 0.0 < lock.timeouts[0] <= (
-        audio_io_mod._OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC
+        tts_mod._OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC
     )
     assert adapter.closed
     assert child.recv(64) == b""
@@ -1052,12 +1049,12 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     monkeypatch, accepted_prefix,
 ) -> None:
 
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 5)
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 5)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -1110,7 +1107,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
 
 def test_outputd_stream_adapter_sends_loudness_control_protocol():
     parent, child = socket.socketpair()
-    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    adapter = tts_mod._OutputdStreamAdapter(parent)
     profile = AssistantLoudnessProfile(
         provider="openai",
         model="gpt-realtime-2",
@@ -1137,7 +1134,7 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
             model="gpt-realtime-2",
             voice="verse",
             tts_envelope_lufs=-42.34,
-            volume_context=audio_io_mod.EffectiveVolumeContext(
+            volume_context=tts_mod.EffectiveVolumeContext(
                 canonical_db=-30.0,
                 downstream_db=0.0,
                 tts_envelope_lufs=-42.34,
@@ -1173,7 +1170,7 @@ async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
     nothing else would heal the connection first."""
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
     parent, child = socket.socketpair()
-    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream = tts_mod._OutputdStreamAdapter(parent)
     closed_stream.close()
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
@@ -1197,14 +1194,14 @@ async def test_program_duck_reports_a_failure_when_there_is_no_connection():
 
 
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream = tts_mod._OutputdStreamAdapter(parent)
     closed_stream.close()
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
@@ -1232,14 +1229,14 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
 async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     monkeypatch,
 ):
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    broken_stream = tts_mod._OutputdStreamAdapter(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1273,7 +1270,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    broken_stream = tts_mod._OutputdStreamAdapter(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1320,7 +1317,7 @@ async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
     )
 
     assert stream.volume_contexts == [
-        audio_io_mod.EffectiveVolumeContext(
+        tts_mod.EffectiveVolumeContext(
             canonical_db=-30.0,
             downstream_db=0.0,
             tts_envelope_lufs=-41.0,
@@ -1339,7 +1336,7 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    broken_stream = tts_mod._OutputdStreamAdapter(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1368,7 +1365,7 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    broken_stream = tts_mod._OutputdStreamAdapter(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1395,7 +1392,7 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    broken_stream = tts_mod._OutputdStreamAdapter(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1408,40 +1405,3 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
 
     assert broken_stream.closed
     assert p._stream is broken_stream
-
-
-def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, caplog):
-    monkeypatch.setattr(
-        "jasper.mic_presence.read_mic_presence",
-        lambda: SimpleNamespace(absent_confirmed=True),
-    )
-    with caplog.at_level(logging.WARNING, logger="jasper.audio_io"):
-        audio_io_mod._log_audio_open_failure("MicCapture", "hw:1,0", RuntimeError("boom"))
-    assert [r.levelno for r in caplog.records] == [logging.WARNING]
-
-
-async def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
-    """The decimating mic path resamples on `jasper.dsp_numpy`.
-
-    scipy is ~58 MB resident for the life of jasper-voice, whose
-    `jts-mic.slice` sets `MemorySwapMax=0` (issue #3697), and the callback
-    is the one place the mic path could reach for it. Blocking the import
-    here fails a reintroduced `from scipy.signal import ...` outright.
-    """
-    monkeypatch.setitem(sys.modules, "scipy", None)
-    monkeypatch.setitem(sys.modules, "scipy.signal", None)
-    cap = audio_io_mod.MicCapture(
-        "hw:1,0", capture_rate=48_000, capture_channels=2,
-    )
-    cap._queue = audio_io_mod._CaptureQueue()
-    frames = audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES * 3
-    indata = np.random.default_rng(7).integers(
-        -20_000, 20_000, size=(frames, 2), dtype=np.int16,
-    )
-
-    cap._callback(indata, frames, None, None)
-
-    chunk = await cap._queue.get()
-    assert chunk.dtype == np.int16
-    assert chunk.shape == (audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES,)
-    assert audio_io_mod.resample_poly.__module__ == "jasper.dsp_numpy"

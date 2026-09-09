@@ -60,7 +60,7 @@ from .music_sources import (
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
-from .volume_owner import VolumeOwner
+from .volume_owner import VolumeOwner, install_volume_owner
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -70,10 +70,6 @@ from .volume_persistence import (
 )
 
 if TYPE_CHECKING:
-    # Avoid loading camilladsp/dbus modules at unit-test time. The
-    # coordinator is duck-typed against CamillaController and
-    # RendererClient; the real Pi-side imports happen in voice_daemon
-    # and jasper-control.
     from .camilla import CamillaController
     from .renderer import RendererClient
     from .volume_persistence import VolumeRecord
@@ -2791,8 +2787,10 @@ async def _busctl_set_property(
 
 async def env_canonical_target_db() -> float:
     """Read current household intent through the active source coordinator."""
-    from jasper.camilla import primary_controller
+    # lazy: import cost — every wizard, CLI and daemon that imports this module
+    # to read the projection would otherwise load the whole actuator graph.
     from jasper import librespot_state
+    from jasper.camilla import primary_controller
     from jasper.renderer import RendererClient
 
     coord = VolumeCoordinator(
@@ -2839,12 +2837,8 @@ def install_env_canonical_target_provider() -> None:
     Which processes call it is pinned by
     ``tests/test_canonical_target_registration.py``.
     """
-    from jasper.camilla import (
-        primary_controller,
-        set_canonical_target_db_provider,
-    )
-
-    from .volume_owner import install_volume_owner
+    # lazy: import cost — see env_canonical_target_db above.
+    from jasper.camilla import primary_controller, set_canonical_target_db_provider
 
     set_canonical_target_db_provider(env_canonical_target_db)
 

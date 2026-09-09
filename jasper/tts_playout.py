@@ -9,10 +9,9 @@ import json
 import logging
 import select
 import socket
-import subprocess
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -26,389 +25,16 @@ from .assistant_loudness import (
     update_profile_from_measurement,
     upsample_2x,
 )
-from .audio_buffer import AudioBuffer, InputFrame
 from .assistant_volume import EffectiveVolumeContext
-from .dsp_numpy import resample_poly
+from .fanin_coupling import assistant_wire_is_wide
 from .log_event import log_event
 from .platform import wire
 from .tts_routing import FANIN_TTS_SOCKET
-from . import wake_ports
-
-# `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
-# installed in the local dev venv and isn't needed by the pure-Python
-# helpers in this module (UdpMicCapture and the dataclasses).
-# Lazy-import inside the two places that actually open PortAudio streams
-# (_log_audio_open_failure, MicCapture.__aenter__) so the module can be
-# imported on a dev machine, hardware-free tests can parse it, and the
-# lazy-import guards in test_lazy_imports.py can run.
-# The annotation on MicCapture._stream uses `sd.InputStream`, but
-# `from __future__ import annotations` above makes that a string —
-# never evaluated.
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-    import sounddevice as sd
-
-
-class InputDeviceUnavailable(RuntimeError):
-    """The primary microphone input could not be opened at startup.
-
-    Raised by the voice daemon's leg factory when the must-have "on"
-    wake leg's device won't open (absent card, PortAudio "No input
-    device matching ...", busy capture, or a malformed/unbindable UDP
-    transport). The daemon's ``main()`` catches it and exits
-    ``VOICE_MIC_UNAVAILABLE_EXIT`` so systemd parks the unit cleanly
-    instead of crash-looping toward ``StartLimitAction=reboot``."""
-
-    def __init__(self, device: str, cause: BaseException | None = None) -> None:
-        self.device = device
-        detail = f": {type(cause).__name__}: {cause}" if cause is not None else ""
-        super().__init__(
-            f"primary microphone input {device!r} unavailable{detail}"
-        )
-
-
-def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
-    """Dump environmental state when a sounddevice stream open fails.
-
-    Called from MicCapture.__aenter__ immediately before re-raising
-    on a real open failure. The bare exception (typically
-    `ValueError: No <kind> device matching '<name>'`) doesn't tell
-    us whether ALSA can see the device, whether dmesg has a recent
-    USB-disconnect line, or what PortAudio actually has enumerated —
-    all common when the Apple dongle de-enumerates after losing
-    its analog load, or when the AEC bridge's loopback isn't fed.
-    Capturing this snapshot once at failure beats blind reasoning
-    from a stack trace days later.
-
-    Best-effort: a logging helper must NEVER mask or suppress the
-    underlying audio failure, so every snapshot path is wrapped in
-    `try/except` and falls through to `logger.warning` rather than
-    raising. The caller still re-raises the original exception.
-    """
-    # A missing mic is already the reconciler's single source of truth. When it
-    # has confirmed "no microphone", a capture-open failure here is that same
-    # expected fact — not a new incident — so log one line and skip the full
-    # portaudio/arecord/aplay/dmesg snapshot. Keeps absence one flag, not a
-    # cascade. Playback failures, and capture failures with a present/unknown
-    # mic, still get the full snapshot below. See jasper/mic_presence.py.
-    # "MicCapture" is the literal the capture caller passes — a "capture"
-    # comparison here never matched and the cascade ran on absent mics too.
-    if role == "MicCapture":
-        try:
-            from jasper.mic_presence import read_mic_presence
-            if read_mic_presence().absent_confirmed:
-                logger.warning(
-                    "audio open failed (expected): role=capture device=%r — no "
-                    "microphone present per the AEC reconciler; voice parked, "
-                    "auto-starts on reconnect (%s)",
-                    device, type(exc).__name__,
-                )
-                return
-        except Exception:  # noqa: BLE001 — the gate must never mask the failure
-            pass
-
-    import sounddevice as sd  # Pi-side dep, lazy — see module top.
-
-    logger.error(
-        "audio open failed: role=%s device=%r exc=%s: %s",
-        role, device, type(exc).__name__, exc,
-    )
-    try:
-        # PortAudio's view — what sounddevice could see at the
-        # moment of failure. If our target device isn't in this
-        # list, the dongle/mic disappeared (most common cause).
-        devices = sd.query_devices()
-        logger.error("audio open failed: portaudio devices = %s", list(devices))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("audio open failed: query_devices snapshot failed: %s", e)
-    for cmd, label in (
-        (["aplay", "-l"], "aplay -l"),
-        (["arecord", "-l"], "arecord -l"),
-    ):
-        try:
-            out = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=2.0,
-            ).stdout
-            logger.error("audio open failed: %s =\n%s", label, out.strip())
-        except Exception as e:  # noqa: BLE001
-            logger.warning("audio open failed: %s snapshot failed: %s", label, e)
-    try:
-        # Last 20 lines of dmesg catches USB-disconnect / xhci
-        # reset events that often correlate with dongle dropouts.
-        out = subprocess.run(
-            ["dmesg", "--ctime"],
-            capture_output=True, text=True, timeout=2.0,
-        ).stdout
-        tail = "\n".join(out.strip().splitlines()[-20:])
-        logger.error("audio open failed: dmesg tail =\n%s", tail)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("audio open failed: dmesg snapshot failed: %s", e)
-
-
-# Capture consumers discard audio older than 1 s. Slow turn acquisition has
-# its own 20 s budget; it must not make idle wake detection replay a backlog.
-CAPTURE_MAX_AGE_SEC = 1.0
-CAPTURE_MAX_FRAMES = 64
-CAPTURE_GAP_SEC = 0.32  # Four normal 80 ms packets without input.
-
-
-class _CaptureQueue:
-    def __init__(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._ready = asyncio.Event()
-        self._lock = threading.Lock()
-        self._buffer = AudioBuffer(CAPTURE_MAX_FRAMES, CAPTURE_MAX_AGE_SEC)
-        self._notification_pending = False
-        self._last_received_at: float | None = None
-        self.last_frame: InputFrame | None = None
-
-    @property
-    def dropped_frames(self) -> int:
-        return self._buffer.dropped_frames
-
-    def put_nowait(
-        self, pcm, captured_at: float | None = None, *, discontinuity: bool = False,
-    ) -> None:
-        now = time.monotonic() if captured_at is None else captured_at
-        with self._lock:
-            discontinuity |= (
-                self._last_received_at is not None
-                and now - self._last_received_at > CAPTURE_GAP_SEC
-            )
-            self._last_received_at = now
-            self._buffer.append(pcm, now, discontinuity=discontinuity)
-            # PortAudio's thread retains at most one loop notification, not
-            # one scheduled callback (and PCM array) per captured frame.
-            if not self._notification_pending:
-                self._notification_pending = True
-                self._loop.call_soon_threadsafe(self._notify)
-
-    def _notify(self) -> None:
-        with self._lock:
-            self._notification_pending = False
-            self._ready.set()
-
-    async def get(self):
-        while True:
-            with self._lock:
-                frame = self._buffer.pop()
-                if frame is not None:
-                    self.last_frame = frame
-                    return frame.pcm
-                self._ready.clear()
-            await self._ready.wait()
-
-
-class MicCapture:
-    """Capture channel 0 as 80 ms mono frames at 16 kHz.
-
-    PortAudio does not resample: the source must support the requested
-    capture rate, which must be an integer multiple of the output rate.
-    """
-
-    OUTPUT_RATE = 16000
-    OUTPUT_FRAME_SAMPLES = 1280  # 80 ms at 16 kHz
-
-    def __init__(
-        self,
-        device: str | int,
-        capture_rate: int = OUTPUT_RATE,
-        capture_channels: int = 1,
-    ) -> None:
-        if capture_rate < self.OUTPUT_RATE:
-            raise RuntimeError(
-                f"capture_rate {capture_rate} must be >= {self.OUTPUT_RATE}"
-            )
-        if capture_rate % self.OUTPUT_RATE != 0:
-            raise RuntimeError(
-                f"capture_rate {capture_rate} must be an integer multiple "
-                f"of {self.OUTPUT_RATE} (downsample ratio must be exact)"
-            )
-        self._device = device
-        self._capture_rate = capture_rate
-        self._capture_channels = capture_channels
-        self._decimation = capture_rate // self.OUTPUT_RATE
-        # Block size at the capture rate that yields exactly OUTPUT_FRAME_SAMPLES
-        # frames at OUTPUT_RATE after downsampling.
-        self._capture_block = self.OUTPUT_FRAME_SAMPLES * self._decimation
-        # Lazy queue init — see UdpMicCapture for rationale (construct
-        # from sync code shouldn't fail on stale event-loop state).
-        self._queue: _CaptureQueue | None = None
-        self._stream: sd.InputStream | None = None
-
-    def _callback(self, indata, frames, time_info, status):  # noqa: ARG002
-        if status:
-            logger.debug("mic status: %s", status)
-        if self._queue is None:
-            return
-        captured_at = time.monotonic()
-        # Take channel 0 (mono). UMIK-2 et al. expose stereo, but the L
-        # capsule is what we want for voice; R is silent or duplicate.
-        ch0 = indata[:, 0]
-        if self._decimation == 1:
-            chunk = ch0.astype(np.int16, copy=True)
-        else:
-            # Polyphase resample with a built-in anti-alias filter, not
-            # naive stride-decimation, which would alias voice content
-            # above 8 kHz back into the audible band.
-            resampled = resample_poly(ch0, up=1, down=self._decimation)
-            chunk = np.clip(resampled, -32768, 32767).astype(np.int16)
-        self._queue.put_nowait(chunk, captured_at, discontinuity=bool(status))
-
-    @property
-    def last_frame(self) -> InputFrame | None:
-        return self._queue.last_frame if self._queue is not None else None
-
-    @property
-    def dropped_frames(self) -> int:
-        return self._queue.dropped_frames if self._queue is not None else 0
-
-    async def __aenter__(self) -> "MicCapture":
-        import sounddevice as sd  # Pi-side dep, lazy — see module top.
-
-        self._queue = _CaptureQueue()
-        try:
-            self._stream = sd.InputStream(
-                device=self._device,
-                samplerate=self._capture_rate,
-                channels=self._capture_channels,
-                dtype="int16",
-                blocksize=self._capture_block,
-                callback=self._callback,
-            )
-            self._stream.start()
-        except Exception as e:  # noqa: BLE001
-            if self._stream is not None:
-                with suppress(Exception):
-                    self._stream.close()
-                self._stream = None
-            _log_audio_open_failure("MicCapture", self._device, e)
-            raise
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            try:
-                stream.stop()
-            except BaseException:  # noqa: BLE001
-                with suppress(Exception):
-                    stream.close()
-                raise
-            else:
-                stream.close()
-
-    async def frames(self):
-        if self._queue is None:
-            raise RuntimeError("MicCapture.frames() called before __aenter__")
-        while True:
-            yield await self._queue.get()
-
-
-class UdpMicCapture:
-    """Mono 16 kHz int16 UDP input. Timestamps measure application ingress;
-    the unsequenced PCM carrier cannot expose sender or kernel queue age.
-    """
-
-    OUTPUT_RATE = MicCapture.OUTPUT_RATE
-    OUTPUT_FRAME_SAMPLES = MicCapture.OUTPUT_FRAME_SAMPLES
-
-    def __init__(
-        self, host: str = "127.0.0.1", port: int = 9876,
-    ) -> None:
-        self._host = host
-        self._port = port
-        self._queue: _CaptureQueue | None = None
-        self._transport: asyncio.BaseTransport | None = None
-
-    @property
-    def last_frame(self) -> InputFrame | None:
-        return self._queue.last_frame if self._queue is not None else None
-
-    @property
-    def dropped_frames(self) -> int:
-        return self._queue.dropped_frames if self._queue is not None else 0
-
-    async def __aenter__(self) -> "UdpMicCapture":
-        loop = asyncio.get_running_loop()
-        self._queue = _CaptureQueue()
-        try:
-            self._transport, _ = await loop.create_datagram_endpoint(
-                lambda: _UdpMicProtocol(self._queue),
-                local_addr=(self._host, self._port),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "UdpMicCapture bind failed: host=%s port=%d exc=%s: %s",
-                self._host, self._port, type(e).__name__, e,
-            )
-            raise
-        logger.info(
-            "UdpMicCapture listening on %s:%d (frame=%d samples @ %d Hz)",
-            self._host, self._port, self.OUTPUT_FRAME_SAMPLES, self.OUTPUT_RATE,
-        )
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
-
-    async def frames(self):
-        if self._queue is None:
-            raise RuntimeError("UdpMicCapture.frames() called before __aenter__")
-        while True:
-            yield await self._queue.get()
-
-
-class _UdpMicProtocol(asyncio.DatagramProtocol):
-    def __init__(self, queue: _CaptureQueue) -> None:
-        self._queue = queue
-        self._gap_pending = False
-
-    def datagram_received(self, data: bytes, _addr) -> None:
-        if not data:
-            return
-        if len(data) % 2 != 0:
-            self._gap_pending = True
-            logger.warning(
-                "UdpMicCapture: dropping malformed packet (%d bytes, odd)",
-                len(data),
-            )
-            return
-        chunk = np.frombuffer(data, dtype=np.int16)
-        self._queue.put_nowait(chunk, discontinuity=self._gap_pending)
-        self._gap_pending = False
-
-
-def make_mic_capture(
-    device: str | int,
-    capture_rate: int = MicCapture.OUTPUT_RATE,
-    capture_channels: int = 1,
-):
-    """Construct the right mic-capture flavour for a device string.
-
-    `device` matching `udp:PORT` / `udp://HOST:PORT` → `UdpMicCapture`
-    (the AEC bridge sends post-processed mic to that socket;
-    `capture_rate` / `capture_channels` are ignored because the
-    bridge has already resampled to 16 kHz mono and the format is
-    fixed at the bridge↔voice transport contract).
-
-    Anything else → `MicCapture` (PortAudio + ALSA path: chip-direct
-    via `Array`, or any other USB mic).
-    """
-    if isinstance(device, str):
-        udp = wake_ports.parse_udp_device(device)
-        if udp is not None:
-            host, port = udp
-            return UdpMicCapture(host=host, port=port)
-    return MicCapture(
-        device, capture_rate=capture_rate, capture_channels=capture_channels,
-    )
 
 
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE — the narrow wire
@@ -461,7 +87,7 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
 # audio. OpenAI Realtime delivers replies faster than realtime (~11 s of
 # audio in ~4 s), so an unpaced writer overflows the budget and the
 # surviving chunks play as garbled "fast-forward" audio
-# (event=fanin.tts_command_dropped, observed on JTS3 2026-06-11).
+# (event=fanin.tts_command_dropped).
 # Keeping ≤1.2 s queued ahead of realtime leaves 0.55 s of margin
 # (2.0 s budget − 1.2 s watermark − one 0.25 s IPC chunk) against
 # event-loop jitter AND the bounded drift from a concurrent same-object
@@ -511,37 +137,18 @@ def _quantize_to_wire(arr, *, wide: bool):
     keeps that scale), regardless of which wire it is headed for. This is THE
     one place the assistant path leaves floating point.
 
-    NARROW is preserved verbatim — ``np.clip(...).astype(np.int16)``, the same
-    saturating truncate-toward-zero it has always been. Its bytes are a shipped
-    contract; "the same thing but rounded" would be a different signal on every
-    box in the fleet.
+    NARROW saturates and truncates toward zero. Its bytes are a shipped
+    contract: rounding instead would change the signal on every box in the
+    fleet.
 
     WIDE scales to the i32 spine (``_SPINE_SCALE``, the exact 2^16 the Rust
-    ``widen_i16_to_i32`` shifts by) and quantizes ROUND-TO-NEAREST saturating —
-    the campaign's rule for a JTS-owned quantizer, and a new edge that does not
-    inherit the narrow one's history.
-
-    The scaling multiply runs in **float64**, and it is worth being exact about
-    why, because the obvious reason is wrong. ``arr`` is float32 (the resampler
-    is cast back to it), and multiplying it by 2^16 is EXACT in float32:
-    a power of two changes only the exponent, so no mantissa bit moves and no
-    precision is recovered by widening. The upcast buys two smaller things —
-    ``np.rint`` and the clip compare against the i32 rails at a width that
-    represents every i32 exactly, so the rounding decision and the saturation
-    boundary are not themselves approximated — and it costs one temporary per
-    chunk on a path that already allocates several. It is insurance on the
-    quantizer's own arithmetic, not a wider signal. (The ``pcm_wide`` ingest
-    below states the same power-of-two exactness for the inverse divide; the two
-    should read alike, because they are the same fact.)
-
-    What actually survives is therefore bounded by float32, and that is fine:
-    resampling a 16-bit source produces values off the S16 grid, and float32's
-    24-bit mantissa carries ~8 of those bits into the payload. The remaining 8
-    bits of the i32 container sit below that mantissa and below the source's own
-    resolution — the container is sized by the spine, not by a claim about the
-    assistant's precision. Widening the RESAMPLE path is not proposed here: it
-    would cost a real float64 pass over every chunk for bits the 16-bit source
-    never had.
+    ``widen_i16_to_i32`` shifts by) and quantizes round-to-nearest saturating.
+    The multiply runs in float64 not for precision — ``arr`` is float32 and
+    multiplying by a power of two is exact there — but so ``np.rint`` and the
+    clip compare against the i32 rails at a width that represents every i32
+    exactly. Payload precision stays bounded by float32's 24-bit mantissa; the
+    i32 container is sized by the spine, not by a claim about assistant
+    precision.
     """
     if wide:
         scaled = np.rint(arr.astype(np.float64) * _SPINE_SCALE)
@@ -553,58 +160,34 @@ def _quantize_to_wire(arr, *, wide: bool):
 def tts_wire_is_wide() -> bool:
     """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
 
-    ONE RULE, TWO LANGUAGES. Delegates to
-    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
-    the shared crate's ``TtsWireWidth::from_box_declaration`` that
-    ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
-    the box's declaration are required — the ``S32_LE`` wire format AND a
-    coupling that leaves fan-in on the ring (an UNDECLARED one does, ADR-0100)
-    — and both are read file-fresh, not from ``os.environ``: ``jasper-voice``
-    never loaded ``fanin.env``, which is the stale-``os.environ`` class
-    AGENTS.md canonizes.
+    Delegates to :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the
+    Python mirror of the shared crate's ``TtsWireWidth::from_box_declaration``.
+    Both halves of the box's declaration are required — the ``S32_LE`` wire
+    format AND a coupling that leaves fan-in on the ring (an UNDECLARED one
+    does, ADR-0100) — and both are read file-fresh: ``jasper-voice`` never
+    loaded ``fanin.env``, so ``os.environ`` would be stale.
 
-    WHY A BAD TOKEN DOES NOT RAISE HERE. ``jasper-fanin`` already treats an
-    unrecognized value as a config-class fault and parks at exit 78, and the
-    doctor surfaces it. Re-raising in ``jasper-voice`` would take down the
-    daemon that plays the failure cues, turning one operator typo into a silent
-    speaker. So the fault is reported loudly here and resolved narrow — the
-    conservative width, and the one every unarmed box uses.
+    A bad token resolves NARROW rather than raising: ``jasper-fanin`` already
+    parks at exit 78 on an unrecognized value and the doctor surfaces it, while
+    raising here would take down the daemon that plays the failure cues.
 
-    CACHED so the process has exactly ONE answer. Two callers ask — the playout
-    (which quantizes provider TTS) and the daemon (which bakes earcons) — and a
-    second file read between them could return a second answer, which is the
-    drift this campaign exists to remove.
+    CACHED so the process has exactly ONE answer — the playout (quantizing
+    provider TTS) and the daemon (baking earcons) must not disagree. Two of the
+    three ways the answer can move restart ``jasper-voice`` and so rebuild the
+    cache: a coupling flip through ``coupling_reconcile``, and a
+    resolver-default move through a deploy's
+    ``park_audio_clients_for_core_graph_restart``. The third — an operator
+    hand-editing ``JASPER_FANIN_RING_WIRE_FORMAT`` on a live box — is NOT
+    covered: this process keeps its old answer until the documented "set it,
+    reconcile, arm" sequence restarts the daemons.
 
-    WHAT BOUNDS THE STALENESS, stated as the THREE ways the answer can move
-    rather than the one this used to name:
-
-    * a COUPLING flip — ``coupling_reconcile``'s transition path ``try-restart``s
-      ``jasper-voice`` when the verdict changes, so the process is replaced;
-    * the RESOLVER'S DEFAULT moving (the ring wire's narrow→wide flip is one),
-      which changes the answer with no coupling flip and no reconciler
-      transition. Nothing in ``coupling_reconcile`` covers that — but such a move
-      only ever arrives in a DEPLOY, and a deploy parks ``jasper-voice``
-      (``park_audio_clients_for_core_graph_restart``) and restarts it through
-      ``jasper-aec-reconcile``, so the cache is rebuilt in the same operation
-      that moved the default;
-    * an operator hand-editing ``JASPER_FANIN_RING_WIRE_FORMAT`` on a live box.
-      That is NOT covered and never was: the documented per-box move is "set it,
-      run the hardware reconciler, then arm", and the arm is what restarts the
-      daemons. Until then this process keeps its old answer.
-
-    A STALE ANSWER IS A WIDTH DISAGREEMENT, NEVER A LEVEL ERROR. The IPC verb is
-    self-describing (``AUDIO`` vs ``AUDIO32``), so fan-in converts exactly
-    whichever it receives and logs
-    ``event=fanin.tts_wire_width_mismatch action=converted``; the failure
-    direction is an unnecessary conversion and a warn, not a scale error. The
-    ``except`` below resolves NARROW for the same reason — the conservative
-    width every unarmed box uses.
+    A stale answer is a width disagreement, never a level error: the IPC verb
+    is self-describing (``AUDIO`` vs ``AUDIO32``), so fan-in converts whichever
+    it receives and logs ``event=fanin.tts_wire_width_mismatch``.
 
     Tests reset it with ``tts_wire_is_wide.cache_clear()``;
     ``tests/conftest.py`` does it automatically around every test.
     """
-    from .fanin_coupling import assistant_wire_is_wide
-
     try:
         return assistant_wire_is_wide()
     except (OSError, ValueError) as e:
@@ -1064,12 +647,10 @@ class TtsPlayout:
     """Assistant-audio playout: gain validation, drain-deadline timing, and
     the fan-in TTS IPC client.
 
-    The name and "transport" language are historical; the packaged socket
-    is fan-in so TTS/cues enter before CamillaDSP. Provider PCM enters as
-    24 kHz mono; write() polyphase-upsamples it 2x to the fan-in socket's
-    fixed 48 kHz, duplicates mono to stereo, updates the drain deadline,
-    and writes bytes to this class's socket adapter. Gain travels as
-    metadata so the active TTS IPC owner can apply the final clamp at its
+    Provider PCM enters as 24 kHz mono; write() polyphase-upsamples it 2x to
+    the fan-in socket's fixed 48 kHz, duplicates mono to stereo, updates the
+    drain deadline, and writes bytes to this class's socket adapter. Gain
+    travels as metadata so the TTS IPC owner applies the final clamp at its
     mix boundary.
     """
 
@@ -1100,12 +681,8 @@ class TtsPlayout:
         # Cumulative pacing-sleep time since the last take_paced_sec().
         self._paced_total_sec = 0.0
         self._stream: _OutputdStreamAdapter | None = None
-        # One-shot warning latch: if a caller invokes write() before
-        # entering the async context (so _stream is still None), log
-        # once. The class is a context manager and the underlying
-        # ALSA stream only opens in __aenter__; without that, write()
-        # used to silently no-op, which was the cause of "I can't
-        # hear the cue" being mis-diagnosed as routing problems.
+        # One-shot latch so a write() before __aenter__ (no stream yet) is
+        # audible in the journal instead of a silent no-op.
         self._closed_stream_warned = False
         # Drain tracking — see `expected_drain_at`. None (not 0.0)
         # because CLOCK_MONOTONIC's reference is platform-defined; 0.0
@@ -1115,8 +692,6 @@ class TtsPlayout:
         # Emission-time admission authority — see set_emission_admission.
         self._emission_admission: "Callable[[], str | None] | None" = None
         self._emission_refusal_logged = False
-        # Apply the constructor's gain_db through the same validation path
-        # as runtime updates.
         self.set_gain_db(gain_db)
         self._socket_path = socket_path
         self._provider = provider
@@ -1136,10 +711,8 @@ class TtsPlayout:
             if self._wire_wide
             else _OUTPUTD_AUDIO_FRAME_BYTES
         )
-        # Item 4 (observability): a support read must be able to answer "what
-        # width is this box speaking, and why" without journal archaeology or a
-        # code read. One line, at construction, naming the resolved width AND
-        # where it came from — a resolver answer or an explicit caller override.
+        # One line naming the resolved width and where it came from, paired
+        # with fan-in's own resolved line so a support read can compare the two.
         log_event(
             logger,
             "tts_wire.resolved",

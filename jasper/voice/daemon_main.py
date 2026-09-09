@@ -18,11 +18,8 @@ from typing import Any, TypeVar
 from jasper.log_event import log_event
 
 from .. import flight_recorder, transit
-from ..audio_io import (
-    InputDeviceUnavailable,
-    TtsPlayout,
-    make_mic_capture,
-)
+from ..mic_capture import InputDeviceUnavailable, make_mic_capture
+from ..tts_playout import TtsPlayout
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..camilla import (
     CamillaController,
