@@ -67,6 +67,7 @@ from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUM
 from jasper.dsp_apply import CamillaConfigValidationResult
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
+from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -4883,6 +4884,88 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
     config_text = Path(payload["config"]["path"]).read_text()
     assert "delay: 0.2500" in config_text
     assert payload["candidate_fingerprint"] is not None
+
+
+_ROOM_CORRECTION: dict[str, Any] = {
+    "sides": {
+        "mono": [
+            {"freq": 48.0, "q": 3.0, "gain": -4.0},
+            {"freq": 120.0, "q": 2.0, "gain": -2.5},
+            {"freq": 62.0, "q": 4.0, "gain": 3.0},
+        ]
+    },
+    "ceiling_hz": 350.0,
+    "ceiling_source": "applied_candidate",
+    "basis": {
+        "round_id": "round-7",
+        "room_median_sha256": "b" * 64,
+        "admitted_boosts_hz": [62.0],
+    },
+    "boost_db_total": 3.0,
+    "level_cost_db": 3.0,
+}
+
+
+def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
+    tmp_path: Path,
+) -> None:
+    """A v2 candidate's own room set reaches the graph it applies: the PEQs
+    round-trip back out of the emitted config text, their boost is absorbed by
+    active_baseline_headroom, and the applied-now record lands on the payload's
+    top level (never inside the fingerprinted recomposition_snapshot). A
+    candidate without the field emits no room stage at all."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    def _candidate_payload(
+        candidate: MeasuredCrossoverCandidate, name: str
+    ) -> dict[str, Any]:
+        return build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=True,
+            state_path=tmp_path / f"{name}.json",
+            config_path=tmp_path / f"{name}.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+            created_at="2026-07-18T12:20:00Z",
+        )
+
+    def _headroom_gain_db(config_text: str) -> float:
+        filters = yaml_lib.safe_load(config_text)["filters"]
+        return float(filters["active_baseline_headroom"]["parameters"]["gain"])
+
+    candidate = _v2_candidate(preset, room_correction=_ROOM_CORRECTION)
+    payload = _candidate_payload(candidate, "room")
+    plain = _candidate_payload(_v2_candidate(preset), "plain")
+
+    assert payload["status"] == "ready_to_apply", payload["issues"]
+    config_text = Path(payload["config"]["path"]).read_text()
+    assert extract_room_peqs_from_config_text(config_text) == [
+        PeqFilter(freq=48.0, q=3.0, gain=-4.0),
+        PeqFilter(freq=120.0, q=2.0, gain=-2.5),
+        PeqFilter(freq=62.0, q=4.0, gain=3.0),
+    ]
+    plain_text = Path(plain["config"]["path"]).read_text()
+    assert _headroom_gain_db(config_text) == pytest.approx(
+        _headroom_gain_db(plain_text) - 3.0
+    )
+    assert payload["room_correction"] == candidate.room_correction
+    assert "room_correction" not in payload["recomposition_snapshot"]
+
+    assert plain["status"] == "ready_to_apply", plain["issues"]
+    assert plain["room_correction"] == {}
+    assert [
+        name
+        for name in yaml_lib.safe_load(plain_text)["filters"]
+        if name.startswith("room_peq_")
+    ] == []
 
 
 def test_build_baseline_profile_candidate_threads_linearization_outcome(

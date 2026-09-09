@@ -19,7 +19,7 @@ from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
-from .measure_spec import GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
 
 logger = logging.getLogger(__name__)
 _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
@@ -151,12 +151,12 @@ class MeasurementSessionGraph:
     def select_scope(self, scope: str, candidate_id: str = "") -> None:
         if scope not in GRAPH_SCOPES:
             raise SessionGraphError(f"unknown graph scope: {scope}")
-        if scope == "candidate" and not candidate_id.strip():
-            raise SessionGraphError("candidate scope requires candidate_id")
+        if scope in CANDIDATE_SCOPES and not candidate_id.strip():
+            raise SessionGraphError(f"{scope} scope requires candidate_id")
         if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
             raise SessionGraphError("no scoped graph emitter is bound")
         self._scope = scope
-        self._candidate_id = candidate_id if scope == "candidate" else ""
+        self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
 
     def graph_yaml(
         self,
@@ -418,15 +418,14 @@ class MeasurementSessionGraph:
                 normalized = parse_running_graph(await cam.normalize_config_raw(
                     yaml_text, best_effort=False,
                 ))
-                graph = parse_running_graph(yaml_text)
                 assert self._entry_yaml is not None
-                graph["description"] = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
+                description = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
                     "scope": self._scope,
                     "anchor_path": self._entry_config_path,
                     "anchor_sha256": hashlib.sha256(self._entry_yaml.encode("utf-8")).hexdigest(),
                     "graph_sha256": _graph_body_fingerprint(normalized),
                 }, sort_keys=True)
-                submitted = yaml.safe_dump(graph, sort_keys=False)
+                submitted = yaml_text + "\n" + yaml.safe_dump({"description": description})
             self._submitted_yaml[yaml_text] = submitted
         loaded = await cam.set_active_config_raw(
             submitted, best_effort=False, duck=False,

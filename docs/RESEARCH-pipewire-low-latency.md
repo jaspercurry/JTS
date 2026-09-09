@@ -148,15 +148,14 @@ low-risk-high-leverage first.
 | # | Increment | Principle it serves | Risk |
 |---|---|---|---|
 | **1** | **`jasper-clock` shared crate**: port `spa_dll` to Rust — a pure `Dll` (`update(err) → ratio`, adaptive bandwidth, resync jump) exposing its ppm + error stats + lock state. No I/O, no audio. Unit-test the convergence/no-oscillation properties. | SSOT · simple/elegant (lift, don't derive) · modular (pure) · performant (no alloc) | none (no consumer yet) |
-| **2 ✅** | **First consumer, observe-only — DAC-clock observer**: a `Dll` in `jasper-outputd` measuring the DAC playout crystal vs *nominal* wall-clock (the one clock outputd can see), surfacing `dac_clock_ppm` (+var, lock, neutral acquiring/steady/drifting verdict) on `/state` + doctor. This is **not** the `:9891`-ref-vs-mic drift — AEC3 self-compensates that and outputd can't see the mic — so there is **no software-AEC resampling follow-up**. Pure clock-domain observability for the real DLL sites. *(= foundation-review G2.)* **Landed** (#1067/#1069); measured ~−115 ppm on the jts3 HiFiBerry. | observable (the headline) · measure-before-fix | low (observe-only) |
+| **2 ✅** | **First consumer, observe-only — DAC-clock observer**: a `Dll` in `jasper-outputd` measuring the DAC playout crystal vs *nominal* wall-clock (the one clock outputd can see), surfacing `dac_clock_ppm` (+var, lock, neutral acquiring/steady/drifting verdict) on `/state` + doctor. This is **not** the `:9891`-ref-vs-mic drift — AEC3 self-compensates that and outputd can't see the mic — so there is **no software-AEC resampling follow-up**. Pure clock-domain observability for the real DLL sites. *(= foundation-review G2.)* Landed (#1067/#1069), measured ~−115 ppm on the jts3 HiFiBerry, then **removed**: nothing read the `/state` block, on the same reasoning as ADR-0250. | observable (the headline) · measure-before-fix | low (observe-only) |
 | **3** | **Converge the ad-hoc loops** in `aec_clock.rs` (`SroEstimator`) + `content_bridge.rs` (`RateController`) onto the shared `Dll`. Site-specific I/O (error source, resampler) stays local; the loop math is the one shared primitive. | DRY (delete duplicate loop math) · SSOT · separation of concerns | med (chip-AEC SRO path) — behind existing default-off/self-verify gates + soak |
-| **4** | **`rate_diff` everywhere**: every `Dll` instance publishes ppm + error stats + resync counters on `/state`/doctor (mirrors `clock.rate_diff`). | observable · shared (one telemetry shape) | low |
 | **5 (retired)** | **htimestamp-distrust helper** in `jasper-clock`: refine via `snd_pcm_htimestamp`, sanity-check vs `CLOCK_MONOTONIC`, disable after N lies — generalizing the dongle workaround into one shared place. The pure helper landed during the research spike but was removed in the 2026-08-02 cleanup because no production path ever consumed it; revive the design only with a real call site. | DRY · SSOT · resilience | low |
 | **6** | **stage→barrier→swap apply path**: borrow `target_*`/`target_seq` so a buffer/rate/config change applies at a cycle barrier instead of a daemon restart. Enables the **4b-iv lean lane-switch** (buffered↔lean, glitch-free) + active-speaker buffer changes. | elegant · separation of concerns (apply-path owns the swap) | larger design — pair with the 4b-iv live wiring |
 
-**Status (updated 2026-08-02):** increments 1–4 have landed (#1067 the
-`jasper-clock` crate; #1069 the DAC-clock observer, the ad-hoc-loop converge
-onto the shared `Dll`, and the `rate_diff` telemetry). Increment 5's unused
+**Status (updated 2026-08-02):** increments 1–3 have landed (#1067 the
+`jasper-clock` crate; #1069 the DAC-clock observer and the ad-hoc-loop
+converge onto the shared `Dll`). Increment 5's unused
 helper was retired after a repo-wide caller audit; the design remains here as
 research, not shipped API. Increment 2
 shipped as a **DAC-clock observer**, re-framed from the original "software-AEC"
@@ -177,7 +176,7 @@ should a host ever ignore the gadget's async feedback and need mixer-side
 adaptive resampling.
 
 **Convergence with the audio-foundation review** (`docs/HANDOFF-audio-latency-foundation.md`):
-increments 2/4 *are* that review's **G2**; PipeWire's `RLIMIT_RTTIME` point is its
+increment 2 *is* that review's **G2**; PipeWire's `RLIMIT_RTTIME` point is its
 **G4**. The two independent investigations point at the same small set — strong
 signal those are the real foundation wins.
 

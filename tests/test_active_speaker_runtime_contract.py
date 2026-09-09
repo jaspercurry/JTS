@@ -72,7 +72,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_bass_extension_graph,
 )
 from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
-from jasper.bass_extension import _intent_payload
+from jasper.bass_extension.apply_intent import _intent_payload
 from jasper.bass_extension.profile import save_bass_extension_profile
 from jasper.camilla_config_contract import (
     FilterSpec,
@@ -4853,7 +4853,7 @@ def test_blocker_bearing_roleful_draft_parks_instead_of_blocking(
 ) -> None:
     """#2145 row 2: a savable mid-edit draft no longer aborts every deploy.
 
-    `/sound/setup/` saves a draft at every card, so a household can persist a
+    `/sound/speaker/` saves a draft at every card, so a household can persist a
     roleful topology whose channels are not all assigned yet. That topology
     carries `physical_output_unassigned`, which before #2145 forced the parked
     graph's verdict to `allowed=False` and blocked the install — even though the
@@ -5390,7 +5390,7 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
 ) -> None:
     """The reconciler replay: the re-pin's park survives its own reconcile.
 
-    `/sound/setup/`'s re-pin parks live AND writes a parked statefile, then
+    `/sound/speaker/`'s re-pin parks live AND writes a parked statefile, then
     fires `trigger_reconcile` on the same request. That reconcile runs
     `runtime-safe-graph --write-statefile`, which re-decides from scratch and
     has no parked-preservation guard of its own — so before #2814 the park was

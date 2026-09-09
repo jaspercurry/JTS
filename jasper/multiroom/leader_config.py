@@ -57,8 +57,8 @@ from .member_config import member_camilla_kwargs
 logger = logging.getLogger(__name__)
 
 # The bonded / restore configs live in CANONICAL_CAMILLA_CONFIG_DIR, with
-# names registered in the sound module's _JTS_GENERATED_RE — so a /sound or
-# /sound/room/ apply while bonded recognises them as JTS-generated, preserves
+# names registered in the sound module's _JTS_GENERATED_RE — so a /sound
+# apply while bonded recognises them as JTS-generated, preserves
 # their room PEQs, and regenerates THROUGH the member policy instead of
 # refusing (or worse, silently rewriting a "custom" config).
 BONDED_CONFIG_PATH = str(CANONICAL_CAMILLA_CONFIG_DIR / "grouping_leader.yml")
@@ -120,7 +120,7 @@ def restore_action(
 
     ``stash_usable`` means the stashed path exists AND its content is a
     genuinely SOLO config (``not _is_pipe_config``). The content check is
-    load-bearing: a /sound or /sound/room/ save WHILE BONDED regenerates
+    load-bearing: a /sound save WHILE BONDED regenerates
     that wizard's own config file (sound_current.yml / correction_*.yml)
     PIPE-shaped — the feature that keeps a bonded save from un-bonding
     camilla — so a path that was solo when stashed can be pipe-shaped by

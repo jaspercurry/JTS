@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 import os
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -51,16 +50,16 @@ from typing import Any
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
-    canonical_page,
+    dispatch_get,
+    dispatch_post,
     forward_control_token_headers,
     proxy_get,
     proxy_post,
-    reject_csrf,
+    route_path,
     send_html_response,
     send_proxy_json,
-    guard_read_request,
-    guard_mutating_request,
 )
+from .chrome import canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -98,17 +97,13 @@ def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
 def _make_handler(
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> type[BaseHTTPRequestHandler]:
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) so the handlers can close over
-    # `control_base`, same as this function has always done.
-    def _get_index(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         send_html_response(
             handler,
             _render_page(
                 ctx["csrf_token"],
-                view="audio" if path == "/audio" else "system",
+                view="audio" if route_path(handler.path) == "/audio" else "system",
             ),
         )
 
@@ -128,7 +123,8 @@ def _make_handler(
         )
         send_proxy_json(handler, body, status=status)
 
-    def _post_proxy(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _post_proxy(handler: BaseHTTPRequestHandler) -> None:
+        path = route_path(handler.path)
         body = None
         if path in (
             "/audio-quality", "/usb-latency", "/usb-forensics",
@@ -165,9 +161,9 @@ def _make_handler(
     _GET_ROUTES = {
         "/": _get_index,
         "/audio": _get_index,
-        "/data.json": lambda h, p: _get_data(h),
-        "/diagnostics.json": lambda h, p: _get_diagnostics(h),
-        "/optional-features/enhanced-aec": lambda h, p: _get_enhanced_aec(h),
+        "/data.json": _get_data,
+        "/diagnostics.json": _get_diagnostics,
+        "/optional-features/enhanced-aec": _get_enhanced_aec,
     }
     _POST_ROUTES = {
         "/restart/voice": _post_proxy,
@@ -187,27 +183,10 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802
             # nginx strips the /system/ prefix so we see paths like
             # "/" and "/data.json".
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self, path)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            handler_fn(self, path)
+            dispatch_post(self, _POST_ROUTES, guard="header")
 
     return Handler
 

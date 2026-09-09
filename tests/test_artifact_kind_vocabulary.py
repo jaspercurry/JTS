@@ -22,11 +22,9 @@ These tests are what makes it a contract.
 
 **Known bound:** the source scan walks ``jasper/`` only and reads ``kind=``
 literals only, so a manifest writer living outside that tree, or one passing a
-computed kind, is invisible to it. Verified empty as of 2026-08-22 — every
-writer is under ``jasper/``, and the single computed site
-(``correction/artifacts.py``'s three-value capture-kind dict) is matched from
-the source text instead. The runtime guard in :func:`validate_artifact_kind`
-is what covers a computed kind on a path this scan cannot see.
+computed kind, is invisible to it. The runtime guard in
+:func:`validate_artifact_kind` is what covers a computed kind on a path this
+scan cannot see.
 """
 
 from __future__ import annotations
@@ -159,20 +157,11 @@ def test_no_production_writer_adds_an_unnamespaced_kind() -> None:
 
 
 def test_the_legacy_set_has_no_entry_nothing_writes() -> None:
-    """Grandfathering a kind no writer emits would be dead vocabulary.
-
-    `jasper/correction/artifacts.py` picks three of these from a dict rather
-    than a literal keyword, so those are matched from the source text.
-    """
+    """Grandfathering a kind no writer emits would be dead vocabulary."""
 
     written = set(_kind_literals_written_under(REPO_ROOT / "jasper"))
-    dispatched = (REPO_ROOT / "jasper/correction/artifacts.py").read_text(
-        encoding="utf-8"
-    )
     unwritten = {
-        kind
-        for kind in bundles.LEGACY_UNNAMESPACED_KINDS
-        if kind not in written and f'"{kind}"' not in dispatched
+        kind for kind in bundles.LEGACY_UNNAMESPACED_KINDS if kind not in written
     }
     assert unwritten == set(), f"grandfathered but never written: {sorted(unwritten)}"
 
@@ -191,7 +180,7 @@ def _bundle_with_unknown_kind(tmp_path: Path) -> Path:
         bundle,
         "info.json",
         {"bundle_schema_version": 5},
-        kind="session_metadata",
+        kind="jts_active_speaker_metadata",
         sensitivity="debug_safe",
         recomputable=False,
         generated_by="tests",
@@ -219,82 +208,3 @@ def test_the_neutral_reader_returns_an_unknown_kind_untouched(tmp_path: Path) ->
     assert UNKNOWN_KIND in _manifest_kinds(bundle)
 
 
-def test_bundle_validation_does_not_fault_an_unknown_kind(tmp_path: Path) -> None:
-    """The manifest validator checks that `kind` is PRESENT, never which one."""
-
-    from jasper.correction import bundles as correction_bundles
-
-    bundle = _bundle_with_unknown_kind(tmp_path)
-    issues: list[correction_bundles.BundleIssue] = []
-    correction_bundles._validate_artifact_manifest(
-        bundle,
-        issues,
-        info_bundle_schema_version=5,
-        require_manifest=True,
-    )
-    assert not [
-        issue for issue in issues if UNKNOWN_KIND in str(issue)
-    ], f"an unknown kind raised a bundle issue: {issues}"
-
-
-def test_artifact_counts_gives_an_unknown_kind_its_own_bucket(tmp_path: Path) -> None:
-    """A histogram over kinds must not collapse or drop what it cannot name."""
-
-    from jasper.correction import bundle_tools
-
-    bundle = _bundle_with_unknown_kind(tmp_path)
-    counts = bundle_tools._artifact_counts(bundles.read_artifact_manifest(bundle))
-    assert counts[UNKNOWN_KIND] == 1
-    # "unknown" is reserved for an entry with no kind at all, not for one
-    # whose kind this build has never heard of.
-    assert "unknown" not in counts
-
-
-def test_fir_readiness_reports_a_missing_kind_rather_than_raising(
-    tmp_path: Path,
-) -> None:
-    from jasper.correction import bundle_tools
-
-    bundle = _bundle_with_unknown_kind(tmp_path)
-    readiness = bundle_tools.fir_readiness(bundle)
-    # The two kinds it looks up by name are absent, so it reports zero and
-    # names what is missing. An unknown kind is neither counted as one of
-    # them nor allowed to abort the summary.
-    assert readiness["derived_impulse_response_count"] == 0
-    assert readiness["ready_for_runtime_import"] is False
-    assert "derived impulse-response artifacts" in readiness["missing"]
-
-
-def test_advisor_manifest_context_survives_an_unknown_kind(tmp_path: Path) -> None:
-    from jasper.calibration_agent import advisor_context
-
-    bundle = _bundle_with_unknown_kind(tmp_path)
-    context = advisor_context._manifest_context(bundle)
-    assert context["available"] is True
-    assert context["artifact_count"] == 2
-    # Unknown, and not audio by sensitivity — counted as an artifact, not as
-    # private audio, and above all not an error.
-    assert context["private_audio_count"] == 0
-
-
-def test_private_audio_allowlist_names_only_real_kinds() -> None:
-    """Every entry must be a kind something writes — the drift that bit here.
-
-    Four of this set's five entries once matched nothing at all, so the clause
-    read as coverage while `sensitivity` did all the work.
-    """
-
-    from jasper.calibration_agent import advisor_context
-
-    written = set(_kind_literals_written_under(REPO_ROOT / "jasper"))
-    dispatched = (REPO_ROOT / "jasper/correction/artifacts.py").read_text(
-        encoding="utf-8"
-    )
-    phantom = {
-        kind
-        for kind in advisor_context._PRIVATE_AUDIO_KINDS
-        if kind not in written and f'"{kind}"' not in dispatched
-    }
-    assert phantom == set(), (
-        f"private-audio allowlist names kinds nothing writes: {sorted(phantom)}"
-    )

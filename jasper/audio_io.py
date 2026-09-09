@@ -1435,7 +1435,7 @@ class TtsPlayout:
         def failed(reason: str, **fields: str) -> bool:
             log_event(
                 logger,
-                "fanin.duck_failed",
+                "voice.duck_failed",
                 on=str(bool(on)).lower(),
                 reason=reason,
                 level=logging.WARNING,

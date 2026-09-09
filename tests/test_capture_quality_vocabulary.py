@@ -13,10 +13,9 @@ number?").
 
 Before that, every surface reporting one declared its own. Copies that agree
 are still copies, and each one is a chance to disagree — one had already taken
-it: the crossover-v2 feature classifier wrote ``med`` where
-``correction.confidence``, ``correction.spatial``, and
-``correction.acoustic_quality`` all wrote ``medium``, so a banked lab artifact
-and a room-correction report answered one question in two spellings.
+it: the crossover-v2 feature classifier wrote ``med`` where the room surfaces
+wrote ``medium``, so a banked lab artifact and a room report answered one
+question in two spellings.
 
 These tests pin the words themselves, so a seventh surface cannot re-open the
 question by declaring a seventh ``Literal``. That qualifier is the honest
@@ -45,7 +44,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any, get_args
+from typing import get_args
 
 from jasper.active_speaker.crossover_v2 import feature_classification
 from jasper.audio_measurement import quality, snr_policy
@@ -55,16 +54,6 @@ from jasper.audio_measurement.quality_model import (
     Severity,
     TrustLevel,
 )
-from jasper.correction import (
-    acceptance,
-    acoustic_quality,
-    browser_audio,
-    confidence,
-    envelope,
-    runtime_integrity,
-    spatial,
-)
-
 _REPO = Path(__file__).resolve().parent.parent
 _JASPER = _REPO / "jasper"
 
@@ -99,10 +88,6 @@ def test_every_surface_speaks_the_shared_vocabulary() -> None:
     artifact. The redeclaration scan below is what catches the duplicate.
     """
     assert get_args(quality.Severity) == get_args(Severity)
-    assert get_args(runtime_integrity.Severity) == get_args(Severity)
-    assert get_args(browser_audio.Severity) == get_args(Severity)
-    assert get_args(confidence.ConfidenceLevel) == get_args(TrustLevel)
-    assert get_args(spatial.SpatialConfidence) == get_args(TrustLevel)
 
 
 def test_the_no_evidence_slot_is_not_a_trust_level() -> None:
@@ -119,12 +104,10 @@ def test_the_no_evidence_slot_keeps_its_published_spelling() -> None:
     """``TRUST_UNAVAILABLE``'s VALUE is a wire contract, not an internal name.
 
     Python callers import the constant, so renaming the symbol is free — but
-    the STRING is written into `acoustic_quality.json` and read back by
-    readers that cannot import anything: `deploy/assets/correction/js/main.js`
-    hand-compares `acoustic.snr_level !== 'unavailable'` and renders
-    `repeatability.level || 'unavailable'`. Change the value and those readers
-    silently start treating "not measured" as a real trust rank. Pinned here
-    because no Python type can reach across that boundary.
+    the STRING is written into banked artifacts and read back by readers that
+    cannot import anything. Change the value and those readers silently start
+    treating "not measured" as a real trust rank. Pinned here because no
+    Python type can reach across that boundary.
     """
     assert TRUST_UNAVAILABLE == "unavailable"
 
@@ -255,81 +238,6 @@ def test_an_unknown_confidence_is_kept_verbatim() -> None:
     assert verdict.confidence == "extremely-confident"
 
 
-def _report_words(node: Any, severities: set[str], levels: set[str]) -> None:
-    """Collect every ``severity`` / ``*level`` word an artifact actually
-    published, walking the nested report rather than sampling its top."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "severity" and isinstance(value, str):
-                severities.add(value)
-            elif (key == "level" or key.endswith("_level")) and isinstance(value, str):
-                levels.add(value)
-            _report_words(value, severities, levels)
-    elif isinstance(node, list):
-        for item in node:
-            _report_words(item, severities, levels)
-
-
-def test_the_acoustic_quality_report_publishes_only_shared_words() -> None:
-    """The one surface that builds plain dicts, checked on what it EMITS.
-
-    ``acoustic_quality`` has no dataclass for a reader to type-check, so its
-    conformance has to be measured on a real report. Both scales it publishes
-    are covered: per-finding ``severity`` and every ``*level`` roll-up.
-    """
-    report = acoustic_quality.build_acoustic_quality_report(
-        session_id="vocabulary-contract",
-        capture_quality=[
-            # No noise floor recorded -> the `unavailable` trust slot and the
-            # `info` severity, neither of which a happy-path capture reaches.
-            {"capture_kind": "position", "position_index": 0},
-            # A real but poor SNR -> the `low` trust rank and a `warn`.
-            {
-                "capture_kind": "position",
-                "position_index": 1,
-                "estimated_snr_db": 4.0,
-            },
-            # Between the two thresholds -> the `medium` rank, the word this
-            # whole ticket exists for.
-            {
-                "capture_kind": "position",
-                "position_index": 2,
-                "estimated_snr_db": 22.0,
-            },
-        ],
-    )
-    severities: set[str] = set()
-    levels: set[str] = set()
-    _report_words(report, severities, levels)
-
-    assert severities, "fixture published no severities — it proves nothing"
-    assert levels, "fixture published no levels — it proves nothing"
-    assert severities <= _SEVERITY_WORDS, severities - _SEVERITY_WORDS
-    assert levels <= _REPORT_WORDS | _TRUST_WORDS | {TRUST_UNAVAILABLE}, (
-        levels - (_REPORT_WORDS | _TRUST_WORDS | {TRUST_UNAVAILABLE})
-    )
-    # The fixture actually reached the interesting ranks, so a future edit
-    # that stops producing them fails here rather than passing vacuously.
-    assert "medium" in levels
-    assert TRUST_UNAVAILABLE in levels
-    assert "info" in severities
-
-
-def test_the_browser_audio_report_publishes_only_shared_words() -> None:
-    """The other typed surface, checked on a report that trips both scales."""
-    report = browser_audio.assess_browser_audio_path(
-        input_device={
-            "sample_rate": 44100,
-            "channel_count": 2,
-            "echo_cancellation": True,
-        },
-        expected_sample_rate=48000,
-        has_mic_calibration=False,
-    )
-    assert report.level in _REPORT_WORDS
-    assert {issue.severity for issue in report.issues} <= _SEVERITY_WORDS
-
-
 def test_the_snr_refusal_rank_is_deliberately_a_different_vocabulary() -> None:
     """``snr_policy``'s rank must NOT be folded into :data:`TrustLevel`.
 
@@ -350,18 +258,3 @@ def test_the_snr_refusal_rank_is_deliberately_a_different_vocabulary() -> None:
     assert "reduced" in rank_words and "insufficient" in rank_words
 
 
-def test_the_verdict_headline_map_holds_only_real_verdict_values() -> None:
-    """No synthetic key among the real ones.
-
-    A quality-gated surface copy (#2058 B1) used to sit in this map under
-    ``"surface_quality_gated"`` — a string that reads exactly like a
-    ``Verdict`` member and is not one. Owner ruling S8 deleted that whole
-    mechanism (acceptance.gate_on_acoustic_quality never downgrades a
-    verdict now); this pin stays as the general guard against any future
-    synthetic key sneaking into the map.
-    """
-    real = {verdict.value for verdict in acceptance.Verdict}
-    assert set(envelope._VERDICT_HEADLINE) <= real, (
-        "synthetic keys in _VERDICT_HEADLINE: "
-        f"{sorted(set(envelope._VERDICT_HEADLINE) - real)}"
-    )

@@ -5,34 +5,50 @@
 """Shared helpers for the JTS web setup pages.
 
 Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)
-shares the look, the `systemctl restart jasper-voice` shell-out, and
-the request-response plumbing for navigation hygiene (flash cookies,
-CSRF tokens, no-store caching). What's NOT shared: per-wizard route
-handlers, page layouts, form bodies.
+shares the `systemctl restart jasper-voice` shell-out and the
+request-response plumbing for navigation hygiene (flash cookies, CSRF
+tokens, no-store caching); the page shell itself lives in `chrome.py`.
+What's NOT shared: per-wizard route handlers, page layouts, form bodies.
 
 ## Conventions for new wizards
 
-Every wizard's request handler should look like this:
+A wizard is two route tables of bare `handler_fn(handler)` callables and a
+dispatcher that hands them to the shared seam — nothing else:
+
+    _GET_ROUTES = {"/": _get_index, "/state": _get_state}
+    _POST_ROUTES = {"/save": _post_save, "/clear": _post_clear}
 
     def do_GET(self):
-        if path == "/":
-            if not guard_read_request(self):
-                return
-            ctx = begin_request(self)
-            send_html_response(self, render_page(
-                ctx["csrf_token"], status_msg=ctx["flash"],
-            ))
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self):
-        # Route-check before CSRF-check: unknown paths return 404
-        # without revealing the CSRF state.
-        if path not in ("/save", "/clear", …):
-            self.send_error(HTTPStatus.NOT_FOUND); return
-        form = read_form(self)
-        if not guard_mutating_request(self, form):
-            reject_csrf(self); return
-        # ... handle ...
-        send_see_other(self, "./", flash="Saved.")
+        dispatch_post(self, _POST_ROUTES, guard="header")
+
+The tables live wherever their bodies reach the wizard's state: inside
+`_make_handler`'s closure when they close over `cfg` or the `Handler` class,
+at module level when they close over nothing. The pins drive real handler
+instances, so the two read the same.
+
+Unknown paths 404 before any guard, never revealing CSRF state. `route_path`
+makes `/save`, `/save/` and `/save?x=1` one key; a prefix family such as
+`/layer/<name>` passes `resolve=`, a `path -> callable or None` hook that may
+only inspect the path string — no I/O, no state lookup — because it runs
+ahead of every guard on a request that has proved nothing. Wear
+`@resolve_samples({"/layer/raw": _post_layer})` on that hook: the generic
+route pins drive one sample path per prefix family exactly as they drive a
+table key, so a family that names no sample is pinned by nothing. A family
+shaped `prefix + <param> + suffix` is `prefix_route("/pair/", "/stream",
+_get_pair_stream)` rather than a hand-rolled hook, and several of them
+compose with `first_match(...)`.
+`guard="header"` runs `guard_mutating_request` in the dispatcher, ahead of
+any body read, and those POST bodies wear `@json_body`. A wizard whose
+guard varies per route passes `guard="per-body"` and each body declares its
+own — `@form_guarded` (token in the form body), `@header_guarded` (token in
+the header), `@read_guarded` (read-only probe: no token, cross-site
+navigations refused). A GET that changes state is a table entry wrapped in
+`read_guarded(...)`: under the dispatcher's permissive read guard that
+composes to the strict one, refusing the cross-site navigation a plain GET
+route allows.
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
@@ -63,6 +79,7 @@ See `tests/test_web_common.py` for the helpers' behavior contracts.
 """
 from __future__ import annotations
 
+import functools
 import html
 import http
 import json
@@ -72,10 +89,10 @@ import re
 import secrets
 import subprocess
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
-from typing import Any
+from typing import Any, Literal
 
 from ..atomic_io import atomic_write_text
 from ..platform import control_client as control
@@ -84,9 +101,7 @@ from ..control.restart_broker import manage_units
 # Re-exported: google_setup.py still imports both from this module. Drop
 # this line once it imports jasper.env_file directly.
 from ..env_file import read_env_file, write_env_file  # noqa: F401
-from ..env_load import parse_env_file
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
-from ..install_profile import BUILD_MANIFEST_FILE
 from ..local_sources.markers import local_sources_allowed
 from ..log_event import log_event
 from ..multiroom.config import LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
@@ -126,425 +141,6 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 # the per-request begin_request → send_html_response flow can share state
 # without re-parsing cookies twice.
 _CTX_ATTR = "_jts_request_ctx"
-
-
-def toggle_html(
-    input_id: str, *, checked: bool = False, disabled: bool = False,
-) -> str:
-    """Render the checkbox markup for the canonical toggle control.
-
-    `input_id` is the DOM id; pages bind to it via
-    `document.getElementById(input_id).addEventListener('change', ...)`.
-    Initial `checked` / `disabled` set the first-paint state — server-
-    rendered HTML is hydrated by a /state poll so the actual value
-    converges to truth within a poll cycle anyway. The `.toggle` classes
-    are styled by `/assets/app.css` on canonical pages."""
-    attrs = [f'id="{html.escape(input_id)}"', 'type="checkbox"']
-    if checked:
-        attrs.append("checked")
-    if disabled:
-        attrs.append("disabled")
-    return (
-        f'<label class="toggle">'
-        f'<input {" ".join(attrs)}>'
-        f'<span class="track"></span>'
-        f'</label>'
-    )
-
-
-# ---------------------------------------------------------------------------
-# Canonical design system (the redesigned look).
-# ---------------------------------------------------------------------------
-#
-# The management landing page (deploy/index.html) and the redesigned
-# wizards share one stylesheet — /assets/app.css — served static by nginx
-# and browser-cached. `canonical_page()` emits the document shell
-# (head + stylesheet link + CSRF meta + the shared icon sprite) so a
-# wizard authors only its body. Page-specific CSS rides in `page_css`;
-# shared primitives live in app.css. This is the seam every migrated
-# wizard reuses.
-
-
-def _asset_version() -> str:
-    """Current cache-busting token for canonical design assets.
-
-    nginx serves /assets/ with `immutable, max-age=1y`, so the linked URL
-    must change when the stylesheet does. We key it on the deployed build
-    SHA (written to /var/lib/jasper/build.txt by install.sh) — a new
-    deploy is exactly when app.css can change. Fail-soft: a missing or
-    unreadable file yields "dev", a still-valid (un-busted) URL.
-
-    Read on each HTML render rather than caching for the process lifetime.
-    A wizard can be socket-activated during the install window before the
-    verified manifest is written; that long-lived process must notice the
-    final atomic manifest replacement. This is one tiny local read per page
-    navigation, never part of a wizard's polling/data path."""
-    sha = parse_env_file(str(BUILD_MANIFEST_FILE)).get("JASPER_GIT_SHA", "")
-    return sha if sha and sha != "unknown" else "dev"
-
-
-# Curated inline icon sprite for the redesigned pages AND the static landing
-# page, which substitutes it at install time (jasper.web.landing). Reference
-# one with `<svg class="ico"><use href="#icon-NAME"></use></svg>`. Add a symbol
-# here when a page needs a new glyph — keep it a shared set, not per-page.
-# Symbols carry geometry only (lucide-style, 24×24, no `stroke-width`): the
-# wrapper owns the weight — `.ico` sets 2, a settings row's `.row-icon svg`
-# sets 1.9 — and a symbol-level attribute would outrank both.
-CANONICAL_ICON_SPRITE = """\
-<svg class="sr-only" aria-hidden="true" focusable="false">
-  <symbol id="icon-back" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="m15 18-6-6 6-6"></path>
-  </symbol>
-  <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="m9 18 6-6-6-6"></path>
-  </symbol>
-  <symbol id="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 14h4l5 5V5L8 10H4z"></path>
-    <path d="M17 9a5 5 0 0 1 0 6"></path>
-    <path d="M19.5 6.5a8.5 8.5 0 0 1 0 11"></path>
-  </symbol>
-  <symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
-    <circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle>
-    <circle cx="11" cy="18" r="2"></circle>
-  </symbol>
-  <symbol id="icon-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 12c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
-    <path d="M3 17c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
-  </symbol>
-  <symbol id="icon-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12h14"></path><path d="M12 5v14"></path>
-  </symbol>
-  <symbol id="icon-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 6h18"></path>
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
-    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-    <line x1="10" x2="10" y1="11" y2="17"></line>
-    <line x1="14" x2="14" y1="11" y2="17"></line>
-  </symbol>
-  <symbol id="icon-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>
-    <path d="m15 5 4 4"></path>
-  </symbol>
-  <symbol id="icon-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path>
-  </symbol>
-  <symbol id="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"></path>
-    <path d="m18 2 4 4-4 4"></path>
-    <path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"></path>
-    <path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"></path>
-    <path d="m18 14 4 4-4 4"></path>
-  </symbol>
-  <symbol id="icon-airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"></path>
-    <path d="m12 15 5 6H7l5-6z"></path>
-  </symbol>
-  <symbol id="icon-bluetooth" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="m7 7 10 10-5 5V2l5 5L7 17"></path>
-  </symbol>
-  <symbol id="icon-music" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="8" cy="18" r="4"></circle><path d="M12 18V2l7 4"></path>
-  </symbol>
-  <symbol id="icon-usb" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="10" cy="7" r="1"></circle><circle cx="4" cy="20" r="1"></circle>
-    <path d="M4.7 19.3 19 5"></path><path d="m21 3-3 1 2 2 1-3Z"></path>
-    <path d="M9.26 7.68 5 12l2 5"></path><path d="m10 14 5 2 3.5-3.5"></path>
-    <path d="m18 12 1-1 1 1-1 1Z"></path>
-  </symbol>
-  <symbol id="icon-source" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
-    <path d="M8 6v12"></path><path d="M16 6v12"></path>
-  </symbol>
-  <symbol id="icon-voice" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
-    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path>
-  </symbol>
-  <symbol id="icon-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-5.5A8 8 0 1 1 21 12z"></path>
-    <path d="M8 10h8"></path><path d="M8 14h5"></path>
-  </symbol>
-  <symbol id="icon-wake" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 12h2"></path><path d="M18 12h2"></path>
-    <path d="M7 7l1.4 1.4"></path><path d="M15.6 15.6 17 17"></path>
-    <path d="M17 7l-1.4 1.4"></path><path d="M8.4 15.6 7 17"></path>
-    <circle cx="12" cy="12" r="3"></circle>
-  </symbol>
-  <symbol id="icon-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-  </symbol>
-  <symbol id="icon-weather" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M7 17h10a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.6 1.5A3.5 3.5 0 0 0 7 17z"></path>
-    <path d="M5 5l1.2 1.2"></path><path d="M12 3v2"></path><path d="M19 5l-1.2 1.2"></path>
-  </symbol>
-  <symbol id="icon-transit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <rect x="5" y="4" width="14" height="13" rx="2"></rect>
-    <path d="M8 8h8"></path><path d="M8 13h.01"></path><path d="M16 13h.01"></path>
-    <path d="M8 21l2-4"></path><path d="M16 21l-2-4"></path>
-  </symbol>
-  <symbol id="icon-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <rect x="4" y="5" width="16" height="15" rx="2"></rect>
-    <path d="M8 3v4"></path><path d="M16 3v4"></path><path d="M4 10h16"></path>
-    <path d="M8 14h3"></path><path d="M13 14h3"></path><path d="M8 17h3"></path>
-  </symbol>
-  <symbol id="icon-home" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 11 12 4l9 7"></path><path d="M5 10v10h14V10"></path>
-    <path d="M10 20v-6h4v6"></path>
-  </symbol>
-  <symbol id="icon-wifi" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 20h.01"></path><path d="M2 8.82a15 15 0 0 1 20 0"></path>
-    <path d="M5 12.859a10 10 0 0 1 14 0"></path><path d="M8.5 16.429a5 5 0 0 1 7 0"></path>
-  </symbol>
-  <symbol id="icon-peers" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="7" cy="12" r="3"></circle><circle cx="17" cy="7" r="3"></circle>
-    <circle cx="17" cy="17" r="3"></circle><path d="M9.5 10.5 14.5 8.5"></path>
-    <path d="M9.5 13.5 14.5 15.5"></path>
-  </symbol>
-  <symbol id="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <rect x="4" y="5" width="16" height="11" rx="2"></rect>
-    <path d="M8 20h8"></path><path d="M12 16v4"></path>
-  </symbol>
-  <symbol id="icon-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"></path>
-    <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"></circle>
-  </symbol>
-  <symbol id="icon-software" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="M8 7h8"></path><path d="M8 12h8"></path><path d="M8 17h5"></path>
-    <rect x="5" y="3" width="14" height="18" rx="2"></rect>
-  </symbol>
-  <symbol id="icon-dev" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-linecap="round" stroke-linejoin="round">
-    <path d="m8 9-4 3 4 3"></path><path d="m16 9 4 3-4 3"></path><path d="m14 5-4 14"></path>
-  </symbol>
-</svg>"""
-
-
-def canonical_page(
-    title: str,
-    body: str,
-    *,
-    csrf_token: str = "",
-    page_css: str = "",
-    page_css_href: str = "",
-    app_css_version: str = "",
-    control_token_meta: bool = True,
-) -> bytes:
-    """Wrap a body fragment in a full HTML document on the canonical
-    design system (the redesigned management look).
-
-    Shared tokens, fonts, and component primitives live in the static
-    stylesheet /assets/app.css (one source of truth for every page); this
-    helper emits the document shell so a wizard authors only its body markup:
-
-      * doctype + head with the cache-busted app.css <link>,
-      * the CSRF meta tag (when `csrf_token` is given, for fetch POSTs),
-      * an optional per-page stylesheet for components that aren't shared:
-        a cache-busted <link> (`page_css_href` — the preferred form: a real,
-        lintable static .css file served from /assets/) or an inline <style>
-        (`page_css`),
-      * the shared inline icon sprite,
-      * the caller's `body` (which supplies its own <header>/<main>/
-        <script>).
-
-    An install-time render passes `app_css_version` (the build SHA the run
-    installs — /var/lib/jasper/build.txt still holds the PRIOR one while
-    install.sh runs) and `control_token_meta=False`: a page written to disk
-    for nginx has no privileged POST to ride the token, so it must not bake
-    the secret into a world-readable file.
-
-    Returns bytes; send via `send_html_response()`."""
-    version = html.escape(app_css_version or _asset_version())
-    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
-    ctl_token = control_token_meta_html() if control_token_meta else ""
-    page_link = (
-        f'<link rel="stylesheet" href="{html.escape(page_css_href)}?v={version}">'
-        if page_css_href else ""
-    )
-    style = f"<style>{page_css}</style>" if page_css else ""
-    head_extra = "\n".join(
-        part for part in (csrf, ctl_token, page_link, style) if part
-    )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>{html.escape(title)}</title>
-<link rel="stylesheet" href="/assets/app.css?v={version}">
-{head_extra}
-</head>
-<body>
-{CANONICAL_ICON_SPRITE}
-{body}
-</body>
-</html>""".encode()
-
-
-def canonical_header(
-    title: str,
-    *,
-    back_href: str = "/",
-    back_label: str = "Home",
-    right_html: str = "",
-    back_id: str = "",
-    tabs_html: str = "",
-) -> str:
-    """The canonical sticky top bar (`.app-header`) for a migrated wizard.
-
-    Single source of truth for the sub-page chrome: a round back button on
-    the left (links ``back_href``, labelled ``back_label`` for screen
-    readers, drawn from the shared ``#icon-back`` sprite symbol), the page
-    title centred, and an optional ``right_html`` slot on the right (an
-    action button, a badge, …). The 3-column grid in ``.app-header__row``
-    keeps the title optically centred, so the right slot defaults to an
-    empty ``<span>`` placeholder rather than collapsing the grid.
-
-    ``back_id`` and ``tabs_html`` are opt-in, empty by default: the sole
-    consumer today is `sound_setup.py`'s EQ editor, whose JS binds the back
-    button by id and renders a segmented view strip that must stay inside
-    the sticky `.app-header` (`.app-header__tabs`, styled in `app.css`) to
-    keep scrolling with it.
-
-    ``title`` / ``back_href`` / ``back_label`` are escaped; ``right_html``
-    and ``tabs_html`` are caller-trusted markup (it's the caller's job to
-    escape any untrusted strings it interpolates, exactly as with
-    ``canonical_page``'s body)."""
-    right = right_html or "<span></span>"
-    back_id_attr = f' id="{html.escape(back_id, quote=True)}"' if back_id else ""
-    tabs = f'<div class="app-header__tabs">{tabs_html}</div>' if tabs_html else ""
-    return (
-        '<header class="app-header"><div class="app-header__row">'
-        f'<a class="icon-button"{back_id_attr} '
-        f'href="{html.escape(back_href, quote=True)}" '
-        f'aria-label="{html.escape(back_label, quote=True)}">'
-        '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
-        '</a>'
-        f'<h1 class="app-header__title">{html.escape(title)}</h1>'
-        f'{right}'
-        f'</div>{tabs}</header>'
-    )
-
-
-def safe_back_href(raw: str | None, *, default: str = "/") -> str:
-    """Return a local absolute path suitable for a header back link.
-
-    `return_to` query params are user-controlled, so keep only same-site
-    absolute paths like `/assistant/tools/pack/spotify/`. Reject protocol-relative
-    URLs, schemes, backslashes, and control-character tricks before the value
-    reaches `canonical_header()`.
-    """
-    if not raw:
-        return default
-    value = raw.strip()
-    if (
-        not value.startswith("/")
-        or value.startswith("//")
-        or "\\" in value
-        or any(ord(ch) < 32 for ch in value)
-    ):
-        return default
-    parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme or parsed.netloc:
-        return default
-    path = parsed.path or "/"
-    return urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
-
-
-def canonical_banner(message: str) -> str:
-    """A canonical flash banner (`.banner`) for a migrated wizard.
-
-    A flash string written by the shared ``send_see_other(flash=...)`` maps
-    to a stable status, danger, or info severity. An empty / blank message
-    renders nothing (returns ``""``) so the caller can unconditionally drop
-    ``canonical_banner(flash)`` into the body:
-
-      * contains "error" or "fail" (case-insensitive) → ``banner--danger``
-      * starts with "saved" / "cleared" → ``banner--ok``
-      * otherwise → ``banner--info``
-    """
-    if not message or not message.strip():
-        return ""
-    lowered = message.lower()
-    if "error" in lowered or "fail" in lowered:
-        tone = "banner--danger"
-    elif lowered.startswith(("saved", "cleared")):
-        tone = "banner--ok"
-    else:
-        tone = "banner--info"
-    return (
-        f'<div class="banner {tone}" role="status">'
-        f'{html.escape(message)}</div>'
-    )
-
-
-# Translation applied to the serialized JSON of a data island. `<`, `>`,
-# and `&` can only appear inside JSON string values, never in JSON
-# structure, so a whole-text translate is safe. This is the same approach
-# as Django's `json_script` filter: escaping `<` kills both `</script>`
-# early-close breakouts and `<!--` script-data parser-state tricks.
-_JSON_ISLAND_ESCAPES = {
-    ord("<"): "\\u003C",
-    ord(">"): "\\u003E",
-    ord("&"): "\\u0026",
-}
-
-
-def json_island(element_id: str, payload: Any) -> str:
-    """Serialize ``payload`` into an inert JSON data island.
-
-    The returned element has this shape:
-
-        <script type="application/json" id="...">...</script>
-
-    This is the shared way a wizard hands Python-built page data to its
-    ES module. The module reads it back with::
-
-        JSON.parse(document.getElementById("...").textContent)
-
-    Why a helper: an inline ``<script>``'s content ends at the first
-    ``</script`` regardless of the ``type`` attribute, so untrusted
-    strings serialized into an island could close it early and inject
-    markup unless serialization guards ``<``. Centralizing the dumps and
-    escape here makes that guard hard to forget; a conventions test
-    asserts no page hand-rolls an ``application/json`` island.
-
-    ``element_id`` is developer-supplied by convention, but it is
-    attribute-escaped anyway, matching Django's ``json_script``. That
-    keeps a future dynamic id from breaking out of the attribute.
-    """
-    body = json.dumps(payload).translate(_JSON_ISLAND_ESCAPES)
-    safe_id = html.escape(element_id, quote=True)
-    return (
-        f'<script type="application/json" id="{safe_id}">{body}</script>'
-    )
 
 
 def value_for_env(
@@ -911,6 +507,17 @@ def read_json_body(
         return None, _JSON_BODY_ERRORS.get(exc.code, fallback)
 
 
+def route_path(request_path: str) -> str:
+    """Normalise a request line into the key a wizard route table uses:
+    query string dropped, trailing slashes trimmed, "" mapped to "/".
+    Every wizard dispatcher looks its route up by this, so `/save`,
+    `/save/` and `/save?x=1` are one route. Lenient by design: `;params`
+    and an absolute-form request line are normalised away before lookup,
+    so those reach the guarded route body rather than a 404 — every guard
+    still runs."""
+    return urllib.parse.urlparse(request_path).path.rstrip("/") or "/"
+
+
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     """Parse a urlencoded form body off a stdlib BaseHTTPRequestHandler
     request into a single-value dict. Empty values are preserved (so
@@ -1258,6 +865,178 @@ def reject_csrf(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+# Each wrapper below stamps `csrf_mode` on the callable it returns, so a
+# route table declares per route which axis guards it. tests/
+# test_web_wizard_conventions.py pins each mode's behaviour off that marker.
+def form_guarded(
+    fn: Callable[[BaseHTTPRequestHandler, dict[str, str]], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """Wrap a form route body as the bare `handler_fn(handler)` a wizard
+    route table holds. A form wizard's CSRF token rides in the body, so the
+    read has to happen before the guard; doing it here means no route body
+    can be written that mutates without one."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        form = read_form(handler)
+        if not guard_mutating_request(handler, form):
+            reject_csrf(handler)
+            return
+        fn(handler, form)
+    setattr(route, "csrf_mode", "form")
+    return route
+
+
+def header_guarded(
+    fn: Callable[[BaseHTTPRequestHandler], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """`form_guarded`'s sibling for a route whose CSRF token rides in the
+    X-CSRF-Token header: the guard runs before any body read, so a rejected
+    POST leaves the request body unconsumed. Wizards whose POST guard varies
+    per route declare it here rather than in their dispatcher."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        if not guard_mutating_request(handler):
+            reject_csrf(handler)
+            return
+        fn(handler)
+    setattr(route, "csrf_mode", "header")
+    return route
+
+
+def read_guarded(
+    fn: Callable[[BaseHTTPRequestHandler], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """The siblings' third axis, for a POST that only reads: no CSRF token,
+    but the read guard runs with cross-site top-level navigations refused,
+    so a cross-site auto-submitting form cannot reach the body. The
+    permissive default exists for links and OAuth redirect-follows into a
+    GET page; a POST has neither."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        if not guard_read_request(handler, allow_cross_site_navigation=False):
+            return
+        fn(handler)
+    setattr(route, "csrf_mode", "read")
+    return route
+
+
+def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None]:
+    """Wrap a JSON route body as the bare `handler_fn(handler)` a wizard
+    route table holds. The wizard's own `_read_json()` returns the parsed
+    object, or None once it has already answered the client itself; a wizard
+    may instead coerce a bad body to {} (wifi_setup)."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        body = handler._read_json()
+        if body is None:
+            return
+        fn(handler, body)
+    route.reads_json_body = True  # type: ignore[attr-defined]
+    return route
+
+
+# The handler is `Any`: a table typed against `BaseHTTPRequestHandler` fails
+# contravariance against each wizard's own narrower `_Handler`.
+RouteFn = Callable[[Any], None]
+RouteTable = Mapping[str, RouteFn]
+Resolver = Callable[[str], RouteFn | None]
+Runner = Callable[[Any, RouteFn, str], None]
+
+
+def resolve_samples(samples: RouteTable) -> Callable[[Resolver], Resolver]:
+    """Name one concrete path per prefix family a `resolve=` hook answers.
+
+    `@resolve_samples({"/layer/raw": _post_layer})` stamps the mapping on the
+    hook the way `csrf_mode` rides on a guard wrapper: dispatch ignores it,
+    and the generic route pins read it so a `/layer/<name>` family is covered
+    by the same 403 / 404 / malformed-body pins an exact table key gets.
+    """
+    def mark(hook: Resolver) -> Resolver:
+        hook.resolve_samples = dict(samples)  # type: ignore[attr-defined]
+        return hook
+    return mark
+
+
+def prefix_route(prefix: str, suffix: str, fn: RouteFn) -> Resolver:
+    """One prefix family as data: `/pair/<mac>/stream` is
+    `prefix_route("/pair/", "/stream", _get_pair_stream)`. The body
+    re-derives its own path parameter and rejects a malformed one, which is
+    where a bad id belongs — the hook itself only inspects the string."""
+    def resolve(path: str) -> RouteFn | None:
+        return fn if path.startswith(prefix) and path.endswith(suffix) else None
+    return resolve
+
+
+def first_match(*resolvers: Resolver) -> Resolver:
+    """The first of several families to claim the path, else None."""
+    def resolve(path: str) -> RouteFn | None:
+        return next((r for r in (h(path) for h in resolvers) if r is not None), None)
+    return resolve
+
+
+def _route_for(
+    handler: Any, table: RouteTable, resolve: Resolver | None,
+) -> tuple[RouteFn | None, str]:
+    """Table lookup then the prefix-family hook; sends the 404 itself.
+    Returns the route (None once it has answered) and the normalised path
+    it routed on, so a caller needing the path does not parse it twice.
+
+    `resolve` runs before every guard, on a request that has proved
+    nothing, so it may only inspect the path string — no I/O, no state
+    lookup.
+    """
+    path = route_path(handler.path)
+    route = table.get(path)
+    if route is None and resolve is not None:
+        route = resolve(path)
+    if route is None:
+        handler.send_error(http.HTTPStatus.NOT_FOUND)
+    return route, path
+
+
+def dispatch_get(
+    handler: Any, table: RouteTable, *, resolve: Resolver | None = None,
+) -> None:
+    """Route a wizard GET. Unknown paths 404 before the read guard runs."""
+    route, _ = _route_for(handler, table, resolve)
+    if route is not None and guard_read_request(handler):
+        route(handler)
+
+
+def dispatch_post(
+    handler: Any,
+    table: RouteTable,
+    *,
+    guard: Literal["header", "per-body"] = "header",
+    resolve: Resolver | None = None,
+    run: Runner | None = None,
+) -> None:
+    """Route a wizard POST. Unknown paths 404 before any guard, never
+    revealing CSRF state. `guard="header"` runs the mutating chokepoint
+    here, ahead of any body read; `guard="per-body"` guards nothing — each
+    route body wears `@form_guarded` / `@header_guarded` / `@read_guarded`.
+
+    `run=` is the guarded-call hook for a dispatcher that owns a policy no
+    route body can (correction_setup blocks content DSP on a bonded
+    follower and nets a whole path family's exceptions): it is handed
+    `(handler, route, path)` after the header guard and calls the route
+    itself. It pairs with `guard="header"` only — under `guard="per-body"`
+    there is no dispatcher guard for it to run behind, so the pairing is
+    refused rather than silently unguarded."""
+    if run is not None and guard != "header":
+        raise ValueError('run= requires guard="header"')
+    route, path = _route_for(handler, table, resolve)
+    if route is None:
+        return
+    if guard == "header" and not guard_mutating_request(handler):
+        reject_csrf(handler)
+        return
+    if run is not None:
+        run(handler, route, path)
+        return
+    route(handler)
 
 
 # ---------------------------------------------------------------------------

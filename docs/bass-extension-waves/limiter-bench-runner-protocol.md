@@ -3,15 +3,13 @@
 > **Status (2026-07-20): accepted amendment** (reviewed; gate 1 complete). This
 > is the *reviewed amendment* that
 > [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md) "Required bench
-> owner — no hidden authority" and
-> [`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md) Revision 9
-> both defer to. It authorizes **building the bench runner** that executes the
-> already-frozen limiter-evidence campaign and emits the replayable bundle the
-> frozen `produce_limiter_thresholds` consumes. It authorizes **no production
-> wiring, no profile persistence, and no hardware playback** until the runner
-> implementation passes its own independent safety review and Jasper runs the
-> supervised bench session. This document is a contract only — it changed no code
-> and no hardware behavior.
+> owner — no hidden authority" defers to. It authorizes **building the bench
+> runner** that executes the already-frozen limiter-evidence campaign and emits
+> the replayable bundle the frozen `produce_limiter_thresholds` consumes. It
+> authorizes **no production wiring, no profile persistence, and no hardware
+> playback** until the runner implementation passes its own independent safety
+> review and Jasper runs the supervised bench session. This document is a
+> contract only — it changed no code and no hardware behavior.
 
 ## Relationship to the frozen protocol
 

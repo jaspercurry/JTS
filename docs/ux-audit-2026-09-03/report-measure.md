@@ -1,7 +1,7 @@
 # UX / IA audit — MEASUREMENT / CORRECTION cluster
 
-Design of record consulted: `docs/room-correction-information-design.md`,
-`docs/active-crossover-information-design.md`, `docs/measurement-loop-doctrine.md`,
+Design of record consulted: `docs/active-crossover-information-design.md`,
+`docs/measurement-loop-doctrine.md`,
 `docs/design-language.md`. Findings that would contradict those docs are listed
 under "Declined (ratified)" per page rather than filed.
 

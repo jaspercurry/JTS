@@ -1374,6 +1374,19 @@ class VolumeCoordinator:
         prev_carries = await self._camilla_carries_level(prev_source)
         curr_carries = await self._camilla_carries_level(current_source)
         async with self._mutation():
+            # The verdict was resolved before the cross-daemon lease. Re-check
+            # source ownership at the ordering point, as
+            # `observe_source_volume` does, so a handoff that landed meanwhile
+            # cannot pin camilla against a lane the mux has already left.
+            active = await self._active_source()
+            if active != current_source:
+                self._refresh_from_disk()
+                logger.debug(
+                    "active_source transition %s→%s: dropped, active "
+                    "source became %s",
+                    prev_source.value, current_source.value, active.value,
+                )
+                return
             # Pull the latest listening_level from disk before
             # dispatching. The control daemon (remote / HTTP) writes
             # the same file on every twist, but voice_daemon's in-
@@ -1972,12 +1985,16 @@ class VolumeCoordinator:
         if selected_source is not None:
             try:
                 selected = await selected_source()
-                # Only a music source answers this question. Mux also says
-                # "idle" and, during a measurement lease, a fan-in lane label
-                # — neither is a source, and both must fall through to the
-                # raw probes rather than pinning the coordinator to IDLE.
+                # Mux answers with a music source, "idle", or — during a
+                # measurement lease — a fan-in lane label. It holds its last
+                # committed answer while a handoff is in flight, so "idle" is
+                # true idle and takes the attenuating camilla-master carrier.
+                # Only the lane label is not a source; it falls through to the
+                # raw probes.
                 if selected in MUSIC_SOURCE_VALUES:
                     return Source(selected)
+                if selected == Source.IDLE.value:
+                    return Source.IDLE
             except Exception as e:  # noqa: BLE001
                 logger.debug("selected_source() failed (%s); using probes", e)
         try:

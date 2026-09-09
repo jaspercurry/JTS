@@ -103,7 +103,7 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 # the property that matters — this line is a leak alarm, and one that cried
 # wolf on every Full-tier commission would be worse than none. Escalation is
 # the ONLY behavior change: nothing reaps the process, per
-# `correction_capture._run_async`'s fail-closed invariant (a terminal response
+# `correction_runtime.run_async`'s fail-closed invariant (a terminal response
 # must never release measurement ownership while the graph/volume finalizer
 # can still mutate the speaker).
 HOLD_LEAK_WARN_AFTER_SEC = 7200.0
@@ -474,9 +474,10 @@ class IdleShutdownTracker:
                 if self._on_idle_exit is not None:
                     # Same specific tuple the service-start claim boundary
                     # catches around this hook's restore (correction_setup):
-                    # _run_async timeouts are TimeoutError (an OSError), and
-                    # CamillaUnavailable is a RuntimeError. Hooks are expected
-                    # to be fail-soft themselves; os._exit below still runs.
+                    # correction_runtime.run_async timeouts are TimeoutError
+                    # (an OSError), and CamillaUnavailable is a RuntimeError.
+                    # Hooks are expected to be fail-soft themselves; os._exit
+                    # below still runs.
                     try:
                         self._on_idle_exit()
                     except (OSError, RuntimeError, ValueError):
