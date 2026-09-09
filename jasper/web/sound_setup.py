@@ -47,6 +47,7 @@ from jasper.sound.settings import (
     output_trim_db as _output_trim,  # aliased so the probe's kwarg can't shadow it
 )
 
+from . import nav
 from ._common import (
     JsonBodyError,
     begin_request,
@@ -163,14 +164,23 @@ def _coerce_page_mode(page_mode: str) -> str:
     return page_mode if page_mode in _PAGE_PATHS else "eq"
 
 
-#: /sound/speaker/ renders the link to its own child row (docs/web-ia.md §1).
-#: The href is RELATIVE so it stays on the origin the household is already on;
-#: an absolute one would land on the self-signed 443 origin (issue #2632).
-_CROSSOVER_CHILD_LINK = """<section class="info-card">
+#: /sound/speaker/ renders the link to its own child row (docs/web-ia.md §1),
+#: on a follower too — the crossover wizard is the driver domain a follower
+#: keeps. Label and href come from the row itself so the two cannot drift. The
+#: href is RELATIVE (the path minus its parent) so it stays on the origin the
+#: household is already on; an absolute one would land on the self-signed 443
+#: origin (issue #2632).
+_CROSSOVER_ROW = nav.entry("/sound/speaker/crossover/")
+_CROSSOVER_HREF = _CROSSOVER_ROW.path.removeprefix(_CROSSOVER_ROW.parent)
+_CROSSOVER_CHILD_LINK = f"""<section class="info-card">
     <p class="form-hint">Measure the crossover between this speaker's drivers
     and set the filters that protect them.</p>
-    <div class="form-actions"><a class="btn" href="crossover/">Active speaker</a></div>
+    <div class="form-actions"><a class="btn" href="{_CROSSOVER_HREF}">{_CROSSOVER_ROW.label}</a></div>
   </section>"""
+
+
+def _crossover_child_link(page_mode: str) -> str:
+    return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
@@ -209,7 +219,9 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     )
 
 
-def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
+def _follower_sound_html(
+    csrf_token: str = "", *, page_mode: str, title: str
+) -> bytes:
     """Render one split Sound page for a bonded active follower.
 
     A bonded follower delegates the PROGRAM domain (content EQ, room
@@ -235,11 +247,6 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
         else ""
     )
     page_island = _sound_page_island(page_mode=page_mode, follower=True)
-    title = (
-        "EQ" if page_mode == "eq"
-        else "Speaker setup" if page_mode == "speaker"
-        else "Output"
-    )
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
@@ -270,6 +277,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     </div>
   </section>
   {local_setup}
+  {_crossover_child_link(page_mode)}
 </main>
 {page_island}
 """
@@ -283,13 +291,15 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
 
 def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     page_mode = _coerce_page_mode(page_mode)
-    if bonded_follower_active():
-        return _follower_sound_html(csrf_token, page_mode=page_mode)
+    # One title chain for both renderers: the §5.1 conventions guard reads
+    # these literals out of the scope that calls the page shell.
     title = (
         "EQ" if page_mode == "eq"
         else "Speaker setup" if page_mode == "speaker"
         else "Output"
     )
+    if bonded_follower_active():
+        return _follower_sound_html(csrf_token, page_mode=page_mode, title=title)
     eq_tabs_html = (
         '<div><div class="segmented" role="tablist" aria-label="Sound source">'
         '<button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>'
@@ -325,7 +335,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 <main class="page">
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
-  {_CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""}
+  {_crossover_child_link(page_mode)}
 </main>
 """
     )

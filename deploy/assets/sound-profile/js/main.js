@@ -3812,6 +3812,20 @@ import {
     outputTopology.protectionSaving = '';
     if (outputGroups(topology).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   }
+  // The Output page renders the HAT picker and the sound settings, nothing
+  // else, so it reads the topology payload for `i2s_hat` alone and skips the
+  // six crossover/commissioning reads only the speaker page draws.
+  async function loadOutputHardware() {
+    try {
+      var resp = await fetch('./output-topology', {cache: 'no-store'});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'speaker layout load failed');
+      ingestOutputTopology(payload);
+    } catch (e) {
+      outputTopology.error = e.message;
+    }
+    render();
+  }
   async function refreshOutputTopology(options) {
     options = options || {};
     if (!options.silent && outputTopology.dirty &&
@@ -5596,7 +5610,7 @@ import {
       render();
       // The Output page reads the I2S HAT off the topology payload; the
       // safety-limits deep link belongs to the speaker page.
-      if (pageMode === 'output') refreshOutputTopology({silent: true});
+      if (pageMode === 'output') loadOutputHardware();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }

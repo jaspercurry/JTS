@@ -1322,9 +1322,16 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       fail("Output mode rendered another page's control", { forbidden, outputHtml });
     }
   }
-  // The HAT reading rides the topology payload, so Output loads it too.
+  // The HAT reading rides the topology payload, so Output loads it too --
+  // and nothing else: the crossover/commissioning reads paint no control on
+  // this page, so booting them is six round trips of nothing.
   if (!outputFetched.includes("./output-topology")) {
     fail("Output mode should load the I2S HAT reading", { outputFetched });
+  }
+  const outputExtras = outputFetched.filter(
+    (path) => path.indexOf("./active-speaker/") === 0);
+  if (outputExtras.length) {
+    fail("Output mode must boot no commissioning reads", { outputExtras });
   }
   // Nothing detected: the picker is rendered, on the saved value, offering
   // only the HATs that cannot identify themselves.

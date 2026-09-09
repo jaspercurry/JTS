@@ -883,7 +883,14 @@ def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> Non
     a bare `location /sound/speaker` would swallow nothing today but has the
     same shape. The 308 is what makes the no-slash URL usable.
     """
-    for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8")):
+    listeners = set()
+    for ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8")):
+        if ("", "/sound/speaker/crossover/") in locations:
+            # The child page rides both listeners, so its normaliser does too.
+            assert locations[("=", "/sound/speaker/crossover")].strip() == (
+                "return 308 /sound/speaker/crossover/;"
+            )
+            listeners |= set(ports)
         if ("", "/sound/") not in locations:
             continue
         for page in ("/sound/speaker/", "/sound/output/"):
@@ -892,13 +899,24 @@ def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> Non
             assert ("", bare) not in locations
             assert locations[("=", bare)].strip() == f"return 308 {page};"
 
+    assert listeners == {80, 443}
+
 
 @pytest.mark.parametrize(
     "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
 )
-def test_the_old_sound_setup_path_only_redirects(conf_path: Path) -> None:
-    """`/sound/setup/` was printed and bookmarked, so it 301s instead of being
-    cut outright (ADR-0253 §3) — but it serves nothing of its own any more."""
+def test_the_old_sound_setup_page_redirects_but_its_subtree_still_proxies(
+    conf_path: Path,
+) -> None:
+    """`/sound/setup/` was printed and bookmarked, so the PAGE 301s instead of
+    being cut outright (ADR-0253 §3).
+
+    Its subtree does not: a tab opened before the move POSTs
+    `./active-speaker/summed-test/stop` and `./volume-floor/stop` at its own
+    origin on pagehide, and a 301 turns a keepalive POST into a GET that never
+    stops the tone. So the prefix stays proxied, with the page header the
+    speaker page is served under.
+    """
     blocks = {
         (mod, path): body
         for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
@@ -906,9 +924,15 @@ def test_the_old_sound_setup_path_only_redirects(conf_path: Path) -> None:
         if path == "/sound/setup" or path.startswith("/sound/setup/")
     }
 
-    assert set(blocks) == {("=", "/sound/setup"), ("", "/sound/setup/")}
-    for body in blocks.values():
-        assert body.strip() == "return 301 /sound/speaker/;"
+    assert set(blocks) == {
+        ("=", "/sound/setup"), ("=", "/sound/setup/"), ("", "/sound/setup/"),
+    }
+    for exact in (("=", "/sound/setup"), ("=", "/sound/setup/")):
+        assert blocks[exact].strip() == "return 301 /sound/speaker/;"
+    stale = blocks[("", "/sound/setup/")]
+    assert _proxy_upstream(stale) == "127.0.0.1:8784"
+    assert "proxy_set_header X-JTS-Sound-Page speaker;" in stale
+    assert "return 30" not in stale
 
 
 @pytest.mark.parametrize(

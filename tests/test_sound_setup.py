@@ -69,6 +69,7 @@ from jasper.sound.settings import (
 )
 from jasper.volume_curve import percent_to_db
 from jasper.web import (
+    nav,
     sound_active_speaker,
     sound_profile_apply,
     sound_setup,
@@ -810,6 +811,12 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
 _EQ_ONLY_CHROME = ('id="tab-off"', 'id="tab-saved"', 'id="tab-draft"', 'id="plot"')
 
 
+def _crossover_child_row() -> tuple[str, str]:
+    """The nav row /sound/speaker/ links itself, as (relative href, label)."""
+    row = nav.entry("/sound/speaker/crossover/")
+    return row.path.removeprefix(row.parent), row.label
+
+
 @pytest.mark.parametrize(
     ("page_mode", "title"),
     [("eq", "EQ"), ("speaker", "Speaker setup"), ("output", "Output")],
@@ -840,8 +847,12 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
         assert not any(marker in html for marker in _EQ_ONLY_CHROME)
     # Only the speaker page links its child row, and RELATIVELY: an absolute
     # link would land the household on the self-signed 443 origin (#2632).
-    child = re.findall(r'<a class="btn" href="([^"]*)">Active speaker</a>', html)
-    assert child == (["crossover/"] if page_mode == "speaker" else [])
+    # Both halves come from the nav row that owns the child page.
+    href, label = _crossover_child_row()
+    child = re.findall(
+        r'<a class="btn" href="([^"]*)">' + re.escape(label) + "</a>", html
+    )
+    assert child == ([href] if page_mode == "speaker" else [])
     assert "/sound/speaker/crossover/" not in html
 
 
@@ -1019,6 +1030,12 @@ def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch
     assert 'id="plot"' not in html
     # The local page owns the driver domain, so it offers no way back to it.
     assert "Open local speaker setup" not in html
+    # It is also the follower's ONLY way into its own crossover wizard: the
+    # row moved under this page, so nothing else links it. Relative, on the
+    # origin the household is already on (#2632).
+    href, label = _crossover_child_row()
+    assert f'<a class="btn" href="{href}">{label}</a>' in html
+    assert "/sound/speaker/crossover/" not in html
 
 
 def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
@@ -1039,6 +1056,8 @@ def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
     assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
     assert "/assets/sound-profile/js/main.js" not in html
     assert 'id="view-body"' not in html
+    # The crossover row hangs under Speaker setup, not this page.
+    assert _crossover_child_row()[1] + "</a>" not in html
 
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
