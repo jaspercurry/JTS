@@ -903,9 +903,11 @@ def check_outputd_dac_render() -> CheckResult:
     """
     label = "outputd DAC render"
     env = _outputd_reconciled_env()
-    backend = str(env.get("JASPER_OUTPUTD_BACKEND") or "").strip()
-    # The reconciler writes the DAC PCM on every branch (the composite sink
-    # opens the dual-Apple PCM, never outputd_dac) and the unit defaults it.
+    # Both keys default as the unit's own Environment= lines do
+    # (deploy/systemd/jasper-outputd.service): a box with no outputd.env runs
+    # alsa on outputd_dac. The reconciler writes the DAC PCM on every branch
+    # (the composite sink opens the dual-Apple PCM, never outputd_dac).
+    backend = str(env.get("JASPER_OUTPUTD_BACKEND") or "alsa").strip()
     dac_pcm = (
         str(env.get("JASPER_OUTPUTD_DAC_PCM") or "").strip()
         or _OUTPUTD_EXPECTED_DAC_PCM

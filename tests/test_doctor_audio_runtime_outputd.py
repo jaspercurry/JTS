@@ -1141,6 +1141,14 @@ _OUTPUTD_DAC_NULL = "pcm.outputd_dac {\n    type null\n}\n"
         ),
         ("alsa", "outputd_dac", _OUTPUTD_DAC_HW, "ok", ""),
         (
+            # No outputd.env yet (fresh install): the unit runs alsa.
+            None,
+            "outputd_dac",
+            _OUTPUTD_DAC_NULL,
+            "fail",
+            audio_runtime_outputd.REASON_OUTPUTD_DAC_RENDERED_NULL,
+        ),
+        (
             "fake",
             "outputd_dac",
             _OUTPUTD_DAC_NULL,
@@ -1167,6 +1175,7 @@ _OUTPUTD_DAC_NULL = "pcm.outputd_dac {\n    type null\n}\n"
     ids=[
         "null-under-alsa",
         "real-device",
+        "backend-unset-is-alsa",
         "not-alsa",
         "conf-absent",
         "composite-sink-skip",
@@ -1178,10 +1187,10 @@ def test_outputd_dac_render_reads_the_rendered_alsa_config(
     """A null-rendered DAC PCM is invisible in outputd's STATUS (#4605), so the
     row keys on the rendered /etc/asound.conf instead."""
     env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        f"JASPER_OUTPUTD_BACKEND={backend}\nJASPER_OUTPUTD_DAC_PCM={dac_pcm_env}\n",
-        encoding="utf-8",
-    )
+    lines = [f"JASPER_OUTPUTD_DAC_PCM={dac_pcm_env}"]
+    if backend is not None:
+        lines.insert(0, f"JASPER_OUTPUTD_BACKEND={backend}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     asound = tmp_path / "asound.conf"
     if conf is not None:
