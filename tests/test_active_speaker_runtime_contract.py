@@ -138,7 +138,7 @@ def _flat_yaml() -> str:
         "  playback:\n"
         "    type: Alsa\n"
         "    channels: 2\n"
-        "    device: outputd_content_playback\n"
+        "    device: jts_ring_playback\n"
         "filters:\n"
         "  flat:\n"
         "    type: Gain\n"
@@ -1685,7 +1685,7 @@ def _mono_flat_yaml(
             "  playback:",
             "    type: Alsa",
             "    channels: 2",
-            "    device: outputd_content_playback",
+            "    device: jts_ring_playback",
             "filters:",
             *filters,
             *mixers,
@@ -4005,7 +4005,7 @@ _ALSA_PLAYBACK_BLOCK = (
     "  playback:\n"
     "    type: Alsa\n"
     "    channels: 2\n"
-    '    device: "outputd_content_playback"\n'
+    '    device: "jts_ring_playback"\n'
     "    format: S16_LE"
 )
 
