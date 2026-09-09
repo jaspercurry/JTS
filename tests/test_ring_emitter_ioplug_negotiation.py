@@ -37,13 +37,13 @@ from jasper.fanin_coupling import (
 )
 from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
 from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+from tests.ring_abi import ring_abi
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF_D = ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 IOPLUG_C = ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 RUST_FANIN_CONFIG = ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
-RUST_RING_LAYOUT = ROOT / "rust" / "jasper-ring" / "src" / "layout.rs"
 CAMILLADSP_TAG = "v4.1.3"
 CAMILLADSP_COMMIT = "05e9cfc"
 
@@ -81,12 +81,6 @@ def test_ioplug_geometry_is_fixed_min_equals_max():
     _ioplug_advertises_period_and_periods_fixed()
 
 
-# Anchored at column zero, because a `///` doc comment quoting a superseded
-# declaration would otherwise satisfy an unanchored search while the real
-# constant said something else.
-_RUST_SLOT_DECL_RE = re.compile(r"^pub const RING_SLOT_FRAMES: u32 = (\d+);$", re.MULTILINE)
-
-
 def _rust_declares_line(path: Path, line: str) -> bool:
     """Does ``path`` spell ``line`` as a WHOLE top-level line?
 
@@ -97,19 +91,14 @@ def _rust_declares_line(path: Path, line: str) -> bool:
 
 
 def _rust_ring_slot_frames() -> int:
-    """The Rust declaration of the slot, in the crate BOTH daemons link.
+    """The slot the crate BOTH daemons link declares, off the generated ABI.
 
-    `jasper-fanin` re-exports this and `jasper-outputd` reads it for the
-    dac-content lane, so it is the only Rust spelling left to pin. A SECOND
-    declaration is as much a drift as a changed one — the readers would split
-    across them — so more than one match fails here too.
+    `jasper-fanin` re-exports it and `jasper-outputd` reads it for the
+    dac-content lane, so `jasper_ring` is the only Rust spelling; the committed
+    `layout.json` is rendered from it and is what the C and Python ends are
+    pinned against too.
     """
-    matches = _RUST_SLOT_DECL_RE.findall(RUST_RING_LAYOUT.read_text(encoding="utf-8"))
-    assert len(matches) == 1, (
-        f"rust/jasper-ring/src/layout.rs must declare `pub const RING_SLOT_FRAMES: "
-        f"u32` exactly once at top level; found {len(matches)}"
-    )
-    return int(matches[0])
+    return ring_abi()["ring_slot_frames"]
 
 
 def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
