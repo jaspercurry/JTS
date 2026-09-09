@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from ._common import canonical_header, canonical_page, json_island
+from .chrome import canonical_header, canonical_page, json_island
 
 
 class NavRow(NamedTuple):

@@ -33,7 +33,8 @@ Grep before adding a class or a helper. A second implementation is a defect.
 
 | Concept | Owner |
 |---|---|
-| page shell, header, banner, toggle, JSON island, flash, 303, rejected-POST re-render (`send_rejected_form`) | `jasper/web/_common.py` |
+| page shell, header, banner, toggle, JSON island | `jasper/web/chrome.py` |
+| flash, 303, rejected-POST re-render (`send_rejected_form`) | `jasper/web/_common.py` |
 | button, info-card, badge, segmented, field, form-actions, spinner, dialog | `deploy/assets/app.css` |
 | CSRF fetch, control token, stale-session reload, polling with hidden-tab backoff (`startPolling`), confirm / alert / prompt, element building, escaping, page header (client-rendered), confirm before submit, copy to clipboard | `deploy/assets/shared/js/`: `http.js`, `dialog.js`, `dom.js`, `escape.js`, `chrome.js` (`appHeader`), `confirm-forms.js` (`data-confirm`), `copy.js` (`data-copy`) |
 | capability gating (`[data-requires]`) + live `status-*` sublabels | `deploy/assets/shared/js/settings-status.js` (`initSettingsStatus`) |

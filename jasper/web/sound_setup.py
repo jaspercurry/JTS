@@ -53,17 +53,15 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    canonical_header,
-    canonical_page,
     guard_mutating_request,
     guard_read_request,
-    json_island,
     read_json_object,
     reject_csrf,
     send_html_response,
     send_json_response,
     send_route_failure,
 )
+from .chrome import canonical_header, canonical_page, json_island
 from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,

@@ -106,9 +106,6 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     SECRET_ENV_MODE,
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     flash_error,
     form_guarded,
@@ -116,10 +113,10 @@ from ._common import (
     redirect_with_legacy_msg,
     route_path,
     restart_systemd_units,
-    safe_back_href,
     send_html_response,
     send_json_response,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,

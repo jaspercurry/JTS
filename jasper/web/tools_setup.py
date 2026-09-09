@@ -69,12 +69,9 @@ from ._common import (
     JsonBodyError,
     begin_request,
     bonded_follower_active,
-    canonical_header,
-    canonical_page,
     guard_mutating_request,
     guard_read_request,
     json_body,
-    json_island,
     read_active_provider,
     read_json_object,
     reject_csrf,
@@ -83,6 +80,7 @@ from ._common import (
     send_html_response,
     send_proxy_json,
 )
+from .chrome import canonical_header, canonical_page, json_island
 
 logger = logging.getLogger(__name__)
 

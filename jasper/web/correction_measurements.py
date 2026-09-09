@@ -18,7 +18,7 @@ from jasper.active_speaker.measurement_archive import (
     load_measurement,
 )
 
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 CATALOG_SCHEMA = "jts_frequency_catalog/1"
 
