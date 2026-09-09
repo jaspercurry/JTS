@@ -384,16 +384,46 @@ def test_pages_do_not_invent_their_own_text_tiers():
     )
 
 
-# The landing page is the protected reference implementation
-# (docs/design-language.md §2), so these three off-ladder sizes are HELD for
-# owner review rather than corrected: 0.92rem -> 14px reflows the pair banner.
-# The allowlist exists so the guard can still fail a NEW off-ladder value.
-LANDING_OFF_LADDER_HELD = {"0.92rem", "0.88rem", "0.86rem"}
+# Off-ladder font sizes HELD per sheet until that page's own pass corrects
+# them. The landing page's three are held under docs/design-language.md §2 as
+# well — it is the protected reference implementation and 0.92rem -> 14px
+# reflows the pair banner. SHRINK-ONLY: the guard asserts a sheet's off-ladder
+# set EQUALS its entry here, so a corrected value must be deleted from this
+# table and any new stray fails.
+OFF_LADDER_HELD: dict[str, set[str]] = {
+    "deploy/index.html": {"0.86rem", "0.88rem", "0.92rem"},
+    "deploy/assets/airplay/airplay.css": {"10px"},
+    "deploy/assets/bluetooth/bluetooth.css": {"0.7rem", "0.85rem", "0.95rem"},
+    "deploy/assets/correction/correction.css": {
+        "0.72rem", "0.82rem", "0.85rem", "0.93rem", "0.94rem", "0.95rem",
+        "0.9rem", "1.08rem", "1rem",
+    },
+    "deploy/assets/correction/crossover.css": {
+        "0.8125rem", "0.82rem", "0.95rem", "0.9rem", "1.05rem",
+    },
+    "deploy/assets/sound-profile/sound.css": {"10px", "9px"},
+    "deploy/assets/spotify/spotify.css": {"17px"},
+    "deploy/assets/system-status/system.css": {
+        "10px", "15px", "17px", "18px", "20px", "24px",
+    },
+    "deploy/assets/tools/tools.css": {"24px", "26px"},
+    "deploy/assets/transit/transit.css": {
+        "0.8125rem", "0.875rem", "0.95rem", "1.05rem",
+    },
+    "deploy/assets/voice/voice.css": {"0.85rem", "0.8rem", "1.05rem"},
+    "deploy/assets/wake/wake.css": {
+        "0.78rem", "0.82rem", "0.83rem", "0.84rem", "0.86rem", "0.88rem",
+        "0.93rem", "0.95rem", "0.9rem", "1rem",
+    },
+    "deploy/assets/weather/weather.css": {"0.85rem"},
+    "deploy/assets/wifi/wifi.css": {"18px"},
+    "jasper/web/sources_setup.py": {"0.9rem"},
+}
 TYPE_LADDER_PX = {"11px", "12px", "13px", "14px", "16px"}
 
 
 def _off_ladder_sizes(css: str) -> set[str]:
-    """font-size values that are neither on the ladder nor already held.
+    """font-size values that are not on the ladder.
 
     NB `em` is relative-to-parent sizing, not a ladder step, so it is skipped —
     but the check must not also swallow `rem`, which IS an absolute size and is
@@ -401,7 +431,7 @@ def _off_ladder_sizes(css: str) -> set[str]:
     out: set[str] = set()
     for raw in re.findall(r"font-size:\s*([^;}]+)", css):
         value = raw.strip()
-        if value in TYPE_LADDER_PX or value in LANDING_OFF_LADDER_HELD:
+        if value in TYPE_LADDER_PX:
             continue
         if value.startswith("var(") or value.startswith("calc("):
             continue
@@ -411,12 +441,18 @@ def _off_ladder_sizes(css: str) -> set[str]:
     return out
 
 
-def test_landing_page_type_stays_on_the_ladder():
+@pytest.mark.parametrize(
+    "path", _focus_ring_css_sources(), ids=lambda p: str(p.relative_to(ROOT))
+)
+def test_page_type_stays_on_the_ladder(path: Path):
     """design-language.md §3: 11/12/13/14/16 px, and no new off-ladder value."""
-    unexpected = _off_ladder_sizes(_without_css_comments(LANDING_HTML.read_text()))
-    assert not unexpected, (
-        "landing-page type must sit on the 11/12/13/14/16px ladder "
-        f"(docs/design-language.md §3); found {sorted(unexpected)}"
+    rel = str(path.relative_to(ROOT))
+    found = _off_ladder_sizes(_without_css_comments(path.read_text()))
+    held = OFF_LADDER_HELD.get(rel, set())
+    assert found == held, (
+        f"{rel} type must sit on the 11/12/13/14/16px ladder "
+        f"(docs/design-language.md §3). New off-ladder: {sorted(found - held)}. "
+        f"Corrected — delete from OFF_LADDER_HELD: {sorted(held - found)}"
     )
 
 
@@ -429,7 +465,8 @@ def test_type_ladder_guard_actually_catches_a_new_off_ladder_value():
     # …while the genuinely-exempt shapes stay quiet.
     assert _off_ladder_sizes("a { font-size: 0.95em; }") == set()
     assert _off_ladder_sizes("a { font-size: 14px; }") == set()
-    assert _off_ladder_sizes("a { font-size: 0.92rem; }") == set()  # held, §3
+    # Held values are held per sheet (OFF_LADDER_HELD), never tree-wide.
+    assert _off_ladder_sizes("a { font-size: 0.92rem; }") == {"0.92rem"}
 
 
 TARGET_PREFERRED_PX = 44
