@@ -311,6 +311,19 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 04:25Z: Row 1.1 LANDED (PR #4557 squash-merged at `82e82a03b`). Lane A
+  ran 1.3 and 1.4 before 1.2 (an import cycle: `correction/envelope.py` and the
+  room's LLM routes import `calibration_agent`, which imports
+  `correction.{bundles,evidence,strategy}`), so PR #4567 (row 1.3, −11,206,
+  takes the room wizard's LLM hooks with the client) and PR #4563 (row 1.4,
+  −4,790, bass wizard + parked apply pathway; encoder `_intent_payload` moves to
+  `apply_intent.py`) are open and CI-green; Opus reviews running; 1.2 is built
+  on 1.3's head and opens after it merges. Collision to manage: open PR #4580
+  (p11 program, "correction wizard runtime floor") edits
+  `web/correction_{capture,handlers,setup}.py`, `main.js` and
+  `tests/test_web_correction_tuning.py`, which #4567 deletes — merge #4567
+  first; #4580 rebases. Lane D pushed `claude/seat-w3-3-3a-bass-candidate` (6
+  commits, +3597/−580, stacked on 3.1/3.2); still no lane D PR.
 - 2026-09-09 02:28Z: Row 1.1 LANDED: PR #4557 squash-merged at `82e82a03b` on
   green CI after the fix commit.
 - 2026-09-09 02:30Z: Row 1.1 LANDED: PR #4557 squash-merged at `82e82a03b` on
