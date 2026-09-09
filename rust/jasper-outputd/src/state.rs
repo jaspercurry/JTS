@@ -1185,6 +1185,8 @@ impl OutputdState {
                 buf.push(',');
                 push_kv_u64(&mut buf, "frame_timeouts", counters.frame_timeouts());
                 buf.push(',');
+                push_kv_u64(&mut buf, "protocol_errors", counters.protocol_errors());
+                buf.push(',');
                 push_kv_u64(
                     &mut buf,
                     "flush_requests",
@@ -2774,6 +2776,7 @@ mod tests {
             r#""connections_rejected":0"#,
             r#""tts_clients":0"#,
             r#""frame_timeouts":0"#,
+            r#""protocol_errors":0"#,
             r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
