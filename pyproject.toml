@@ -416,6 +416,7 @@ module = [
     "jasper.web.__main__",
     "jasper.web._common",
     "jasper.web.bluetooth_setup",
+    "jasper.web.rooms_peers",
     "jasper.web.rooms_setup",
     "jasper.web.sound_active_speaker",
     "jasper.web.sound_profile_apply",

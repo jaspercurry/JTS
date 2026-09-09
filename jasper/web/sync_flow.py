@@ -378,7 +378,7 @@ def handle_apply(handler) -> tuple[dict, int]:
     gate-armed speaker — and since sync only writes self, a missing token
     fails the apply outright.
     """
-    from .rooms_setup import (
+    from .rooms_peers import (
         post_grouping_to_member,
         request_control_token,
         self_addresses,
