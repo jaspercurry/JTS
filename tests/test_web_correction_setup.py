@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.web import (
+    _common,
     correction_capture,
     correction_handlers,
     correction_runtime,
@@ -380,7 +381,7 @@ def test_get_measurement_data_dispatches_a_and_b(monkeypatch):
 
 def test_follower_keeps_local_crossover_measurement_post(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
-    monkeypatch.setattr(correction_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
     monkeypatch.setattr(
         correction_handlers,
         "_handle_crossover_reset",
@@ -579,7 +580,7 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     The subject is that whichever gate refuses, the refusal is journaled, never
     silent, and it carries the code the household's screen renders from."""
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
 
@@ -617,7 +618,7 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
     from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     raw_text = "cloud_measure_positions must be 6..12, got 14"
 
@@ -641,7 +642,7 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
     families it knows, so a plain transport failure must keep saying what it
     said. Containing every 500 behind one sentence would hide real breakage."""
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     def _raise_oserror(*_a, **_k):
@@ -679,7 +680,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
 
@@ -732,7 +733,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
         )
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(correction_handlers, "_handle_crossover_v2_capture", _refuse)
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
@@ -756,7 +757,7 @@ def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(
         v2host_mod,
@@ -799,7 +800,7 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(
         v2host_mod,
@@ -840,7 +841,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     def _raise(exc):
@@ -1451,7 +1452,7 @@ def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
     from jasper.volume_owner import VolumeOwner, install_volume_owner
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     declared: list[float] = []
@@ -1511,7 +1512,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     drained: list = []
 

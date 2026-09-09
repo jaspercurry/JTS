@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
 from collections.abc import Callable, Mapping
@@ -59,21 +60,18 @@ from . import correction_room_flow
 from ..platform.systemd import no_hold
 
 from ._common import (
+    RouteFn,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    guard_mutating_request,
-    guard_read_request,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
     route_path,
     send_html_response,
     send_json_response,
 )
 from . import correction_capture, correction_handlers, correction_runtime
-from .correction_capture import (
-    REQUIRED_SAMPLE_RATE,
-    _FOLLOWER_DELEGATED_PAGE_PATHS,
-)
+from .correction_capture import REQUIRED_SAMPLE_RATE
 from .correction_runtime import (
     BadRequest,
     CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
@@ -179,77 +177,10 @@ class _Handler(BaseHTTPRequestHandler):
     # --- routes ---
 
     def do_GET(self) -> None:  # noqa: N802
-        path = route_path(self.path)
-        handler_fn = _GET_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_read_request(self):
-            return
-        if bonded_follower_active() and path in _FOLLOWER_DELEGATED_PAGE_PATHS:
-            ctx = begin_request(self)
-            self._send_html(_render_follower_page(
-                self.hostname, ctx["csrf_token"],
-            ))
-            return
-        handler_fn(self)
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = route_path(self.path)
-        handler_fn = _POST_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
-        if bonded_follower_active() and not path.startswith("/crossover/"):
-            log_event(
-                logger,
-                "correction.follower_content_dsp_blocked",
-                path=path,
-            )
-            self._send_json(
-                {
-                    "error": (
-                        "room correction is controlled on the pair "
-                        "leader while this speaker is a follower"
-                    ),
-                },
-                status=HTTPStatus.CONFLICT,
-            )
-            return
-        # The prefix families answer their own failures, so they run
-        # outside the blanket 500 net below.
-        if path.startswith(("/sync/", "/crossover/")):
-            handler_fn(self)
-            return
-        try:
-            handler_fn(self)
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("POST %s failed", path)
-            self._send_json({"error": str(e)}, status=500)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        dispatch_post(self, _POST_ROUTES, guard="header", run=_run_post_route)
 
 
 # ---------------------------------------------------------------------------
@@ -1068,18 +999,60 @@ def _post_session_delete(handler: _Handler) -> None:
         handler._send_client_error(str(e), status=409)
 
 
+def _follower_delegated(fn: RouteFn) -> RouteFn:
+    """A page a bonded follower does not own: it renders the "controlled on
+    the leader" page instead of its own."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        if bonded_follower_active():
+            ctx = begin_request(handler)
+            handler._send_html(_render_follower_page(
+                handler.hostname, ctx["csrf_token"],
+            ))
+            return
+        fn(handler)
+    return route
+
+
+def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
+    """The seam's guarded-call hook (`run=`). Content DSP is the pair
+    leader's on a bonded follower; only /crossover/* stays local. The
+    /sync/* and /crossover/* families answer their own failures, so they
+    run outside the blanket 500 net."""
+    if bonded_follower_active() and not path.startswith("/crossover/"):
+        log_event(
+            logger,
+            "correction.follower_content_dsp_blocked",
+            path=path,
+        )
+        handler._send_json(
+            {
+                "error": (
+                    "room correction is controlled on the pair "
+                    "leader while this speaker is a follower"
+                ),
+            },
+            status=HTTPStatus.CONFLICT,
+        )
+        return
+    if path.startswith(("/sync/", "/crossover/")):
+        route(handler)
+        return
+    try:
+        route(handler)
+    except BadRequest as e:
+        handler._send_client_error(str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST %s failed", path)
+        handler._send_json({"error": str(e)}, status=500)
+
+
 # do_GET / do_POST dispatch through these exact-path tables
 # (path -> callable taking the handler). Mirrors the table in
 # jasper/web/wake_corpus_setup.py.
-#
-# ORDERING IS LOAD-BEARING: an unlisted path 404s before the read guard
-# (GET) or the CSRF check (POST) runs, so a bogus path never reveals
-# either. The /sync/* and /crossover/* families are dispatched by prefix
-# through their own functions, which answer their own failures and so run
-# outside do_POST's blanket 500 net.
 
 _GET_ROUTES = {
-    "/": _get_index,
+    "/": _follower_delegated(_get_index),
     "/crossover": _get_crossover,
     "/measurements": _get_measurements,
     "/measurements/data": _get_measurements_data,
@@ -1087,7 +1060,7 @@ _GET_ROUTES = {
     "/crossover/envelope": _get_crossover_envelope,
     "/bass": _get_bass,
     "/bass/status": _get_bass_status,
-    "/sync": _get_sync,
+    "/sync": _follower_delegated(_get_sync),
     "/sync/status": _get_sync_status,
     "/healthz": _get_healthz,
     "/status": _get_status,

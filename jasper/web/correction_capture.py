@@ -53,7 +53,6 @@ _AUTHORITY_UNCONFIRMED_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 # resampling would produce a working but wrong correction).
 REQUIRED_SAMPLE_RATE = 48000
 MAX_DEVICE_FIELD_CHARS = 160
-_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/sync"})
 
 
 # Module-level session. Lazy-init on first use so importing this module is

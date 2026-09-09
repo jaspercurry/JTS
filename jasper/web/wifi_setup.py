@@ -59,7 +59,6 @@ import re
 import shlex
 import subprocess
 import time
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -70,14 +69,13 @@ from ..secret_redaction import redact_secrets
 from ._common import (
     JsonBodyError,
     begin_request,
+    dispatch_get,
+    dispatch_post,
     json_body,
-    reject_csrf,
     read_json_object,
     route_path,
     send_html_response,
     send_json_response,
-    guard_read_request,
-    guard_mutating_request,
 )
 from .chrome import canonical_header, canonical_page
 
@@ -1320,26 +1318,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         self._json_response_started = False
-        handler_fn = _GET_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_read_request(self):
-            return
-        handler_fn(self)
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self) -> None:  # noqa: N802
         self._json_response_started = False
-        path = route_path(self.path)
-        handler_fn = _POST_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
         try:
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="header")
         except Exception as e:  # noqa: BLE001
             # A failure after the route answered is a transport failure on a
             # response already on the wire; re-raise rather than write a
@@ -1349,7 +1333,7 @@ class _Handler(BaseHTTPRequestHandler):
             log_event(
                 logger,
                 "wifi.post_dispatch_failed",
-                action=path.removeprefix("/"),
+                action=route_path(self.path).removeprefix("/"),
                 error=type(e).__name__,
                 ok=False,
                 client=self.address_string(),
@@ -1448,10 +1432,7 @@ def _post_radio(handler: _Handler, body: dict[str, Any]) -> None:
     handler._send_json({"ok": ok, "message": msg}, status=200 if ok else 502)
 
 
-# do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables (exact
-# path -> handler callable) — module-level, since no per-server state is
-# captured here. ORDERING IS LOAD-BEARING: each method looks the route up
-# first, so an unknown path 404s before the read/CSRF guard runs.
+# The tables are module-level, since no per-server state is captured here.
 _GET_ROUTES = {"/": _get_index, "/state": _get_state}
 _POST_ROUTES = {
     "/scan": _post_scan,

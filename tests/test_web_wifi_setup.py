@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.web import wifi_setup
+from jasper.web import _common, wifi_setup
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -860,7 +860,7 @@ def test_post_unknown_route_precedes_csrf_and_body_read(monkeypatch):
     def fail_guard(_handler):
         raise AssertionError("unknown routes must not reach CSRF")
 
-    monkeypatch.setattr(wifi_setup, "guard_mutating_request", fail_guard)
+    monkeypatch.setattr(_common, "guard_mutating_request", fail_guard)
     h, captured = _make_request("/unknown", body=b'{"on":true}')
     reader = _TrackingReader(b'{"on":true}', fail=True)
     h.rfile = reader
