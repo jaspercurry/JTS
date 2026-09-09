@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from .models import UUID_A2DP_SINK
+
 if TYPE_CHECKING:
     from .adapter import BluezSession
 
@@ -30,33 +32,46 @@ BLUEZ_PROBE_TIMEOUT_SEC = 2.0
 
 async def _bluez_objects(session: BluezSession | None = None) -> dict[str, Any] | None:
     """One bounded object-tree read; None when BlueZ failed."""
-    # lazy: import cost. dbus_next behind .adapter is ~10 MB RSS that the
-    # resident mux/voice daemons importing this module must not hold for a
-    # path used once per Bluetooth preempt (tests/test_lazy_imports.py).
-    from .adapter import BLUEZ_ERRORS, managed_objects  # lazy
-
+    try:
+        # lazy: import cost. dbus_next behind .adapter is ~10 MB RSS that the
+        # resident mux/voice daemons importing this module must not hold for a
+        # path used once per Bluetooth preempt (tests/test_lazy_imports.py).
+        # Guarded: an absent dbus_next is an unreachable bus, not a raise into
+        # mux's probe gather, and BLUEZ_ERRORS below is unbound if it fails.
+        from .adapter import BLUEZ_ERRORS, managed_objects  # lazy
+    except ImportError as exc:
+        logger.debug("dbus_next unavailable: %s", exc)
+        return None
     try:
         # asyncio.timeout(), NOT wait_for(): awaited directly from
         # cancellation-only poll loops (mux patrol, source-state tick), which
         # wait_for on 3.11 would keep immortal. See jasper/renderer.py.
         async with asyncio.timeout(BLUEZ_PROBE_TIMEOUT_SEC):
             return await managed_objects(session)
-    except (*BLUEZ_ERRORS, TimeoutError) as exc:
+    # LookupError: managed_objects returns body[0] of the reply.
+    except (*BLUEZ_ERRORS, LookupError, TimeoutError) as exc:
         logger.debug("bluez GetManagedObjects failed: %s", exc)
         return None
 
 
 def _a2dp_sink_device(objects: dict[str, Any]) -> str | None:
-    """The Device1 path owning the first A2DP transport, in any state.
+    """The Device1 path owning the first A2DP-sink transport, in any state.
 
-    A ``MediaTransport1`` object exists exactly while a phone has the A2DP
+    Such a ``MediaTransport1`` exists exactly while a phone has the A2DP sink
     profile connected — the same fact the bluealsa PCM list used to report —
-    so a connected-but-paused phone still counts. JTS is only ever the sink,
-    so no endpoint-role filter is needed.
+    so a connected-but-paused phone still counts.
+
+    The UUID filter is load-bearing: bluez-alsa also runs an a2dp-source
+    endpoint (JTS -> headset) and SCO/HFP transports surface on this same
+    interface, and either would otherwise read as "a phone is playing to us"
+    and preempt the current mux winner.
     """
     for ifaces in objects.values():
         transport = ifaces.get(BLUEZ_TRANSPORT_IFACE)
         if transport is None:
+            continue
+        uuid = getattr(transport.get("UUID"), "value", None)
+        if not isinstance(uuid, str) or UUID_A2DP_SINK not in uuid.lower():
             continue
         device = getattr(transport.get("Device"), "value", None)
         if isinstance(device, str) and device:
@@ -102,9 +117,15 @@ async def bluetooth_player_path(session: BluezSession | None = None) -> str | No
 
 async def bluetooth_avrcp_call(method: str, session: BluezSession | None = None) -> None:
     """Invoke a no-arg AVRCP method on the active BlueZ MediaPlayer1."""
-    from dbus_next import Message  # type: ignore  # lazy: import cost
+    try:
+        # Guarded for the same reason as in _bluez_objects: an absent
+        # dbus_next is one failed transport command, not a ModuleNotFoundError
+        # escaping into mux's preempt path.
+        from dbus_next import Message  # type: ignore  # lazy: import cost
 
-    from .adapter import BLUEZ_BUS, BLUEZ_ERRORS, bluez_session  # lazy: import cost
+        from .adapter import BLUEZ_BUS, BLUEZ_ERRORS, bluez_session  # lazy: import cost
+    except ImportError as exc:
+        raise RuntimeError(f"bluetooth {method} failed: {exc}") from exc
 
     try:
         # The timeout also covers the connect: a bus that accepts the socket
@@ -112,7 +133,7 @@ async def bluetooth_avrcp_call(method: str, session: BluezSession | None = None)
         async with asyncio.timeout(BLUEZ_PROBE_TIMEOUT_SEC), bluez_session(session) as sess:
             objects = await _bluez_objects(sess)
             path = None if objects is None else _player_path(objects)
-            if path is None:
+            if objects is None or path is None:
                 raise RuntimeError("bluetooth AVRCP player not available")
             if method == "PlayPause":
                 method = "Pause" if _player_status(objects, path) == "playing" else "Play"
@@ -122,5 +143,5 @@ async def bluetooth_avrcp_call(method: str, session: BluezSession | None = None)
                 interface=BLUEZ_PLAYER_IFACE,
                 member=method,
             ))
-    except (*BLUEZ_ERRORS, TimeoutError) as exc:
+    except (*BLUEZ_ERRORS, LookupError, TimeoutError) as exc:
         raise RuntimeError(f"bluetooth {method} failed: {exc}") from exc

@@ -10,6 +10,8 @@ probe must fail soft: an unreachable bus is None, never a raise.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 from dbus_next import Message, Variant  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
@@ -21,11 +23,17 @@ OTHER_DEVICE = "/org/bluez/hci0/dev_11_22_33_44_55_66"
 TRANSPORT = f"{DEVICE}/fd0"
 
 
-def _transport(state: str, device: str = DEVICE) -> dict:
+A2DP_SINK_UUID = "0000110B-0000-1000-8000-00805F9B34FB"
+A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
+HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
+
+
+def _transport(state: str, device: str = DEVICE, uuid: str = A2DP_SINK_UUID) -> dict:
     return {
         avrcp.BLUEZ_TRANSPORT_IFACE: {
             "State": Variant("s", state),
             "Device": Variant("o", device),
+            "UUID": Variant("s", uuid),
         },
     }
 
@@ -62,6 +70,11 @@ class _Session:
     [
         ({TRANSPORT: _transport("active")}, True),
         ({TRANSPORT: _transport("idle")}, True),
+        # Only the A2DP SINK role is "a phone playing to us": bluez-alsa also
+        # runs an a2dp-source endpoint and HFP/SCO uses the same interface.
+        ({TRANSPORT: _transport("active", uuid=A2DP_SOURCE_UUID)}, False),
+        ({TRANSPORT: _transport("active", uuid=HFP_AG_UUID)}, False),
+        ({TRANSPORT: {avrcp.BLUEZ_TRANSPORT_IFACE: {"Device": Variant("o", DEVICE)}}}, False),
         ({DEVICE: {"org.bluez.Device1": {}}}, False),
         ({}, False),
     ],
@@ -79,6 +92,15 @@ async def test_unreachable_bus_is_none_not_a_raise(monkeypatch, error):
     _install_objects(monkeypatch, error=error)
     assert await avrcp.a2dp_sink_playing() is None
     assert await avrcp.bluetooth_player_path() is None
+
+
+async def test_a_missing_dbus_next_fails_soft_like_an_unreachable_bus(monkeypatch):
+    """The probe is gathered with return_exceptions=False (mux arbitration),
+    so an ImportError from the lazy import must not escape the module."""
+    monkeypatch.setitem(sys.modules, "jasper.bluetooth.adapter", None)
+    assert await avrcp.a2dp_sink_playing() is None
+    with pytest.raises(RuntimeError):
+        await avrcp.bluetooth_avrcp_call("Pause", _Session())
 
 
 @pytest.mark.parametrize(
