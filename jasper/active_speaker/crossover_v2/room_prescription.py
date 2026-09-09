@@ -205,11 +205,13 @@ class RoomMedian:
     #: The level ``median_db`` was read against: the producer's median curve's
     #: own median over the band, dB.
     level_reference_db: float = 0.0
+    evidence: Mapping[str, Any] | None = None
+    coverage_hz: tuple[float, float] | None = None
 
     @property
     def band_hz(self) -> tuple[float, float]:
         """The band a prescription against this median may place filters in."""
-        return (ROOM_FLOOR_HZ, self.ceiling_hz)
+        return self.coverage_hz or (ROOM_FLOOR_HZ, self.ceiling_hz)
 
 
 def _unavailable(detail: str, **evidence: Any) -> NoReturn:
@@ -284,9 +286,15 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
             f"n_positions is {declared} against {len(positions)} position record(s)"
         )
     rows: list[np.ndarray] = []
+    poses: set[str] = set()
     for index, entry in enumerate(positions):
         if not isinstance(entry, Mapping):
             _unavailable(f"position {index} must be an object")
+        pose = entry.get("pose_key")
+        if isinstance(pose, str):
+            if pose in poses:
+                _unavailable("positions repeat a physical pose", pose_key=pose)
+            poses.add(pose)
         rows.append(
             _median_array(
                 entry.get("deviation_db"),
@@ -294,6 +302,18 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
                 length=bins,
             )
         )
+    evidence = raw.get("evidence")
+    if evidence is not None and (
+        not isinstance(evidence, Mapping) or not isinstance(evidence.get("basis"), Mapping)
+        or evidence.get("take_ids") != [entry.get("id") for entry in positions]
+    ):
+        _unavailable("evidence must name the selected position records")
+    coverage = None
+    if "coverage_hz" in raw:
+        span = _median_array(raw["coverage_hz"], "coverage_hz", length=2)
+        if not np.allclose(span, [freqs[0], freqs[-1]], rtol=1e-8, atol=0):
+            _unavailable("coverage_hz must match the supported grid endpoints")
+        coverage = (float(span[0]), float(span[1]))
     # The producer writes the median at measurement level; a room correction
     # moves shape, never level, so the trend is read against its own robust
     # level over the band and that reference is disclosed.
@@ -303,6 +323,8 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
         median_db=median_db - level_db,
         spread_db=spread_db,
         level_reference_db=level_db,
+        evidence=evidence,
+        coverage_hz=coverage,
         deviations_db=(
             np.vstack(rows) if rows else np.zeros((0, bins), dtype=np.float64)
         ),
@@ -352,6 +374,7 @@ class RoomPrescription:
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
     rationale_dropped_chars: int | None = None
+    coverage_hz: tuple[float, float] | None = None
 
     @property
     def filters(self) -> list[dict[str, Any]]:
@@ -364,7 +387,7 @@ class RoomPrescription:
 
     @property
     def band_hz(self) -> tuple[float, float]:
-        return (ROOM_FLOOR_HZ, self.ceiling_hz)
+        return self.coverage_hz or (ROOM_FLOOR_HZ, self.ceiling_hz)
 
     @property
     def admitted_boosts_hz(self) -> list[float]:
@@ -744,8 +767,12 @@ def _check_composed(
     the cascade past a per-filter bound both filters cleared. Returns the
     largest per-side boost spend, which is what the level costs.
     """
-    grid = composed_grid(median.band_hz, median.freqs_hz)
-    grid_floor_db = np.interp(grid, median.freqs_hz, floor_db)
+    # Coverage limits filter centres; the room policy still bounds their tails.
+    grid = composed_grid((ROOM_FLOOR_HZ, median.ceiling_hz), median.freqs_hz)
+    grid_floor_db = np.maximum(
+        np.interp(grid, median.freqs_hz, floor_db),
+        cut_floor_db(0.0, grid, median.ceiling_hz),
+    )
     cap_db = boost_cap_db(grid, median.ceiling_hz)
     spend = 0.0
     for side, entries in sides.items():
@@ -823,6 +850,9 @@ def read_room_prescription(
             expected_sides=sorted(sides),
         )
     median = _checked_median(room_median, room_median_sha256, echoed, round_id)
+    measured_side = (median.evidence or {}).get("basis", {}).get("side")
+    if measured_side is not None and set(sides) != {measured_side}:
+        _refuse(SIDE_MALFORMED, "the median measures another side", measured_side=measured_side)
     # Built once: the per-filter bound and the composed one read the same
     # per-bin floor, on the same grid the median declared it on.
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
@@ -833,6 +863,7 @@ def read_room_prescription(
         sides=prescribed,
         prescription_class=prescription_class,
         room_median_sha256=echoed,
+        coverage_hz=median.coverage_hz,
         prescriber_model=model,
         prescriber_operator=operator,
         ceiling_hz=median.ceiling_hz,
