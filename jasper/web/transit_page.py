@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 # Owned by ..location_state / ..google_routes; transit_setup.py imports
-# these from here rather than redeclaring them.
+# these from here rather than redeclaring them. Values: JASPER_TRANSIT_LAT,
+# JASPER_TRANSIT_LON, JASPER_TRANSIT_DISPLAY_NAME — wizard-internal
+# coordinate scaffolding (written by the geocode handlers in
+# transit_setup.py), not an operator-facing .env.example knob.
 LAT_ENV = location_state.TRANSIT_LAT_ENV
 LON_ENV = location_state.TRANSIT_LON_ENV
 DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
