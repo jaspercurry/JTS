@@ -1448,6 +1448,47 @@ def test_manage_units_no_fallback_when_non_root(tmp_path, monkeypatch):
     assert ran == []  # NO direct systemctl when non-root
 
 
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_manage_units_power_verb_fallback_gated_like_the_broker(
+    tmp_path, monkeypatch, verb,
+):
+    """Broker unreachable + a caller that is neither root nor jasper-control
+    -> refused, never a direct `systemctl reboot`/`poweroff`. The dead-broker
+    fallback must refuse exactly what the broker's own peer-uid check would
+    refuse (test_power_verb_is_refused_from_a_non_control_peer) -- a power
+    verb alone must not arm it for every non-root process."""
+    monkeypatch.setattr(
+        restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 1234)
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (0, 5678))
+    spawned = _record_popen(monkeypatch)
+
+    resp = restart_broker.manage_units(verb=verb, timeout=0.5)
+
+    assert resp["ok"] is False
+    assert spawned == []
+
+
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_manage_units_power_verb_fallback_armed_for_jasper_control(
+    tmp_path, monkeypatch, verb,
+):
+    """The one non-root caller polkit actually grants login1
+    reboot/power-off to keeps its dead-broker fallback."""
+    monkeypatch.setattr(
+        restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (0, 4242))
+    spawned = _record_popen(monkeypatch)
+
+    resp = restart_broker.manage_units(verb=verb, timeout=0.5)
+
+    assert resp["ok"] is True
+    assert spawned == [["systemctl", verb]]
+
+
 @pytest.mark.parametrize("call", ["request_restart", "manage_units"])
 def test_default_socket_path_is_resolved_at_call_time(call, tmp_path, monkeypatch):
     """Both client entry points must read DEFAULT_SOCKET_PATH when called, not

@@ -135,6 +135,19 @@ async def test_reboot_system_goes_through_the_restart_broker(tmp_path):
     assert calls == [("reboot", ())]
 
 
+async def test_reboot_system_raises_when_the_broker_refuses(tmp_path):
+    """A refused/failed broker reboot must not look like a queued one: the
+    caller (_handle_wedge) only logs `system_supervisor.reboot_failed` if
+    this raises."""
+    sup = SystemSupervisor(reboot_state_path=tmp_path / "reboot.json")
+    with patch.object(
+        restart_broker, "manage_units",
+        lambda *u, **kw: {"ok": False, "error": "denied"},
+    ):
+        with pytest.raises(RuntimeError):
+            await sup.reboot_system()
+
+
 async def test_all_probes_pass_keeps_counter_zero():
     sup = _FakeSupervisor()
     sup.probe_results = [None, None, None]
@@ -158,6 +171,26 @@ async def test_three_consecutive_failures_trigger_one_reboot():
     assert sup.consecutive_failures == 0   # reset after reboot
     assert sup.reboot_count == 1
     assert sup.last_reboot_at is not None
+
+
+async def test_reboot_failed_is_logged_when_reboot_system_raises(caplog):
+    """A recovery reboot that the broker refuses/fails must still be visible
+    on the wire: `_handle_wedge` logs `system_supervisor.reboot_failed`
+    rather than swallowing the exception."""
+    sup = _FakeSupervisor()
+
+    async def _raising_reboot() -> None:
+        raise RuntimeError("restart broker refused reboot: {'ok': False}")
+
+    sup.reboot_system = _raising_reboot
+    sup.probe_results = [(False, True, True)] * 3
+    with caplog.at_level("ERROR", logger="jasper.control.system_supervisor"):
+        for _ in range(3):
+            await sup._tick()
+    assert any(
+        "event=system_supervisor.reboot_failed" in rec.getMessage()
+        for rec in caplog.records
+    )
 
 
 async def test_recovery_before_threshold_resets_counter():

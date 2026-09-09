@@ -488,11 +488,17 @@ class SystemSupervisor:
         """Clean reboot through the restart broker — the one audited
         systemctl door, shared with the /system buttons. NOT `reboot-force`:
         we want filesystems unmounted and zram dirty pages synced. The broker
-        spawns it detached, so this returns once the reboot is queued."""
-        await asyncio.to_thread(
+        spawns it detached, so this returns once the reboot is queued.
+
+        Raises if the broker refused or failed the request, so a wedged box
+        that cannot reboot surfaces via ``system_supervisor.reboot_failed``
+        instead of the caller assuming the reboot happened."""
+        result = await asyncio.to_thread(
             restart_broker.manage_units,
             verb="reboot", reason="system_supervisor",
         )
+        if not result.get("ok"):
+            raise RuntimeError(f"restart broker refused reboot: {result}")
 
     # ---- accessors ----
 

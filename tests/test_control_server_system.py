@@ -779,42 +779,46 @@ def test_usb_forensics_rejects_malformed_toggle(
     assert body["error"] == "enabled must be a boolean"
 
 
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
 def test_system_action_reboot_audits_and_asks_the_broker(
     monkeypatch,
     server_with_coordinator,
     caplog,
+    verb,
 ):
     """A destructive /system/ action emits an `event=system.action` audit line
-    (so a dashboard-triggered reboot is distinguishable from a watchdog/crash
-    reset when debugging "the speaker restarted on its own") and reaches
-    systemd only through the restart broker — never its own subprocess. The
-    box goes down before any verdict, so the answer is 202 accepted, never a
-    claim that the reboot happened."""
+    (so a dashboard-triggered reboot/poweroff is distinguishable from a
+    watchdog/crash reset when debugging "the speaker restarted on its own")
+    and reaches systemd only through the restart broker — never its own
+    subprocess. The box goes down before any verdict, so the answer is 202
+    accepted, never a claim that the action happened."""
     import logging
 
     base, _ = server_with_coordinator
     broker_calls = _record_broker(monkeypatch)
 
     with caplog.at_level(logging.INFO, logger="jasper.control"):
-        status, body = _post(f"{base}/system/reboot", {})
+        status, body = _post(f"{base}/system/{verb}", {})
 
     assert status == 202
-    assert body["action"] == "reboot"
+    assert body["action"] == verb
     assert body["status"] == "accepted"
-    assert broker_calls == [("reboot", [])]
+    assert broker_calls == [(verb, [])]
     assert any(
-        "event=system.action action=reboot" in rec.getMessage()
+        f"event=system.action action={verb}" in rec.getMessage()
         for rec in caplog.records
-    ), "reboot must emit an event=system.action audit line"
+    ), f"{verb} must emit an event=system.action audit line"
 
 
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
 def test_system_action_reboot_survives_a_dead_broker(
     monkeypatch,
     server_with_coordinator,
+    verb,
 ):
     """The broker's socket bind is deliberately non-fatal, so the dashboard
-    reboot must not hard-depend on it: with the socket unreachable
-    jasper-control still spawns the reboot itself and answers 202."""
+    reboot/poweroff must not hard-depend on it: with the socket unreachable
+    jasper-control still spawns the action itself and answers 202."""
     import jasper.control.restart_broker as rb
 
     base, _ = server_with_coordinator
@@ -826,11 +830,11 @@ def test_system_action_reboot_survives_a_dead_broker(
     monkeypatch.setattr(rb, "request_restart", _no_socket)
     monkeypatch.setattr(rb.subprocess, "Popen", _recording_popen(popens))
 
-    status, body = _post(f"{base}/system/reboot", {})
+    status, body = _post(f"{base}/system/{verb}", {})
 
     assert status == 202
     assert body["status"] == "accepted"
-    assert popens == [["systemctl", "reboot"]]
+    assert popens == [["systemctl", verb]]
 
 
 def test_system_snapshot_audio_quality_fails_soft(

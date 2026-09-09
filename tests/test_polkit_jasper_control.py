@@ -4,11 +4,14 @@
 
 """Pin the polkit rule that authorizes the non-root `jasper-control` service user.
 
-Once jasper-control drops to a non-root user, its in-process restart broker and
-its supervisors (system_supervisor reboot, shairport_supervisor restart, the
-/system buttons) can only `systemctl`/reboot through polkit. The rule lives at
-deploy/polkit/49-jasper-control.rules and is installed to
-/etc/polkit-1/rules.d/ by install.sh's install_jasper_control_polkit.
+Once jasper-control drops to a non-root user, its in-process restart broker
+(which reboot/poweroff, the /system buttons, and system_supervisor's recovery
+reboot all route through, falling back to a direct spawn only when the broker
+itself is unreachable) and its other supervisors (shairport_supervisor
+restart, grouping/aec reconciler kicks) can only `systemctl`/reboot through
+polkit. The rule lives at deploy/polkit/49-jasper-control.rules and is
+installed to /etc/polkit-1/rules.d/ by install.sh's
+install_jasper_control_polkit.
 
 These tests pin the invariants that, if broken, silently disable a
 resilience-critical path (a unit the broker accepts gets polkit-denied, or the

@@ -405,11 +405,19 @@ def _allowed_uids() -> set[int]:
 
 
 def _power_verb_uids() -> tuple[int, ...]:
-    """Peer uids that may ask for a POWER_VERB: root and the broker's own
-    (jasper-control). polkit grants org.freedesktop.login1.reboot/power-off to
+    """Uids that may ask for a POWER_VERB: root and the ``jasper-control``
+    service account. polkit grants org.freedesktop.login1.reboot/power-off to
     the jasper-control user alone (deploy/polkit/49-jasper-control.rules), so
-    the other broker clients must not borrow it through this socket."""
-    return 0, os.geteuid()
+    neither the broker's other peers nor manage_units' dead-broker fallback
+    may borrow it. Resolved by name (not the caller's own euid) so this set
+    means the same thing whether it checks a connecting peer's credentials or
+    the current process's own identity."""
+    uids = [0]
+    try:
+        uids.append(pwd.getpwnam("jasper-control").pw_uid)
+    except KeyError:
+        pass
+    return tuple(uids)
 
 
 # SO_PEERCRED is Linux-only (the broker runs on the Pi). Resolve it once;
@@ -526,7 +534,7 @@ class _BrokerHandler(StreamRequestHandler):
             exec_timeout=exec_timeout,
         )
         try:
-            rc, err, self_deferred = _run_systemctl_request(
+            rc, err, deferred = _run_systemctl_request(
                 verb, units, no_block=no_block, exec_timeout=exec_timeout,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -536,12 +544,17 @@ class _BrokerHandler(StreamRequestHandler):
             )
             self._reply({"ok": False, "error": f"systemctl invocation failed: {exc}"})
             return
-        if self_deferred:
+        if deferred:
             log_event(
                 logger, "restart_broker.deferred", verb=verb,
                 units=units_label, result="queued_unconfirmed",
             )
-        queued_unconfirmed = self_deferred and rc is None
+        queued_unconfirmed = deferred and rc is None
+        # A power verb is also `deferred` (spawned detached, unconfirmable)
+        # but it never restarts jasper-control itself — reserve the
+        # `self_deferred` field for the actual self-unit-restart case so it
+        # is not a misnomer for reboot/poweroff replies.
+        self_deferred = deferred and verb not in POWER_VERBS
         if rc is not None and rc != 0:
             log_event(
                 logger, "restart_broker.exec_nonzero", verb=verb,
@@ -758,11 +771,15 @@ def manage_units(
             *units, verb=verb, reason=reason, no_block=no_block, timeout=timeout,
         )
     except BrokerUnavailable as exc:
-        # A power verb keeps the direct path even for the non-root
-        # jasper-control: the broker's bind failure is deliberately non-fatal
+        # A power verb keeps the direct path for the non-root jasper-control
+        # specifically: the broker's bind failure is deliberately non-fatal
         # (jasper.control.server), and polkit grants login1 reboot/power-off
-        # to jasper-control itself, the only caller that issues one.
-        if os.geteuid() == 0 or verb in POWER_VERBS:
+        # to jasper-control itself, the only caller that issues one. Any
+        # OTHER non-root caller gets no fallback here either — mirrors the
+        # broker's own peer-uid check for POWER_VERBS.
+        if os.geteuid() == 0 or (
+            verb in POWER_VERBS and os.geteuid() in _power_verb_uids()
+        ):
             log_event(
                 logger, "restart_broker.fallback_direct", verb=verb,
                 units=label, error=str(exc), level=logging.WARNING,
