@@ -19,6 +19,7 @@ import pytest
 from jasper.usage import (
     AggregateUsageReader,
     BillableActivityMeter,
+    USAGE_RETENTION_DAYS,
     _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
     Pricing,
@@ -330,6 +331,37 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
         conn.commit()
 
     assert store.spend_last_24h_usd() == 0.0
+
+
+def test_spend_window_query_uses_epoch_index(tmp_path: Path):
+    """The 24h spend window range-scans the epoch index instead of running
+    strftime() over every row — the fix for the per-wake full table scan."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    plan = store._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
+        "WHERE started_at_epoch >= ?", (0,),
+    ).fetchall()
+    detail = " ".join(row[-1] for row in plan)
+    assert "USING INDEX" in detail
+    assert "idx_sessions_started_at_epoch" in detail
+
+
+def test_sessions_older_than_retention_are_pruned_on_open(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=USAGE_RETENTION_DAYS + 1)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(_SESSIONS_TABLE_DDL)
+        conn.executemany(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            [(old, 1.0), (recent, 2.0)],
+        )
+
+    store = UsageStore(str(db))  # opening the writer runs the one-time prune
+    rows = store._conn.execute("SELECT started_at FROM sessions").fetchall()
+    assert rows == [(recent,)]
 
 
 # ---------------------------------------------------------------------------
