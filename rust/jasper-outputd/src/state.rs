@@ -342,7 +342,7 @@ pub struct OutputdState {
     reference_sequence: AtomicU64,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
-    // Bonded-member TTS lane (PR-2). Set once at startup when the
+    // Bonded-member TTS lane. Set once at startup when the
     // socket env is configured; the state server may briefly read
     // enabled:false before run_alsa sets it — harmless.
     tts: OnceLock<(String, TtsMetrics)>,
@@ -1111,7 +1111,7 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Multi-room round-trip lane (Increment 3) — DAEMON-TRUTH health
+        // Multi-room round-trip lane — DAEMON-TRUTH health
         // for /state + jasper-doctor (never a Python mirror of env
         // intent). enabled:false with no further fields when the lane is
         // not configured (solo — zero cost, zero noise).
@@ -1147,7 +1147,7 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Bonded-member TTS lane (PR-2) — daemon truth for /state +
+        // Bonded-member TTS lane — daemon truth for /state +
         // doctor. enabled:false when the lane is off (solo: fanin owns
         // TTS) — zero noise, mirroring dac_content.
         buf.push_str(r#""tts":{"#);
@@ -1481,8 +1481,8 @@ impl OutputdState {
         push_kv_bool(&mut buf, "desired", chip_ref_desired);
         buf.push(',');
         // Compatibility: existing AEC policy consumers read `enabled` as the
-        // live writer verdict. It now tells runtime truth instead of merely
-        // echoing that a PCM name was configured.
+        // live writer verdict — runtime truth, not merely that a PCM name was
+        // configured.
         push_kv_bool(&mut buf, "enabled", chip_ref_active);
         buf.push(',');
         push_kv_bool(&mut buf, "active", chip_ref_active);
@@ -2003,8 +2003,7 @@ mod tests {
         for needle in [
             r#""backend":"alsa""#,
             // The content lane's own declared/negotiated hop sits right after
-            // its pcm, mirroring `dac`. Updated deliberately when
-            // `content.format` was added: the block's prefix is the contract
+            // its pcm, mirroring `dac`. The block's prefix is the contract
             // consumers read, so a new field belongs IN this needle, not around
             // it.
             r#""content":{"source":"alsa","format":"S16_LE""#,
@@ -2043,9 +2042,8 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // PR-2 (Increment 5) UN-RETIRED the outputd TTS lane that 9102e13
-        // removed — this assertion used to pin its absence; it now pins
-        // the solo shape: present but disabled (fanin owns solo TTS).
+        // Solo shape: the tts block is present but disabled (fanin owns
+        // solo TTS).
         assert!(
             j.contains(r#""tts":{"enabled":false}"#),
             "solo tts block must be present-but-disabled in {j}"
@@ -2406,13 +2404,11 @@ mod tests {
 
     #[test]
     fn a_composite_reports_the_width_its_children_negotiated_not_a_constant() {
-        // STATUS honesty for the composite transport. Until PR-5,
-        // `RuntimeAlsaSink::dac_format` returned a hardcoded `S16Le` for this
-        // sink, so a composite that negotiated anything else reported S16_LE —
-        // to `/state`, to the doctor, and to the chip-AEC alignment identity,
-        // which certifies against `dac.format`. Both halves are asserted here:
-        // the DECLARED echo before the sink opens, and the NEGOTIATED value
-        // after, on the same composite config.
+        // STATUS honesty for the composite transport: `dac.format` must report
+        // what the children actually negotiated, not a constant — the doctor
+        // and the chip-AEC alignment identity both certify against it. Both
+        // halves are asserted here: the DECLARED echo before the sink opens,
+        // and the NEGOTIATED value after, on the same composite config.
         let state = OutputdState::new(&Config {
             declared_dac_format: SampleFormat::S32Le,
             ..dual_test_config()

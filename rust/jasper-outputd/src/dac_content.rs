@@ -22,12 +22,9 @@
 //! A period the lane cannot fill is emitted as silence (one journal line
 //! per process); there is no last-good replay and
 //! no fallback source. The lane IS the content source on an armed box, so
-//! there is nothing to fall back TO — the direct content PCM this lane once
-//! fell back to went away with the snd-aloop route (ADR-0100), which left
-//! the old damped-recovery policy reaching a caller that parks. Health is
-//! self-reported on the STATUS surface (`DacContentMetrics` → the
-//! `dac_content` block) — daemon truth, never a Python mirror of env intent
-//! (the removed `SNAPFIFO_PRODUCER_WIRED` lesson).
+//! there is nothing to fall back TO. Health is self-reported on the STATUS
+//! surface (`DacContentMetrics` → the `dac_content` block) — daemon truth,
+//! never a Python mirror of env intent.
 //!
 //! ## Timing
 //!
@@ -142,12 +139,11 @@ pub struct DacContentMetrics {
     /// `dac_content.serving_fifo` for the pair-lock verdict
     /// (`jasper.multiroom.state`, `jasper.control.grouping_supervisor`), where
     /// it means "bytes are flowing" and explicitly NOT "sample lock proven".
-    /// The FIFO arm is gone; the field keeps its name because renaming it
-    /// would break those readers, and its meaning is unchanged on the ring.
+    /// The field keeps this name because renaming it would break those
+    /// readers.
     ///
-    /// It is now a per-period fact rather than a damped mode: under D4 there
-    /// is no mode to be in, so a poll landing on a starved period honestly
-    /// reports false.
+    /// A per-period fact, not a damped mode: under D4 there is no mode to be
+    /// in, so a poll landing on a starved period honestly reports false.
     pub serving_fifo: bool,
     /// Periods the lane filled with real audio.
     pub fifo_periods: u64,
