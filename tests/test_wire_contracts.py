@@ -76,10 +76,6 @@ _RUST_EMIT_RE = re.compile(
     re.VERBOSE,
 )
 
-#: A `fn(buf, key, ..)` helper that nests an object under its `key` argument
-#: (`push_dll_rate_diff`), as opposed to the `push_kv_*` scalar writers.
-_HELPER_OPENS_OBJECT = re.compile(r'push_str\(r\#"":[\{\[]"\#\)')
-
 
 def _rust_fn_bodies(src: str) -> dict[str, str]:
     """Every `fn` body in rustfmt'd source, keyed by name.
@@ -121,13 +117,7 @@ def _parse_rust_emitter(
             if len(stack) > 1:
                 stack.pop()
         elif match.group("helper"):
-            child = top.setdefault(match.group("key"), {})
-            helper = bodies.get(match.group("helper"))
-            if helper and match.group("helper") not in seen:
-                if _HELPER_OPENS_OBJECT.search(helper):
-                    _parse_rust_emitter(
-                        helper, child, bodies, seen | {match.group("helper")},
-                    )
+            top.setdefault(match.group("key"), {})
         elif match.group("dynamic"):
             top[OPAQUE] = {}
         elif match.group("inline"):
