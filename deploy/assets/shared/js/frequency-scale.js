@@ -4,6 +4,11 @@
 
 export const FREQUENCY_SLIDER_STEPS = 1000;
 
+export function fmtFreq(v) {
+  v = Number(v) || 0;
+  return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + ' kHz' : Math.round(v) + ' Hz';
+}
+
 export function freqToSlider(freq, min, max) {
   const bounded = Math.min(max, Math.max(min, Number(freq) || 0));
   return Math.round(Math.log(bounded / min) / Math.log(max / min) * FREQUENCY_SLIDER_STEPS);

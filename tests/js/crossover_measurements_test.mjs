@@ -135,7 +135,7 @@ globalThis.__svg = h;
 globalThis.__getJSON = getJSON;
 globalThis.__cssColor = (_canvas, _name, fallback) => fallback;
 globalThis.__drawFrequencyChart = drawFrequencyChart;
-const { FREQUENCY_SLIDER_STEPS, freqToSlider, sliderToFreq } = await loadEsm(repoPath('deploy/assets/shared/js/frequency-scale.js'));
+const { FREQUENCY_SLIDER_STEPS, fmtFreq, freqToSlider, sliderToFreq } = await loadEsm(repoPath('deploy/assets/shared/js/frequency-scale.js'));
 for (const [lo, hi] of [[20, 20000], [100, 1000]]) {
   for (const step of [0, 1, 250, 500, 750, 999, FREQUENCY_SLIDER_STEPS]) {
     assert.equal(freqToSlider(sliderToFreq(step, lo, hi), lo, hi), step);
@@ -144,10 +144,11 @@ for (const [lo, hi] of [[20, 20000], [100, 1000]]) {
   assert.equal(sliderToFreq(FREQUENCY_SLIDER_STEPS + 1, lo, hi), hi);
 }
 globalThis.__FREQUENCY_SLIDER_STEPS = FREQUENCY_SLIDER_STEPS;
+globalThis.__fmtFreq = fmtFreq;
 globalThis.__sliderToFreq = sliderToFreq;
 const { frequencyWindow } = await loadEsm(repoPath('deploy/assets/correction/js/measurement-frequency-window.js'), {
   stripImports: true,
-  prelude: 'const h = globalThis.__h; const sliderToFreq = globalThis.__sliderToFreq; const FREQUENCY_SLIDER_STEPS = globalThis.__FREQUENCY_SLIDER_STEPS;\n',
+  prelude: 'const h = globalThis.__h; const sliderToFreq = globalThis.__sliderToFreq; const FREQUENCY_SLIDER_STEPS = globalThis.__FREQUENCY_SLIDER_STEPS; const fmtFreq = globalThis.__fmtFreq;\n',
 });
 globalThis.__frequencyWindow = frequencyWindow;
 

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { h } from '/assets/shared/js/dom.js';
-import { FREQUENCY_SLIDER_STEPS, sliderToFreq } from '/assets/shared/js/frequency-scale.js';
+import { FREQUENCY_SLIDER_STEPS, fmtFreq, sliderToFreq } from '/assets/shared/js/frequency-scale.js';
 
 export function frequencyWindow(container, onChange) {
   const rangeHz = () => sliders.map((slider) => Math.round(sliderToFreq(slider.value, 20, 20000) * 10) / 10);
@@ -32,7 +32,7 @@ export function frequencyWindow(container, onChange) {
 
   function update() {
     const labels = rangeHz().map((hz) => `${hz.toLocaleString('en-US', { maximumFractionDigits: 1 })} Hz`);
-    label.textContent = labels.join(' – ');
+    label.textContent = rangeHz().map(fmtFreq).join(' – ');
     sliders.forEach((slider, index) => slider.setAttribute('aria-valuetext', labels[index]));
     selection.style.left = `${Number(sliders[0].value) / FREQUENCY_SLIDER_STEPS * 100}%`;
     selection.style.right = `${100 - Number(sliders[1].value) / FREQUENCY_SLIDER_STEPS * 100}%`;

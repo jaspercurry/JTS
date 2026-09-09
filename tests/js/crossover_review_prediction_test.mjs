@@ -210,6 +210,7 @@ function recordingContext() {
       fills.push({ style: fillStyle, alpha, x, y, width, height });
     },
     fillText(text, x, y) { labels.push({ text, x, y }); },
+    measureText(text) { return { width: text.length * 6 }; },
     setLineDash(value) { dash = value.slice(); },
     stroke() { strokes.push({ style, dash: dash.slice(), path: path.slice() }); },
     set strokeStyle(value) { style = value; },
@@ -261,10 +262,10 @@ function drawWith(payload) {
   return { drew, ctx };
 }
 
-function drawGeneric(payload) {
+function drawGeneric(payload, width = 640) {
   const ctx = recordingContext();
   const canvas = {
-    getBoundingClientRect: () => ({ width: 640, height: 240 }),
+    getBoundingClientRect: () => ({ width, height: 240 }),
     getContext: () => ctx,
     width: 0,
     height: 0,
@@ -274,6 +275,15 @@ function drawGeneric(payload) {
 }
 
 const curve = (db) => ({ freqs_hz: [300, 700, 1000], magnitude_db: [db, db, db] });
+
+for (const width of [240, 320, 640]) {
+  const { ctx } = drawGeneric({ series: [{ curve: curve(0), referenceDb: 0 }] }, width);
+  const labels = ctx.labels.filter((label) => label.y === 232);
+  check(labels.length >= 2 && labels.every((label, index) =>
+    label.x >= 0 && label.x + ctx.measureText(label.text).width <= width &&
+    (index === 0 || label.x >= labels[index - 1].x + ctx.measureText(labels[index - 1].text).width + 6)),
+  'frequency labels stay inside the canvas without overlapping on narrow screens');
+}
 
 {
   const { drew, ctx } = drawWith({

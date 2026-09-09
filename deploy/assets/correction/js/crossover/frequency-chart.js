@@ -90,6 +90,7 @@ export function drawFrequencyChart(canvas, payload) {
   context.fillStyle = theme.text || '#888';
   context.font = '11px sans-serif';
   context.lineWidth = 1;
+  let labelRight = -Infinity;
   for (const frequency of GRID_FREQS_HZ) {
     if (frequency < loHz || frequency > hiHz) continue;
     const gridX = x(frequency);
@@ -98,7 +99,12 @@ export function drawFrequencyChart(canvas, payload) {
     context.lineTo(gridX, margins.top + height);
     context.stroke();
     const label = frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`;
-    context.fillText(label, gridX - 8, margins.top + height + 14);
+    const labelWidth = context.measureText(label).width;
+    const labelX = Math.min(rect.width - labelWidth, gridX - labelWidth / 2);
+    if (labelX >= labelRight + 6) {
+      context.fillText(label, labelX, margins.top + height + 14);
+      labelRight = labelX + labelWidth;
+    }
   }
   const step = dbMax <= 5 ? 1 : Math.ceil(dbMax / 5);
   for (let db = Math.ceil(dbMin / step) * step; db <= dbMax; db += step) {
