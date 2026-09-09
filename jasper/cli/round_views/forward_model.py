@@ -2,19 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reconstruct an exact complete-tune capture and predict a replacement candidate.
+"""Reconstruct exact complete-tune takes or forecast replacement candidates.
 
-``--capture-id`` keeps the recorded branch timing and full configuration.
-Without it, the legacy independently referenced solo path remains available:
-
-* ``forward-model <round-dir> [--measured-round <round-dir>]`` — what a
-  candidate WOULD measure, from this round's banked per-driver solos summed
-  through its filters, trims, polarity and residual delay. With
-  ``--measured-round`` it is deltaed against that verify-stage round's banked
-  VERIFY sum; with no round carrying one, nothing judged it and the record's
-  ``acceptance`` says so.
-  Computes only: no audio plays and no device is opened, and applying what it
-  predicts stays the prescription doors' job. Writes ``forward_model.json``.
+``--capture-id`` retains the recording's shared timing. Without it, the legacy
+solo path uses independent phase references and explicit residual timing.
 """
 
 from __future__ import annotations
@@ -25,13 +16,13 @@ from pathlib import Path
 from jasper.active_speaker.crossover_v2.capture_prediction import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
-from jasper.active_speaker.crossover_v2.forward_model import candidate_from_json
+from jasper.active_speaker.crossover_v2.forward_model import ForwardModelError, candidate_from_json
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
     forward_model_verify_delta,
 )
-from jasper.cli._refusal import EXIT_UNREADABLE, stage
+from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
@@ -42,7 +33,6 @@ from ._common import (
     _write,
     answer,
     ARTIFACT_BY_VIEW,
-    refused_by_name,
     resolved_out,
 )
 
@@ -65,7 +55,8 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
         if args.residual_delay_us is not None or args.polarity_sign is not None:
             raise RoundViewsError("complete-tune captures derive alignment from configurations; omit legacy overrides")
         try:
-            result = capture_prediction(
+            result = stage(
+                EXIT_UNREADABLE, (OSError,), capture_prediction,
                 Path(args.round_dir), capture_id=args.capture_id, window_ms=args.window_ms,
                 candidate_path=Path(args.candidate_json) if args.candidate_json else None,
                 basis_candidate_path=Path(args.basis_candidate_json) if args.basis_candidate_json else None,
@@ -74,8 +65,10 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
                 measured_capture_id=args.measured_capture_id,
                 expected_prediction_fingerprint=args.expected_prediction_fingerprint,
             )
+        except ForwardModelError as exc:
+            return failed(EXIT_REFUSED, exc.refusal_reason, {"message": str(exc), **exc.detail})
         except RoundCapturesRefused as exc:
-            return refused_by_name(exc.reason, exc.detail)
+            return failed(EXIT_REFUSED, exc.reason, exc.detail)
         written = _write(result, args.out, resolved_out(
             Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact,
         ))
@@ -137,13 +130,13 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     forward = sub.add_parser(
         "forward-model",
-        help="what a candidate WOULD measure, summed from this round's banked per-driver solos",
+        help="reconstruct an exact complete-tune take or forecast a candidate change",
         epilog=ACCEPTANCE_RUNS,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     forward.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR,
-        help=f"{_ROUND_DIR_HELP} whose per-driver solos are the PREDICTION BASIS",
+        help=f"{_ROUND_DIR_HELP} containing the measured branch basis",
     )
     forward.add_argument(
         "--measured-round", default=None,

@@ -358,6 +358,8 @@ def predicted_minus_measured_db(
         "compared_points": int(compared_grid.size),
         "level_offset_db": offset_db,
         "freqs_hz": [float(hz) for hz in compared_grid],
+        "predicted_db": predicted_curve.tolist(),
+        "measured_db": measured_on_grid.tolist(),
         "delta_db": [float(db) for db in delta],
         "max_abs_db": float(np.max(np.abs(delta))),
         "rms_db": float(np.sqrt(np.mean(delta**2))),

@@ -14,6 +14,8 @@ the two predictors of one physical quantity have drifted.
 import json
 import math
 import re
+import shutil
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +25,7 @@ import yaml
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.active_speaker.crossover_v2 import delay_landscape
+from jasper.active_speaker.crossover_v2 import delay_landscape, round_captures
 from jasper.active_speaker.crossover_v2.capture_prediction import (
     compare_transfer,
     predict_transfer,
@@ -57,10 +59,11 @@ from jasper.audio_measurement.program_analysis import (
     analyze_program_capture,
 )
 from jasper.audio_measurement.sweep import write_sweep_wav
-from jasper.cli._refusal import EXIT_REFUSED
+from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE
 from jasper.cli.round_views import (
     ACCEPTANCE_RUNS,
     REASON_REFUSED,
+    REASON_UNREADABLE,
     build_parser,
     main as cli_main,
 )
@@ -542,6 +545,65 @@ def test_the_common_window_reconstructs_each_named_take_in_its_recording_clock(
     )
 
 
+@pytest.mark.parametrize("canonical", [False, True])
+def test_a_diagnostic_reads_each_record_and_hashes_each_audio_file_once(
+    diagnostic_round: Path, monkeypatch, canonical: bool,
+) -> None:
+    bundle = diagnostic_round / "bundle" / "b0"
+    record = bundle / "summed" / "summed_old.json"
+    wav = record.with_suffix(".wav")
+    if canonical:
+        document = json.loads(record.read_text())
+        document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
+                        wav_sha256=round_captures.sha256_file(wav))
+        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/old.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps(document))
+    reads, hashes = Counter(), Counter()
+    read_text, hash_file = Path.read_text, round_captures.sha256_file
+
+    def read(path, *args, **kwargs):
+        reads[path] += 1
+        return read_text(path, *args, **kwargs)
+
+    def digest(path):
+        hashes[path] += 1
+        return hash_file(path)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(round_captures, "sha256_file", digest)
+    basis = read_diagnostic(diagnostic_round, "old", 7.0)
+
+    assert reads[record] == 1
+    assert hashes[wav] == 1
+    assert all(count == 1 for count in hashes.values())
+    assert set(basis.captures) == {"woofer", "tweeter", "summed"}
+    assert all(capture.record_document is basis.document for capture in basis.captures.values())
+
+
+@pytest.mark.parametrize("change", ["diagnostic", "window", "candidate", "pose"])
+def test_forecast_binding_changes_with_its_evidence_or_analysis(
+    diagnostic_round: Path, change: str,
+) -> None:
+    before = read_diagnostic(diagnostic_round, "old", 7.0)
+    record = before.captures["summed"].record_path
+    document = json.loads(record.read_text())
+    if change == "diagnostic":
+        document["branch_diagnostic"]["responses"][0]["impulse"][0] += .01
+    elif change == "candidate":
+        document["candidate_id"] = "different-candidate"
+    elif change == "pose":
+        document["position_deg"] = .001
+    record.write_text(json.dumps(document))
+    after = read_diagnostic(diagnostic_round, "old", 6.0 if change == "window" else 7.0)
+
+    if change == "window":
+        assert before.source["capture_fingerprint"] == after.source["capture_fingerprint"]
+        assert before.window != after.window
+    else:
+        assert before.source["capture_fingerprint"] != after.source["capture_fingerprint"]
+
+
 def test_prediction_changes_compose_on_the_reconstructed_complex_branches(
     diagnostic_round: Path,
 ) -> None:
@@ -606,13 +668,23 @@ def test_phase_error_excludes_the_same_recordings_weak_cancellations(
         pytest.param("old", 0.0, ForwardModelError, id="zero-window"),
         pytest.param("old", float("nan"), ForwardModelError, id="nan-window"),
         pytest.param("old", 100.0, ForwardModelError, id="overlong-window"),
+        pytest.param("missing-clock", 7.0, RoundCapturesRefused, id="incomplete-clock"),
     ],
 )
 def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
     diagnostic_round: Path, capture_id: str, window_ms: float, error: type[Exception],
 ) -> None:
+    if capture_id == "missing-clock":
+        path = diagnostic_round / "bundle/b0/summed/summed_old.json"
+        document = json.loads(path.read_text())
+        del document["branch_diagnostic"]["responses"][0]["clock_shift_samples"]
+        path.write_text(json.dumps(document))
+        capture_id = "old"
     with pytest.raises(error) as excinfo:
         read_diagnostic(diagnostic_round, capture_id, window_ms)
+    if error is RoundCapturesRefused and capture_id == "old":
+        assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
+        assert excinfo.value.detail["role"] == "woofer"
     if capture_id == "missing":
         assert excinfo.value.reason == REFUSE_CLOSE_REFERENCE_NO_CAPTURE
 
@@ -696,12 +768,25 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     assert forecast["relative_graph"]["usable_bins_by_role"]["woofer"] > 0
     assert forecast["relative_graph"]["usable_bins_by_role"]["tweeter"] > 0
 
+    relocated = tmp_path / "relocated"
+    shutil.copytree(diagnostic_round, relocated)
+    bundle = relocated / "bundle" / "b0"
+    source_record = bundle / "summed" / "summed_old.json"
+    document = json.loads(source_record.read_text())
+    document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
+                    wav_sha256=round_captures.sha256_file(source_record.with_suffix(".wav")))
+    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/source.json"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(json.dumps(document))
+    source_record.unlink()
+    command[1] = str(relocated)
     assert cli_main(command + [
         "--measured-round", str(diagnostic_round),
         "--measured-capture-id", "new-shape",
         "--expected-prediction-fingerprint", fingerprint,
     ]) == 0
-    judged = json.loads((diagnostic_round / "forward_model.json").read_text())
+    judged = json.loads((relocated / "forward_model.json").read_text())
+    assert judged["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
     assert judged["summary"]["prediction_fingerprint"] == fingerprint
     assert judged["summary"]["forecast_binding"] == {
         "status": "matched",
@@ -754,7 +839,40 @@ def test_the_cli_refuses_candidate_prediction_without_exact_source_proof(
     refusal = json.loads(capsys.readouterr().out)
 
     assert code == EXIT_REFUSED
-    assert refusal["reason"] == REASON_REFUSED
+    assert refusal["reason"] == {
+        "wrong-source-candidate": "forward_model_candidate_mismatch",
+        "played-graph-identity": "forward_model_graph_mismatch",
+        "wrong-forecast-fingerprint": "forward_model_forecast_mismatch",
+    }[fault]
+    field = {
+        "wrong-source-candidate": "actual_candidate_id",
+        "played-graph-identity": "capture_id",
+        "wrong-forecast-fingerprint": "actual_prediction_fingerprint",
+    }[fault]
+    assert refusal["detail"][field]
+
+
+@pytest.mark.parametrize("source", ["missing", "malformed", "tampered"])
+def test_an_unreadable_named_candidate_is_a_source_failure(
+    diagnostic_round: Path, tmp_path: Path, tuning_profile, capsys, source: str,
+) -> None:
+    path = tmp_path / "candidate.json"
+    if source == "malformed":
+        path.write_text("{")
+    elif source == "tampered":
+        candidate = _trial_candidate(tuning_profile).to_dict()
+        candidate["fingerprint"] = "0" * 64
+        path.write_text(json.dumps(candidate))
+
+    code = cli_main([
+        "forward-model", str(diagnostic_round), "--capture-id", "old",
+        "--candidate-json", str(path),
+    ])
+    failure = json.loads(capsys.readouterr().out)
+
+    assert code == EXIT_UNREADABLE
+    assert failure["status"] == "unreadable"
+    assert failure["reason"] == REASON_UNREADABLE
 
 
 def test_a_same_candidate_repeat_refuses_a_changed_played_graph(
@@ -779,7 +897,8 @@ def test_a_same_candidate_repeat_refuses_a_changed_played_graph(
     refusal = json.loads(capsys.readouterr().out)
 
     assert code == EXIT_REFUSED
-    assert refusal["reason"] == REASON_REFUSED
+    assert refusal["reason"] == "forward_model_graph_mismatch"
+    assert refusal["detail"]["measured_capture_id"] == "new-level"
 
 
 # --------------------------------------------------------------------------- #
@@ -800,6 +919,8 @@ def test_a_pure_level_difference_is_reported_as_offset_not_as_shape_error() -> N
         predicted, freqs, predicted.predicted_db - offset_db
     )
 
+    assert delta["predicted_db"] == pytest.approx(predicted.predicted_db)
+    assert delta["measured_db"] == pytest.approx(predicted.predicted_db - offset_db)
     assert delta["level_offset_db"] == pytest.approx(offset_db)
     assert delta["max_abs_db"] == pytest.approx(0.0, abs=1e-9)
     assert delta["rms_db"] == pytest.approx(0.0, abs=1e-9)

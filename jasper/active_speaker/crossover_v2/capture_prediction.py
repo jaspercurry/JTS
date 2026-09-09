@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,8 +23,8 @@ from jasper.active_speaker.measured_crossover_candidate import compile_candidate
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segment
-from .graph_prediction import relative_branch_response
-from .round_captures import PoseCapture, capture_row, select_capture
+from .graph_prediction import GraphPredictionError, relative_branch_response
+from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 
 ROLES = ("woofer", "tweeter", "summed")
 
@@ -32,31 +32,27 @@ ROLES = ("woofer", "tweeter", "summed")
 @dataclass(frozen=True)
 class DiagnosticBasis:
     captures: Mapping[str, PoseCapture]
-    document: Mapping[str, Any]
     freqs_hz: np.ndarray
     transfers: Mapping[str, np.ndarray]
     band_hz: tuple[float, float]
     window: Mapping[str, Any]
 
     @property
+    def document(self) -> Mapping[str, Any]:
+        return self.captures["summed"].record_document
+
+    @cached_property
     def source(self) -> dict[str, Any]:
         capture = self.captures["summed"]
         return {**capture_row(capture), "record_path": str(capture.record_path),
-                "record_fingerprint": json_fingerprint(self.document)}
+                "capture_fingerprint": capture_fingerprint(capture)}
 
 
 def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> DiagnosticBasis:
     if not np.isfinite(window_ms) or window_ms <= 0:
-        raise ForwardModelError("window_ms must be positive and finite")
-    captures = {role: select_capture(round_dir, capture_id=capture_id, role=role) for role in ROLES}
+        raise ForwardModelError("window_ms must be positive and finite", detail={"field": "window_ms", "capture_id": capture_id})
+    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=ROLES)
     summed = captures["summed"]
-    if summed.record_path is None:
-        raise ForwardModelError("the capture has no exact record")
-    document = json.loads(summed.record_path.read_text())
-    if not document.get("branch_diagnostic"):
-        raise ForwardModelError("the selected take has no complete-tune branch diagnostic")
-    if len({(c.capture_sha256, c.sample_rate, c.graph_fingerprint) for c in captures.values()}) != 1:
-        raise ForwardModelError("branches do not share one recording, sample rate and graph")
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())
     shifts = {
@@ -65,13 +61,13 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
         for role, c in captures.items()
     }
     if not all(np.isfinite(value) for value in shifts.values()):
-        raise ForwardModelError("the diagnostic clock reference is incomplete")
+        raise ForwardModelError("the diagnostic clock reference is incomplete", detail={"field": "clock_shift_samples", "capture_id": capture_id})
     margin = int(np.ceil(max(abs(value) for value in shifts.values()))) + 1
     length = max(c.ir.size for c in captures.values())
     aligned = {}
     for role, capture in captures.items():
         if not np.all(np.isfinite(capture.ir)) or not np.any(capture.ir):
-            raise ForwardModelError(f"{role} has no finite nonzero impulse")
+            raise ForwardModelError("no finite nonzero impulse", detail={"role": role, "capture_id": capture_id})
         aligned[role] = fractional_shift(
             np.pad(capture.ir, (margin, length - capture.ir.size + margin)), shifts[role],
         )
@@ -83,9 +79,9 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
     if span < 1 or span + lead + 1 > N_FFT or any(
         end > margin + c.ir.size + shifts[role] for role, c in captures.items()
     ):
-        raise ForwardModelError("the common window exceeds the retained impulse or FFT span")
+        raise ForwardModelError("the common window exceeds the retained impulse or FFT span", detail={"field": "window_ms", "capture_id": capture_id, "window_ms": window_ms})
     if any(int(np.argmax(abs(aligned[role]))) >= end for role in ROLES[:2]):
-        raise ForwardModelError("the common window does not contain both direct arrivals")
+        raise ForwardModelError("the common window does not contain both direct arrivals", detail={"field": "window_ms", "capture_id": capture_id, "window_ms": window_ms})
     freqs = np.fft.rfftfreq(N_FFT, 1 / rate)
     band = (
         max(f_trusted_floor_hz(window_ms / 1000), *(c.radiated_band_hz[0] for c in captures.values())),
@@ -93,14 +89,14 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
     )
     mask = (freqs >= band[0]) & (freqs <= band[1])
     if not np.any(mask):
-        raise ForwardModelError("the common window and swept bands have no trusted overlap")
+        raise ForwardModelError("the common window and swept bands have no trusted overlap", detail={"capture_id": capture_id, "band_hz": list(band)})
     transfers = {
         role: np.fft.rfft(gated_segment(
             ir, rate, gate_ms=window_ms, peak_idx=anchor,
         )[0], n=N_FFT)[mask]
         for role, ir in aligned.items()
     }
-    return DiagnosticBasis(captures, document, freqs[mask], transfers, band, {
+    return DiagnosticBasis(captures, freqs[mask], transfers, band, {
         "window_ms": window_ms, "anchor_sample": anchor - margin,
         "lead_ms": PHASE_GATE_LEAD_MS,
         "validity_floor_hz": f_valid_floor_hz(window_ms / 1000),
@@ -134,7 +130,7 @@ def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray, measured: Dia
     )
     raw = np.asarray(delta["delta_db"]) + delta["level_offset_db"]
     delta.update(raw_rms_db=float(np.sqrt(np.mean(raw**2))), raw_max_abs_db=float(np.max(abs(raw))))
-    same_take = basis.source == measured.source
+    same_take = basis.source["capture_fingerprint"] == measured.source["capture_fingerprint"]
     level_reasons = [] if same_take else ["separate_capture_gain_unverified"]
     for key in ("main_volume_db", "session_volume_db"):
         source_level = (basis.document.get("provenance") or {}).get(key)
@@ -167,7 +163,7 @@ def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray, measured: Dia
 def _candidate(path: Path):
     candidate = load_candidate_artifact(path)
     if candidate is None:
-        raise ForwardModelError(f"{path}: no intact complete candidate")
+        raise OSError(f"{path}: no intact complete candidate")
     return candidate
 
 
@@ -175,18 +171,25 @@ def _recorded_graph(basis: DiagnosticBasis) -> Mapping[str, Any]:
     graph = (basis.document.get("provenance") or {}).get("graph") or {}
     config = graph.get("config")
     if not isinstance(config, Mapping) or json_fingerprint(config) != graph.get("fingerprint"):
-        raise ForwardModelError("the take has no intact played graph snapshot; retain a new diagnostic take")
+        raise ForwardModelError(
+            "the take has no intact played graph snapshot; retain a new diagnostic take",
+            reason="forward_model_graph_mismatch",
+            detail={"capture_id": basis.source["capture_id"], "graph_fingerprint": graph.get("fingerprint")},
+        )
     return config
 
 
 def _relative(source, target, basis, channels, source_inputs, target_inputs):
-    return relative_branch_response(
-        source, target, basis.freqs_hz,
-        role_output_channels=channels,
-        source_input_weights_by_role=source_inputs,
-        target_input_weights_by_role=target_inputs,
-        valid_band_hz_by_role={role: basis.band_hz for role in channels},
-    )
+    try:
+        return relative_branch_response(
+            source, target, basis.freqs_hz,
+            role_output_channels=channels,
+            source_input_weights_by_role=source_inputs,
+            target_input_weights_by_role=target_inputs,
+            valid_band_hz_by_role={role: basis.band_hz for role in channels},
+        )
+    except GraphPredictionError as exc:
+        raise ForwardModelError(str(exc), detail={"capture_id": basis.source["capture_id"], "field": "relative_graph"}) from exc
 
 
 def _metric_summary(delta: Mapping[str, Any] | None) -> dict | None:
@@ -207,9 +210,9 @@ def capture_prediction(
     expected_prediction_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     if measured_round is not None and measured_capture_id is None:
-        raise ForwardModelError("--measured-round requires an exact --measured-capture-id")
+        raise ForwardModelError("comparison requires an exact capture", detail={"required": "measured_capture_id"})
     if expected_prediction_fingerprint is not None and measured_capture_id is None:
-        raise ForwardModelError("an expected prediction fingerprint requires a measured capture")
+        raise ForwardModelError("an expected prediction fingerprint requires a measured capture", detail={"required": "measured_capture_id"})
     basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS if window_ms is None else window_ms)
     reconstruction_tf = predict_transfer(basis, {})
     reconstruction = compare_transfer(basis, reconstruction_tf, basis)
@@ -224,9 +227,13 @@ def capture_prediction(
                 else find_banked_candidate(basis.source["candidate_id"], root=candidate_root).candidate
             )
         except CandidateBankRefusal as exc:
-            raise ForwardModelError(f"source candidate: {exc.code}: {exc.detail}") from exc
+            raise ForwardModelError("source candidate lookup failed", reason="forward_model_source_candidate_unavailable", detail={
+                "candidate_id": basis.source["candidate_id"], "lookup_reason": exc.code, "lookup_detail": exc.detail,
+            }) from exc
         if source_candidate.fingerprint != basis.source["candidate_id"]:
-            raise ForwardModelError("source candidate does not match the exact recorded candidate")
+            raise ForwardModelError("source candidate does not match the exact recorded candidate", reason="forward_model_candidate_mismatch", detail={
+                "capture_id": capture_id, "expected_candidate_id": basis.source["candidate_id"], "actual_candidate_id": source_candidate.fingerprint,
+            })
         if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
         outputs = candidate.source_preset.channel_map.outputs
@@ -254,10 +261,15 @@ def capture_prediction(
         measured = read_diagnostic(measured_round or round_dir, measured_capture_id, basis.window["window_ms"])
         expected_candidate = candidate.fingerprint if candidate is not None else basis.source["candidate_id"]
         if not expected_candidate or measured.source["candidate_id"] != expected_candidate:
-            raise ForwardModelError("comparison take does not name the predicted candidate")
+            raise ForwardModelError("comparison take does not name the predicted candidate", reason="forward_model_candidate_mismatch", detail={
+                "capture_id": measured_capture_id, "expected_candidate_id": expected_candidate, "actual_candidate_id": measured.source["candidate_id"],
+            })
         pose_fields = ("position_deg", "vertical_deg", "mark_distance_m", "pose_kind", "seat_offset_m")
         if any(basis.document.get(key) != measured.document.get(key) for key in pose_fields):
-            raise ForwardModelError("comparison take has a different declared microphone pose")
+            raise ForwardModelError("comparison take has a different declared microphone pose", reason="forward_model_pose_mismatch", detail={
+                "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
+                "changed_fields": [key for key in pose_fields if basis.document.get(key) != measured.document.get(key)],
+            })
         if candidate is not None:
             def input_weights(read):
                 records = {r["role"]: r for r in read.document["branch_diagnostic"]["responses"]}
@@ -269,9 +281,13 @@ def capture_prediction(
             for role in channels:
                 planned = changes.responses_by_role[role][valid]
                 if not np.all(observed.usable_by_role[role]) or not np.allclose(observed.responses_by_role[role], planned, rtol=1e-6, atol=1e-8):
-                    raise ForwardModelError("recorded graph change differs from the predicted complete candidate change")
+                    raise ForwardModelError("recorded graph change differs from the predicted complete candidate change", reason="forward_model_graph_mismatch", detail={
+                        "role": role, "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
+                    })
         elif json_fingerprint(_recorded_graph(basis)) != json_fingerprint(_recorded_graph(measured)):
-            raise ForwardModelError("a same-candidate repeat requires the same played graph")
+            raise ForwardModelError("a same-candidate repeat requires the same played graph", reason="forward_model_graph_mismatch", detail={
+                "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
+            })
         comparison = compare_transfer(basis, transfer, measured)
         level_keys = ("main_volume_db", "session_volume_db")
         context = {
@@ -295,11 +311,15 @@ def capture_prediction(
         "limits": "Reconstruction checks this take only. Forecast assumes linear operation and unchanged setup; inspect window sensitivity. Magnitude errors can be dominated by low-SNR cancellation bins. This result does not authorize or block playback.",
     }
     summary["prediction_fingerprint"] = json_fingerprint({
-        "basis": basis.source, "candidate_id": summary["candidate_id"],
-        "window": basis.window, "prediction": predicted.to_dict(),
+        "basis": basis.source["capture_fingerprint"], "candidate_id": summary["candidate_id"],
+        "window": basis.window,
+        "prediction": {key: value for key, value in predicted.to_dict().items() if key != "take_path"},
     })
     if expected_prediction_fingerprint is not None and expected_prediction_fingerprint != summary["prediction_fingerprint"]:
-        raise ForwardModelError("the comparison does not match the saved prediction fingerprint")
+        raise ForwardModelError("the comparison does not match the saved prediction fingerprint", reason="forward_model_forecast_mismatch", detail={
+            "expected_prediction_fingerprint": expected_prediction_fingerprint,
+            "actual_prediction_fingerprint": summary["prediction_fingerprint"],
+        })
     summary["forecast_binding"] = {
         "status": "matched" if expected_prediction_fingerprint is not None else "not_requested",
         "expected_prediction_fingerprint": expected_prediction_fingerprint,
