@@ -269,6 +269,9 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     # The seat median and the design draft are the room-median view's and
     # /sound/'s to file, so this view's two inputs are banked beside the round.
     "bass-fit": lambda r: ["bass-fit", str(bank_bass_fit_inputs(r.measured))],
+    # A rung's ladder needs takes played through that rung's own graph,
+    # which only `jasper-measure --graph-scope bass_candidate` banks.
+    "bass-ladder": _NO_CAPTURES,
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],

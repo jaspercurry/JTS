@@ -126,6 +126,10 @@ from jasper.active_speaker.seat_level_reference import (
     seat_level_reference_volume_db,
 )
 from jasper.active_speaker.state_paths import baseline_profile_state_path
+from jasper.bass_extension.ladder_evidence import (
+    BASS_LADDER_DIRNAME,
+    bass_ladder_evidence,
+)
 # One owner for how this tool is spelled under sudo: an SSH session gets no
 # EnvironmentFile and /opt/jasper/.venv is not on the default PATH.
 from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
@@ -402,43 +406,6 @@ def _composed_room(
     )
 
 
-#: Row 3.4's per-target protection artifacts, banked beside the fit they
-#: protect. Only the READER's contract is defined here: an object naming the
-#: ``target_id`` it measured, its ``verdict`` and the ``max_level_db`` that
-#: verdict bounds it to.
-BASS_LADDER_DIRNAME = "bass_ladder"
-
-
-def _bass_ladder_evidence(
-    fit_dir: Path, target_ids: Sequence[str]
-) -> dict[str, Mapping[str, Any]]:
-    """The banked ladder evidence for the targets this document adopts.
-
-    Only those: reading the whole directory would let a document that adopts
-    one rung pay for every file beside it. The digest is computed HERE, over
-    the bytes read, for the room median's reason -- the evidence a rung shows
-    must name the file that was read. A file that is unreadable, is not an
-    object, or measured another target is DROPPED, so one bad file cannot
-    admit or refuse another target.
-    """
-    evidence: dict[str, Mapping[str, Any]] = {}
-    for target_id in dict.fromkeys(target_ids):
-        # The ids are the operator's document's, so a rung may not name a
-        # path: one plain segment, never a traversal.
-        if target_id in {"", ".", ".."} or Path(target_id).name != target_id:
-            continue
-        path = fit_dir / BASS_LADDER_DIRNAME / f"{target_id}.json"
-        try:
-            payload = path.read_bytes()
-            document = json.loads(payload)
-        except (OSError, ValueError, RecursionError):
-            continue
-        if not isinstance(document, Mapping) or document.get("target_id") != target_id:
-            continue
-        evidence[target_id] = {**document, "sha256": prescription_sha256(payload)}
-    return evidence
-
-
 def _bass_owner_channels(
     args: argparse.Namespace, owner_role: str
 ) -> tuple[int, ...]:
@@ -479,7 +446,7 @@ def _bass_gate(
     # boost rides on can be shown. The seam is banked beside the ladder's so
     # the take re-gates from exactly what the stage saw.
     limiter: Mapping[str, Any] | None = None
-    ladder_evidence = _bass_ladder_evidence(
+    ladder_evidence = bass_ladder_evidence(
         path.parent,
         [entry for entry in requested if isinstance(entry, str)]
         if isinstance(requested, list)

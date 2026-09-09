@@ -14,6 +14,7 @@ constructs the same engine and must not pull the web host in.
 from __future__ import annotations
 
 import asyncio
+import json
 from functools import partial
 from itertools import count
 from pathlib import Path
@@ -220,6 +221,12 @@ def bind_program_composer(
         def render() -> Any:
             wav_path.parent.mkdir(parents=True, exist_ok=True)
             write_program_wav(str(wav_path), program)
+            # The SCHEDULE beside the bytes: a rendered WAV cannot be read
+            # back into the segments and sweep metadata a later harmonic read
+            # anchors on, and nothing else in a banked round names them.
+            wav_path.with_suffix(".json").write_text(
+                json.dumps(program.to_dict(), sort_keys=True)
+            )
             return store.identify_artifact(wav_rel)
 
         artifact = await asyncio.to_thread(render)

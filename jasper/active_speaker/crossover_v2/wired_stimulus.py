@@ -38,8 +38,14 @@ from .program_transaction import StimulusCaptureError
 
 def place_wired_answer(
     bundle_dir: Path, answer: WiredCaptureAnswer, *, phase: str, group: str,
+    program_id: str = "",
 ) -> WiredCaptureAnswer:
-    """Place and register raw bytes once; later analysis uses this exact path."""
+    """Place and register raw bytes once; later analysis uses this exact path.
+
+    ``program_id`` is the content hash of the schedule that played, declared
+    on the sidecar because the phase label is not the program (#3504) and a
+    ladder step's rung differs from its neighbour's only by drive.
+    """
     if answer.wav_path:
         return answer
     relative = capture_artifact_relpath("summed", group, None)
@@ -49,7 +55,12 @@ def place_wired_answer(
     entry = register_capture(
         bundle_dir, relative_path=relative,
         kind=CAPTURE_KIND_SEQUENTIAL if phase in ("check", "measure", "lateral") else "summed",
-        payload={"speaker_group_id": group, "phase": phase, "measurement_status": "captured"},
+        payload={
+            "speaker_group_id": group, "phase": phase,
+            "measurement_status": "captured",
+            **({"provenance": {"stimulus": {"program_id": program_id, "phase": phase}}}
+               if program_id else {}),
+        },
     )
     if entry is None:
         raise StimulusCaptureError("the raw capture could not be registered")
@@ -101,7 +112,7 @@ class WiredStimulusCapture:
         async def _finish() -> str:
             try:
                 recording = await asyncio.to_thread(recorder.finish, tail_s=WIRED_POST_ROLL_S)
-                answer = await asyncio.to_thread(self._mint_and_place, recording, str(program.phase))
+                answer = await asyncio.to_thread(self._mint_and_place, recording, program)
             except (WiredCaptureError, OSError, ValueError) as exc:
                 raise StimulusCaptureError("the capture could not be placed") from exc
             self._pending.append(answer)
@@ -117,12 +128,20 @@ class WiredStimulusCapture:
                 PlaybackObservation(emission="completed"), wav_path=finishing.result(),
             ) from exc
 
-    def _mint_and_place(self, recording: Any, phase: str) -> WiredCaptureAnswer:
+    def _mint_and_place(self, recording: Any, program: Any) -> WiredCaptureAnswer:
         answer = mint_wired_answer(
             recording, device=self.device,
             setup=self.setup_reference() if self.setup_reference else None,
         )
-        return place_wired_answer(self.bundle_dir, answer, phase=phase, group=phase)
+        phase = str(program.phase)
+        return place_wired_answer(
+            self.bundle_dir, answer, phase=phase, group=phase,
+            # The seam takes whatever schedule the HOST composed, and its own
+            # contract names no id; one that cannot name its schedule declares
+            # none, and a later read calls that step unproven rather than
+            # binding it to a program it only guessed at.
+            program_id=str(getattr(program, "program_id", "") or ""),
+        )
 
     def take_answer(self) -> WiredCaptureAnswer | None:
         return self._pending.pop() if self._pending else None

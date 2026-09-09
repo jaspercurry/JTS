@@ -42,7 +42,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REGIME_REFERENCE_AXIS,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
     STUB_CODES,
     VERTICAL_AXIS_NOT_IMPLEMENTED,
@@ -241,12 +240,6 @@ def _session(
         (
             MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
             NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "R-3", True,
-        ),
-        (
-            MeasureSpec(
-                kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
-            ),
-            DISTORTION_VS_LEVEL_NOT_IMPLEMENTED, "R-4", True,
         ),
         (
             MeasureSpec(

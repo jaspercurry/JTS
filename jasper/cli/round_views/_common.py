@@ -30,6 +30,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
     load_banked_round,
 )
+from jasper.bass_extension.ladder_evidence import BASS_LADDER_DIRNAME
 from jasper.cli._refusal import (
     EXIT_OK,
     answered,
@@ -78,12 +79,18 @@ class ViewArtifact(NamedTuple):
     at, rather than beside the round where an operator reads the rest.
     ``producer`` names the command for an artifact this tool does NOT write;
     ``None`` means the key is the subcommand that writes it.
+
+    ``per_target`` marks the one row whose ``artifact`` is a DIRECTORY rather
+    than a file: the ladder writes one document per bass rung, named by the
+    target id its ``--target-id`` selected, and no single filename would name
+    what such a round carries.
     """
 
     artifact: str
     takes: tuple[str, ...] = (TAKES_THIS_ROUND,)
     in_artifact_dir: bool = False
     producer: str | None = None
+    per_target: bool = False
 
 #: The artifacts a round carries, declared once: the subcommands take their
 #: default output path from this table and ``inventory`` names each one's
@@ -113,6 +120,10 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room-median": ViewArtifact("room_median.json"),
     "room-persistence": ViewArtifact("room_persistence.json"),
     "bass-fit": ViewArtifact("bass_fit.json"),
+    "bass-ladder": ViewArtifact(
+        BASS_LADDER_DIRNAME, (TAKES_THIS_ROUND, "--target-id", "<target-id>"),
+        per_target=True,
+    ),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(

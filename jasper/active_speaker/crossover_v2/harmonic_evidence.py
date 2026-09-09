@@ -619,13 +619,14 @@ def _sign_convention(calibration_id: str) -> str:
     return DEFAULT_SIGN_CONVENTION
 
 
-def _calibration_for(captures: list[dict[str, Any]], text: str | None):
-    """``(curve, description)`` for this round's captures, or ``(None, why)``.
+def calibration_from_text(text: str | None, calibration_id: str):
+    """``(curve, description)`` for one session's mic, or ``(None, why)``.
 
-    The convention comes from the FIRST bound capture's own
-    ``setup_calibration_id``, that being the microphone the session recorded
-    using; a file parsed under the other convention would be applied with its
-    sign flipped.
+    The convention comes from the calibration id the SESSION banked, that
+    being the microphone it recorded using; a file parsed under the other
+    convention would be applied with its sign flipped. Every reader that turns
+    a round's calibration file into a curve comes through here, so no caller
+    inherits the parser's bare default.
     """
     if text is None:
         return None, {
@@ -637,7 +638,6 @@ def _calibration_for(captures: list[dict[str, Any]], text: str | None):
         }
     from jasper.audio_measurement.calibration import parse_calibration_text
 
-    calibration_id = str(captures[0]["sidecar"].get("setup_calibration_id") or "")
     convention = _sign_convention(calibration_id)
     curve = parse_calibration_text(text, sign_convention=convention)
     return curve, {
@@ -646,6 +646,13 @@ def _calibration_for(captures: list[dict[str, Any]], text: str | None):
         "setup_calibration_id": calibration_id,
         "n_points": len(curve.freqs_hz),
     }
+
+
+def _calibration_for(captures: list[dict[str, Any]], text: str | None):
+    """This round's calibration, keyed on the FIRST bound capture's own id."""
+    return calibration_from_text(
+        text, str(captures[0]["sidecar"].get("setup_calibration_id") or "")
+    )
 
 
 def _fidelity_failures(
@@ -703,16 +710,9 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
     not evidence about a speaker — and a sidecar carrying NONE of the gate
     fields is refused outright: zero comparisons is not a passed gate.
     """
-    from jasper.audio_measurement import deconv
-    from jasper.audio_measurement.distortion import read_segment_distortion
-    from jasper.audio_measurement.program import KIND_SWEEP
     from jasper.audio_measurement.program_analysis import (
-        CAPTURE_BOUND_MARGIN_S,
         MeasurementGeometry,
         MeasurementPriors,
-        _estimate_drift,
-        _global_offset,
-        _locate_segments,
         analysis_diagnostic_summary,
         analyze_program_capture,
     )
@@ -742,8 +742,43 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
         return [], failures, None, compared
     disclosure = _glitch_disclosure(replayed, banked)
 
-    # The same bounding `analyze_program_capture` applies before locating, so
-    # the anchors below are the anchors it used.
+    return read_program_sweeps(
+        program, samples, orders=orders, calibration=calibration,
+        level_notes={
+            "wav_sha256_12": str(sidecar.get("wav_sha256", ""))[:12],
+            "phase": sidecar.get("phase"),
+        },
+    ), [], disclosure, compared
+
+
+def read_program_sweeps(
+    program, samples, *, orders, calibration=None, level_notes=None, kinds=None,
+) -> list:
+    """Every sweep segment of one capture, read for distortion. ONE anchor.
+
+    The capture is bounded and located exactly as ``analyze_program_capture``
+    does, so the anchors here are the anchors it used, and each sweep is then
+    handed to ``read_segment_distortion`` — the repo's only sweep-harmonic
+    read. Ungated on purpose: the ring's fidelity gate lives in
+    :func:`_read_one_capture` above, and a caller reading a capture the ring
+    never held (the bass ladder's summed steps) proves its capture its own way.
+
+    ``kinds`` names WHICH stimulus kind is a sweep to this caller — the
+    per-driver ``sweep`` by default, since a harmonic read of a summed sum
+    cannot attribute an order to a driver, and the ladder's own
+    ``summed_sweep`` where the whole system IS the thing being bounded.
+    """
+    from jasper.audio_measurement import deconv
+    from jasper.audio_measurement.distortion import read_segment_distortion
+    from jasper.audio_measurement.program import KIND_SWEEP
+    from jasper.audio_measurement.program_analysis import (
+        CAPTURE_BOUND_MARGIN_S,
+        _estimate_drift,
+        _global_offset,
+        _locate_segments,
+    )
+
+    rate = program.sample_rate_hz
     bounded = deconv.cap_capture_length(
         samples,
         sweep_len=program.total_samples,
@@ -752,24 +787,27 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
     )
     global_offset, _first, stimuli, _ambiguous = _global_offset(program, bounded, rate)
     locations = _locate_segments(program, bounded, rate, global_offset, stimuli)
-    epsilon = _estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
 
-    readings = []
-    for segment in program.stimulus_segments():
-        if segment.kind != KIND_SWEEP:
-            continue
-        readings.append(
-            read_segment_distortion(
-                program, bounded, segment.segment_id,
-                global_offset + segment.start_sample,
-                orders=orders, calibration=calibration, epsilon=epsilon,
-                level_notes={
-                    "wav_sha256_12": str(sidecar.get("wav_sha256", ""))[:12],
-                    "phase": sidecar.get("phase"),
-                },
-            )
+    wanted = frozenset(kinds) if kinds else frozenset({KIND_SWEEP})
+    swept = [seg for seg in program.stimulus_segments() if seg.kind in wanted]
+    # Clock drift is measured between two occurrences of ONE role's sweep, and
+    # the estimator's anchor is the MEASURE program's repeated woofer. A
+    # program that plays each sweep once — the ladder's summed step — offers no
+    # baseline, which is the 0.0 the estimator itself answers there.
+    repeated = len({seg.role for seg in swept}) < len(swept)
+    epsilon = (
+        _estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
+        if repeated else 0.0
+    )
+    return [
+        read_segment_distortion(
+            program, bounded, segment.segment_id,
+            global_offset + segment.start_sample,
+            orders=orders, calibration=calibration, epsilon=epsilon,
+            level_notes=level_notes,
         )
-    return readings, [], disclosure, compared
+        for segment in swept
+    ]
 
 
 def _median(values: Sequence[float]) -> float:

@@ -35,7 +35,6 @@ from .contracts import (
 from .journey import CAPTURE_PHASES
 
 __all__ = [
-    "DISTORTION_VS_LEVEL_NOT_IMPLEMENTED",
     "NEAR_FIELD_SPLICE_NOT_IMPLEMENTED",
     "STUB_CODES",
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
@@ -54,9 +53,6 @@ __all__ = [
 #: R-3. The near-field capture ships; the splice onto the far-field trace is
 #: the analysis that does not exist.
 NEAR_FIELD_SPLICE_NOT_IMPLEMENTED = "near_field_splice_not_implemented"
-#: R-4. Every rung of the ladder plays and banks its own record; what does not
-#: exist is the consumer that turns the set into a measured floor.
-DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
 #: R-5a. A vertical pose plays and banks, labelled with the elevation the
 #: operator was asked for (:attr:`~.spatial.PositionGeometry.vertical_deg`).
 #: What does not exist is the consumer that reads lobing out of an elevation set.
@@ -103,14 +99,11 @@ def _stub(code: str, row: _StubRow) -> CapabilityStub:
     )
 
 
-#: One row per named hole, kept as data so a fifth stub joins the engine's
+#: One row per named hole, kept as data so another stub joins the engine's
 #: vocabulary by adding a row here and nowhere else.
 _ROWS: dict[str, _StubRow] = {
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
         "near-field splice", "splice", "R-3", captured=True,
-    ),
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: _StubRow(
-        "distortion-vs-level sweep", "level ladder", "R-4", captured=True,
     ),
     VERTICAL_AXIS_NOT_IMPLEMENTED: _StubRow(
         "vertical-axis analysis", "elevation read", "R-5a", captured=True,
@@ -360,8 +353,6 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
     codes: list[str] = []
     if spec.regime == REGIME_NEAR_FIELD:
         codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
-    if spec.level_ladder_dbfs:
-        codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)
     if spec.position_axis == POSITION_AXIS_VERTICAL or spec.vertical_deg:
         # Keyed on the ELEVATION, not on the axis word: the two are orthogonal,
         # so a horizontal walk raised off mark height banks the same unanalysed

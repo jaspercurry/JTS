@@ -62,19 +62,29 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             if spec.in_artifact_dir and artifact_dir is not None
             else default_out(inputs, round_dir, spec.artifact)
         )
-        stat = path.stat() if path.is_file() else None
+        # A per-target row names a DIRECTORY of one document per rung, so its
+        # presence is "this round carries at least one" and its size is all of
+        # them; every other row is one file.
+        documents = (
+            sorted(path.glob("*.json")) if spec.per_target and path.is_dir()
+            else ([path] if path.is_file() else [])
+        )
+        n_bytes = sum(document.stat().st_size for document in documents)
         produced_by, required_inputs = _runnable(view, spec, round_dir, inputs)
         banked_index = view == "position-cycle" and inputs.banked
         artifacts.append({
             "artifact": spec.artifact,
             "path": str(path),
-            "present": stat is not None,
-            "bytes": None if stat is None else stat.st_size,
+            "present": bool(documents),
+            "bytes": n_bytes if documents else None,
             "produced_by": produced_by,
             "producer_needs_more_than_this_round": bool(required_inputs),
             "required_inputs": required_inputs,
             "next_command": None if banked_index else produced_by,
-            "repair_reason": "banked_pose_index_missing" if banked_index and stat is None else None,
+            "repair_reason": (
+                "banked_pose_index_missing"
+                if banked_index and not documents else None
+            ),
         })
     bytes_total = sum(row["bytes"] or 0 for row in artifacts)
     payload = {
