@@ -422,6 +422,7 @@ module = [
     "jasper.web.spotify_setup",
     "jasper.web.sync_flow",
     "jasper.web.tools_setup",
+    "jasper.web.voice_page",
     "jasper.web.voice_setup",
     "jasper.web.wake_setup",
     "jasper.xvf.xvf_host",

@@ -321,6 +321,7 @@ code = [
   "jasper/web/tools_setup.py",
   "jasper/cues/**",
   "jasper/web/voice_setup.py",
+  "jasper/web/voice_page.py",
   "deploy/systemd/jasper-voice.service",
   "scripts/switch-voice-provider.sh",
   "scripts/switch-gemini-model.sh",

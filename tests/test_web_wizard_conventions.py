@@ -1070,7 +1070,7 @@ _PAGE_MODULE = {
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
-    "/assistant/voice/": "voice_setup",
+    "/assistant/voice/": "voice_page",
     "/assistant/wake/": "wake_setup",
     "/assistant/chat/": "chat_setup",
     "/assistant/tools/": "tools_setup",
