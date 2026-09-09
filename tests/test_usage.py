@@ -1280,7 +1280,7 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
     first = await VoiceUsageStore.start(db)
     second = await VoiceUsageStore.start(db)
     try:
-        assert first.spend_last_24h_usd() == pytest.approx(1)
+        await _wait_usage(lambda: first.spend_last_24h_usd() == pytest.approx(1))
         assert first.session_count_today_utc() == 1000
         ids = [s.open_session("concurrent") for s in (first, second)]
         assert len(set(ids)) == 2
@@ -1296,7 +1296,7 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
         await second.aclose()
     restarted = await VoiceUsageStore.start(db)
     try:
-        assert restarted.spend_last_24h_usd() == pytest.approx(expected)
+        await _wait_usage(lambda: restarted.spend_last_24h_usd() == pytest.approx(expected))
         with sqlite3.connect(db) as conn:
             assert {r[0] for r in conn.execute("SELECT id FROM sessions WHERE provider = 'concurrent'")} == set(ids)
     finally:
