@@ -507,6 +507,21 @@ def read_json_body(
         return None, _JSON_BODY_ERRORS.get(exc.code, fallback)
 
 
+# An OAuth provider returns the single-use authorization code as `?code=…` on
+# the callback request line, which the stdlib hands to `log_message` verbatim.
+# The query string carries nothing an operator reading the journal needs, so
+# it is dropped from the record rather than left to the journal redactor to
+# recognise (non-negotiable 3).
+_QUERY_STRING_RE = re.compile(r"\?\S*")
+
+
+def access_log_line(fmt: str, *args: Any) -> str:
+    """The stdlib access-log line with its query string dropped. A wizard
+    whose routes carry a secret in the query string (the OAuth callbacks)
+    renders its `log_message` through this."""
+    return _QUERY_STRING_RE.sub("", fmt % args)
+
+
 def route_path(request_path: str) -> str:
     """Normalise a request line into the key a wizard route table uses:
     query string dropped, trailing slashes trimmed, "" mapped to "/".

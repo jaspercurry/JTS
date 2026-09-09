@@ -33,7 +33,9 @@ import http
 import logging
 import urllib.parse
 from email.message import Message
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from threading import Thread
 from types import SimpleNamespace
 from unittest import mock
 
@@ -676,3 +678,82 @@ def test_the_callback_access_log_never_carries_the_authorization_code(caplog):
     assert "4-0AVMBsJgAbCdEf" not in logged
     assert "code=" not in logged
     assert "/callback" in logged  # the path itself still reaches the journal
+
+
+# ----------------------------------------------------------------------
+# The userinfo fetch carries the freshly-issued bearer token.
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture()
+def userinfo_servers():
+    """A server that 302s to a second server, plus that second server's
+    request log — an empty log proves the bearer never rode the second hop.
+    The `/<n>` path on either serves n bytes of JSON padding."""
+    hits: list[dict] = []
+
+    def _serve(handler_cls):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    class _Sink(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            hits.append({k.lower(): v for k, v in self.headers.items()})
+            body = b'{"email": "a@b.c", "pad": "%s"}' % (
+                b"x" * max(0, int(self.path.lstrip("/") or 0))
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    sink = _serve(_Sink)
+    sink_url = f"http://127.0.0.1:{sink.server_address[1]}/0"
+
+    class _Redirector(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", sink_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    redirector = _serve(_Redirector)
+    yield f"http://127.0.0.1:{redirector.server_address[1]}/", sink_url, hits
+    for each in (redirector, sink):
+        each.shutdown()
+        each.server_close()
+
+
+def test_the_userinfo_bearer_never_rides_a_redirect(
+    monkeypatch, userinfo_servers,
+):
+    """urllib replays every request header onto a redirect, so following one
+    would hand the access token to whatever host the reply named."""
+    redirect_url, _, hits = userinfo_servers
+    monkeypatch.setattr(google_setup, "_USERINFO_URI", redirect_url)
+
+    assert google_setup._fetch_userinfo("ya29.secret-access-token") == {}
+    assert hits == []
+
+
+def test_an_oversized_userinfo_reply_is_not_decoded(
+    monkeypatch, userinfo_servers,
+):
+    """A claims object is small; a body past the cap must not be read whole
+    onto a 415 MB box."""
+    _, sink_url, _ = userinfo_servers
+    base = sink_url.rsplit("/", 1)[0]
+    cap = google_setup._USERINFO_MAX_BYTES
+
+    monkeypatch.setattr(google_setup, "_USERINFO_URI", f"{base}/0")
+    assert google_setup._fetch_userinfo("ya29.token")["email"] == "a@b.c"
+
+    monkeypatch.setattr(google_setup, "_USERINFO_URI", f"{base}/{cap}")
+    assert google_setup._fetch_userinfo("ya29.token") == {}
