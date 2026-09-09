@@ -817,6 +817,7 @@ code = [
   "jasper/tools/subway.py",
   "jasper/tools/citibike.py",
   "jasper/web/transit_setup.py",
+  "jasper/web/transit_page.py",
   "scripts/refresh-mta-stations.sh",
 ]
 docs = [
