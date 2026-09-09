@@ -829,6 +829,10 @@ def test_system_action_reboot_survives_a_dead_broker(
 
     monkeypatch.setattr(rb, "request_restart", _no_socket)
     monkeypatch.setattr(rb.subprocess, "Popen", _recording_popen(popens))
+    # The dead-broker fallback is gated the same way as the broker itself;
+    # grant this process's own euid rather than relying on the runner being
+    # root or jasper-control.
+    monkeypatch.setattr(rb, "_power_verb_uids", lambda: (os.geteuid(),))
 
     status, body = _post(f"{base}/system/{verb}", {})
 

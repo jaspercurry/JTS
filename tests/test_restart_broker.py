@@ -531,6 +531,9 @@ def test_power_verbs_run_unit_less_and_detached(broker, monkeypatch, verb):
     report a verdict."""
     sock_path, calls, _ = broker
     spawned = _record_popen(monkeypatch)
+    # The peer is this test process; grant it explicitly rather than relying
+    # on the runner's own uid being root or jasper-control.
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (os.getuid(),))
 
     resp = _request_restart_retrying_transient_failures(
         verb=verb, reason="dashboard", socket_path=sock_path,
