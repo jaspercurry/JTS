@@ -50,12 +50,9 @@ COMMISSION_FLOOR_HZ = 20.0
 def woofer_curve(
     captures: Mapping[CaptureRole, MagnitudeCurve],
 ) -> MagnitudeCurve | None:
-    """The curve every plant fit reads: the seat median.
+    """The curve every plant fit reads: the seat median (ADR-0260 section 3),
+    or a nearfield capture where one is supplied instead."""
 
-    The nearfield arm exists only for :func:`ladder.synthetic_dry_run`'s
-    synthetic curves and retires with ``ladder.py`` (ADR-0259 section 3;
-    ADR-0260 section 4).
-    """
     return captures.get(
         CaptureRole.SEAT_MEDIAN, captures.get(CaptureRole.WOOFER_NEARFIELD)
     )

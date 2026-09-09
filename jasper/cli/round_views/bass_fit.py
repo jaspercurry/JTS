@@ -86,7 +86,10 @@ def _cmd_bass_fit(args: argparse.Namespace) -> int:
     if (args.declared_f0_hz is None) != (args.declared_q0 is None):
         args.parser.error("--declared-f0-hz and --declared-q0 are declared together")
     round_dir = Path(args.round_dir)
-    inputs = round_inputs(round_dir)
+    # A directory that resolves as neither a banked round nor a live bundle is
+    # the ROUND failing, which is the load stage's code, as every sibling view
+    # refuses it through ``_load_round``.
+    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     median_path = (
         Path(args.median) if args.median
         else default_out(inputs, round_dir, MEDIAN_FILENAME)

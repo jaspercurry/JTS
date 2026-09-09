@@ -31,13 +31,13 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from jasper.cli import _refusal, round_views
+from tests.bass_fit_fixture import bank_bass_fit_inputs
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_seat_round,
     bank_verify_round,
 )
 from tests.room_median_fixture import write_room_median
-from tests.test_cli_round_views_bass_fit import bank_bass_fit_inputs
 
 CLI_DIR = Path(_refusal.__file__).resolve().parent
 

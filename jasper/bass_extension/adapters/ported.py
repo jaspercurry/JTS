@@ -181,7 +181,7 @@ def fit_ported_plant(
     woofer = woofer_curve(captures)
     if woofer is None:
         return FitRefusal("bass_extension_tuning_not_located",
-                          "seat median capture is required")
+                          "woofer nearfield capture is required")
     freqs, measured = _normalized_curve(woofer)
     magnitude = smooth_fractional_octave(freqs, measured, fraction=24)
     fb = _locate_fb(freqs, magnitude)
@@ -329,7 +329,10 @@ def ported_predicted_response(
 class PortedAdapter:
     adapter_id = "ported_v1"
     adapter_version = 1
-    required_captures = (CaptureRole.SEAT_MEDIAN,)
+    #: ``fb`` is located as the port null (:func:`_locate_fb`), which exists in
+    #: a nearfield capture and not in a seat median, where the only minima that
+    #: deep are room modes. No in-room fit for this enclosure.
+    required_captures = (CaptureRole.WOOFER_NEARFIELD,)
 
     def fit_plant(
         self,

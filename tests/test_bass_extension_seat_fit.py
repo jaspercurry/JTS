@@ -4,10 +4,8 @@
 
 """The in-situ bass fit: the seat-cube median in, one target family out.
 
-The median here is a MEASUREMENT, not a model: a driver's second-order roll-off
-under a gentle low shelf standing in for room gain, plus seeded noise. Room
-gain is included on purpose (ADR-0260 section 3), so what the fit recovers is
-the in-room plant, not the datasheet one — the bars below are what that costs.
+The median and the cabinet come from :mod:`tests.bass_fit_fixture`, which says
+what they are made of; the bars below are what fitting an in-room median costs.
 
 The document reads through the room door's own reader, which is where a
 malformed or gated median is refused; nothing here re-tests that reader.
@@ -20,15 +18,14 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.bass_extension.adapters.base import (
-    CabinetInfo,
     CaptureRole,
     MagnitudeCurve,
+    passband_normalize,
     woofer_curve,
 )
 from jasper.bass_extension.adapters.sealed import SEALED_ADAPTER, SealedPlantFit
 from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
-    low_shelf_response_db,
     second_order_highpass_db,
 )
 from jasper.bass_extension.profile import BassExtensionRefusal
@@ -40,53 +37,22 @@ from jasper.bass_extension.seat_fit import (
     fit_seat_median,
 )
 from jasper.bass_extension.targets import MARGINS
-from tests.room_median_fixture import median_document
+from tests.bass_fit_fixture import (
+    CABINET,
+    CEILING_HZ,
+    FREQS,
+    SEALED_TARGET,
+    in_room,
+    seat_median_db,
+    seat_median_json,
+)
 
-#: 1/24 octave from the room floor to the last bin under the ceiling, as the
-#: room door requires a median's grid to sit.
-CEILING_HZ = 300.0
-FREQS = 20.0 * 2.0 ** (np.arange(94) / 24.0)
-CABINET = CabinetInfo("sealed", 1, 165.0, 220.0)
 MARGIN = MARGINS["conservative"]
-
-#: Room gain as a low shelf (Hz, Q, dB) and the seeded measurement noise.
-ROOM_GAIN_HZ, ROOM_GAIN_Q, ROOM_GAIN_DB = 35.0, 0.5, 2.0
-NOISE_SIGMA_DB = 0.4
-NOISE_SEED = 20260908
-
-SEALED_TARGET = {
-    "target_id": "main:woofer",
-    "role": "woofer",
-    "hard_excitation_band_hz": [30.0, 300.0],
-    "cabinet": {
-        "enclosure_kind": CABINET.enclosure_kind,
-        "radiator_count": CABINET.radiator_count,
-        "effective_radiating_diameter_mm": CABINET.effective_radiating_diameter_mm,
-        "baffle_width_mm": CABINET.baffle_width_mm,
-    },
-}
-
-
-def _in_room(shape: np.ndarray) -> np.ndarray:
-    """One driver shape as a seat-cube median: room gain, then noise."""
-    noise = np.random.default_rng(NOISE_SEED).normal(0.0, NOISE_SIGMA_DB, FREQS.size)
-    shelf = low_shelf_response_db(FREQS, ROOM_GAIN_HZ, ROOM_GAIN_Q, ROOM_GAIN_DB)
-    return shape + shelf + noise
-
-
-def seat_median_db(f0_hz: float, q0: float) -> np.ndarray:
-    """The median a sealed plant at ``f0_hz``/``q0`` leaves at the seats."""
-    return _in_room(second_order_highpass_db(FREQS, f0_hz, q0))
 
 
 def _third_order_db() -> np.ndarray:
     """A roll-off no sealed plant explains: the leakage the fit refuses over."""
-    return _in_room(butterworth_highpass_db(FREQS, 61.0, 3))
-
-
-def seat_median_json(magnitude_db: np.ndarray) -> dict:
-    """One ``room_median.json`` payload around that median."""
-    return median_document(FREQS.tolist(), magnitude_db.tolist(), ceiling_hz=CEILING_HZ)
+    return in_room(butterworth_highpass_db(FREQS, 61.0, 3))
 
 
 def _median(magnitude_db: np.ndarray):
@@ -171,6 +137,27 @@ def test_the_model_curve_is_published_beside_the_median_it_was_fitted_to():
         )
 
 
+def test_the_published_model_is_the_plant_the_fit_fitted_and_no_filter_more():
+    """``model_db`` is the fitted plant, not a rung's chain: the subsonic the
+    natural rung carries is not in the measurement, so its skirt in this curve
+    would read as a bottom-end fit error the published RMS contradicts."""
+    fit = _fit(_median(seat_median_db(45.0, 0.707)))
+    freqs = np.asarray(fit.curve["freqs_hz"])
+    plant = passband_normalize(
+        freqs, second_order_highpass_db(freqs, fit.effective_corner_hz, fit.effective_q)
+    )
+    subsonic = fit.rungs[-1].target.subsonic
+
+    assert np.asarray(fit.curve["model_db"]) == pytest.approx(plant, abs=1e-9)
+    # The filter kept out is not a free one: at the bottom bin it costs more
+    # than the whole published fit residual.
+    assert subsonic is not None
+    skirt = butterworth_highpass_db(
+        freqs, float(subsonic["freq"]), int(subsonic["order"])
+    )
+    assert abs(float(skirt[0])) > fit.fit_rms_db
+
+
 def test_a_roll_off_no_sealed_plant_explains_refuses_without_a_declared_one():
     with pytest.raises(SeatFitRefused) as refused:
         _fit(_median(_third_order_db()))
@@ -198,23 +185,39 @@ def test_a_declared_plant_outside_the_adapters_own_domain_refuses(declared):
     assert refused.value.detail["problem"] == "declared_plant_outside_domain"
 
 
-@pytest.mark.parametrize("target,reason", (
+#: The two enclosures whose adapters locate their plant on a nearfield null a
+#: seat median does not carry, and what each needs instead of this door.
+_NEARFIELD_ONLY = {
+    "passive_radiator": [CaptureRole.WOOFER_NEARFIELD, CaptureRole.PR_NEARFIELD],
+    "vented": [CaptureRole.WOOFER_NEARFIELD],
+}
+
+
+@pytest.mark.parametrize("target,reason,detail", (
     ({"target_id": "main:woofer", "role": "woofer"},
-     BassExtensionRefusal.ENCLOSURE_UNKNOWN),
+     BassExtensionRefusal.ENCLOSURE_UNKNOWN, {"problem": "no_cabinet"}),
     ({"target_id": "main:woofer", "role": "woofer", "cabinet": {}},
-     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED),
+     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
+     {"problem": "no_adapter_for_enclosure"}),
     ({"target_id": "main:woofer", "role": "woofer",
       "cabinet": {"enclosure_kind": "open_baffle"}},
-     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED),
+     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
+     {"problem": "no_adapter_for_enclosure"}),
+) + tuple(
+    # An adapter this door cannot feed refuses naming the capture it needs.
     ({"target_id": "main:woofer", "role": "woofer",
-      "cabinet": {"enclosure_kind": "passive_radiator"}},
-     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED),
+      "cabinet": {"enclosure_kind": kind}},
+     BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
+     {"problem": "adapter_needs_captures_this_door_cannot_take",
+      "required_captures": captures})
+    for kind, captures in _NEARFIELD_ONLY.items()
 ))
-def test_a_target_declaring_no_usable_cabinet_refuses(target, reason):
+def test_a_target_declaring_no_usable_cabinet_refuses(target, reason, detail):
     with pytest.raises(SeatFitRefused) as refused:
         cabinet_of(target)
 
     assert refused.value.reason == reason
+    assert detail.items() <= refused.value.detail.items()
 
 
 def test_the_declared_cabinet_picks_its_adapter_and_carries_its_geometry():

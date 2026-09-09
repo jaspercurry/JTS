@@ -17,7 +17,7 @@ one that door would prescribe against, and the view holds that seam.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
@@ -82,6 +82,10 @@ class Rung:
     target's chain, ``0.0`` where the chain has none: equal excursion is the
     prior. One headroom gain absorbs the whole chain's boost, so the target's
     ``boost_headroom_db`` is the level cost (ADR-0257 section 3).
+
+    ``max_listening_level`` is the DIGITAL bound and only that: the level at
+    which the boost still fits under the margin policy's digital headroom. It
+    is no thermal, excursion or acoustic bound on how loud the rung may play.
     """
 
     target: TargetSpec
@@ -109,6 +113,9 @@ class SeatFit:
     fit_rms_db: float | None
     fit_refusal: Mapping[str, str] | None
     rungs: tuple[Rung, ...]
+    #: The median as fitted and the fitted plant's own response, on one
+    #: passband rule so their difference is the fit residual and nothing else:
+    #: no rung's subsonic is in ``model_db``.
     curve: Mapping[str, list[float]]
     ceiling_hz: float
     ceiling_source: str
@@ -176,9 +183,6 @@ def cabinet_of(target: Mapping[str, Any]) -> tuple[EnclosureAdapter, CabinetInfo
             cabinet.get("effective_radiating_diameter_mm")
         ),
         baffle_width_mm=finite_float(cabinet.get("baffle_width_mm")),
-        passive_radiator_diameter_mm=finite_float(
-            cabinet.get("passive_radiator_diameter_mm")
-        ),
     )
 
 
@@ -254,8 +258,12 @@ def fit_seat_median(
     # Every adapter ends its family with the natural alignment: its corner is
     # the plant's own, whatever the enclosure's model calls it.
     natural = family[-1]
+    # The model published beside the median is the plant the fit FITTED: the
+    # rung's subsonic high-pass is a filter the measurement does not contain,
+    # and its skirt in this curve would read as fit error it is not.
     model = np.asarray(
-        adapter.predicted_response(plant, family[-1], freqs), dtype=np.float64
+        adapter.predicted_response(plant, replace(natural, subsonic=None), freqs),
+        dtype=np.float64,
     )
     return SeatFit(
         adapter_id=adapter.adapter_id,
