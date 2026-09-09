@@ -3,8 +3,11 @@
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
 (PR #4517, ADR-0259/0260). Lane B landed rows 1.4/1.5/1.7 (PRs #4522, #4524,
 #4525); lane C landed rows 2.3 (#4520), 2.1 (#4544) and 2.2 (#4546); lane A
-landed row 1.1 (#4557), rows 1.2–1.4 next; lane D in progress. **Owner:** jaspercurry. **Orchestrating
-session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
+landed rows 1.1–1.6 (#4557, #4602, #4563, #4567, #4604, #4603); lane D
+is being integrated by the orchestrator (rebased, one PR per row). **Owner:** jaspercurry. **Orchestrating
+session:** https://claude.ai/code/session_014RrgH2yP2zFdebvhGGfTXd (took over
+2026-09-09 13:00Z from session_01CR6fGdpH8YDFPv9ZbyXmGJ; handoff in
+`briefs/HANDOFF-ORCHESTRATOR.md`). **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
 Decisions live in `docs/adr/` on `main`; this file holds the vision, the plan,
@@ -312,6 +315,26 @@ cardioid channel's design · a database or memory service · new `JASPER_*`
 knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
+
+- 2026-09-09 13:30Z: Orchestration taken over by a fresh session (owner stopped
+  "JTS D"; rebasing its branches is allowed). Topology of the eight lane D
+  branches, verified with `merge-base --is-ancestor`: one stack
+  `3-2 → 3-3a → 3-3b → 3-4a → 3-4b`; `3-1` independent; `3-1b-bench-field` =
+  merge(`3-1`, `3-4a`) + two commits ("Compose the limiter bench's campaign
+  from the applied candidate's field", "Enter the bench through the door's
+  seams and anchor it to the live graph"), so the handoff's "3.1 with 3.1b"
+  cannot land first: those commits consume 3.3's candidate field and 3.4a's
+  `bass_candidate` scope. Landing order revised: **3.1 part 1** (the wired
+  play-and-capture seam and rung analysis, retitled to what it is, plus the
+  `bass_extension` boundary row) in parallel with **3.2** (consuming the door's
+  `read_room_median`, duplicate parser deleted) → **3.3** (3.3a+3.3b, one PR;
+  emission on the output path → NN) → **3.4** (3.4a+3.4b, NN) → **3.1 part 2**
+  (3.1b's two commits: `--live` binding) → **3.5** docs last, menu regenerated.
+  Dispatched: Opus agents for 3.1 and 3.2 (rebase, findings, ladder, PR);
+  Sonnet read-only pre-reads of 3.3 and of 3.4+3.1b against main (collision
+  map, claim check, deleted-dependency scan). Container note for the ladder:
+  pycamilladsp must be pip-installed WITH its deps (it needs
+  `websocket-client`); the rest of §4's recipe holds.
 
 - 2026-09-09 11:40Z: Lane D now has eight branches (`3-1`, `3-1b-bench-field`,
   `3-2`, `3-3a`, `3-3b`, `3-4a-rung-graph`, `3-4b-ladder-view`, `3-5-bass-docs`),
