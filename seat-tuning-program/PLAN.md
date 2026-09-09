@@ -318,6 +318,42 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 15:05Z: #4643 adversarial review (NN tier): **two blockers, both on
+  the excitation path, both probed rather than argued**, sent to the fix agent
+  with the design review's four.
+  - **Non-owner drivers get the same bytes with no cap evaluated.** The seam
+    re-admits through `readmit_program_from_wav`, the *isolated-driver* gate,
+    declaring both source channels as the bass owner's role;
+    `_evaluate_program:493` resolves a cap only for roles present in
+    `channel_roles`, so mid/tweeter/mains caps are never consulted — while the
+    artifact is a 2-channel mix through the full installed crossover, the case
+    the engine routes to `readmit_summed_program_from_wav:667` (peak ≤ cap for
+    *every* role, plus `protection_requirement_present` proven off the graph
+    text). Adjudicated where the two reviews disagreed: the design review
+    called `assert_stimulus_band_protected` the right compensating stop; the
+    adversarial review is right that it is not one, because it compares against
+    `preset.crossover_regions` — a declaration, not the graph that will be live
+    — and drops the per-driver caps. It also has no margin: its own comment
+    says the band must stop short of the corner and the test is
+    `>= min(corners)`, so `band=(100.0, 399.999)` passes against `fc = 400 Hz`,
+    driving the tweeter ~6 dB below the woofer's stress level with no cap of
+    its own. The per-role caps come from the summed gate; the band check stays
+    only if it earns its place, with its edge fixed and pinned.
+  - **The fader level and the live graph are proven before the lock and before
+    admission, not when audio is emitted.** The engine puts both proofs inside
+    the lock immediately before aplay (`composition.py:136`); the bench's
+    `_play_wav_polled` runs neither, and the raise happens ~3 steps earlier.
+    Not hypothetical: `measurement_hold.py` is scoped to source-observed volume
+    changes only, and `conductor_context.py:521` records that a deliberate
+    household "louder" still moves the fader mid-session. This falls out of the
+    design review's binder fix by construction.
+  Recorded for the owner ahead of wave 4.1: `activation.py:186` carries a
+  pre-existing issue #2202 defect the reviewer says will block the first
+  supervised campaign regardless of this row. Out of scope here, named now.
+  Everything else in the diff was found sound: clamps, SPL stop, secrets, env
+  writers, and the five promotions; the duck-first give-back order was
+  independently confirmed sound by both reviews.
+
 - 2026-09-09 14:55Z: Row 3.1 part 1 opened as PR #4643 (`+3013/−140`, 22 files,
   CI green) and reviewed: **REQUEST CHANGES**, fix agent dispatched. Two of the
   four must-fixes change what we thought was true:
