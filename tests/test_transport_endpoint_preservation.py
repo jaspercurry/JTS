@@ -52,8 +52,8 @@ from jasper.active_speaker.playback_route import (
     resolve_live_active_endpoint,
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_DEVICE,
     parse_camilla_devices_config,
 )
@@ -241,7 +241,7 @@ async def test_which_witness_answers_for_the_live_endpoint(
         statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
     elif shape != "no_statefile":
         declined = (
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+            ACTIVE_OUTPUTD_PLAYBACK_DEVICE
             if shape == "graph_on_the_retired_aloop_endpoint"
             else DEFAULT_PLAYBACK_DEVICE
         )
@@ -330,7 +330,7 @@ async def test_reconcile_current_dsp_re_emits_through_the_live_endpoint(
     config_dir = tmp_path / "configs"
     config_dir.mkdir(exist_ok=True)
     pre_arm = ring_graph.replace(
-        RING_ACTIVE_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+        RING_ACTIVE_PLAYBACK_DEVICE, ACTIVE_OUTPUTD_PLAYBACK_DEVICE
     ).replace(RING_CAPTURE_DEVICE, RETIRED_ALOOP_CAPTURE_DEVICE)
     assert pre_arm != ring_graph
     current = config_dir / "sound_current.yml"
@@ -871,7 +871,7 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     )
 
     preflight = _ring_load_preflight(
-        topology, preset, tmp_path / "alsa", OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+        topology, preset, tmp_path / "alsa", ACTIVE_OUTPUTD_PLAYBACK_DEVICE
     )
 
     assert _gate(preflight, "commissioning_transport_armed")["passed"] is True
@@ -964,7 +964,7 @@ async def test_boot_anchor_derives_the_ring_device_block(
 @pytest.mark.parametrize("stage", ["boot_anchor", "driver_commissioning"])
 @pytest.mark.parametrize(
     "device",
-    [OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"],
+    [ACTIVE_OUTPUTD_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"],
     ids=["aloop_active_lane", "lab_override"],
 )
 async def test_the_derived_device_block_is_byte_identical_off_the_ring(
@@ -1036,7 +1036,7 @@ async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
     # The refusal precedes the write, so a bad wire leaves no half-formed anchor.
     assert not Path(payload["config"]["path"]).exists(), payload["config"]["path"]
     assert _anchor_yaml(
-        topology, preset, tmp_path / "alsa", OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+        topology, preset, tmp_path / "alsa", ACTIVE_OUTPUTD_PLAYBACK_DEVICE
     )
 
 
@@ -1057,7 +1057,7 @@ async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
         ("ring", RING_ACTIVE_PLAYBACK_DEVICE, TRANSPORT_RING, RING_CAPTURE_DEVICE, None),
         # Not a ring end: ADR-0100 left one transport, so the line reports the
         # journal's own "no answer" literal rather than a second name.
-        ("aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "-", RING_CAPTURE_DEVICE, "-"),
+        ("aloop", ACTIVE_OUTPUTD_PLAYBACK_DEVICE, "-", RING_CAPTURE_DEVICE, "-"),
         ("unresolved", None, "-", "-", "-"),
     ],
 )
@@ -1161,7 +1161,7 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
             )
         )
         for lane, sink in (
-            ("aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE),
+            ("aloop", ACTIVE_OUTPUTD_PLAYBACK_DEVICE),
             ("ring", RING_ACTIVE_PLAYBACK_DEVICE),
         )
     }
@@ -1258,7 +1258,7 @@ async def test_the_audible_evidence_holds_identically_on_a_ring_graph(
         return off_device, running, _gate(payload, "driver_protection_while_audible")
 
     aloop_off, aloop_live, aloop_gate = _evidence(
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE, tmp_path / "aloop"
+        ACTIVE_OUTPUTD_PLAYBACK_DEVICE, tmp_path / "aloop"
     )
     ring_off, ring_live, ring_gate = _evidence(
         RING_ACTIVE_PLAYBACK_DEVICE, tmp_path / "ring"
@@ -1326,7 +1326,7 @@ async def test_the_ramp_gate_holds_identically_on_a_ring_graph():
             prior_step_cleared=False,
         )
 
-    aloop = _checks(OUTPUTD_ACTIVE_PLAYBACK_DEVICE)
+    aloop = _checks(ACTIVE_OUTPUTD_PLAYBACK_DEVICE)
     ring = _checks(RING_ACTIVE_PLAYBACK_DEVICE)
 
     assert set(aloop["checks"]) == {

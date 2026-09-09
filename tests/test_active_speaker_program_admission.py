@@ -690,7 +690,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
         assert refusal in admission.refusals
 
 
-@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate", "candidate_branches"])
 @pytest.mark.parametrize("damage", [
     None, "missing", "wrong_output", "low_corner", "shallow_slope", "gain", "after_limiter",
     "upper_band", "lowpass_slope", "lowpass_missing", "lowpass_wrong_output",
@@ -716,7 +716,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
     )
     text = compile_tuning_graph(
         measurement, scope="base" if scope == "candidate" else scope,
-        candidate=_trial_candidate(measurement) if scope == "candidate" else None,
+        candidate=_trial_candidate(measurement) if scope in {"candidate", "candidate_branches"} else None,
     )
     graph = yaml.safe_load(text)
     highpasses = {
@@ -772,7 +772,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         FakeCam(entry_path=_entry(tmp_path)), tmp_path=tmp_path,
         emit_scoped=lambda *_: text,
     )
-    session_graph.select_scope(scope, "trial" if scope == "candidate" else "")
+    session_graph.select_scope(scope, "trial" if scope in {"candidate", "candidate_branches"} else "")
     asyncio.run(session_graph.install())
     submitted = session_graph.installed_graph_yaml()
     submitted_graph = yaml.safe_load(submitted)
@@ -783,6 +783,9 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         session_volume_db=-20, fc_hz=2500,
         sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
     ).verify_program()
+    if scope == "candidate_branches":
+        from jasper.audio_measurement.branch_program import build_branch_program
+        program = build_branch_program(program, measurement.role_channels)
     wav = tmp_path / "summed.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -794,3 +797,30 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in admission.refusals
     elif damage:
         assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
+
+
+@pytest.mark.parametrize("damage", ["swapped_inputs", "loud_second_channel"])
+def test_branch_admission_checks_both_input_routes_and_actual_channels(tmp_path, damage):
+    from jasper.audio_measurement.branch_program import build_branch_program
+    topology, safety, targets = _profile_and_targets(woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4)
+    applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
+    profile = MeasurementGraphProfile(preset, topology,
+        {"woofer": 1, "tweeter": 0} if damage == "swapped_inputs" else {"woofer": 0, "tweeter": 1},
+        ACTIVE_PCM, protection_sections_by_role=confirmed_protection_sections(safety, targets), applied_profile=applied)
+    graph = compile_tuning_graph(profile, scope="candidate_branches", candidate=_trial_candidate(profile))
+    program = build_branch_program(SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
+        fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).cloud_program(), {"woofer": 0, "tweeter": 1})
+    wav = tmp_path / "branches.wav"
+    write_program_wav(wav, program)
+    if damage == "loud_second_channel":
+        rate, pcm = wavfile.read(wav)
+        pcm[:, 1] *= 2
+        wavfile.write(wav, rate, pcm)
+    result = readmit_summed_program_from_wav(program, wav, graph_yaml=graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20)
+    assert not result.allowed
+    assert (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN if damage == "swapped_inputs"
+            else ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP) in result.refusals

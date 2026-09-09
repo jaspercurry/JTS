@@ -116,6 +116,7 @@ from jasper.active_speaker.crossover_v2.conductor_context import (
     ensure_crossover_preview_ready,
     resolve_conductor_context,
 )
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
 from jasper.active_speaker.crossover_v2 import durable_state as _durable
 from jasper.active_speaker.crossover_v2.durable_state import (
@@ -1952,6 +1953,7 @@ def _take_staged_angle_walk(
     """
     from jasper.active_speaker.angle_capture import (
         REGIME_SUMMED,
+        REGIME_BRANCHES,
         WALK_CANDIDATE_NOT_MEASURABLE,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
@@ -2067,7 +2069,7 @@ def _take_staged_angle_walk(
     try:
         for candidate_id in sorted(set(candidate_ids) - {""}):
             find_banked_candidate(candidate_id)
-        if any(stop.regime == REGIME_SUMMED for stop in request.stops) and (
+        if any(stop.regime in (REGIME_SUMMED, REGIME_BRANCHES) for stop in request.stops) and (
             request.level_matched or request.inverted_role or request.delayed_role
         ):
             raise LateralWalkRefused(
@@ -2097,7 +2099,7 @@ def _take_staged_angle_walk(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
         prompts, request.stops,
     ):
-        if stop.regime == REGIME_SUMMED:
+        if stop.regime in (REGIME_SUMMED, REGIME_BRANCHES):
             # A seat or close pose with no candidate plays the applied tune
             # whole (the VERIFY shape): the room is measured through the
             # speaker stage it sits on (docs/measurement-loop-doctrine.md 1a).
@@ -2107,7 +2109,8 @@ def _take_staged_angle_walk(
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
                 pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
                 graph_scope=(
-                    "candidate" if stop.candidate_id
+                    "candidate_branches" if stop.regime == REGIME_BRANCHES
+                    else "candidate" if stop.candidate_id
                     else "speaker_tune" if through_tune else "base"
                 ),
             )
@@ -3384,6 +3387,8 @@ def bind_production_play(
         if stimulus_dbfs is not None:
             raise ValueError("The round's program owns its stimulus level.")
         phase = spec.program_phase
+        if spec.graph_scope == "candidate_branches":
+            return program_for_phase(PHASE_LATERAL)
         if spec.graph_scope != "drivers" and phase not in SUMMED_SWEEP_PHASES:
             phase = PHASE_CLOUD_MEASURE
         return program_for_phase(phase)
@@ -4974,6 +4979,7 @@ def prepare_v2_session(
                 include_lateral=include_lateral,
                 include_entry_baseline=include_entry_baseline,
                 lateral_prompts=lateral_prompts,
+                branch_diagnostic=any(s.graph_scope == "candidate_branches" for s in engine_measure_specs.values()),
                 lateral_candidate_ids=(
                     tuple(claim.candidate_id for claim in lateral_claims)
                     if any(s.graph_scope != GRAPH_SCOPE_DRIVERS for s in engine_measure_specs.values())

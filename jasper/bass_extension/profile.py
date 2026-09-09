@@ -49,6 +49,7 @@ class BassExtensionRefusal(StrEnum):
     BONDED_BASS_OWNER_REMOTE = "bass_extension_bonded_bass_owner_remote"
     ENCLOSURE_UNKNOWN = "bass_extension_enclosure_unknown"
     ENCLOSURE_UNSUPPORTED = "bass_extension_enclosure_unsupported"
+    PLANT_UNRESOLVED = "bass_extension_plant_unresolved"
     TUNING_NOT_LOCATED = "bass_extension_tuning_not_located"
     PR_NOTCH_NOT_LOCATED = "bass_extension_pr_notch_not_located"
     FIT_QUALITY_INSUFFICIENT = "bass_extension_fit_quality_insufficient"

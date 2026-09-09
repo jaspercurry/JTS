@@ -42,12 +42,6 @@ ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
 DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
-# The snd-aloop playback half ADR-0100 retired. No emitter writes it and its
-# ALSA definition is gone, so this is not a lane to hand a caller; it lives here
-# because `classify_camilla_config_text` is its ONE remaining reader — the
-# graph an unreconciled box still carries has to stay recognizable.
-_RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
-
 # The active-leader's camilla#1 program bake (distributed-active Stage B): a flat
 # (no-Layer-A) program graph whose playback is a File/pipe sink, not a DAC. Its
 # own classification keeps it OFF the DAC-output rollback/restore paths
@@ -353,11 +347,7 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     }:
         classification = "jts_generated_stereo"
         label = "JTS generated stereo DSP config"
-    elif playback_device in {DEFAULT_PLAYBACK_DEVICE, _RETIRED_ALOOP_PLAYBACK_DEVICE}:
-        # Ring B, or the retired snd-aloop lane a box that has not reconciled
-        # still names. Both are outputd's stereo hop; the second one no longer
-        # plays (ADR-0100), but classifying it `unknown_custom` would tell an
-        # operator JTS cannot preserve a graph JTS itself emitted.
+    elif playback_device == DEFAULT_PLAYBACK_DEVICE:
         classification = "jts_outputd_stereo"
         label = "JTS outputd stereo config"
     elif playback_device and "jasper_out" in playback_device:
