@@ -1655,6 +1655,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     VERIFY cannot become a second model-error observation.
     """
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+    from jasper.cli.doctor import correction
     from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
 
     cloud_block = {
@@ -1745,8 +1746,12 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     # A recorded cloud_measure entry means the check no longer takes its
     # REASON_CLOUD_NOT_RUN "nothing recorded yet" branch; with no
     # cloud_verify present the spec-fail does not gate, so this stays ok.
+    # The row also folds in the applied-grade finding: this rearm's state IS
+    # applied but has no VERIFY outcome yet, which the fold-in now discloses
+    # rather than staying silent about (the gap the row's own docstring
+    # names).
     assert r.status == "ok"
-    assert r.reason == ""
+    assert r.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
 
 
 def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():

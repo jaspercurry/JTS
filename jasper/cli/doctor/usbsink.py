@@ -93,8 +93,6 @@ REASON_USBSINK_SERVICE_INACTIVE = "usbsink_service_inactive"
 
 REASON_CARD_MISSING = "card_missing"
 
-REASON_HOST_STREAM_NOT_COMPOSED = "host_stream_not_composed"
-REASON_HOST_STREAM_NO_CARD = "host_stream_no_card"
 REASON_HOST_STREAM_NO_CONTROL = "host_stream_no_control"
 REASON_HOST_STREAM_ACTIVE = "host_stream_active"
 REASON_HOST_STREAM_IDLE = "host_stream_idle"
@@ -439,76 +437,70 @@ def check_usbsink_state() -> CheckResult:
         f"host_connected={connected} (activity/level owned by fan-in STATUS)",
     )
 
+def _usbsink_host_stream_finding() -> tuple[str, str]:
+    """Disclose whether the HOST has actually started the USB audio stream,
+    once the gadget card is confirmed present (the caller,
+    :func:`check_usbsink_card`, already established that).
+
+    Descriptor composed, card present, marker active, lane armed — none of
+    that can see the one state #3194 produced: the host enumerates and its
+    control plane works (volume keys move ``PCM Capture Volume``) while the
+    ISO data path never starts, so playback is silent with no failing check
+    anywhere.
+
+    u_audio publishes exactly that fact as a volatile, read-only ``Capture
+    Rate`` kcontrol on the gadget card: it holds the negotiated rate while the
+    host streams and reads 0 otherwise. This reports it and nothing more. An
+    idle host also reads 0, so the Pi cannot tell "host idle" from "host
+    playing into a wedged data path" — the honest disclosure is the number
+    plus the recovery, never a verdict, which is why this never fails."""
+    rate = _uac2_capture_rate()
+    if rate is None:
+        return (
+            "host stream state not observable (kernel does not expose the "
+            f"u_audio 'Capture Rate' control on {UAC2_CARD_NAME})",
+            REASON_HOST_STREAM_NO_CONTROL,
+        )
+    if rate > 0:
+        return f"host stream running (capture_rate={rate})", REASON_HOST_STREAM_ACTIVE
+    return (
+        "host is not streaming (capture_rate=0). Normal while the host is "
+        "idle. If the host IS playing, the ISO data path never started: "
+        f"`systemctl restart {USBGADGET_UNIT}`, then restart jasper-fanin and "
+        f"{USBMIC_UNIT} to drop their stale card handles (#3194).",
+        REASON_HOST_STREAM_IDLE,
+    )
+
+
 @doctor_check()
 def check_usbsink_card() -> CheckResult:
     """When jasper-usbsink is enabled, the UAC2Gadget ALSA card MUST
     be present — otherwise jasper-usbgadget.service either didn't run
-    or failed to compose/bind the uac2.usb0 function to the UDC."""
+    or failed to compose/bind the uac2.usb0 function to the UDC.
+
+    Once present, also folds in whether the HOST has actually started the
+    stream (:func:`_usbsink_host_stream_finding`) — a fact only meaningful
+    once the card itself is confirmed there. The card is checked before the
+    readiness-marker gate: a composed, bound uac2.usb0 can keep host-streaming
+    or sit wedged (#3194) even with the marker down, and that is exactly the
+    state this disclosure exists to surface."""
+    if Path(UAC2_CARD_PATH).is_dir():
+        stream_detail, stream_reason = _usbsink_host_stream_finding()
+        return CheckResult(
+            "usbsink card", "ok",
+            f"UAC2Gadget card present (host will see the speaker as USB audio); "
+            f"{stream_detail}",
+            reason=stream_reason,
+        )
     inactive = _skip_when_usbsink_inactive("usbsink card")
     if inactive is not None:
         return inactive
-    if Path(UAC2_CARD_PATH).is_dir():
-        return CheckResult(
-            "usbsink card", "ok",
-            "UAC2Gadget card present (host will see the speaker as USB audio)",
-        )
     return CheckResult(
         "usbsink card", "fail",
         "service active but /proc/asound/UAC2Gadget missing — "
         f"{USBGADGET_UNIT} didn't compose/bind uac2.usb0. Check "
         f"`systemctl status {USBGADGET_UNIT}` for the failure mode.",
         reason=REASON_CARD_MISSING,
-    )
-
-
-@doctor_check()
-def check_usbsink_host_stream() -> CheckResult:
-    """Disclose whether the HOST has actually started the USB audio stream.
-
-    Everything else in this group proves the gadget side: descriptor composed,
-    card present, marker active, lane armed. None of it can see the one state
-    #3194 produced — the host enumerates and its control plane works (volume
-    keys move ``PCM Capture Volume``) while the ISO data path never starts, so
-    playback is silent with no failing check anywhere.
-
-    u_audio publishes exactly that fact as a volatile, read-only ``Capture
-    Rate`` kcontrol on the gadget card: it holds the negotiated rate while the
-    host streams and reads 0 otherwise. This check reports it and nothing more.
-    An idle host also reads 0, so the Pi cannot tell "host idle" from "host
-    playing into a wedged data path" — the honest disclosure is the number plus
-    the recovery, never a verdict, which is why this check never fails."""
-    label = "usbsink host stream"
-    if not _uac2_present():
-        return CheckResult(
-            label, "skipped", "uac2.usb0 not composed — no host stream",
-            reason=REASON_HOST_STREAM_NOT_COMPOSED,
-        )
-    if not Path(UAC2_CARD_PATH).is_dir():
-        return CheckResult(
-            label, "skipped",
-            f"{UAC2_CARD_PATH} missing — see check_usbsink_card",
-            reason=REASON_HOST_STREAM_NO_CARD,
-        )
-    rate = _uac2_capture_rate()
-    if rate is None:
-        return CheckResult(
-            label, "skipped",
-            "kernel does not expose the u_audio 'Capture Rate' control on "
-            f"{UAC2_CARD_NAME} — host stream state is not observable here",
-            reason=REASON_HOST_STREAM_NO_CONTROL,
-        )
-    if rate > 0:
-        return CheckResult(
-            label, "ok", f"host stream running (capture_rate={rate})",
-            reason=REASON_HOST_STREAM_ACTIVE,
-        )
-    return CheckResult(
-        label, "ok",
-        "host is not streaming (capture_rate=0). Normal while the host is "
-        "idle. If the host IS playing, the ISO data path never started: "
-        f"`systemctl restart {USBGADGET_UNIT}`, then restart jasper-fanin and "
-        f"{USBMIC_UNIT} to drop their stale card handles (#3194).",
-        reason=REASON_HOST_STREAM_IDLE,
     )
 
 

@@ -249,10 +249,13 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
         by_name["check_crossover_v2_cloud_pipeline"],
         "streambox",
     )
-    assert _harness._doctor_skip_detail(
-        by_name["check_crossover_v2_applied_is_graded"],
-        "streambox",
-    )
+    # Cloud-integration rows the voice module also owns: a streambox has no
+    # assistant, so these never register a tool either.
+    for name in (
+        "check_google_tokens", "check_google_routes",
+        "check_home_assistant", "check_citibike",
+    ):
+        assert _harness._doctor_skip_detail(by_name[name], "streambox"), name
     assert not _harness._doctor_skip_detail(
         by_name["check_camilla_websocket"],
         "streambox",
