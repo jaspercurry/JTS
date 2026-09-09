@@ -69,13 +69,11 @@ def bass_fit_document(**overrides: Any) -> dict[str, Any]:
         owner_role="woofer",
         owner_target_id="main:woofer",
         margin=MARGIN.name,
-        effective_plant={
-            "f0_hz": PLANT.f0_hz,
-            "q0": PLANT.q0,
-            "fit_rms_db": PLANT.fit_rms_db,
-            "source": "seat_median_fit",
-            "notes": [],
-        },
+        effective_corner_hz=bass_family()[-1]["fp_hz"],
+        effective_q=bass_family()[-1]["qp"],
+        effective_plant=PLANT.to_dict(),
+        plant_source="seat_median_fit",
+        fit_rms_db=PLANT.fit_rms_db,
         fit_refusal=None,
         rungs=tuple(
             Rung(
@@ -92,6 +90,7 @@ def bass_fit_document(**overrides: Any) -> dict[str, Any]:
         ceiling_hz=300.0,
         ceiling_source="declared",
         n_positions=5,
+        level_reference_db=-20.0,
     ))
     fit.update(overrides)
     return {"status": "fitted", "bass_fit": fit}

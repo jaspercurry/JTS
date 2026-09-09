@@ -3897,6 +3897,9 @@ def classify_bass_extension_graph(
     else:
         return _unsafe_boundary("bass_extension_source_invalid", "unknown evidence source")
 
+    # The intent and profile files carry no authority — the applied candidate's
+    # field is the only one — but a write to either mid-read means the host was
+    # changing under this snapshot, so both stay in the stability check.
     for _attempt in range(2):
         try:
             applied1 = _read_optional_bytes(applied_baseline_path)

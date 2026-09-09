@@ -565,7 +565,12 @@ def read_bass_prescription(
         round_id=round_id.strip(),
         adapter_id=str(fit.get("adapter_id") or ""),
         owner_role=owner_role,
-        effective_plant=dict(fit.get("effective_plant") or {}),
+        # The view splits the adapter's own fit record from where it came
+        # from; the candidate field carries both under one plant object.
+        effective_plant={
+            **dict(fit.get("effective_plant") or {}),
+            "source": fit.get("plant_source"),
+        },
         rungs=rungs,
         rationale=rationale,
         rationale_dropped_chars=dropped,
