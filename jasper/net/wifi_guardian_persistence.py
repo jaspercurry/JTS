@@ -34,11 +34,12 @@ contents.
 from __future__ import annotations
 import logging
 import os
-import tempfile
+import tempfile  # noqa: F401 — kept so tests can patch the shared
+                 # tempfile.mkstemp that atomic_write_text calls internally
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.atomic_io import fsync_directory
+from jasper.atomic_io import atomic_write_text, fsync_directory
 
 logger = logging.getLogger(__name__)
 DEFAULT_PATH = "/var/lib/jasper/wifi_guardian.env"
@@ -153,17 +154,17 @@ def write_stash(
     psk: str,
     key_mgmt: str,
 ) -> None:
-    """Best-effort atomic write with durability beyond ``os.replace``.
-    Steps:
-      1. Write into a tempfile in the same directory (atomic rename
-         needs same-filesystem source + target).
-      2. ``os.fsync`` the tempfile FD before close → contents on disk.
-      3. ``chmod 0600`` (PSK is in the file).
-      4. ``os.replace`` (atomic on POSIX same-FS).
-      5. ``os.fsync`` the *parent directory* FD → the rename itself
-         is on disk. This is the step ``mic_mute_persistence`` skips;
-         we need it because the whole point of this stash is recovery
-         from filesystem loss.
+    """Atomic write via ``atomic_io``, plus durability beyond ``os.replace``.
+
+    ``atomic_write_text`` covers tempfile-in-same-dir, ``chmod 0600`` before
+    the rename (PSK is in the file), and ``os.replace``. The extra step here
+    — ``fsync`` on the *parent directory* — is the delta from
+    ``mic_mute_persistence``: without it, a dirty shutdown right after a
+    wizard save can roll back the rename even though the file's own content
+    already landed on disk (ext4 ``data=ordered`` writes a rename's data
+    before its metadata commit). This stash exists specifically to survive
+    filesystem loss, so that gap is the one worth closing.
+
     Raises ``ValueError`` for inputs the guardian won't act on
     (empty SSID, ``wpa-eap`` enterprise auth). Logs and re-raises
     OSError so callers can surface "we couldn't write the stash" in
@@ -182,36 +183,14 @@ def write_stash(
         f"{_KEY_PSK}={psk}\n"
         f"{_KEY_MGMT}={key_mgmt or 'none'}\n"
     )
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        prefix=".wifi_guardian.", suffix=".tmp", dir=str(p.parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, p)
-    except Exception:  # noqa: BLE001
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    # fsync the parent directory so the rename itself is durable. On
-    # ext4 with default ``data=ordered`` this isn't strictly necessary
-    # for the file *contents* (they're already on disk from step 2),
-    # but the directory entry pointing at the new inode lives in the
-    # parent dir's data block — without this fsync, a dirty shutdown
-    # immediately after wizard save can leave the rename rolled back.
-    # That's the exact failure class the guardian exists to recover
-    # from; defending against it on the write path too is consistent.
+    # group_from_parent=False: this is a root-only secret, not a
+    # group-readable state file (mode 0600 already excludes the group).
+    atomic_write_text(p, body, mode=0o600, group_from_parent=False)
     try:
         fsync_directory(p.parent)
     except OSError as e:
-        # Any error only degrades rename durability: the file contents are on
-        # disk from step 2, and the wizard's connect must not fail.
+        # Any error only degrades rename durability: the file contents are
+        # already on disk, and the wizard's connect must not fail.
         logger.warning(
             "wifi guardian persistence: parent fsync on %s failed (%s) — "
             "contents written, rename durability degraded",
