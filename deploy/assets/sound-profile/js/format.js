@@ -7,6 +7,14 @@
 // Leaf helpers: no page records, no DOM.
 
 function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
+function freqToSlider(freq, min, max) {
+  var lmin = Math.log(min), lmax = Math.log(max);
+  return Math.round((Math.log(clamp(freq, min, max)) - lmin) / (lmax - lmin) * 1000);
+}
+function sliderToFreq(pos, min, max) {
+  var lmin = Math.log(min), lmax = Math.log(max);
+  return Math.exp(lmin + clamp(pos, 0, 1000) / 1000 * (lmax - lmin));
+}
 function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
 function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
 function fmtFreq(v) {
@@ -78,6 +86,8 @@ export {
   fmtDb,
   fmtFreq,
   fmtFreqShort,
+  freqToSlider,
+  sliderToFreq,
   fmtQ,
   fmtTrim,
   ico,
