@@ -118,6 +118,8 @@ function renderDiagnostics(out, body) {
     (s === "skipped"
       ? "var(--muted-faint)"
       : "var(--status-" + (s === "fail" ? "danger" : s === "warn" ? "warn" : "ok") + ")");
+  // Worst-first is the doctor's own order (jasper/cli/doctor/_cli.py) — the
+  // payload arrives pre-sorted, so this renders it as given.
   const rows = (body.results || []).map((c) =>
     h("tr", null,
       h("td.diag-mark", { style: { color: tone(c.status) } }, mark(c.status)),
@@ -136,12 +138,13 @@ function renderDiagnostics(out, body) {
   // that carries one still carries its own jasper-doctor row, and a stale
   // snapshot plus a refresh failure carries every check as well.
   if (body.error) nodes.push(h("p.muted.diag-error", null, "Error: " + body.error));
+  // The verdict leads the panel, above the table (SYS-2).
   nodes.push(
-    h("div.table-wrap", null, h("table.table.table--diag", null, h("tbody", null, ...rows))),
     h("p.info-card__note", null,
       (body.speaker_silent ? "the speaker is silent — " : "") +
       body.fails + " failed, " + body.warns + " warning(s)." +
-      (meta.length ? " " + meta.join(" - ") + "." : "")));
+      (meta.length ? " " + meta.join(" - ") + "." : "")),
+    h("div.table-wrap", null, h("table.table.table--diag", null, h("tbody", null, ...rows))));
   out.replaceChildren(...nodes);
 }
 

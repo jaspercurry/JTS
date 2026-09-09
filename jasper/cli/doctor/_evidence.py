@@ -19,8 +19,10 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from ...env_load import parse_env_mapping
 from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -98,6 +100,16 @@ def _loopback_substreams() -> dict[int, str]:
         except OSError:
             continue
     return out
+
+
+def _read_env_mapping(path: str) -> dict[str, str] | None:
+    """One env file's parsed mapping, or None when it could not be read
+    (missing or unreadable)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return parse_env_mapping(text)
 
 
 class Evidence:
@@ -230,6 +242,22 @@ class Evidence:
 
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)
+
+    def fanin_env(self) -> dict[str, str] | None:
+        """``fanin.env``'s parsed mapping, read once per run. None when it
+        could not be read (missing or unreadable)."""
+        from ...env_load import FANIN_ENV_PATH  # lazy: tests patch env_load.FANIN_ENV_PATH at call time
+
+        return self.get("fanin_env", lambda: _read_env_mapping(FANIN_ENV_PATH))
+
+    def outputd_env(self) -> dict[str, str] | None:
+        """``outputd.env``'s own parsed mapping — just that single-writer
+        file's text, NOT the merged ``outputd_reconciled_env`` three-layer
+        stack (see ``audio_runtime_outputd._outputd_reconciled_env``). None
+        when it could not be read."""
+        from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
+
+        return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 
     def parked_bonded_follower(self) -> bool:
         from ._shared import _parked_as_bonded_follower

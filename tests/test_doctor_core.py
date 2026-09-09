@@ -415,7 +415,9 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
 def _summary_line(results, capsys) -> tuple[int, str]:
     exit_code = doctor.render(results)
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
-    return exit_code, lines[-1]
+    # render() prints the summary directly under the "jasper-doctor" header,
+    # above the table (SYS-2) — it is the second non-blank line.
+    return exit_code, lines[1]
 
 
 def test_summary_never_calls_a_silent_speaker_non_critical(capsys):
@@ -541,6 +543,28 @@ def test_a_silent_failure_does_not_pin_its_silence_on_a_cosmetic_warning(capsys)
         "the speaker is silent — 1 failed, 1 warning(s).\x1b[0m"
     )
     assert "of them" not in line
+
+
+def test_render_puts_the_verdict_above_the_table_sorted_worst_first(capsys):
+    """SYS-2: the verdict leads the report, and rows sort fail, warn, ok."""
+    results = [
+        CheckResult("alpha", "ok", "up"),
+        CheckResult("bravo", "fail", "down", reason="bravo_down"),
+        CheckResult("charlie", "warn", "flaky", reason="charlie_flaky"),
+    ]
+
+    doctor.render(list(results))
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+
+    row_index = {
+        name: next(i for i, ln in enumerate(lines) if name in ln)
+        for name in ("alpha", "bravo", "charlie")
+    }
+    summary_index = next(
+        i for i, ln in enumerate(lines) if "1 failed" in ln
+    )
+    assert summary_index < min(row_index.values())
+    assert row_index["bravo"] < row_index["charlie"] < row_index["alpha"]
 
 
 def test_an_ok_result_cannot_claim_the_speaker_is_silent():

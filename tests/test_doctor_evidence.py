@@ -117,6 +117,40 @@ def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
     assert len(status_block_calls) <= 1
 
 
+@pytest.mark.parametrize(
+    "method_name, env_path_attr",
+    [
+        ("fanin_env", "FANIN_ENV_PATH"),
+        ("outputd_env", "OUTPUTD_ENV_PATH"),
+    ],
+    ids=["fanin_env", "outputd_env"],
+)
+def test_env_file_readers_are_memoized_and_fail_soft_to_none(
+    monkeypatch, tmp_path, method_name, env_path_attr,
+):
+    """``fanin_env``/``outputd_env``: the file's parsed mapping, read once per
+    run (several checks each used to open it themselves — ADR-0233 rule 4); a
+    missing or unreadable file reads as None, matching every consuming
+    check's prior broad ``except OSError``."""
+    import jasper.env_load as env_load
+
+    path = tmp_path / "env"
+    path.write_text("FOO=bar\n")
+    monkeypatch.setattr(env_load, env_path_attr, str(path))
+
+    ev = Evidence()
+    method = getattr(ev, method_name)
+    assert method() == {"FOO": "bar"}
+
+    # Read once per Evidence instance: a rewrite after the first call must
+    # not appear.
+    path.write_text("FOO=changed\n")
+    assert method() == {"FOO": "bar"}
+
+    monkeypatch.setattr(env_load, env_path_attr, str(tmp_path / "missing"))
+    assert getattr(Evidence(), method_name)() is None
+
+
 def test_daemon_status_is_fail_soft_and_classifies_unreachable(monkeypatch):
     def unreachable(path, *, timeout):
         raise ConnectionRefusedError(path)

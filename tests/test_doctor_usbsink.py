@@ -1277,11 +1277,15 @@ def _setup_combo(
         usbsink, "source_intent_enabled", lambda _source: intent
     )
     evidence.seed("parked_bonded_follower", parked)
-    declare_fanin_env(
+    fanin_env_path = declare_fanin_env(
         monkeypatch,
         tmp_path,
         f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else "",
     )
+    # The check's own read is the evidence-memoized `fanin_env()`, sourced
+    # from `env_load.FANIN_ENV_PATH` (`declare_fanin_env` only patches
+    # `ring_health`'s copy, for its other non-doctor callers).
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env_path))
 
 
 @pytest.mark.parametrize(

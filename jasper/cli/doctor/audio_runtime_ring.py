@@ -26,7 +26,6 @@ import os
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 from ... import ring_assets
@@ -315,8 +314,6 @@ def check_content_transport_coherence() -> CheckResult:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from jasper.env_file import read_value
-    from jasper.env_load import OUTPUTD_ENV_PATH
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -402,17 +399,13 @@ def check_content_transport_coherence() -> CheckResult:
             label, "ok", f"{pair}; no central ring path to read",
             reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
-    # The SUBJECT stays outputd.env's own text: the marker and the ring path are
+    # The SUBJECT stays outputd.env's own keys: the marker and the ring path are
     # single-writer keys of that file, and `outputd_ring_path_for` is contracted
-    # on one snapshot of the file being reconciled.
-    try:
-        outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        outputd_text = ""
-    carried = resolve_outputd_ring_path(
-        read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    derived = outputd_ring_path_for(outputd_text)
+    # on one snapshot of the file being reconciled — the per-run memo instead
+    # of a second read (ADR-0233 rule 4).
+    own_outputd_env = evidence.outputd_env() or {}
+    carried = resolve_outputd_ring_path(own_outputd_env.get(OUTPUTD_RING_PATH_ENV_VAR))
+    derived = outputd_ring_path_for(own_outputd_env)
     if carried != derived:
         return _crossed_transport_pair(
             label,
@@ -952,10 +945,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.ring_health import (
-            FANIN_ENV_PATH,
-            resolve_effective_fanin_ring_slots,
-        )
+        from jasper.fanin.ring_health import resolve_effective_fanin_ring_slots
         from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
@@ -966,11 +956,8 @@ def check_ring_geometry_coherence() -> CheckResult:
         )
 
     # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).
-    try:
-        fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        fanin_text = ""
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
+    # Off the per-run memo instead of re-opening fanin.env (ADR-0233 rule 4).
+    resolution = resolve_effective_fanin_ring_slots(evidence.fanin_env() or {})
     if resolution.value is None:
         return CheckResult(
             label, "fail",
