@@ -1533,7 +1533,8 @@ impl HostClock {
         // quantity: whenever the observable is wrong-way enough to count as
         // evidence, the integrator is already frozen below saturation
         // (#3609, ADR-0214).
-        let saturated = raw.abs() >= MAX_BIAS_PPM || integrator_frozen;
+        let saturated_by_raw = raw.abs() >= MAX_BIAS_PPM;
+        let saturated = saturated_by_raw || integrator_frozen;
         let observable = self.probe_observable_ppm();
         let l2_slope_threshold = (self.cfg.probe_ppm / 2.0).max(L2_SLOPE_FLOOR_PPM);
         // "Uncorrected direction": we are commanding to reduce the error, but the
@@ -1557,11 +1558,12 @@ impl HostClock {
             self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions); // pitch → neutral (forced)
             log::warn!(
-                "event={}.host_clock_lost_authority reason=lost_authority capture_generation={} control_generation={} observable_ppm={:.1}",
+                "event={}.host_clock_lost_authority reason=lost_authority capture_generation={} control_generation={} observable_ppm={:.1} saturated_by={}",
                 self.cfg.log_prefix,
                 self.control_status.capture_generation,
                 self.control_status.control_generation.unwrap_or(0),
                 observable,
+                if saturated_by_raw { "raw" } else { "frozen" },
             );
             return;
         }
@@ -2407,9 +2409,11 @@ mod tests {
         assert_eq!(hc.ladder(), Ladder::L0Locked);
 
         let mut demoted = false;
+        let mut ppm_before_demotion = hc.commanded_ppm();
         for t in 200u64..800 {
             cap += 48_000;
             play += 48_000;
+            ppm_before_demotion = hc.commanded_ppm();
             hc.tick(obs_corr(-500.0, cap, play), t * 1000);
             if hc.ladder() == Ladder::L2Fallback {
                 demoted = true;
@@ -2420,8 +2424,11 @@ mod tests {
             demoted,
             "a wrong-way host past the actuator bound must demote"
         );
+        // Sampled on the tick BEFORE the ladder flips: `commanded_ppm()` after
+        // the flip is forced to 0.0 by demotion itself, which would make this
+        // assertion vacuous.
         assert!(
-            hc.commanded_ppm().abs() < MAX_BIAS_PPM,
+            ppm_before_demotion.abs() < MAX_BIAS_PPM,
             "the command never reached the bound — the integrator froze short of it"
         );
         assert_eq!(hc.commanded_ppm(), 0.0, "demotion forces neutral pitch");

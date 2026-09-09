@@ -98,12 +98,12 @@ async def _duck_release_target_db(
 
     ``min(reference, current + duck_depth_db)`` — give back this holder's own
     attenuation and nothing else, and never end above the level that should be
-    in effect. Both halves are load-bearing whenever two duck holders can
-    interleave — the graph-swap bracket and any ranked ``TRANSIENT_DUCK``
-    claim, in either order:
+    in effect. Both halves are load-bearing even with the graph-swap bracket
+    as the only holder that ducks the main fader in production — a volume
+    change landing inside that bracket's window can go either way:
 
-    * replaying the entry snapshot strands the fader, because whichever holder
-      exits last replays a value the other one had already ducked;
+    * replaying the entry snapshot ignores that change, stranding the fader
+      at the pre-duck level instead of the one the change set;
     * a bare relative release fails the other way, clamping to 0 dB — loud —
       when a volume change lands inside the window.
 

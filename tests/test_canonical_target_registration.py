@@ -8,9 +8,9 @@ since wave 5b the process fader OWNER with it —
 
 `CamillaController._graph_mutation` ducks the main fader across a swap and
 releases it to ``min(canonical, current + own depth)``. With no canonical
-target registered, that release falls back to the entry snapshot — which an
-interleaved `TRANSIENT_DUCK` holder may already have ducked — and the fader
-strands tens of dB quiet.
+target registered, that release falls back to the entry snapshot — which
+ignores a volume change that lands inside the swap's duck window — and the
+fader strands tens of dB quiet.
 
 Every swap that ducks uses the canonical target, with no exception. The
 crossover-v2 measurement path used to declare its own reference (#2929); wave

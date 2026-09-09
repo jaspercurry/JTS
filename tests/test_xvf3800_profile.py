@@ -363,9 +363,14 @@ def test_recording_provenance_names_the_detected_board_s_firmware(
     _probe, identity = runtime_probe.mic_probe_and_identity()
 
     target = xvf3800.FIRMWARE_UPDATE_TARGETS_BY_ID[expected_target_id]
+    to_variant = next(
+        v for v in xvf3800.FIRMWARE_VARIANTS if v.variant_id == target.to_variant_id
+    )
     firmware = identity["recommended_firmware"]
     assert firmware["blob"] == target.filename
     assert firmware["sha256"] == target.sha256
+    assert firmware["capture_channels"] == target.expected_capture_channels
+    assert firmware["raw_mic_indices"] == list(to_variant.raw_mic_indices)
     assert identity["geometry"] == target.geometry
     if publishes_build_provenance:
         assert firmware["known_good_as_of"] == target.known_good_as_of
@@ -373,3 +378,35 @@ def test_recording_provenance_names_the_detected_board_s_firmware(
     else:
         assert "known_good_as_of" not in firmware
         assert "build_repo_hash" not in firmware
+
+
+def test_recommended_firmware_omits_keys_for_unrecognized_board(monkeypatch):
+    """A board xvf3800 cannot match to any registry row (unknown BLD_MSG,
+    non-standard channel count) has no safe firmware to describe — the
+    per-board keys are absent rather than borrowed from the legacy square
+    build's (#4361)."""
+    from jasper.mics import xvf3800
+    from jasper.wake_corpus import runtime_probe
+
+    monkeypatch.setattr(
+        runtime_probe.xvf3800,
+        "detect_runtime_profile",
+        lambda **_kwargs: xvf3800.RuntimeProfile(
+            present=True,
+            variant=None,
+            alsa_card_name=xvf3800.ALSA_CARD_NAME,
+            capture_channels=4,
+            chip_beam_plan=None,
+            reason="test",
+        ),
+    )
+
+    _probe, identity = runtime_probe.mic_probe_and_identity()
+
+    firmware = identity["recommended_firmware"]
+    assert "blob" not in firmware
+    assert "sha256" not in firmware
+    assert "capture_channels" not in firmware
+    assert "raw_mic_indices" not in firmware
+    assert "known_good_as_of" not in firmware
+    assert "build_repo_hash" not in firmware
