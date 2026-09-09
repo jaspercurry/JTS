@@ -22,7 +22,8 @@ class BusctlResult:
 
 def name_is_absent(stderr: bytes) -> bool:
     """D-Bus missing-name errors under the system image's C locale."""
-    return any(marker in stderr.lower() for marker in (
+    detail = stderr.lower()
+    return (b'name "' in detail and b'" does not exist' in detail) or any(marker in detail for marker in (
         b"was not provided by any .service files",
         b"name has no owner",
         b"is not activatable",

@@ -2001,7 +2001,7 @@ async def test_paused_airplay_session_is_released_on_takeover(
         ([BusctlResult(0, b"", b"")], ["DropSession"], "ok", "drop_acknowledged"),
         ([None, BusctlResult(0, b"", b"")], ["DropSession", "Stop"], "degraded", "stop_unconfirmed"),
         ([None, None], ["DropSession", "Stop"], "degraded", "cleanup_failed"),
-        ([BusctlResult(1, b"", b"Name has no owner")], ["DropSession"], "ok", "receiver_absent"),
+        ([BusctlResult(1, b"", b'Call failed: Name "org.gnome.ShairportSync" does not exist')], ["DropSession"], "ok", "receiver_absent"),
     ],
 )
 async def test_airplay_cleanup_outcome_keeps_new_source_authoritative(
