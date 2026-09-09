@@ -32,7 +32,7 @@ from ...fanin_coupling import read_declared_ring_wire_format
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _service_state_failure
+from ._shared import CheckResult, _service_state_failure, silence_unobserved
 from .audio_runtime_camilla import _loaded_device_fields
 
 
@@ -407,7 +407,8 @@ def check_fanin_service() -> CheckResult:
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-            reason=REASON_FANIN_STATUS_UNREACHABLE, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_UNREACHABLE,
+            speaker_silent=silence_unobserved(),
         )
     data = status.payload
     if data is None:
@@ -424,7 +425,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
-            reason=REASON_FANIN_STATUS_MISSING_OUTPUT, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -440,6 +441,8 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
+            # Not gated on jasper-control: a fan-in on another transport
+            # still reports healthy to it, so no signal-path code names this.
             reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")
@@ -450,7 +453,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
-            reason=REASON_FANIN_STATUS_MISSING_RING, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_RING,
         )
 
     inputs = data.get("inputs")
@@ -1041,7 +1044,7 @@ def check_fanin_coupling() -> CheckResult:
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
-        from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+        from ...control.transport_eligibility import ACTIVE_ENDPOINT_REMEDY
 
         coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (

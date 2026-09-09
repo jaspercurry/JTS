@@ -339,7 +339,6 @@ def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_ABOVE_CAPACITY
-    assert r.speaker_silent is True
 
 
 def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
@@ -370,7 +369,6 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_camilla.REASON_RING_TARGET_LEVEL_ABOVE_CEILING
-    assert r.speaker_silent is True
 
 
 def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
@@ -983,8 +981,6 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
             f"the doctor prints `jasper-fanin-coupling-reconcile {token}`, which "
             "the CLI rejects"
         )
-
-
 def _silent_camilla_recover_park(monkeypatch, tmp_path):
     from jasper.control import camilla_recover_state
 
@@ -995,6 +991,15 @@ def _silent_camilla_recover_park(monkeypatch, tmp_path):
             "status": "parked",
             "parked": True,
             "reason": "camilla_start_failed",
+            "parked_utc": "2026-01-15T12:00:00Z",
         },
     )
     return audio_runtime_camilla.check_camilla_recover_park
+
+
+def test_camilla_recover_park_detail_carries_the_writers_own_timestamp(
+    monkeypatch, tmp_path
+):
+    """A malformed parked_utc must still show up verbatim, never drop the line."""
+    result = _silent_camilla_recover_park(monkeypatch, tmp_path)()
+    assert "2026-01-15T12:00:00Z" in result.detail

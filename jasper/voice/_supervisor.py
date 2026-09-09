@@ -511,7 +511,7 @@ def hand_off_first_connect(
     request_unplanned_reopen(conn)
 
 
-async def run_supervisor_loop(conn: SupervisedConnection) -> None:
+async def run_connection_supervisor(conn: SupervisedConnection) -> None:
     """Reconnect for the connection's lifetime.
 
     Wakes on `_reconnect_event`, which the receive loop sets when it

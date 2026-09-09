@@ -36,7 +36,7 @@ REVALIDATION_PENDING = "revalidation_pending"
 _BIN = "/opt/jasper/.venv/bin"
 ORIENTATION_COMMAND = f"sudo {_BIN}/jasper-crossover-prescriber status"
 PROGRAM_DOOR_COMMAND = (
-    f"sudo {_BIN}/jasper-angle-capture stage --program baseline --size express"
+    f"sudo {_BIN}/jasper-angle-capture plan --help"
 )
 
 
@@ -87,13 +87,14 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any]) -> str:
             f"  {ORIENTATION_COMMAND}",
             "  It prints the reading order for the operator docs installed on "
             "this box, where this speaker stands, and what it can do next. "
-            "Read the runbook's \"The tool menu\" for which tool to run and "
-            "how; do not ask this prompt.",
+            "Read the runbook's \"Find the analysis that answers the question\" "
+            "first, then \"The tool menu\" for the selected tool's door; do not "
+            "ask this prompt.",
             "",
             "THE PROGRAM DOOR",
             f"  {PROGRAM_DOOR_COMMAND}",
-            "  Stages the next measurement walk. Run it when the orientation "
-            "verb's next actions call for a round, not before.",
+            "  Shows the measurement programs without staging one. Choose a "
+            "program only after status and the current question say what to measure.",
             "",
             "BINDING (stamped when this prompt was copied)",
             f"  speaker: {binding.get('speaker_name') or ''} ({hostname})",

@@ -1381,7 +1381,7 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # PASSIVE (not roleful, so no active ring) — a roleful composite resolves 4.
     # These shapes PARK under their own name instead
     # (ADR-0178: passive-stereo-composite is #2982, explicit-mono is #3117) —
-    # see jasper.control.transport_park — rather than falling back to a
+    # see jasper.control.transport_eligibility — rather than falling back to a
     # second coupling.
     # A plain single-sink speaker still needs an explicit passive stereo layout
     # before this arm is legal. A stale roleful/subwoofer topology needs the same

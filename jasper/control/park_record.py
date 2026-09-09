@@ -4,13 +4,13 @@
 
 """The read half of a park record.
 
-``jasper-camilla-recover`` (ADR-0175) parks a daemon out-of-band on a ``/run``
-record, and :mod:`jasper.control.camilla_recover_state` reads it for
-jasper-doctor. This module owns the
-open/absent/unreadable/parse preamble, including its posture: a record that
-cannot be read is reported distinctly from one that is not there, because a
-permissions regression must never read as a healthy speaker. Each reader
-keeps only what is specific to its own record's fields.
+``jasper-camilla-recover`` (ADR-0175) and
+``jasper-outputd-failure-reconcile`` each park a daemon out-of-band on a
+``/run`` record. This module owns the open/absent/unreadable/parse
+preamble both share, including its posture: a record that cannot be read
+is reported distinctly from one that is not there, because a permissions
+regression must never read as a healthy speaker. Each reader keeps only
+what is specific to its own record's fields.
 """
 from __future__ import annotations
 
@@ -23,10 +23,11 @@ def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
     """Fail-soft read of a park record at ``path``.
 
     Returns ``(terminal, fields)``. A non-None ``terminal`` is the complete
-    snapshot the caller must return — the ``absent`` or ``unreadable`` verdict,
-    which both records spell the same way. Otherwise ``fields`` is the parsed
-    record (empty when the text is malformed; that is the caller's to
-    classify).
+    snapshot the caller must return — the ``absent`` or ``unreadable``
+    verdict, both of which carry ``path`` (a reader that surfaces one but not
+    the other must not have to branch to find it). Otherwise ``fields`` is
+    the parsed record (empty when the text is malformed; that is the
+    caller's to classify).
 
     Never raises.
     """
@@ -34,7 +35,7 @@ def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except FileNotFoundError:
-        return {"status": "absent", "parked": False}, {}
+        return {"status": "absent", "parked": False, "path": path}, {}
     except OSError as exc:
         return {
             "status": "unreadable",

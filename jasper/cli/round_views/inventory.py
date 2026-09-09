@@ -8,10 +8,26 @@ from __future__ import annotations
 
 import argparse
 import shlex
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
+from jasper.active_speaker.crossover_v2.contracts import (
+    DESIGN_AXIS_DEG,
+    DRIVER_ROLE_TWEETER,
+    DRIVER_ROLE_WOOFER,
+)
+from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+from jasper.active_speaker.crossover_v2.position_cycle import (
+    read_pose_curve_pair,
+    take_phase_composition,
+)
+from jasper.active_speaker.crossover_v2.round_captures import (
+    RoundCapturesRefused,
+    capture_documents,
+    document_capture_id,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -19,6 +35,7 @@ from ._common import (
     ARTIFACT_BY_VIEW,
     INVENTORY_ARTIFACT,
     PROG,
+    TAKES_EXACT_CAPTURE,
     TAKES_THIS_BUNDLE,
     TAKES_THIS_ROUND,
     ViewArtifact,
@@ -33,7 +50,11 @@ from ._common import (
 
 
 def _runnable(
-    view: str, spec: ViewArtifact, round_dir: Path, inputs: RoundInputs,
+    view: str,
+    spec: ViewArtifact,
+    round_dir: Path,
+    inputs: RoundInputs,
+    takes: tuple[str, ...] | None = None,
 ) -> tuple[str, list[str]]:
     bindings = {
         TAKES_THIS_ROUND: round_dir,
@@ -41,9 +62,47 @@ def _runnable(
         "<flow-state>": inputs.state_path,
         "<applied-profile>": inputs.applied_profile_path,
     }
-    missing = [token for token in spec.takes if token.startswith("<") and not bindings.get(token)]
-    tokens = [str(bindings.get(token) or token) for token in spec.takes]
+    takes = spec.takes if takes is None else takes
+    missing = [
+        token for token in takes
+        if token.startswith("<") and not bindings.get(token)
+    ]
+    tokens = [str(bindings.get(token) or token) for token in takes]
     return shlex.join([*shlex.split(spec.producer or f"{PROG} {view}"), *tokens]), missing
+
+
+def _has_legacy_branch_pair(inputs: RoundInputs) -> bool:
+    selected = read_pose_curve_pair(
+        inputs.session_dir,
+        phase=PHASE_MEASURE,
+        position_deg=DESIGN_AXIS_DEG,
+        roles=(DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER),
+    )
+    return selected is not None and take_phase_composition(
+        inputs.session_dir, selected[2]
+    ) != "complete_tune_measured"
+
+
+def _forward_model_takes(
+    round_dir: Path, inputs: RoundInputs,
+) -> tuple[tuple[str, ...], str | None, bool]:
+    try:
+        documents = capture_documents(round_dir)
+    except RoundCapturesRefused as exc:
+        return TAKES_EXACT_CAPTURE, exc.reason, False
+    diagnostics = [
+        doc for doc in documents if isinstance(doc.get("branch_diagnostic"), Mapping)
+    ]
+    if diagnostics:
+        capture_id = (
+            document_capture_id(diagnostics[0]) if len(diagnostics) == 1 else None
+        )
+        if capture_id is None:
+            return TAKES_EXACT_CAPTURE, "exact_capture_id_required", True
+        return (TAKES_THIS_ROUND, "--capture-id", capture_id), None, True
+    if _has_legacy_branch_pair(inputs):
+        return (TAKES_THIS_ROUND,), None, True
+    return TAKES_EXACT_CAPTURE, "forward_model_basis_missing", False
 
 
 def _cmd_inventory(args: argparse.Namespace) -> int:
@@ -63,7 +122,17 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             else default_out(inputs, round_dir, spec.artifact)
         )
         stat = path.stat() if path.is_file() else None
-        produced_by, required_inputs = _runnable(view, spec, round_dir, inputs)
+        repair_reason = None
+        command_available = True
+        if view == "forward-model":
+            takes, repair_reason, command_available = _forward_model_takes(
+                round_dir, inputs
+            )
+        else:
+            takes = None
+        produced_by, required_inputs = _runnable(
+            view, spec, round_dir, inputs, takes
+        )
         banked_index = view == "position-cycle" and inputs.banked
         artifacts.append({
             "artifact": spec.artifact,
@@ -73,8 +142,13 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             "produced_by": produced_by,
             "producer_needs_more_than_this_round": bool(required_inputs),
             "required_inputs": required_inputs,
-            "next_command": None if banked_index else produced_by,
-            "repair_reason": "banked_pose_index_missing" if banked_index and stat is None else None,
+            "next_command": (
+                produced_by if not banked_index and command_available else None
+            ),
+            "repair_reason": (
+                "banked_pose_index_missing" if banked_index and stat is None
+                else repair_reason if stat is None else None
+            ),
         })
     bytes_total = sum(row["bytes"] or 0 for row in artifacts)
     payload = {

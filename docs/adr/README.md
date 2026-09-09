@@ -64,7 +64,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | accepted |
 | [0271](0271-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
 | [0273](0273-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
-| [0276](0276-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
+| [0277](0277-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
 
 ## Volume & hearing
 
@@ -99,6 +99,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
 | [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | amended by 0266 |
 | [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
+| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | amended by 0276 |
+| [0276](0276-usb-buffer-acquisition-overlaps-the-timing-check.md) | USB buffer acquisition overlaps the timing check | accepted |
 
 ## Multiroom & grouping
 
@@ -251,4 +253,3 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
 | [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
-| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | accepted |

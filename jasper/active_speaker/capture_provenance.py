@@ -19,9 +19,12 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from jasper.log_event import log_event
+from jasper.audio_measurement.evidence_identity import json_fingerprint
+
+from .commissioning_admission import parse_running_graph
 
 from .volume_latch import fader_matches
 
@@ -48,6 +51,7 @@ class CaptureProvenance:
     stimulus_phase: str | None = None
     stimulus_wav_sha256: str | None = None
     stimulus_peak_dbfs: float | None = None
+    graph_config: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """The sidecar block, written under one ``provenance`` key."""
@@ -58,6 +62,7 @@ class CaptureProvenance:
                 "kind": self.graph_kind,
                 "config_path": self.graph_config_path,
                 "fingerprint": self.graph_fingerprint,
+                **({"config": dict(self.graph_config)} if self.graph_config is not None else {}),
             },
             "stimulus": {
                 "program_id": self.stimulus_program_id,
@@ -186,14 +191,12 @@ async def observe_capture_provenance(
         "graph.config_path", lambda: cam.get_config_file_path(best_effort=True)
     )
 
-    async def read_fingerprint() -> Any:
-        from .commissioning_admission import running_graph_fingerprint
-
-        return running_graph_fingerprint(
+    async def read_graph() -> Any:
+        return parse_running_graph(
             await cam.get_active_config_raw(best_effort=True)
         )
 
-    fingerprint = await probe("graph.fingerprint", read_fingerprint)
+    graph = await probe("graph.fingerprint", read_graph)
 
     # NOT a probe: None here is an answer (no session volume open).
     session_volume_db: float | None = None
@@ -234,7 +237,8 @@ async def observe_capture_provenance(
         main_volume_db=main_volume_db,
         session_volume_db=session_volume_db,
         graph_config_path=config_path,
-        graph_fingerprint=fingerprint,
+        graph_fingerprint=json_fingerprint(graph) if graph is not None else None,
+        graph_config=graph,
         stimulus_program_id=program_id,
         stimulus_phase=phase,
         stimulus_wav_sha256=wav_sha256,

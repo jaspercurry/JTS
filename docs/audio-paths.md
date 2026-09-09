@@ -9,7 +9,7 @@ assistant loudness behave differently on the two shapes, so it is the first
 thing to establish when testing either.
 
 Why the pre-mix sits in fan-in at all — CamillaDSP takes one ALSA capture
-device per process — is [ADR-0276](adr/0276-the-pre-mix-lives-in-fan-in.md).
+device per process — is [ADR-0277](adr/0277-the-pre-mix-lives-in-fan-in.md).
 
 ## The physical path
 
@@ -106,34 +106,13 @@ between those three daemons, and the machinery that migrated a live box between
 the two, were retired under [ADR-0100](adr/0100-one-audio-transport.md).
 
 A topology the ring cannot serve does not degrade onto a second path — it
-<<<<<<< HEAD
-parks loudly: doctor FAIL, `/state.resilience.transport_park`, and one row per
+parks loudly: doctor FAIL, `/system/snapshot.transport_park`, and one row per
 park on the `/system` page, which is the only browser-facing park presentation
 ([ADR-0187](adr/0187-park-presentation-is-the-system-screen-only.md)).
-`jasper/control/transport_park.py` is the single classifier all three surfaces
-read, so they cannot name different reasons for one box. Hard-park refusals
+`jasper/control/transport_eligibility.py` is the single classifier all three
+surfaces read, so they cannot name different reasons for one box. Hard-park refusals
 that prevent guessing — a full-range program into a protected driver — are
 separate and survive: hearing safety, not transport arbitration.
-=======
-parks loudly: doctor FAIL, `/system/snapshot.transport_park`, and one row
-per park on the `/system` page naming the shape and its tracked issue. Owner
-ruling 2026-08-27: no banner — a browser learns about a park on the system
-screen and nowhere else.
-`jasper/control/transport_park.py` is the single classifier all three
-surfaces read, so they cannot name different reasons for the same box. The
-shapes it names are a passive-stereo composite sink (#2982), an explicit
-mono full-range layout (#3117), a bonded member whose `dac_content`
-round-trip lane outputd refuses against the ring (#3118), and a roleful box
-whose ACTIVE endpoint marker has not converged (a recorded remedy rather
-than an open issue). Hard-park refusals that prevent guessing — a
-full-range program into a protected driver — are separate and survive:
-they are hearing safety, not transport arbitration.
-
-Each renderer has its own snd-aloop lane, and room-correction/test
-playback has a dedicated `correction_substream` lane. `jasper-fanin` sums
-those lanes and writes Ring A for CamillaDSP and **nothing else**.
-Production AEC consumes outputd's post-Camilla speaker monitor.
->>>>>>> origin/main
 
 ## Manual source selection
 

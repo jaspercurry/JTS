@@ -33,7 +33,7 @@ format. Release tags are cut manually by a maintainer.
 - `jasper/audio_io.py` is replaced outright by `jasper/mic_capture.py` and
   `jasper/tts_playout.py`, one concern each and no compatibility shim.
 - Documentation: `docs/audio-paths.md` rewritten to the shipped topology, with
-  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0276 and
+  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0277 and
   ADR-0271.
 
 ### Removed
