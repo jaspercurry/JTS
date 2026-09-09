@@ -1053,11 +1053,6 @@ def _candidate_records() -> list[dict[str, Any]]:
     return records
 
 
-def _candidate_fingerprints(candidates: list[dict[str, Any]]) -> list[str]:
-    """Available artifact identities; capture validates each graph against this speaker."""
-    return [one["fingerprint"] for one in candidates]
-
-
 def _degree_list(block: dict[str, Any], key: str) -> list[int]:
     """One of the packet's whole-degree lists, or empty when it published none."""
 
@@ -1274,14 +1269,10 @@ def _next_commands(
         commands.append(shlex.join([
             PROG, "packet", *evidence, *(["--state", state] if state else []),
         ]))
-    candidate_ids = _candidate_fingerprints(sections["banked"]["candidates"])
-    # One candidate is not a comparison: a tournament exists to put two of them
-    # at one pose, adjacent, so the microphone moves once.
-    if len(candidate_ids) > 1:
-        commands.append(shlex.join([
-            "jasper-angle-capture", "stage",
-            "--program", "tournament", "--candidates", ",".join(candidate_ids),
-        ]))
+    # Status discovers candidates; the LLM chooses a compatible shortlist.
+    # Staging every retained artifact would turn discovery into an experiment.
+    if len(sections["banked"]["candidates"]) > 1:
+        commands.append("jasper-angle-capture plan --help")
     if not sections["staged"]["available"]:
         commands.append(
             " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])

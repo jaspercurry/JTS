@@ -142,6 +142,12 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
   box-shadow: inset 0 0 0 1px var(--primary);
 }
 .choice:disabled { opacity: 0.65; cursor: wait; }
+.segmented__btn[data-latency-pending="true"][aria-pressed="true"] {
+  background: var(--foreground-005);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.segmented__btn[data-latency-pending][aria-pressed="true"]::after { content: " ✓"; }
 .choice__title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
 .choice__body { margin-top: 4px; font-size: 12px; color: var(--muted); }
 

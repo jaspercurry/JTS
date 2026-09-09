@@ -6,9 +6,10 @@
 
 ``jasper-aec-reconcile`` is the single *writer* and
 ``jasper-aec-bridge.service`` gates on the marker's existence; ADR-0224 owns
-the why. Status surfaces (``/state.aec.bridge_ready``, ``jasper-doctor``'s AEC
-bridge row) read it here so an absent verdict is diagnosable as "no reconcile
-pass has admitted the bridge" rather than as an unexplained dead unit.
+the why. Status surfaces (the ``/aec`` endpoint's ``bridge_ready``,
+``jasper-doctor``'s AEC bridge row) read it here so an absent verdict is
+diagnosable as "no reconcile pass has admitted the bridge" rather than as an
+unexplained dead unit.
 
 The path literal is duplicated in ``deploy/bin/jasper-aec-reconcile`` and that
 unit; the agreement is pinned by ``tests/test_aec_bridge_systemd.py``.

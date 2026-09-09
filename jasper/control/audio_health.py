@@ -34,7 +34,7 @@ from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
     FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
 )
-from ..service_units import unit_failed
+from ..service_units import unit_failed, unit_not_running
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..source_intent import read_source_intents
@@ -44,7 +44,7 @@ from .airplay_health import (
     SAMPLE_INTERVAL_SEC,
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
-from .transport_park import (
+from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
@@ -114,7 +114,8 @@ _PARK_MESSAGES: dict[str, str] = {
 
 # What a park's household sentence adds when the class carries a recorded
 # command rather than a tracked issue: where the household finds it. The
-# command itself stays in doctor and `/state.resilience.transport_park` (#2472).
+# command itself stays in doctor and `/system/snapshot`'s `transport_park`
+# (#2472).
 _PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 
 # The one household-facing sentence for a stopped CamillaDSP (#2163), read by
@@ -1103,6 +1104,10 @@ def _usb_timing(
             status = "warn"
             headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
             detail = "Latency will fall after USB host timing stabilizes."
+        elif active and latency_runtime.phase == "buffer_held":
+            status = "warn"
+            headline = f"Extra buffer in use · {current_ms:.1f} ms input buffer"
+            detail = f"JTS keeps this buffer to prevent audio gaps. {preset.label} remains selected."
         elif active and latency_runtime.phase == "checking":
             status = "idle"
             headline = "Checking USB host timing"
@@ -1269,7 +1274,7 @@ def _state_issues(
                 continue
             # The park CLASS rides the key; the row's detail is THIS class's
             # household sentence. The operator's raw detail and the remedy
-            # command stay in doctor and `/state.resilience.transport_park`.
+            # command stay in doctor and `/system/snapshot`'s `transport_park`.
             park_class = str(park.get("park_class"))
             issues.append(_issue(
                 f"path.transport_park.{park_class}",
@@ -1483,55 +1488,31 @@ def _state_issues(
     return issues
 
 
-# systemd ActiveState values that mean the unit is up or on its way up.
-# Everything else — `inactive`, `deactivating`, `failed`, `maintenance` — means
-# no process is doing the unit's job right now.
-_UNIT_RUNNING_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
-
-
 def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
     """``(code, household detail)`` for a CamillaDSP unit that is not running.
 
-    ``None`` when it is running.  The code is what surfaces and tests
-    discriminate on; the detail is household copy, so the unit name, its
-    systemd state and the `journalctl` line stay in doctor's
+    ``None`` when it is running or on the way up. The code is what surfaces
+    and tests discriminate on; the detail is household copy, so the unit
+    name, its systemd state and the `journalctl` line stay in doctor's
     `check_camilla_service`, which fails on the same fact.
 
-    Deliberately WIDER than :func:`jasper.service_units.unit_failed`, which
-    only fires on `failed`/`error`/`not-found`. A cleanly stopped CamillaDSP
-    — `inactive`
-    with `result=success` — is reachable and was invisible to every surface
-    (#2163): `jasper-camilla-recover` parks the unit stopped after an
-    exhausted start-limit burst, and a kill between the coupling reconciler's
-    camilla-stop and camilla-start leaves it stopped without ever going
-    `failed` (so `OnFailure=jasper-camilla-recover` does not catch it).
-
-    Reads neither `result` nor `n_restarts`: `jasper-camilla-recover`'s
-    `park_core_graph` runs `systemctl reset-failed jasper-camilla.service`
-    immediately before stopping the unit, so it parks it with the counter
-    already cleared. Not running is the fact.
-
-    Scoped to CamillaDSP rather than generalised over the core units: the two
-    neighbours have a legitimate parked state — `jasper-outputd` parks itself
-    `inactive` through a missing-DAC `ExecCondition`, `jasper-voice` through
-    the `voice-input-absent` marker — while CamillaDSP has no `Condition*` or
-    `ExecCondition` at all and runs `Restart=always`.
-
-    Silent when systemd truth is unavailable (no `systemctl`, or before the
-    first service-state probe): unknown is not stopped.
+    Reads :func:`jasper.service_units.unit_not_running`, wider than a bare
+    `failed` check on purpose: a clean stop and a jasper-camilla-recover park
+    (#2163, ADR-0175) both count, because CamillaDSP — unlike jasper-outputd's
+    missing-DAC `ExecCondition` or jasper-voice's `voice-input-absent` marker —
+    has no `Condition*`/`ExecCondition` of its own and runs `Restart=always`.
 
     A NEVER-INSTALLED unit keeps its own code and its own remedy: reinstalling
     is the fix, and no restart can clear it.
     """
-    state = _mapping(raw_state)
-    active_state = str(state.get("active_state") or "")
-    if str(state.get("load_state") or "") in {"error", "not-found"}:
+    code = unit_not_running(_mapping(raw_state))
+    if code == "missing":
         return (
             "camilla_not_installed",
             "This speaker's sound processing is not installed, and all sound "
             "runs through it, so nothing can play. Re-run the installer.",
         )
-    if not active_state or active_state in _UNIT_RUNNING_ACTIVE_STATES:
+    if code is None or code == "starting":
         return None
     return (
         "camilla_stopped",
@@ -1856,6 +1837,8 @@ def _receiver_latency(
         mode_label = "clock adjusting"
     elif phase == "buffer_adjusting":
         mode_label = "latency adjusting"
+    elif phase == "buffer_held":
+        mode_label = "extra buffer in use"
     elif phase == "stable":
         label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
         mode_label = f"{label} latency stable"
@@ -2243,7 +2226,7 @@ def compose_audio_health(
     Both typed loosely because this module imports those layers lazily (same
     convention as ``topology`` in :func:`_transport_state`).
 
-    ``transport_park`` is ``jasper.control.transport_park.snapshot()`` (or
+    ``transport_park`` is ``jasper.control.transport_eligibility.snapshot()`` (or
     ``None`` before the first slow-cadence read), passed in rather than read
     here: the incident rows and this headline must be the SAME tick's verdict,
     and it is a file read that belongs on the slow cadence.
@@ -2684,7 +2667,7 @@ class AudioHealthSampler:
             # so a bad read lands as status="unavailable" rather than raising.
             # Imported here, not at module scope, so the name cannot shadow the
             # `transport_park` PARAMETER the composers below take.
-            from . import transport_park as transport_park_reader
+            from . import transport_eligibility as transport_park_reader
 
             self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
@@ -2830,14 +2813,14 @@ class AudioHealthSampler:
         """The transport-park verdict THIS sampler last computed.
 
         ``/state`` reads it from here rather than calling
-        ``transport_park.snapshot()`` again: the incident rows and the
+        ``transport_eligibility.snapshot()`` again: the incident rows and the
         signal-path headline in the same payload were built from this cached
         value, and a fresher read would let one response disagree with itself —
         the box parked in ``resilience`` and playing in ``audio_health``.
 
         Falls back to a fresh read only before the first slow tick.
         """
-        from . import transport_park as transport_park_reader
+        from . import transport_eligibility as transport_park_reader
 
         cached = self._transport_park
         if cached is not None:

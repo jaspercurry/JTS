@@ -24,6 +24,7 @@ from jasper.active_speaker.path_safety import (
 )
 from tests.active_speaker_fixtures import valid_camilla_config as _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.transport_camilla_fixtures import RETIRED_ALOOP_PLAYBACK_DEVICE
 
 
 _APLAY_STDOUT = """
@@ -102,7 +103,7 @@ devices:
   playback:
     type: Alsa
     channels: 2
-    device: "outputd_content_playback"
+    device: "jts_ring_playback"
 """
 
 
@@ -131,12 +132,23 @@ devices:
     channels: 2
     device: "hw:SomeDAC,0"
 """)
+    retired_lane = classify_camilla_config_text(f"""
+devices:
+  volume_limit: 0.0
+  playback:
+    channels: 2
+    device: "{RETIRED_ALOOP_PLAYBACK_DEVICE}"
+""")
 
     assert active["classification"] == "active_startup_candidate"
     assert active["active_split"]["mixer_output_channels"] == 4
     assert outputd["classification"] == "jts_outputd_stereo"
     assert custom["classification"] == "unknown_custom"
     assert custom["issues"][0]["code"] == "unknown_custom_camilla_config"
+    assert retired_lane["classification"] == "unknown_custom"
+    assert "unknown_custom_camilla_config" in {
+        issue["code"] for issue in retired_lane["issues"]
+    }
 
 
 def test_classify_active_config_blocks_playback_split_channel_mismatch() -> None:

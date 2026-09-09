@@ -6,20 +6,19 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-import numpy as np
-
-from .flat_spec import REFERENCE_BAND_HZ, evaluate_flat_spec
+from .crossover_v2.record_index import played_graph_fingerprint
+from .frequency_reference import band_limited_curve, share_run_reference
 from .frequency_view import (
     FrequencyRun,
     FrequencySeries,
-    FrequencyViewError,
     frequency_series,
 )
+from .prediction_document import frequency_run_from_capture_prediction
+from jasper.json_fields import finite_float
 
 
 def _whole_degrees(value: Any) -> int | None:
@@ -43,126 +42,8 @@ def _label(record: Mapping[str, Any], curve: Mapping[str, Any], fallback: str) -
     return " · ".join(parts) or fallback
 
 
-def _finite_float(value: Any) -> float | None:
-    if (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    ):
-        return float(value)
-    return None
-
-
 def _stored_reference_db(curve: Mapping[str, Any]) -> float | None:
-    return _finite_float(curve.get("reference_db"))
-
-
-def _band_limited_curve(curve: Mapping[str, Any]) -> tuple[Any, Any]:
-    """Apply the producer's declared valid band before a curve is exposed."""
-
-    freqs = curve.get("freqs_hz")
-    magnitude = curve.get("magnitude_db")
-    band = curve.get("band_hz")
-    if (
-        not isinstance(freqs, Sequence)
-        or isinstance(freqs, (str, bytes))
-        or not isinstance(magnitude, Sequence)
-        or isinstance(magnitude, (str, bytes))
-        or len(freqs) != len(magnitude)
-        or not isinstance(band, Sequence)
-        or isinstance(band, (str, bytes))
-        or len(band) != 2
-    ):
-        return freqs, magnitude
-    try:
-        lo_hz, hi_hz = (float(value) for value in band)
-        numeric = tuple((float(hz), float(db)) for hz, db in zip(freqs, magnitude))
-    except (TypeError, ValueError):
-        return freqs, magnitude
-    if (
-        not math.isfinite(lo_hz)
-        or not math.isfinite(hi_hz)
-        or hi_hz < lo_hz
-        or not all(math.isfinite(hz) and math.isfinite(db) for hz, db in numeric)
-    ):
-        return freqs, magnitude
-    bounded = tuple((hz, db) for hz, db in numeric if lo_hz <= hz <= hi_hz)
-    return tuple(hz for hz, _ in bounded), tuple(db for _, db in bounded)
-
-
-def _valid_band(series: FrequencySeries) -> tuple[float | None, float | None]:
-    raw = series.details.get("band_hz")
-    if (
-        not isinstance(raw, Sequence)
-        or isinstance(raw, (str, bytes))
-        or len(raw) != 2
-    ):
-        return None, None
-    try:
-        lo_hz, hi_hz = (float(value) for value in raw)
-    except (TypeError, ValueError):
-        return None, None
-    if not math.isfinite(lo_hz) or not math.isfinite(hi_hz) or hi_hz < lo_hz:
-        return None, None
-    return lo_hz, hi_hz
-
-
-def _evaluated_reference_db(series: FrequencySeries) -> float | None:
-    """Use the product's reference evaluator; do not invent a view-only zero."""
-
-    lo_hz, hi_hz = _valid_band(series)
-    try:
-        report = evaluate_flat_spec(
-            np.asarray(series.freqs_hz, dtype=float),
-            np.asarray(series.magnitude_db, dtype=float),
-            smoothing_fraction=0,
-            trusted_floor_hz=lo_hz,
-            trusted_ceiling_hz=hi_hz,
-        )
-    except (OverflowError, TypeError, ValueError):
-        return None
-    return float(report.reference_db)
-
-
-def _anchor_rank(series: FrequencySeries) -> tuple[int, float]:
-    position = series.details.get("position")
-    degrees = position.get("deg") if isinstance(position, Mapping) else None
-    distance = (
-        abs(float(degrees))
-        if isinstance(degrees, (int, float)) and not isinstance(degrees, bool)
-        else math.inf
-    )
-    role = str(series.details.get("role") or "summed")
-    return (0 if role == "summed" and distance in {0.0, math.inf} else 1, distance)
-
-
-def _share_run_reference(
-    series: Sequence[FrequencySeries],
-    run_reference_db: float | None,
-) -> tuple[FrequencySeries, ...]:
-    """Give every directly comparable curve one deterministic run reference."""
-
-    if not series:
-        return ()
-    reference_db = _finite_float(run_reference_db)
-    if reference_db is None:
-        reference_db = next(
-            (item.reference_db for item in series if item.reference_db is not None),
-            None,
-        )
-    if reference_db is None:
-        lo_hz, hi_hz = REFERENCE_BAND_HZ
-        candidates = sorted(
-            (item for item in series if any(lo_hz <= hz < hi_hz for hz in item.freqs_hz)),
-            key=_anchor_rank,
-        )
-        reference_db = _evaluated_reference_db(candidates[0]) if candidates else None
-    if reference_db is None:
-        raise FrequencyViewError(
-            "direct measurement has no stored reference and no curve overlaps "
-            f"{REFERENCE_BAND_HZ[0]:g}-{REFERENCE_BAND_HZ[1]:g} Hz"
-        )
-    return tuple(replace(item, reference_db=reference_db) for item in series)
+    return finite_float(curve.get("reference_db"))
 
 
 def _curve_nodes(value: Any, path: str = "") -> Iterable[tuple[str, Mapping[str, Any]]]:
@@ -192,6 +73,14 @@ def frequency_run_from_documents(
 ) -> FrequencyRun:
     """Adapt saved measurement or analysis JSON without knowing its producer."""
 
+    if len(documents) == 1 and documents[0].get("kind") == "jts_capture_prediction":
+        return frequency_run_from_capture_prediction(
+            run_id=run_id,
+            document=documents[0],
+            started_at=started_at,
+            state=state,
+        )
+
     series: list[FrequencySeries] = []
     seen_ids: set[str] = set()
     angles: set[int] = set()
@@ -208,7 +97,7 @@ def frequency_run_from_documents(
         if degrees is not None:
             angles.add(degrees)
         phase = str(document.get("phase") or "")
-        graph = str(document.get("graph_fingerprint") or "")
+        graph = played_graph_fingerprint(document)
         if phase:
             phases.add(phase)
         if graph:
@@ -231,7 +120,7 @@ def frequency_run_from_documents(
             fallback_label = str(
                 curve.get("label") or path.replace(".", " · ").replace("_", " ")
             )
-            freqs_hz, magnitude_db = _band_limited_curve(curve)
+            freqs_hz, magnitude_db = band_limited_curve(curve)
             item = frequency_series(
                 series_id=series_id,
                 label=_label(document, curve, fallback_label),
@@ -251,14 +140,16 @@ def frequency_run_from_documents(
                 phase=phase or None,
                 candidate_id=document.get("candidate_id"),
                 graph_fingerprint=graph or None,
-                validity_floor_hz=document.get("validity_floor_hz"),
+                validity_floor_hz=curve.get("validity_floor_hz", document.get("validity_floor_hz")),
+                gate_window_ms=curve.get("gate_window_ms", document.get("gate_window_ms", (document.get("diagnostic") or {}).get("verify_gate_window_ms") if role == "summed" else None)),
+                smoothing_fractional_octave=curve.get("smoothing_fractional_octave"),
                 band_hz=curve.get("band_hz"),
             )
             if item is not None:
                 series.append(item)
                 seen_ids.add(series_id)
 
-    normalized = _share_run_reference(series, run_reference_db)
+    normalized = share_run_reference(series, run_reference_db)
     if normalized:
         normalized = (replace(normalized[0], visible_by_default=True), *normalized[1:])
     return FrequencyRun(
