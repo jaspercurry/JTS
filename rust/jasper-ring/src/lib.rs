@@ -41,7 +41,7 @@
 //! |---|---|---|---|
 //! | 0  | magic | u32 | [`MAGIC`] `0x4A52494E` ("JRIN" LE). Written LAST during init, Release. Attach validity gate. |
 //! | 4  | version | u32 | [`VERSION`] = 1 |
-//! | 8  | rate | u32 | 48000 |
+//! | 8  | rate | u32 | [`RATE_HZ`] = 48000 |
 //! | 12 | channels | u32 | 2..=8 ([`MAX_RING_CHANNELS`]) |
 //! | 16 | sample_format | u32 | 1 = S16LE ([`SAMPLE_FORMAT_S16LE`]), 2 = S32LE ([`SAMPLE_FORMAT_S32LE`]) |
 //! | 20 | period_frames | u32 | frames per slot |
@@ -177,8 +177,9 @@ pub mod layout;
 pub mod writer;
 
 pub use layout::{
-    Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES, MIN_N_SLOTS,
-    RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE, VERSION,
+    layout_json, Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES,
+    MIN_N_SLOTS, RATE_HZ, RING_SLOTS, RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE,
+    VERSION,
 };
 pub use writer::{
     PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,
@@ -261,6 +262,12 @@ pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 const MAGIC_WAIT_TIMEOUT_MS: u64 = 100;
 const MAGIC_WAIT_STEP_US: u64 = 200;
 const OPEN_LOCK_SUFFIX: &str = ".open.lock";
+/// Adjacent lock file whose EXCLUSIVE flock a C writer holds for the life of
+/// its mapping. A Rust `RingWriter` does not take it (fan-in owns Ring A by
+/// construction), so nothing in this crate opens the path — but the C ioplug
+/// and `jasper.ring_assets` both spell it, so the declaration lives here with
+/// the rest of the ring ABI and reaches them through [`layout::layout_json`].
+pub const WRITER_LOCK_SUFFIX: &str = ".writer.lock";
 const OPEN_LOCK_MODE: u32 = 0o660;
 const OPEN_LOCK_WAIT_TIMEOUT_MS: u64 = 500;
 const OPEN_LOCK_WAIT_STEP_US: u64 = 1_000;
@@ -1496,7 +1503,7 @@ mod tests {
 
     fn proto_geometry() -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,
@@ -1752,7 +1759,7 @@ mod tests {
 
     fn wide_geometry(sample_format: u32, channels: u32) -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels,
             sample_format,
             period_frames: 128,

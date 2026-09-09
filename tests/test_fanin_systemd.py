@@ -362,7 +362,7 @@ def test_hardening_directives_present():
 def test_read_write_paths_include_jasper_state_dirs():
     """ReadWritePaths grants write access to the paths the daemon
     needs even with ProtectSystem=full. /var/lib/jasper for the
-    xrun_log ring, /run/jasper-fanin for the UDS socket."""
+    assistant volume reference, /run/jasper-fanin for the UDS socket."""
     unit = _read_unit()
     rwp_lines = [
         line.strip().split("=", 1)[1]
@@ -372,7 +372,8 @@ def test_read_write_paths_include_jasper_state_dirs():
     assert rwp_lines, "jasper-fanin.service must declare ReadWritePaths"
     rwp_combined = " ".join(rwp_lines)
     assert "/var/lib/jasper" in rwp_combined, (
-        "ReadWritePaths must include /var/lib/jasper (for xrun_history.jsonl writes)"
+        "ReadWritePaths must include /var/lib/jasper "
+        "(for assistant_volume_reference.json writes)"
     )
     assert "/run/jasper-fanin" in rwp_combined, (
         "ReadWritePaths must include /run/jasper-fanin "

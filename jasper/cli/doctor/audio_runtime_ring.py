@@ -26,7 +26,6 @@ import os
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 from ... import ring_assets
@@ -61,7 +60,6 @@ assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_
 
 REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
 REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
-REASON_SPLIT_GROUPED_DAC_CONTENT_LANE = "split_grouped_dac_content_lane"
 REASON_SPLIT_RING_UNCONSUMED = "split_ring_unconsumed"
 REASON_SPLIT_RING_UNFED = "split_ring_unfed"
 
@@ -236,28 +234,10 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
 
 
 def _transport_park_snapshot() -> dict[str, Any]:
-    """The park verdict this run, read once for the two checks that consume it."""
+    """The park verdict this run, read once through the evidence cache."""
     from ...control import transport_park
 
     return evidence.get("transport_park", transport_park.snapshot)
-
-
-def _grouped_dac_content_lane_parked() -> bool:
-    """Is this box the bonded shape whose post-DSP hop is not a ring at all?
-
-    Fail-soft to False: an unreadable topology must not silence a real split.
-    The park check's own ``unavailable`` branch reports that read failure.
-    """
-    from ...control import transport_park
-
-    try:
-        state = _transport_park_snapshot()
-    except Exception:  # noqa: BLE001 - a park read must never crash a sibling
-        return False
-    return any(
-        park.get("park_class") == transport_park.PARK_GROUPED_DAC_CONTENT_LANE
-        for park in (state.get("parks") or [])
-    )
 
 
 def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResult:
@@ -323,17 +303,8 @@ def check_content_transport_coherence() -> CheckResult:
     it would be needed.
 
     Out of scope: a box with NEITHER end on the ring (coherent; see
-    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and a
-    bonded member in either round-trip spelling — the marker-armed one plays the
-    bond off the return ring, the legacy FIFO one is
-    :func:`check_ring_transport_park`'s named park.
-
-    PER-RUNG STAND-DOWNS, not one gate over all three: the legacy-FIFO park is
-    keyed on ``JASPER_OUTPUTD_DAC_CONTENT_FIFO`` alone, so a parked box can
-    still carry a ring bridge whose path lags the marker — outputd refuses that
-    pair at startup whatever the lane is doing. It stands the SPLIT rungs down
-    (its ``direct`` bridge beside a stereo-ring graph reads as one) and leaves
-    the path rung live.
+    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and an
+    armed bonded member, which plays the bond off the return ring.
 
     The ladder moves these keys one rung at a time, so a run taken inside one
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
@@ -343,8 +314,6 @@ def check_content_transport_coherence() -> CheckResult:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from jasper.env_file import read_value
-    from jasper.env_load import OUTPUTD_ENV_PATH
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -409,17 +378,6 @@ def check_content_transport_coherence() -> CheckResult:
         f"{playback_device or '(none)'}"
     )
     if graph_on_ring != outputd_on_ring:
-        # THE SPLIT RUNGS ONLY: the legacy-FIFO member runs the `direct` bridge
-        # its writer no longer emits while its own graph still loads the stereo
-        # ring, which reads as a split about a box `check_ring_transport_park`
-        # already names. The path rung below is a different fact and stays live.
-        if _grouped_dac_content_lane_parked():
-            return CheckResult(
-                label,
-                "skipped",
-                "grouped dac_content lane; see the transport-park check",
-                reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
-            )
         if graph_on_ring:
             return _crossed_transport_pair(
                 label,
@@ -441,17 +399,13 @@ def check_content_transport_coherence() -> CheckResult:
             label, "ok", f"{pair}; no central ring path to read",
             reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
-    # The SUBJECT stays outputd.env's own text: the marker and the ring path are
+    # The SUBJECT stays outputd.env's own keys: the marker and the ring path are
     # single-writer keys of that file, and `outputd_ring_path_for` is contracted
-    # on one snapshot of the file being reconciled.
-    try:
-        outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        outputd_text = ""
-    carried = resolve_outputd_ring_path(
-        read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    derived = outputd_ring_path_for(outputd_text)
+    # on one snapshot of the file being reconciled — the per-run memo instead
+    # of a second read (ADR-0233 rule 4).
+    own_outputd_env = evidence.outputd_env() or {}
+    carried = resolve_outputd_ring_path(own_outputd_env.get(OUTPUTD_RING_PATH_ENV_VAR))
+    derived = outputd_ring_path_for(own_outputd_env)
     if carried != derived:
         return _crossed_transport_pair(
             label,
@@ -665,8 +619,8 @@ def check_ring_ioplug_provenance() -> CheckResult:
 # (``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS``, 500 ms): ``acquire_writer_lock``
 # opens the lock file FIRST and only then spins on ``flock`` until that budget
 # expires, so for up to that long a healthy box legitimately has TWO processes
-# holding an fd on one ``.writer.lock``. Pinned against the header by
-# ``tests/test_ring_slot_ceiling_pin.py``.
+# holding an fd on one ``.writer.lock``. Pinned against the generated ring ABI
+# by ``tests/test_doctor_audio_runtime_ring.py``.
 _WRITER_LOCK_CONFIRM_DELAY_SEC = 0.75
 # Resolved at CALL time below, so a test can repoint it at a synthetic tree.
 _PROC_ROOT = "/proc"
@@ -991,10 +945,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.ring_health import (
-            FANIN_ENV_PATH,
-            resolve_effective_fanin_ring_slots,
-        )
+        from jasper.fanin.ring_health import resolve_effective_fanin_ring_slots
         from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
@@ -1005,11 +956,8 @@ def check_ring_geometry_coherence() -> CheckResult:
         )
 
     # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).
-    try:
-        fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        fanin_text = ""
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
+    # Off the per-run memo instead of re-opening fanin.env (ADR-0233 rule 4).
+    resolution = resolve_effective_fanin_ring_slots(evidence.fanin_env() or {})
     if resolution.value is None:
         return CheckResult(
             label, "fail",

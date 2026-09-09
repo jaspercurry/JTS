@@ -20,6 +20,7 @@ These tests are a defensive moat around regressions like:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tests.reconcile_fixtures import fake_systemctl
@@ -198,22 +199,28 @@ def test_install_sh_creates_camilladsp_state_dirs():
     assert "install -d -m 2775 -g jasper /var/lib/camilladsp/configs" in body
 
 
-def test_install_sh_removes_legacy_v1_yml_from_upgraded_boxes():
+def test_install_removes_legacy_v1_yml_from_upgraded_boxes():
     """install.sh no longer *seeds* v1.yml (issue #2240), but a box
     upgraded from an older build still has one on disk from a prior
-    install unless install_camilladsp actively removes it. A stray
-    v1.yml is not inert: camillagui's config picker scans
-    /etc/camilladsp/*.yml and can still select it, and the install-time
-    statefile guard treats it as a flat-allowed graph — so a leftover
-    copy can point the statefile at a config that writes to the
-    now-removed pcm.jasper_out dmix."""
-    body = INSTALL_SH.read_text()
-    assert 'rm -f "${CAMILLA_CONF}/v1.yml"' in body
-    # Must live in install_camilladsp, not some other function.
-    func_start = body.index("install_camilladsp()")
-    func_end = body.index("\n}\n", func_start)
-    func_body = body[func_start:func_end]
-    assert 'rm -f "${CAMILLA_CONF}/v1.yml"' in func_body
+    install unless the deploy actively removes it. A stray v1.yml is not
+    inert: camillagui's config picker scans /etc/camilladsp/*.yml and can
+    still select it, and the install-time statefile guard treats it as a
+    flat-allowed graph — so a leftover copy can point the statefile at a
+    config that writes to the now-removed pcm.jasper_out dmix.
+
+    The removal is a row of the retirement table, not an inline rm.
+    """
+    retirements = (
+        Path(__file__).resolve().parent.parent
+        / "deploy"
+        / "lib"
+        / "install"
+        / "retirements.sh"
+    ).read_text()
+    rows = re.findall(r'^\s*"file\|([^"]*)"', retirements, re.MULTILINE)
+    targets = {target for row in rows for target in row.split("|", 1)[0].split()}
+    assert "${CAMILLA_CONF}/v1.yml" in targets, targets
+    assert "v1.yml" not in INSTALL_SH.read_text()
 
 
 def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons():

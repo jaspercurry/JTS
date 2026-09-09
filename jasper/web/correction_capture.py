@@ -6,8 +6,8 @@
 
 The layer :mod:`jasper.web.correction_handlers` route bodies and
 :mod:`jasper.web.correction_setup`'s request handler both call: the capture
-slot and its stop/position/retake signals, and the household microphone /
-calibration readers. The loop bridge it schedules onto lives one layer down,
+slot and its stop/position/retake signals, and the household microphone
+readers. The loop bridge it schedules onto lives one layer down,
 in :mod:`jasper.web.correction_runtime`.
 
 Split out of ``correction_setup``; it imports nothing from its two callers,
@@ -433,61 +433,6 @@ def _crossover_blocking_phase() -> str | None:
     return blocking_measurement_phase()
 
 
-def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
-    """Persist a just-established calibration as the household's default
-    measurement mic (``jasper.audio_measurement.household_mic``).
-
-    Called from the two points a calibration is NEWLY established —
-    ``_handle_calibration_fetch`` and ``_handle_calibration_upload`` below.
-    Handlers that merely load an already-established ``calibration_id``
-    WITHOUT the household saying so (``_handle_start``,
-    ``_handle_local_capture_setup``) do not call this, and neither does a
-    capture resolving the reference minted from this record: the household
-    record only moves on a new success.
-
-    Fail-soft: a write failure must never block the calibration that
-    triggered it. A different mic than the currently-remembered one is
-    never refused — the new success simply replaces the record (the
-    cross-session staleness guard, item 6): logged as
-    ``correction.household_mic_replaced`` rather than blocked.
-    """
-    path = household_mic.household_mic_path()
-    try:
-        new_record = household_mic.household_mic_from_calibration(record, serial=serial)
-        previous = household_mic.read_household_mic(path=path)
-        household_mic.write_household_mic(new_record, path=path)
-    except (OSError, ValueError, TypeError) as exc:
-        logger.warning(
-            "failed to persist household mic record: %r", exc, exc_info=True,
-        )
-        return
-    # A replace is any change of mic IDENTITY: the model, or — within the
-    # same model — a different physical unit (serial_hash). The hashes
-    # themselves stay out of the log line (they are stable per-unit
-    # identifiers; the event only needs to say WHAT kind of change
-    # happened), so `changed=` is the minimal discriminator.
-    changed: list[str] = []
-    if previous is not None:
-        if previous.model_key != new_record.model_key:
-            changed.append("model")
-        if previous.serial_hash != new_record.serial_hash:
-            changed.append("serial")
-    if previous is not None and changed:
-        log_event(
-            logger,
-            "correction.household_mic_replaced",
-            old_model=previous.model_key,
-            new_model=new_record.model_key,
-            changed="+".join(changed),
-        )
-    else:
-        log_event(
-            logger,
-            "correction.household_mic_saved",
-            model=new_record.model_key,
-        )
-
-
 def _default_setup_calibration_for_spec() -> Any | None:
     """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
     from the household's remembered mic.
@@ -530,11 +475,3 @@ def _default_setup_calibration_for_spec() -> Any | None:
         calibration_id=resolved.calibration_id,
         resolvable=resolvable,
     )
-
-
-def _calibration_payload(record) -> dict[str, Any]:
-    from jasper.audio_measurement import calibration
-    return {
-        "calibration": record.public_metadata(),
-        "preview": calibration.preview_curve(record.curve),
-    }

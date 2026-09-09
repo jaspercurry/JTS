@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Mapping
 
 from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
@@ -88,16 +89,17 @@ def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
     return gadget_present and usb_intent_enabled
 
 
-def combo_armed_from_env(text: str) -> bool:
+def combo_armed_from_env(env: str | Mapping[str, str]) -> bool:
     """The OBSERVED counterpart to ``combo_is_armed``'s INTENT.
 
     Reads whether ``fanin.env`` content shows the combo already armed, rather
-    than recomputing the decision — the doctor and ``/state`` both need this
-    same read of the reconciler's own output.
+    than recomputing the decision — the doctor needs this same read of the
+    reconciler's own output. Takes either raw env-file text or an
+    already-parsed mapping (e.g. a caller's cached read of the file).
     """
-    from jasper.env_file import read_value
+    from jasper.env_file import env_value
 
-    return read_value(text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+    return env_value(env, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
 
 
 def usb_combo_actions(

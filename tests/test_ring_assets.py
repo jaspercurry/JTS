@@ -16,12 +16,15 @@ from pathlib import Path
 import pytest
 
 from jasper import ring_assets
+from jasper.active_speaker.runtime_contract import MAX_RING_CHANNELS
 from jasper.fanin_coupling import (
     RING_SLOT_FRAMES,
     RING_WIRE_FORMAT_WIDE,
+    RING_WIRE_FORMATS,
     RingWire,
     resolve_ring_wire,
 )
+from tests.ring_abi import ring_abi
 
 
 def _shipped_wire(**overrides) -> RingWire:
@@ -289,64 +292,56 @@ def test_unknown_sample_format_id_is_named_honestly(tmp_path):
     assert ring_assets.read_ring_header(str(ring)).sample_format_name == "id=9"
 
 
-def test_ring_header_offsets_match_rust_layout():
-    """The Python header offsets duplicate rust/jasper-ring/src/layout.rs (no way to
-    link the Rust const). Pin them against the Rust golden layout so the two can't
-    drift silently — a change to either side must update both (the same discipline
-    as the Rust crate's own golden_layout test)."""
-    from pathlib import Path
+# --- The generated ring ABI --------------------------------------------------
+#
+# `rust/jasper-ring/layout.json` is rendered from `jasper_ring::layout` (its
+# `layout_dump` example) and OWNS every number the SHM header carries. Python is
+# a third speller of them, in a language that can link neither the Rust const nor
+# the C `#define`, and a drift here is silent in the worst possible way: the
+# parser keeps returning a coherent-looking header with fields read out of the
+# wrong words, so a live ring reads as idle or an idle one as stalled.
+#
+# The C half of the same pin lives in `c/jts-ring-ioplug/test_ring_core.c`.
 
-    layout = (
-        Path(__file__).resolve().parents[1]
-        / "rust" / "jasper-ring" / "src" / "layout.rs"
-    ).read_text(encoding="utf-8")
-    # MAGIC, HEADER_BYTES, VERSION, and the u32 field offsets we read.
-    assert "pub const MAGIC: u32 = 0x4A52_494E;" in layout
-    assert ring_assets._RING_MAGIC == 0x4A52_494E
-    assert "pub const HEADER_BYTES: usize = 128;" in layout
-    assert ring_assets._RING_HEADER_BYTES == 128
-    assert "pub const VERSION: u32 = 1;" in layout
-    assert ring_assets._RING_HEADER_VERSION == 1
-    assert "pub const OFF_VERSION: usize = 4;" in layout
-    assert ring_assets._RING_OFF_VERSION == 4
-    assert "pub const OFF_RATE: usize = 8;" in layout
-    assert ring_assets._RING_OFF_RATE == 8
-    assert "pub const OFF_CHANNELS: usize = 12;" in layout
-    assert ring_assets._RING_OFF_CHANNELS == 12
-    assert "pub const OFF_SAMPLE_FORMAT: usize = 16;" in layout
-    assert ring_assets._RING_OFF_SAMPLE_FORMAT == 16
-    assert "pub const OFF_PERIOD_FRAMES: usize = 20;" in layout
-    assert ring_assets._RING_OFF_PERIOD_FRAMES == 20
-    assert "pub const OFF_N_SLOTS: usize = 24;" in layout
-    assert ring_assets._RING_OFF_N_SLOTS == 24
-    # The two u64 RUNTIME liveness fields the stall alarm reads (P8b item 1).
-    assert "pub const OFF_WRITER_HEARTBEAT_NS: usize = 64;" in layout
-    assert ring_assets._RING_OFF_WRITER_HEARTBEAT_NS == 64
-    assert "pub const OFF_READER_HEARTBEAT_NS: usize = 80;" in layout
-    assert ring_assets._RING_OFF_READER_HEARTBEAT_NS == 80
+RING_ABI = ring_abi()
 
 
-def test_ring_sample_format_ids_match_rust_layout():
-    """The sample_format ids are HEADER FIELD VALUES compared at attach.
-
-    Python names them for a mismatch detail, so a Python-side drift would print
-    the wrong format for a real shear. The ceiling pin test asserts the C and
-    Rust copies agree; this is the third declaration.
-    """
-    from pathlib import Path
-
-    layout = (
-        Path(__file__).resolve().parents[1]
-        / "rust" / "jasper-ring" / "src" / "layout.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub const SAMPLE_FORMAT_S16LE: u32 = 1;" in layout
-    assert ring_assets.RING_SAMPLE_FORMAT_S16LE == 1
-    assert "pub const SAMPLE_FORMAT_S32LE: u32 = 2;" in layout
-    assert ring_assets.RING_SAMPLE_FORMAT_S32LE == 2
+def test_python_ring_constants_match_the_generated_abi():
+    assert ring_assets._RING_MAGIC == RING_ABI["magic"]
+    assert ring_assets._RING_HEADER_BYTES == RING_ABI["header_bytes"]
+    assert ring_assets._RING_HEADER_VERSION == RING_ABI["version"]
+    assert RING_SLOT_FRAMES == RING_ABI["ring_slot_frames"]
+    assert ring_assets.RING_CONF_N_SLOTS == RING_ABI["ring_slots"]
+    assert MAX_RING_CHANNELS == RING_ABI["max_ring_channels"]
+    assert ring_assets.RING_LIVENESS_TIMEOUT_NS == RING_ABI["writer_liveness_timeout_ns"]
+    assert ring_assets.RING_WRITER_LOCK_SUFFIX == RING_ABI["writer_lock_suffix"]
+    # Header FIELD VALUES compared field-by-field at attach: Python names them
+    # for a mismatch detail, so a drift would print the wrong format for a real
+    # shear.
+    assert ring_assets.RING_SAMPLE_FORMAT_S16LE == RING_ABI["sample_format_s16le"]
+    assert ring_assets.RING_SAMPLE_FORMAT_S32LE == RING_ABI["sample_format_s32le"]
     # The names are the ALSA tokens the conf.d and every emitter spell.
-    from jasper.fanin_coupling import RING_WIRE_FORMATS
-
     assert set(ring_assets.RING_SAMPLE_FORMAT_NAMES.values()) == set(RING_WIRE_FORMATS)
+
+
+def test_python_header_offsets_match_the_generated_abi():
+    for field, offset in {
+        "magic": ring_assets._RING_OFF_MAGIC,
+        "version": ring_assets._RING_OFF_VERSION,
+        "rate": ring_assets._RING_OFF_RATE,
+        "channels": ring_assets._RING_OFF_CHANNELS,
+        "sample_format": ring_assets._RING_OFF_SAMPLE_FORMAT,
+        "period_frames": ring_assets._RING_OFF_PERIOD_FRAMES,
+        "n_slots": ring_assets._RING_OFF_N_SLOTS,
+        "writer_epoch": ring_assets._RING_OFF_WRITER_EPOCH,
+        "write_seq": ring_assets._RING_OFF_WRITE_SEQ,
+        "read_seq": ring_assets._RING_OFF_READ_SEQ,
+        "writer_pid": ring_assets._RING_OFF_WRITER_PID,
+        "writer_heartbeat_ns": ring_assets._RING_OFF_WRITER_HEARTBEAT_NS,
+        "reader_pid": ring_assets._RING_OFF_READER_PID,
+        "reader_heartbeat_ns": ring_assets._RING_OFF_READER_HEARTBEAT_NS,
+    }.items():
+        assert offset == RING_ABI[f"off_{field}"], field
 
 
 # --- Per-box render: the conf.d slot period follows the DAC's declared floor ---
@@ -408,7 +403,9 @@ def test_render_ring_conf_wire_is_a_no_op_when_it_already_matches(tmp_path):
 
 def test_render_ring_conf_wire_moves_only_the_period_values(tmp_path):
     # Converging a drifted conf.d: every PCM block follows, and NOTHING else
-    # moves — comments, n_slots, path, type, and indentation survive verbatim.
+    # moves — comments, path, type, and indentation survive verbatim. The
+    # outputd-read blocks' n_slots is rewritten to the value it already
+    # carried; Ring A's n_slots is untouched (pinned separately below).
     conf = _drifted_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
 
@@ -434,6 +431,60 @@ def test_render_ring_conf_wire_moves_only_the_period_values(tmp_path):
         line for line in after.splitlines()
         if not line.strip().startswith("period_frames ")
     ]
+
+
+def test_render_ring_conf_wire_converges_a_drifted_slot_count(tmp_path):
+    # The depth is a property of the crate outputd links, not a per-box
+    # resolution, so a conf.d carrying any other n_slots on the outputd-read
+    # blocks declares a geometry outputd never builds — a hard ioplug attach
+    # error at arm. Both outputd-read blocks converge.
+    conf = _shipped_conf_copy(tmp_path)
+    conf.write_text(
+        conf.read_text(encoding="utf-8").replace(
+            f"n_slots {ring_assets.RING_CONF_N_SLOTS}", "n_slots 8"
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = ring_assets.render_ring_conf_wire(_shipped_wire(), conf_d=str(conf))
+
+    assert outcome.changed is True
+    for pcm in ring_assets.RING_CONF_N_SLOTS_PCMS:
+        assert (
+            ring_assets.ring_conf_n_slots(pcm, str(conf))
+            == ring_assets.RING_CONF_N_SLOTS
+        ), pcm
+    # Ring A's writer is jasper-fanin (JASPER_FANIN_RING_SLOTS), not this
+    # renderer: a coherent operator override survives the render untouched.
+    assert ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(conf)) == 8
+
+
+def test_render_ring_conf_wire_writes_a_missing_slot_count(tmp_path):
+    # An omitted n_slots is indeterminate to `ring_conf_n_slots`, not a
+    # declaration of the ioplug default, so the renderer writes the key into
+    # the outputd-read blocks rather than leaving them unreadable. Ring A's
+    # missing key is never invented — it is not this renderer's to declare.
+    conf = _shipped_conf_copy(tmp_path)
+    conf.write_text(
+        "".join(
+            line
+            for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not line.strip().startswith("n_slots ")
+        ),
+        encoding="utf-8",
+    )
+    for pcm in ring_assets.RING_CONF_PCMS:
+        assert ring_assets.ring_conf_n_slots(pcm, str(conf)) is None, pcm
+
+    outcome = ring_assets.render_ring_conf_wire(_shipped_wire(), conf_d=str(conf))
+
+    assert outcome.changed is True
+    for pcm in ring_assets.RING_CONF_N_SLOTS_PCMS:
+        assert (
+            ring_assets.ring_conf_n_slots(pcm, str(conf))
+            == ring_assets.RING_CONF_N_SLOTS
+        ), pcm
+    assert ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(conf)) is None
 
 
 def test_render_ring_conf_wire_second_pass_writes_nothing(tmp_path):
@@ -814,25 +865,6 @@ pcm.jts_ring_playback {
     channels 4
 }
 """
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("pcm.outputd_dac { type null }", "null"),
-        ('pcm.outputd_dac { type "null" }', "null"),
-        ("pcm.outputd_dac { hint { type null } type hw }", "hw"),
-        ('pcm.outputd_dac { hint { description "} type null {" } type hw }', "hw"),
-        ("pcm.outputd_dac { slave { type null } }", None),
-        ("pcm.outputd_dac { # } type null\n type hw\n}", "hw"),
-        ("# pcm.outputd_dac { type null }\npcm.outputd_dac { type hw }", "hw"),
-        ("pcm.other { type null }", None),
-        ("pcm.outputd_dac { type null", None),
-        ('pcm.outputd_dac { hint { description "unterminated } }', None),
-    ],
-)
-def test_pcm_type_belongs_to_the_named_outer_block(text, expected):
-    assert ring_assets.conf_pcm_type(text, "outputd_dac") == expected
 
 
 def test_block_parsers_survive_a_nested_brace_block(tmp_path):

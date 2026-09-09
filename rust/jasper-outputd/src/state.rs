@@ -24,8 +24,8 @@ use crate::dac_content::DacContentMetrics;
 use crate::tts::TtsMetrics;
 use crate::types::SampleFormat;
 use jasper_daemon::json::{
-    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64, push_kv_i64_opt,
-    push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt,
+    event_age_ms, json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64,
+    push_kv_i64_opt, push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt, NEVER_MS,
 };
 use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 use jasper_daemon::DaemonHooks;
@@ -40,7 +40,6 @@ const COMMAND_LIMITS: CommandLimits = CommandLimits {
     max_command_bytes: 256,
     read_timeout: Duration::from_secs(2),
 };
-const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
 const DAC_CONTENT_TRIM_DB_MIN_TENTHS: i32 = -240;
 const DAC_CONTENT_TRIM_DB_MAX_TENTHS: i32 = 0;
@@ -212,13 +211,11 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
-    // The resolved outputd content source: `direct`, `shm_ring`, or
-    // `dac_content_ring` (an armed round-trip marker, whose return lane is the
-    // whole source — no central hop attaches beside it). Published as a plain
-    // mode string; the ring's own health lives in the `shm_ring` block below and
-    // the return lane's in `dac_content`. (The rate-matched bridge that once
-    // published fill/ppm/lock counters here was deleted — see
-    // `config::REMOVED_RATE_MATCH_BRIDGE_SPELLINGS`.)
+    // The resolved outputd content source: `shm_ring`, or `dac_content_ring`
+    // (an armed round-trip marker, whose return lane is the whole source — no
+    // central hop attaches beside it). Published as a plain mode string; the
+    // ring's own health lives in the `shm_ring` block below and the return
+    // lane's in `dac_content`.
     content_bridge_mode: String,
     // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
     // `shm_ring_path` is Some iff JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; the
@@ -262,15 +259,13 @@ pub struct OutputdState {
     shm_ring_writer_pid: AtomicU64,
     shm_ring_writer_heartbeat_age_ms: AtomicU64,
     shm_ring_writer_alive: AtomicBool,
-    /// The armed round-trip lane's path, whichever transport carries it, and
-    /// which transport that is. `None` = solo.
-    dac_content_lane: Option<(&'static str, String)>,
+    /// The armed round-trip lane's ring path. `None` = solo.
+    dac_content_lane: Option<String>,
     dac_content_channel: String,
     dac_content_trim_db_tenths: AtomicI32,
     dac_content_trim_gain_bits: AtomicU32,
     dac_content_serving_fifo: AtomicBool,
     dac_content_fifo_periods: AtomicU64,
-    dac_content_open_failures: AtomicU64,
     chip_ref_sample_rate: AtomicU64,
     chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
@@ -346,7 +341,7 @@ pub struct OutputdState {
     reference_sequence: AtomicU64,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
-    // Bonded-member TTS lane (PR-2). Set once at startup when the
+    // Bonded-member TTS lane. Set once at startup when the
     // socket env is configured; the state server may briefly read
     // enabled:false before run_alsa sets it — harmless.
     tts: OnceLock<(String, TtsMetrics)>,
@@ -431,12 +426,12 @@ impl OutputdState {
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
             content_bridge_mode: config.content_bridge_mode.as_str().to_string(),
             // PROTOTYPE SHM ring reader health.
-            shm_ring_path: config.shm_ring.as_ref().map(|r| r.path.clone()),
+            shm_ring_path: config.shm_ring.clone(),
             shm_ring_slots: AtomicU64::new(
                 config
                     .shm_ring
                     .as_ref()
-                    .map(|r| r.n_slots as u64)
+                    .map(|_| u64::from(jasper_ring::RING_SLOTS))
                     .unwrap_or(0),
             ),
             shm_ring_slot_frames: AtomicU64::new(
@@ -457,11 +452,7 @@ impl OutputdState {
             shm_ring_writer_pid: AtomicU64::new(0),
             shm_ring_writer_heartbeat_age_ms: AtomicU64::new(0),
             shm_ring_writer_alive: AtomicBool::new(false),
-            dac_content_lane: config
-                .dac_content_ring
-                .clone()
-                .map(|path| ("ring", path))
-                .or_else(|| config.dac_content_fifo.clone().map(|path| ("fifo", path))),
+            dac_content_lane: config.dac_content_ring.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_trim_db_tenths: AtomicI32::new(trim_db_tenths(config.dac_content_trim_db)),
             dac_content_trim_gain_bits: AtomicU32::new(trim_gain_bits(trim_db_tenths(
@@ -469,7 +460,6 @@ impl OutputdState {
             ))),
             dac_content_serving_fifo: AtomicBool::new(false),
             dac_content_fifo_periods: AtomicU64::new(0),
-            dac_content_open_failures: AtomicU64::new(0),
             chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
             chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
@@ -827,8 +817,6 @@ impl OutputdState {
             .store(metrics.serving_fifo, Ordering::Relaxed);
         self.dac_content_fifo_periods
             .store(metrics.fifo_periods, Ordering::Relaxed);
-        self.dac_content_open_failures
-            .store(metrics.open_failures, Ordering::Relaxed);
     }
 
     /// PROTOTYPE (latency/ring-proto-shm): publish the SHM ring reader's
@@ -1122,21 +1110,18 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Multi-room round-trip lane (Increment 3) — DAEMON-TRUTH health
+        // Multi-room round-trip lane — DAEMON-TRUTH health
         // for /state + jasper-doctor (never a Python mirror of env
         // intent). enabled:false with no further fields when the lane is
         // not configured (solo — zero cost, zero noise).
         buf.push_str(r#""dac_content":{"#);
         match self.dac_content_lane.as_ref() {
-            Some((transport, path)) => {
+            Some(path) => {
                 push_kv_bool(&mut buf, "enabled", true);
                 buf.push(',');
-                push_kv_str(&mut buf, "transport", transport);
+                push_kv_str(&mut buf, "transport", "ring");
                 buf.push(',');
-                // The path under the key its transport owns. A FIFO box's block
-                // is unchanged; a ring box says `ring` rather than lying with
-                // `fifo`.
-                push_kv_str(&mut buf, transport, path);
+                push_kv_str(&mut buf, "ring", path);
                 buf.push(',');
                 push_kv_str(&mut buf, "channel", &self.dac_content_channel);
                 buf.push(',');
@@ -1153,12 +1138,6 @@ impl OutputdState {
                     "fifo_periods",
                     self.dac_content_fifo_periods.load(Ordering::Relaxed),
                 );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "open_failures",
-                    self.dac_content_open_failures.load(Ordering::Relaxed),
-                );
             }
             None => {
                 push_kv_bool(&mut buf, "enabled", false);
@@ -1167,7 +1146,7 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Bonded-member TTS lane (PR-2) — daemon truth for /state +
+        // Bonded-member TTS lane — daemon truth for /state +
         // doctor. enabled:false when the lane is off (solo: fanin owns
         // TTS) — zero noise, mirroring dac_content.
         buf.push_str(r#""tts":{"#);
@@ -1205,6 +1184,8 @@ impl OutputdState {
                 push_kv_u64(&mut buf, "tts_clients", counters.tts_clients());
                 buf.push(',');
                 push_kv_u64(&mut buf, "frame_timeouts", counters.frame_timeouts());
+                buf.push(',');
+                push_kv_u64(&mut buf, "protocol_errors", counters.protocol_errors());
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,
@@ -1501,8 +1482,8 @@ impl OutputdState {
         push_kv_bool(&mut buf, "desired", chip_ref_desired);
         buf.push(',');
         // Compatibility: existing AEC policy consumers read `enabled` as the
-        // live writer verdict. It now tells runtime truth instead of merely
-        // echoing that a PCM name was configured.
+        // live writer verdict — runtime truth, not merely that a PCM name was
+        // configured.
         push_kv_bool(&mut buf, "enabled", chip_ref_active);
         buf.push(',');
         push_kv_bool(&mut buf, "active", chip_ref_active);
@@ -1842,14 +1823,6 @@ fn subtract_saturating(value: &AtomicU64, delta: u64) {
     });
 }
 
-fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
-    if event_ms == NEVER_MS {
-        None
-    } else {
-        Some(uptime_ms.saturating_sub(event_ms))
-    }
-}
-
 fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
     if count == 0 || uptime_ms == 0 {
         return 0.0;
@@ -1876,7 +1849,9 @@ mod tests {
             sample_rate: 48_000,
             period_frames: 1024,
             dac_buffer_frames: 3072,
-            content_bridge_mode: ContentBridgeMode::Direct,
+            // The one transport, deliberately left UNATTACHED: `shm_ring:
+            // None` is what makes the default-off blocks below reachable.
+            content_bridge_mode: ContentBridgeMode::ShmRing,
             shm_ring: None,
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
@@ -1886,7 +1861,6 @@ mod tests {
             chip_ref_tee_path: None,
             reference_udp_target: None,
             control_socket_path: None,
-            dac_content_fifo: None,
             dac_content_ring: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,
@@ -1906,8 +1880,6 @@ mod tests {
         Config {
             sink_mode: SinkMode::Composite,
             // The armed composite shape: the ring endpoint, and NO content PCM.
-            // A composite on the direct bridge refuses at parse, so a composite
-            // that is running at all is a ring composite.
             ring_active_endpoint: true,
             content_channels: 4,
             dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
@@ -1967,7 +1939,7 @@ mod tests {
     #[test]
     fn state_server_wire_contract_returns_valid_json_for_status_trim_and_errors() {
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             ..test_config()
         };
@@ -2024,12 +1996,11 @@ mod tests {
         for needle in [
             r#""backend":"alsa""#,
             // The content lane's own declared/negotiated hop sits right after
-            // its pcm, mirroring `dac`. Updated deliberately when
-            // `content.format` was added: the block's prefix is the contract
+            // its pcm, mirroring `dac`. The block's prefix is the contract
             // consumers read, so a new field belongs IN this needle, not around
             // it.
             r#""content":{"source":"alsa","format":"S16_LE""#,
-            r#""content_bridge":{"mode":"direct""#,
+            r#""content_bridge":{"mode":"shm_ring""#,
             r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
             r#""period_frames":1024"#,
@@ -2064,9 +2035,8 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // PR-2 (Increment 5) UN-RETIRED the outputd TTS lane that 9102e13
-        // removed — this assertion used to pin its absence; it now pins
-        // the solo shape: present but disabled (fanin owns solo TTS).
+        // Solo shape: the tts block is present but disabled (fanin owns
+        // solo TTS).
         assert!(
             j.contains(r#""tts":{"enabled":false}"#),
             "solo tts block must be present-but-disabled in {j}"
@@ -2427,13 +2397,11 @@ mod tests {
 
     #[test]
     fn a_composite_reports_the_width_its_children_negotiated_not_a_constant() {
-        // STATUS honesty for the composite transport. Until PR-5,
-        // `RuntimeAlsaSink::dac_format` returned a hardcoded `S16Le` for this
-        // sink, so a composite that negotiated anything else reported S16_LE —
-        // to `/state`, to the doctor, and to the chip-AEC alignment identity,
-        // which certifies against `dac.format`. Both halves are asserted here:
-        // the DECLARED echo before the sink opens, and the NEGOTIATED value
-        // after, on the same composite config.
+        // STATUS honesty for the composite transport: `dac.format` must report
+        // what the children actually negotiated, not a constant — the doctor
+        // and the chip-AEC alignment identity both certify against it. Both
+        // halves are asserted here: the DECLARED echo before the sink opens,
+        // and the NEGOTIATED value after, on the same composite config.
         let state = OutputdState::new(&Config {
             declared_dac_format: SampleFormat::S32Le,
             ..dual_test_config()
@@ -2473,10 +2441,7 @@ mod tests {
         // composite answered differently would show up as a diff.
         let ring = |base: Config| Config {
             content_bridge_mode: ContentBridgeMode::ShmRing,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/active.ring".to_string(),
-                n_slots: 2,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/active.ring".to_string()),
             ..base
         };
         let coherent = OutputdState::new(&ring(test_config()));
@@ -2527,28 +2492,26 @@ mod tests {
 
         // Member (lane configured): full daemon-truth health block.
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             dac_content_trim_db: -3.5,
+            content_bridge_mode: ContentBridgeMode::DacContentRing,
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
         state.mark_dac_content(DacContentMetrics {
             serving_fifo: true,
             fifo_periods: 100,
-            open_failures: 4,
         });
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
         for needle in [
             r#""dac_content":{"enabled":true"#,
-            r#""transport":"fifo""#,
+            r#""transport":"ring""#,
             r#""trim_db":-3.5"#,
-            r#""fifo":"/run/jasper-grouping/member-content.fifo""#,
             r#""channel":"left""#,
             r#""serving_fifo":true"#,
             r#""fifo_periods":100"#,
-            r#""open_failures":4"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
@@ -2574,7 +2537,6 @@ mod tests {
         state.mark_dac_content(DacContentMetrics {
             serving_fifo: true,
             fifo_periods: 11,
-            open_failures: 0,
         });
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
@@ -2591,11 +2553,6 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // A ring box must NOT claim a FIFO path it does not have.
-        assert!(
-            !j.contains(r#""fifo":"#),
-            "ring block spelled a fifo key: {j}"
-        );
     }
 
     #[test]
@@ -2614,10 +2571,7 @@ mod tests {
         // Enabled (flag armed): full daemon-truth block, content source flips.
         let cfg = Config {
             content_bridge_mode: ContentBridgeMode::ShmRing,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/content.ring".to_string(),
-                n_slots: 2,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -2723,10 +2677,7 @@ mod tests {
             content_bridge_mode: ContentBridgeMode::ShmRing,
             content_channels: 6,
             content_format: SampleFormat::S32Le,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/content.ring".to_string(),
-                n_slots: 4,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -2756,7 +2707,7 @@ mod tests {
     #[test]
     fn dac_content_trim_can_update_live_without_restarting_outputd() {
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Right,
             dac_content_trim_db: 0.0,
             ..test_config()
@@ -2780,7 +2731,7 @@ mod tests {
         assert!(state.set_dac_content_trim_db(-1.0).is_err());
 
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             ..test_config()
         };
@@ -2816,6 +2767,7 @@ mod tests {
             r#""connections_rejected":0"#,
             r#""tts_clients":0"#,
             r#""frame_timeouts":0"#,
+            r#""protocol_errors":0"#,
             r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");

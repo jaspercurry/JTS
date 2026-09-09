@@ -258,3 +258,51 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
         monkeypatch.setenv("JASPER_LOCAL_MIC_PRESENT", local_mic)
 
     assert wake._push_to_talk_only_speaker() is expected
+
+
+# ---------------------------------------------------------------------------
+# wake recency — the /state.voice facts jasper-doctor already fetches via
+# evidence, projected onto one row
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "voice, push_to_talk_only, status, reason",
+    [
+        ({"reachable": True, "last_wake_at": None}, False,
+         "ok", "REASON_WAKE_RECENCY_FRESH"),
+        ({"reachable": True, "last_wake_at": None}, False,
+         "warn", "REASON_WAKE_RECENCY_STALE"),
+        # No real timestamp yet this daemon lifetime, but jasper-voice IS
+        # up: that's "hasn't heard one since it started", not "stale".
+        ({"reachable": True, "last_wake_at": None}, False,
+         "ok", "REASON_WAKE_RECENCY_NO_WAKE_SINCE_START"),
+        # jasper-voice down (or jasper-control unreachable): no signal to
+        # read, so "can't tell" rather than a false stale/fresh verdict.
+        ({"reachable": False, "last_wake_at": None}, False,
+         "skipped", "REASON_WAKE_RECENCY_UNKNOWN"),
+        # No wake legs by design (push-to-talk-only speaker): there is no
+        # live wake path to report recency on.
+        ({"reachable": True, "last_wake_at": None}, True,
+         "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
+    ],
+    ids=["fresh", "stale", "no-wake-since-start", "voice-unreachable", "no-legs"],
+)
+def test_check_wake_recency_verdicts(
+    monkeypatch, voice, push_to_talk_only, status, reason
+):
+    from jasper.cli.doctor._evidence import StatusRead, evidence
+
+    now = 2_000_000.0
+    if reason == "REASON_WAKE_RECENCY_FRESH":
+        voice = {**voice, "last_wake_at": now - 60.0}
+    elif reason == "REASON_WAKE_RECENCY_STALE":
+        voice = {**voice, "last_wake_at": now - (wake.WAKE_RECENCY_STALE_SEC + 1)}
+    monkeypatch.setattr(wake.time, "time", lambda: now)
+    monkeypatch.setattr(wake, "_push_to_talk_only_speaker", lambda: push_to_talk_only)
+    evidence.seed("control_state", StatusRead({"voice": voice}))
+
+    r = wake.check_wake_recency()
+
+    assert r.status == status
+    assert r.reason == getattr(wake, reason)

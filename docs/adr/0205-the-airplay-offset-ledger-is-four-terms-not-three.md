@@ -1,7 +1,11 @@
 # ADR-0205: The AirPlay offset ledger is four terms, not three
 
 - **Date:** 2026-08-31
-- **Status:** Accepted
+- **Status:** Accepted. `ring_a_frames`' first-choice term (fan-in's
+  `output.snd_pcm_delay_frames`) is superseded by
+  [ADR-0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md),
+  which deletes the field; the ring-occupancy tier below it is now the
+  first. The four-term ledger and every other term stand.
 
 ## Context
 
@@ -33,7 +37,8 @@ The ledger is four terms:
   above that baseline.
 - `ring_a_frames` / `ring_b_frames` each prefer live daemon STATUS (fan-in's
   `output.snd_pcm_delay_frames` ALSA delay, correct on a loopback box; else
-  `output.ring.occupancy * output.period_frames`, the ring's live fill;
+  `output.ring.occupancy * RING_SLOT_FRAMES` (128 — `occupancy` counts SLOTS,
+  and fan-in publishes no slot-size field), the ring's live fill;
   outputd's `shm_ring.occupancy * shm_ring.slot_frames` for Ring B), then a
   `jasper.ring_assets` parse of the shipped
   `deploy/alsa/conf.d/60-jts-ring.conf` (the production authority for that

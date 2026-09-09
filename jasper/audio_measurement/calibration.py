@@ -518,8 +518,13 @@ def store_calibration(
     dest_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
     raw_path = dest_dir / f"{calibration_id}.txt"
     metadata_path = dest_dir / f"{calibration_id}.json"
-    raw_path.write_text(text)
-    raw_path.chmod(0o600)
+    # 0640 + the parent directory's group. The registry root is installed
+    # `2770 -g jasper` and the writer (`jasper-mic-calibration`) runs under
+    # sudo, so a root-owned 0600 file is unreadable to every daemon that
+    # resolves a calibration -- silently, since both resolvers skip what they
+    # cannot read. The curve carries no secrets: the serial is stored only as
+    # a one-way hash.
+    atomic_write_text(raw_path, text, mode=0o640)
 
     record = CalibrationRecord(
         calibration_id=calibration_id,
@@ -537,8 +542,9 @@ def store_calibration(
         point_count=len(curve.freqs_hz),
         curve=curve,
     )
-    metadata_path.write_text(json.dumps(record.to_dict(), indent=2))
-    metadata_path.chmod(0o600)
+    atomic_write_text(
+        metadata_path, json.dumps(record.to_dict(), indent=2), mode=0o640,
+    )
     return record
 
 
@@ -553,25 +559,6 @@ def load_calibration_record(
         raise FileNotFoundError(f"calibration not found: {calibration_id}")
     data = json.loads(matches[0].read_text())
     return CalibrationRecord.from_dict(data)
-
-
-def preview_curve(
-    curve: CalibrationCurve,
-    *,
-    max_points: int = 80,
-) -> dict[str, list[float]]:
-    freqs = np.asarray(curve.freqs_hz, dtype=np.float64)
-    corr = np.asarray(curve.correction_db, dtype=np.float64)
-    if len(freqs) > max_points:
-        idx = np.unique(
-            np.round(np.linspace(0, len(freqs) - 1, max_points)).astype(int)
-        )
-        freqs = freqs[idx]
-        corr = corr[idx]
-    return {
-        "freqs_hz": [float(x) for x in freqs],
-        "correction_db": [float(x) for x in corr],
-    }
 
 
 UrlOpen = Callable[[urllib.request.Request | str, float], bytes]

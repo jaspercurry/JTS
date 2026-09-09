@@ -333,10 +333,11 @@ def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: P
 
 
 def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
-    with JsonStatusSocket(
+    outputd_socket = JsonStatusSocket(
         {"dac": {"snd_pcm_delay_frames": 1024}},
         name="outputd.sock",
-    ) as outputd_status:
+    )
+    with outputd_socket as outputd_status:
         rendered, _ = _render(
             tmp_path,
             """
@@ -353,43 +354,8 @@ def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
     # Camilla term 1024+1024=2048 + Ring A fallback 256 + Ring B fallback
     # 128 + live outputd DAC 1024 = 3456 / 48000 = 0.072000.
     assert "audio_backend_latency_offset_in_seconds = -0.072000;" in rendered
-
-
-def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
-    fanin_socket = JsonStatusSocket(
-        {"output": {"snd_pcm_delay_frames": 1536}},
-        name="fanin.sock",
-    )
-    outputd_socket = JsonStatusSocket(
-        {"dac": {"snd_pcm_delay_frames": 1024}},
-        name="outputd.sock",
-    )
-    with fanin_socket as fanin_status, outputd_socket as outputd_status:
-        rendered, _ = _render(
-            tmp_path,
-            """
-            devices:
-              samplerate: 48000
-              chunksize: 1024
-              queuelimit: 4
-              target_level: 2048
-            """,
-            outputd_env=_outputd_env(dac_buffer_frames=512),
-            fanin_status_socket=fanin_status,
-            outputd_status_socket=outputd_status,
-        )
-
-    # Camilla term 1024+1024=2048 + live fan-in (Ring A) output 1536 +
-    # Ring B fallback 128 + live outputd DAC 1024 = 4736 / 48000 = 0.098667.
-    assert "audio_backend_latency_offset_in_seconds = -0.098667;" in rendered
-    # One STATUS connect for outputd: it always serves Ring B's AND the DAC's
-    # fields together, so this payload distinguishes one connect (new) from
-    # main's three (occupancy, slot_frames, dac_delay, unconditionally).
-    # Fanin's connect count is NOT pinned here: this payload hits Ring A's
-    # first tier immediately, which main's per-field fetcher also does in
-    # exactly one connect — see test_airplay_renderer_prefers_live_ring_a_occupancy
-    # for the fanin pin, on the payload shape (Ring A's SECOND tier) where
-    # main provably needs three.
+    # One STATUS connect: outputd always serves Ring B's two fields AND the
+    # DAC's in one reply, never a round-trip per dotted field.
     assert len(outputd_socket.requests) == 1
 
 
@@ -724,11 +690,11 @@ def test_airplay_renderer_torn_ring_conf_falls_back_to_default(tmp_path: Path):
 
 
 def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
-    """Ring A's SECOND tier: fanin STATUS output.ring.occupancy (live
-    write_seq-read_seq depth) times output.period_frames, used when the
-    ALSA-delay field (output.snd_pcm_delay_frames — correct on a loopback
-    box) is absent, which is the ring topology's normal case (ADR-0100
-    left no playback PCM there for shairport's own snd_pcm_delay() either).
+    """Ring A's live tier: fanin STATUS output.ring.occupancy (live
+    write_seq-read_seq depth, a SLOT count) times the ring's slot size,
+    RING_SLOT_FRAMES=128. It is the only live Ring A evidence there is —
+    ADR-0100 left fan-in no playback PCM to sample, and ADR-0266 deleted the
+    ALSA-delay field that once led here.
     """
     fanin_socket = JsonStatusSocket(
         {"output": {"period_frames": 100, "ring": {"occupancy": 3}}},
@@ -739,55 +705,18 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
             tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
         )
 
-    # Labeled values, not just the tier name: occupancy*period is commutative,
-    # so an accidental occupancy<->period_frames swap at the call site would
-    # still land on the same 300 and pass an unlabeled assertion here.
-    assert (
-        "ring_a tier=live-status basis=ring-occupancy occupancy=3 period_frames=100"
-        in result.stderr
+    # Labeled values, not just the tier name: the payload carries a decoy
+    # output.period_frames (fan-in's render period, NOT the slot size), so a
+    # regression that multiplies by it again lands on 300 rather than 384.
+    assert "ring_a tier=live-status occupancy=3 slot_frames=128 frames=384" in (
+        result.stderr
     )
-    # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
-    # DAC default 3072 = 5548 / 48000.
-    assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
-    # This payload has no snd_pcm_delay_frames at all (Ring A's REAL shape on
-    # a box, per ADR-0100 — the field is null every period, unconditionally),
-    # so main's per-field fetcher provably needs three connects here (a
-    # failed delay_frames attempt, then occupancy, then period_frames) where
-    # this renderer needs one. Unlike the fanin pin dropped from
-    # test_airplay_renderer_prefers_live_fanin_output_delay (whose payload
-    # hits Ring A's first tier immediately, so main also manages one connect
-    # there), this is the payload shape that actually distinguishes them.
+    # Ring A live 3*128=384 + Camilla 2048 + Ring B default 128 + outputd
+    # DAC default 3072 = 5632 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.117333;" in rendered
+    # One STATUS connect: fanin serves both of Ring A's candidate fields in
+    # one reply, never a round-trip per dotted field.
     assert len(fanin_socket.requests) == 1
-
-
-def test_airplay_renderer_alsa_delay_beats_ring_occupancy_for_ring_a(
-    tmp_path: Path,
-):
-    """When fanin STATUS offers BOTH fields (only possible on a genuinely
-    mixed/transitional STATUS shape), the real ALSA delay wins over the
-    occupancy-derived figure — tier order matters, not just tier presence.
-    On a real loopback box output.ring is simply absent, so this pins the
-    PRECEDENCE the two-field case must resolve, not a shape that occurs on
-    a real ring or loopback box today.
-    """
-    with JsonStatusSocket(
-        {
-            "output": {
-                "snd_pcm_delay_frames": 777,
-                "period_frames": 128,
-                "ring": {"occupancy": 2},
-            }
-        },
-        name="fanin.sock",
-    ) as fanin_status:
-        rendered, result = _render(
-            tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
-        )
-
-    assert "ring_a tier=live-status basis=alsa-delay frames=777" in result.stderr
-    # 777 (ALSA delay, NOT the occupancy-derived 2*128=256) + Camilla 2048 +
-    # Ring B default 128 + outputd DAC default 3072 = 6025 / 48000.
-    assert "audio_backend_latency_offset_in_seconds = -0.125521;" in rendered
 
 
 def test_airplay_renderer_prefers_live_ring_b_occupancy(tmp_path: Path):
