@@ -59,8 +59,9 @@ def test_voice_page_links_page_css():
 def test_voice_page_has_shared_app_header():
     out = _render()
     assert_canonical_page(out)
-    assert '<h1 class="app-header__title">Voice provider</h1>' in out
+    assert '<h1 class="app-header__title">Voice</h1>' in out
     assert '<use href="#icon-back">' in out
+    assert 'href="/assistant/" aria-label="Assistant"' in out
 
 
 def test_voice_page_embeds_csrf_meta():

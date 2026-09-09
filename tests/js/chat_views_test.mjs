@@ -140,7 +140,11 @@ const { appHeader } = await loadEsm(repoPath("deploy/assets/shared/js/chrome.js"
   rewrite: [[/from "\/assets\/shared\/js\/dom.js";/, `from "file://${domPath}";`]],
 });
 
-const header = appHeader({ title: "EQ", backHref: "/sound/setup/" });
+const header = appHeader({
+  title: "EQ",
+  backHref: "/sound/setup/",
+  backLabel: "Sound setup",
+});
 assert.equal(header.tag, "header");
 assert.equal(header.className, "app-header");
 const [row] = header.children;
@@ -150,7 +154,7 @@ const [back, title, right] = row.children;
 assert.equal(back.tag, "a");
 assert.equal(back.className, "icon-button");
 assert.equal(back.attributes.href, "/sound/setup/");
-assert.equal(back.attributes["aria-label"], "Home");
+assert.equal(back.attributes["aria-label"], "Sound setup");
 const [icon] = back.children;
 assert.equal(icon.tag, "svg");
 assert.equal(icon.attributes.class, "ico");
@@ -163,5 +167,11 @@ assert.equal(right.tag, "span");
 
 const withRight = appHeader({ title: "T", right: new FakeElement("button") });
 assert.equal(withRight.children[0].children[2].tag, "button");
+
+const defaultHeader = appHeader({ title: "T" });
+assert.equal(
+  defaultHeader.children[0].children[0].attributes["aria-label"],
+  "Home",
+);
 
 console.log(JSON.stringify({ ok: true, timezone: process.env.TZ }));

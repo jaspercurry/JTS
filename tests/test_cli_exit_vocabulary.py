@@ -271,6 +271,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,
     "close-reference": _NO_CAPTURES,
+    "boundary-prior": lambda r: ["boundary-prior", str(r.measured)],
     "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
     "room-median": lambda r: ["room-median", str(r.seat)],
     "room-persistence": lambda r: ["room-persistence", str(r.seat)],

@@ -10,10 +10,10 @@
 
 import { h, svg } from "/assets/shared/js/dom.js";
 
-export function appHeader({ title, backHref = "/", right = null } = {}) {
+export function appHeader({ title, backHref = "/", backLabel = "Home", right = null } = {}) {
   return h("header.app-header", null,
     h("div.app-header__row", null,
-      h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
+      h("a.icon-button", { href: backHref, "attr:aria-label": backLabel },
         svg("svg.ico", { "aria-hidden": "true" },
           svg("use", { href: "#icon-back" }))),
       h("h1.app-header__title", null, title),

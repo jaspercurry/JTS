@@ -369,6 +369,9 @@
 .wake-row.is-unavailable:hover {
   border-color: var(--border);
 }
+.wake-row--static {
+  cursor: default;
+}
 .wake-row .wake-row__head {
   display: flex;
   align-items: center;

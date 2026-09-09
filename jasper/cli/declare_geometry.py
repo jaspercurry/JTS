@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Callable, Sequence
 
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     METERS_PER_INCH,
+    WALL_FIELD_BY_KEY,
     DeclaredGeometry,
     load_declared_geometry,
 )
@@ -48,6 +50,33 @@ def _both_units(meters: float) -> str:
     return f"{meters:.4f} m ({meters / METERS_PER_INCH:.2f} in)"
 
 
+#: The optional lengths, in the order both verbs print them: printed label and
+#: the field it is read from. The walls come from the model's own table.
+_OPTIONAL = (
+    ("ceiling height", "ceiling_height_m"),
+    *((f"{key} wall", field) for key, field in WALL_FIELD_BY_KEY.items()),
+)
+
+
+def _print_rows(rows: Sequence[tuple[str, str]]) -> None:
+    width = max((len(label) for label, _ in rows), default=0)
+    for label, value in rows:
+        print(f"  {label:<{width}} {value}")
+
+
+def _print_optional(
+    geometry: DeclaredGeometry, *, units: Callable[[float], str], absent: str | None,
+) -> None:
+    """The optional lengths; an undeclared one prints ``absent`` or nothing."""
+    rows = []
+    for label, field in _OPTIONAL:
+        metres = getattr(geometry, field)
+        value = units(metres) if metres is not None else absent
+        if value is not None:
+            rows.append((f"{label}:", value))
+    _print_rows(rows)
+
+
 def _print_derived(geometry: DeclaredGeometry) -> None:
     """The two derived lines, labelled with the distance they were derived at.
 
@@ -57,23 +86,22 @@ def _print_derived(geometry: DeclaredGeometry) -> None:
     to expect these digits on every row.
     """
     at = f"at declared distance {geometry.distance_m:.4f} m; captures use their own"
-    rows = (
+    _print_rows((
         (f"first bounce ({at}):", f"{geometry.first_bounce_s() * 1000:.3f} ms"),
         (f"entanglement floor ({at}):", f"{geometry.entanglement_floor_hz():.1f} Hz"),
-    )
-    width = max(len(label) for label, _ in rows)
-    for label, value in rows:
-        print(f"  {label:<{width}} {value}")
+    ))
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-declare-geometry",
         description=(
-            "Declare measurement rig geometry (speaker/mic heights, distance, "
-            "optional ceiling) so entanglement_floor_hz has a provenance-"
+            "Declare measurement rig geometry: speaker/mic heights, distance "
+            "and optional ceiling, so entanglement_floor_hz has a provenance-"
             "labeled, non-measured source on rigs where the measured "
-            "reflection finder structurally never fires -- see issue #3502."
+            "reflection finder structurally never fires (issue #3502); and "
+            "optional front/side wall distances, which only the "
+            "jasper-round-views boundary-prior model reads."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -83,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_unit_pair(set_parser, "mic-height", required=True, label="microphone height")
     add_unit_pair(set_parser, "distance", required=True, label="speaker-to-mic distance")
     add_unit_pair(set_parser, "ceiling-height", required=False, label="ceiling height (optional)")
+    add_unit_pair(set_parser, "front-wall", required=False,
+                  label="speaker baffle to the wall behind it (optional)")
+    add_unit_pair(set_parser, "side-wall", required=False,
+                  label="speaker to the nearest side wall (optional)")
     set_parser.add_argument(
         "--path", default=DEFAULT_PATH,
         help=f"override the stored file location (default: {DEFAULT_PATH})",
@@ -105,6 +137,8 @@ def _cmd_set(args: argparse.Namespace) -> int:
             mic_height_m=_required_meters(args, "mic-height"),
             distance_m=_required_meters(args, "distance"),
             ceiling_height_m=unit_pair_meters(args, "ceiling-height"),
+            front_wall_m=unit_pair_meters(args, "front-wall"),
+            side_wall_m=unit_pair_meters(args, "side-wall"),
         )
     except ValueError as exc:
         print(f"jasper-declare-geometry: refused: {exc}", file=sys.stderr)
@@ -126,8 +160,7 @@ def _cmd_set(args: argparse.Namespace) -> int:
     print(f"  speaker height: {geometry.speaker_height_m:.4f} m")
     print(f"  mic height:     {geometry.mic_height_m:.4f} m")
     print(f"  distance:       {geometry.distance_m:.4f} m")
-    if geometry.ceiling_height_m is not None:
-        print(f"  ceiling height: {geometry.ceiling_height_m:.4f} m")
+    _print_optional(geometry, units=lambda metres: f"{metres:.4f} m", absent=None)
     _print_derived(geometry)
     return EXIT_OK
 
@@ -146,10 +179,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  speaker height: {_both_units(geometry.speaker_height_m)}")
     print(f"  mic height:     {_both_units(geometry.mic_height_m)}")
     print(f"  distance:       {_both_units(geometry.distance_m)}")
-    if geometry.ceiling_height_m is not None:
-        print(f"  ceiling height: {_both_units(geometry.ceiling_height_m)}")
-    else:
-        print("  ceiling height: not declared")
+    _print_optional(geometry, units=_both_units, absent="not declared")
     _print_derived(geometry)
     print("  provenance: declared by the operator, not measured -- see #3502")
     return EXIT_OK

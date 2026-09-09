@@ -92,7 +92,7 @@ def _bell(freq_hz: float, center_hz: float, depth_db: float, sigma: float) -> fl
     return depth_db * math.exp(-((math.log2(freq_hz / center_hz)) / sigma) ** 2)
 
 
-def _room_median(*, present: int = 5) -> dict[str, Any]:
+def _room_median(*, present: int = 5, window: str = "ungated") -> dict[str, Any]:
     """One round's median document: 1/12-octave, 20 Hz to just under 400.
 
     ``present`` is how many of the seats see the dip at :data:`DIP_HZ`; the
@@ -130,7 +130,7 @@ def _room_median(*, present: int = 5) -> dict[str, Any]:
         ],
         "ceiling_hz": CEILING_HZ,
         "ceiling_source": "applied_candidate",
-        "window": "ungated",
+        "window": window,
     }
 
 
@@ -254,8 +254,18 @@ def test_a_median_whose_rows_do_not_match_its_grid_is_not_evidence():
             id="a_side_this_speaker_does_not_declare",
         ),
         pytest.param(
+            SIDE_MALFORMED,
+            {"sides": {"mono": ACCEPTED_FILTERS, " mono ": ACCEPTED_FILTERS}},
+            {},
+            id="one_side_named_twice_around_whitespace",
+        ),
+        pytest.param(
             ROOM_MEDIAN_MISMATCH, {"sha256": "b" * 64}, {},
             id="answers_a_different_median",
+        ),
+        pytest.param(
+            ROOM_MEDIAN_UNAVAILABLE, {}, {"window": "gated"},
+            id="a_median_the_gate_measured_instead_of_the_room",
         ),
     ],
 )

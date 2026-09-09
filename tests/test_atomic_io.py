@@ -804,3 +804,74 @@ def test_locked_transform_serializes_concurrent_read_modify_writes(tmp_path):
     from jasper.atomic_io import _parse_env_text
     final = _parse_env_text(path.read_text(encoding="utf-8"))
     assert final == {f"K{i}": str(i) for i in range(n)}  # nothing lost
+
+
+def test_locked_upsert_preserves_the_targets_owner_and_surrounding_text(
+    tmp_path, monkeypatch
+):
+    """The reconcilers' shared writer republishes an EXISTING env file in
+    place: comments/order survive the edit, and so does the owner install gave
+    it (``root:jasper 0640`` inside a ``root:root`` directory — republished by
+    parent group alone it would revert to root and lock the non-root status
+    daemons out). The MODE is still asserted, which is what repairs a file
+    another writer left too narrow. Real chown needs root, so this pins the
+    CALL."""
+    from jasper.atomic_io import locked_upsert_env_file
+
+    path = tmp_path / "outputd.env"
+    path.write_text("# owned by the reconciler\nKEEP=yes\nDROP=1\n", encoding="utf-8")
+    path.chmod(0o600)
+    target = path.stat()
+
+    chowns: list[tuple[int, int]] = []
+    real_chown = os.chown
+
+    def spy(p, uid, gid):
+        chowns.append((uid, gid))
+        return real_chown(p, uid, gid)
+
+    monkeypatch.setattr(atomic_io_module.os, "chown", spy)
+    text, changed = locked_upsert_env_file(
+        path, lambda _cur: [("NEW", "1"), ("DROP", None)], mode=0o640
+    )
+
+    assert changed is True
+    assert chowns == [(target.st_uid, target.st_gid)]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert text == path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8") == (
+        "# owned by the reconciler\nKEEP=yes\nNEW=1\n"
+    )
+
+
+def test_locked_upsert_reports_a_non_utf8_target_as_an_os_error(tmp_path):
+    """SD-card bit rot must reach the caller's designed write-failure path, not
+    escape as a UnicodeDecodeError traceback; the file is left alone."""
+    from jasper.atomic_io import locked_upsert_env_file
+
+    path = tmp_path / "outputd.env"
+    path.write_bytes(b"KEEP=\xff\xfe\n")
+
+    with pytest.raises(OSError) as caught:
+        locked_upsert_env_file(path, lambda _cur: [("NEW", "1")])
+
+    assert not isinstance(caught.value, UnicodeError)
+    assert path.read_bytes() == b"KEEP=\xff\xfe\n"
+
+
+def test_locked_upsert_publishes_an_emptied_file_unless_asked_to_delete_it(tmp_path):
+    """The two callers differ here and both are load-bearing: the audio-hardware
+    reconciler matches ``jasper_env_file_unset``'s zero-byte publish, the
+    coupling reconciler unlinks."""
+    from jasper.atomic_io import locked_upsert_env_file
+
+    for delete, exists in ((False, True), (True, False)):
+        path = tmp_path / f"delete-{delete}.env"
+        path.write_text("ONLY=1\n", encoding="utf-8")
+        text, changed = locked_upsert_env_file(
+            path, lambda _cur: [("ONLY", None)], delete_when_empty=delete
+        )
+        assert (text, changed) == ("", True)
+        assert path.exists() is exists
+        if exists:
+            assert path.read_bytes() == b""

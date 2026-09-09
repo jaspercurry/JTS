@@ -57,6 +57,8 @@ def test_set_then_show_round_trips_the_declared_geometry(tmp_path):
                 "--mic-height-m": 0.5,
                 "--distance-m": 1.2,
                 "--ceiling-height-m": 2.4,
+                "--front-wall-m": 0.85,
+                "--side-wall-m": 1.4,
             },
         )
     )
@@ -68,6 +70,7 @@ def test_set_then_show_round_trips_the_declared_geometry(tmp_path):
     loaded = DeclaredGeometry.load(path)
     assert loaded == DeclaredGeometry(
         speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
+        front_wall_m=0.85, side_wall_m=1.4,
     )
 
 

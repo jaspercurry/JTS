@@ -432,3 +432,15 @@ def test_the_room_scope_refuses_what_it_cannot_prove(tuning_profile, candidate, 
             tuning_profile, scope="room_candidate", candidate=candidate(tuning_profile),
         )
     assert exc.value.reason == reason
+
+
+def test_the_candidate_scope_refuses_a_candidate_carrying_a_room_layer(tuning_profile):
+    """The plain-candidate graph emits no room PEQs, so a room candidate
+    compiled under it would be captured as a graph missing part of itself."""
+
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(
+            tuning_profile, scope="candidate",
+            candidate=_room_candidate(tuning_profile),
+        )
+    assert exc.value.reason == "measurement_candidate_room_scope"

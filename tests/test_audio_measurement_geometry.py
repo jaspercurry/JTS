@@ -13,6 +13,7 @@ participation rule, field-level validation bounds, and the JSON round trip.
 """
 from __future__ import annotations
 
+import cmath
 import json
 import math
 
@@ -24,13 +25,17 @@ from jasper.audio_measurement.gating import (
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.measurement_geometry import (
+    BOUNDARY_PRIOR_NULL_FLOOR_DB,
     MAX_CEILING_M,
     MAX_DISTANCE_M,
     MAX_HEIGHT_M,
+    MAX_WALL_M,
     MIN_DISTANCE_M,
     MIN_HEIGHT_M,
+    MIN_WALL_M,
     DeclaredGeometry,
     GeometryFieldError,
+    boundary_prior,
     declared_first_bounce_s,
     load_declared_geometry,
 )
@@ -136,6 +141,26 @@ def test_a_low_ceiling_wins_the_minimum_over_the_floor():
             "ceiling_height_m",
             id="ceiling_above_max",
         ),
+        pytest.param(
+            {
+                "speaker_height_m": 0.84,
+                "mic_height_m": 0.84,
+                "distance_m": 1.0,
+                "front_wall_m": MIN_WALL_M - 0.01,
+            },
+            "front_wall_m",
+            id="front_wall_below_min",
+        ),
+        pytest.param(
+            {
+                "speaker_height_m": 0.84,
+                "mic_height_m": 0.84,
+                "distance_m": 1.0,
+                "side_wall_m": MAX_WALL_M + 0.01,
+            },
+            "side_wall_m",
+            id="side_wall_above_max",
+        ),
     ],
 )
 def test_out_of_range_fields_are_refused_and_named(kwargs, bad_field):
@@ -174,6 +199,10 @@ _ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
         pytest.param({"distance_m": "tall"}, "distance_m", id="not_a_number"),
         pytest.param({"distance_m": float("nan")}, "distance_m", id="nan"),
         pytest.param({"ceiling_height_m": float("inf")}, "ceiling_height_m", id="inf"),
+        pytest.param(
+            {"front_wall_m": 0.85, "side_wall_m": 1.4}, "", id="with_walls",
+        ),
+        pytest.param({"side_wall_m": 0.0}, "side_wall_m", id="wall_zero_is_not_absent"),
     ],
 )
 def test_the_dict_round_trip_is_exact_and_refuses_what_is_not_a_length(
@@ -200,6 +229,7 @@ def test_save_load_round_trip_including_provenance(tmp_path):
     path = tmp_path / "measurement_geometry.json"
     geometry = DeclaredGeometry(
         speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
+        front_wall_m=0.85, side_wall_m=1.4,
     )
     geometry.save(path)
 
@@ -219,6 +249,59 @@ def test_save_load_round_trip_without_ceiling(tmp_path):
     loaded = DeclaredGeometry.load(path)
     assert loaded == geometry
     assert loaded.ceiling_height_m is None
+    assert loaded.front_wall_m is None
+    assert loaded.side_wall_m is None
+
+
+def test_the_boundary_prior_states_the_image_source_sum_for_a_declared_wall():
+    """A 0.85 m front wall, against the image source itself.
+
+    The expected level is the two-source sum ``|1 + exp(-j 2 pi f 2d/c)|``,
+    evaluated here in complex arithmetic rather than through the closed form
+    the module reduces it to, so agreeing is evidence rather than tautology.
+    """
+    distance_m, speed = 0.85, DEFAULT_SOUND_SPEED_M_S
+    grid_hz = [20.0, speed / (4.0 * distance_m), speed / (2.0 * distance_m)]
+
+    prior = boundary_prior(grid_hz, walls={"front": distance_m})
+
+    front = prior["walls"]["front"]
+    assert front["distance_m"] == pytest.approx(distance_m)
+    assert front["f_null_hz"] == pytest.approx(100.9, abs=0.1)
+    # Half the +6 dB rise, in dB, is where 2|cos| = sqrt(2): half the null.
+    assert front["f_half_gain_hz"] == pytest.approx(front["f_null_hz"] / 2.0)
+    assert prior["sound_speed_m_s"] == pytest.approx(speed)
+    assert prior["sound_speed_source"] == "default"
+    assert prior["freqs_hz"] == pytest.approx(grid_hz)
+
+    at_20_hz_db = 20.0 * math.log10(
+        abs(1.0 + cmath.exp(-2j * math.pi * 20.0 * 2.0 * distance_m / speed))
+    )
+    assert prior["prior_db"][0] == pytest.approx(at_20_hz_db, abs=1e-9)
+    assert prior["prior_db"][0] == pytest.approx(5.59, abs=0.01)
+    # Already within half a dB of the +6.02 dB 2-pi asymptote at 20 Hz.
+    assert prior["prior_db"][0] > 6.0206 - 0.5
+    # The quarter-wave null is clamped; the half-wave sum is +6 dB again.
+    assert prior["prior_db"][1] == BOUNDARY_PRIOR_NULL_FLOOR_DB
+    assert prior["prior_db"][2] == pytest.approx(6.0206, abs=1e-3)
+
+
+def test_wall_curves_add_in_db_and_no_wall_is_no_curve():
+    """Adding the per-wall dB curves multiplies their magnitudes -- the corner
+    image-source sum; no wall is no claim, not a flat one."""
+    grid_hz = [30.0, 60.0, 120.0]
+    front = boundary_prior(grid_hz, walls={"front": 0.85})
+    side = boundary_prior(grid_hz, walls={"side": 1.4})
+
+    both = boundary_prior(grid_hz, walls={"front": 0.85, "side": 1.4})
+    assert both["prior_db"] == pytest.approx(
+        [f + s for f, s in zip(front["prior_db"], side["prior_db"])]
+    )
+
+    none = boundary_prior(grid_hz, walls={})
+    assert none["walls"] == {}
+    assert none["freqs_hz"] == []
+    assert none["prior_db"] == []
 
 
 def test_load_of_a_missing_file_raises_file_not_found(tmp_path):

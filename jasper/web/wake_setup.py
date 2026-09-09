@@ -480,7 +480,7 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
     active_cls = " is-active" if is_active else ""
     active_badge = '<span class="badge badge--ok">active</span>' if is_active else ""
     return f"""
-<label class="wake-row{active_cls}" style="cursor:default">
+<label class="wake-row wake-row--static{active_cls}">
   <div class="wake-row__head">
     <input type="radio" name="model" value="__custom__" checked disabled>
     <span class="wake-row__label">Custom: {html.escape(model)}</span>
@@ -534,7 +534,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     # csrf_field_html(). The page's behaviour ships as the ES module at
     # /assets/wake/js/main.js — no inline <script>.
     body = f"""
-{canonical_header("Wake word")}
+{canonical_header("Wake word", back_href="/assistant/", back_label="Assistant")}
 {pair_banner_html()}
 <main class="page">
   {_mic_status_card_html()}

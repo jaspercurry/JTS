@@ -34,6 +34,7 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_FLOOR_HZ,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
+    ROOM_MEDIAN_WINDOW,
 )
 from jasper.audio_measurement.room_limits import (
     ROOM_MAX_FILTER_BOOST_DB,
@@ -265,6 +266,12 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
     source = raw.get("ceiling_source")
     if source not in CEILING_SOURCES:
         _unavailable(f"ceiling_source must be one of {sorted(CEILING_SOURCES)}")
+    window = raw.get("window")
+    if window != ROOM_MEDIAN_WINDOW:
+        _unavailable(
+            f"a room median must be read {ROOM_MEDIAN_WINDOW}, got {window!r}",
+            window=window,
+        )
 
     positions = raw.get("positions")
     if isinstance(positions, (str, bytes)) or not isinstance(positions, Sequence):
@@ -519,6 +526,12 @@ def _parse_sides(raw: Any) -> dict[str, tuple[dict[str, Any], ...]]:
         side = " ".join(str(name).split())
         if not side:
             _refuse(SIDE_MALFORMED, "a side name must be non-blank")
+        if side in sides:
+            _refuse(
+                SIDE_MALFORMED,
+                f"side {side!r} is named more than once",
+                side=side,
+            )
         if isinstance(entries, (str, bytes)) or not isinstance(entries, Sequence):
             _refuse(SIDE_MALFORMED, f"side {side!r} must carry a list of filters")
         sides[side] = tuple(

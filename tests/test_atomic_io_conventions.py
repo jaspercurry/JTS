@@ -47,6 +47,14 @@ _ALLOWLIST = {
     "jasper/net/wifi_guardian_persistence.py",
     # Plain burn-down candidate (Path.replace hand-rolls).
     "jasper/audio_measurement/playback.py",
+    # Deliberately different — KEEP. Neither site RENDERS the bytes it
+    # publishes, which is all atomic_write_text can do: the outputd.env
+    # candidate is filled over a whole pass (and each of those writes DOES go
+    # through atomic_write_text) and published only once a validator accepts
+    # it, and the asound template is filled by the shared bash renderer and
+    # published only once `jasper-render-asound-conf` accepts it. The rename is
+    # the publish step of a stage-validate-publish, not a hand-rolled write.
+    "jasper/audio_hardware/reconcile.py",
 }
 
 

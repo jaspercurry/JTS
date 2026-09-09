@@ -171,7 +171,7 @@ def _index_html(csrf_token: str = "") -> bytes:
         'target="_blank" rel="noopener">Guide</a>'
     )
     body = f"""
-{canonical_header("Tools", right_html=guide_link)}
+{canonical_header("Tools", back_href="/assistant/", back_label="Assistant", right_html=guide_link)}
 <main class="page">
   <div class="tools-search">
     <input type="search" id="tools-search" placeholder="Search tools&hellip;"

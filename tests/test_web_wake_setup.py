@@ -74,8 +74,9 @@ def test_render_emits_app_header():
     html = _render()
     assert 'class="app-header"' in html
     assert 'class="app-header__title"' in html
-    # Back affordance to home, using the shared icon sprite.
+    # Back affordance to the Assistant hub, using the shared icon sprite.
     assert "#icon-back" in html
+    assert 'href="/assistant/" aria-label="Assistant"' in html
 
 
 def test_render_carries_csrf_meta_and_form_field():
