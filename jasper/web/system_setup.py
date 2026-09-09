@@ -50,15 +50,14 @@ from typing import Any
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
+    dispatch_get,
+    dispatch_post,
     forward_control_token_headers,
     proxy_get,
     proxy_post,
-    reject_csrf,
     route_path,
     send_html_response,
     send_proxy_json,
-    guard_read_request,
-    guard_mutating_request,
 )
 from .chrome import canonical_page
 
@@ -188,23 +187,10 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802
             # nginx strips the /system/ prefix so we see paths like
             # "/" and "/data.json".
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="header")
 
     return Handler
 

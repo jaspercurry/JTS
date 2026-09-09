@@ -64,12 +64,10 @@ from ..env_file import write_env_file
 from . import rooms_peers
 from ._common import (
     begin_request,
-    guard_read_request,
-    guard_mutating_request,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
     read_json_body,
     restart_voice_daemon,
-    route_path,
     restart_systemd_units,
     send_html_response,
     send_json_response,
@@ -1186,7 +1184,6 @@ def _get_index(handler: BaseHTTPRequestHandler) -> None:
     send_html_response(handler, _render_page(csrf_token=ctx["csrf_token"]))
 
 
-# Unknown paths must return 404 before the read or CSRF guards run.
 _GET_ROUTES = {
     "/": _get_index,
     "/rooms.json": _get_rooms_json,
@@ -1208,29 +1205,12 @@ class _Handler(BaseHTTPRequestHandler):
         logger.info("rooms-wizard: " + fmt, *args)
 
     def do_GET(self):  # noqa: N802
-        handler_fn = _GET_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
-            return
-        if not guard_read_request(self):
-            return
-        handler_fn(self)
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self):  # noqa: N802
-        # Route-check BEFORE the CSRF guard (project convention): a bogus
-        # path 404s without revealing CSRF state.
-        handler_fn = _POST_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
-            return
-        # JSON fetch POST: guard_mutating_request checks the Host/Origin
-        # and the X-CSRF-Token header (no form). Mirrors system_setup.
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
-        handler_fn(self)
+        # JSON fetch POSTs: the token rides in the X-CSRF-Token header, so
+        # the dispatcher guards them all. Mirrors system_setup.
+        dispatch_post(self, _POST_ROUTES, guard="header")
 
 
 def _make_handler():

@@ -81,7 +81,6 @@ import importlib.util
 import json
 import logging
 import os
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -94,8 +93,11 @@ from ..env_file import read_env_file
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
+    RouteFn,
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     form_guarded,
     forward_control_token_headers,
     header_guarded,
@@ -108,7 +110,6 @@ from ._common import (
     send_html_response,
     send_proxy_json,
     send_see_other,
-    guard_read_request,
 )
 from .chrome import canonical_header, canonical_page, toggle_html
 
@@ -746,9 +747,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # closure so the bodies can close over `cfg`. The POST guard varies by
     # route — /save's CSRF token rides in the form body, every JSON route's
     # in the X-CSRF-Token header — so each body declares its own guard by
-    # decorator and the dispatcher does not guard. /layer/<name> is
-    # prefix-matched rather than an exact path, so it stays a special case
-    # ahead of the table.
+    # decorator and the dispatcher does not guard.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         state = _load_state(cfg["state_path"])
         ctx = begin_request(handler)
@@ -978,6 +977,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         "/save": _post_save,
     }
 
+    def _resolve_layer(path: str) -> RouteFn | None:
+        """`/layer/<name>` is prefix-matched, so it rides the seam's
+        resolve hook rather than an exact table key."""
+        if path.startswith("/layer/") and path[len("/layer/"):] in _VALID_LAYERS:
+            return _post_layer
+        return None
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
@@ -995,27 +1001,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             return body
 
         def do_GET(self) -> None:  # noqa: N802
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            path = route_path(self.path)
-            if path.startswith("/layer/"):
-                if path[len("/layer/"):] not in _VALID_LAYERS:
-                    self.send_error(HTTPStatus.NOT_FOUND)
-                    return
-                _post_layer(self)
-                return
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(
+                self, _POST_ROUTES, guard="per-body", resolve=_resolve_layer,
+            )
 
     return Handler
 

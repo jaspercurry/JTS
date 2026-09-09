@@ -23,7 +23,6 @@ import html
 import logging
 import re
 from collections.abc import Mapping
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -47,12 +46,12 @@ from ..source_intent import kick_source_reconcile
 from ._common import (
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     form_guarded,
-    route_path,
     send_html_response,
     send_rejected_form,
     send_see_other,
-    guard_read_request,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page
 from ._service_state import unit_active as _unit_active
@@ -516,20 +515,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 

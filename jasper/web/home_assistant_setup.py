@@ -60,7 +60,6 @@ import html
 import json
 import logging
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -70,6 +69,8 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     form_guarded,
     header_guarded,
     read_guarded,
@@ -1234,29 +1235,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            path = route_path(self.path)
-            if path == "/reset":
+            if route_path(self.path) == "/reset":
                 # A GET that mutates: it must not be reachable by a
                 # cross-site top-level navigation, so its guard variant
-                # differs from the table's and it stays a special case.
+                # differs from the seam's and it stays a special case.
                 if not guard_read_request(self, allow_cross_site_navigation=False):
                     return
                 _get_reset(self)
                 return
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 
