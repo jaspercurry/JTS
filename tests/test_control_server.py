@@ -785,7 +785,7 @@ def _peering_env(monkeypatch):
     """Stub peering config, reset `_peering_task` around the test, and hand
     back the modules so the test can install its own FakePeeringDaemon on
     `peering_daemon_mod.PeeringDaemon`."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
     import jasper.peering as peering_pkg
     import jasper.peering.daemon as peering_daemon_mod
 
@@ -912,7 +912,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     fail-LOUD-invalid configs all resolve to None (local handling)."""
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         effective_role, "read_effective_role_status", lambda: {},
@@ -931,7 +931,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
 
 
 def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
 
@@ -972,7 +972,7 @@ class _FakeUpstream:
 def follower_server(monkeypatch, server_with_coordinator):
     """The coordinator server, with this speaker patched into an active
     bonded follower and the upstream leader call captured."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
@@ -1042,7 +1042,7 @@ def test_follower_forward_loop_is_broken(follower_server):
 def test_follower_forward_failure_is_502_with_leader_named(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
@@ -1067,7 +1067,7 @@ def test_follower_forward_relays_leader_http_verdict(
     JSON body, pair_leader-tagged) — never mislabeled 'unreachable'. Only
     transport failures take the 502 path."""
     import io
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",

@@ -57,11 +57,10 @@ def diagnostics_snapshot(monkeypatch, tmp_path):
     starts from "nothing running" or its own start would be swallowed.
     """
     import jasper.control.handlers.system as system_routes
-    import jasper.control.server as srv_mod
 
     path = tmp_path / "doctor-result.json"
     monkeypatch.setattr(system_routes, "DOCTOR_RESULT_PATH", str(path))
-    monkeypatch.setattr(srv_mod, "_diagnostics_refresh_started_at", None)
+    monkeypatch.setattr(system_routes, "_diagnostics_refresh_started_at", None)
 
     def write(payload: dict, *, age_seconds: float = 0.0) -> Path:
         body = dict(payload)
@@ -185,7 +184,7 @@ def test_diagnostics_refresh_starts_only_while_none_is_in_flight(
     expected_starts: int,
     expected_refreshing: bool,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as srv_mod
 
     diagnostics_snapshot(
         {"fails": 0, "warns": 0, "results": []}, age_seconds=age_seconds,
@@ -214,7 +213,7 @@ def test_a_run_that_died_without_writing_reopens_the_refresh_window(
     """A oneshot OOM-killed or crashed before it wrote leaves no snapshot, so
     the elapsed-time test alone would hold the window for its full ceiling with
     no retry. Systemd is the authority on whether it is still running."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as srv_mod
 
     diagnostics_snapshot({"fails": 0, "warns": 0, "results": []}, age_seconds=120.0)
     monkeypatch.setattr(
@@ -1586,7 +1585,7 @@ def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, mo
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):
     """The dashboard's restart-voice button must not boot the parked
     daemon on a bonded follower — refuse with the pair story."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
     base, _fake = server_with_coordinator
@@ -1664,7 +1663,7 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
 ):
     """restart-audio on a follower touches only the units the profile
     keeps alive (camilla) — never parked source resources."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
     calls = _record_broker(monkeypatch)
