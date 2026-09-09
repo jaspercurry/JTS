@@ -311,6 +311,13 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 05:25Z: #4567 (LLM client retire) fix commit `2d96efeec` pushed
+  (doctor privsep rows, prose, envelope v10 log line, prohibited-keys pin);
+  review comment posted; merges on green. Follow-up parked: `usage.py` ~770
+  still describes a tuning DB no writer creates (ledger consolidation).
+  Process note from the owner: Sonnet does read-only verification (claim
+  checks, CI triage, collision maps); Opus does design review and fixes;
+  the orchestrator adjudicates and merges.
 - 2026-09-09 04:55Z: Bass wizard retired: PR #4563 squash-merged at `7ef2adbef`
   after the fix commit (tripwire, reentrant refusal pin, `LADDER_INCOMPLETE`
   dropped). #4567 (LLM client) awaits its fix commit and CI.
