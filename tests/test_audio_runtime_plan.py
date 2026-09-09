@@ -514,22 +514,23 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
 
 
 def test_audio_runtime_plan_import_does_not_load_runtime_contract():
-    """The active-endpoint validator keeps its heavy import lazy (ADR-0226)."""
+    """The active-endpoint validator keeps its heavy imports lazy (ADR-0226)."""
     import subprocess
     import sys
 
+    heavy = ("jasper.active_speaker.runtime_contract", "jasper.output_topology")
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             "import sys, jasper.audio_runtime_plan; "
-            "print('jasper.active_speaker.runtime_contract' in sys.modules)",
+            f"print([m for m in {heavy!r} if m in sys.modules])",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip() == "[]"
 
 
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():

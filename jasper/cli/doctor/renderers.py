@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -104,6 +105,49 @@ REASON_MUX_MODE_CORRUPT = "mux_mode_corrupt"
 REASON_MUX_MODE_UNKNOWN_SOURCE = "mux_mode_unknown_source"
 REASON_MUX_MODE_PINNED = "mux_mode_pinned"
 REASON_AIRPLAY_CLEANUP_UNAVAILABLE = "airplay_cleanup_unavailable"
+
+# Closed vocabulary for :attr:`LaneOwner.code` — who holds an EBUSY renderer
+# lane — and for :attr:`RendererProbe.outcome`. Separate from the check's
+# `reason` because several probes fold into one CheckResult.
+LANE_OWNER_MATCHED = "owned_by_unit"
+LANE_OWNER_UNKNOWN_LANE = "not_a_known_lane"
+LANE_OWNER_NO_WRITER = "no_writer_published"
+LANE_OWNER_FOREIGN = "foreign_writer"
+
+PROBE_RESOLVED = "resolved"
+PROBE_UNRESOLVABLE = "unresolvable"
+PROBE_NOT_CONFIGURED = "not_configured"
+PROBE_UNIT_NOT_LOADED = "unit_not_loaded"
+
+
+@dataclass(frozen=True)
+class LaneOwner:
+    """Who holds an EBUSY renderer lane. ``pid`` is the published writer."""
+
+    code: str
+    pid: int | None = None
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.code == LANE_OWNER_MATCHED
+
+
+@dataclass(frozen=True)
+class RendererProbe:
+    """One renderer's device, the user it was probed as, and the verdict.
+
+    ``device`` is post-``${VAR}`` substitution and ``declared_device`` is what
+    the config literally carried; they differ only when systemd resolved a
+    placeholder. Both are empty when the renderer is not configured.
+    """
+
+    name: str
+    user: str = ""
+    device: str = ""
+    declared_device: str = ""
+    outcome: str = PROBE_NOT_CONFIGURED
+    detail: str = ""
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -1182,8 +1226,8 @@ def _cgroup_owner_is_unit(pid: object, unit: str) -> tuple[bool, str]:
     return False, f"cgroup={cgroup.strip()!r}"
 
 
-def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
-    """Return whether an EBUSY renderer RING lane is owned by `unit`.
+def _ring_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
+    """Who owns an EBUSY renderer RING lane.
 
     The ring's exact analogue of the aloop `owner_pid` check below: the caller
     has already established that the probe opened the PCM (a BUSY verdict), so
@@ -1192,19 +1236,25 @@ def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     """
     label = _ring_renderer_devices().get(device)
     if label is None:
-        return False, "not a known fan-in ring lane"
+        return LaneOwner(
+            LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in ring lane"
+        )
     from jasper.renderer_lanes import ring_writer_pid
 
     pid = ring_writer_pid(label)
     if pid is None:
-        return False, f"ring for lane {label} names no writer"
+        return LaneOwner(
+            LANE_OWNER_NO_WRITER, detail=f"ring for lane {label} names no writer"
+        )
     owned, why = _cgroup_owner_is_unit(pid, unit)
     if owned:
-        return True, f"busy/owned pid={pid} (ring writer)"
-    return False, f"busy but ring writer pid={pid} {why}"
+        return LaneOwner(
+            LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid} (ring writer)"
+        )
+    return LaneOwner(LANE_OWNER_FOREIGN, pid, f"busy but ring writer pid={pid} {why}")
 
 
-def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
+def _fanin_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
     """Return whether an EBUSY private fan-in lane is owned by `unit`.
 
     A BUSY verdict proves the PCM resolved, not that the expected renderer
@@ -1223,18 +1273,106 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
         return _ring_lane_busy_owner_matches(device, unit)
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
-        return False, "not a known fan-in private lane"
+        return LaneOwner(
+            LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in private lane"
+        )
     text = evidence.loopback_substreams().get(substream)
     if text is None:
-        return False, f"could not read Loopback substream {substream} status"
+        return LaneOwner(
+            LANE_OWNER_NO_WRITER,
+            detail=f"could not read Loopback substream {substream} status",
+        )
     m = re.search(r"owner_pid\s*:\s*(\d+)", text)
     if not m:
-        return False, f"Loopback substream {substream} status has no owner_pid"
-    pid = m.group(1)
+        return LaneOwner(
+            LANE_OWNER_NO_WRITER,
+            detail=f"Loopback substream {substream} status has no owner_pid",
+        )
+    pid = int(m.group(1))
     owned, why = _cgroup_owner_is_unit(pid, unit)
     if owned:
-        return True, f"busy/owned pid={pid}"
-    return False, f"busy but owner pid={pid} {why}"
+        return LaneOwner(LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid}")
+    return LaneOwner(LANE_OWNER_FOREIGN, pid, f"busy but owner pid={pid} {why}")
+
+
+def renderer_probes() -> tuple[RendererProbe, ...]:
+    """Probe every configured renderer's device as its unit's own ``User=``.
+
+    The structured half of :func:`check_renderer_device_resolvable`, which only
+    formats these records. An EBUSY verdict proves the PCM resolved and opened,
+    so it is `resolved` when the lane's published writer is the expected unit
+    and `unresolvable` when it is anyone else.
+    """
+    # Built per call, so a test that redirects one parser is seen here.
+    configured = (
+        ("shairport-sync", "shairport-sync.service", _renderer_device_shairport),
+        ("librespot", "librespot.service", _renderer_device_librespot),
+        ("bluealsa-aplay", "bluealsa-aplay.service", _renderer_device_bluealsa),
+    )
+    probes: list[RendererProbe] = []
+    for name, unit, parse_dev in configured:
+        device = parse_dev()
+        if device is None:
+            probes.append(
+                RendererProbe(name, detail="config not found (not installed?)")
+            )
+            continue
+        # A ${VAR} reference is what systemd would substitute at ExecStart
+        # time; probing the literal would fail with "Unknown PCM ${VAR}" on a
+        # box whose running daemon has resolved it.
+        resolved_device = _resolve_systemd_env_vars(device, unit)
+        user, load_state = _systemd_unit_user(unit)
+        if load_state != "loaded":
+            probes.append(
+                RendererProbe(
+                    name,
+                    device=resolved_device,
+                    declared_device=device,
+                    outcome=PROBE_UNIT_NOT_LOADED,
+                    detail=f"{unit} is {load_state}, not loaded",
+                )
+            )
+            continue
+        outcome, detail = _probe_open_as_user(resolved_device, user)
+        verdict, why = PROBE_RESOLVED, ""
+        if outcome is ProbeOutcome.BUSY:
+            owner = _fanin_lane_busy_owner_matches(resolved_device, unit)
+            verdict = PROBE_RESOLVED if owner.ok else PROBE_UNRESOLVABLE
+            why = owner.detail
+        elif outcome is not ProbeOutcome.OPENED:
+            verdict, why = PROBE_UNRESOLVABLE, detail
+        probes.append(
+            RendererProbe(
+                name,
+                user=user or "root",
+                device=resolved_device,
+                declared_device=device,
+                outcome=verdict,
+                detail=why,
+            )
+        )
+    return tuple(probes)
+
+
+def _probe_line(probe: RendererProbe) -> str:
+    """One renderer's line in the check's detail.
+
+    Both the declared and the resolved device are shown when they differ, so an
+    operator can spot a misconfigured env file without re-reading the unit.
+    """
+    if probe.outcome in (PROBE_NOT_CONFIGURED, PROBE_UNIT_NOT_LOADED):
+        return f"{probe.name}: {probe.detail}"
+    display = (
+        probe.device
+        if probe.device == probe.declared_device
+        else f"{probe.device} (from {probe.declared_device})"
+    )
+    line = f"{probe.name}({probe.user})→{display}"
+    if not probe.detail:
+        return line
+    sep = " " if probe.outcome == PROBE_RESOLVED else ": "
+    return f"{line}{sep}{probe.detail}"
+
 
 @doctor_check(exclusive_group="audio-probe", core=True)
 def check_renderer_device_resolvable() -> CheckResult:
@@ -1260,53 +1398,16 @@ def check_renderer_device_resolvable() -> CheckResult:
               installed; informational)
     """
     label = "renderer ALSA device resolvable"
-    renderers = [
-        ("shairport-sync", "shairport-sync.service",
-         _renderer_device_shairport),
-        ("librespot",      "librespot.service",
-         _renderer_device_librespot),
-        ("bluealsa-aplay", "bluealsa-aplay.service",
-         _renderer_device_bluealsa),
+    probes = renderer_probes()
+    failures = [
+        _probe_line(p)
+        for p in probes
+        if p.outcome in (PROBE_UNRESOLVABLE, PROBE_UNIT_NOT_LOADED)
     ]
-    failures: list[str] = []
-    incomplete: list[str] = []
-    successes: list[str] = []
-    for name, unit, parse_dev in renderers:
-        device = parse_dev()
-        if device is None:
-            incomplete.append(f"{name}: config not found (not installed?)")
-            continue
-        # If the parsed device contains a ${VAR} reference, ask systemd
-        # what value it would substitute at ExecStart time. Otherwise
-        # the aplay probe below will fail with "Unknown PCM ${VAR}" —
-        # a false positive, since the running daemon has resolved it.
-        resolved_device = _resolve_systemd_env_vars(device, unit)
-        user, load_state = _systemd_unit_user(unit)
-        if load_state != "loaded":
-            failures.append(f"{name}: {unit} is {load_state}, not loaded")
-            continue
-        outcome, detail = _probe_open_as_user(resolved_device, user)
-        who = user or "root"
-        # Show both the literal-parsed and resolved values when they
-        # differ, so the operator can spot a misconfigured env file
-        # without re-reading the unit themselves.
-        display = (
-            f"{resolved_device}"
-            if resolved_device == device
-            else f"{resolved_device} (from {device})"
-        )
-        if outcome is ProbeOutcome.OPENED:
-            successes.append(f"{name}({who})→{display}")
-        elif outcome is ProbeOutcome.BUSY:
-            owned, owner_detail = _fanin_lane_busy_owner_matches(
-                resolved_device, unit,
-            )
-            if owned:
-                successes.append(f"{name}({who})→{display} {owner_detail}")
-            else:
-                failures.append(f"{name}({who})→{display}: {owner_detail}")
-        else:
-            failures.append(f"{name}({who})→{display}: {detail}")
+    incomplete = [
+        _probe_line(p) for p in probes if p.outcome == PROBE_NOT_CONFIGURED
+    ]
+    successes = [_probe_line(p) for p in probes if p.outcome == PROBE_RESOLVED]
     if failures:
         return CheckResult(
             label, "fail",
