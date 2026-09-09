@@ -11,18 +11,27 @@
 # Row format: "<kind>|<targets>|<what it retires>", targets space-separated.
 #   unit -> disable --now, stop, and reset-failed after the daemon-reload
 #   file -> rm -f
-# The table expands STATE_DIR and SYSTEMD_DIR when this file is SOURCED;
-# install.sh sets both above its source block.
+# The table expands STATE_DIR, SYSTEMD_DIR and CAMILLA_CONF when this file is
+# SOURCED; install.sh sets all three above its source block.
+: "${STATE_DIR:?}" "${SYSTEMD_DIR:?}" "${CAMILLA_CONF:?}"
 JASPER_RETIRED_LEFTOVERS=(
     # The removed endpoint tier served /sources/ from a standalone socket on
     # 8773, the port both profiles now serve from the combined jasper-web
     # bundle. Retire it before any jasper-web.socket enable; a
     # `systemctl disable --now` is never part of a unit-staging transaction.
+    # The file row is what lets the unit row terminate: nothing else at HEAD
+    # removes the unit files a pre-collapse install left in SYSTEMD_DIR.
+    # REMOVAL CONDITION: both rows drop once every box has taken one install
+    # after this lands — the file row leaves the disable nothing to find.
     "unit|jasper-sources-web.socket jasper-sources-web.service|the standalone /sources/ endpoint tier"
+    "file|${SYSTEMD_DIR}/jasper-sources-web.socket ${SYSTEMD_DIR}/jasper-sources-web.service|the standalone /sources/ unit files"
     # The combo-health timer inferred capture failure from successful reopen
     # counters and could withdraw the entire UAC2 function. Its alternate
     # capture fallback no longer exists, so the destructive observer is retired
     # before the graph units are staged.
+    # REMOVAL CONDITION: both rows drop once every box has taken one install
+    # after this lands — the file row removes the unit files, so nothing can
+    # re-register the timer.
     "unit|jasper-fanin-combo-health.timer jasper-fanin-combo-health.service|the destructive USB combo-health watcher"
     "file|${SYSTEMD_DIR}/jasper-fanin-combo-health.timer ${SYSTEMD_DIR}/jasper-fanin-combo-health.service ${STATE_DIR}/usb_combo_fallback.json ${STATE_DIR}/combo_health_tick.json|the combo-health unit files and its persisted override state"
     # No backup, deliberately: nothing reads audio_topology.env for routing, so
@@ -33,6 +42,13 @@ JASPER_RETIRED_LEFTOVERS=(
     # REMOVAL CONDITION: that check drops its WARN AND no Pi still carries
     # /etc/asound.conf.dmix-mode-backup.
     "file|${STATE_DIR}/audio_topology.env /etc/asound.conf.dmix-mode-backup|the dmix/fanin topology switch state"
+    # v1.yml is the pre-outputd rollback graph (issue #2240); install.sh stopped
+    # seeding it, but a copy left by an older install is not inert — camillagui's
+    # config picker scans /etc/camilladsp/*.yml, and the install-time statefile
+    # guard reads it as a flat-allowed graph that writes to the removed
+    # pcm.jasper_out dmix.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${CAMILLA_CONF}/v1.yml|the pre-outputd CamillaDSP rollback graph"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort
@@ -40,12 +56,15 @@ JASPER_RETIRED_LEFTOVERS=(
 # one must not fail its deploy over it.
 _retire_apply() {
     local want="$1" row kind targets
+    local -a target_list
     shift
     for row in "${JASPER_RETIRED_LEFTOVERS[@]}"; do
         IFS='|' read -r kind targets _ <<<"${row}"
         [[ "${kind}" == "${want}" ]] || continue
-        # shellcheck disable=SC2086  # targets is a deliberate word split
-        "$@" ${targets} >/dev/null 2>&1 || true
+        # read -ra, not a bare ${targets}: word-split the target list without
+        # also glob-expanding it against the installer's cwd.
+        read -ra target_list <<<"${targets}"
+        "$@" "${target_list[@]}" >/dev/null 2>&1 || true
     done
 }
 

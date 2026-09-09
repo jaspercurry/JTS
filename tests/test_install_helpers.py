@@ -3696,6 +3696,7 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
             **os.environ,
             "STATE_DIR": str(state_dir),
             "SYSTEMD_DIR": str(systemd_dir),
+            "CAMILLA_CONF": str(tmp_path / "camilla"),
         },
     )
 
@@ -3750,4 +3751,6 @@ def test_retired_leftovers_table_file_targets_are_scoped():
         targets = body.split("|", 1)[0].split()
         assert targets
         for target in targets:
-            assert target.startswith(("${STATE_DIR}/", "${SYSTEMD_DIR}/", "/etc/")), target
+            assert target.startswith(
+                ("${STATE_DIR}/", "${SYSTEMD_DIR}/", "${CAMILLA_CONF}/", "/etc/")
+            ), target

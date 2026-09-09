@@ -686,14 +686,6 @@ install_camilladsp() {
     # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
     # contract which graph is legal and fails closed if no protected graph
     # exists.
-
-    # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
-    # installed by this function. Remove any copy left behind by a prior
-    # install: an upgraded box that keeps it on disk indefinitely is still
-    # selectable in camillagui's config picker (config_dir scans
-    # /etc/camilladsp/*.yml) and can leave a flat-allowed statefile pointer
-    # aimed at a file that writes to the now-removed pcm.jasper_out dmix.
-    rm -f "${CAMILLA_CONF}/v1.yml"
 }
 
 run_captured_command() {

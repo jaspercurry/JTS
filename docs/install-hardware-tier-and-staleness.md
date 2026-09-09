@@ -204,10 +204,11 @@ The last clause is deliberately narrower than "delete anything", because
 that phrasing is falsifiable by a grep of the same set: **1 of the 10 calls
 `rm -f`** — `retire_leftovers`, folded into
 `deploy/lib/install/retirements.sh` and included in the grep above. It is
-the one genuine file removal in the set: it `rm -f`s the units and
-state files earlier releases left behind — among them the retired dmix/fanin
-switch's state file, which nothing reads and which `jasper-doctor` warns about
-on presence. It is an unconditional cleanup rather than a migration.
+the one genuine file removal in the set: it `rm -f`s the units, state files
+and stale CamillaDSP graphs earlier releases left behind — among them the
+retired dmix/fanin switch's state file, which nothing reads and which
+`jasper-doctor` warns about on presence. It is an unconditional cleanup
+rather than a migration.
 
 (The earlier "31 total / 28 convergent / 3 destructive-but-safe" figures
 are superseded and do not reproduce — the same grep returned 24
@@ -219,16 +220,6 @@ on both "old key present?" *and* "new key already there?" (e.g.
 `migrate_control_host_bind_seed` only rewrote the *exact* `0.0.0.0`
 seed), so a box that predates even the old key degraded to a no-op, not a
 misfire.
-
-(2026-08-25 update: the fleet-migration gate cleared (owner-confirmed every
-live Pi past every candidate migration) and the one-shot relocation loops
-named above — `migrate_wake_legs_config`, `migrate_control_host_bind_seed`,
-`migrate_transit_config`, `migrate_weather_config`, `migrate_fanin_coupling`,
-and the grouping migration — were retired as unreachable; the same grep now
-returns **10**. The two still-live ongoing sweeps, `migrate_voice_keys_split`
-and `migrate_google_routes_key`, keep running every deploy. The point this
-section makes — migrations are convergent and skew cannot pile them up —
-still holds; only the roster and the count changed.)
 
 Skew does not multiply migration count or introduce ordering hazards.
 Residual: a box so old it predates a migration's recognized "old shape"
