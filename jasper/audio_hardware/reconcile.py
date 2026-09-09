@@ -50,11 +50,16 @@ from jasper.atomic_io import (
     env_lock_path,
     locked_upsert_env_file,
 )
+from jasper.audio_hardware.config_txt import boot_config_path
+from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
+from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
+from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.output_hardware import (
+    DEFAULT_PROC_ASOUND_PATH,
     DEFAULT_TOPOLOGY_PATH,
     ObservedOutput,
     observe,
@@ -161,6 +166,10 @@ class Pass:
         self.print_env = print_env
         self.no_restart = no_restart
         self.signalled = ""
+        self.proc_asound = env.get("JASPER_PROC_ASOUND", DEFAULT_PROC_ASOUND_PATH)
+        self.model_path = env.get("JASPER_PI_MODEL_FILE", DEFAULT_MODEL_PATH)
+        self.boot_config_path = boot_config_path()
+        self.udc_class_dir = env.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR)
 
         self.env_file = env.get("JASPER_ENV_FILE") or BASE_ENV_PATH
         self.outputd_env_file = env.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_PATH
@@ -422,16 +431,11 @@ class Pass:
     # -- I2S HAT boot intent ------------------------------------------------
 
     def reconcile_i2s_hat_boot(self) -> None:
-        # lazy: patch target — the tests replace `reconcile_boot_config` on the
-        # source module, which only a per-call import sees; the rest travel with
-        # it rather than splitting one statement across two homes.
-        from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
+        # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
         from jasper.audio_hardware.usb_port_role import (
-            DEFAULT_MODEL_PATH,
-            reconcile_boot_config,
-            boot_role_events,
+            reconcile_boot_config, boot_role_events,
         )
-        from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
         try:
             (
@@ -442,15 +446,9 @@ class Pass:
                 durability_failed,
                 hat_collision,
             ) = reconcile_boot_config(
-                model_path=os.environ.get(
-                    "JASPER_PI_MODEL_FILE", DEFAULT_MODEL_PATH
-                ),
-                boot_config_path=os.environ.get(
-                    "JTS_BOOT_CONFIG_FILE", DEFAULT_BOOT_CONFIG_PATH
-                ),
-                udc_class_dir=os.environ.get(
-                    "JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR
-                ),
+                model_path=self.model_path,
+                boot_config_path=self.boot_config_path,
+                udc_class_dir=self.udc_class_dir,
                 i2s_hat_intent_path=self.i2s_hat_intent_file,
             )
         # noqa reason: any failure here means the boot config was NOT applied, and
@@ -1957,6 +1955,12 @@ def main(argv: list[str] | None = None) -> int:
     status = 1
     try:
         status = run.execute()
+        if status == 0 and not (run.print_env or run.no_restart):
+            try:
+                publish_reconcile_inputs(run)
+            except (OSError, ValueError):
+                run.mark_degraded()
+                run.log("stamp_skipped", reason="inputs_unavailable")
     except _Abort as abort:
         status = abort.status
     except SystemExit as exc:
