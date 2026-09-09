@@ -91,7 +91,10 @@ class Heartbeat:
         if not self._enabled:
             return
         self._stop.set()
-        notify_stopping()
+        try:
+            notify_stopping()
+        except Exception:  # noqa: BLE001
+            pass
         if self._thread is not None:
             self._thread.join(timeout=1.0)
 
@@ -107,7 +110,12 @@ class Heartbeat:
                     log_event(logger, "watchdog.heartbeat_resumed",
                               suppressed_ticks=suppressed_ticks)
                     suppressed_ticks = 0
-                notify_watchdog()
+                try:
+                    notify_watchdog()
+                except Exception:  # noqa: BLE001
+                    # Don't crash the heartbeat thread on a transient
+                    # socket error -- try again next tick.
+                    logger.exception("systemd WATCHDOG=1 notify failed")
             else:
                 if not suppressed_ticks:
                     log_event(logger, "watchdog.heartbeat_suppressed",

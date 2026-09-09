@@ -217,6 +217,34 @@ def test_suppression_speaks_once_per_wedge_not_once_per_tick(
     assert int(resumed["suppressed_ticks"]) >= 3
 
 
+def test_transient_notify_error_does_not_kill_heartbeat(transitions, build, monkeypatch):
+    """A transient `OSError` out of `notify_watchdog()` (e.g. `EMFILE` on
+    the notify socket) must not kill the heartbeat thread — the next tick
+    still has to try again, or systemd's `WatchdogSec=` timer fires on a
+    daemon that is otherwise healthy."""
+    calls = {"n": 0}
+
+    def flaky_notify() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(24, "EMFILE")
+        transitions.record("WATCHDOG=1")
+
+    monkeypatch.setattr(watchdog_module, "notify_watchdog", flaky_notify)
+
+    clock = FakeClock(transitions)
+    hb = build(clock, stale_threshold_sec=1.0)
+    clock.now = 10.0
+    hb.bump()
+    clock.now = 10.1
+    hb.start()
+
+    # If the first (raising) call killed the thread, this never reaches 1.
+    transitions.await_count("WATCHDOG=1", 1)
+    assert hb._thread.is_alive()
+    assert calls["n"] >= 2
+
+
 def test_stop_is_idempotent(transitions):
     """Daemon shutdown paths call stop() in `finally:`; calling it
     again from a signal handler must not raise."""

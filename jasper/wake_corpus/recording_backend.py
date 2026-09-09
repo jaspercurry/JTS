@@ -132,6 +132,9 @@ STOP_RETRY_INITIAL_SEC = 0.05
 STOP_RETRY_MAX_SEC = 1.0
 # Ceiling on total retries before giving up on publishing the clip — a
 # lifecycle owner that never releases would otherwise retry forever.
+# Sum of the capped-exponential delays above, one per attempt: at the
+# current STOP_RETRY_INITIAL_SEC/STOP_RETRY_MAX_SEC, 20 attempts is
+# ~16.6 s of wall clock before abandonment.
 STOP_RETRY_MAX_ATTEMPTS = 20
 STOP_SHUTDOWN_JOIN_SEC = 5.0
 _STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
@@ -1457,10 +1460,18 @@ class RecordingBackend:
             attempt = self._stop_retry_attempts
             if attempt > STOP_RETRY_MAX_ATTEMPTS:
                 abandoned_attempts = attempt - 1
+                abandoned_clip_id = self._current_clip_id
                 self._pending_stop = None
                 self._pending_stop_generation = None
                 self._stop_retry_handle = None
                 self._stop_retry_attempts = 0
+                # The lifecycle owner never released; the clip is lost, but
+                # the recorder must stay usable for the next one — clear the
+                # in-progress slot `start_recording()` checks.
+                self._current = None
+                self._current_clip_id = None
+                self._current_meta = None
+                self._current_plan_conformance = None
             else:
                 exponent = min(attempt - 1, 8)
                 delay = min(
@@ -1482,6 +1493,7 @@ class RecordingBackend:
                 logger,
                 "wake_corpus.stop_retry_abandoned",
                 attempts=abandoned_attempts,
+                clip_id=abandoned_clip_id,
                 auto=merged_auto,
                 mute_stopped=merged_mute,
                 level=logging.ERROR,

@@ -1279,6 +1279,43 @@ def test_stop_retry_gives_up_after_max_attempts(
     assert fields["attempts"] == "3"
 
 
+def test_recorder_usable_after_stop_retry_abandoned(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog,
+) -> None:
+    """Abandoning a wedged stop must give up on that clip, not on the
+    recorder — a later start_recording() must not be stuck raising
+    StateError forever."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+        clip_id = backend._current_clip_id
+    generation = (clip_id, task)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
+    backend._auto_stop_safe(generation)
+
+    def _gave_up() -> bool:
+        with backend._lock:
+            return (
+                backend._pending_stop is None
+                and backend._stop_retry_handle is None
+            )
+
+    wait_until_sync(_gave_up)
+
+    with backend._lock:
+        assert backend._current is None
+        assert backend._current_clip_id is None
+
+    backend.start_recording("quiet", "near")
+
+
 def test_stale_retry_callback_cannot_stop_the_next_clip(
     backend,
     monkeypatch: pytest.MonkeyPatch,
