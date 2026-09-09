@@ -1,4 +1,4 @@
-# ADR-0278: AirPlay session release belongs to source takeover
+# ADR-0279: AirPlay session release belongs to source takeover
 
 - **Date:** 2026-09-09
 - **Status:** Accepted
