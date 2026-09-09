@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Renderer-neutral frequency-response contract.
-
-Measurement readers translate their stored shape into :class:`FrequencyRun`.
-The web page, CLI, and an LLM then consume the same ``jts_frequency_view/1``
-document.  This module knows no tuning flow and performs no measurement DSP.
-"""
+"""Renderer-neutral frequency-response contract for the web page and CLI."""
 
 from __future__ import annotations
 
@@ -15,6 +10,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from .frequency_display import prepare_frequency_curve
 
 SCHEMA = "jts_frequency_view/1"
 
@@ -156,7 +153,7 @@ def build_frequency_view(
             "round_id": run.round_id,
             "state": run.state,
             "metadata": dict(run.metadata),
-            "series": [series.to_dict() for series in run.series],
+            "series": [prepare_frequency_curve(series.to_dict(), run.metadata) for series in run.series],
         })
     return {
         "schema": SCHEMA,

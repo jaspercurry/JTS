@@ -468,11 +468,9 @@ LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
 
 @dataclass(frozen=True)
 class LateralPoseCurve:
-    """One driver's NEUTRAL response at one pose, on the shared log basis.
+    """One branch's response at one pose, on the shared log basis.
 
-    ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
-    configured-crossover composition applied; ``S_c = sign_c * M * C_c / P`` is
-    the consumer's step, once per candidate.
+    The take's ``phase_composition`` states whether this includes a complete tune.
 
     Values are SAMPLED at the nearest native bin, never interpolated or
     averaged: a phase interpolated across a wrap is simply wrong. The
@@ -493,6 +491,7 @@ class LateralPoseCurve:
     #: was resolved", never 0 Hz.
     validity_floor_hz: float | None = None
     repeat_curves: tuple["LateralPoseCurve", ...] = ()
+    gate_window_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -588,6 +587,7 @@ def lateral_pose_curve(
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
         validity_floor_hz=response.validity_floor_hz,
+        gate_window_ms=(response.gating or {}).get("window_ms"),
         repeat_curves=tuple(
             lateral_pose_curve(occurrence, band_hz)
             for occurrence in response.repeat_responses
@@ -776,6 +776,8 @@ def phase_composition(analysis: Any, *, protection_emitted: bool) -> str:
     carried a protective high-pass at all — and is not derivable from the
     analysis, which sees only whether it was handed priors to divide out.
     """
+    if getattr(analysis, "branch_diagnostic", None):
+        return "complete_tune_measured"
     if analysis.phase != PROGRAM_PHASE_MEASURE:
         return ""
     if analysis.configured_path_composed:
@@ -1047,6 +1049,8 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # without these two cannot be re-fitted offline. Additive: a round
         # banked before this carries neither key.
         "validity_floor_hz": curve.validity_floor_hz,
+        "gate_window_ms": curve.gate_window_ms,
+        "smoothing_fractional_octave": 0,
         "repeat_curves": [
             pose_curve_record(repeat) for repeat in curve.repeat_curves
         ],

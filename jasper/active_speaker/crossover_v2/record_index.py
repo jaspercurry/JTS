@@ -50,6 +50,11 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def played_graph_fingerprint(document: Mapping[str, Any]) -> str:
+    provenance = document.get("provenance") or {}
+    return str((provenance.get("graph") or {}).get("fingerprint") or document.get("graph_fingerprint") or "")
+
+
 def _position_deg(value: Any) -> int | None:
     """The signed whole-degree bearing, or ``None`` where none was commanded.
 

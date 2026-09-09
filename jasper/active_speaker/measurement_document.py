@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from .flat_spec import REFERENCE_BAND_HZ, evaluate_flat_spec
+from .crossover_v2.record_index import played_graph_fingerprint
 from .frequency_view import (
     FrequencyRun,
     FrequencySeries,
@@ -208,7 +209,7 @@ def frequency_run_from_documents(
         if degrees is not None:
             angles.add(degrees)
         phase = str(document.get("phase") or "")
-        graph = str(document.get("graph_fingerprint") or "")
+        graph = played_graph_fingerprint(document)
         if phase:
             phases.add(phase)
         if graph:
@@ -251,7 +252,9 @@ def frequency_run_from_documents(
                 phase=phase or None,
                 candidate_id=document.get("candidate_id"),
                 graph_fingerprint=graph or None,
-                validity_floor_hz=document.get("validity_floor_hz"),
+                validity_floor_hz=curve.get("validity_floor_hz", document.get("validity_floor_hz")),
+                gate_window_ms=curve.get("gate_window_ms", document.get("gate_window_ms", (document.get("diagnostic") or {}).get("verify_gate_window_ms") if role == "summed" else None)),
+                smoothing_fractional_octave=curve.get("smoothing_fractional_octave"),
                 band_hz=curve.get("band_hz"),
             )
             if item is not None:

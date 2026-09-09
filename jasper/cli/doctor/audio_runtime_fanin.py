@@ -140,6 +140,9 @@ def check_fanin_binary_installed() -> CheckResult:
         "jasper-fanin binary", "ok", f"{path} ({size_kb} KB)"
     )
 
+_ASOUND_CONF_PATH = Path("/etc/asound.conf")
+
+
 def _asound_non_comment_text(text: str) -> str:
     return "\n".join(
         line for line in text.splitlines()
@@ -260,7 +263,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     `check_ring_platform_assets` and `check_ring_geometry_coherence`.
     """
     label = "fan-in ALSA wiring"
-    path = Path("/etc/asound.conf")
+    path = _ASOUND_CONF_PATH
     if not path.exists():
         return CheckResult(
             label,
