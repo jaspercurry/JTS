@@ -1568,7 +1568,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Main speakers" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
-    assert "templateDraftAxes: {layout: '', speakerMode: ''}" in js
+    # The axis draft itself runs through the DOM in
+    # tests/js/sound_profile_harness.mjs: activeCrossoverFirstStepRendered (both
+    # axes offered on a fresh page) and activeRouteLimitsRenderedTemplates (a
+    # pick is held and narrows the grid).
     assert "function outputTemplateChoiceDisabled(count, axis, value, axes)" in js
     assert "function outputTemplateUnavailableReason(template, topology, hasSubwoofer)" in js
     assert "This install can test and apply up to " in js
@@ -5392,7 +5395,7 @@ def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
     assert "if (eqEditor.view === 'saved')" in reconcile_body
     assert "return applySavedSelection(options.okMsg, seq);" in reconcile_body
     assert "if (act === 'browse-presets') { setView('saved'); }" in js
-    assert "selectedId = fallbackSavedId();" in delete_body
+    assert "eqEditor.selectedId = fallbackSavedId();" in delete_body
     assert "requestLiveSource({immediate: true});" in delete_body
     assert "selectedId = findIdFor(applied);" in load_body
 

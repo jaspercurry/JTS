@@ -45,9 +45,11 @@ var driverResearch = {
 };
 var crossoverPreview = {payload: null, preparing: false, error: ''};
 
-// The EQ editor's record (/sound/eq/). resetEqEditor() clears the naming
-// record as a unit: every entry point re-seeds nameMode and nameDraft, so an
-// exit that cleared `naming` alone would leave a stale pair behind it.
+// The EQ editor's record (/sound/eq/). resetEqEditor() serves the exits that
+// discard the naming UI outright — newDraft, editEntry, resetDraft,
+// cancel-name and Escape — so naming/nameMode/nameDraft go back as one unit.
+// finalizeName() deliberately clears `naming` alone and must not call it: it
+// reads nameMode and nameDraft afterwards to choose save vs rename.
 var eqEditor = {
   view: 'off',            // off | saved | draft
   mode: 'simple',         // simple | peq
@@ -59,7 +61,12 @@ var eqEditor = {
   nameDraft: '',
   library: [],            // [{id,name,kind,editable,description,profile,...}]
   simpleBands: [],        // [{key,field,label,freq_hz,type}] from /state
-  curvesById: {}
+  curvesById: {},
+  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
+  // when it can host EQ (or nothing probed it). Whole-page state, not a status
+  // line: only a payload that stops refusing clears it, never an editor exit,
+  // so resetEqEditor() leaves it alone.
+  carrierBlock: null
 };
 
 function resetEqEditor() {
@@ -68,27 +75,24 @@ function resetEqEditor() {
   eqEditor.nameDraft = '';
 }
 
-// The output page's record (/sound/output/) plus the two settings the EQ page
-// shares with it.
+// The /sound/output/ wizard's record: the saved sound settings it edits plus
+// the in-flight picks of its own steps.
 var outputPage = {
   // volume_floor_db is absent until /state carries it: savedVolumeFloorDb()
   // then falls back to volumeFloorDefault() (backend-owned) rather than this
   // module keeping a second copy of the default.
   soundSettings: {headroom_trim_db: 0, match_loudness: false},
   blocked: false,          // ./settings: the graph refused to carry EQ
-  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
-  // when it can host EQ (or nothing probed it). Page state, not a status line.
-  eqCarrierBlock: null,
   i2sHat: null,
   volumeFloorDraftDb: null,
   stepOverride: '',
   templateDraftAxes: {layout: '', speakerMode: ''}
 };
 
-// Drops the layout wizard's in-flight axis pick when a saved topology
-// supersedes it. `stepOverride` deliberately survives: which step is open is
-// not part of that draft, and only the re-pin path clears it.
-function resetOutputPage() {
+// Clears templateDraftAxes only — the layout wizard's in-flight axis pick,
+// dropped when a saved topology supersedes it. `stepOverride` is not part of
+// that draft: which step is open is cleared by the re-pin path alone.
+function resetOutputTemplateDraft() {
   outputPage.templateDraftAxes = {layout: '', speakerMode: ''};
 }
 
@@ -162,5 +166,5 @@ export {
   outputTopology,
   pageMode,
   resetEqEditor,
-  resetOutputPage,
+  resetOutputTemplateDraft,
 };

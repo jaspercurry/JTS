@@ -142,7 +142,7 @@ import {
   outputTopology,
   pageMode,
   resetEqEditor,
-  resetOutputPage
+  resetOutputTemplateDraft
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCommissionRoles,
@@ -513,9 +513,9 @@ import {
     // not showing, and the plot would sit empty, so both go with it.
     ['eq-tabs', 'now-playing'].forEach(function(id) {
       var node = el(id);
-      if (node) node.hidden = !!outputPage.eqCarrierBlock;
+      if (node) node.hidden = !!eqEditor.carrierBlock;
     });
-    if (outputPage.eqCarrierBlock) {
+    if (eqEditor.carrierBlock) {
       renderEqCarrierBlocked();
       status(statusText, statusErr);
       return;
@@ -593,7 +593,7 @@ import {
   // so a refusal mid-session becomes the page's state too. Recorded whatever
   // the request's sequence: it describes the loaded graph, not this request.
   function noteCarrierRefusal(payload) {
-    outputPage.eqCarrierBlock = {
+    eqEditor.carrierBlock = {
       status: 'blocked',
       reason_code: payload.reason_code || '',
       message: payload.message || EQ_BLOCKED_MESSAGE
@@ -606,7 +606,7 @@ import {
   function renderEqCarrierBlocked() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="info-card" role="status">' +
-        '<p>' + escapeHtml(outputPage.eqCarrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
+        '<p>' + escapeHtml(eqEditor.carrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
         '<div class="form-actions">' +
           '<a class="btn btn--primary" href="/sound/speaker/">Open Speaker setup</a>' +
         '</div>' +
@@ -3268,7 +3268,7 @@ import {
     // Every /state and every successful apply carries the field, so a fixed
     // layout drops the block at the next render instead of needing a reload.
     var carrier = payload.eq_carrier;
-    if (carrier) outputPage.eqCarrierBlock = carrier.status === 'blocked' ? carrier : null;
+    if (carrier) eqEditor.carrierBlock = carrier.status === 'blocked' ? carrier : null;
     applied = normalizeProfile(payload.profile || {});
   }
 
@@ -3720,6 +3720,7 @@ import {
   }
   function focusNameInput() { var n = el('name-input'); if (n) { n.focus(); n.select(); } }
   async function finalizeName() {
+    // Not resetEqEditor(): the branches below still read nameMode and nameDraft.
     eqEditor.naming = false;
     if (eqEditor.nameMode === 'rename' && eqEditor.editing.kind === 'user') {
       var newName = (eqEditor.nameDraft || '').trim() || eqEditor.editing.name || defaultName();
@@ -3789,7 +3790,7 @@ import {
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
-    if (outputGroups(topology).length) resetOutputPage();
+    if (outputGroups(topology).length) resetOutputTemplateDraft();
   }
   // The Output page renders the HAT picker and the sound settings, nothing
   // else, so it reads the topology payload for `i2s_hat` alone and skips the
@@ -4144,7 +4145,7 @@ import {
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
-    if (outputGroups(next).length) resetOutputPage();
+    if (outputGroups(next).length) resetOutputTemplateDraft();
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
@@ -4404,7 +4405,7 @@ import {
       status('Choose a supported speaker layout template.', true);
       return;
     }
-    resetOutputPage();
+    resetOutputTemplateDraft();
     if (count < template.minOutputs) {
       status(template.name + ' needs at least ' + template.minOutputs +
         ' physical output' + (template.minOutputs === 1 ? '.' : 's.'), true);
