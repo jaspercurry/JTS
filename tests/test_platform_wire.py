@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 TTS_PROTOCOL_RS = REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
 MUX_PY = REPO / "jasper" / "mux.py"
+VOICE_CONTROL_SOCKET_PY = REPO / "jasper" / "voice" / "control_socket.py"
 
 _CONTEXT = EffectiveVolumeContext(
     canonical_db=-18.25,
@@ -81,6 +82,16 @@ _CONTEXT = EffectiveVolumeContext(
         "PREPARE_ASSISTANT openai gpt cedar -21.00 "
         "-18.250 -6.500 -21.000 1 1234567890123",
     ),
+    # jasper-voice control socket (external IPC into the wake loop).
+    (wire.STATUS, "STATUS"),
+    (wire.voice_start(), "START"),
+    (wire.voice_start("airplay"), "START airplay"),
+    (wire.VOICE_END, "END"),
+    (wire.voice_cue_play("doorbell"), "CUE_PLAY doorbell"),
+    (wire.voice_mic_mute(True), "MUTE"),
+    (wire.voice_mic_mute(False), "UNMUTE"),
+    (wire.VOICE_MEASURE_PAUSE, "MEASURE_PAUSE"),
+    (wire.VOICE_MEASURE_RESUME, "MEASURE_RESUME"),
 ])
 def test_formatter_bytes_match_the_literal_they_replaced(command, expected):
     assert command == expected
@@ -125,6 +136,15 @@ def test_unmuted_volume_context_carries_the_zero_token():
     (wire.mux_preempt("x"), MUX_PY),
     (wire.mux_test_select("l", "o"), MUX_PY),
     (wire.mux_test_release("o"), MUX_PY),
+    (wire.STATUS, VOICE_CONTROL_SOCKET_PY),
+    (wire.voice_start(), VOICE_CONTROL_SOCKET_PY),
+    (wire.voice_start("airplay"), VOICE_CONTROL_SOCKET_PY),
+    (wire.VOICE_END, VOICE_CONTROL_SOCKET_PY),
+    (wire.voice_cue_play("doorbell"), VOICE_CONTROL_SOCKET_PY),
+    (wire.voice_mic_mute(True), VOICE_CONTROL_SOCKET_PY),
+    (wire.voice_mic_mute(False), VOICE_CONTROL_SOCKET_PY),
+    (wire.VOICE_MEASURE_PAUSE, VOICE_CONTROL_SOCKET_PY),
+    (wire.VOICE_MEASURE_RESUME, VOICE_CONTROL_SOCKET_PY),
 ])
 def test_every_verb_is_still_handled_by_its_reader(command, reader):
     """The reader for each socket still dispatches on the verb we emit.

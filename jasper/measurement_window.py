@@ -589,7 +589,7 @@ async def measurement_window(
             try:
                 resp = await _voice_uds_command(
                     voice_socket_path,
-                    "MEASURE_PAUSE",
+                    wire.VOICE_MEASURE_PAUSE,
                     timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                 )
                 pause_result = resp.get("result")
@@ -623,7 +623,7 @@ async def measurement_window(
                             try:
                                 renewal = await _voice_uds_command(
                                     voice_socket_path,
-                                    "MEASURE_PAUSE",
+                                    wire.VOICE_MEASURE_PAUSE,
                                     timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                                 )
                             except (
@@ -731,7 +731,7 @@ async def measurement_window(
                     # RESUME has no in-playout drain to wait out, and giving up
                     # here is recoverable via the daemon's auto-clear.
                     await _voice_uds_command(
-                        voice_socket_path, "MEASURE_RESUME", timeout=3.0,
+                        voice_socket_path, wire.VOICE_MEASURE_RESUME, timeout=3.0,
                     )
                 except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
                     logger.error(

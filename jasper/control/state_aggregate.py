@@ -51,6 +51,7 @@ from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
 from ..identity.speaker_name import read_state as _read_speaker_name_state
+from ..platform import wire
 from ..platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -769,7 +770,7 @@ async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
 
 async def _voice_status(cmd: Callable[..., Any], socket_path: str) -> dict | None:
     try:
-        return await cmd(socket_path, "STATUS", timeout=2.0)
+        return await cmd(socket_path, wire.STATUS, timeout=2.0)
     except (OSError, RuntimeError):
         return None
 
@@ -791,7 +792,7 @@ def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
 
 async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
     try:
-        return await cmd("STATUS", timeout=1.0)
+        return await cmd(wire.STATUS, timeout=1.0)
     except (OSError, RuntimeError, ValueError):
         return None
 

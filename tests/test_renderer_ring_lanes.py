@@ -33,7 +33,7 @@ import pytest
 from jasper import renderer_lanes as rl
 from jasper import ring_assets
 from jasper.fanin_coupling import resolve_ring_wire_format
-from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1701,6 +1701,22 @@ def test_every_music_source_names_a_real_fanin_lane(spec):
         f"MUSIC_SOURCE_SPECS[{spec.id.value}].fanin_label "
         f"{spec.fanin_label!r} is missing from fan-in's compiled-in default "
         f"input_renderers {fanin_labels} (scraped from {FANIN_CONFIG_RS.name})"
+    )
+
+
+@pytest.mark.parametrize(
+    "source", sorted(SOURCE_TO_FANIN_LABEL, key=lambda s: s.value), ids=lambda s: s.value,
+)
+def test_every_source_to_fanin_label_entry_names_a_real_fanin_lane(source):
+    """``SOURCE_TO_FANIN_LABEL`` is the dict control-plane callers actually
+    read (mux's source gate, in particular); pin it directly rather than
+    trusting it stays a faithful projection of MUSIC_SOURCE_SPECS above."""
+    label = SOURCE_TO_FANIN_LABEL[source]
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert label in fanin_labels, (
+        f"SOURCE_TO_FANIN_LABEL[{source.value}] = {label!r} is missing from "
+        f"fan-in's compiled-in default input_renderers {fanin_labels} "
+        f"(scraped from {FANIN_CONFIG_RS.name})"
     )
 
 

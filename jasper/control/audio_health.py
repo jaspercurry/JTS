@@ -50,6 +50,7 @@ from .transport_park import (
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
+from ..platform import wire
 from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from ..platform.uds import MAX_STATUS_BYTES, mux_socket_command
 
@@ -257,7 +258,7 @@ def _read_mux_status(
     try:
         return asyncio.run(
             mux_socket_command(
-                "STATUS",
+                wire.STATUS,
                 socket_path=socket_path,
                 timeout=timeout_sec,
             )

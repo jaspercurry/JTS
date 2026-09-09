@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from ..platform import wire
 from ..platform.uds import voice_socket_command
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
@@ -213,7 +214,7 @@ def _make_duck_active_probe(
     async def probe() -> Optional[bool]:
         try:
             response = await voice_socket_command(
-                voice_socket_path, "STATUS", timeout=1.0,
+                voice_socket_path, wire.STATUS, timeout=1.0,
             )
         except (
             FileNotFoundError,

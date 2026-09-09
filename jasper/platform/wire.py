@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The command vocabulary of the fan-in, mux and TTS control sockets.
+"""The command vocabulary of the fan-in, mux, TTS and voice control sockets.
 
 One formatter per verb, so a wire word is spelled once on the Python side and
-the Rust readers it must match are a single grep away:
+the readers it must match are a single grep away:
 
 * fan-in's source gate — ``rust/jasper-fanin/src/state.rs``;
 * the TTS playout verbs — ``rust/jasper-tts-protocol/src/lib.rs``, the parser
   both fan-in and outputd serve the playout connection with;
-* mux's own verbs — ``jasper/mux.py``'s command handler.
+* mux's own verbs — ``jasper/mux.py``'s command handler;
+* the voice daemon's external-IPC verbs — ``jasper/voice/control_socket.py``.
 
 Formatters return the command LINE without its terminator; :func:`encode` adds
 it. Callers that hand the line to :mod:`jasper.platform.uds` pass the string —
@@ -18,10 +19,19 @@ that client terminates and encodes it itself.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import Protocol, Sequence
 
-if TYPE_CHECKING:  # import-linter excludes type-checking imports; keeps this a leaf
-    from jasper.assistant_volume import EffectiveVolumeContext
+
+class _EffectiveVolumeContext(Protocol):
+    """The five fields ``_volume_context_tokens`` reads — a structural stand-in
+    for ``jasper.assistant_volume.EffectiveVolumeContext`` so this bottom-layer
+    module carries no upward import; callers pass the real dataclass."""
+
+    canonical_db: float
+    downstream_db: float
+    tts_envelope_lufs: float
+    muted: bool
+    stamp_boot_ns: int
 
 
 def encode(command: str) -> bytes:
@@ -106,7 +116,7 @@ def tts_segment_start(
     return " ".join(parts)
 
 
-def _volume_context_tokens(context: EffectiveVolumeContext) -> list[str]:
+def _volume_context_tokens(context: _EffectiveVolumeContext) -> list[str]:
     """The five absolute fields, in the order both verbs carry them."""
     return [
         f"{context.canonical_db:.3f}",
@@ -117,7 +127,7 @@ def _volume_context_tokens(context: EffectiveVolumeContext) -> list[str]:
     ]
 
 
-def tts_volume_context(context: EffectiveVolumeContext) -> str:
+def tts_volume_context(context: _EffectiveVolumeContext) -> str:
     return "VOLUME_CONTEXT " + " ".join(_volume_context_tokens(context))
 
 
@@ -127,7 +137,7 @@ def tts_prepare_assistant(
     model: str,
     voice: str,
     tts_envelope_lufs: float,
-    volume_context: EffectiveVolumeContext | None = None,
+    volume_context: _EffectiveVolumeContext | None = None,
 ) -> str:
     parts: list[str] = [
         "PREPARE_ASSISTANT",
@@ -139,3 +149,27 @@ def tts_prepare_assistant(
     if volume_context is not None:
         parts.extend(_volume_context_tokens(volume_context))
     return " ".join(parts)
+
+
+# --- jasper-voice control socket (external IPC into the wake loop) ------
+
+VOICE_END = "END"
+VOICE_MEASURE_PAUSE = "MEASURE_PAUSE"
+VOICE_MEASURE_RESUME = "MEASURE_RESUME"
+
+
+def voice_start(source: str | None = None) -> str:
+    """Manual session start (long-press begin). ``source`` names the input
+    for a push-to-talk speaker; omitted, the daemon uses its default mic."""
+    return f"START {source}" if source else "START"
+
+
+def voice_cue_play(slug: str) -> str:
+    """Play a registered audio cue through the daemon's fan-in-backed
+    TtsPlayout, so a caller doesn't have to recreate the output path."""
+    return f"CUE_PLAY {slug}"
+
+
+def voice_mic_mute(muted: bool) -> str:
+    """User-driven mic mute/unmute at the wake-loop gate."""
+    return "MUTE" if muted else "UNMUTE"
