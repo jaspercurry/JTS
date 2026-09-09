@@ -228,6 +228,7 @@ disjoint files.
 | Row | Concern | Tag | Gate |
 |---|---|---|---|
 | 4.1 | Supervised limiter bench campaign on jts3 per `limiter-evidence-protocol.md`; one accepted, replayable bundle. | H | owner present, **NN** |
+| 4.1b | **The contract revision (added 2026-09-09).** The limiter-evidence protocol blocks all wave-4 production wiring until an ADR names the accepted bundle's exact `evidence_fingerprint`, records an independent review at zero blockers, and authorizes a named trusted caller; the tap-realization amendment separately forbids "a scheduler" by name. 4.2 and 4.3 cannot start before this merges. | A | owner sign-off |
 | 4.2 | Runtime scheduler: pure target selection, instant retreat, gated re-extend, patching the named rung filters; no new daemon; no added latency. | R | **NN**, adversarial review |
 | 4.3 | First production caller lands (the engine's apply of a scheduled candidate). | C | code-review |
 
@@ -315,6 +316,32 @@ cardioid channel's design · a database or memory service · new `JASPER_*`
 knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
+
+- 2026-09-09 14:30Z: Wave-4 brief written (`briefs/wave-4-bass-runtime.md`),
+  fact-checked against main `a1994ef69` by a Sonnet pass first. It found the
+  thing the plan's row list was missing, now added as row **4.1b**: the
+  limiter-evidence protocol blocks every wave-4 production wiring until a
+  contract revision names the accepted bundle's exact `evidence_fingerprint`,
+  records an independent review at zero blockers and zero should-fixes, and
+  authorizes a named trusted caller — and the tap-realization amendment's
+  "what this does NOT authorize" list forbids *a scheduler* by name. Rows 4.2
+  and 4.3 are contract-blocked until that ADR merges. Other facts the brief now
+  carries, each of which would have been a false premise: the context builder
+  the protocol called missing has since been built (`bench/context.py`, whose
+  limiter domain is byte-identical to the emitter's own bound), so the open gap
+  is only that no production call feeds a real bundle into the replay; the R1
+  live-patch precedent exists but is unstepped (`multiroom/runtime_balance.py`
+  patches one named `Gain` today, and no interpolating sequencer exists
+  anywhere); the DSP writer lock refuses every mutation while a bass apply-intent
+  file exists, yet nothing has written that file since #4563, so a scheduler
+  must either own the writer again or stop the readers checking for it; and
+  "listening level" names two non-interchangeable numbers — the live 0-100 knob
+  on `/state`, which the bass schema already speaks and a scheduler keys on,
+  versus `seat_level_reference`'s one-shot measurement-session SPL constant,
+  which it must not. The brief also carries a stop-and-report instruction: if a
+  boosted rung can reach CamillaDSP after wave 3 without a matching charge into
+  `active_baseline_headroom`, that is a level bug on the output path, not a
+  wave-5 nicety.
 
 - 2026-09-09 14:05Z: Lane D pre-reads done (two Sonnet read-only passes over
   3.3 and over 3.4+3.1b at their tips vs main). Findings and the
