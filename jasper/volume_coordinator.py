@@ -51,7 +51,7 @@ from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import (
-    MUSIC_SOURCES,
+    MUSIC_SOURCE_VALUES,
     SOURCE_TO_ACTIVE_KEY,
     Source,
     VolumeMode,
@@ -1957,8 +1957,6 @@ class VolumeCoordinator:
         self._deep_quiet_skipped = skipping
         return skipping
 
-    _SELECTABLE_SOURCE_VALUES = frozenset(s.value for s in MUSIC_SOURCES)
-
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
         (mux preempts in <1 s) but possible during transitions; pick
@@ -1978,7 +1976,7 @@ class VolumeCoordinator:
                 # "idle" and, during a measurement lease, a fan-in lane label
                 # — neither is a source, and both must fall through to the
                 # raw probes rather than pinning the coordinator to IDLE.
-                if selected in self._SELECTABLE_SOURCE_VALUES:
+                if selected in MUSIC_SOURCE_VALUES:
                     return Source(selected)
             except (ValueError, TypeError):
                 logger.debug("mux selected_source was unknown; ignoring")

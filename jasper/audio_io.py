@@ -1430,31 +1430,27 @@ class TtsPlayout:
         Returns False when there is no live connection to ask on or the ask
         failed, so the caller can own its own restore.
         """
+        # A silent duck failure means music does not step back under the
+        # assistant, so every path out of here says why.
+        def failed(reason: str, **fields: str) -> bool:
+            log_event(
+                logger,
+                "fanin.duck_failed",
+                on=str(bool(on)).lower(),
+                reason=reason,
+                level=logging.WARNING,
+                **fields,
+            )
+            return False
+
         stream = await self._current_outputd_stream()
         duck = getattr(stream, "program_duck", None)
         if duck is None:
-            # A silent duck failure means music does not step back under the
-            # assistant, so say so rather than returning False quietly.
-            log_event(
-                logger,
-                "fanin.duck_failed",
-                on=str(bool(on)).lower(),
-                reason="no_connection",
-                level=logging.WARNING,
-            )
-            return False
+            return failed("no_connection")
         try:
             await asyncio.to_thread(duck, on)
         except OSError as e:
-            log_event(
-                logger,
-                "fanin.duck_failed",
-                on=str(bool(on)).lower(),
-                reason="send",
-                detail=str(e),
-                level=logging.WARNING,
-            )
-            return False
+            return failed("send", detail=str(e))
         return True
 
     async def prepare_assistant_context(

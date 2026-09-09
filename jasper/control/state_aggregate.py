@@ -19,7 +19,7 @@ from typing import Any, Callable, Sequence, TypeVar
 from ..identity import identity_state
 from ..accessories import status as accessory_status
 from ..memory_policy import disk_usage
-from ..music_sources import MUSIC_SOURCES
+from ..music_sources import MUSIC_SOURCE_VALUES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -608,11 +608,6 @@ def _spotify_state() -> dict[str, Any]:
     }
 
 
-# Mux's ``active_source`` can also carry "idle" or a fan-in test-lease
-# label; only these are sources this surface may report.
-_MUSIC_SOURCE_VALUES = frozenset(source.value for source in MUSIC_SOURCES)
-
-
 def _active_source(
     *,
     voice_session: bool,
@@ -646,7 +641,7 @@ def _active_source(
     mux_effective_source = None
     if isinstance(mux_status, dict):
         raw_effective = mux_status.get("active_source")
-        if raw_effective in _MUSIC_SOURCE_VALUES:
+        if raw_effective in MUSIC_SOURCE_VALUES:
             mux_effective_source = raw_effective
 
     if voice_session:

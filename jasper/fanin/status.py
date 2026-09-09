@@ -147,15 +147,7 @@ def fanin_usbsink_input(
     Malformed snapshots fail soft to ``None``.
     """
 
-    if not isinstance(fanin_status, dict):
-        return None
-    inputs = fanin_status.get("inputs")
-    if not isinstance(inputs, list):
-        return None
-    for entry in inputs:
-        if isinstance(entry, dict) and entry.get("label") == USBSINK_INPUT_LABEL:
-            return entry
-    return None
+    return fanin_inputs_by_label(fanin_status).get(USBSINK_INPUT_LABEL)
 
 
 def fanin_usbsink_lane_is_direct(fanin_status: dict[str, Any] | None) -> bool:
