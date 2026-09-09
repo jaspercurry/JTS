@@ -29,6 +29,7 @@ import pytest
 from jasper.web import (
     airplay_setup,
     bluetooth_setup,
+    chat_setup,
     correction_setup,
     google_setup,
     home_assistant_setup,
@@ -446,6 +447,7 @@ _TABLED_WIZARD_FACTORIES = {
         {"state_path": "/tmp/jts-test-airplay.env"},
     ),
     "bluetooth_setup": lambda: bluetooth_setup._make_handler(),
+    "chat_setup": chat_setup._make_handler,
     "correction_setup": lambda: correction_setup._make_handler_class(
         hostname="jts.local", idle_hold=nullcontext,
     ),
@@ -466,6 +468,7 @@ _TABLED_WIZARD_FACTORIES = {
 # the body the token is in. Shrinks as a wizard moves to header CSRF.
 _HEADER_CSRF_WIZARDS = frozenset({
     "bluetooth_setup",
+    "chat_setup",
     "correction_setup",
     "rooms_setup",
     "sources_setup",
