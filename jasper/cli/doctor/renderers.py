@@ -103,6 +103,7 @@ REASON_MUX_MODE_UNREADABLE = "mux_mode_unreadable"
 REASON_MUX_MODE_CORRUPT = "mux_mode_corrupt"
 REASON_MUX_MODE_UNKNOWN_SOURCE = "mux_mode_unknown_source"
 REASON_MUX_MODE_PINNED = "mux_mode_pinned"
+REASON_AIRPLAY_CLEANUP_UNAVAILABLE = "airplay_cleanup_unavailable"
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -1389,15 +1390,16 @@ def check_airplay_session_cleanup() -> CheckResult:
     if not isinstance(fact, dict) or fact.get("reason") not in AIRPLAY_CLEANUP_REASONS:
         return CheckResult(
             name, "skipped", "mux cleanup outcome is unavailable",
-            reason="airplay_cleanup_unavailable",
+            reason=REASON_AIRPLAY_CLEANUP_UNAVAILABLE,
         )
     status = {"unobserved": "skipped", "ok": "ok", "degraded": "warn"}.get(
         fact.get("status"), "skipped",
     )
-    detail = f"last receiver cleanup: {fact['reason']}"
+    reason = fact["reason"]
+    detail = f"last receiver cleanup: {reason}"
     if status == "warn":
         detail += "; if AirPlay cannot connect, use Restart AirPlay"
-    return CheckResult(name, status, detail, reason=fact["reason"])
+    return CheckResult(name, status, detail, reason=reason)
 
 
 @doctor_check()
