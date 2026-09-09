@@ -1316,7 +1316,7 @@ def _make_handler(
             duck_active_probe=duck_active_probe,
         )
 
-    async def _get_op() -> VolumeState:
+    def _get_op() -> VolumeState:
         return _read_volume_state()
 
     async def _mute_set_op(want_muted: bool) -> VolumeState:
