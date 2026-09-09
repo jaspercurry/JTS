@@ -80,6 +80,16 @@ REASON_FANIN_TTS_PROTOCOL_ERRORS = "fanin_tts_protocol_errors"
 REASON_FANIN_TTS_AUDIO_DROPPED = "fanin_tts_audio_dropped"
 REASON_FANIN_TTS_CONNECTIONS_REJECTED = "fanin_tts_connections_rejected"
 REASON_FANIN_TTS_FRAME_TIMEOUTS = "fanin_tts_frame_timeouts"
+REASON_FANIN_TTS_DROPPED_RECENTLY = "fanin_tts_dropped_recently"
+
+REASON_FANIN_SCHED_STATUS_NOT_PROBED = "fanin_sched_status_not_probed"
+REASON_FANIN_SCHED_POLICY_UNREPORTED = "fanin_sched_policy_unreported"
+REASON_FANIN_SCHED_POLICY_NOT_FIFO = "fanin_sched_policy_not_fifo"
+
+# How recent a TTS drop has to be to be worth a row. Long enough to survive one
+# listening session's worth of doctor runs, short enough that a boot-time drop
+# does not latch the row warn until the next restart.
+FANIN_TTS_DROP_RECENT_MS = 900_000
 
 REASON_HOST_CLOCK_STATUS_NOT_PROBED = "host_clock_status_not_probed"
 REASON_HOST_CLOCK_TELEMETRY_MISSING = "host_clock_telemetry_missing"
@@ -702,15 +712,17 @@ def check_fanin_tts_drops() -> CheckResult:
     under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a
     nonzero drop counter means assistant/cue audio audibly skipped.
 
-    Every counter here is CUMULATIVE SINCE FAN-IN START, and fan-in publishes no
-    recency beside them, so no rate-and-recency verdict is derivable: warning
-    would latch one boot-time drop red until the next restart, and reward a
-    healer for restarting fan-in to clear it.
+    Every counter here is CUMULATIVE SINCE FAN-IN START, so the verdict keys on
+    `tts.last_drop_age_ms` instead: a drop inside FANIN_TTS_DROP_RECENT_MS is a
+    live fault and warns, while the same counters with no recent drop stay ok
+    rather than latching one boot-time drop red until the next restart. A build
+    that publishes no `last_drop_age_ms` keeps the counter-only verdicts below
+    unchanged; drop the recency branch if no build ever publishes it.
 
     Returns:
-      - ok whenever STATUS is readable, carrying `fanin_tts_protocol_errors`,
-        `fanin_tts_audio_dropped`, `fanin_tts_connections_rejected`,
-        `fanin_tts_frame_timeouts` or `fanin_tts_lane_disabled` as its reason.
+      - warn when a drop happened inside the recency window.
+      - ok whenever STATUS is readable and nothing dropped recently, carrying
+        the counter branch that fired as its reason.
       - skipped when STATUS is unreachable (reachability is owned by
         'jasper-fanin service').
     """
@@ -733,6 +745,23 @@ def check_fanin_tts_drops() -> CheckResult:
             "ok",
             "TTS lane disabled in this topology",
             reason=REASON_FANIN_TTS_LANE_DISABLED,
+        )
+
+    drop_age_ms = tts.get("last_drop_age_ms")
+    if (
+        isinstance(drop_age_ms, (int, float))
+        and not isinstance(drop_age_ms, bool)
+        and 0 <= drop_age_ms <= FANIN_TTS_DROP_RECENT_MS
+    ):
+        return CheckResult(
+            name,
+            "warn",
+            f"TTS audio dropped {int(drop_age_ms) // 1000}s ago — an assistant "
+            "reply or cue was audibly garbled. Check `journalctl -u jasper-fanin "
+            "| grep tts_command_dropped` and the voice daemon's `paced` turn "
+            "accounting; an unpaced writer or a pacing regression is the usual "
+            "cause.",
+            reason=REASON_FANIN_TTS_DROPPED_RECENTLY,
         )
 
     dropped_frames = int(tts.get("dropped_audio_frames") or 0)
@@ -792,6 +821,53 @@ def check_fanin_tts_drops() -> CheckResult:
             reason=REASON_FANIN_TTS_FRAME_TIMEOUTS,
         )
     return CheckResult(name, "ok", f"none since fan-in start ({budget})")
+
+
+@doctor_check()
+def check_fanin_sched_policy() -> CheckResult:
+    """jasper-fanin's mixer loop must be running SCHED_FIFO.
+
+    The loop is period-hot: demoted to SCHED_OTHER it keeps its counters clean
+    while missing deadlines under load, which reaches the household as
+    intermittent skipping with no xrun to point at. Fail-soft in both
+    directions — a build that does not publish the field is `skipped`, never a
+    warn about a policy nothing observed. Remove this row if no daemon build
+    ever publishes `sched_policy`: a permanently skipped row is noise.
+    """
+    name = "fan-in scheduling policy"
+    status = evidence.fanin_status()
+    data = status.payload
+    if data is None:
+        return CheckResult(
+            name,
+            "skipped",
+            f"not probed ({type(status.error).__name__}); fan-in reachability is "
+            "covered by the 'jasper-fanin service' check",
+            reason=REASON_FANIN_SCHED_STATUS_NOT_PROBED,
+        )
+    raw = data.get("sched_policy")
+    policy = raw.strip() if isinstance(raw, str) else ""
+    # "unknown" is the daemon's sched_getscheduler() error return: nothing was
+    # observed, which is unreported, not a demotion.
+    if not policy or policy.lower() == "unknown":
+        return CheckResult(
+            name,
+            "skipped",
+            "jasper-fanin STATUS reports no sched_policy on this build",
+            reason=REASON_FANIN_SCHED_POLICY_UNREPORTED,
+        )
+    if policy.upper() != "SCHED_FIFO":
+        return CheckResult(
+            name,
+            "warn",
+            f"jasper-fanin is running {policy}, not SCHED_FIFO — the mixer "
+            "loop can miss its period under load without recording an xrun. "
+            "Check the unit's CPUSchedulingPolicy= and whether "
+            "sched_setscheduler failed at start "
+            "(`journalctl -u jasper-fanin | grep sched`).",
+            reason=REASON_FANIN_SCHED_POLICY_NOT_FIFO,
+        )
+    return CheckResult(name, "ok", policy)
 
 
 @doctor_check()
