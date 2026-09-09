@@ -79,7 +79,7 @@ parks loudly: doctor FAIL, `/system/snapshot.transport_park`, and one row
 per park on the `/system` page naming the shape and its tracked issue. Owner
 ruling 2026-08-27: no banner — a browser learns about a park on the system
 screen and nowhere else.
-`jasper/control/transport_park.py` is the single classifier all three
+`jasper/control/transport_eligibility.py` is the single classifier all three
 surfaces read, so they cannot name different reasons for the same box. The
 shapes it names are a passive-stereo composite sink (#2982), an explicit
 mono full-range layout (#3117), a bonded member whose `dac_content`
@@ -718,5 +718,5 @@ tap reads.
 
 Last verified: 2026-09-05 against `deploy/alsa/asoundrc.jasper`,
 `deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`,
-`jasper/control/transport_park.py`, and the DAC section against
+`jasper/control/transport_eligibility.py`, and the DAC section against
 `jasper/audio_hardware/dac.py` and `jasper/output_hardware.py`.

@@ -16,6 +16,7 @@ not restart when outputd parks.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
 
 from .control import park_record
@@ -31,14 +32,6 @@ UNIT = "jasper-outputd.service"
 #: ``RuntimeDirectory=jasper-outputd``, which systemd deletes on the very stop
 #: this record reports.
 DEFAULT_RECORD_PATH = "/run/jasper-outputd-failure-reconcile.park"
-
-SPEC = park_record.ParkRecordSpec(
-    default_path=DEFAULT_RECORD_PATH,
-    path_env_var="JASPER_OUTPUTD_RECONCILE_PARK_STATE",
-    fields=("exit_status", "reason"),
-    timestamp_field="parked_at",
-    timestamp_format="epoch",
-)
 
 #: Closed vocabulary for ``snapshot()["reason"]``.
 REASON_PARKED = "parked"
@@ -75,15 +68,17 @@ def snapshot(
       this module cannot read must not report a healthy speaker.
     * ``ok`` — no record, outputd running.
     """
-    rec = park_record.snapshot(SPEC, path)
-    out: dict[str, Any] = {"path": rec["path"], "present": False, "parked": False}
+    target = path if path is not None else os.environ.get(
+        "JASPER_OUTPUTD_RECONCILE_PARK_STATE", DEFAULT_RECORD_PATH
+    )
+    out: dict[str, Any] = {"path": target, "present": False, "parked": False}
+    terminal, fields = park_record.read(target)
 
-    if rec["status"] == "unreadable":
-        out["error"] = rec.get("error")
-        out["reason"] = REASON_UNOBSERVED
-        return out
-    if rec["status"] == "absent":
-        if unit_state is None:
+    if terminal is not None:
+        if terminal.get("status") == "unreadable":
+            out["error"] = terminal.get("error")
+            out["reason"] = REASON_UNOBSERVED
+        elif unit_state is None:
             out["reason"] = REASON_UNOBSERVED
         elif unit_failed(unit_state):
             out["reason"] = REASON_UNIT_FAILED
@@ -95,9 +90,9 @@ def snapshot(
 
     out.update({
         "present": True,
-        "parked_at": rec.get("parked_at"),
-        "exit_status": rec.get("exit_status"),
-        "park_reason": rec.get("reason"),
+        "parked_at": _epoch(fields.get("parked_at")),
+        "exit_status": fields.get("exit_status"),
+        "park_reason": fields.get("reason"),
     })
     if unit_state is not None and not unit_failed(unit_state):
         out["reason"] = REASON_RECORD_STALE
@@ -105,3 +100,10 @@ def snapshot(
     out["parked"] = True
     out["reason"] = REASON_PARKED
     return out
+
+
+def _epoch(raw: str | None) -> int | None:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None

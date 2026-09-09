@@ -995,6 +995,15 @@ def _silent_camilla_recover_park(monkeypatch, tmp_path):
             "status": "parked",
             "parked": True,
             "reason": "camilla_start_failed",
+            "parked_utc": "2026-01-15T12:00:00Z",
         },
     )
     return audio_runtime_camilla.check_camilla_recover_park
+
+
+def test_camilla_recover_park_detail_carries_the_writers_own_timestamp(
+    monkeypatch, tmp_path
+):
+    """A malformed parked_utc must still show up verbatim, never drop the line."""
+    result = _silent_camilla_recover_park(monkeypatch, tmp_path)()
+    assert "2026-01-15T12:00:00Z" in result.detail

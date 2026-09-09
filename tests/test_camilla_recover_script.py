@@ -237,6 +237,7 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     snapshot = camilla_recover_state.snapshot()
     assert snapshot["parked"] is True
     assert snapshot["reason"] == "camilla_start_failed"
+    assert isinstance(snapshot["parked_at"], int)
 
     result = audio_runtime_camilla.check_camilla_recover_park()
     assert result.status == "fail"

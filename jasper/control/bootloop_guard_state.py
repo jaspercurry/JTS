@@ -11,18 +11,16 @@ state.json` on every run (`tripped: false` on a healthy boot,
 `tripped: true` after it has written the runtime drop-ins that disarm
 StartLimitAction=reboot). This module reads that marker fresh on every
 call so the doctor row reflects the truth of the current boot, including
-a guard that never ran (fresh install, unit failed). The marker's
-open/parse fail-soft posture is :func:`jasper.control.park_record.read_json`.
+a guard that never ran (fresh install, unit failed).
 
 Always returns a dict, never raises, with a top-level `ran`
 discriminator.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
-
-from . import park_record
 
 DEFAULT_MARKER_PATH = "/run/jasper-bootloop-guard/state.json"
 
@@ -38,8 +36,12 @@ def snapshot() -> dict[str, Any]:
     targets when tripped). A missing or corrupt marker resolves to
     ``{"ran": False}`` — the guard fails open, and so does its
     observability."""
-    raw = park_record.read_json(_marker_path())
-    if raw is None:
+    try:
+        with open(_marker_path(), encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"ran": False}
+    if not isinstance(raw, dict):
         return {"ran": False}
     return {
         "ran": True,
