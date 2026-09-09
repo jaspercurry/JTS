@@ -10,7 +10,7 @@ pub const BUFFER_ADJUST_PPM: f64 = 2000.0;
 pub enum DecayFrozenReason {
     Unlocked,
     NotL0,
-    Cascade,
+    BufferLow,
     Warmup,
     AtFloor,
     Backoff,
@@ -23,7 +23,7 @@ impl DecayFrozenReason {
             None => 0,
             Some(Self::Unlocked) => 1,
             Some(Self::NotL0) => 2,
-            Some(Self::Cascade) => 3,
+            Some(Self::BufferLow) => 3,
             Some(Self::Warmup) => 4,
             Some(Self::AtFloor) => 5,
             Some(Self::Backoff) => 6,
@@ -34,7 +34,7 @@ impl DecayFrozenReason {
         match code {
             1 => "unlocked",
             2 => "not_l0",
-            3 => "cascade",
+            3 => "buffer_low",
             4 => "warmup",
             5 => "at_floor",
             6 => "backoff",
@@ -49,7 +49,6 @@ pub struct DecayParams {
     pub enabled: bool,
     pub floor_frames: u64,
     pub stability_ms: u64,
-    pub cascade_guard_ppm: f64,
 }
 
 impl DecayParams {
@@ -59,7 +58,6 @@ impl DecayParams {
             enabled: false,
             floor_frames: 0,
             stability_ms: 2000,
-            cascade_guard_ppm: 400.0,
         }
     }
     pub fn build(
@@ -89,7 +87,6 @@ impl DecayParams {
             // A 250 ms gap exceeds the whole acquisition buffer; extra
             // buffering cannot bridge it. Treat it as an idle/resume boundary.
             pause_periods: periods(250),
-            cascade_guard_ppm: self.cascade_guard_ppm,
             settled_periods: 0,
             stable_periods: 0,
             idle_periods: 0,
@@ -111,8 +108,7 @@ impl DecayParams {
 pub struct DecaySignals {
     pub locked: bool,
     pub dll_l0_locked: bool,
-    pub commanded_ppm_abs: f64,
-    pub ratio_saturated: bool,
+    pub buffer_low: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +121,6 @@ pub struct CushionDecay {
     period_frames: f64,
     stability_periods: u64,
     pause_periods: u64,
-    cascade_guard_ppm: f64,
     stable_periods: u64,
     settled_periods: u64,
     idle_periods: u64,
@@ -218,6 +213,20 @@ impl CushionDecay {
         }
     }
 
+    pub fn output_lost(&mut self) {
+        self.interrupted_at = None;
+        self.reuse_last_good();
+    }
+
+    fn reuse_last_good(&mut self) {
+        if self.connection != 0 && !self.failed {
+            if let Some(target) = self.last_good {
+                self.held = target as f64;
+                self.reused = true;
+            }
+        }
+    }
+
     // Called after rendering. Integrate only the motion actually used in that
     // period, then prepare the next period's feed-forward and target together.
     pub fn tick(&mut self, s: DecaySignals) -> u64 {
@@ -227,17 +236,11 @@ impl CushionDecay {
         if !s.locked {
             self.motion_ppm = 0.0;
             self.idle_periods = self.idle_periods.saturating_add(1);
-            if self.idle_periods >= self.pause_periods && self.connection != 0 && !self.failed {
-                if let Some(target) = self.last_good {
-                    self.held = target as f64;
-                    self.reused = true;
-                }
+            if self.idle_periods >= self.pause_periods {
+                self.reuse_last_good();
             }
             self.frozen_reason = Some(DecayFrozenReason::Unlocked);
             return self.held();
-        }
-        if self.motion_ppm != 0.0 || !s.dll_l0_locked || s.ratio_saturated {
-            self.settled_periods = 0;
         }
         self.held = (self.held - self.motion_ppm * self.period_frames / 1e6)
             .clamp(self.learned_floor as f64, self.ceiling as f64);
@@ -261,20 +264,23 @@ impl CushionDecay {
             }
             self.refilling = false;
         }
-        if !s.dll_l0_locked {
+        if self.failed || (!s.dll_l0_locked && self.connection == 0) {
             self.motion_ppm = 0.0;
             self.stable_periods = 0;
-            if self.reused && !self.failed {
-                self.frozen_reason = Some(DecayFrozenReason::Reused);
-            } else {
-                self.snap_back(DecayFrozenReason::NotL0);
-            }
+            self.snap_back(DecayFrozenReason::NotL0);
             return self.held();
         }
-        if s.commanded_ppm_abs > self.cascade_guard_ppm || s.ratio_saturated {
+        if self.held == self.learned_floor as f64 && self.motion_ppm == 0.0 && s.dll_l0_locked {
+            self.settled_periods = self.settled_periods.saturating_add(1);
+            if self.settled_periods >= self.stability_periods && self.connection != 0 {
+                self.last_good = Some(self.held());
+            }
+        } else {
+            self.settled_periods = 0;
+        }
+        if s.buffer_low {
             self.motion_ppm = 0.0;
-            self.stable_periods = 0;
-            self.frozen_reason = Some(DecayFrozenReason::Cascade);
+            self.frozen_reason = Some(DecayFrozenReason::BufferLow);
             return self.held();
         }
         self.stable_periods = self.stable_periods.saturating_add(1);
@@ -287,18 +293,13 @@ impl CushionDecay {
             self.frozen_reason = None;
         } else {
             self.motion_ppm = 0.0;
-            self.frozen_reason = Some(if self.learned_floor > self.floor {
+            self.frozen_reason = Some(if self.reused && !s.dll_l0_locked {
+                DecayFrozenReason::Reused
+            } else if self.learned_floor > self.floor {
                 DecayFrozenReason::Backoff
             } else {
                 DecayFrozenReason::AtFloor
             });
-            self.settled_periods = self.settled_periods.saturating_add(1);
-            if self.settled_periods >= self.stability_periods
-                && self.connection != 0
-                && !self.failed
-            {
-                self.last_good = Some(self.held());
-            }
         }
         self.held()
     }
@@ -312,8 +313,63 @@ mod tests {
         DecaySignals {
             locked,
             dll_l0_locked: locked,
-            commanded_ppm_abs: 0.0,
-            ratio_saturated: false,
+            buffer_low: false,
+        }
+    }
+
+    #[test]
+    fn buffer_dips_pause_probe_descent_without_restarting_the_settle_window() {
+        let mut d = DecayParams {
+            enabled: true,
+            floor_frames: 576,
+            stability_ms: 2000,
+        }
+        .build(2560, 256, 48000, 500.0);
+        d.context(1, false, false);
+        let mut s = signals(true);
+        s.dll_l0_locked = false;
+        for _ in 0..1000 {
+            d.tick(s);
+        }
+        assert!(d.held() < 2560);
+        s.buffer_low = true;
+        d.tick(s);
+        let held = d.held();
+        for _ in 0..100 {
+            d.tick(s);
+        }
+        assert_eq!(d.held(), held);
+        assert_eq!(d.demand_ppm(), 0.0);
+        assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::BufferLow));
+        s.buffer_low = false;
+        d.tick(s);
+        assert!(d.demand_ppm() > 0.0);
+        d.tick(s);
+        d.tick(s);
+        assert!(d.held() < held);
+    }
+
+    #[test]
+    fn a_provisional_low_buffer_is_reusable_only_after_timing_passes() {
+        for (passed, expected) in [(false, 2560), (true, 576)] {
+            let mut d = DecayParams {
+                enabled: true,
+                floor_frames: 576,
+                stability_ms: 2000,
+            }
+            .build(2560, 256, 48000, 500.0);
+            d.context(1, false, false);
+            let mut s = signals(true);
+            s.dll_l0_locked = passed;
+            for _ in 0..6000 {
+                d.tick(s);
+            }
+            assert_eq!(d.held(), 576);
+            d.snap_back(DecayFrozenReason::Unlocked);
+            for _ in 0..100 {
+                d.tick(signals(false));
+            }
+            assert_eq!(d.held(), expected);
         }
     }
 
@@ -323,7 +379,6 @@ mod tests {
             enabled: true,
             floor_frames: 576,
             stability_ms: 2000,
-            cascade_guard_ppm: 400.0,
         }
         .build(2560, 256, 48000, 500.0);
         d.context(1, false, false);

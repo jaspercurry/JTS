@@ -27,7 +27,7 @@ mod pcm_open;
 mod ring_capture;
 
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
@@ -352,7 +352,6 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
 
 const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
-const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread — which OWNS the `LaneResampler` and performs the actual ring trim —
@@ -779,18 +778,9 @@ pub struct Mixer {
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
-    /// REVERSE host-clock signals (servo thread → mixer) for the DEFAULT-OFF
-    /// post-lock cushion decay. The `fanin-host-clock` thread only ever WRITES
-    /// these, every servo tick; the mixer's per-period decay tick only ever
-    /// READS them. `ladder_l0` = the DLL is `l0_locked` (decay's steady-state
-    /// gate); `commanded_milli_ppm` = the DLL's last commanded bias (× 1000) for
-    /// the cascade guard. When the servo thread is not running (host-clock off /
-    /// no direct lane) these stay at their init (`false` / 0), so decay never
-    /// leaves the ceiling — decay REQUIRES the DLL.
     host_clock_ladder_l0: Arc<AtomicBool>,
     usb_connection_epoch: Arc<AtomicU64>,
     host_clock_timing_failed: Arc<AtomicBool>,
-    host_clock_commanded_milli_ppm: Arc<AtomicI64>,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -1524,7 +1514,6 @@ impl Mixer {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             usb_connection_epoch: Arc::new(AtomicU64::new(0)),
             host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
-            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -1581,7 +1570,6 @@ impl Mixer {
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
             connection_epoch: Arc::clone(&self.usb_connection_epoch),
             timing_failed: Arc::clone(&self.host_clock_timing_failed),
-            commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
         })
     }
 
@@ -1675,16 +1663,9 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         self.maybe_trim();
 
-        // Snapshot the REVERSE host-clock signals ONCE per period for the
-        // cushion-decay tick below (a per-input read would self-borrow). `l0`
-        // gates decay to the DLL's steady state; `commanded_ppm_abs` drives the
-        // cascade guard. Both are inert (false / 0) when the servo thread is not
-        // running, so decay never leaves the ceiling without the DLL.
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
         let connection_epoch = self.usb_connection_epoch.load(Ordering::Relaxed);
         let timing_failed = self.host_clock_timing_failed.load(Ordering::Relaxed);
-        let decay_commanded_ppm_abs =
-            (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
             if let Some(r) = input.resampler.as_mut() {
@@ -1771,7 +1752,7 @@ impl Mixer {
                 if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
                     r.force_decay_snap_back();
                 }
-                r.tick_decay(decay_l0, decay_commanded_ppm_abs);
+                r.tick_decay(decay_l0);
             }
             // Selection AND mute gate, applied at the SUM only: the per-lane
             // telemetry above is already accounted, so a de-selected OR muted
@@ -1882,6 +1863,11 @@ impl Mixer {
             &self.ring_wide_payload,
             self.period_frames,
         );
+        for input in &mut self.inputs {
+            if let Some(resampler) = &mut input.resampler {
+                resampler.output_published(published_frames);
+            }
+        }
         self.frames_written
             .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())
@@ -2346,7 +2332,6 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         enabled: config.input_resampler_cushion_decay_enabled,
         floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
         stability_ms: CUSHION_DECAY_STABILITY_MS,
-        cascade_guard_ppm: CUSHION_DECAY_CASCADE_GUARD_PPM,
     };
     match LaneResampler::new(
         CHANNELS as usize,
