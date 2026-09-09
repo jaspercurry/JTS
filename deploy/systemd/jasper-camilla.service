@@ -1,8 +1,7 @@
 [Unit]
 Description=CamillaDSP (always-on, outputd + master_gain ducking node)
 After=sound.target network.target jasper-audio-hardware-reconcile.service jasper-outputd.service jasper-fanin.service
-Wants=sound.target jasper-outputd.service jasper-fanin.service
-Requires=jasper-audio-hardware-reconcile.service
+Wants=sound.target jasper-outputd.service jasper-fanin.service jasper-audio-hardware-reconcile.service
 # Camilla must NEVER stay stopped. The audio chain breaks the moment
 # it exits; voice and the AEC bridge deliberately keep only soft
 # dependencies so a brief DSP restart does not also kill mic progress.

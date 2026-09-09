@@ -232,9 +232,9 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
 # ---------------------------------------------------------------------------
 # main()'s exit contract: a permanent fault parks, a transient restarts.
 #
-# jasper-aec-bridge.service carries RestartSec=2 / StartLimitBurst=4 /
+# jasper-aec-bridge.service carries RestartSec=5 / StartLimitBurst=4 /
 # StartLimitAction=reboot, so a fault systemd counts as a failure reboots the
-# box in ~8 s and comes back to the same fault. The five permanent faults exit
+# box in ~20 s and comes back to the same fault. The five permanent faults exit
 # on codes the unit lists in SuccessExitStatus + RestartPreventExitStatus
 # (66 78) so the unit parks instead; BridgeStalled is transient and keeps 1.
 # ---------------------------------------------------------------------------

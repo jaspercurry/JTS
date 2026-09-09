@@ -10,7 +10,6 @@ Description=Jasper USB Audio Input readiness marker
 # kernel registered the UAC2Gadget ALSA card. It is not a liveness or activity
 # signal; fan-in STATUS owns both.
 After=jasper-usbgadget.service jasper-fanin.service jasper-camilla.service sound.target
-Requires=jasper-usbgadget.service
 Wants=jasper-fanin.service jasper-usbsink-volume.service
 # Restarting the gadget invalidates the prior readiness proof. PartOf makes the
 # marker stop/re-run with the gadget owner, including its wait-card barrier.

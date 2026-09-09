@@ -110,8 +110,8 @@ def test_bridge_gates_on_the_reconciler_published_ready_marker() -> None:
 def test_bridge_parks_on_the_permanent_fault_exit_codes() -> None:
     """A permanent fault must not spend the StartLimitAction=reboot budget.
 
-    `RestartSec=2` x `StartLimitBurst=4` means a fault the bridge cannot grow
-    out of reboots the box in ~8 s and comes back to the same fault.
+    `RestartSec=5` x `StartLimitBurst=4` means a fault the bridge cannot grow
+    out of reboots the box in ~20 s and comes back to the same fault.
     `jasper/cli/aec_bridge.py` exits 78 (os.EX_CONFIG) on the three config
     faults and the opt-in corpus-USB leg, and 66 (os.EX_NOINPUT) when the wake
     mic itself will not open; both must read as success here so the unit parks.
