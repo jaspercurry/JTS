@@ -112,6 +112,16 @@ def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     attribution = _clean_attribution(context.get("attribution"))
     if attribution is not None:
         out["attribution"] = attribution
+    host = {
+        field: value
+        for field, value in (
+            (name, _finite_number(_mapping(context.get("host")).get(name)))
+            for name in ("throttled_now", "throttled_history", "mem_psi_some_avg60")
+        )
+        if value is not None
+    }
+    if host:
+        out["host"] = host
     return out
 
 

@@ -2022,6 +2022,7 @@ def main(argv: list[str] | None = None) -> int:
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
         service_probe=sampler.service_states_snapshot,
+        system_probe=sampler.pressure_snapshot,
         incident_store=IncidentStore(),
     )
     audio_health_sampler.start()
