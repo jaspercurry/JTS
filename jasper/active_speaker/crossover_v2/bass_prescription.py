@@ -76,6 +76,7 @@ __all__ = [
     "TARGET_NOT_IN_FAMILY",
     "BassPrescription",
     "BassPrescriptionRefused",
+    "bass_fit_body",
     "bass_prescription_response_format",
     "bass_prescription_to_candidate_fields",
     "read_bass_prescription",
@@ -356,17 +357,22 @@ def _parse_prescription(
     )
 
 
+def bass_fit_body(document: Any) -> Any:
+    """The fit inside the ``bass-fit`` view's wrapper, else the value itself.
+
+    The view writes ``{"status": ..., "bass_fit": {...}}``; a caller holding
+    either shape asks the same question of the fit.
+    """
+    if isinstance(document, Mapping) and isinstance(document.get("bass_fit"), Mapping):
+        return document["bass_fit"]
+    return document
+
+
 def _family(
     bass_fit: Mapping[str, Any] | None,
 ) -> tuple[Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
-    """The fit and its rungs, in the order it published them.
-
-    The document the ``bass-fit`` view writes wraps the fit under its own key;
-    the fit itself is accepted too, so a caller holding either shape asks the
-    same question.
-    """
-    if isinstance(bass_fit, Mapping) and isinstance(bass_fit.get("bass_fit"), Mapping):
-        bass_fit = bass_fit["bass_fit"]
+    """The fit and its rungs, in the order it published them."""
+    bass_fit = bass_fit_body(bass_fit)
     if not isinstance(bass_fit, Mapping):
         _refuse(
             FIT_UNAVAILABLE,
