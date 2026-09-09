@@ -10,6 +10,7 @@ the `_BridgeStats` it counts into rather than reaching for a module global.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 import json
 import logging
@@ -43,7 +44,13 @@ OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 BRIDGE_STATS_PATH_ENV = "JASPER_AEC_BRIDGE_STATS_PATH"
-BRIDGE_STATS_SCHEMA_VERSION = 4
+BRIDGE_STATS_SCHEMA_VERSION = 5
+# Cadence of the bridge's RMS telemetry and the depth of the window history
+# the snapshot republishes. Their product is the span jasper-doctor assesses
+# for reference-path health, and the history must stay at or above doctor's
+# silent-reference alarm count (5) for that verdict to be reachable.
+RMS_LOG_INTERVAL_SEC = 15.0
+RMS_WINDOW_HISTORY = 6
 
 
 def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
@@ -136,6 +143,9 @@ class _BridgeStats:
                 if reference_endpoint is None
                 else reference_endpoint
             )
+            self._rms_windows: deque[dict[str, object]] = deque(
+                maxlen=RMS_WINDOW_HISTORY,
+            )
             self._reference_frames_enqueued = 0
             self._reference_last_frame_monotonic: float | None = None
             self._counters: dict[str, int] = {
@@ -171,6 +181,32 @@ class _BridgeStats:
         with self._lock:
             self._reference_frames_enqueued += count
             self._reference_last_frame_monotonic = now
+
+    def record_rms_window(
+        self,
+        *,
+        ref: float,
+        mic: float,
+        level_db: float | None,
+        chip: bool,
+    ) -> None:
+        """Publish one finished RMS window, the near-end evidence
+        jasper-doctor's `check_aec_bridge_output_health` assesses.
+
+        `mic` is the least-cancelled near-end level the running profile
+        offers: the AEC3 capture lane, or the chip's raw mic-0 channel.
+        `level_db` is AEC3 attenuation, None under chip AEC.
+        """
+
+        window: dict[str, object] = {
+            "ref": round(ref),
+            "mic": round(mic),
+            "level_db": level_db,
+            "chip": chip,
+            "monotonic_ms": max(0, int(time.monotonic() * 1000)),
+        }
+        with self._lock:
+            self._rms_windows.append(window)
 
     def set_capture_stream(
         self,
@@ -298,6 +334,7 @@ class _BridgeStats:
             leg_engines = json.loads(json.dumps(self._leg_engines))
             active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
             capture_stream = json.loads(json.dumps(self._capture_stream))
+            rms_windows = list(self._rms_windows)
             reference_source = self._reference_source
             reference_endpoint = self._reference_endpoint
             reference_frames_enqueued = self._reference_frames_enqueued
@@ -326,6 +363,7 @@ class _BridgeStats:
             "counters": counters,
             "leg_engines": leg_engines,
             "capture_stream": capture_stream,
+            "rms": {"windows": rms_windows},
             "reference_input": {
                 "source": reference_source,
                 "endpoint": reference_endpoint,

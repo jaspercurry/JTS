@@ -438,7 +438,6 @@ def test_summarize_latencies_empty_does_not_crash():
 def _healthy_route_snapshot(
     *,
     uptime_seconds: float = 10.0,
-    fanin_output_xruns: int = 0,
     outputd_content_xruns: int = 0,
     outputd_dac_xruns: int = 0,
     usb_xruns: int = 0,
@@ -462,7 +461,6 @@ def _healthy_route_snapshot(
                     },
                 },
             ],
-            "output": {"xrun_count": fanin_output_xruns},
         },
         "outputd": {
             "uptime_seconds": uptime_seconds,
@@ -604,27 +602,12 @@ def test_diff_route_health_negative_known_delta_means_restart_not_clean():
     # daemon restarted mid-window (counter reset to 0). A restart is an unclean
     # window by definition — it must NOT justify the declaration, even though
     # "fewer xruns after" superficially looks cleaner.
-    before = _healthy_route_snapshot(fanin_output_xruns=7)
+    before = _healthy_route_snapshot(outputd_dac_xruns=7)
     after = _healthy_route_snapshot(uptime_seconds=20.0)  # reset to 0 -> -7
 
     report = harness.diff_route_health(before, after)
 
-    assert report.known_counter_deltas["fanin.output.xrun_count"] == -7.0
-    assert report.window_clean is False
-
-
-def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
-    # S2: a new fan-in OUTPUT xrun is on the route's own path. The clean-window
-    # contract names "no outputd/fan-in xruns" explicitly, so it must disqualify.
-    before = _healthy_route_snapshot()
-    after = _healthy_route_snapshot(
-        uptime_seconds=20.0,
-        fanin_output_xruns=4,
-    )
-
-    report = harness.diff_route_health(before, after)
-
-    assert report.known_counter_deltas["fanin.output.xrun_count"] == 4.0
+    assert report.known_counter_deltas["outputd.dac.xrun_count"] == -7.0
     assert report.window_clean is False
 
 
@@ -923,12 +906,12 @@ def test_cli_analyze_prints_route_health_deltas_and_the_window_verdict(tmp_path,
         json.dumps(
             {
                 "before": {
-                    "fanin": {"output": {"xrun_count": 0}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 0}},
                 },
                 "after": {
-                    "fanin": {"output": {"xrun_count": 2}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 2}},
                 },
             }
         ),
@@ -946,7 +929,7 @@ def test_cli_analyze_prints_route_health_deltas_and_the_window_verdict(tmp_path,
     assert rc == 0
     out = capsys.readouterr().out
     assert "NOT clean" in out
-    assert "fanin.output.xrun_count: +2" in out
+    assert "outputd.dac.xrun_count: +2" in out
 
 
 def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
@@ -967,13 +950,13 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
             {
                 "before": {
                     "captured_at_monotonic_ns": 1_000,
-                    "fanin": {"output": {"xrun_count": 0}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 0}},
                 },
                 "after": {
                     "captured_at_monotonic_ns": 999_999_999,
-                    "fanin": {"output": {"xrun_count": 1}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 1}},
                 },
             }
         ),
@@ -991,7 +974,7 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The real counter delta is printed...
-    assert "fanin.output.xrun_count: +1" in out
+    assert "outputd.dac.xrun_count: +1" in out
     # ...but the timestamp leaves are not.
     assert "captured_at_monotonic_ns" not in out
 

@@ -625,7 +625,8 @@ def test_doctor_wake_check_does_not_load_sklearn() -> None:
     )
 
 
-def test_doctor_import_does_not_load_portaudio() -> None:
+@pytest.mark.parametrize("module", ["sounddevice", "numpy"])
+def test_doctor_import_does_not_load_portaudio(module: str) -> None:
     """jasper-doctor runs on every install and opens no audio device.
 
     Importing `sounddevice` loads the PortAudio shared library, so the two
@@ -633,6 +634,12 @@ def test_doctor_import_does_not_load_portaudio() -> None:
     module in the doctor's import graph has to keep that bargain: one
     top-level `import sounddevice` anywhere in it costs the load on every run
     and makes the doctor unimportable on a host without the library.
+
+    `numpy` is pinned the same way: the cue-cache check's module
+    (`jasper.cues.manager`) only needs `wait_tts_drained_owned` — pure
+    asyncio — so numpy must stay out of the full roster inside the 256M
+    doctor cgroup on the 415 MB Pi. Remove this half of the parametrize if
+    the doctor roster ever legitimately needs numpy at import time.
 
     `registered_checks()`, not a bare package import: the check modules are
     imported on demand now (ADR-0233 rule 5's `--core` subset), and the full
@@ -645,12 +652,11 @@ def test_doctor_import_does_not_load_portaudio() -> None:
         "assert 'jasper.aec.bridge_config' in sys.modules, (\n"
         "    'probe never reached bridge_config, the module whose "
         "lazy import this pins')\n"
-        "print('sounddevice_loaded=' + "
-        "str('sounddevice' in sys.modules).lower())\n"
+        f"print('loaded=' + str({module!r} in sys.modules).lower())\n"
     )
     result = _run_probe(probe)
-    assert result.get("sounddevice_loaded") is False, (
-        "importing jasper.cli.doctor pulled sounddevice into sys.modules. "
+    assert result.get("loaded") is False, (
+        f"importing jasper.cli.doctor pulled {module} into sys.modules. "
         "Keep the import inside the function that opens or queries a device."
     )
 

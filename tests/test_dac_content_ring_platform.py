@@ -7,9 +7,9 @@
 The platform is three files that ship together and open nothing:
 ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf`` declares the PCM,
 :mod:`jasper.multiroom.dac_content_ring` owns the same identity in Python, and
-``deploy/lib/install/ring-platform.sh`` places the conf.d on every box. Nothing
-consumes it yet — the lane is parked (ADR-0178 ``grouped_dac_content_lane``)
-and its transport arrives behind a hardware gate.
+``deploy/lib/install/ring-platform.sh`` places the conf.d on every box. Its one
+reader is outputd's round-trip arm (``rust/jasper-outputd/src/dac_content.rs``),
+which attaches the ring only when the lane marker is armed.
 
 Three contracts, in rising order of what they cost to get wrong:
 
@@ -63,6 +63,7 @@ from tests.test_grouping_ring_platform import _c_define, _strip_conf_comments
 # Same rule for "how a Rust declaration is read": the slot's own pin owns both
 # helpers, so the anchoring that keeps a doc comment from satisfying them is
 # written once.
+from tests.ring_abi import ring_abi
 from tests.test_ring_emitter_ioplug_negotiation import (
     _rust_declares_line,
     _rust_ring_slot_frames,
@@ -75,14 +76,13 @@ _IOPLUG_H = _REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
 _RING_PLATFORM_SH = _REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
 _OUTPUTD_CONFIG_RS = _REPO / "rust" / "jasper-outputd" / "src" / "config.rs"
 _OUTPUTD_DAC_CONTENT_RS = _REPO / "rust" / "jasper-outputd" / "src" / "dac_content.rs"
-_OUTPUTD_RING_SOURCE_RS = (
-    _REPO / "rust" / "jasper-outputd" / "src" / "shm_ring_source.rs"
-)
 
-#: The one rate this box runs. Neither the conf.d block nor the Python
-#: identity declares it — the ioplug inherits it and the Rust reader hardcodes
-#: it — so it is spelled here once and pinned against that reader below.
+#: The one rate this box runs, as this file's timing claims spell it. Neither
+#: the conf.d block nor the Python identity declares it — the ioplug inherits it
+#: and every ring geometry takes it from `jasper_ring::RATE_HZ` — so it is
+#: spelled here once and pinned against the generated ring ABI below.
 _RING_RATE_HZ = 48_000
+RING_ABI = ring_abi()
 
 
 def _read(path: Path) -> str:
@@ -420,25 +420,16 @@ def test_the_rust_ring_arm_opens_the_wire_python_and_the_confd_declare():
 def test_the_ring_readers_rate_is_the_one_rate_this_box_runs():
     """The RATE axis — the only one no declarer but the reader carries.
 
-    The conf.d block names no rate and the Python identity holds no constant
-    for it; the ioplug inherits it and this literal is where it enters the
-    ring's geometry. It is VALIDATED rather than negotiated: the geometry goes
-    field-by-field against the live header at attach, so a changed rate here
-    presents as a refused attach, not a resample.
+    The conf.d block names no rate and the Python identity holds no constant for
+    it; every ring geometry in either language takes it from
+    ``jasper_ring::RATE_HZ``, which the generated ABI publishes. It is VALIDATED
+    rather than negotiated: the geometry goes field-by-field against the live
+    header at attach, so a changed rate presents as a refused attach, not a
+    resample — which is why this file's timing arithmetic may assume it.
     """
-    rates = re.findall(
-        r"^\s*rate:\s*([\d_]+)\s*,",
-        _rust_production_half(_OUTPUTD_RING_SOURCE_RS),
-        re.MULTILINE,
-    )
-    assert len(rates) == 1, (
-        f"{_OUTPUTD_RING_SOURCE_RS.name} must build the geometry exactly once "
-        f"for this pin to guard it; found {len(rates)}. A second geometry at "
-        "another rate would leave this checking only the first."
-    )
-    assert int(rates[0].replace("_", "")) == _RING_RATE_HZ, (
-        f"the ring reader pins {rates[0]} Hz where this tree's timing claims "
-        f"are computed at {_RING_RATE_HZ} Hz"
+    assert RING_ABI["rate_hz"] == _RING_RATE_HZ, (
+        f"the ring ABI carries {RING_ABI['rate_hz']} Hz where this file's "
+        f"timing claims are computed at {_RING_RATE_HZ} Hz"
     )
 
 

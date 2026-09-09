@@ -19,6 +19,7 @@ import pytest
 import jasper.camilla as camilla_module
 from jasper.camilla import (
     CAMILLA_ATTEMPT_BUDGET_S,
+    CAMILLA_FAILURE_MEMORY_S,
     CAMILLA_OPERATION_TIMEOUT_S,
     CamillaController,
     CamillaUnavailable,
@@ -800,6 +801,92 @@ async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     assert len(clients) == 2
     assert websocket.default_timeout == 17.0
     assert controller._client is None
+
+
+@pytest.mark.parametrize(
+    ("gap_s", "recovers", "clients_after"),
+    [
+        (0.0, False, 3),
+        (CAMILLA_FAILURE_MEMORY_S + 1.0, False, 4),
+        (0.0, True, 4),
+        (0.0, "retry", 3),
+    ],
+)
+async def test_failure_memory_skips_the_retry_only_inside_the_window(
+    monkeypatch, gap_s: float, recovers: bool | str, clients_after: int,
+):
+    """A wedged websocket must not charge every caller two connect timeouts.
+    Each attempt burns CAMILLA_OPERATION_TIMEOUT_S, so the window is judged
+    from before the attempt; a reachable daemon disarms the memory. When
+    ``recovers`` is the string ``"retry"``, the disarming call itself only
+    succeeds on its retry (its first attempt is config-rejected, which
+    bypasses stale memory rather than a real transport failure) -- pinning
+    that a retry that succeeds disarms the memory too, not only a first
+    attempt that does."""
+    from camilladsp.exceptions import ConfigValidationError
+
+    clock = types.SimpleNamespace(now=0.0, healthy=False)
+    clients: list[object] = []
+    reject_first_of = 0 if recovers == "retry" else None
+
+    class Client:
+        def __init__(self, _host: str, _port: int) -> None:
+            self._ws = None
+            self._index = len(clients)
+            clients.append(self)
+
+        def connect(self) -> None:
+            clock.now += CAMILLA_OPERATION_TIMEOUT_S
+            if self._index == reject_first_of:
+                raise ConfigValidationError(message="bad config", value=None)
+            if not clock.healthy:
+                raise TimeoutError("wedged handshake")
+
+        def main_volume(self) -> float:
+            if not clock.healthy:
+                raise TimeoutError("wedged read")
+            return -20.0
+
+    _install_transport_fakes(monkeypatch, Client)
+    monkeypatch.setattr(
+        camilla_module, "time", types.SimpleNamespace(monotonic=lambda: clock.now),
+    )
+    controller = CamillaController("127.0.0.1", 1234)
+    call = lambda: controller._call(lambda client: client.main_volume())
+
+    if recovers == "retry":
+        # Arm the memory as an unrelated abandonment would have, moments
+        # before a call whose first attempt is config-rejected (so this
+        # stale memory can't itself cause an abandon) and whose retry
+        # succeeds. That retry-success must clear the memory: the next
+        # call reuses the still-cached client and fails once more (1 new
+        # client so far), and that failure must get its own retry (a 2nd
+        # new client) rather than an instant abandon off the stale
+        # timestamp -- which is what leaves only Call A's 2 clients behind.
+        controller._failed_at = (
+            2 * CAMILLA_OPERATION_TIMEOUT_S - CAMILLA_FAILURE_MEMORY_S / 2
+        )
+        controller._abandon_logged = True
+        clock.healthy = True
+        await call()
+        clock.healthy = False
+        with pytest.raises(CamillaUnavailable):
+            await call()
+        assert len(clients) == clients_after
+        return
+
+    with pytest.raises(CamillaUnavailable):
+        await call()
+    assert len(clients) == 2
+
+    clock.now += gap_s
+    if recovers:
+        clock.healthy = True
+        await call()
+        clock.healthy = False
+    with pytest.raises(CamillaUnavailable):
+        await call()
+    assert len(clients) == clients_after
 
 
 async def test_call_classifies_config_validation_error_as_config_rejected(monkeypatch):

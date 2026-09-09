@@ -8,14 +8,12 @@ run against, the ANSI report and the JSON report the /system dashboard reads.
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
     sudo /opt/jasper/.venv/bin/jasper-doctor --core      # post-deploy subset
-    sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
-    sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
     sudo /opt/jasper/.venv/bin/jasper-doctor --only network  # one module
     sudo /opt/jasper/.venv/bin/jasper-doctor --failing   # fail/warn rows only
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
 ``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
-checks pass, 1 otherwise; --watch exits 0 on Ctrl-C."""
+checks pass, 1 otherwise."""
 from __future__ import annotations
 
 import argparse
@@ -63,26 +61,22 @@ from ._shared import (
 )
 
 
+# Verdict order for the table: worst first. Module grouping (roster order)
+# is kept within a band via Python's stable sort. The one sort both the ANSI
+# report and the /system dashboard's JSON payload use, so the dashboard (fed
+# entirely by _json_payload()) never needs its own copy.
+_STATUS_BAND = {"fail": 0, "warn": 1, "skipped": 2, "ok": 3}
+
+
+def _worst_first(results: list[CheckResult]) -> list[CheckResult]:
+    return sorted(results, key=lambda r: _STATUS_BAND.get(r.status, 4))
+
+
 def render(
     results: list[CheckResult], *, core: bool = False, failing: bool = False,
 ) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    rows = (
-        [r for r in results if r.status in ("fail", "warn")]
-        if failing else results
-    )
-    for r in rows:
-        if r.status == "ok":
-            color, mark = GREEN, "✓"
-        elif r.status == "skipped":
-            color, mark = DIM, "-"
-        elif r.status == "warn":
-            color, mark = YELLOW, "!"
-        else:
-            color, mark = RED, "✗"
-        print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
-    print()
     counts = summarize(results)
     fails, warns, silent = (
         counts["fails"], counts["warns"], counts["speaker_silent"],
@@ -102,25 +96,41 @@ def render(
     # something is broken), so a parked box stays deployable (#2145).
     lead = "the speaker is silent — " if silent else ""
     if fails:
-        print(f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}")
-        return 1
-    if warns:
+        exit_code, summary = 1, f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}"
+    elif warns:
         tail = "" if silent else " — non-critical"
-        print(f"{YELLOW}{lead}{warns} warning(s){tail}.{RESET}")
-        return 0
-    print(f"{GREEN}all checks passed.{RESET}")
-    return 0
+        exit_code, summary = 0, f"{YELLOW}{lead}{warns} warning(s){tail}.{RESET}"
+    else:
+        exit_code, summary = 0, f"{GREEN}all checks passed.{RESET}"
+    print(summary)
+    print()
+    rows = (
+        [r for r in results if r.status in ("fail", "warn")]
+        if failing else results
+    )
+    for r in _worst_first(rows):
+        if r.status == "ok":
+            color, mark = GREEN, "✓"
+        elif r.status == "skipped":
+            color, mark = DIM, "-"
+        elif r.status == "warn":
+            color, mark = YELLOW, "!"
+        else:
+            color, mark = RED, "✗"
+        print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
+    print()
+    return exit_code
 
 def _json_payload(
     results: list[CheckResult],
     *,
     duration_sec: float | None = None,
 ) -> dict:
-    """The flat /system-dashboard schema — one row per check."""
+    """The flat /system-dashboard schema — one row per check, worst first."""
     payload = {
         **summarize(results),
         "generated_at_epoch": time.time(),
-        "results": [check_row(r) for r in results],
+        "results": [check_row(r) for r in _worst_first(results)],
     }
     if duration_sec is not None:
         payload["duration_sec"] = round(duration_sec, 3)
@@ -170,26 +180,6 @@ def render_json(
         return 0
     return 1 if payload["fails"] else 0
 
-def _watch_line(results: list[CheckResult]) -> str:
-    """One-line summary for --watch mode: timestamp, counts, first non-ok
-    name."""
-    fails = [r for r in results if r.status == "fail"]
-    warns = [r for r in results if r.status == "warn"]
-    ts = time.strftime("%H:%M:%S")
-    if fails:
-        first = fails[0].name
-        return (
-            f"{ts}  {RED}{len(fails)} fail{RESET} "
-            f"{YELLOW}{len(warns)} warn{RESET}  first-fail: {first}"
-        )
-    if warns:
-        first = warns[0].name
-        return (
-            f"{ts}  {GREEN}ok{RESET} "
-            f"{YELLOW}{len(warns)} warn{RESET}  first-warn: {first}"
-        )
-    return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
-
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
@@ -226,42 +216,10 @@ def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
         return _local_audio_config_from_env()
     return Config.from_env()
 
-async def _watch_loop(
-    cfg: Config | SimpleNamespace,
-    interval: float,
-    *,
-    core_only: bool = False,
-    only: str | None = None,
-) -> int:
-    """Run checks every `interval` seconds, print one line per pass.
-    Returns 0 on Ctrl-C."""
-    print(
-        f"jasper-doctor --watch (interval={interval:.1f}s, "
-        f"Ctrl-C to exit)\n",
-        flush=True,
-    )
-    try:
-        while True:
-            results = await run_async(cfg, core_only=core_only, only=only)
-            print(_watch_line(results), flush=True)
-            await asyncio.sleep(interval)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\nexiting", flush=True)
-        return 0
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jasper-doctor",
         description="JTS preflight diagnostics. Run as root.",
-    )
-    parser.add_argument(
-        "--watch", action="store_true",
-        help="Loop the checks until Ctrl-C; one summary line per pass.",
-    )
-    parser.add_argument(
-        "-i", "--interval", type=float, default=5.0,
-        help="Seconds between iterations in --watch mode (default 5).",
     )
     parser.add_argument(
         "--core", action="store_true",
@@ -323,10 +281,6 @@ def main() -> None:
             sys.exit(0 if args.out else 1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
-    if args.watch:
-        sys.exit(asyncio.run(
-            _watch_loop(cfg, args.interval, core_only=args.core, only=args.only)
-        ))
     started_at = time.monotonic()
     try:
         results = asyncio.run(run_async(cfg, core_only=args.core, only=args.only))

@@ -150,6 +150,17 @@ REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
 # ADR-0217 streambox-awaiting-accessory state, shared by resilience.py and voice.py.
 REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 
+# The three ways a caller reading the active CamillaDSP statefile/config ends
+# up with no config to judge — shared by audio_runtime_camilla (core),
+# correction, grouping, and active_speaker, each hitting the same evidence
+# failure on a different check.
+# STATEFILE_UNREADABLE stays `warn`: the statefile reader returns the same
+# None for an unreadable statefile and for a readable one missing its
+# `config_path:` line.
+REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
+REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
+REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
+
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 

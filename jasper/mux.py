@@ -260,6 +260,11 @@ class Mux:
         self._patrol_repairs = 0
         self._last_reconcile: dict[str, Any] | None = None
         self._last_alert_reconcile_at = 0.0
+        # True when the last landed gate command was NONE, so steady idle
+        # re-asserts nothing at the 1 Hz tick. SELECT clears it before its
+        # command and NONE sets it after: never believe idle when unsure.
+        self._fanin_none_asserted = False
+        self._fanin_gate_failures = 0
 
     async def run(self) -> None:
         log_event(logger, "mux.ready", patrol_s=self.POLL_INTERVAL_SEC,
@@ -602,7 +607,8 @@ class Mux:
             else:
                 self._winner = None
                 self._pending_auto_target = None
-                await self._fanin_none_best_effort(reason="auto_idle")
+                if not self._fanin_none_asserted:
+                    await self._fanin_none_best_effort(reason="auto_idle")
 
         # Release USB preempt once all other sources are idle; without this the
         # speaker would stay silent after AirPlay/Spotify stop while the host
@@ -721,7 +727,7 @@ class Mux:
                 self._manual_source = None
                 self._pending_auto_target = None
                 mux_mode_persistence.write_mode(self._mode_state_path, None)
-                await self._fanin_none()
+                await self._fanin_none(reason="auto_select")
 
         if self._usbsink_preempted:
             others_playing = any(
@@ -779,11 +785,13 @@ class Mux:
             self._test_fanin_owner = owner
             self._test_fanin_expires_at = time.monotonic() + FANIN_TEST_LEASE_SEC
             try:
-                await self._fanin_select_label(label)
+                await self._fanin_select_label(label, reason="test_select")
             except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
                 if not already_owned:
                     try:
-                        await self._restore_normal_fanin_gate()
+                        await self._restore_normal_fanin_gate(
+                            reason="test_select_rollback",
+                        )
                     except (
                         OSError,
                         asyncio.TimeoutError,
@@ -806,17 +814,17 @@ class Mux:
         log_event(logger, "source.test_select", label=label, owner=owner)
         return self._status_payload(self._state.playing)
 
-    async def _restore_normal_fanin_gate(self) -> None:
+    async def _restore_normal_fanin_gate(self, *, reason: str) -> None:
         """Strictly restore the current household source gate."""
 
         if self._manual_source is not None:
-            await self._fanin_select(self._manual_source)
+            await self._fanin_select(self._manual_source, reason=reason)
         elif self._winner is not None and self._state.playing.get(
             self._winner, False,
         ):
-            await self._fanin_select(self._winner)
+            await self._fanin_select(self._winner, reason=reason)
         else:
-            await self._fanin_none()
+            await self._fanin_none(reason=reason)
 
     async def release_test_fanin_label(
         self, owner: str, *, reason: str = "requested",
@@ -834,7 +842,7 @@ class Mux:
                 }
             released = self._test_fanin_label
             try:
-                await self._restore_normal_fanin_gate()
+                await self._restore_normal_fanin_gate(reason="test_release")
             except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
                 # Fail closed: retain owner + label so the caller can retry and
                 # the per-tick diagnostic reassertion keeps music excluded.
@@ -1002,9 +1010,8 @@ class Mux:
             source = self._manual_source
             if source is None:
                 return
-            await self._fanin_select_best_effort(
-                source, reason="manual_tick",
-            )
+            with contextlib.suppress(Exception):
+                await self._fanin_select(source, reason="manual_tick")
             if self._usbsink_preempted:
                 await self._usbsink_set_preempt(False, reason="manual_mode")
             self._winner = source
@@ -1019,16 +1026,16 @@ class Mux:
             winner = self._winner
             if winner is None or not current.get(winner, False):
                 return
-            await self._fanin_select_best_effort(winner, reason="auto_tick")
+            with contextlib.suppress(Exception):
+                await self._fanin_select(winner, reason="auto_tick")
 
     async def _reassert_test_fanin_label(self) -> None:
         async with self._transition_lock:
             label = self._test_fanin_label
             if label is None:
                 return
-            await self._fanin_select_label_best_effort(
-                label, reason="test_tick",
-            )
+            with contextlib.suppress(Exception):
+                await self._fanin_select_label(label, reason="test_tick")
 
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
@@ -1136,7 +1143,7 @@ class Mux:
             )
             return False
         try:
-            await self._fanin_select(source)
+            await self._fanin_select(source, reason=reason)
         except Exception as e:  # noqa: BLE001
             with contextlib.suppress(Exception):
                 await coordinator.abort_source_handoff(handoff)
@@ -1254,17 +1261,53 @@ class Mux:
                 source.value, reason, e,
             )
 
-    async def _fanin_select(self, source: Source) -> dict[str, Any]:
+    async def _fanin_select(
+        self, source: Source, *, reason: str,
+    ) -> dict[str, Any]:
         label = SOURCE_TO_FANIN_LABEL[source]
-        return await self._fanin_select_label(label)
+        return await self._fanin_select_label(label, reason=reason)
 
-    async def _fanin_select_label(self, label: str) -> dict[str, Any]:
-        return await fanin_command(
-            f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
+    async def _fanin_select_label(
+        self, label: str, *, reason: str,
+    ) -> dict[str, Any]:
+        # Clear before the command and set after it: a lost response must
+        # never leave the gate believed idle.
+        self._fanin_none_asserted = False
+        return await self._fanin_gate(
+            f"SELECT {label}", reason=reason, label=label,
         )
 
-    async def _fanin_none(self) -> dict[str, Any]:
-        return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
+    async def _fanin_none(self, *, reason: str) -> dict[str, Any]:
+        result = await self._fanin_gate("NONE", reason=reason)
+        self._fanin_none_asserted = True
+        return result
+
+    async def _fanin_gate(
+        self, command: str, *, reason: str, **fields: Any,
+    ) -> dict[str, Any]:
+        """Send one gate command, reported on its failure episode's edges.
+
+        Strict and best-effort callers share the episode, so any gate
+        command that lands closes it; every caller retries at the 1 Hz
+        patrol tick, so a held fault repeats nothing.
+        """
+        try:
+            result = await fanin_command(
+                command, socket_path=FANIN_CONTROL_SOCKET,
+            )
+        except Exception as e:  # noqa: BLE001
+            if not self._fanin_gate_failures:
+                log_event(logger, "mux.fanin_gate_failed",
+                          level=logging.WARNING, reason=reason,
+                          error=f"{type(e).__name__}: {e}", **fields)
+            self._fanin_gate_failures += 1
+            raise
+        if self._fanin_gate_failures:
+            log_event(logger, "mux.fanin_gate_recovered", reason=reason,
+                      consecutive_failures=self._fanin_gate_failures,
+                      **fields)
+            self._fanin_gate_failures = 0
+        return result
 
     async def _fanin_lane_mute(
         self, label: str, muted: bool,
@@ -1279,33 +1322,9 @@ class Mux:
             f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
         )
 
-    async def _fanin_select_best_effort(
-        self, source: Source, *, reason: str,
-    ) -> None:
-        try:
-            await self._fanin_select(source)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "fanin source gate reassert failed source=%s reason=%s: %s",
-                source.value, reason, e,
-            )
-
-    async def _fanin_select_label_best_effort(
-        self, label: str, *, reason: str,
-    ) -> None:
-        try:
-            await self._fanin_select_label(label)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "fanin test gate reassert failed label=%s reason=%s: %s",
-                label, reason, e,
-            )
-
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
-        try:
-            await self._fanin_none()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("fanin NONE failed reason=%s: %s", reason, e)
+        with contextlib.suppress(Exception):
+            await self._fanin_none(reason=reason)
 
     async def _run_control_server(self) -> None:
         try:

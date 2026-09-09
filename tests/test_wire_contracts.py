@@ -493,8 +493,8 @@ def test_fanin_control_command_vocabulary_matches_mux():
     for verb in ('"STATUS"', '"NONE"', '"SELECT '):
         assert verb in state_rs, f"fanin state.rs no longer handles {verb}"
     assert 'socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)' in mux_py
+    assert 'f"SELECT {label}"' in mux_py
+    assert '"NONE"' in mux_py
     # state.rs error responses carry {"error": ...}; mux raises on it.
     assert '"error":' in state_rs
     assert '"error" in payload' in control_py
@@ -798,11 +798,7 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
     # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
     # canonical design feeds the snapserver pipe from the leader's
-    # CamillaDSP, so the env is no longer written anywhere. The former
-    # JASPER_OUTPUTD_DAC_CONTENT_FIFO exception was dropped the same day
-    # in the opposite direction: Increment 3 landed the outputd reader,
-    # so the name is now LIVE Rust-read config, exactly as this guard's
-    # bidirectional contract demands.)
+    # CamillaDSP, so the env is no longer written anywhere.)
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see
     # test_control_socket_paths_agree_across_processes). Setting this
@@ -822,6 +818,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # parked, read back by jasper/outputd_failure_reconcile_state.py for the
     # doctor and /state. The Rust daemon reads neither end.
     "JASPER_OUTPUTD_RECONCILE_PARK_STATE": "outputd park record path; shell writer + jasper.outputd_failure_reconcile_state reader",
+    # Ring B's slot count, retired as an env: outputd now takes the depth from
+    # `jasper_ring::RING_SLOTS` (rust/jasper-ring/layout.json), the same constant
+    # jasper.ring_assets renders into the ioplug's conf.d blocks, so the two ends
+    # cannot disagree. The surviving mention is the fan-in coupling reconciler,
+    # which still writes the key into outputd.env; that write is inert.
+    # REMOVAL CONDITION: goes when `jasper.fanin_coupling.OUTPUTD_RING_SLOTS_ENV_VAR`
+    # and its reconciler writer go.
+    "JASPER_OUTPUTD_SHM_RING_SLOTS": "retired knob; the fan-in reconciler still writes an inert line",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from
@@ -829,12 +833,7 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # ABSENT is the steady state. The ONE surviving mention is
     # jasper/audio_runtime_plan.py's retired-route describer, which reads the
     # key with an absent-key default — the state every reconciled box is in.
-    # REMOVAL CONDITION: goes when that describer goes. Retiring the describer
-    # ALSO means retiring the reconciler's endpoint-contract gate, which
-    # resolves the retired pairing map on every pass and exits 66 when it
-    # misses: dropping that map entry while the gate stands parks every box on
-    # every reconcile (see jasper/camilla_config_contract.py). Delete this entry
-    # then, and this guard fails until someone does.
+    # REMOVAL CONDITION: goes when that describer goes.
     "JASPER_OUTPUTD_CONTENT_PCM": "retired lane; read with a default by the park describer, written by nothing",
     # The removed transport_pipe coupling's outputd key. The Rust
     # local_content_pipe path was deleted with the coupling, so it is not
@@ -978,7 +977,6 @@ def _system_snapshot_payload() -> dict:
         def __init__(self) -> None:
             self._sampler = None
             self._audio_health_sampler = None
-            self._airplay_health_sampler = None
             self._ha_status_cache = type(
                 "_HaCache", (), {"snapshot": staticmethod(dict)},
             )

@@ -8,13 +8,13 @@
 # Restart=on-failure attempt reads current config rather than the stale DAC env
 # it died on. Runs from jasper-outputd.service ExecStopPost.
 #
-# At most one reconcile per window across every failure class: a reconciler pass
-# costs a dozen-plus Python interpreters, and outputd restarts on failure into
-# StartLimitAction=reboot, so a crash loop must not multiply it. Exit 78 keeps
-# its ADR-0141 reconcile + no-block retry, sharing that one stamp: a repeated
-# exit 78 inside a window another class already spent also parks without
-# retry here, relying on the separate udev-triggered reconcile (untouched by
-# this stamp) to pick up a real hardware change.
+# At most one reconcile per window across every failure class: outputd
+# restarts on failure into StartLimitAction=reboot, so a crash loop must not
+# repeat the reconciler's hardware probing and systemctl work on every
+# attempt. The exit-78 branch also depends on this same stamp for its retry
+# bound: a repeated exit 78 inside a window another class already spent
+# skips the retry and parks, relying on the separate udev-triggered
+# reconcile (untouched by this stamp) to pick up a real hardware change.
 # Fail-open: always exits 0.
 
 set -uo pipefail
@@ -24,8 +24,6 @@ STATUS="${EXIT_STATUS:-}"
 RECONCILE="${JASPER_AUDIO_HARDWARE_RECONCILE:-/usr/local/sbin/jasper-audio-hardware-reconcile}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 CONFIG_EXIT_STATUS=78
-# Remove this bound once jasper-audio-hardware-reconcile runs as one
-# interpreter instead of a dozen-plus.
 # Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
 # directory when the unit stops without a restart — exactly the park this
 # stamp must survive, or the 300s dedup never fires and a park-then-restart

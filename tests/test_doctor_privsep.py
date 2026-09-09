@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor import privsep
+from jasper.cli.doctor import _shared, privsep
+from jasper.cli.doctor._shared import CheckResult
 from jasper.cli.doctor.privsep import MANIFEST, OUT_OF_SCOPE_NONROOT_UNITS
 from tests.systemd_unit_helpers import value_for, values_for
 
@@ -239,49 +240,61 @@ def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch
 
 
 # --------------------------------------------------------------------------- #
-# Integration: the decorated checks must be total (never crash) off the Pi.
+# check_daemon_readable_inputs — rolls every unit's verdict into one row.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
-    "check",
+    "overrides, expected_status, expected_reason",
     [
-        privsep.check_control_readable_inputs,
-        privsep.check_web_readable_inputs,
-        privsep.check_chat_web_readable_inputs,
-        privsep.check_mux_readable_inputs,
-        privsep.check_voice_readable_inputs,
-        privsep.check_usbmic_readable_inputs,
+        ({}, "ok", privsep.REASON_INPUTS_READABLE),
+        (
+            {"jasper-voice": ("skipped", privsep.REASON_UNIT_NOT_INSTALLED),
+             "jasper-web": ("skipped", privsep.REASON_UNIT_RUNS_AS_ROOT)},
+            "ok", privsep.REASON_INPUTS_READABLE,
+        ),
+        (
+            {"jasper-control": ("warn", privsep.REASON_INPUTS_UNREADABLE)},
+            "warn", privsep.REASON_INPUTS_UNREADABLE,
+        ),
+        (
+            {"jasper-control": ("warn", privsep.REASON_INPUTS_UNREADABLE),
+             "jasper-voice": ("warn", privsep.REASON_INPUTS_UNREADABLE)},
+            "warn", privsep.REASON_INPUTS_UNREADABLE,
+        ),
+        (
+            {unit: ("skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE)
+             for unit in privsep._MANIFEST_UNITS},
+            "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+        ),
     ],
-    ids=lambda fn: fn.__name__,
+    ids=["all-ok", "skips-do-not-fail-row", "one-warn", "two-warn", "all-skipped"],
 )
-def test_decorated_checks_are_total_without_systemctl(monkeypatch, check):
-    """With systemctl unavailable every per-daemon check returns a skip,
-    never raising — the doctor must stay total on a dev host."""
+def test_merged_check_rolls_up_the_manifest(
+    monkeypatch, overrides, expected_status, expected_reason
+):
+    """One row for the whole spec table: `ok` unless a unit's declared inputs
+    are unreadable (`warn`, naming every such unit); a unit skipped for this
+    profile (not installed, runs as root, ...) never fails the row alone. When
+    every unit is skipped (e.g. no systemctl), the row itself reports skipped
+    rather than ok (ADR-0233 rule 3: a check that did not run says skipped)."""
+    def fake_check_daemon(unit: str) -> CheckResult:
+        status, reason = overrides.get(unit, ("ok", privsep.REASON_INPUTS_READABLE))
+        return CheckResult(f"daemon reads: {unit}", status, unit, reason=reason)
+
+    monkeypatch.setattr(privsep, "_check_daemon", fake_check_daemon)
+    result = privsep.check_daemon_readable_inputs()
+    assert result.status == expected_status
+    assert result.reason == expected_reason
+
+
+def test_merged_check_is_total_without_systemctl(monkeypatch):
+    """With systemctl unavailable, every real per-daemon check resolves to a
+    skip, and the merged row stays skipped rather than raising or reporting
+    ok — mirrors the pre-merge per-daemon total-without-systemctl guarantee."""
     monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
 
-    assert check().status == "skipped"
-
-
-def test_not_installed_unit_skips(monkeypatch):
-    monkeypatch.setattr(
-        privsep,
-        "_unit_runtime_identity",
-        lambda unit: {"LoadState": "not-found", "User": ""},
-    )
-    result = privsep.check_voice_readable_inputs()
+    result = privsep.check_daemon_readable_inputs()
     assert result.status == "skipped"
-    assert result.reason == privsep.REASON_UNIT_NOT_INSTALLED
-
-
-def test_root_unit_skips(monkeypatch):
-    """A unit running as root (e.g. streambox jasper-web) reads everything -> skip."""
-    monkeypatch.setattr(
-        privsep,
-        "_unit_runtime_identity",
-        lambda unit: {"LoadState": "loaded", "User": "root"},
-    )
-    result = privsep.check_web_readable_inputs()
-    assert result.status == "skipped"
-    assert result.reason == privsep.REASON_UNIT_RUNS_AS_ROOT
+    assert result.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_classify_warn_overflow_truncates(tmp_path: Path):

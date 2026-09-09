@@ -14,9 +14,9 @@ from __future__ import annotations
 import ast
 import functools
 import http
-import inspect
 import json
 import re
+import tempfile
 import textwrap
 import urllib.parse
 from contextlib import nullcontext
@@ -40,12 +40,20 @@ from jasper.web import (
     spotify_setup,
     system_setup,
     tools_setup,
+    transit_setup,
+    voice_setup,
     wake_corpus_setup,
     wake_setup,
+    weather_setup,
     wifi_setup,
 )
 from jasper.web._common import CSRF_COOKIE_NAME
 from jasper.web.nav import NAV, hub_paths, render_hub
+
+# Every handler factory below points its state and secret files here. A fixed
+# /tmp path is shared by every concurrent lane on one machine; one directory
+# per process cannot collide.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="jts-wizard-conventions-"))
 
 
 WEB_SETUP_FILES = (
@@ -234,6 +242,17 @@ class _WizardRequest:
         self._handler = h
 
     def _record_status(self, status, *args, **kwargs):  # noqa: ANN001
+        """Latch the FIRST status, and refuse a second.
+
+        Keeping the last status would let a body that answers before its
+        guard pass the CSRF pin: the guard's later 403 would overwrite the
+        body's own reply and the pin could not tell the two orders apart.
+        """
+        if self.status is not None:
+            raise AssertionError(
+                f"handler responded twice: {self.status} then {int(status)} "
+                "— a route body answered before or after its guard",
+            )
         self.status = int(status)
 
     def do_GET(self):
@@ -303,7 +322,7 @@ def test_wizard_get_allows_cross_site_top_level_navigation():
 
 def test_state_changing_get_can_reject_cross_site_top_level_navigation():
     req = _WizardRequest(
-        home_assistant_setup._make_handler({"state_path": "/tmp/jts-test-ha.env"}),
+        home_assistant_setup._make_handler({"state_path": str(_SCRATCH / "ha.env")}),
         "/reset",
         headers={
             "Host": "jts.local",
@@ -344,7 +363,7 @@ def _spotify_handler_cls():
     return spotify_setup._make_handler({
         "client_id": "",
         "mode": "bounce",
-        "registry_path": "/tmp/jts-test-spotify-accounts.json",
+        "registry_path": str(_SCRATCH / "spotify-accounts.json"),
         "bounce_redirect_uri": (
             "https://jaspercurry.github.io/spotify-oauth-callback/?host=jts.local"
         ),
@@ -354,33 +373,12 @@ def _spotify_handler_cls():
 
 def _google_handler_cls():
     return google_setup._make_handler({
-        "creds_path": "/tmp/jts-test-google-credentials.env",
+        "creds_path": str(_SCRATCH / "google-credentials.env"),
         "redirect_uri": (
             "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
         ),
-        "registry_path": "/tmp/jts-test-google-accounts.json",
+        "registry_path": str(_SCRATCH / "google-accounts.json"),
     })
-
-
-def test_legacy_msg_redirect_handlers_are_thin_shared_helper_delegates():
-    for handler_cls in (_spotify_handler_cls(), _google_handler_cls()):
-        source = textwrap.dedent(inspect.getsource(handler_cls._redirect))
-        function = ast.parse(source).body[0]
-        assert isinstance(function, ast.FunctionDef)
-        assert len(function.body) == 1
-        statement = function.body[0]
-        assert isinstance(statement, ast.Expr)
-        call = statement.value
-        assert isinstance(call, ast.Call)
-        assert isinstance(call.func, ast.Name)
-        assert call.func.id == "redirect_with_legacy_msg"
-        assert len(call.args) == 2
-        assert all(isinstance(arg, ast.Name) for arg in call.args)
-        assert [arg.id for arg in call.args] == [
-            "self",
-            "location",
-        ]
-        assert call.keywords == []
 
 
 def test_oauth_callbacks_allow_cross_site_top_level_navigation():
@@ -408,8 +406,8 @@ def test_oauth_redirect_follow_index_allows_cross_site_top_level_navigation():
         "Sec-Fetch-Dest": "document",
     }
     cases = (
-        (_spotify_handler_cls(), "/?msg=Linked+Spotify"),
-        (_google_handler_cls(), "/?msg=Linked+Google"),
+        (_spotify_handler_cls(), "/"),
+        (_google_handler_cls(), "/"),
     )
     for handler_cls, path in cases:
         req = _WizardRequest(handler_cls, path, headers=headers)
@@ -449,37 +447,56 @@ _VALID_CSRF_TOKEN = "A" * 43
 
 _TABLED_WIZARD_FACTORIES = {
     "airplay_setup": lambda: airplay_setup._make_handler(
-        {"state_path": "/tmp/jts-test-airplay.env"},
+        {"state_path": str(_SCRATCH / "airplay.env")},
     ),
     "bluetooth_setup": lambda: bluetooth_setup._make_handler(),
     "chat_setup": chat_setup._make_handler,
     "correction_setup": lambda: correction_setup._make_handler_class(
         hostname="jts.local", idle_hold=nullcontext,
     ),
+    "google_setup": _google_handler_cls,
+    "home_assistant_setup": lambda: home_assistant_setup._make_handler(
+        {"state_path": str(_SCRATCH / "ha.env")},
+    ),
     "rooms_setup": rooms_setup._make_handler,
     "sources_setup": sources_setup._make_handler,
     "speaker_setup": lambda: speaker_setup._make_handler(
-        {"state_path": "/tmp/jts-test-speaker.env"},
+        {"state_path": str(_SCRATCH / "speaker.env")},
     ),
     "spotify_setup": _spotify_handler_cls,
     "system_setup": system_setup._make_handler,
     "tools_setup": lambda: tools_setup._make_handler({
-        "catalog_path": "/tmp/jts-test-tools-catalog.json",
-        "state_path": "/tmp/jts-test-tool-state.env",
-        "prompt_overrides_path": "/tmp/jts-test-tool-prompt-overrides.json",
+        "catalog_path": str(_SCRATCH / "tools-catalog.json"),
+        "state_path": str(_SCRATCH / "tool-state.env"),
+        "prompt_overrides_path": str(_SCRATCH / "tool-prompt-overrides.json"),
+    }),
+    "transit_setup": lambda: transit_setup._make_handler({
+        "state_path": str(_SCRATCH / "transit.env"),
+        "routes_secret_path": str(_SCRATCH / "transit-routes.env"),
+        "weather_path": str(_SCRATCH / "transit-weather.env"),
+    }),
+    "voice_setup": lambda: voice_setup._make_handler({
+        "state_path": str(_SCRATCH / "voice-provider.env"),
+        "keys_path": str(_SCRATCH / "voice-keys.env"),
+        "discovery_cache_path": str(_SCRATCH / "voice-models.json"),
+        "discovery_http_client": None,
+        "pricing_path": str(_SCRATCH / "voice-pricing.json"),
+        "assistant_loudness_profile_path": str(_SCRATCH / "voice-loudness.json"),
+        "loudness_seed_fn": lambda *a, **k: None,
     }),
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
     ),
-    "home_assistant_setup": lambda: home_assistant_setup._make_handler(
-        {"state_path": "/tmp/jts-test-ha.env"},
-    ),
     "wake_setup": lambda: wake_setup._make_handler(
         {
-            "state_path": "/tmp/jts-test-wake.env",
+            "state_path": str(_SCRATCH / "wake.env"),
             "control_base": "http://127.0.0.1:8780",
         },
     ),
+    "weather_setup": lambda: weather_setup._make_handler({
+        "state_path": str(_SCRATCH / "weather.env"),
+        "transit_path": str(_SCRATCH / "weather-transit.env"),
+    }),
     "wifi_setup": wifi_setup._make_handler,
 }
 

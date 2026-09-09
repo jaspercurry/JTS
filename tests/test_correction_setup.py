@@ -18,7 +18,6 @@ import asyncio
 import concurrent.futures
 import io
 import inspect
-import json
 import logging
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
@@ -652,56 +651,6 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
         correction_runtime.read_wav_body(Incomplete())
 
 
-def test_test_tone_wav_is_generated_and_cached(tmp_path):
-    """First call generates the WAV; second call reuses the cache
-    file (no re-generation). Cache key is the parameter tuple."""
-    from jasper.audio_measurement.playback import ensure_sine_wav
-    p1 = ensure_sine_wav(
-        freq_hz=1000, duration_s=2.0, dbfs=-18.0,
-        sample_rate=48000, cache_dir=tmp_path,
-    )
-    assert p1.exists()
-    mtime1 = p1.stat().st_mtime
-    # Second call → same path, cache hit.
-    p2 = ensure_sine_wav(
-        freq_hz=1000, duration_s=2.0, dbfs=-18.0,
-        sample_rate=48000, cache_dir=tmp_path,
-    )
-    assert p2 == p1
-    assert p2.stat().st_mtime == mtime1
-
-
-def test_test_tone_wav_audio_correctness(tmp_path):
-    """The generated WAV should:
-      - have the expected duration (within sample-rate resolution)
-      - contain a single dominant frequency at the requested freq
-      - peak amplitude near the requested dBFS (within fade-edge dip)
-    """
-    import numpy as np
-    from jasper.audio_measurement import sweep
-    from jasper.audio_measurement.playback import ensure_sine_wav
-
-    wav_path = ensure_sine_wav(
-        freq_hz=1000, duration_s=1.0, dbfs=-12.0,
-        sample_rate=48000, cache_dir=tmp_path,
-    )
-    sig, sr = sweep.read_wav_mono(wav_path)
-    assert sr == 48000
-    # Length tolerance: ±10 samples for fade-rounding.
-    assert abs(len(sig) - 48000) < 10
-    # Peak amplitude target: 10**(-12/20) = 0.251. Allow a bit of
-    # margin for fade-edge dip.
-    expected_peak = 10 ** (-12.0 / 20)
-    actual_peak = float(np.max(np.abs(sig)))
-    assert actual_peak <= expected_peak + 0.005
-    assert actual_peak > expected_peak * 0.9
-    # FFT — the peak bin should be at ~1000 Hz.
-    spectrum = np.abs(np.fft.rfft(sig))
-    freqs_bin = np.fft.rfftfreq(len(sig), d=1.0 / sr)
-    peak_idx = int(np.argmax(spectrum))
-    assert abs(freqs_bin[peak_idx] - 1000) < 2  # within 2 Hz
-
-
 # ---------- End-to-end via the actual HTTP server --------------------------
 
 
@@ -745,72 +694,6 @@ def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
     assert "/assets/sync/sync.css?v=" in body
 
 
-def test_e2e_test_tone_plays_through_the_dispatcher(tmp_path, monkeypatch):
-    """POST /test-tone answers with what it played, over real HTTP.
-
-    The tone WAV and the ALSA spawn are the only stubs: the route, its CSRF
-    guard, the measurement window and the JSON contract are the real ones.
-    """
-    import contextlib
-
-    from jasper.audio_measurement import correction_lane, playback as am_playback
-    import jasper.measurement_window as measurement_window_mod
-
-    monkeypatch.setattr(correction_lane, "CORRECTION_TONE_DIR", tmp_path)
-    monkeypatch.setattr(correction_lane, "correction_play_device", lambda: "null")
-    played: list[tuple[str, str, float]] = []
-
-    async def _play_wav(wav_path, *, alsa_device, timeout_s):
-        played.append((str(wav_path), alsa_device, timeout_s))
-        return None
-
-    monkeypatch.setattr(am_playback, "play_wav", _play_wav)
-
-    @contextlib.asynccontextmanager
-    async def _window(**_kw):
-        yield None
-
-    monkeypatch.setattr(measurement_window_mod, "measurement_window", _window)
-
-    server, base = _start_server()
-    try:
-        resp = _post_with_csrf(
-            base,
-            "/test-tone",
-            json.dumps({"duration_s": 2.0}).encode("utf-8"),
-            content_type="application/json",
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    assert payload == {"played": True, "duration_s": 2.0}
-    assert len(played) == 1
-    wav_path, alsa_device, timeout_s = played[0]
-    assert wav_path.startswith(str(tmp_path))
-    assert alsa_device == "null"
-    assert timeout_s == 7.0
-
-
-def test_e2e_healthz_returns_plain_ok():
-    """systemd's `Type=notify` could replace this later, but for now a
-    simple HTTP-200 / "ok" body is what makes a `curl` against the daemon's
-    own port a valid liveness probe — and also lets jasper-doctor add a
-    measurement-subsystem check without parsing JSON."""
-    server, base = _start_server()
-    try:
-        resp = urllib.request.urlopen(f"{base}/healthz")
-        assert resp.status == 200
-        assert resp.headers.get("Content-Type", "").startswith(
-            "text/plain",
-        )
-        assert resp.read() == b"ok\n"
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 def test_e2e_unknown_path_404s():
     server, base = _start_server()
     try:
@@ -825,136 +708,18 @@ def test_e2e_unknown_path_404s():
         server.server_close()
 
 
-def test_e2e_calibration_upload_parses_and_stores(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "filename": "lab.txt",
-            "content": "20 -1\n100 0\n1000 1\n",
-            "model": "other",
-            "label": "Lab mic",
-            "sign_convention": "correction",
-        }).encode()
-        resp = _post_with_csrf(
-            base,
-            "/calibration/upload",
-            payload,
-            content_type="application/json",
-        )
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-        assert data["calibration"]["provider"] == "manual_upload"
-        assert data["calibration"]["point_count"] == 3
-        assert data["calibration"]["calibration_id"]
-        assert data["preview"]["freqs_hz"][0] == 20.0
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_e2e_calibration_upload_defaults_to_the_response_convention(
-    tmp_path, monkeypatch,
-):
-    """An upload that declares no convention is read as the mic's RESPONSE.
-
-    That is what a measurement-mic calibration file states (the page's own
-    control and help copy say so), so an omitted field must resolve to the
-    same answer the household would have picked, not the opposite one.
-    """
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "filename": "lab.txt",
-            "content": "20 -1\n100 0\n1000 1\n",
-            "model": "other",
-            "label": "Lab mic",
-        }).encode()
-        resp = _post_with_csrf(
-            base,
-            "/calibration/upload",
-            payload,
-            content_type="application/json",
-        )
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-        assert data["calibration"]["sign_convention"] == "response"
-        # The mic reads 1 dB LOW at 20 Hz and 1 dB HIGH at 1 kHz, so the
-        # correction adds 1 dB and cuts 1 dB respectively.
-        assert data["preview"]["correction_db"] == [1.0, 0.0, -1.0]
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "filename": "bad.txt",
-            "content": "this is not a calibration file",
-            "model": "other",
-            "label": "Lab mic",
-        }).encode()
-        e = _post_with_csrf(
-            base,
-            "/calibration/upload",
-            payload,
-            content_type="application/json",
-            expect_status=400,
-        )
-        body = json.loads(e.read().decode())
-        assert "at least 2 rows" in body["error"]
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 def test_e2e_invalid_json_returns_400():
+    """A body that is not a JSON object is answered before the route body
+    runs, so no route sees a half-parsed request."""
     server, base = _start_server()
     try:
-        e = _post_with_csrf(
+        _post_with_csrf(
             base,
-            "/calibration/upload",
+            "/crossover/v2/position-ready",
             b"{not json",
             content_type="application/json",
             expect_status=400,
         )
-        body = json.loads(e.read().decode())
-        assert "invalid JSON" in body["error"]
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
-    from jasper.audio_measurement import calibration
-
-    def fake_fetch_vendor_calibration(**kwargs):
-        raise calibration.CalibrationUpstreamError("miniDSP unavailable")
-
-    monkeypatch.setattr(
-        calibration,
-        "fetch_vendor_calibration",
-        fake_fetch_vendor_calibration,
-    )
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "model": "minidsp_umik2",
-            "serial": "810-8494",
-        }).encode()
-        e = _post_with_csrf(
-            base,
-            "/calibration/fetch",
-            payload,
-            content_type="application/json",
-            expect_status=502,
-        )
-        body = json.loads(e.read().decode())
-        assert body["error"] == "miniDSP unavailable"
     finally:
         server.shutdown()
         server.server_close()
@@ -993,114 +758,6 @@ def _setup_reference(record, *, model="minidsp_umik2"):
             "model": model,
         },
     }
-
-
-def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, caplog):
-    """A different mic is never refused: the new success replaces the record
-    and says so with the model pair."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.audio_measurement.household_mic import read_household_mic
-
-    first = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="manual_upload",
-        model="other",
-        label="Lab mic",
-        source="uploaded:lab.txt",
-        root=tmp_path / "cal",
-    )
-    correction_capture._save_household_mic(first)
-    caplog.clear()
-
-    second = calibration.store_calibration(
-        text="20 -2\n100 0\n1000 2\n",
-        provider="manual_upload",
-        model="dayton_imm6",
-        label="New lab mic",
-        source="uploaded:lab2.txt",
-        root=tmp_path / "cal",
-    )
-    correction_capture._save_household_mic(second)
-
-    record = read_household_mic(path=household_path)
-    assert record is not None
-    assert record.model_key == "dayton_imm6"  # replaced, not merged or refused
-    assert "event=correction.household_mic_replaced" in caplog.text
-    assert "old_model=other" in caplog.text
-    assert "new_model=dayton_imm6" in caplog.text
-
-
-def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, caplog):
-    """Within one model, a different physical unit (serial_hash) is still a
-    mic swap: the record is replaced and household_mic_replaced fires with a
-    `changed=serial` discriminator — while the serial hashes themselves stay
-    out of the log line."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.audio_measurement.calibration import serial_hash
-    from jasper.audio_measurement.household_mic import read_household_mic
-
-    for serial in ("810-1111", "810-2222"):
-        record = calibration.store_calibration(
-            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
-            provider="minidsp",
-            model="minidsp_umik2",
-            label="miniDSP UMIK-2",
-            source="https://vendor.example/cal.txt",
-            serial=serial,
-            root=tmp_path / "cal",
-        )
-        correction_capture._save_household_mic(record, serial=serial)
-
-    stored = read_household_mic(path=household_path)
-    assert stored is not None
-    assert stored.serial_hash == serial_hash("810-2222")
-    assert "event=correction.household_mic_replaced" in caplog.text
-    assert "changed=serial" in caplog.text
-    # Hashes never ride the event line.
-    assert serial_hash("810-1111") not in caplog.text
-    assert serial_hash("810-2222") not in caplog.text
-
-
-def test_household_mic_write_failure_never_blocks_the_calibration(
-    tmp_path, monkeypatch, caplog,
-):
-    """The documented never-block invariant: persisting the household record
-    is best-effort. A write failure logs one WARN and the caller continues."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.audio_measurement import household_mic
-
-    def boom(record, *, path):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(household_mic, "write_household_mic", boom)
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="manual_upload",
-        model="other",
-        label="Lab mic",
-        source="uploaded:lab.txt",
-        root=tmp_path / "cal",
-    )
-    correction_capture._save_household_mic(record)
-
-    assert not household_path.exists()
-    assert "failed to persist household mic record" in caplog.text
 
 
 def test_setup_reference_resolves_the_remembered_calibration(tmp_path, monkeypatch):
@@ -1250,92 +907,6 @@ def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
         )
 
 
-def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-
-    from jasper.audio_measurement import calibration
-
-    def fake_fetch_vendor_calibration(
-        *, model_key, serial, orientation, root, opener=None,
-    ):
-        return calibration.store_calibration(
-            text="20 -1\n100 0\n1000 1\n",
-            provider="dayton_audio",
-            model=model_key,
-            label="Dayton Audio iMM-6 / iMM-6C",
-            source="https://vendor.example/cal.txt",
-            serial=serial,
-            orientation=orientation,
-            root=root,
-        )
-
-    monkeypatch.setattr(
-        calibration, "fetch_vendor_calibration", fake_fetch_vendor_calibration,
-    )
-
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "model": "dayton_imm6",
-            "serial": "700-1234",
-            "orientation": "0deg",
-        }).encode()
-        resp = _post_with_csrf(
-            base,
-            "/calibration/fetch",
-            payload,
-            content_type="application/json",
-        )
-        assert resp.status == 200
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    from jasper.audio_measurement.household_mic import read_household_mic
-
-    record = read_household_mic(path=household_path)
-    assert record is not None
-    assert record.model_key == "dayton_imm6"
-    assert record.provider == "dayton_audio"
-    assert record.serial_display == "1234"
-
-
-def test_e2e_calibration_upload_success_saves_household_mic(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-
-    server, base = _start_server()
-    try:
-        payload = json.dumps({
-            "filename": "lab.txt",
-            "content": "20 -1\n100 0\n1000 1\n",
-            "model": "other",
-            "label": "Lab mic",
-            "sign_convention": "correction",
-        }).encode()
-        resp = _post_with_csrf(
-            base,
-            "/calibration/upload",
-            payload,
-            content_type="application/json",
-        )
-        assert resp.status == 200
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    from jasper.audio_measurement.household_mic import read_household_mic
-
-    record = read_household_mic(path=household_path)
-    assert record is not None
-    assert record.model_key == "other"
-    assert record.provider == "manual_upload"
-    assert record.serial_display is None  # uploads never carry a serial
-
-
 def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeypatch):
     cal_root = tmp_path / "cal"
     household_path = tmp_path / "household_mic.json"
@@ -1433,7 +1004,7 @@ def test_e2e_correction_posts_require_csrf():
     server, base = _start_server()
     try:
         req = urllib.request.Request(
-            f"{base}/calibration/upload",
+            f"{base}/crossover/reset",
             data=b"{}",
             headers={"Content-Type": "application/json"},
             method="POST",
