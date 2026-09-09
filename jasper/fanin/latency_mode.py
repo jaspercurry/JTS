@@ -296,6 +296,9 @@ def read_state(
         if effective is not None and resampler.get("locked") is True:
             state = "applied"
             detail = f"{PRESETS[effective].label} is active. Checking USB timing in the background."
+        elif runtime.phase == "checking" and _mapping(resampler.get("decay")).get("active") is True:
+            state = "recovery"
+            detail = "Reducing input delay while checking USB timing."
         else:
             detail = "Checking USB timing." if runtime.phase == "checking" else "USB audio is starting."
     elif applied is not None:

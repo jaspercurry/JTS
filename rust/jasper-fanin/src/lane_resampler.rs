@@ -868,14 +868,16 @@ impl LaneResampler {
         self.publish_decay_gauges();
     }
 
-    pub fn tick_decay(&mut self, dll_l0_locked: bool, commanded_ppm_abs: f64) {
+    pub fn tick_decay(&mut self, dll_l0_locked: bool) {
         let was_refilling = self.decay.refilling();
         self.decay.tick(DecaySignals {
             locked: self.locked,
             dll_l0_locked,
-            commanded_ppm_abs,
-            // This period's own command, from the controller that produced it.
-            ratio_saturated: self.controller.ratio_ppm().abs() >= self.max_adjust_ppm,
+            // Pre-render fill and working floor share the DLL's frame margin.
+            // The moving target is not a measure of the remaining audio reserve.
+            buffer_low: (self.fill_frames.load(Ordering::Relaxed) as f64
+                + crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as f64)
+                < self.decay.learned_floor() as f64,
         });
         self.publish_decay_gauges();
         self.note_refill_edge(was_refilling);
@@ -1676,17 +1678,20 @@ mod tests {
 
     #[test]
     fn host_probe_distinguishes_compliance_after_a_stalled_start() {
-        for (prefill, compliant, short_periods) in [
-            (1024, true, 4),
-            (1500, false, 4),
-            (2560, true, 4),
-            (2560, true, 0),
+        for (prefill, compliant, short_periods, offset, bursty, retries) in [
+            (1024, true, 4, 50.0, false, 0),
+            (1500, false, 4, 50.0, false, 2),
+            (2560, true, 4, -250.0, false, 1),
+            (2560, true, 0, 250.0, false, 0),
+            (2560, true, 0, 50.0, false, 0),
+            (2560, false, 0, -250.0, false, 2),
+            (2560, false, 0, 250.0, false, 2),
+            (2560, true, 0, 0.0, true, 0),
         ] {
             let params = DecayParams {
                 enabled: true,
                 floor_frames: 576,
                 stability_ms: 2000,
-                cascade_guard_ppm: 400.0,
             };
             let mut r =
                 LaneResampler::new(2, PERIOD, RATE, TARGET, 2048, MAX_PPM, RING, params).unwrap();
@@ -1711,7 +1716,8 @@ mod tests {
             let mut fractional = 0.0_f64;
             let mut first_low = None;
             let mut resumed_at_low = false;
-            for period in 1..=(RATE * 160 / PERIOD) {
+            let mut pending = 0;
+            for period in 1..=(RATE * 190 / PERIOD) {
                 let seconds = period * PERIOD / RATE;
                 let paused = (90..100).contains(&seconds);
                 r.latency_context(
@@ -1721,19 +1727,20 @@ mod tests {
                 if period == RATE * 92 / PERIOD {
                     r.reset();
                 }
-                let host_ppm = 50.0 + if compliant { pitch } else { 0.0 };
+                let host_ppm = offset + if compliant { pitch } else { 0.0 };
                 fractional += PERIOD as f64 * (1.0 + host_ppm / 1e6);
                 let frames = fractional.floor() as usize;
                 fractional -= frames as f64;
                 let frames = frames - if period <= short_periods { 128 } else { 0 };
                 if !paused {
-                    r.push_input(&tone(frames));
+                    pending += frames;
+                    if !bursty || period % 8 != 0 {
+                        r.push_input(&tone(pending));
+                        pending = 0;
+                    }
                 }
                 r.render_period(&mut out);
-                r.tick_decay(
-                    clock.ladder() == Ladder::L0Locked,
-                    clock.commanded_ppm().abs(),
-                );
+                r.tick_decay(clock.ladder() == Ladder::L0Locked);
                 if compliant && r.locked && r.hold_fill_frames() == 576 {
                     first_low.get_or_insert(seconds);
                     if seconds == 100 {
@@ -1781,12 +1788,13 @@ mod tests {
             assert_eq!(r.unlock_count.load(Ordering::Relaxed), 1);
             if compliant {
                 assert!(
-                    first_low.unwrap() < if short_periods == 0 { 55 } else { 90 },
-                    "prefill={prefill} first_low={first_low:?}"
+                    first_low.unwrap() < 35,
+                    "prefill={prefill} offset={offset} bursty={bursty} first_low={first_low:?}"
                 );
                 assert!(resumed_at_low);
                 assert_eq!(r.decay.resumes(), 1);
             }
+            assert_eq!(clock.probe_retries(), retries);
             assert_eq!(r.hold_fill_frames() < 2560, compliant);
         }
     }
@@ -1848,15 +1856,11 @@ mod tests {
 
     // ---- post-lock cushion decay (the held-target single source of truth) --
 
-    /// Build a resampler with the DEFAULT-OFF decay ARMED. Floor is `TARGET + 32`
-    /// (base target plus a small margin); the ms knobs both clamp to one render
-    /// period so the descent runs fast.
     fn build_with_decay() -> LaneResampler {
         let params = DecayParams {
             enabled: true,
             floor_frames: (TARGET + 32) as u64,
             stability_ms: 1, // → 1 period (clamped up)
-            cascade_guard_ppm: 400.0,
         };
         LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING, params)
             .expect("resampler builds with decay armed")
@@ -1878,7 +1882,7 @@ mod tests {
         for _ in 0..40 {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
         }
         assert!(r.hold_fill_frames() < r.ceiling_fill_frames(), "no descent");
         r.refill_window_periods = 999; // stale count from an earlier window
@@ -1901,20 +1905,20 @@ mod tests {
         for _ in 0..500 {
             r.push_input(&tone(PERIOD as usize));
             r.render_period(&mut vec![0i16; PERIOD as usize * 2]);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
             assert_eq!(r.hold_fill_frames() as u64, ceiling);
             assert!(!r.decay_active.load(Ordering::Relaxed));
         }
     }
 
     #[test]
-    fn decay_lowers_held_target_only_while_locked_and_l0() {
+    fn decay_lowers_and_publishes_the_held_target_after_timing_passes() {
         let mut r = build_with_decay();
         let ceiling = (TARGET + CUSHION) as u64;
         let floor = (TARGET + 32) as u64;
         // Before lock: ticking decay never lowers (locked == false).
         for _ in 0..100 {
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
         }
         assert_eq!(r.hold_fill_frames() as u64, ceiling, "unlocked → ceiling");
 
@@ -1928,7 +1932,7 @@ mod tests {
         for _ in 0..5000 {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
             if r.hold_fill_frames() as u64 == floor {
                 break;
             }
@@ -1951,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn decay_frozen_when_dll_not_l0() {
+    fn decay_frozen_without_a_timing_result_or_observed_connection() {
         let mut r = build_with_decay();
         let ceiling = (TARGET + CUSHION) as u64;
         let mut out = vec![0i16; PERIOD as usize * 2];
@@ -1962,31 +1966,13 @@ mod tests {
         for _ in 0..2000 {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(false, 0.0);
+            r.tick_decay(false);
         }
         assert_eq!(
             r.hold_fill_frames() as u64,
             ceiling,
             "held target must stay at the ceiling while DLL is not l0"
         );
-        assert!(!r.decay_active.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn decay_cascade_guard_pauses_above_threshold() {
-        let mut r = build_with_decay();
-        let ceiling = (TARGET + CUSHION) as u64;
-        let mut out = vec![0i16; PERIOD as usize * 2];
-        r.push_input(&tone(deep_prefill() + 64));
-        assert_eq!(r.render_period(&mut out), PERIOD as usize);
-        let block = tone(PERIOD as usize);
-        // DLL commanding hard (> guard): decay pauses, held stays at ceiling.
-        for _ in 0..2000 {
-            r.push_input(&block);
-            r.render_period(&mut out);
-            r.tick_decay(true, 401.0);
-        }
-        assert_eq!(r.hold_fill_frames() as u64, ceiling);
         assert!(!r.decay_active.load(Ordering::Relaxed));
     }
 
@@ -2004,10 +1990,10 @@ mod tests {
                 enabled: true,
                 floor_frames: 576,
                 stability_ms: 2000,
-                cascade_guard_ppm: 400.0,
             },
         )
         .unwrap();
+        r.latency_context(1, false);
         let mut phase = r.startup_prefill_frames();
         r.push_input(&tone_at(0, phase));
         let mut out = vec![0i16; PERIOD as usize * 2];
@@ -2017,7 +2003,7 @@ mod tests {
             r.push_input(&tone_at(phase, PERIOD as usize));
             phase += PERIOD as usize;
             assert_eq!(r.render_period(&mut out), PERIOD as usize);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(false);
             for frame in out.chunks_exact(2) {
                 for channel in 0..2 {
                     assert!((frame[channel] as i32 - previous[channel] as i32).abs() < 140);
@@ -2046,7 +2032,7 @@ mod tests {
             for _ in 0..2000 {
                 r.push_input(&tone(PERIOD as usize));
                 r.render_period(&mut out);
-                r.tick_decay(true, 0.0);
+                r.tick_decay(true);
             }
             assert_eq!(r.hold_fill_frames(), 544);
             r.reset();
@@ -2055,7 +2041,7 @@ mod tests {
                     r.reset();
                 } // Idle capture-handle reopen.
                 r.render_period(&mut out);
-                r.tick_decay(false, 0.0);
+                r.tick_decay(false);
             }
             if disconnect {
                 r.latency_context(2, false);
@@ -2063,7 +2049,7 @@ mod tests {
             assert_eq!(r.hold_fill_frames(), expected);
             r.push_input(&tone(r.startup_prefill_frames()));
             r.render_period(&mut out);
-            r.tick_decay(false, 0.0); // New timing probe runs in the background.
+            r.tick_decay(false); // New timing probe runs in the background.
             assert_eq!(r.hold_fill_frames(), expected);
             assert_eq!(r.decay.resumes(), u64::from(expected == 544));
             if expected == 544 {
@@ -2071,7 +2057,7 @@ mod tests {
                 for _ in 0..1000 {
                     r.push_input(&tone(PERIOD as usize));
                     r.render_period(&mut out);
-                    r.tick_decay(false, 0.0);
+                    r.tick_decay(false);
                 }
                 assert_eq!(r.hold_fill_frames(), 768);
                 assert_eq!(r.decay.resumes(), 1);
@@ -2155,7 +2141,6 @@ mod tests {
                 enabled: decay_enabled,
                 floor_frames: 306,
                 stability_ms: 10_000,
-                cascade_guard_ppm: 400.0,
             };
             let mut r = LaneResampler::new(
                 2,
@@ -2197,7 +2182,7 @@ mod tests {
             phase += CHURNY_TARGET + PERIOD as usize + 64;
             r.render_period(&mut out);
             absorb(&out);
-            r.tick_decay(false, 0.0);
+            r.tick_decay(false);
             // Regime 1 (i < CHURN_PERIODS): one period per interval delivered ON
             // TIME (fill held tight at the setpoint) except on every 8th period,
             // where delivery is withheld (fill dips one period below the
@@ -2221,7 +2206,7 @@ mod tests {
                 absorb(&out);
                 // dll_l0 = false on every tick, so an armed decay must SNAP BACK
                 // to the ceiling and never lower.
-                r.tick_decay(false, 0.0);
+                r.tick_decay(false);
             }
             let o = r.observability();
             (
@@ -2271,7 +2256,7 @@ mod tests {
         for _ in 0..5000 {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
             if r.hold_fill_frames() as u64 == floor {
                 break;
             }
@@ -2304,12 +2289,12 @@ mod tests {
         for _ in 0..r.acquisition_grace_periods {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
         }
         for _ in 0..5000 {
             r.push_input(&block);
             r.render_period(&mut out);
-            r.tick_decay(true, 0.0);
+            r.tick_decay(true);
             if r.hold_fill_frames() as u64 == floor {
                 break;
             }

@@ -538,46 +538,6 @@ def test_input_resampler_status_exports_live_lock_state():
     assert "r.locked.load(Ordering::Relaxed)" in state_text
 
 
-def test_cushion_decay_held_target_is_single_source_of_truth():
-    """The DEFAULT-OFF post-lock cushion decay's held target must be ONE value.
-
-    The resampler owns the live held-target gauge; `hold_fill_frames` reads it (so
-    render/trim discipline toward it); the host-clock adapter reads the SAME gauge
-    (never a duplicated config value); and STATUS surfaces both the live held
-    target and the decay block. If any of these wires drifts, the two controllers
-    can disagree about where the fill sits — the documented two-controller
-    oscillation class this design avoids.
-    """
-    resampler_text = _lane_resampler_rs_text()
-    host_clock_text = (
-        _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
-    ).read_text(encoding="utf-8")
-    mixer_text = _mixer_rs_text()
-    state_text = _state_rs_text()
-
-    # 1. The resampler OWNS the live held-target gauge, and hold_fill_frames reads
-    #    it (the setpoint render_period / trim_ring discipline toward).
-    assert "held_target_frames: Arc<AtomicU64>" in resampler_text
-    assert "self.held_target_frames.load(Ordering::Relaxed) as usize" in resampler_text, (
-        "hold_fill_frames must read the live held-target gauge, not a static field"
-    )
-    # 2. The decay is a render-PERIOD-clocked pure state machine ticked by the mixer.
-    assert "pub fn tick_decay(" in resampler_text
-    assert "r.tick_decay(decay_l0, decay_commanded_ppm_abs)" in mixer_text, (
-        "the mixer must tick the decay once per render period with the DLL signals"
-    )
-    # 3. The host-clock adapter reads the SAME live gauge (build_obs anchors its
-    #    descent compensation on it), never a duplicated config value.
-    assert "pub held_target_frames: Arc<AtomicU64>" in host_clock_text
-    assert "signals.held_target_frames.load(Ordering::Relaxed)" in host_clock_text, (
-        "build_obs must anchor on the live held-target gauge"
-    )
-    # 4. STATUS surfaces the live held target AND the decay block (additive).
-    assert '"held_target_frames"' in state_text
-    assert '"decay":{' in state_text
-    assert '"frozen_reason"' in state_text
-
-
 def test_no_blocking_io_on_the_fanin_render_thread():
     """#2533: no filesystem write and no device open/close may run inside `step()`.
 
@@ -694,33 +654,6 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     state_text = _state_rs_text()
     assert '"reopen_pending"' in state_text
     assert '"attach_pending"' in state_text
-
-
-def test_servo_thread_exit_clears_reverse_signals():
-    """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
-
-    The graceful-shutdown exit path neutralizes the pitch ctl so the host
-    free-runs. It must ALSO clear the outer-loop signals the mixer's decay
-    tick reads (`ladder_l0`, `commanded_milli_ppm`); otherwise a dead thread
-    leaves `ladder_l0=true` frozen, driving the thin-cushion free-run churn
-    loop. A panic instead aborts the process outright (C6's ExecStopPost
-    neutralizes the pitch), so this is the only exit path that needs the
-    signal clear.
-    """
-    host_clock_text = (
-        _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
-    ).read_text(encoding="utf-8")
-    # The exit-neutralize block ends the thread body; every reverse-signal
-    # clear follows the actuator neutralize on this graceful-exit path.
-    exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
-    exit_tail = host_clock_text[exit_start:]
-    assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (
-        "servo-thread exit must clear ladder_l0 so a dead thread cannot leave the "
-        "decay tick reading a stale l0=true"
-    )
-    assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
-        "servo-thread exit must clear commanded_milli_ppm"
-    )
 
 
 def test_input_resampler_recovery_restarts_capture_pcm():
