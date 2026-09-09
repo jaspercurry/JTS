@@ -1926,6 +1926,17 @@ async def test_winner_stopping_holds_fanin_none(
     assert mux._winner is None
 
 
+async def test_steady_idle_asserts_fanin_none_once(mux, patched_probes):
+    """Idle is an edge, not a 1 Hz heartbeat: the patrol re-asserts NONE
+    only when the arbiter enters idle, not on every tick after."""
+    _stub_probes(patched_probes)
+
+    await mux._tick()
+    await mux._tick()
+
+    assert mux._fanin_none.await_count == 1
+
+
 async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
     calls: list[tuple[tuple[str, ...], float]] = []
 

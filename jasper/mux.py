@@ -255,6 +255,10 @@ class Mux:
         self._patrol_repairs = 0
         self._last_reconcile: dict[str, Any] | None = None
         self._last_alert_reconcile_at = 0.0
+        # True once an idle NONE assert has landed and no SELECT has been
+        # issued since. Steady idle then re-asserts nothing at the 1 Hz tick.
+        self._fanin_none_asserted = False
+        self._fanin_none_failures = 0
 
     async def run(self) -> None:
         log_event(logger, "mux.ready", patrol_s=self.POLL_INTERVAL_SEC,
@@ -594,7 +598,7 @@ class Mux:
         elif target is None:
             if self._winner is not None and current.get(self._winner, False):
                 await self._reassert_auto_winner(current)
-            else:
+            elif self._winner is not None or not self._fanin_none_asserted:
                 self._winner = None
                 self._pending_auto_target = None
                 await self._fanin_none_best_effort(reason="auto_idle")
@@ -1248,6 +1252,7 @@ class Mux:
         return await self._fanin_select_label(label)
 
     async def _fanin_select_label(self, label: str) -> dict[str, Any]:
+        self._fanin_none_asserted = False
         return await fanin_command(
             f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
         )
@@ -1291,10 +1296,24 @@ class Mux:
             )
 
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
+        # Reported on its edges only: the retry is every tick (1 Hz) and a
+        # held fault says nothing the first one did not.
         try:
             await self._fanin_none()
         except Exception as e:  # noqa: BLE001
-            logger.warning("fanin NONE failed reason=%s: %s", reason, e)
+            if not self._fanin_none_failures:
+                log_event(logger, "mux.fanin_none_failed",
+                          level=logging.WARNING,
+                          reason=reason,
+                          error=f"{type(e).__name__}: {e}")
+            self._fanin_none_failures += 1
+        else:
+            self._fanin_none_asserted = True
+            if self._fanin_none_failures:
+                log_event(logger, "mux.fanin_none_recovered",
+                          reason=reason,
+                          consecutive_failures=self._fanin_none_failures)
+                self._fanin_none_failures = 0
 
     async def _run_control_server(self) -> None:
         try:
