@@ -3106,7 +3106,7 @@ static void test_capture_destage_partial_reads(void) {
 // ungoverned paths against a frozen copy of the pre-governor clamp.
 //
 // The hardware numbers these tests stand in for are stated once, in
-// jts_ring_shm.h's governor banner and ADR-0261. Not restated here.
+// jts_ring_shm.h's governor banner and ADR-0268. Not restated here.
 // ============================================================================
 
 // The grouping ring's own geometry — the only PCM that declares pace_nominal.

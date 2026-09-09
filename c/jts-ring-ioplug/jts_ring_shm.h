@@ -62,7 +62,7 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // 512-frame buffer sat below both camilla's negotiated 1024 and its
 // target_level (1536), so the rate controller chased an unreachable target and
 // drove the writer full into stall/underrun flapping. 16 slots => 2048 frames
-// >= target_level with headroom. See ADR-0261.
+// >= target_level with headroom. See ADR-0268.
 // Must stay in lockstep with MAX_N_SLOTS (rust/jasper-ring/src/layout.rs) and
 // MAX_SHM_RING_SLOTS (rust/jasper-outputd/src/config.rs);
 // tests/test_ring_slot_ceiling_pin.py asserts all three equal.
@@ -400,7 +400,7 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 // (the wire's crystal vs this Pi's), so a crystal's own +-100 ppm spec is the wrong
 // size: this fleet's dongle measures ~667 ppm and the same two-crystal problem took
 // ~4x that (2667 ppm). An exact reciprocal of 1e6 keeps the refill integral.
-// See ADR-0261.
+// See ADR-0268.
 //
 // BARS BELONG AGAINST THE DERIVED BOUND, not against this number flat. Every
 // truncation in the path rounds DOWN, so what a finite measurement adds is
@@ -553,7 +553,7 @@ static inline void jts_ring_pointer_prepare(jts_ring_pointer_state_t *st, int pa
 
 // THE PACING GOVERNOR — one owner, PLAYBACK only. A floor under the failure a
 // DAC-clocked reader does not have: a stalled reader let this ring's writer
-// storm at 763x where a live one held it to 1.00x (See ADR-0261). CAPTURE never
+// storm at 763x where a live one held it to 1.00x (See ADR-0268). CAPTURE never
 // calls it: a bind there would starve camilla on a DAC-vs-Pi clock difference.
 //
 // A token bucket anchored to the PREVIOUS call. Each call refills by what a

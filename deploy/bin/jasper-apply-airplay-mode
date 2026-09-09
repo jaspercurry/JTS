@@ -134,7 +134,7 @@ DEFAULT_RING_B_LATENCY_FRAMES=128
 # live-status tier multiplies by this compile-time constant:
 # rust/jasper-ring/src/layout.rs's RING_SLOT_FRAMES, mirrored in
 # jasper.fanin_coupling.RING_SLOT_FRAMES, with no env override on any side
-# (ADR-0261). It is NOT fan-in's render period (output.period_frames, 256).
+# (ADR-0268). It is NOT fan-in's render period (output.period_frames, 256).
 RING_A_SLOT_FRAMES=128
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

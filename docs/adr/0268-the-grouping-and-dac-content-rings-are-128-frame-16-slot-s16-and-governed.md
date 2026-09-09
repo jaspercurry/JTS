@@ -1,4 +1,4 @@
-# ADR-0261: the grouping and dac-content rings are 128-frame, 16-slot, S16, and governed
+# ADR-0268: the grouping and dac-content rings are 128-frame, 16-slot, S16, and governed
 
 - **Date:** 2026-09-09
 - **Status:** Accepted
