@@ -1125,7 +1125,7 @@ async function testBlockedEqCarrierIsThePageState() {
 
   const html = blocked.elements.get("view-body").innerHTML;
   for (const expected of [
-    "info-card", "a configuration JTS did not generate", 'href="/sound/setup/"',
+    "info-card", "a configuration JTS did not generate", 'href="/sound/speaker/"',
   ]) {
     if (!html.includes(expected)) {
       fail("a blocked EQ carrier should render the refusal as the page", {

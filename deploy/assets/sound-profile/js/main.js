@@ -629,7 +629,7 @@ import {
       '<div class="saved-stack"><section class="info-card" role="status">' +
         '<p>' + escapeHtml(eqCarrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
         '<div class="form-actions">' +
-          '<a class="btn btn--primary" href="/sound/setup/">Open Sound setup</a>' +
+          '<a class="btn btn--primary" href="/sound/speaker/">Open Speaker setup</a>' +
         '</div>' +
       '</section></div>';
   }

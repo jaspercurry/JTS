@@ -5741,7 +5741,10 @@ def test_state_probes_the_carrier_with_the_household_output_trim(
     assert probed == [payload["output_trim_db"]] == [6.0]
 
 
-def test_state_skips_the_carrier_probe_off_the_eq_page(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("header", ["speaker", "output"])
+def test_state_skips_the_carrier_probe_off_the_eq_page(
+    tmp_path: Path, monkeypatch, header,
+):
     """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
     renders the editor, so no other page pays for it."""
     import jasper.camilla
@@ -5759,14 +5762,14 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(tmp_path: Path, monkeypat
     )
 
     def _must_not_probe(*_args, **_kwargs):
-        raise AssertionError("the setup page must not probe the loaded graph")
+        raise AssertionError("a hardware page must not probe the loaded graph")
 
     monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _must_not_probe)
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(
             urllib.request.Request(
-                f"{base}/state", headers={"X-JTS-Sound-Page": "setup"},
+                f"{base}/state", headers={"X-JTS-Sound-Page": header},
             )
         ) as resp:
             assert resp.status == 200

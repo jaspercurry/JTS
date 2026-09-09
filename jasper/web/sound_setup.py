@@ -410,8 +410,7 @@ def _json_route_payload(builder: str) -> dict[str, Any]:
 
 def _requested_page_mode(headers: Any) -> str:
     """Which split page a request is for: nginx sets the header per location."""
-    mode = headers.get("X-JTS-Sound-Page", "eq")
-    return mode if mode in {"eq", "setup"} else "eq"
+    return _coerce_page_mode(headers.get("X-JTS-Sound-Page", "eq"))
 
 
 def _eq_carrier_block(
