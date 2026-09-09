@@ -20,6 +20,15 @@ class BusctlResult:
     stderr: bytes
 
 
+def name_is_absent(stderr: bytes) -> bool:
+    """D-Bus missing-name errors under the system image's C locale."""
+    return any(marker in stderr.lower() for marker in (
+        b"was not provided by any .service files",
+        b"name has no owner",
+        b"is not activatable",
+    ))
+
+
 async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(ProcessLookupError):
         proc.kill()

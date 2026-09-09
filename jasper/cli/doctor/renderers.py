@@ -19,6 +19,7 @@ import subprocess
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from ...airplay_session import REASONS as AIRPLAY_CLEANUP_REASONS
 from ...config import Config
 from ...log_event import log_event
 
@@ -1377,6 +1378,26 @@ def _classify_mux_mode(path: Path) -> CheckResult:
     return CheckResult(
         name, "ok", f"manual pin: {source.value}", reason=REASON_MUX_MODE_PINNED
     )
+
+
+@doctor_check()
+def check_airplay_session_cleanup() -> CheckResult:
+    payload = evidence.control_state().payload or {}
+    selection = payload.get("source_selection") or {}
+    fact = selection.get("airplay_session_cleanup")
+    name = "AirPlay session cleanup"
+    if not isinstance(fact, dict) or fact.get("reason") not in AIRPLAY_CLEANUP_REASONS:
+        return CheckResult(
+            name, "skipped", "mux cleanup outcome is unavailable",
+            reason="airplay_cleanup_unavailable",
+        )
+    status = {"unobserved": "skipped", "ok": "ok", "degraded": "warn"}.get(
+        fact.get("status"), "skipped",
+    )
+    detail = f"last receiver cleanup: {fact['reason']}"
+    if status == "warn":
+        detail += "; if AirPlay cannot connect, use Restart AirPlay"
+    return CheckResult(name, status, detail, reason=fact["reason"])
 
 
 @doctor_check()

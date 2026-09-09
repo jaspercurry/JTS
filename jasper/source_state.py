@@ -28,7 +28,7 @@ from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
-from .busctl import run_busctl
+from .busctl import name_is_absent, run_busctl
 from .fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -54,13 +54,6 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # invariant that mux does not import this constant.
 USBSINK_PLAYING_RMS_DBFS = -60.0
 
-_DBUS_NAME_ABSENT_ERRORS = (
-    b"was not provided by any .service files",
-    b"name has no owner",
-    b"is not activatable",
-)
-
-
 def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
     """Classify a failed AirPlay property call without inventing a stop.
 
@@ -70,8 +63,7 @@ def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
     ``busctl`` writes the D-Bus error to stderr; its service-absent wording is
     stable under the system image's C locale.
     """
-    detail = stderr.lower()
-    if any(marker in detail for marker in _DBUS_NAME_ABSENT_ERRORS):
+    if name_is_absent(stderr):
         return False
     return None
 
