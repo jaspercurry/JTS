@@ -311,6 +311,14 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 02:20Z: #4557 (row 1.1) reviewed by Opus: APPROVE WITH FIXES;
+  fixes pushed as `4cd078db4` (hoist the v2 setup-calibration import; pin
+  `resolved_household_mic`; one module-level `configured_calibration_root`).
+  Merges on green. Carried to row 1.2: two renamed `audio_measurement` tests
+  still import `correction.session` / the `acoustic_quality` alias. Carried to
+  the tuning-flow agent: the two thin `DefaultSetupCalibration` hint builders
+  (web, cli) have diverged; a `from_household` factory in `sweep_spec.py`
+  folds them.
 - 2026-09-09 01:55Z: Row 2.2 LANDED: PR #4546 squash-merged at `7db6bca73` after
   the merge-in of main (#4512's reconcile-test fix) went green. Lane C's
   software rows are all on main; 2.4 (first seat-cube room round on hardware)
