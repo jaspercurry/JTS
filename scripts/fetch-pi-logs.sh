@@ -284,10 +284,10 @@ journalctl -b 0 -k -p warning..alert --no-pager --output=short-iso 2>/dev/null
 true
 REMOTE
 
-# Live daemon truth. Every audio-health verdict in the journals above was
-# derived from these three, and none of them survives in a log line: the
-# control daemon's /state, each audio daemon's STATUS reply, and the doctor's
-# machine-readable report.
+# Live daemon truth: the control daemon's /state plus each audio daemon's raw
+# STATUS reply. The raw sockets are captured beside /state because they survive
+# a dead jasper-control and because /state drops outputd's
+# chip_ref_writer.recent_writes.
 fetch_remote_bash "audio-runtime" "txt" <<'REMOTE'
 set +e
 JASPER_PYTHON=/opt/jasper/.venv/bin/python
@@ -313,9 +313,16 @@ fi
 true
 REMOTE
 
+# The CACHED doctor report only (deploy/systemd/jasper-doctor-json.service
+# writes it; jasper/doctor_contract.py owns the path). Never a live run from
+# here: the doctor opens PCMs on the ring lanes and budgets 600 s / 256 MB,
+# which is the last thing an incident box under investigation can spare
+# (ADR-0242). Its age is on stderr so the operator can see how stale it is.
 fetch_remote_bash "doctor" "json" <<'REMOTE'
 set +e
-sudo -n /opt/jasper/.venv/bin/jasper-doctor --json 2>/dev/null
+doctor_cache=/run/jasper-control/doctor-result.json
+stat -c "doctor cache mtime: %y" "$doctor_cache" >&2
+timeout 10 sudo -n cat "$doctor_cache"
 true
 REMOTE
 

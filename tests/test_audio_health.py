@@ -2141,7 +2141,6 @@ def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() ->
     assert stream["latency"]["summary"].endswith("ms · low latency stable")
     assert stream["latency"]["detail"] == ""
     assert [row["label"] for row in stream["latency"]["details"]] == [
-        "Mixing queue",
         "DSP queue",
         "DAC presentation queue",
     ]
@@ -3145,8 +3144,6 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
     assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
     assert fanin["inputs"]["spotify"]["present"] is False
     assert fanin["host_clock"]["ladder"] == "l0_locked"
-    assert fanin["output"]["snd_pcm_delay_frames"] == 864
-    assert fanin["output"]["snd_pcm_delay_ms"] == 18.0
 
     status["inputs"][0]["frames_read"] += 48000
     now[0] += 1.0
@@ -3518,8 +3515,8 @@ def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
         events=[
             {
                 "ts": 1000.0,
-                "type": "fanin_output_xrun",
-                "detail": "Fan-in recovered.",
+                "type": "camilla_playback_underrun",
+                "detail": "The shared path recovered.",
             },
             {
                 "ts": 1000.0,
@@ -3541,7 +3538,7 @@ def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
 
     assert len(store.saves) == 1
     assert {item["key"] for item in store.saves[0]} == {
-        "path.fanin_output_xrun",
+        "path.camilla_playback_underrun",
         "airplay.shairport_packet_drop",
     }
 
@@ -3553,7 +3550,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
         ladder="l0_locked",
         events=[{
             "ts": 990.0,
-            "type": "fanin_output_xrun",
+            "type": "camilla_playback_underrun",
             "detail": "Recovered before this session.",
         }],
     )
@@ -3564,7 +3561,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
             *delayed["events"],
             {
                 "ts": 1001.0,
-                "type": "fanin_output_xrun",
+                "type": "camilla_playback_underrun",
                 "detail": "Recovered during this session.",
             },
         ],
@@ -3581,7 +3578,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
     assert first["current_stream"]["session"]["interruptions"] == 0
     delayed_issue = next(
         row for row in first["issues"]
-        if row["key"] == "path.fanin_output_xrun"
+        if row["key"] == "path.camilla_playback_underrun"
     )
     assert "context" not in delayed_issue
 

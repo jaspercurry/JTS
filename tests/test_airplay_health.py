@@ -27,7 +27,6 @@ def _fanin_status(
     airplay_frames: int = 0,
     airplay_xruns: int = 0,
     output_frames: int = 0,
-    output_xruns: int = 0,
     input_buffer_frames: int = 4096,
     progress_age_ms: int = 0,
     selected_input: str | None = None,
@@ -49,7 +48,6 @@ def _fanin_status(
             "sample_rate": 48000,
             "period_frames": 256,
             "frames_written": output_frames,
-            "xrun_count": output_xruns,
         },
         "watchdog": {
             "pings_sent": 10,
@@ -274,13 +272,11 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
             airplay_frames=0,
             airplay_xruns=7,
             output_frames=0,
-            output_xruns=1,
         ),
         _fanin_status(
             airplay_frames=240000,
             airplay_xruns=8,
             output_frames=240000,
-            output_xruns=1,
         ),
     ]
 
@@ -299,7 +295,6 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
     snap = sampler.snapshot()
     assert snap["status"] == "issue"
     assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
-    assert snap["summary_5m"]["fanin_output_xruns"] == 0
     assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
     assert snap["events"][-1]["type"] == "fanin_airplay_xrun"
 

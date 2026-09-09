@@ -475,8 +475,6 @@ def check_fanin_service() -> CheckResult:
             reason=REASON_FANIN_STATUS_MISSING_WATCHDOG,
         )
     frames = output.get("frames_written", 0)
-    xruns = output.get("xrun_count", 0)
-    xrun_events_dropped = data.get("xrun_events_dropped", 0)
     input_buffer_frames = data.get("input_buffer_frames")
     if not isinstance(input_buffer_frames, int):
         return CheckResult(
@@ -572,7 +570,6 @@ def check_fanin_service() -> CheckResult:
         f"active, frames_written={frames}, "
         f"transport={actual_transport}, "
         f"input_buffer_frames={input_buffer_frames}, "
-        f"output xruns={xruns}, xrun_events_dropped={xrun_events_dropped}, "
         f"input xruns={','.join(input_xruns) or '0'}, "
         f"progress_age_ms={progress_age}, "
         f"{tts_detail}"
@@ -850,14 +847,16 @@ def check_fanin_sched_policy() -> CheckResult:
         )
     raw = data.get("sched_policy")
     policy = raw.strip() if isinstance(raw, str) else ""
-    if not policy:
+    # "unknown" is the daemon's sched_getscheduler() error return: nothing was
+    # observed, which is unreported, not a demotion.
+    if not policy or policy.lower() == "unknown":
         return CheckResult(
             name,
             "skipped",
-            "jasper-fanin STATUS publishes no sched_policy on this build",
+            "jasper-fanin STATUS reports no sched_policy on this build",
             reason=REASON_FANIN_SCHED_POLICY_UNREPORTED,
         )
-    if policy.upper() not in {"SCHED_FIFO", "FIFO"}:
+    if policy.upper() != "SCHED_FIFO":
         return CheckResult(
             name,
             "warn",

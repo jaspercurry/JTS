@@ -114,7 +114,6 @@ def _empty_bucket(t: float) -> dict[str, Any]:
         "shairport_sync_errors": 0,
         "shairport_underruns": 0,
         "fanin_airplay_xruns": 0,
-        "fanin_output_xruns": 0,
         "camilla_short_reads": 0,
         "camilla_playback_underruns": 0,
     }
@@ -129,7 +128,6 @@ EVENT_BUCKET_FIELD = {
     "shairport_broken_pipe": "shairport_events",
     "shairport_offset_too_short": "shairport_events",
     "fanin_airplay_xrun": "fanin_airplay_xruns",
-    "fanin_output_xrun": "fanin_output_xruns",
     "camilla_short_read": "camilla_short_reads",
     "camilla_playback_underrun": "camilla_playback_underruns",
 }
@@ -922,7 +920,6 @@ class AirPlayHealthSampler:
         airplay_frames = _as_int(airplay.get("frames_read")) if airplay else 0
         airplay_xruns = _as_int(airplay.get("xrun_count")) if airplay else 0
         output_frames = _as_int(output.get("frames_written"))
-        output_xruns = _as_int(output.get("xrun_count"))
 
         prev = self._last_fanin_counts
         airplay_rate: float | None = None
@@ -973,7 +970,6 @@ class AirPlayHealthSampler:
                     )
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
-            output_delta = output_xruns - _as_int(prev.get("output_xruns"))
             if airplay_delta > 0 and not suppress_events:
                 self._record_event(
                     now,
@@ -986,25 +982,12 @@ class AirPlayHealthSampler:
                     },
                     count=airplay_delta,
                 )
-            if output_delta > 0 and not suppress_events:
-                self._record_event(
-                    now,
-                    {
-                        "type": "fanin_output_xrun",
-                        "subsystem": "fanin",
-                        "severity": "issue",
-                        "title": "Fan-in output xrun",
-                        "detail": f"output recovered {output_delta} xrun(s)",
-                    },
-                    count=output_delta,
-                )
 
         self._last_fanin_counts = {
             "ts": now,
             "airplay_frames": airplay_frames,
             "airplay_xruns": airplay_xruns,
             "output_frames": output_frames,
-            "output_xruns": output_xruns,
             "input_frames": input_frames,
             "input_empty_reads": input_empty_reads,
         }
@@ -1171,11 +1154,8 @@ class AirPlayHealthSampler:
                     round(output_rate, 1)
                     if output_rate is not None else None
                 ),
-                "xrun_count": output_xruns,
                 "sample_rate": _as_int(output.get("sample_rate")),
                 "period_frames": _as_int(output.get("period_frames")),
-                "snd_pcm_delay_frames": output.get("snd_pcm_delay_frames"),
-                "snd_pcm_delay_ms": output.get("snd_pcm_delay_ms"),
             },
             "watchdog": {
                 "last_progress_age_ms": _as_int(
@@ -1593,7 +1573,6 @@ class AirPlayHealthSampler:
             "shairport_sync_errors": 0,
             "shairport_underruns": 0,
             "fanin_airplay_xruns": 0,
-            "fanin_output_xruns": 0,
             "camilla_short_reads": 0,
             "camilla_playback_underruns": 0,
         }
@@ -1628,7 +1607,6 @@ class AirPlayHealthSampler:
             or summary_5m["shairport_underruns"] > 0
             or summary_5m["camilla_playback_underruns"] > 0
             or summary_5m["fanin_airplay_xruns"] > 0
-            or summary_5m["fanin_output_xruns"] > 0
         ):
             return "issue", "recent audio-path recovery event"
 
@@ -1670,7 +1648,6 @@ class AirPlayHealthSampler:
         if (
             summary_30m["shairport_events"] > 0
             or summary_30m["fanin_airplay_xruns"] > 0
-            or summary_30m["fanin_output_xruns"] > 0
             or summary_5m["camilla_short_reads"] > 0
             or summary_30m["camilla_playback_underruns"] > 0
         ):

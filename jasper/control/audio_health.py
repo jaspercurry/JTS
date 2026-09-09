@@ -1726,9 +1726,6 @@ def _receiver_latency(
         fill = _finite_number(resampler.get("fill_frames"))
         if fill is not None and float(fill) >= 0.0:
             components.append(("USB input queue", float(fill) * 1000.0 / rate))
-    fanin_delay = _finite_number(output.get("snd_pcm_delay_ms"))
-    if fanin_delay is not None and float(fanin_delay) >= 0.0:
-        components.append(("Mixing queue", float(fanin_delay)))
     capture_rate = _as_int(camilla.get("capture_rate")) or rate
     camilla_frames = _finite_number(camilla.get("buffer_level"))
     if (
@@ -2736,7 +2733,7 @@ class AudioHealthSampler:
                 and active_source != Source.AIRPLAY.value
             ):
                 continue
-            if event_type in {"fanin_output_xrun", "camilla_playback_underrun"}:
+            if event_type == "camilla_playback_underrun":
                 candidate = _issue(
                     f"path.{event_type}",
                     scope="path",
