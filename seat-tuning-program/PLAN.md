@@ -313,6 +313,14 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 10:00Z: #4604 (row 1.5) Opus review: REQUEST CHANGES — under
+  `sudo` the calibration files land `root:jasper 0600` and the daemon
+  (`jasper-web`) silently measures uncalibrated (`resolve_household_mic_calibration`
+  swallows `OSError`). Fix agent dispatched: `atomic_write_text(mode=0o640)`
+  for both files, an observable event on the swallowed read failure, an
+  amending ADR for ADR-0259 §4, runbook `sudo` line, parse/size refusals,
+  `--model` default aligned with `models`. Moved-not-copied, boundaries,
+  exit vocabulary, secrets and deletions all verified clean.
 - 2026-09-09 09:50Z: Row 1.6 LANDED: PR #4603 squash-merged at `d85d08152` after
   its re-run went green (the AirPlay fade test was a wall-clock flake; a
   hardening PR is warranted if it recurs). #4604 (row 1.5) awaits its Opus
