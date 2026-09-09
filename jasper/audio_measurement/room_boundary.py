@@ -11,25 +11,17 @@ acceptance ladder, the confidence report, the advisor gate, the repeatability
 evidence, the acoustic-quality re-clamp, and the shared deviation metric —
 with no shared constant, no cross-import, and no test pinning the relationship
 to the speaker layer's spec edge (issue #1787). Moving the boundary meant
-finding and editing all ten by hand, and two of them
-(:func:`jasper.correction.acoustic_quality.repeatability_from_arrays`'s
-``min(350, peq_f_high)`` re-clamp and
-:func:`jasper.audio_measurement.analysis.deviation_metrics`) would have
+finding and editing all ten by hand, and one of them
+(:func:`jasper.audio_measurement.analysis.deviation_metrics`) would have
 silently capped a raised ceiling rather than failing loudly.
 
-Why this module lives in ``audio_measurement`` and not ``correction``:
-``correction`` sits ABOVE ``active_speaker`` (``correction.runtime_safety``
-imports ``active_speaker.runtime_contract``) and ``active_speaker`` reaches
-back for nothing, so homing a shared constant in ``correction`` would force
-``active_speaker`` to import upward — which
-``test_correction_boundary_ssot.test_package_boundary_holds`` forbids.
-``audio_measurement`` is different, and this is the precise property the
-placement rests on: **it is imported by both and imports neither** — it has
-zero imports of ``jasper.correction`` and zero of ``jasper.active_speaker``.
-That makes it the one package all three consumers (including
+Why this module lives in ``audio_measurement``, and this is the precise
+property the placement rests on: **it is imported by its consumers and
+imports none of them** — it has zero imports of ``jasper.active_speaker``.
+That makes it the one package every consumer (including
 ``audio_measurement.analysis`` itself, which owns one of the routed sites) can
 read the boundary from without any new cross-package edge.
-``tests/test_correction_boundary_ssot.py`` pins that invariant, because the
+``tests/test_audio_measurement_boundary_ssot.py`` pins that invariant, because the
 placement argument is only as good as it stays true.
 
 The two edges, and the relation between them
@@ -56,7 +48,7 @@ authority to hand off *to*, so a room ceiling underneath it would leave a band
 that neither layer owns. That is why :data:`ROOM_BOUNDARY_MIN_HZ` is *defined
 as* :data:`GATED_SPEC_LOWER_EDGE_HZ` rather than coincidentally equal to it —
 moving the spec edge drags the clamp floor with it, and the contract test in
-``tests/test_correction_boundary_ssot.py`` fails if the two ever drift apart.
+``tests/test_audio_measurement_boundary_ssot.py`` fails if the two ever drift apart.
 Between the spec edge and the room ceiling the two layers deliberately overlap:
 the gated layer owns absolute tonal balance there, the room layer cuts modal
 peaks (see ``docs/room-correction-regime-plan.md`` D3).
@@ -85,7 +77,7 @@ What is NOT owned here
   design-floor concern, not a layer seam: 50 Hz exists because the iPhone
   built-in mic's own high-pass filter dominates below it. Those stay where they
   are used.
-* **The SNR band tables** (:data:`jasper.correction.acoustic_quality.SNR_BANDS_HZ`
+* **The SNR band tables** (:data:`jasper.audio_measurement.snr_policy.SNR_BANDS_HZ`
   and :data:`jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ`).
   Their 350 Hz edge looks like this boundary and is deliberately NOT routed
   here — see the trap note on those tables. They are capture-quality
@@ -117,6 +109,22 @@ ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
 # strategy's band.
 ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
 ROOM_BOUNDARY_MAX_HZ: float = 500.0
+
+# The room layer's floor, Hz: below it a seat take says little a cabinet can
+# act on, and no room filter is placed.
+ROOM_FLOOR_HZ: float = 20.0
+
+# Where a room ceiling came from: the applied candidate's trusted floor, or
+# the default above when no floor was readable (ADR-0256 rule 1).
+CEILING_SOURCE_APPLIED = "applied_candidate"
+CEILING_SOURCE_FALLBACK = "fallback"
+CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK})
+
+# The window a room median must be read in: the seat cube is the room's own
+# measurement and is analyzed ungated (ADR-0260), so a gated or mixed median
+# measures the speaker, not the room, and is not evidence a room layer may be
+# prescribed against.
+ROOM_MEDIAN_WINDOW = "ungated"
 
 
 def room_ceiling_hz(trusted_floor_hz: float | None) -> float:

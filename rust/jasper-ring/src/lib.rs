@@ -219,8 +219,6 @@ pub struct RingMetrics {
     pub epoch_resets: u64,
     /// Defensive resyncs when `write_seq - read_seq > n_slots` (should be 0).
     pub reader_resyncs: u64,
-    /// Resyncs performed at attach time (`read_seq = write_seq`).
-    pub attach_resyncs: u64,
     /// Last-observed writer pid (0 = detached).
     pub writer_pid: u64,
     /// Age of the writer heartbeat in ms at the last read (u64::MAX = never).
@@ -660,8 +658,8 @@ impl RingReader {
     /// `expected`. `O_EXCL` create races are resolved by attaching instead.
     ///
     /// On attach the reader resyncs `read_seq = write_seq` (drops the <=
-    /// `n_slots` stale slots accumulated while the reader was down; counted
-    /// `attach_resyncs`) and stamps `reader_pid`.
+    /// `n_slots` stale slots accumulated while the reader was down) and stamps
+    /// `reader_pid`.
     ///
     /// Refuses with `EBUSY` — and stamps nothing — when a live FOREIGN reader
     /// already owns the ring: it is SPSC and tolerates exactly one reader.
@@ -698,10 +696,8 @@ impl RingReader {
         map.header_atomic(layout::OFF_READER_HEARTBEAT_NS)
             .store(monotonic_ns(), Ordering::Relaxed);
 
-        let attach_resyncs = if write_seq > 0 { 1 } else { 0 };
         let metrics = RingMetrics {
             attached: true,
-            attach_resyncs,
             n_slots: expected.n_slots,
             slot_frames: expected.period_frames,
             ..RingMetrics::default()
@@ -1677,7 +1673,6 @@ mod tests {
         // Now the reader attaches; it must resync to the tip (drop the stale
         // slot) rather than replay it.
         let mut reader = RingReader::create_or_attach(&path, g).unwrap();
-        assert_eq!(reader.metrics().attach_resyncs, 1);
         let mut out = vec![0i16; n];
         assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Empty);
         cleanup(&path);

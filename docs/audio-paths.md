@@ -671,7 +671,7 @@ one speaker-local stereo pair per DAC, and exactly four physical outputs.
 Stored 900 s common-clock drift evidence is surfaced as validation evidence;
 missing evidence warns, failed evidence blocks, and missing/partial live
 hardware observation blocks the composite clock report. When the live dual pair
-is ready, reconcile promotes `jasper-outputd` to `JASPER_OUTPUTD_SINK=dual_apple`
+is ready, reconcile promotes `jasper-outputd` to `JASPER_OUTPUTD_SINK=composite`
 and pins DAC A/B from the saved topology child identity; if only observed
 hardware order is available, that order is used only as first-time bootstrap.
 Partial states, USB topology mismatches, or saved-topology identity mismatches

@@ -321,6 +321,7 @@ code = [
   "jasper/web/tools_setup.py",
   "jasper/cues/**",
   "jasper/web/voice_setup.py",
+  "jasper/web/voice_page.py",
   "deploy/systemd/jasper-voice.service",
   "scripts/switch-voice-provider.sh",
   "scripts/switch-gemini-model.sh",
@@ -562,6 +563,7 @@ code = [
   "jasper/control/handlers/**",
   "jasper/tools/audio.py",
   "jasper/web/_common.py",
+  "jasper/web/chrome.py",
   "jasper/web/sources_setup.py",
   "jasper/web/bluetooth_setup.py",
   "jasper/web/airplay_setup.py",
@@ -718,31 +720,26 @@ verification = [
 
 [[subsystem]]
 id = "room-correction-and-calibration"
-title = "Room correction and calibration agent"
+title = "Measurement daemon and speaker tuning"
 safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
   "jasper/attribution/**",
   "jasper/bass_extension/**",
-  "jasper/correction/**",
   "jasper/measurement_window.py",
   "jasper/audio_measurement/**",
-  "jasper/calibration_agent/**",
   "jasper/web/correction_*.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_active_speaker.py",
   "jasper/web/sync_flow.py",
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
-  "deploy/assets/correction/correction.css",
   "deploy/assets/correction/crossover.css",
   "deploy/jasper-correction-web.*",
-  "docs/room-correction-information-design.md",
   "docs/active-crossover-information-design.md",
 ]
 docs = [
   "docs/measurement-loop-doctrine.md",
-  "docs/room-correction-information-design.md",
   "docs/HANDOFF-bass-extension-plan.md",
   "docs/active-crossover-information-design.md",
   "docs/active-speaker-tuning-layers-design.md",
@@ -761,15 +758,13 @@ docs = [
   "docs/research/2026-07-29-attribution/README.md",
 ]
 requires_docs_when = [
-  "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
+  "Measurement workflow, sweep playback, generated correction config, confidence scoring, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
-  "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, local browser capture, measured proof, acceptance authority, or target/headroom/latency promise changes.",
   "The v2 crossover commission session (open/measure/close lifecycle, four seam fields, excitation program, or temporary trial scope) or its session-volume, apply, verify, or republish contract changes — scan tuning-operator-runbook.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
-  "pytest tests/test_web_correction_setup.py",
-  "pytest tests/test_web_correction_tuning.py",
+  "pytest tests/test_web_correction_setup.py tests/test_doctor_correction.py",
   "bash scripts/check-js-syntax.sh",
   "pytest tests/test_web_sync_flow.py",
   "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py tests/test_active_speaker_commissioning_evidence.py",
@@ -816,6 +811,7 @@ code = [
   "jasper/tools/subway.py",
   "jasper/tools/citibike.py",
   "jasper/web/transit_setup.py",
+  "jasper/web/transit_page.py",
   "scripts/refresh-mta-stations.sh",
 ]
 docs = [
@@ -856,6 +852,7 @@ safety = "hardware-risk"
 code = [
   "jasper/peering/**",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "jasper/accessories/**",
   # The per-connection BLE connection-event reservation the WiiM mic adapter
   # requests on every reconnect. It lives in jasper/cli/ because it is a
@@ -886,6 +883,7 @@ code = [
   "jasper/install_profile.py",
   "jasper/tts_routing.py",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/net/control_advert.py",
   # Shared primitives the /sound/pair/ directory + friendly-name advert ride on:
@@ -1120,6 +1118,7 @@ code = [
   "jasper/control/household_credential.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "tests/test_control_server.py",
   "tests/test_household_credential.py",
 ]

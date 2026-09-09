@@ -667,10 +667,32 @@ async def test_which_attenuator_carries_the_level_across_a_transition(
     assert coord.airplay_writes == case["airplay"]
 
 
+async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
+    tmp_path,
+):
+    """The observer resolves the source before the cross-daemon lease. A
+    handoff that commits while the verdict queues must not end with camilla
+    pinned to 0 dB against a lane whose own slider JTS never writes."""
+    coord, cam, _ = _coord(tmp_path, active={}, level=50, selected="spotify")
+    answers = ["spotify", "airplay"]
+
+    async def selected_source() -> str:
+        return answers.pop(0) if answers else "airplay"
+
+    coord._backend.selected_source = selected_source
+    before = list(cam.set_calls)
+
+    assert await coord._active_source() is Source.SPOTIFY
+    await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
+
+    assert coord.spotify_writes == []
+    assert cam.set_calls == before
+
+
 async def test_transition_suppressed_during_voice_session(tmp_path):
     """note_voice_session(True) gates apply_active_source_transition
     so the ducker's additive math isn't corrupted by absolute writes."""
-    coord, cam, _ = _coord(tmp_path, active={})
+    coord, cam, _ = _coord(tmp_path, active={}, selected="spotify")
     coord.note_voice_session(True)
     initial_calls = list(cam.set_calls)
     await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
@@ -1350,7 +1372,9 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
     diag_path = tmp_path / "volume_policy.json"
     monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     level = 42
-    coord, _, persistence = _coord(tmp_path, active={}, level=level)
+    coord, _, persistence = _coord(
+        tmp_path, active={}, level=level, selected=current_source.value,
+    )
     persistence.save_now(-7.5)
     guard_calls = _stub_failed_push(
         monkeypatch, coord, setter_name, guard_confirmed,
@@ -2404,15 +2428,16 @@ async def test_observe_usbsink_initial_snapshot_cannot_clear_remote_mute(tmp_pat
     ("selected", "expected"),
     [
         ("airplay", Source.AIRPLAY),
-        # Mux's non-source answers — "idle", and a fan-in test-lease label
-        # during a measurement — must fall through to the raw probes rather
-        # than pinning the coordinator to IDLE while Spotify is playing.
-        ("idle", Source.SPOTIFY),
+        # Mux holds its last committed answer across a handoff, so "idle" is
+        # true idle and takes the attenuating camilla-master carrier. Only a
+        # fan-in test-lease label, which is not a source at all, falls through
+        # to the raw probes.
+        ("idle", Source.IDLE),
         ("correction", Source.SPOTIFY),
         (None, Source.SPOTIFY),
     ],
 )
-async def test_active_source_falls_through_on_a_non_source_answer(
+async def test_active_source_honours_mux_over_the_raw_probes(
     tmp_path, selected, expected,
 ):
     coord, _, _ = _real_coord(

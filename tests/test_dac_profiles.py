@@ -474,7 +474,7 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.clock_domain_contract == (
         "measured_sync_required"
     )
-    assert DUAL_APPLE_USB_C_DAC_4CH.outputd_sink == "dual_apple"
+    assert DUAL_APPLE_USB_C_DAC_4CH.outputd_sink == "composite"
     assert DUAL_APPLE_USB_C_DAC_4CH.connection == "usb"
     assert DUAL_APPLE_USB_C_DAC_4CH.child_profile_ids == (
         APPLE_USB_C_DONGLE_ID,
@@ -528,7 +528,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             coherent_clock_domain=False,
             clock_domain_label="Bad clock",
             clock_domain_contract="measured_sync_required",
-            outputd_sink="dual_apple",
+            outputd_sink="composite",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID,),
         )
@@ -545,7 +545,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             coherent_clock_domain=False,
             clock_domain_label="Bad clock",
             clock_domain_contract="measured_sync_required",
-            outputd_sink="dual_apple",
+            outputd_sink="composite",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
             mixer_controls=APPLE_USB_C_DONGLE.mixer_controls,
@@ -576,7 +576,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             coherent_clock_domain=False,
             clock_domain_label="Two clocks",
             clock_domain_contract="measured_sync_required",
-            outputd_sink="dual_apple",
+            outputd_sink="composite",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
             supports_active_outputd_lane=True,
@@ -1159,4 +1159,4 @@ def test_every_registry_row_declares_a_sink_outputd_can_parse() -> None:
     """
 
     for profile in dac.all_profiles():
-        assert profile.outputd_sink in ("single_alsa", "dual_apple")
+        assert profile.outputd_sink in ("single_alsa", "composite")

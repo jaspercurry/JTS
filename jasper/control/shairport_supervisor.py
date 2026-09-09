@@ -291,6 +291,13 @@ class ShairportSupervisor:
         unknown. A dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
 
+        An absent MPRIS bus name is not unknown: the probe classifies it as a
+        definite not-Playing, so a wedged shairport-sync with no bus name is
+        restarted without a systemd cross-check and without a
+        `shairport.gate_bypass` event (that event covers only the
+        unknown-probe path). The shipped build is `--with-mpris-interface`, so
+        a missing bus name means no session for mux either.
+
         A *deliberately disabled* unit is diverted before this gate:
         each failing tick checks `is_shairport_unit_disabled()` before
         the counter can arm, so the unit_inactive bypass is reached

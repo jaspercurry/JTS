@@ -136,9 +136,13 @@ import {
   crossoverVocabulary,
   driverResearch,
   el,
+  eqEditor,
   followerMode,
+  outputPage,
   outputTopology,
-  pageMode
+  pageMode,
+  resetEqEditor,
+  resetOutputTemplateDraft
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCommissionRoles,
@@ -192,33 +196,13 @@ import {
             profile_id: '', profile_name: ''};
   };
 
-  // Declared before FLAT() is first called below — zeroSimple() reads them.
-  var simpleBands = [];        // [{key,field,label,freq_hz,type}] from /state
   var limits = Object.assign({}, LIMIT_DEFAULTS);
 
-  var view = 'off';            // off | saved | draft
-  var mode = 'simple';         // simple | peq
-  var selectedId = null;       // selected library id on the Saved tab
   var draft = FLAT();          // working profile in the Draft tab
-  var editing = {kind: 'new'}; // new | {kind:'user',id,name} | {kind:'preset',id,name}
-  var activeBand = 0;
   var allCollapsed = false;
-  var naming = false;
-  var nameMode = 'save';       // 'save' (new/copy) | 'rename'
-  var nameDraft = '';
 
   var applied = FLAT();        // persisted profile
-  var library = [];            // [{id,name,kind,editable,description,profile,...}]
-  var soundSettings = {
-    headroom_trim_db: 0,
-    match_loudness: false,
-    volume_floor_db: volumeFloorDefault()
-  };  // global output settings
-  var soundSettingsBlocked = false;  // ./settings: the graph refused to carry EQ
-  var i2sHat = null;
-  var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
-  var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
   var liveSourceSeq = 0, liveSourcePending = false, liveSourceOptions = {};
@@ -250,17 +234,14 @@ import {
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
-  var outputStepOverride = '';
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
-  // is "/sound/setup/#confirm-safety-limits"). Both halves of that link — the id
+  // is "/sound/speaker/#confirm-safety-limits"). Both halves of that link — the id
   // rendered here and the href in the registry — are pinned by
   // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
   var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
-  var activeSpeakerSetupOpen = false;
   var driverAdvancedOpen = false;
-  var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   var ZERO_DETENT_DB = 0.1;
   var volumeFloorTone = {
     active: false,
@@ -276,10 +257,10 @@ import {
   }
   function zeroSimple() {
     var out = {};
-    (simpleBands.length ? simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
+    (eqEditor.simpleBands.length ? eqEditor.simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
       out[b.field] = 0;
     });
-    if (!simpleBands.length) {
+    if (!eqEditor.simpleBands.length) {
       ['sub_bass_db', 'bass_db', 'mid_db', 'presence_db', 'treble_db'].forEach(function(f) {
         if (!(f in out)) out[f] = 0;
       });
@@ -301,7 +282,7 @@ import {
     raw = raw || {};
     var simple = raw.simple_eq || {};
     var normSimple = {};
-    var bands = simpleBands.length ? simpleBands : [
+    var bands = eqEditor.simpleBands.length ? eqEditor.simpleBands : [
       {field: 'sub_bass_db'}, {field: 'bass_db'}, {field: 'mid_db'},
       {field: 'presence_db'}, {field: 'treble_db'}
     ];
@@ -331,19 +312,19 @@ import {
     });
   }
   function entryById(id) {
-    return library.find(function(e) { return e.id === id; }) || null;
+    return eqEditor.library.find(function(e) { return e.id === id; }) || null;
   }
-  function userEntries() { return library.filter(function(e) { return e.kind === 'custom'; }); }
-  function presetEntries() { return library.filter(function(e) { return e.kind === 'stock'; }); }
+  function userEntries() { return eqEditor.library.filter(function(e) { return e.kind === 'custom'; }); }
+  function presetEntries() { return eqEditor.library.filter(function(e) { return e.kind === 'stock'; }); }
   function fallbackSavedId() {
     if (entryById(DEFAULT_SAVED_ID)) return DEFAULT_SAVED_ID;
-    return library.length ? library[0].id : null;
+    return eqEditor.library.length ? eqEditor.library[0].id : null;
   }
   function selectedSavedEntry() {
-    var entry = entryById(selectedId);
+    var entry = entryById(eqEditor.selectedId);
     if (entry) return entry;
-    selectedId = fallbackSavedId();
-    return selectedId ? entryById(selectedId) : null;
+    eqEditor.selectedId = fallbackSavedId();
+    return eqEditor.selectedId ? entryById(eqEditor.selectedId) : null;
   }
   function selectedSavedProfile() {
     var entry = selectedSavedEntry();
@@ -353,16 +334,16 @@ import {
     profile = normalizeProfile(profile);
     if (profile.profile_id && entryById(profile.profile_id)) return profile.profile_id;
     var key = profileKey(profile);
-    var stock = library.find(function(e) { return e.kind === 'stock' && profileKey(e.profile) === key; });
+    var stock = eqEditor.library.find(function(e) { return e.kind === 'stock' && profileKey(e.profile) === key; });
     if (stock) return stock.id;
-    var custom = library.find(function(e) { return e.kind === 'custom' && profileKey(e.profile) === key; });
+    var custom = eqEditor.library.find(function(e) { return e.kind === 'custom' && profileKey(e.profile) === key; });
     if (custom) return custom.id;
     return 'stock:' + (profile.curve_id || 'flat');
   }
   // The profile the editor sources from (for the modified/dirty check).
   function sourceProfile() {
-    if (editing.kind === 'new') return FLAT();
-    var entry = entryById(editing.id);
+    if (eqEditor.editing.kind === 'new') return FLAT();
+    var entry = entryById(eqEditor.editing.id);
     return entry ? normalizeProfile(entry.profile) : FLAT();
   }
   function draftModified() {
@@ -376,22 +357,22 @@ import {
   }
   // The profile currently driving the speaker per the active tab.
   function liveProfile() {
-    if (view === 'off') return null;
-    if (view === 'saved') {
+    if (eqEditor.view === 'off') return null;
+    if (eqEditor.view === 'saved') {
       var entry = selectedSavedEntry();
       return entry ? normalizeProfile(entry.profile) : null;
     }
     return draft;
   }
   function liveLabel() {
-    if (view === 'off') return 'Bypass';
-    if (view === 'saved') {
+    if (eqEditor.view === 'off') return 'Bypass';
+    if (eqEditor.view === 'saved') {
       var entry = selectedSavedEntry();
       return entry ? entry.name : 'No profile selected';
     }
-    if (editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
-    var lead = editing.kind === 'preset' ? 'From preset: ' : 'Editing: ';
-    return lead + editing.name + (draftModified() ? ' · edited' : '');
+    if (eqEditor.editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
+    var lead = eqEditor.editing.kind === 'preset' ? 'From preset: ' : 'Editing: ';
+    return lead + eqEditor.editing.name + (draftModified() ? ' · edited' : '');
   }
 
   // ---- preview math ---------------------------------------------------
@@ -413,10 +394,10 @@ import {
   function bandQMax(type) {
     return (type === 'Highpass' || type === 'Lowpass') ? limits.cut_max_q : limits.max_q;
   }
-  function curveSpecs(profile) { return (curvesById[profile.curve_id] || {}).filters || []; }
+  function curveSpecs(profile) { return (eqEditor.curvesById[profile.curve_id] || {}).filters || []; }
   function simpleSpecs(profile) {
     var simple = profile.simple_eq || {};
-    return (simpleBands.length ? simpleBands : []).map(function(b) {
+    return (eqEditor.simpleBands.length ? eqEditor.simpleBands : []).map(function(b) {
       return {type: b.type, freq_hz: b.freq_hz, gain_db: simple[b.field] || 0,
               q: b.type === 'Peaking' ? 1.0 : undefined};
     });
@@ -436,7 +417,7 @@ import {
   // adds a frequency guide line (+ width shading for Peaking) — no per-band
   // marker lines or component curves clutter the default view.
   function drawBandMarkers(summed) {
-    if (view !== 'draft' || mode !== 'peq') return '';
+    if (eqEditor.view !== 'draft' || eqEditor.mode !== 'peq') return '';
     var expandedBand = expandedPeqBandIndex();
     var html = '';
     (draft.parametric_bands || []).forEach(function(b, i) {
@@ -462,8 +443,8 @@ import {
     return html;
   }
   function expandedPeqBandIndex() {
-    if (view !== 'draft' || mode !== 'peq' || allCollapsed || activeBand < 0) return -1;
-    return activeBand;
+    if (eqEditor.view !== 'draft' || eqEditor.mode !== 'peq' || allCollapsed || eqEditor.activeBand < 0) return -1;
+    return eqEditor.activeBand;
   }
   function renderGraph(payload, enabled) {
     var svg = el('plot');
@@ -513,8 +494,8 @@ import {
   function renderTabs() {
     ['off', 'saved', 'draft'].forEach(function(v) {
       var btn = el('tab-' + v);
-      btn.setAttribute('aria-pressed', v === view ? 'true' : 'false');
-      btn.classList.toggle('is-live', v === view);
+      btn.setAttribute('aria-pressed', v === eqEditor.view ? 'true' : 'false');
+      btn.classList.toggle('is-live', v === eqEditor.view);
     });
   }
   function render() {
@@ -523,22 +504,32 @@ import {
       status(statusText, statusErr);
       return;
     }
-    if (pageMode === 'setup') {
-      renderSetup();
+    if (pageMode !== 'eq') {
+      if (pageMode === 'speaker') renderSpeaker(); else renderOutput();
+      status(statusText, statusErr);
+      return;
+    }
+    // The tab strip and the now-playing plot describe an editor this page is
+    // not showing, and the plot would sit empty, so both go with it.
+    ['eq-tabs', 'now-playing'].forEach(function(id) {
+      var node = el(id);
+      if (node) node.hidden = !!eqEditor.carrierBlock;
+    });
+    if (eqEditor.carrierBlock) {
+      renderEqCarrierBlocked();
       status(statusText, statusErr);
       return;
     }
     renderTabs();
     renderLiveGraph();
-    if (view === 'off') renderOff();
-    else if (view === 'saved') renderSaved();
+    if (eqEditor.view === 'off') renderOff();
+    else if (eqEditor.view === 'saved') renderSaved();
     else renderDraft();
     status(statusText, statusErr);
   }
 
-  // Follower mode renders the local driver/crossover/commissioning surface as the
-  // page's primary content (expanded, not behind the Speaker setup disclosure a
-  // solo box tucks it under). No EQ tabs/plot exist on a follower.
+  // A follower's local page carries the I2S HAT too: its Output page is
+  // delegated to the leader. No EQ tabs/plot exist on a follower.
   function renderFollower() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
@@ -546,14 +537,19 @@ import {
       '</section></div>';
   }
 
-  function renderSetup() {
+  function renderSpeaker() {
+    el('view-body').innerHTML =
+      '<div class="saved-stack"><section class="active-speaker-setup">' +
+      renderOutputTopologySetup() + '</section></div>';
+  }
+
+  function renderOutput() {
     el('view-body').innerHTML = '<div class="saved-stack">' +
-      renderI2sHatSetting() + renderSetupSoundSettings() +
-      renderActiveSpeakerSetup() + '</div>';
+      renderI2sHatSetting() + renderSetupSoundSettings() + '</div>';
   }
 
   function renderI2sHatSetting() {
-    var hat = i2sHat;
+    var hat = outputPage.i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
     var profiles = hat.profiles || [];
     var selectedId = hat.desired_profile_id || '';
@@ -591,6 +587,30 @@ import {
           'before installing or removing the HAT. Never power the Pi through the HAT and another power input at the same time. ' +
           'Never hot-plug. Start the first playback at a very low level.</p>' +
       '</div></section>';
+  }
+
+  // ./apply and ./live-draft refuse with the same typed body /state carries,
+  // so a refusal mid-session becomes the page's state too. Recorded whatever
+  // the request's sequence: it describes the loaded graph, not this request.
+  function noteCarrierRefusal(payload) {
+    eqEditor.carrierBlock = {
+      status: 'blocked',
+      reason_code: payload.reason_code || '',
+      message: payload.message || EQ_BLOCKED_MESSAGE
+    };
+  }
+
+  // The whole page when the loaded graph cannot host EQ: the editor would only
+  // offer edits every save refuses, so it is replaced by the reason and the
+  // one page that can change it.
+  function renderEqCarrierBlocked() {
+    el('view-body').innerHTML =
+      '<div class="saved-stack"><section class="info-card" role="status">' +
+        '<p>' + escapeHtml(eqEditor.carrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
+        '<div class="form-actions">' +
+          '<a class="btn btn--primary" href="/sound/speaker/">Open Speaker setup</a>' +
+        '</div>' +
+      '</section></div>';
   }
 
   function renderOff() {
@@ -643,13 +663,13 @@ import {
       '<button type="button" class="text-button" data-act="new-draft">' + ico('plus') + 'New</button></div>' +
       (users.length
         ? '<div class="list-card"><div class="list-card__rows">' +
-            users.map(function(e) { return profileRow(e, e.id === selectedId, true); }).join('') + '</div></div>'
+            users.map(function(e) { return profileRow(e, e.id === eqEditor.selectedId, true); }).join('') + '</div></div>'
         : '<div class="empty-card"><p>No profiles yet.</p>' +
             '<button type="button" class="btn btn--primary" data-act="new-draft">Create your first</button></div>') +
       '</section>';
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
-        presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
+        presets.map(function(e) { return profileRow(e, e.id === eqEditor.selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
   }
   function fmtVolumeFloor(v) {
@@ -675,7 +695,7 @@ import {
   }
   function savedVolumeFloorDb() {
     var bounds = volumeFloorLimits();
-    var floor = Number(soundSettings.volume_floor_db);
+    var floor = Number(outputPage.soundSettings.volume_floor_db);
     if (!isFinite(floor)) floor = volumeFloorDefault();
     return clamp(floor, bounds.min, bounds.max);
   }
@@ -686,8 +706,8 @@ import {
     return clamp(floor, bounds.min, bounds.max);
   }
   function volumeFloorValue() {
-    return volumeFloorDraftDb === null || volumeFloorDraftDb === undefined ?
-      savedVolumeFloorDb() : coerceVolumeFloorDb(volumeFloorDraftDb);
+    return outputPage.volumeFloorDraftDb === null || outputPage.volumeFloorDraftDb === undefined ?
+      savedVolumeFloorDb() : coerceVolumeFloorDb(outputPage.volumeFloorDraftDb);
   }
   function volumeFloorDirty(v) {
     return Math.abs(coerceVolumeFloorDb(v) - savedVolumeFloorDb()) >= 0.05;
@@ -706,11 +726,11 @@ import {
     }
   }
   function setVolumeFloorDraft(v) {
-    volumeFloorDraftDb = coerceVolumeFloorDb(v);
-    syncVolumeFloorControls(volumeFloorDraftDb);
+    outputPage.volumeFloorDraftDb = coerceVolumeFloorDb(v);
+    syncVolumeFloorControls(outputPage.volumeFloorDraftDb);
   }
   function renderMatchLoudnessSetting() {
-    var ml = soundSettings.match_loudness ? ' checked' : '';
+    var ml = outputPage.soundSettings.match_loudness ? ' checked' : '';
     return '<div class="setting-row">' +
         '<div class="setting-row__text">' +
           '<p class="setting-row__title">Match loudness</p>' +
@@ -721,7 +741,7 @@ import {
       '</div>';
   }
   function renderSetupSoundSettings() {
-    var trim = Number(soundSettings.headroom_trim_db) || 0;
+    var trim = Number(outputPage.soundSettings.headroom_trim_db) || 0;
     var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
     var floorBounds = volumeFloorLimits();
     var floorMin = floorBounds.min;
@@ -735,7 +755,7 @@ import {
     var saveLabel = volumeFloorSaving ? 'Saving' :
       (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
-      (soundSettingsBlocked ? '<div class="info-card" role="status"><p>' +
+      (outputPage.blocked ? '<div class="info-card" role="status"><p>' +
         EQ_BLOCKED_CARD_MESSAGE + '</p></div>' : '') +
       renderMatchLoudnessSetting() +
       '<details class="advanced"' + (advancedOpen ? ' open' : '') + '>' +
@@ -769,19 +789,6 @@ import {
             '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
           '</div>' +
         '</div>' +
-      '</details>' +
-    '</section>';
-  }
-  function renderActiveSpeakerSetup() {
-    var open = activeSpeakerSetupOpen || activeSpeaker.loading ||
-      activeSpeaker.session ||
-      activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
-      outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
-      outputTopology.dirty || outputTopology.touched;
-    return '<section class="active-speaker-setup">' +
-      '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
-        '<summary>Speaker setup</summary>' +
-        renderOutputTopologySetup() +
       '</details>' +
     '</section>';
   }
@@ -1413,15 +1420,15 @@ import {
     return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));
   }
   function outputStepIsOpen(step, topology) {
-    return (outputStepOverride || defaultOutputStep()) === step;
+    return (outputPage.stepOverride || defaultOutputStep()) === step;
   }
   function outputStepCanOpen(step, topology) {
     if (outputStepState(step, topology) !== 'todo') return true;
     // Dirty output remaps are saved from the map card itself.
-    return step === 'map' && outputTopology.dirty && outputStepOverride === 'map';
+    return step === 'map' && outputTopology.dirty && outputPage.stepOverride === 'map';
   }
   function openOutputStep(step) {
-    outputStepOverride = step;
+    outputPage.stepOverride = step;
     render();
   }
   function outputStepHint(step, fallback) {
@@ -1506,8 +1513,8 @@ import {
     });
     if (!mainGroups.length) {
       return {
-        layout: outputTemplateDraftAxes.layout || '',
-        speakerMode: outputTemplateDraftAxes.speakerMode || ''
+        layout: outputPage.templateDraftAxes.layout || '',
+        speakerMode: outputPage.templateDraftAxes.speakerMode || ''
       };
     }
     var kinds = mainGroups.map(function(group) { return group.kind; });
@@ -1813,7 +1820,7 @@ import {
   function applySafetyLimitsDeepLink() {
     if (window.location.hash !== '#' + CONFIRM_SAFETY_ANCHOR_ID) return;
     if (!driverSafetyReviewState(currentOutputTopology()).needsReview) return;
-    outputStepOverride = 'research';
+    outputPage.stepOverride = 'research';
     render();
     var node = document.getElementById(CONFIRM_SAFETY_ANCHOR_ID);
     if (node && typeof node.scrollIntoView === 'function') {
@@ -2848,7 +2855,7 @@ import {
     '</div>';
   }
   function bandRow(band, index) {
-    var open = !allCollapsed && index === activeBand;
+    var open = !allCollapsed && index === eqEditor.activeBand;
     var type = band.type || 'Peaking';
     var shelf = type === 'Lowshelf' || type === 'Highshelf';
     var gainless = GAINLESS_TYPES.indexOf(type) >= 0;
@@ -2906,13 +2913,13 @@ import {
   function renderDraft() {
     var modeSection = '<section class="mode-toggle"><div class="section-header"><h2 class="eyebrow">Mode</h2></div>' +
       '<div class="segmented" id="mode-tabs">' +
-        '<button type="button" class="segmented__btn" data-mode="simple" aria-pressed="' + (mode === 'simple' ? 'true' : 'false') + '">Simple</button>' +
-        '<button type="button" class="segmented__btn" data-mode="peq" aria-pressed="' + (mode === 'peq' ? 'true' : 'false') + '">PEQ</button>' +
+        '<button type="button" class="segmented__btn" data-mode="simple" aria-pressed="' + (eqEditor.mode === 'simple' ? 'true' : 'false') + '">Simple</button>' +
+        '<button type="button" class="segmented__btn" data-mode="peq" aria-pressed="' + (eqEditor.mode === 'peq' ? 'true' : 'false') + '">PEQ</button>' +
       '</div></section>';
 
     var bandsContent;
-    if (mode === 'simple') {
-      var cols = (simpleBands.length ? simpleBands : []).map(function(slot, i) {
+    if (eqEditor.mode === 'simple') {
+      var cols = (eqEditor.simpleBands.length ? eqEditor.simpleBands : []).map(function(slot, i) {
         return simpleColumn(Object.assign({idx: i}, slot), draft.simple_eq[slot.field] || 0);
       }).join('');
       bandsContent = '<div class="bands-card bands-card--simple"><div class="simple-grid">' + cols + '</div></div>';
@@ -2923,7 +2930,7 @@ import {
         (draft.parametric_bands.length >= limits.max_parametric_bands ? ' disabled' : '') + '>' +
         ico('plus') + 'Add band</button></div></div>';
     }
-    var activeCount = mode === 'simple'
+    var activeCount = eqEditor.mode === 'simple'
       ? Object.keys(draft.simple_eq).filter(function(k) {
         return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
       }).length
@@ -2931,7 +2938,7 @@ import {
     var bandsSection = '<section class="bands-section"><div class="row-between">' +
       '<h2 class="eyebrow">Bands</h2>' +
       '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
-      (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
+      (eqEditor.mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
         (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
       '</div></div>' + bandsContent + '</section>';
 
@@ -2939,11 +2946,11 @@ import {
       '<section class="draft-footer">' + footerHtml() + '</section></div>';
   }
   function footerHtml() {
-    if (naming) {
-      var isRename = nameMode === 'rename';
+    if (eqEditor.naming) {
+      var isRename = eqEditor.nameMode === 'rename';
       return '<div class="naming-card">' +
         '<label class="eyebrow">' + (isRename ? 'Rename profile' : 'Name your profile') + '</label>' +
-        '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(nameDraft) + '">' +
+        '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(eqEditor.nameDraft) + '">' +
         '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="finalize-name">' +
             (isRename ? 'Rename' : 'Save profile') + '</button>' +
@@ -2951,7 +2958,7 @@ import {
         '</div></div>';
     }
     var dirty = draftModified();
-    if (editing.kind === 'user') {
+    if (eqEditor.editing.kind === 'user') {
       return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="overwrite" data-dirty-action' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
           '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
@@ -2960,7 +2967,7 @@ import {
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' +
             (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
-    if (editing.kind === 'preset') {
+    if (eqEditor.editing.kind === 'preset') {
       return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="begin-name">Save as new</button>' +
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
@@ -3010,6 +3017,8 @@ import {
           // The loaded graph can't host EQ (e.g. an active crossover). Show
           // the server's honest hint; do not touch the draft/epoch state.
           status(payload.message || EQ_BLOCKED_MESSAGE, true);
+          noteCarrierRefusal(payload);
+          render();
         } else {
           if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
           if (payload.live_status === 'live') status('Listening to this draft live.');
@@ -3040,10 +3049,10 @@ import {
     liveSourcePending = false;
     liveSourceOptions = {};
     var seq = liveSourceSeq;
-    if (view === 'off') {
+    if (eqEditor.view === 'off') {
       return applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), options.okMsg, seq);
     }
-    if (view === 'saved') {
+    if (eqEditor.view === 'saved') {
       return applySavedSelection(options.okMsg, seq);
     }
     scheduleLiveDraft(options.immediate === false ? false : true);
@@ -3060,6 +3069,7 @@ import {
         // Refused (e.g. EQ over an active crossover). Surface the honest hint
         // and skip ingestState — a blocked body carries no profile state.
         if (sourceSeq === liveSourceSeq) status(payload.message || EQ_BLOCKED_MESSAGE, true);
+        noteCarrierRefusal(payload);   // the `finally` below renders it
       } else {
         ingestState(payload);
         if (sourceSeq === liveSourceSeq) status(okMsg || '');
@@ -3077,7 +3087,7 @@ import {
       var resp = await fetch(path, {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body || {})});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'profile update failed');
-      if (payload.profile_library) library = payload.profile_library;
+      if (payload.profile_library) eqEditor.library = payload.profile_library;
       return payload;
     } catch (e) {
       status('Could not update profiles: ' + e.message, true);
@@ -3091,8 +3101,8 @@ import {
   // Global sound settings. Optimistic: the controls already show the user's
   // input, so on success we just ingest; on failure we revert and re-render.
   async function saveSettings(patch) {
-    var prev = soundSettings;
-    soundSettings = Object.assign({}, soundSettings, patch);
+    var prev = outputPage.soundSettings;
+    outputPage.soundSettings = Object.assign({}, outputPage.soundSettings, patch);
     try {
       var payload = await postJSON('./settings', patch);
       // The setting is saved either way; a blocked body says the loaded graph
@@ -3101,15 +3111,15 @@ import {
       // warnings a save can ALSO raise (a blocked body never carries
       // `warning` — same server branch — so in practice that is volume_warning).
       var blocked = payload.status === 'blocked';
-      var blockChanged = blocked !== soundSettingsBlocked;
-      soundSettingsBlocked = blocked;
+      var blockChanged = blocked !== outputPage.blocked;
+      outputPage.blocked = blocked;
       ingestState(payload);
       if (blockChanged) render();
       if (payload.warning) status(payload.warning, true);
       else if (payload.volume_warning) status(payload.volume_warning, true);
       return true;
     } catch (e) {
-      soundSettings = prev;
+      outputPage.soundSettings = prev;
       status('Could not save sound settings: ' + e.message, true);
       render();
       return false;
@@ -3124,7 +3134,7 @@ import {
         body: JSON.stringify({profile_id: profileId || null})
       });
       var payload = await resp.json();
-      if ('desired_profile_id' in payload) i2sHat = payload;
+      if ('desired_profile_id' in payload) outputPage.i2sHat = payload;
       if (!resp.ok && 'desired_profile_id' in payload)
         return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
@@ -3215,7 +3225,7 @@ import {
     var saved = await saveSettings({volume_floor_db: floor});
     volumeFloorSaving = false;
     if (saved) {
-      volumeFloorDraftDb = null;
+      outputPage.volumeFloorDraftDb = null;
       syncVolumeFloorControls(savedVolumeFloorDb());
       if (volumeFloorTone.active) {
         volumeFloorTone.savedNotice = true;
@@ -3250,17 +3260,21 @@ import {
 
   function ingestState(payload) {
     limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
-    simpleBands = limits.simple_bands || [];
-    if (payload.curves) { curvesById = {}; payload.curves.forEach(function(c) { curvesById[c.id] = c; }); }
-    if (payload.profile_library) library = payload.profile_library;
+    eqEditor.simpleBands = limits.simple_bands || [];
+    if (payload.curves) { eqEditor.curvesById = {}; payload.curves.forEach(function(c) { eqEditor.curvesById[c.id] = c; }); }
+    if (payload.profile_library) eqEditor.library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-    if (payload.sound_settings) soundSettings = payload.sound_settings;
+    if (payload.sound_settings) outputPage.soundSettings = payload.sound_settings;
+    // Every /state and every successful apply carries the field, so a fixed
+    // layout drops the block at the next render instead of needing a reload.
+    var carrier = payload.eq_carrier;
+    if (carrier) eqEditor.carrierBlock = carrier.status === 'blocked' ? carrier : null;
     applied = normalizeProfile(payload.profile || {});
   }
 
   // ---- tab + edit transitions ----------------------------------------
   function setView(v) {
-    view = v;
+    eqEditor.view = v;
     render();
     // Off and Saved are durable: clicking Off applies a bypass; tapping a
     // saved profile applies it (see selectSaved). Draft is a live, non-
@@ -3276,21 +3290,21 @@ import {
     return applyProfile(profile, okMsg, sourceSeq);
   }
   function selectSaved(id) {
-    selectedId = id;
+    eqEditor.selectedId = id;
     render();
     requestLiveSource({immediate: true});
   }
   function newDraft() {
-    draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
-    view = 'draft'; status(''); render(); requestLiveSource({immediate: true});
+    draft = FLAT(); eqEditor.editing = {kind: 'new'}; eqEditor.mode = 'simple'; eqEditor.activeBand = 0; resetEqEditor();
+    eqEditor.view = 'draft'; status(''); render(); requestLiveSource({immediate: true});
   }
   function editEntry(id) {
     var entry = entryById(id);
     if (!entry) return;
     draft = normalizeProfile(entry.profile);
-    editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
-    mode = draft.parametric_bands.length ? 'peq' : 'simple';
-    activeBand = 0; naming = false; view = 'draft';
+    eqEditor.editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
+    eqEditor.mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    eqEditor.activeBand = 0; resetEqEditor(); eqEditor.view = 'draft';
     status('Editing ' + entry.name + '.'); render(); requestLiveSource({immediate: true});
   }
   // Body re-render + optimistic graph (via schedulePreview) + live audio.
@@ -3304,7 +3318,7 @@ import {
   function refreshActiveCount() {
     var e = el('active-count');
     if (!e) return;
-    var n = mode === 'simple'
+    var n = eqEditor.mode === 'simple'
       ? Object.keys(draft.simple_eq).filter(function(k) {
         return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
       }).length
@@ -3329,7 +3343,7 @@ import {
   // The Off/Saved/Draft tabs only exist on the solo page; a follower omits them.
   if (!followerMode && pageMode === 'eq') {
     ['off', 'saved', 'draft'].forEach(function(v) {
-      el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
+      el('tab-' + v).addEventListener('click', function() { if (eqEditor.view !== v) setView(v); });
     });
   }
   el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/sound/'; });
@@ -3347,11 +3361,11 @@ import {
     else if (act === 'delete') { deleteEntry(id); }
     else if (act === 'add-band') { addBand(); }
     else if (act === 'del-band') { delBand(index); }
-    else if (act === 'toggle-band') { activeBand = (activeBand === index && !allCollapsed) ? -1 : index; allCollapsed = false; renderDraft(); renderLiveGraph(); }
+    else if (act === 'toggle-band') { eqEditor.activeBand = (eqEditor.activeBand === index && !allCollapsed) ? -1 : index; allCollapsed = false; renderDraft(); renderLiveGraph(); }
     else if (act === 'toggle-collapse') { allCollapsed = !allCollapsed; renderDraft(); }
-    else if (act === 'begin-name') { naming = true; nameMode = 'save'; nameDraft = defaultName(); renderDraft(); focusNameInput(); }
-    else if (act === 'begin-rename') { naming = true; nameMode = 'rename'; nameDraft = editing.name || ''; renderDraft(); focusNameInput(); }
-    else if (act === 'cancel-name') { naming = false; renderDraft(); }
+    else if (act === 'begin-name') { eqEditor.naming = true; eqEditor.nameMode = 'save'; eqEditor.nameDraft = defaultName(); renderDraft(); focusNameInput(); }
+    else if (act === 'begin-rename') { eqEditor.naming = true; eqEditor.nameMode = 'rename'; eqEditor.nameDraft = eqEditor.editing.name || ''; renderDraft(); focusNameInput(); }
+    else if (act === 'cancel-name') { resetEqEditor(); renderDraft(); }
     else if (act === 'finalize-name') { finalizeName(); }
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
@@ -3423,7 +3437,7 @@ import {
             prevType !== 'Highpass' && prevType !== 'Lowpass') {
           b.q = 0.707;
         }
-        activeBand = bi;
+        eqEditor.activeBand = bi;
         onDraftChanged(true);
       }
     }
@@ -3530,7 +3544,7 @@ import {
       var bi = Number(row.getAttribute('data-index'));
       var band = draft.parametric_bands[bi];
       if (!band) return;
-      activeBand = bi;
+      eqEditor.activeBand = bi;
       if (range === 'freq') band.freq_hz = sliderToFreq(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
       if (range === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
       if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, bandQMax(band.type));
@@ -3542,7 +3556,7 @@ import {
     }
   });
   el('view-body').addEventListener('input', function(ev) {
-    if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
+    if (ev.target.id === 'name-input') { eqEditor.nameDraft = ev.target.value; return; }
     if (ev.target.id === 'set-headroom') {
       var ro = el('set-headroom-readout');           // live readout; commit on 'change'
       if (ro) ro.textContent = fmtTrim(ev.target.value);
@@ -3596,7 +3610,7 @@ import {
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-style')) {
       var saveDriverStyle = ev.target.hasAttribute('data-save-driver-style');
-      if (saveDriverStyle) outputStepOverride = 'research';
+      if (saveDriverStyle) outputPage.stepOverride = 'research';
       setOutputChannelDriverStyle(
         ev.target.getAttribute('data-group-id') || '',
         ev.target.getAttribute('data-role') || '',
@@ -3620,26 +3634,22 @@ import {
     }
   });
   el('view-body').addEventListener('toggle', function(ev) {
-    if (ev.target && ev.target.matches && ev.target.matches('[data-active-speaker-setup]')) {
-      activeSpeakerSetupOpen = !!ev.target.open;
-      return;
-    }
     if (ev.target && ev.target.matches && ev.target.matches('[data-driver-advanced]')) {
       driverAdvancedOpen = !!ev.target.open;
       return;
     }
     if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
         ev.target.open) {
-      var step = ev.target.getAttribute('data-output-step') || outputStepOverride;
+      var step = ev.target.getAttribute('data-output-step') || outputPage.stepOverride;
       var topology = currentOutputTopology();
       if (!outputStepCanOpen(step, topology)) {
         ev.target.open = false;
-        outputStepOverride = defaultOutputStep();
+        outputPage.stepOverride = defaultOutputStep();
         status('Finish the current card before opening ' + outputStepTitle(step) + '.', true);
         render();
         return;
       }
-      outputStepOverride = step;
+      outputPage.stepOverride = step;
       el('view-body').querySelectorAll('.output-step[open]').forEach(function(stepEl) {
         if (stepEl !== ev.target) stepEl.open = false;
       });
@@ -3648,15 +3658,15 @@ import {
   el('view-body').addEventListener('keydown', function(ev) {
     if (ev.target.id !== 'name-input') return;
     if (ev.key === 'Enter') { ev.preventDefault(); finalizeName(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); naming = false; renderDraft(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); resetEqEditor(); renderDraft(); }
   });
 
   function switchMode(next) {
-    if (next === mode) return;
+    if (next === eqEditor.mode) return;
     if (next === 'simple') {
       // Snap to the simple template, copying nearest gain by log-frequency.
       var newSimple = zeroSimple();
-      (simpleBands || []).forEach(function(slot) {
+      (eqEditor.simpleBands || []).forEach(function(slot) {
         var nearest = null, best = 1.2;
         draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).forEach(function(b) {
           var dist = Math.abs(Math.log(b.freq_hz / slot.freq_hz) / Math.log(2));
@@ -3668,7 +3678,7 @@ import {
       draft.parametric_bands = [];
     } else {
       // Simple -> PEQ keeps the simple bands as gains; PEQ owns the bands going forward.
-      draft.parametric_bands = (simpleBands || []).filter(function(s) {
+      draft.parametric_bands = (eqEditor.simpleBands || []).filter(function(s) {
         return Math.abs(draft.simple_eq[s.field] || 0) >= ACTIVE_GAIN_EPSILON_DB;
       }).map(function(s) {
         // Simple EQ shelves ignore Q in the backend, but carrying a stable
@@ -3677,9 +3687,9 @@ import {
                 gain_db: draft.simple_eq[s.field], q: 1.0};
       });
       draft.simple_eq = zeroSimple();
-      activeBand = 0;
+      eqEditor.activeBand = 0;
     }
-    mode = next;
+    eqEditor.mode = next;
     onDraftChanged(true);
   }
   function addBand() {
@@ -3688,19 +3698,19 @@ import {
       return;
     }
     draft.parametric_bands.push({enabled: true, type: 'Peaking', freq_hz: 1000, gain_db: 0, q: 1});
-    activeBand = draft.parametric_bands.length - 1;
+    eqEditor.activeBand = draft.parametric_bands.length - 1;
     onDraftChanged(true);
   }
   function delBand(index) {
     draft.parametric_bands.splice(index, 1);
-    activeBand = Math.max(0, Math.min(activeBand, draft.parametric_bands.length - 1));
+    eqEditor.activeBand = Math.max(0, Math.min(eqEditor.activeBand, draft.parametric_bands.length - 1));
     onDraftChanged(true);
   }
   function resetDraft() {
     draft = sourceProfile();
-    if (editing.kind !== 'new') draft = withIdentity(draft, editing.id, editing.name);
-    mode = draft.parametric_bands.length ? 'peq' : 'simple';
-    activeBand = 0; naming = false;
+    if (eqEditor.editing.kind !== 'new') draft = withIdentity(draft, eqEditor.editing.id, eqEditor.editing.name);
+    eqEditor.mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    eqEditor.activeBand = 0; resetEqEditor();
     onDraftChanged(true);
   }
   function defaultName() {
@@ -3710,34 +3720,35 @@ import {
   }
   function focusNameInput() { var n = el('name-input'); if (n) { n.focus(); n.select(); } }
   async function finalizeName() {
-    naming = false;
-    if (nameMode === 'rename' && editing.kind === 'user') {
-      var newName = (nameDraft || '').trim() || editing.name || defaultName();
-      var rp = await profileMutate('./profiles/rename', {id: editing.id, name: newName});
+    // Not resetEqEditor(): the branches below still read nameMode and nameDraft.
+    eqEditor.naming = false;
+    if (eqEditor.nameMode === 'rename' && eqEditor.editing.kind === 'user') {
+      var newName = (eqEditor.nameDraft || '').trim() || eqEditor.editing.name || defaultName();
+      var rp = await profileMutate('./profiles/rename', {id: eqEditor.editing.id, name: newName});
       if (rp && rp.profile_entry) {
-        if (selectedId === editing.id) selectedId = rp.profile_entry.id;
-        editing = {kind: 'user', id: rp.profile_entry.id, name: rp.profile_entry.name};
+        if (eqEditor.selectedId === eqEditor.editing.id) eqEditor.selectedId = rp.profile_entry.id;
+        eqEditor.editing = {kind: 'user', id: rp.profile_entry.id, name: rp.profile_entry.name};
         status('Renamed to ' + rp.profile_entry.name + '.');
       }
       render();
       return;
     }
-    var name = (nameDraft || '').trim() || defaultName();
+    var name = (eqEditor.nameDraft || '').trim() || defaultName();
     var payload = await profileMutate('./profiles/save', {id: null, name: name, profile: draft});
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
-      library = payload.profile_library || library;
-      selectedId = entry.id; view = 'saved';
+      eqEditor.library = payload.profile_library || eqEditor.library;
+      eqEditor.selectedId = entry.id; eqEditor.view = 'saved';
       await requestLiveSource({okMsg: 'Saved ' + entry.name + '.', immediate: true});
       render();
     } else { render(); }
   }
   async function overwrite() {
-    if (editing.kind !== 'user') return;
-    var payload = await profileMutate('./profiles/save', {id: editing.id, name: editing.name, profile: draft});
+    if (eqEditor.editing.kind !== 'user') return;
+    var payload = await profileMutate('./profiles/save', {id: eqEditor.editing.id, name: eqEditor.editing.name, profile: draft});
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
-      selectedId = entry.id; view = 'saved';
+      eqEditor.selectedId = entry.id; eqEditor.view = 'saved';
       await requestLiveSource({okMsg: 'Updated ' + entry.name + '.', immediate: true});
       render();
     }
@@ -3749,8 +3760,8 @@ import {
     var payload = await profileMutate('./profiles/delete', {id: id});
     if (payload) {
       status('Deleted ' + entry.name + '.');
-      if (selectedId === id) {
-        selectedId = fallbackSavedId();
+      if (eqEditor.selectedId === id) {
+        eqEditor.selectedId = fallbackSavedId();
         render();
         requestLiveSource({immediate: true});
       } else {
@@ -3769,7 +3780,7 @@ import {
     outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
     outputTopology.hardwareMismatch = payload && payload.hardware_mismatch || null;
     outputTopology.hardwareRepin = payload && payload.hardware_repin || null;
-    i2sHat = payload && payload.i2s_hat || i2sHat;
+    outputPage.i2sHat = payload && payload.i2s_hat || outputPage.i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
@@ -3779,7 +3790,21 @@ import {
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
-    if (outputGroups(topology).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    if (outputGroups(topology).length) resetOutputTemplateDraft();
+  }
+  // The Output page renders the HAT picker and the sound settings, nothing
+  // else, so it reads the topology payload for `i2s_hat` alone and skips the
+  // six crossover/commissioning reads only the speaker page draws.
+  async function loadOutputHardware() {
+    try {
+      var resp = await fetch('./output-topology', {cache: 'no-store'});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'speaker layout load failed');
+      ingestOutputTopology(payload);
+    } catch (e) {
+      outputTopology.error = e.message;
+    }
+    render();
   }
   async function refreshOutputTopology(options) {
     options = options || {};
@@ -3973,7 +3998,7 @@ import {
       result.payload.status === 'confirmed');
     if (outcome === 'heard_correct_driver' && confirmed) {
       if (driverTargetProofComplete()) {
-        outputStepOverride = 'safety';
+        outputPage.stepOverride = 'safety';
         status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
       } else {
         status('Driver confirmation saved. Continue with the next output.');
@@ -3992,12 +4017,12 @@ import {
       stopCommissionAutoRamp('Stopped. Check the channel assignments before testing again.');
       await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
     }
-    outputStepOverride = 'map';
+    outputPage.stepOverride = 'map';
     status('Check the DAC channel assignments, save, then confirm the wiring again.');
     render();
   }
   function backToCrossoverConfiguration() {
-    outputStepOverride = 'research';
+    outputPage.stepOverride = 'research';
     status('Review the crossover settings, then return to validation.');
     render();
   }
@@ -4120,7 +4145,7 @@ import {
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
-    if (outputGroups(next).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    if (outputGroups(next).length) resetOutputTemplateDraft();
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
@@ -4204,7 +4229,7 @@ import {
     }
     applyChannel(targetChannel, selected);
     if (swapPeer) applyChannel(swapPeer, previousSelected);
-    outputStepOverride = 'map';
+    outputPage.stepOverride = 'map';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
@@ -4380,7 +4405,7 @@ import {
       status('Choose a supported speaker layout template.', true);
       return;
     }
-    outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    resetOutputTemplateDraft();
     if (count < template.minOutputs) {
       status(template.name + ' needs at least ' + template.minOutputs +
         ' physical output' + (template.minOutputs === 1 ? '.' : 's.'), true);
@@ -4422,7 +4447,7 @@ import {
     var axes = outputTemplateAxesForTopology(topology);
     var layout = axis === 'layout' ? value : axes.layout;
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
-    outputTemplateDraftAxes = {layout: layout || '', speakerMode: speakerMode || ''};
+    outputPage.templateDraftAxes = {layout: layout || '', speakerMode: speakerMode || ''};
     if (!layout || !speakerMode) {
       status(layout ? 'Choose passive, active 2-way, or active 3-way to continue.' :
         'Choose mono or stereo to continue.');
@@ -4681,7 +4706,7 @@ import {
   async function saveDriverResearchDraft(options) {
     options = options || {};
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
-      outputStepOverride = options.nextStep;
+      outputPage.stepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
         'Working setup is already current. Preview crossover before confirming outputs.' :
         'Save driver names and crossover points before confirming outputs.');
@@ -4783,7 +4808,7 @@ import {
       }
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
-      if (options.nextStep) outputStepOverride = options.nextStep;
+      if (options.nextStep) outputPage.stepOverride = options.nextStep;
       if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
@@ -4834,7 +4859,7 @@ import {
       if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
       ingestCrossoverPreview(payload);
       await refreshCommissioningView();
-      outputStepOverride = 'map';
+      outputPage.stepOverride = 'map';
       status('Crossover preview ready. No sound was played. Confirm the outputs next.');
       render();
       return true;
@@ -4850,7 +4875,7 @@ import {
     var topology = currentOutputTopology();
     if (step === 'layout') {
       if (!topology || !outputGroups(topology).length) {
-        outputStepOverride = 'layout';
+        outputPage.stepOverride = 'layout';
         status('Choose a speaker layout before continuing.', true);
         render();
         return;
@@ -4877,7 +4902,7 @@ import {
     }
     if (step === 'map') {
       if (outputTopology.dirty) {
-        outputStepOverride = 'map';
+        outputPage.stepOverride = 'map';
         status('Save the speaker layout before confirming outputs.', true);
         render();
         return;
@@ -4885,7 +4910,7 @@ import {
       if (!driverTargetProofComplete()) {
         var report = outputIdentityReport();
         var assigned = Number(report && report.assigned_channel_count || 0);
-        outputStepOverride = 'map';
+        outputPage.stepOverride = 'map';
         status(assigned > 0 ?
           'Play and confirm every assigned driver before continuing.' :
           'Save a speaker layout with assigned outputs before continuing.', true);
@@ -4904,13 +4929,13 @@ import {
         status('Combined speaker check is saved. Save and apply the active profile.');
         return;
       }
-      outputStepOverride = 'safety';
+      outputPage.stepOverride = 'safety';
       status('Run the combined speaker test and save what you heard before applying.');
       render();
       return;
     }
     if (step === 'profile') {
-      outputStepOverride = 'profile';
+      outputPage.stepOverride = 'profile';
       status(baselineProfileApplied() ?
         'The active speaker profile is applied.' :
         'Finish the combined crossover check, then save and apply the active profile.');
@@ -4947,7 +4972,7 @@ import {
       ingestOutputTopology(payload);
       // The refusal card names the carrier this save just replaced, so a fixed
       // layout drops it at the render below instead of outliving its cause.
-      soundSettingsBlocked = false;
+      outputPage.blocked = false;
       try {
         await fetchDesignDraft();
       } catch (draftError) {
@@ -4970,7 +4995,7 @@ import {
         crossoverPreview.error = previewError.message;
       }
       await refreshCommissioningView();
-      if (options.nextStep) outputStepOverride = options.nextStep;
+      if (options.nextStep) outputPage.stepOverride = options.nextStep;
       var saveStatus = payload && payload.save || {};
       var needsAttention = saveStatus.status === 'needs_attention';
       status(
@@ -5027,7 +5052,7 @@ import {
         commissionBusy: '',
         commissionError: ''
       });
-      outputStepOverride = 'layout';
+      outputPage.stepOverride = 'layout';
       var resetStatus = payload && payload.reset || {};
       if (resetStatus.status === 'needs_attention') {
         outputTopology.error = resetStatus.message || 'Speaker setup was reset, but JTS requires attention before continuing.';
@@ -5091,7 +5116,7 @@ import {
       await refreshCommissioningView();
       // Let the backend's own current step win: identity is now unverified for
       // the replaced lanes, so the derived default lands on the right rung.
-      outputStepOverride = '';
+      outputPage.stepOverride = '';
       var repinStatus = payload && payload.repin || {};
       if (repinStatus.status === 'needs_attention') {
         outputTopology.error = repinStatus.message ||
@@ -5455,7 +5480,7 @@ import {
         patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile});
       }
       if (summedValidationComplete()) {
-        outputStepOverride = 'profile';
+        outputPage.stepOverride = 'profile';
         status('Combined crossover check saved. Save and apply the active profile when ready.');
       } else {
         var latestValidations = payload && payload.summary &&
@@ -5552,29 +5577,28 @@ import {
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
       ingestState(payload);
-      selectedId = findIdFor(applied);
+      eqEditor.selectedId = findIdFor(applied);
       // Open on Off when no EQ is effectively applied — bypassed (enabled
       // false) OR flat (no active filters). Open on Saved with the applied
       // profile marked active otherwise. filter_count is the backend's
       // authoritative signal (len(build_sound_filters); 0 when disabled/flat).
       if (payload.filter_count > 0) {
-        view = 'saved';
+        eqEditor.view = 'saved';
       } else {
-        view = 'off';
+        eqEditor.view = 'off';
       }
       render();
-      // The design draft the deep link needs arrives with this refresh, so the
-      // fragment is applied after it settles, not at DOMContentLoaded.
-      if (pageMode === 'setup') {
-        refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
-      }
+      // The Output page reads the I2S HAT off the topology payload; the
+      // safety-limits deep link belongs to the speaker page.
+      if (pageMode === 'output') loadOutputHardware();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }
   }
-  // Follower boot: no content-EQ /state fetch (the leader owns the program
-  // domain). Paint the local active-speaker shell, then load its hardware state.
-  function loadFollowerActive() {
+  // Hardware-only boot, for /sound/speaker/ and for a follower (whose leader
+  // owns the program domain): no content-EQ /state fetch. Paint the shell, then
+  // load the hardware state the safety-limits deep link needs to resolve.
+  function loadLocalHardware() {
     render();
     refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
   }
@@ -5591,7 +5615,7 @@ import {
     // profile back. Never gated on the page really going away: bfcache freezes
     // a page instead of unloading it, and a frozen page must not keep a draft
     // playing either.
-    if (view === 'draft') {
+    if (eqEditor.view === 'draft') {
       postJSON('./apply', normalizeProfile(applied), {keepalive: true})
         .catch(function() {});
     }
@@ -5601,8 +5625,8 @@ import {
   // holds is now stale. Re-run the live-draft path — the server answers
   // `stale`, which adopts the fresh epoch and asks for a control move.
   window.addEventListener('pageshow', function(event) {
-    if (event && event.persisted && view === 'draft') scheduleLiveDraft(true);
+    if (event && event.persisted && eqEditor.view === 'draft') scheduleLiveDraft(true);
   });
-  if (followerMode) loadFollowerActive();
+  if (followerMode || pageMode === 'speaker') loadLocalHardware();
   else loadState();
 })();

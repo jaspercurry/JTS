@@ -4,7 +4,7 @@
 
 """The shared JSON data-island helper + its conventions guard.
 
-`jasper.web._common.json_island` is the way a wizard page hands data to
+`jasper.web.chrome.json_island` is the way a wizard page hands data to
 its ES module: it owns the json.dumps + `<`/`>`/`&` JSON-unicode escaping
 that keeps untrusted strings from closing the inline ``<script>`` element
 early. The conventions test at the bottom keeps the next wizard from
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.web._common import json_island
+from jasper.web.chrome import json_island
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "jasper" / "web"
 
@@ -69,14 +69,14 @@ def test_no_wizard_hand_rolls_a_json_island():
     `json_island()`."""
     offenders = []
     for py in sorted(WEB_DIR.glob("*.py")):
-        if py.name == "_common.py":
+        if py.name == "chrome.py":
             continue
         text = py.read_text(encoding="utf-8")
         if 'type="application/json"' in text:
             offenders.append(py.name)
     assert not offenders, (
         f"hand-rolled application/json island(s) in {offenders}; "
-        "use jasper.web._common.json_island()"
+        "use jasper.web.chrome.json_island()"
     )
 
 

@@ -132,7 +132,7 @@ class FanInDucker:
             if deferred_cancel:
                 raise asyncio.CancelledError
             return
-        log_event(logger, "fanin.duck", on="true")
+        log_event(logger, "voice.duck", on="true")
         if deferred_cancel:
             raise asyncio.CancelledError
 
@@ -142,7 +142,7 @@ class FanInDucker:
         try:
             ok = await self._playout.program_duck(False)
             if ok:
-                log_event(logger, "fanin.duck", on="false")
+                log_event(logger, "voice.duck", on="false")
         finally:
             self._ducked = False
 

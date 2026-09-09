@@ -52,9 +52,9 @@ def _changes(*paths: str, status: str = "M") -> tuple:
 _PAGE = "deploy/index.html"
 _DOC = "docs/HANDOFF-aec.md"
 _POLICY_TEST = "tests/test_ci_classifier.py"
-# The calibration-agent corpus is a package resource, not prose (#2981), so
+# Markdown shipped inside the package tree is product, not prose (#2981), so
 # nothing under jasper/ is a docs subject however it is spelled.
-_CORPUS = "jasper/calibration_agent/corpus/README.md"
+_PACKAGE_MD = "jasper/mics/README.md"
 
 
 @pytest.mark.parametrize(
@@ -99,8 +99,8 @@ _CORPUS = "jasper/calibration_agent/corpus/README.md"
         # The registration guard is a bundle member, never a companion.
         ("full", "pull_request", (_DOC, _POLICY_TEST)),
         # Markdown outside the prose trees is not a subject.
-        ("full", "pull_request", (_CORPUS,)),
-        ("full", "pull_request", (_DOC, _CORPUS)),
+        ("full", "pull_request", (_PACKAGE_MD,)),
+        ("full", "pull_request", (_DOC, _PACKAGE_MD)),
         ("full", "pull_request", ("jasper/README.md",)),
         # Non-PR events never take a narrow lane.
         ("full", "push", ()),

@@ -521,22 +521,6 @@ def test_bounded_dir_size_caps_depth(tmp_path, monkeypatch):
     "check, dir_env, warn_env, size, warn_bytes, status",
     [
         (
-            "check_correction_storage",
-            "JASPER_CORRECTION_SESSIONS_DIR",
-            "JASPER_CORRECTION_STORAGE_WARN_BYTES",
-            1024,
-            None,
-            "ok",
-        ),
-        (
-            "check_correction_storage",
-            "JASPER_CORRECTION_SESSIONS_DIR",
-            "JASPER_CORRECTION_STORAGE_WARN_BYTES",
-            4096,
-            "1024",
-            "warn",
-        ),
-        (
             "check_wake_events_storage",
             "JASPER_WAKE_EVENTS_DIR",
             "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
@@ -553,7 +537,7 @@ def test_bounded_dir_size_caps_depth(tmp_path, monkeypatch):
             "warn",
         ),
     ],
-    ids=["correction-ok", "correction-warn", "wake-ok", "wake-warn"],
+    ids=["wake-ok", "wake-warn"],
 )
 def test_storage_checks_warn_over_their_threshold(
     monkeypatch, tmp_path, check, dir_env, warn_env, size, warn_bytes, status
@@ -573,10 +557,10 @@ def test_storage_checks_warn_over_their_threshold(
         assert r.reason == doctor_memory.REASON_STORAGE_OVER_THRESHOLD
 
 
-def test_correction_storage_absent_dir_is_skipped(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(tmp_path / "never"))
+def test_wake_events_storage_absent_dir_is_skipped(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WAKE_EVENTS_DIR", str(tmp_path / "never"))
 
-    r = doctor_memory.check_correction_storage()
+    r = doctor_memory.check_wake_events_storage()
     assert r.status == "skipped"
     assert r.reason == doctor_memory.REASON_STORAGE_ABSENT
 

@@ -147,7 +147,7 @@ def os_environ_get(name: str) -> str | None:
 
 
 # JASPER_MTA_BUSTIME_KEY is a documented jasper.env key (see
-# jasper/web/transit_setup.py's _bus_key_source) rather than a compartment
+# jasper/web/transit_page.py's _bus_key_source) rather than a compartment
 # escapee, so it alone must read "ok" non-empty too.
 _NONEMPTY_STATUS = {
     k: ("ok" if k == "JASPER_MTA_BUSTIME_KEY" else "fail") for k in SECRET_ENV_NAMES

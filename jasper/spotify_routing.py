@@ -176,7 +176,14 @@ async def stop_renderers(names: list[str]) -> None:
     for name in names:
         try:
             if name == "airplay":
-                await mux_socket_command(wire.mux_preempt(Source.AIRPLAY.value))
+                await mux_socket_command(
+                    wire.mux_preempt(Source.AIRPLAY.value),
+                    # mux awaits the drop inline: DropSession then the MPRIS
+                    # Stop fallback, two 2 s busctl calls. The default 2 s
+                    # would time out here and start librespot while
+                    # shairport-sync is still draining.
+                    timeout=6.0,
+                )
             elif name == "bluetooth":
                 await bluetooth_avrcp_call("Pause")
             else:

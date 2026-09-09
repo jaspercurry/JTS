@@ -499,8 +499,8 @@ def check_spend_cap(cfg: Config) -> CheckResult:
         # create or re-own it and lock the owning daemon out of its own DB.
         # household_usage_reader opens every member read_only.
         tuning_db = tuning_usage_db_path(cfg.usage_db)
-        # Household spend folds in jasper-correction-web's paid tuning calls;
-        # the note says whether that sibling ledger exists yet.
+        # Nothing writes the sibling tuning ledger; the note says whether one
+        # exists on disk and is still folded into the household total.
         ledger_note = (
             "includes tuning ledger"
             if os.path.exists(tuning_db)

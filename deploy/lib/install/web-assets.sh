@@ -19,7 +19,7 @@
 # What ships, all manifested:
 # - app.css — the canonical design-system stylesheet shared by the
 #   landing page and the redesigned wizards
-#   (jasper.web._common.canonical_page links it, cache-busted by
+#   (jasper.web.chrome.canonical_page links it, cache-busted by
 #   build SHA). Served by the `location /assets/` block.
 # - fonts/* — Figtree/Outfit .woff2 plus their OFL license texts
 #   (the license files must accompany the fonts).

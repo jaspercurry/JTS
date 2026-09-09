@@ -359,11 +359,11 @@ def test_composite_floor_equals_its_children():
     assert DUAL_APPLE_USB_C_DAC_4CH.latency_floor == child_floor
 
 
-def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path, capsys):
+def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path):
     """The floor's real payoff, pinned at the command that consumes it: an
     absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
     resolved, so the ACTIVE block would keep the ioplug default forever."""
-    from jasper.cli.audio_config import ring_conf_wire_report
+    from jasper.ring_assets import ring_conf_wire_report
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")

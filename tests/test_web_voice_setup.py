@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 
 from jasper.voice.catalog import PROVIDERS
-from jasper.web import _common, voice_setup
+from jasper.web import chrome, voice_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
@@ -141,7 +141,7 @@ def test_voice_flash_is_routed_through_canonical_banner():
         "Could not refresh OpenAI models: connection failed",
         "Cleared Gemini Live credentials.",
     ):
-        assert _common.canonical_banner(flash) in _render(flash=flash)
+        assert chrome.canonical_banner(flash) in _render(flash=flash)
 
 
 def _handler_cls(tmp_path):
