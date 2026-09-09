@@ -50,17 +50,21 @@ from jasper.atomic_io import (
     env_lock_path,
     locked_upsert_env_file,
 )
-from jasper.cli.output_hardware import ObservedOutput, observe, observed_output
 from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.output_hardware import (
     DEFAULT_TOPOLOGY_PATH,
+    ObservedOutput,
+    observe,
+    observed_output,
     degraded_marker_path,
     state_path,
 )
-from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC
+from jasper.ring_assets import conf_pcm_type
+from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
+from jasper.shell_env import render_shell_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +96,6 @@ _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
 #: at CALL time rather than bound at import. Not a legal timeout itself.
 _MANAGER_BOUND = -1.0
 
-# jasper_env_quote_value's safe charset (deploy/lib/jasper-env-file.sh): a
-# value outside it is quoted for the shell.
-_SHELL_SAFE = re.compile(r"\A[A-Za-z0-9_./:@,+=-]+\Z")
 _LOG_TOKEN_UNSAFE = re.compile(r"[^A-Za-z0-9_.:,-]")
 
 
@@ -104,24 +105,6 @@ class _Abort(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(status)
         self.status = status
-
-
-def _shell_quote(value: str) -> str:
-    """Quote ``value`` for the ``--print-env`` payload install.sh evals.
-
-    Byte-identical to ``jasper_env_quote_value`` in
-    ``deploy/lib/jasper-env-file.sh``, which is the other implementation of the
-    same shell contract (``shlex.quote`` is not: it quotes the safe charset).
-    """
-    if not value:
-        return "''"
-    if "'" in value:
-        for char in ("\\", '"', "$", "`"):
-            value = value.replace(char, "\\" + char)
-        return f'"{value}"'
-    if _SHELL_SAFE.match(value):
-        return value
-    return f"'{value}'"
 
 
 def _log_token(value: str) -> str:
@@ -305,10 +288,8 @@ class Pass:
         """
         bound = SYSTEMCTL_TIMEOUT_SEC if timeout == _MANAGER_BOUND else timeout
         try:
-            return subprocess.run(
-                [self.systemctl, *args],
-                stderr=subprocess.DEVNULL if quiet else None,
-                check=False,
+            return run_systemctl(
+                args, executable=self.systemctl, capture_output=False, quiet=quiet,
                 timeout=bound,
             ).returncode
         except OSError:
@@ -448,8 +429,8 @@ class Pass:
         from jasper.audio_hardware.usb_port_role import (
             DEFAULT_MODEL_PATH,
             reconcile_boot_config,
+            boot_role_events,
         )
-        from jasper.cli.usb_port_role import boot_role_events
         from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
         try:
@@ -596,7 +577,7 @@ class Pass:
     def validate_outputd_env_stage(self) -> bool:
         # lazy: patch target — the tests replace it on the source module,
         # which only a per-call import sees.
-        from jasper.cli.audio_config import validate_outputd_env
+        from jasper.audio_runtime_plan import validate_outputd_env
 
         stage = self.outputd_env_stage
         if stage is None:
@@ -691,25 +672,9 @@ class Pass:
         so the alias outputd actually opens is whatever an earlier pass left.
         Fail closed — an absent or unreadable template is not evidence.
         """
-        text = read_env_file_text(self.asound_template)[0] or ""
-        if not text:
-            return False
-        depth = 0
-        found = False
-        for line in text.splitlines():
-            if depth == 0:
-                if re.match(r"^\s*pcm\.outputd_dac\s*\{", line):
-                    depth = 1
-                continue
-            if "{" in line:
-                depth += 1
-            if re.match(r"^\s*type\s+null\s*$", line):
-                found = True
-            if "}" in line:
-                depth -= 1
-                if depth <= 0:
-                    return found
-        return found
+        return conf_pcm_type(
+            read_env_file_text(self.asound_template)[0] or "", "outputd_dac"
+        ) == "null"
 
     def park_preserved_env_if_clockless(self) -> bool:
         """Turn a preserve-runtime-env fallback into the do-no-harm park when
@@ -998,9 +963,8 @@ class Pass:
         silently drop a tuned box to packaged defaults with no error anywhere,
         while a stale floor is the loud option.
         """
-        # lazy: import cost — the floor plan and its CLI are a policy layer the
-        # --print-env path never reaches (ADR-0226).
-        from jasper.cli.audio_config import outputd_floor_plan
+        # lazy: import cost — --print-env never reaches the floor policy (ADR-0226).
+        from jasper.audio_runtime_plan import outputd_floor_plan
 
         try:
             summary, actions = outputd_floor_plan(
@@ -1123,8 +1087,7 @@ class Pass:
         one decision. Positive equality against the named device, never "not
         the ALSA lane": an unrecognized endpoint must resolve to NO marker,
         which a negative test would invert into a spurious arm. Returns whether
-        either key changed. tests/test_ring_active_endpoint.py walks every
-        write site and fails if any writes one key without the other.
+        either key changed.
         """
         ring_endpoint = (
             "1"
@@ -1433,8 +1396,7 @@ class Pass:
         Triggers NO restart and feeds no restart flag: ALSA reads the conf.d at
         the next PCM open, and arming is owned by the coupling reconciler.
         """
-        # lazy: import cost — the --print-env path never reaches it (ADR-0226).
-        from jasper.cli.audio_config import ring_conf_wire_report
+        from jasper.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
 
         if not self.output_dac_recognized:
             self.log("ring_conf", result="skipped", reason="dac_unrecognized")
@@ -1772,15 +1734,14 @@ class Pass:
         return 78
 
     def print_role_env(self) -> None:
-        for key, value in (
-            ("DONGLE_CARD", self.dongle_card),
-            ("APPLE_DONGLE_PRESENT", "1" if self.apple_dongle_present else "0"),
-            ("APPLE_DONGLE_SERVICE_CARD", self.apple_dongle_service_card),
-            ("OUTPUT_DAC_CARD", self.output_dac_card),
-            ("OUTPUT_DAC_ID", self.output_dac_id),
-            ("OUTPUT_DAC_RECOGNIZED", "1" if self.output_dac_recognized else "0"),
-        ):
-            print(f"{key}={_shell_quote(value)}")
+        print(render_shell_assignments({
+            "DONGLE_CARD": self.dongle_card,
+            "APPLE_DONGLE_PRESENT": "1" if self.apple_dongle_present else "0",
+            "APPLE_DONGLE_SERVICE_CARD": self.apple_dongle_service_card,
+            "OUTPUT_DAC_CARD": self.output_dac_card,
+            "OUTPUT_DAC_ID": self.output_dac_id,
+            "OUTPUT_DAC_RECOGNIZED": "1" if self.output_dac_recognized else "0",
+        }), end="")
 
     def execute(self) -> int:
         if not os.access(self.asound_render_lib, os.R_OK):
