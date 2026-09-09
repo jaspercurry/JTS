@@ -174,10 +174,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0144](0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md) | Diagnostics leave the box over SSH, not over the LAN | accepted |
 | [0146](0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md) | Userspace liveness is two software layers, and three deferred dials | accepted |
 | [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | accepted |
-| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | accepted |
+| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | rule 2 `/state` superseded by 0268, rule 3 amended by 0268 |
 | [0243](0243-a-secret-is-replaced-whole-by-one-redactor-per-language.md) | A secret is replaced whole, by one redactor per language | accepted |
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
 | [0251](0251-jasper-control-parks-on-a-bind-failure.md) | jasper-control parks on a bind failure instead of rebooting the box | accepted |
+| [0268](0268-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
 
 ## Web & UI
 
