@@ -130,6 +130,21 @@ independent proof of benefit for JTS; ordinary PEQ cannot claim the same phase
 control. Research can begin now; any experiment needing a new filter/scope
 first needs that bounded capability, not a blanket full-band enablement.
 
+First experiment for 2.11: use raw curves from one compatible seat cloud and
+the saved gated on/off-axis set, since the room-median artifact is already
+cropped to today's ceiling. Fit all but one unique seat position and predict
+the held-out position; repeat for every position. Compare the same low-band
+candidate alone with that candidate plus a small, broad upper-band change.
+Declare the listening-window weights, target, scalar level reference and
+trial limits before fitting. Crop to common support and the gated trusted
+floors; any gap above the current room ceiling remains a gap. Report held-out
+seat error and changes to gated on-axis/off-axis response separately. A common
+EQ cannot reduce the per-frequency seat spread in dB. These are offline
+predictions, not proof of perceived benefit, phase correction, full sound
+power, driver margin or realized DSP. A later live trial needs its own bounded
+filter contract and matched-level listening. Missing identity is disclosed;
+it removes the associated attribution claim rather than inventing provenance.
+
 ## 2. Principles (each has an ADR or a doctrine line)
 
 - **One loop, one toolbox.** Speaker, room and bass are programs, views and
