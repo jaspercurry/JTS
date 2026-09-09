@@ -16,8 +16,9 @@ format. Release tags are cut manually by a maintainer.
 - Audio observability gauge set: fan-in and ring counters, coded
   stall/degradation signal-path reasons, a restart-incident record, and one
   reliability group behind them on `/state` and in `jasper-doctor`.
-- `jasper-mux` gained a `PREEMPT <source>` control verb, so anything that needs
-  a source silenced asks mux instead of reaching for the renderer itself.
+- `jasper-mux` gained a `PREEMPT airplay` control verb — AirPlay only, because
+  its escalation is bounded — so a caller that needs AirPlay silenced asks mux
+  instead of reaching for the renderer itself.
 
 ### Changed
 

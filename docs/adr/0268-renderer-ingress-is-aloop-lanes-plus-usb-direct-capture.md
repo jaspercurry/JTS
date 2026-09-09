@@ -77,6 +77,15 @@ compiled in on both sides for a box an operator deliberately pins.
 - Given up for now: nothing about the narrow wire. `S16_LE` remains reachable,
   so the undithered-requantization hazard is still one deliberate pin away —
   closing it is a separate decision on the Rust arm.
+- Given up for now, second: a complete sweep of the retired coupling key. The
+  reconciler unsets it in the `fanin.env` it owns, but `jasper-fanin.service`
+  also loads `/etc/jasper/jasper.env`, which nothing here writes — so a
+  hand-set `JASPER_FANIN_CAMILLA_COUPLING` there still reaches the daemon and
+  still parks it at exit 78. That is the deliberate tradeoff of keeping the
+  refusal: a stale value is loud rather than ignored, and the remedy is manual.
+  Before trusting a box, run
+  `grep -R JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/ /var/lib/jasper/` and
+  remove what it finds.
 - Doctor, `/state` and the fan-in `STATUS` block lose the lane-arm fields they
   published. They are the surfaces to re-read after this lands; a reader of a
   removed field must be fail-soft to an absent key.

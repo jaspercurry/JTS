@@ -84,7 +84,11 @@ compiled in on both sides for a box an operator has deliberately pinned. There
 is no coupling to declare either — the Python selector vocabulary is gone, and
 fan-in still refuses any `JASPER_FANIN_CAMILLA_COUPLING` token but
 unset/empty/`shm_ring` as a config-class fault (exit 78, the unit parks) until
-that accept-set is removed too. CamillaDSP
+that accept-set is removed too. The reconciler's sweep unsets a stale value in
+the `fanin.env` it owns, but not in `/etc/jasper/jasper.env`, which fan-in also
+loads — so a hand-set copy there still parks the daemon; `grep -R
+JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/ /var/lib/jasper/` is the check.
+CamillaDSP
 writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
 Ring B one DAC-sized slot at a time. A roleful (active-crossover) box has a
 ring of its own, carrying POST-crossover per-driver channels rather than a
@@ -141,11 +145,22 @@ Ownership is deliberately split:
   `active_source`, which folds the test lease, the manual pin and a still-playing
   winner into one name. Readers consume that field and do not rebuild the answer
   from the pin and the raw winner: `RendererClient.selected_source()` returns it
-  verbatim, and `/state`'s `active_source` accepts it only when it names a music
-  source — mux also answers `idle`, and the fan-in test lane's label while a
-  measurement holds the lease, neither of which that surface may report. Both are
-  fail-soft: an unreachable mux, an unparseable reply or a missing field is
-  `None`, never an error. `active_renderers()` stays the raw per-renderer view.
+  verbatim. Mid-handoff the honest answer would be `idle` — the losing source has
+  stopped and the winner is not committed — so while the transition lock is held
+  mux keeps answering its **last committed** name instead. That is what lets a
+  reader treat a plain `idle` as *true* idle: the volume coordinator maps it to
+  `Source.IDLE` and takes the attenuating Camilla-master carrier rather than
+  resolving a carrier against a lane mux is about to leave. Only the fan-in test
+  lane's label (a measurement holding the lease) is a name `/state` may not
+  report, and it falls through to the raw probes. Every reader is fail-soft: an
+  unreachable mux, an unparseable reply or a missing field is `None`, never an
+  error. `active_renderers()` stays the raw per-renderer view.
+- One source can be silenced through mux from outside: `PREEMPT airplay`.
+  Deliberately AirPlay-only — its escalation is bounded by two 2 s `busctl`
+  calls a socket client can wait out, while Spotify's tier-2 `try-restart` is an
+  8 s worst case no client can, and nothing calls the other lanes. Any other
+  name is refused with an `error` payload rather than silently ignored, and
+  callers pass a 6 s timeout to cover the bounded escalation.
 - Before mux exposes a new lane it asks
   `VolumeCoordinator.prepare_source_handoff(...)` to make the target volume
   carrier safe, sends `SELECT <label>` only then, and converges the
@@ -235,9 +250,10 @@ introduces no second mixer, second output device or new volume model.
    already-completed handoff. Do not add a per-source escape-hatch env var to
    turn the preemption off — a preemption that does not work is a bug to fix. A
    source that genuinely cannot be controlled from the Pi documents that it may
-   briefly mix. Anything outside mux that needs a source silenced asks mux for
-   it over the control socket (`PREEMPT <source>`) rather than reaching for the
-   renderer itself.
+   briefly mix. A caller outside mux that needs a source silenced asks mux over
+   the control socket rather than reaching for the renderer itself — but only
+   AirPlay is exposed that way (see below), so do not assume a new source earns
+   a `PREEMPT` verb.
 8. **Wire manual source selection.** The mux/control allow-lists derive from
    `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
@@ -284,7 +300,9 @@ Notes:
   `master_gain` "the ducking knob" are wrong.
 - The voice loop owns the duck/restore lifecycle and sends it through
   `TtsPlayout` down the same socket as the speech it is ducking for
-  (`event=fanin.duck`); fan-in owns where the attenuation happens, logs its own
+  (`event=voice.duck`, `event=voice.duck_failed` — the voice loop's own
+  prefix, because the voice loop is what ducked); fan-in owns where the
+  attenuation happens, logs its own
   transitions as `event=fanin.program_duck`, and takes the depth from
   `JASPER_FANIN_TTS_PROGRAM_DUCK_DB` (cues: `JASPER_FANIN_TTS_CUE_DUCK_DB`).
 - CamillaGUI is an operator escape hatch, not part of the product path: it can
