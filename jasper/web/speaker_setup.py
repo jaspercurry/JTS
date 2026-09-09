@@ -22,7 +22,6 @@ import functools
 import html
 import logging
 import re
-import urllib.parse
 from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,13 +50,12 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    read_form,
-    reject_csrf,
+    form_guarded,
+    route_path,
     send_html_response,
     send_rejected_form,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
 )
 from ._service_state import unit_active as _unit_active
 
@@ -434,7 +432,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             ),
         )
 
-    def _post_save(handler: BaseHTTPRequestHandler, form: dict[str, str]) -> None:
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
         name = form.get("name", "")
         room = form.get("room", "")
         page = functools.partial(
@@ -517,9 +518,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -528,17 +527,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            handler_fn(self)
 
     return Handler
 
