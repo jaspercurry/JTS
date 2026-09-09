@@ -28,8 +28,10 @@ import pytest
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
 from jasper.active_speaker.runtime_contract import FLAT_PROGRAM_GRAPH_UNCONFIGURED
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
+from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
+from jasper.measurement_window import MeasurementWindowError
 from jasper.output_topology import (
     CROSS_CHILD_GROUP_CODE,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
@@ -420,6 +422,58 @@ class FakeVolumeFloorToneRunner:
     @property
     def running(self) -> bool:
         return self.started and not self.stopped and self.error is None
+
+
+class FakeHeldWindow:
+    """A `measurement_window` stand-in for the audition's announcement.
+
+    Only the window is faked: the audition's own thread, its open/refuse
+    decision and its release funnel all run for real, while the box-wide
+    leases underneath (voice MEASURE_PAUSE, the mux gate, jasper-control's
+    hold) are not reachable from a test host.
+    """
+
+    instances: list["FakeHeldWindow"] = []
+    open_error: BaseException | None = None
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.entered = threading.Event()
+        self.lost = threading.Event()
+        self.released = threading.Event()
+        self.held = False
+        self.error: BaseException | None = None
+        FakeHeldWindow.instances.append(self)
+
+    async def hold(self) -> None:
+        if FakeHeldWindow.open_error is not None:
+            self.error = FakeHeldWindow.open_error
+            self.entered.set()
+            return
+        self.held = True
+        self.entered.set()
+        # Polled, not parked on a worker: an audition a test never stops
+        # leaves this loop running in its daemon thread, and a non-daemon
+        # executor thread under it would hang the interpreter's exit.
+        while not self.released.is_set():
+            await asyncio.sleep(0.01)
+
+    def release(self) -> None:
+        self.released.set()
+
+    def lose(self) -> None:
+        """End the window under its holder, as a lost gate lease does."""
+        self.lost.set()
+        self.released.set()
+
+
+@pytest.fixture
+def audition_window(monkeypatch):
+    FakeHeldWindow.instances.clear()
+    FakeHeldWindow.open_error = None
+    monkeypatch.setattr(volume_floor_tone, "HeldWindow", FakeHeldWindow)
+    yield FakeHeldWindow
+    FakeHeldWindow.open_error = None
 
 
 _SOUND_MODULE = (
@@ -6452,7 +6506,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
 
 
 async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, audition_window,
 ):
     settings_path = tmp_path / "sound_settings.json"
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
@@ -6479,6 +6533,14 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     }
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert FakeVolumeFloorToneRunner.instances[0].started is True
+    # The announcement the reconciler in jasper-voice stands down on, held for
+    # as long as the fader is parked at the floor (#3038).
+    window = audition_window.instances[-1]
+    assert window.kwargs == {
+        "gate_owner": volume_floor_tone.VOLUME_FLOOR_GATE_OWNER,
+    }
+    assert window.held is True
+    assert window.released.is_set() is False
     assert fake.events[0] == (
         "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
     )
@@ -6522,11 +6584,12 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     ]
     assert fake.db == pytest.approx(-18.0)
     assert fake.muted is True
+    assert window.released.is_set() is True
     assert not settings_path.exists()
 
 
 async def test_audition_volume_floor_update_survives_a_withdrawn_owner(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, audition_window,
 ):
     """An owner withdrawn mid-audition degrades the update, it does not fail it.
 
@@ -6624,7 +6687,7 @@ def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
 
 
 async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, audition_window,
 ):
     settings_path = tmp_path / "sound_settings.json"
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
@@ -6672,6 +6735,75 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
         ("mute", True, True),
         ("volume", pytest.approx(-18.0), True),
     ]
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
+
+
+async def test_an_audition_that_cannot_be_announced_is_refused_not_played(
+    tmp_path: Path, monkeypatch, audition_window,
+):
+    """The window is the audition's licence to park the fader tens of dB down:
+    without it the reconciler walks the level back under a live tone, so a
+    start that cannot take one plays nothing and touches no fader (#3038)."""
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    audition_window.open_error = MeasurementWindowError("mux gate refused")
+    fake = FakeVolumeCamilla(db=-18.0, muted=True)
+    _install_floor_tone_owner(fake)
+    session = volume_floor_tone.VolumeFloorToneSession()
+
+    with pytest.raises(RuntimeError):
+        await session.start_or_update(
+            {"volume_floor_db": -24.0},
+            camilla_factory=lambda: fake,
+            runner_factory=FakeVolumeFloorToneRunner,
+        )
+
+    assert [r.started for r in FakeVolumeFloorToneRunner.instances] == [False]
+    assert fake.events == []
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
+    # A refusal leaves an idle session, not a wedged one.
+    stop_payload = await session.stop(camilla_factory=lambda: fake, reason="stop")
+    assert stop_payload["status"] == "idle"
+
+
+async def test_a_camilla_failure_mid_start_drops_the_announcement(
+    tmp_path: Path, monkeypatch, audition_window,
+):
+    """An unreachable CamillaDSP is the exit path that used to escape the
+    session's own handler; it must still restore the fader AND release the
+    window, or the box stays paused with no audition to show for it (#3038).
+    """
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+
+    class _UnreachableOnUnmute(FakeVolumeCamilla):
+        async def set_main_mute(self, muted, *, best_effort=False):
+            if not best_effort:
+                raise CamillaUnavailable("websocket gone")
+            return await super().set_main_mute(muted, best_effort=best_effort)
+
+    fake = _UnreachableOnUnmute(db=-18.0, muted=True)
+    _install_floor_tone_owner(fake)
+    session = volume_floor_tone.VolumeFloorToneSession()
+
+    # RuntimeError, not CamillaUnavailable: the route answers 502 off that set.
+    with pytest.raises(RuntimeError):
+        await session.start_or_update(
+            {"volume_floor_db": -24.0},
+            camilla_factory=lambda: fake,
+            runner_factory=FakeVolumeFloorToneRunner,
+        )
+
+    window = audition_window.instances[-1]
+    assert window.held is True
+    assert window.released.is_set() is True
+    assert [r.started for r in FakeVolumeFloorToneRunner.instances] == [False]
     assert fake.db == pytest.approx(-18.0)
     assert fake.muted is True
 

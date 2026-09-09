@@ -1922,13 +1922,11 @@ async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
         pytest.param(percent_to_db(70) - 0.3, 70, False, id="dead_band"),
         pytest.param(-18.0, 76, True, id="quiet_drift"),
         pytest.param(-8.0, 70, True, id="loud_drift"),
-        # Deep LOUD drift is unsafe in a way deep quiet is not.
         pytest.param(0.0, 0, True, id="deep_loud_drift"),
-        # The retained quiet carve-out: a fader claim held in ANOTHER process
-        # — jasper-web's volume-floor audition — parks camilla tens of dB
-        # below the household level with nothing this reconciler can ask
+        # No quiet carve-out: an unannounced duck this deep is a stranded
+        # writer, and the announced ones never reach the drift comparison
         # (#3038).
-        pytest.param(percent_to_db(70) - 25.0, 70, False, id="deep_quiet_drift"),
+        pytest.param(percent_to_db(70) - 25.0, 70, True, id="deep_quiet_drift"),
     ],
 )
 async def test_which_drift_the_reconciler_corrects(
@@ -2130,9 +2128,10 @@ async def _gate_none(coord, cam):
 )
 async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gate):
     """Voice session → the duck holder owns camilla. Measurement → correction's
-    ramp lease owns it. Push-mode source → camilla is pinned at 0 dB by
-    design and the level lives on the source's own slider. Camilla
-    unreachable → skip silently and retry on the next tick.
+    ramp lease, or jasper-web's volume-floor audition, owns it. Push-mode
+    source → camilla is pinned at 0 dB by design and the level lives on the
+    source's own slider. Camilla unreachable → skip silently and retry on the
+    next tick.
 
     Camilla sits 15 dB LOUDER than the level implies in every case — the
     direction the reconciler always corrects, per
@@ -2693,12 +2692,9 @@ def _owned_coord(tmp_path, db: float):
 
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     """The reconciler writes by DECLARING the household level, so a duck held
-    in this process outranks it — no dB inference is involved, which is why
-    `RECONCILE_DUCK_SKIP_DB` is not what protects `CueDuck`.
+    in this process outranks it — no dB inference is involved (ADR-0177).
 
-    The duck is shallower than that threshold, so the carve-out cannot be
-    what spares it; releasing the claim lands the fader back on the household
-    level.
+    Releasing the claim lands the fader back on the household level.
     """
     expected_db = percent_to_db(70)
     coord, _, client = _owned_coord(tmp_path, db=expected_db)
@@ -2746,8 +2742,8 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
 
 
 async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
-    """The quiet carve-out is directional — it must never turn the
-    reconciler's loud-direction safety correction into a skip."""
+    """A writer that left camilla far ABOVE the canonical level is the safety
+    case this reconciler exists for; no gate may turn it into a skip."""
     expected_db = percent_to_db(40)
     coord, _, client = _owned_coord(tmp_path, db=expected_db)
     await coord.set_listening_level(40)
@@ -2756,38 +2752,6 @@ async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
     await coord.maybe_reconcile_camilla()
 
     assert client.db == pytest.approx(expected_db)
-
-
-async def test_deep_quiet_refusal_speaks_once_per_episode(tmp_path, caplog):
-    """The refusal is evaluated at the observer's 1 Hz for as long as the
-    unowned duck holds, so it is reported on the episode's edge — and a NEW
-    episode is a new line, not silence. Delete with the event.
-    """
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
-    expected_db = percent_to_db(70)
-    coord, cam, _ = _real_coord(
-        tmp_path, active={}, db=expected_db - 25.0, level=70,
-        mark_user_change=True,
-    )
-
-    for _ in range(3):
-        await coord.maybe_reconcile_camilla()
-    assert cam.set_calls == []
-    cam._db = expected_db  # the unowned writer let go
-    await coord.maybe_reconcile_camilla()
-    cam._db = expected_db - 25.0  # and a second episode opens
-    await coord.maybe_reconcile_camilla()
-    # A tick that returns before the drift comparison ends the episode too,
-    # so the duck still standing when the session hands camilla back is news.
-    coord.note_voice_session(True)
-    await coord.maybe_reconcile_camilla()
-    coord.note_voice_session(False)
-    await coord.maybe_reconcile_camilla()
-
-    skips = event_field_maps(
-        caplog, "volume.reconcile_skipped", reason="deep_quiet_unowned",
-    )
-    assert [fields["drift_db"] for fields in skips] == ["+25.00"] * 3
 
 
 async def test_a_refused_write_speaks_once_and_says_when_it_lands(

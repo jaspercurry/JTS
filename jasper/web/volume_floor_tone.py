@@ -4,7 +4,8 @@
 
 """Held reference tone for the /sound/output/ volume-floor audition.
 
-Owns the tone's process, its COMMISSIONING claim on the main fader and the
+Owns the tone's process, its COMMISSIONING claim on the main fader, the
+measurement window that announces the claim to the other daemons, and the
 session that arbitrates them. The sound page's two routes drive that session
 directly, handing it their own CamillaDSP factory.
 """
@@ -27,7 +28,9 @@ from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
     popen_correction_play,
 )
+from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
+from jasper.measurement_window import HeldWindow, MeasurementWindowError
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_curve import percent_to_db
 from jasper.volume_owner import ClaimKind, VolumeClaimHandle, volume_owner
@@ -43,6 +46,15 @@ VOLUME_FLOOR_TONE_SEGMENT_DURATION_S = 0.75
 VOLUME_FLOOR_TONE_MAX_DURATION_S = 10 * 60.0
 VOLUME_FLOOR_TONE_SAMPLE_RATE = 48000
 VOLUME_FLOOR_TONE_STARTUP_CHECK_S = 0.08
+
+# The audition's identity on mux, jasper-control and /state while it holds the
+# measurement window.
+VOLUME_FLOOR_GATE_OWNER = "volume-floor-audition"
+# Bounds the REFUSAL, not the window: every lease under it carries its own
+# seconds-scale deadline, so a wait past this means one of them is wedged and
+# the operator should hear no instead of waiting.
+VOLUME_FLOOR_WINDOW_OPEN_TIMEOUT_S = 30.0
+VOLUME_FLOOR_WINDOW_RELEASE_TIMEOUT_S = 15.0
 
 
 def _volume_floor_tone_wav_path() -> Path:
@@ -262,6 +274,59 @@ async def _release_floor_level(
     await owner.release(claim)
 
 
+class _AuditionIsolation:
+    """The audition's announcement: one measurement window, held on its own
+    thread, for as long as the tone plays (#3038).
+
+    jasper-web answers every request on a throwaway ``asyncio.run`` loop and
+    idle-exits between them, so the window cannot live on the loop that opened
+    it; ``HeldWindow`` is the primitive for exactly that. Its MEASURE_PAUSE is
+    what the 1 Hz reconciler in jasper-voice stands down on, and every lease
+    under it self-expires, so a killed jasper-web is recovered by the
+    reconciler rather than by a durable claim that can go stale (#3038).
+
+    ``on_lost`` runs when the window ends before anyone released it.
+    """
+
+    def __init__(self, *, on_lost: Callable[[], None]) -> None:
+        self._on_lost = on_lost
+        self._window = HeldWindow(gate_owner=VOLUME_FLOOR_GATE_OWNER)
+        self._done = threading.Event()
+        self._thread = threading.Thread(
+            target=self._hold, name="jts-volume-floor-window", daemon=True,
+        )
+
+    def _hold(self) -> None:
+        try:
+            asyncio.run(self._window.hold())
+        finally:
+            self._done.set()
+        if self._window.lost.is_set():
+            self._on_lost()
+
+    def open(self) -> None:
+        """Block until the window is up, or raise why the audition is refused."""
+        self._thread.start()
+        if not self._window.entered.wait(VOLUME_FLOOR_WINDOW_OPEN_TIMEOUT_S):
+            self._window.release()
+            raise MeasurementWindowError(
+                "the speaker could not be paused for the audition in "
+                f"{VOLUME_FLOOR_WINDOW_OPEN_TIMEOUT_S:.0f}s"
+            )
+        if not self._window.held:
+            raise MeasurementWindowError(
+                "the speaker could not be paused for the audition: "
+                f"{self._window.error}"
+            )
+
+    def release(self) -> None:
+        """Drop the announcement. Safe from any thread, its own included: the
+        lost-window path releases from inside ``_hold``, where the wait below
+        is already satisfied."""
+        self._window.release()
+        self._done.wait(VOLUME_FLOOR_WINDOW_RELEASE_TIMEOUT_S)
+
+
 def _payload(*, floor_db: float, status: str, active: bool) -> dict[str, Any]:
     """The audition's one answer shape."""
     return {
@@ -286,6 +351,8 @@ class VolumeFloorToneSession:
         # The COMMISSIONING claim this audition holds on the main fader. The
         # level it sits at moves with the slider, so the claim outlives it.
         self._claim: VolumeClaimHandle | None = None
+        # The cross-process half of the same claim, dropped in the same funnel.
+        self._isolation: _AuditionIsolation | None = None
         self._original_db: float | None = None
         self._original_mute: bool | None = None
         self._floor_db: float | None = None
@@ -361,6 +428,14 @@ class VolumeFloorToneSession:
                     _volume_floor_tone_wav_path(),
                     on_finish=self._runner_finished,
                 )
+                # Announced before the fader moves and before a note plays: an
+                # audition the rest of the box cannot be told about is refused,
+                # never played (#3038). Outside the op lock — the wait is the
+                # window's, and a concurrent stop's restore must not queue
+                # behind it.
+                isolation = _AuditionIsolation(on_lost=self._isolation_lost)
+                await asyncio.to_thread(isolation.open)
+                self._isolation = isolation
                 async with self._camilla_op():
                     camilla = camilla_factory()
                     original = await camilla.get_volume_and_mute(best_effort=True)
@@ -404,7 +479,7 @@ class VolumeFloorToneSession:
                         original = None
                         raise
                     started_runner = runner
-            except (OSError, RuntimeError):
+            except (CamillaUnavailable, OSError, RuntimeError) as exc:
                 with self._lock:
                     self._starting = False
                     self._cancel_start = False
@@ -415,6 +490,8 @@ class VolumeFloorToneSession:
                     original_db=None if original is None else original[0],
                     original_mute=None if original is None else original[1],
                 )
+                if isinstance(exc, CamillaUnavailable):
+                    raise RuntimeError("CamillaDSP is unavailable") from exc
                 raise
         else:
             async with self._camilla_op():
@@ -578,8 +655,10 @@ class VolumeFloorToneSession:
         original_db: float | None,
         original_mute: bool | None,
     ) -> None:
-        """Take the op lock, then restore. No snapshot means nothing moved."""
+        """Take the op lock, then restore. No snapshot means nothing moved —
+        the announcement is still dropped."""
         if original_db is None or original_mute is None:
+            await self._release_isolation()
             return
         async with self._camilla_op():
             await self._restore_snapshot(
@@ -602,12 +681,37 @@ class VolumeFloorToneSession:
         # household level the start declared (``original_db``); the mute
         # ordering around it stays this session's, not the owner's.
         claim, self._claim = self._claim, None
-        if original_mute:
-            await camilla.set_main_mute(True, best_effort=True)
-            await _release_floor_level(claim, original_db)
-        else:
-            await _release_floor_level(claim, original_db)
-            await camilla.set_main_mute(False, best_effort=True)
+        try:
+            if original_mute:
+                await camilla.set_main_mute(True, best_effort=True)
+                await _release_floor_level(claim, original_db)
+            else:
+                await _release_floor_level(claim, original_db)
+                await camilla.set_main_mute(False, best_effort=True)
+        finally:
+            # Last: while the fader is still down at the floor, the audition is
+            # exactly what the announcement is for.
+            await self._release_isolation()
+
+    async def _release_isolation(self) -> None:
+        """Drop the audition's measurement window, once, from any exit path."""
+        isolation, self._isolation = self._isolation, None
+        if isolation is not None:
+            await asyncio.to_thread(isolation.release)
+
+    def _isolation_lost(self) -> None:
+        """The window ended under a live audition (a lost mux gate lease).
+
+        Unannounced, the reconciler in jasper-voice walks the fader back to the
+        household level with the tone still playing, so the tone stops with the
+        announcement.
+        """
+        with self._lock:
+            runner = self._runner
+        if runner is None:
+            return
+        runner.stop()
+        self._runner_finished(runner, "isolation_lost")
 
     def _clear_active_locked(self) -> None:
         self._runner = None
