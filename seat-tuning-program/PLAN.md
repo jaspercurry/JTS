@@ -3,7 +3,7 @@
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
 (PR #4517, ADR-0259/0260). Lane B landed rows 1.4/1.5/1.7 (PRs #4522, #4524,
 #4525); lane C landed rows 2.3 (#4520), 2.1 (#4544) and 2.2 (#4546); lane A
-row 1.1 open (#4557); lane D in progress. **Owner:** jaspercurry. **Orchestrating
+landed row 1.1 (#4557), rows 1.2–1.4 next; lane D in progress. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
@@ -190,7 +190,7 @@ disjoint files.
 
 | Row | Lane | Concern | Tag | Proof | Gate |
 |---|---|---|---|---|---|
-| 1.1 | A | **Census, then move.** Grep every importer of `jasper.correction.*`, `jasper.calibration_agent.*` and the room handlers from `jasper/web/correction_crossover_v2*.py`, `active_speaker/`, `cli/`, `multiroom/`, `doctor/`. Move the shared pieces named in ADR-0259 before any deletion: `level_match` beside `audio_measurement/ramp.py`; the household mic record and its three path/hint helpers to `audio_measurement`; `SNR_BANDS_HZ` to `snr_policy`; the variance-cap rule and room target math to `audio_measurement`; the shared capture slot stays in the daemon. | D | census in the PR body; boundary tests green | code-review |
+| 1.1 | A | **LANDED 2026-09-09 — PR #4557 merged (`82e82a03b`).** **Census, then move.** Grep every importer of `jasper.correction.*`, `jasper.calibration_agent.*` and the room handlers from `jasper/web/correction_crossover_v2*.py`, `active_speaker/`, `cli/`, `multiroom/`, `doctor/`. Move the shared pieces named in ADR-0259 before any deletion: `level_match` beside `audio_measurement/ramp.py`; the household mic record and its three path/hint helpers to `audio_measurement`; `SNR_BANDS_HZ` to `snr_policy`; the variance-cap rule and room target math to `audio_measurement`; the shared capture slot stays in the daemon. | D | census in the PR body; boundary tests green | code-review |
 | 1.2 | A | **Delete the room product.** `jasper/correction/` orchestration whole (session, acceptance, autolevel, browser_audio, confidence, envelope, status, state_guard, runtime_integrity, runtime_safety, strategy, failures, evidence, replay_artifacts, bundles, bundle_tools, interop, fir_runtime, artifacts, acoustic_quality after its SNR table moves, `_numbers`); the room routes and handlers in `correction_setup.py`/`correction_handlers.py`/`correction_capture.py` (the crossover, sync, calibration and healthz routes stay); `web/correction_room_flow.py`; `web/correction_tuning.py`; `jasper/calibration_agent/` and `jasper-calibration-agent`; `jasper-correction-bundle`; the room JS (`deploy/assets/correction/js/main.js` room modules, `shared/js/measurement-audio.js`); doctor's room section re-pointed at the applied candidate or dropped; all their tests. SUPERSEDED verdict per module. | D | grep proof; `scripts/test-merge` green; the speaker walk still opens a v2 session on a fixture | code-review; D-tier |
 | 1.3 | A | **Delete the bass wizard.** `bass_extension/ladder.py`, the apply/bypass/recover transaction in `bass_extension/__init__.py`, `tests/test_bass_extension_plan_status.py`, and the three superseded wave docs. Keep `alignment`, `targets`, `adapters`, `limiter_evidence`, `profile` (absorbed by 3.3), `bench/`. | D | grep proof; `/state.bass_extension` still reports | code-review |
 | 1.0 | B | **LANDED 2026-09-08 — PR #4510 merged (`72bc34764`), #4138 closed.** The wired kernel in the leaf. Reconcile with main: `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder` move from `crossover_v2/wired_stimulus.py` to the leaf `audio_measurement/wired_capture.py`; `WiredStimulusCapture` stays in the engine; keep its `require_wired_mic` and the null-door intactness gate. Its own gate holds: one owner `jasper-null` run confirming a clean take reports zero zero-runs and zero block gaps. Coordinate with the right-size orchestrator, who owns the PR. | R | the PR's four hardware checks; AST identity of moved bodies | owner null run, then code-review |
@@ -311,6 +311,10 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 02:30Z: Row 1.1 LANDED: PR #4557 squash-merged at `82e82a03b` on
+  green CI after the fix commit. Lane A proceeds to 1.2 (delete the room
+  product); `room_limits.py` is on main so `variance_cap.py`/`target.py` go
+  as SUPERSEDED.
 - 2026-09-09 02:20Z: #4557 (row 1.1) reviewed by Opus: APPROVE WITH FIXES;
   fixes pushed as `4cd078db4` (hoist the v2 setup-calibration import; pin
   `resolved_household_mic`; one module-level `configured_calibration_root`).
