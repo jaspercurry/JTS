@@ -5669,7 +5669,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 # --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
 
 
-def test_web_binding_shares_graph_profile_and_writer_directory(monkeypatch, tmp_path):
+def test_web_binding_uses_saved_profile_when_playback_is_composed(monkeypatch, tmp_path):
     from jasper.active_speaker.crossover_v2 import composition, door
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
@@ -5683,7 +5683,8 @@ def test_web_binding_shares_graph_profile_and_writer_directory(monkeypatch, tmp_
         return "composer"
     monkeypatch.setattr(door, "bind_measurement_graph", bind_graph)
     monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
-    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: {"profile": "applied"})
+    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: None)
+    monkeypatch.setattr(v2host, "load_applied_baseline_profile_state", lambda: {"profile": "applied"})
     protection = {"woofer": (), "tweeter": ()}
     play = v2host.bind_production_play(
         program_for_phase=lambda phase: phase, camilla_factory=lambda: None,
