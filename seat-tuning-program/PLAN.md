@@ -318,6 +318,53 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 16:00Z: **B1 re-check verdict on #4643: the deviation is justified,
+  the defect is NOT closed. The PR does not merge.** Two new blockers, and the
+  orchestrator's 14:05Z ruling is formally superseded.
+  - **The ruling was unimplementable, for a reason neither earlier review
+    found.** The summed admission gate hardcodes
+    `bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY`, so
+    `bass_extension_block_valid` demands the *complete absence* of every
+    `bass_ext*` filter. Probed against the suite's own live graph:
+    `valid=False, reason=bass_extension_block_forbidden,
+    definitions=('bass_ext_lt','bass_ext_subsonic')` → `GRAPH_NOT_PROVEN`. The
+    gate can never admit any bench program on any bench graph at any level.
+    The fix agent's own arguments were partly wrong too: its mono-VERIFY point
+    holds, its "every pass refuses" was overstated (a derived HF ceiling
+    supersedes the declared −65 dBFS where both sensitivities are declared),
+    and its claim that `protection_requirement_present` credits a dB figure is
+    **false** — that check proves the declared filter's type, cutoff and slope
+    are present in the graph text, which is exactly the proof this row wants.
+  - **B1a — the replacement's protection excuse is tautological and
+    unverified.** `apply_driver_low_limit` writes the high-pass cutoff and
+    `hard_excitation_band_hz[0]` from one number, so on the
+    `program_admission=True` path an HF role's test reduces to
+    `frequency >= frequency` and can never refuse a normally-authored tweeter
+    (fixture: floor 1500.0, cutoff 1500.0). Nothing checks the declared filter
+    against the graph that will play — **and the proof is now available**:
+    `graph_yaml` is threaded in, and `view_from_camilla_dict(yaml.safe_load(...))`
+    is the parse `activation._prove_active_graph` already performs. Sharper
+    still, the bench passes `program_admission=True`, the *proven* protective
+    high-pass path, taking the ceiling loosening without supplying the proof.
+  - **B1b — the completeness check was dropped with the summed gate.** Any role
+    absent from `role_targets` passes silently (probed: drop `"tweeter"` and
+    the guard is quiet); the summed gate's
+    `set(role_targets.values()) != set(physical)` leg was the only thing
+    catching it. Out-of-band drivers are likewise unguarded.
+  - Confirmed closed: the band margin (`ceiling = min(corners)/2`, boundary
+    200.0/200.001, correct for LR4 and LR8) — but `SUPPORTED_LR_ORDERS`
+    includes 2, an LR2 pair is only −14.0 dB at fc/2, and the code ignores
+    `region.order` while its comment names LR4. Nothing new was broken by the
+    binder consumption: `confirm_graph_is_live` → fader proof → aplay now sit
+    inside the writer lock, matching the wizard's own nesting.
+  - **M1 part 2 remains open**: the preflight refuses at 6–12 s against the
+    protocol's 30/60/90 s holds, so the campaign still cannot run.
+  Recorded ruling, superseding 14:05Z: **per-driver caps do not come from the
+  summed admission gate — it cannot admit a bench graph at all. The bench's own
+  guard is the right shape, but it must prove the declared protection filter
+  against `graph_yaml` rather than trusting the declaration, and must fail
+  closed on a role it has no target for.**
+
 - 2026-09-09 15:45Z: #4643's fix round landed at `af3e7a79a` (conflict with the
   merged 3.2 resolved, main merged in twice, never rebased). Three of the six
   findings are closed as instructed, and three produced findings of their own
