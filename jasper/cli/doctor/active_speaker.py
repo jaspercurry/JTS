@@ -37,9 +37,6 @@ REASON_SOUND_PROFILE_UNREADABLE = "sound_profile_unreadable"
 REASON_SOUND_PROFILE_NOT_ACTIVE = "sound_profile_not_active"
 
 REASON_BASS_EXTENSION_NOT_COMMISSIONED = "bass_extension_not_commissioned"
-REASON_BASS_EXTENSION_MALFORMED = "bass_extension_malformed"
-REASON_BASS_EXTENSION_STALE = "bass_extension_stale"
-REASON_BASS_EXTENSION_BYPASSED = "bass_extension_bypassed"
 
 REASON_DSP_APPLY_NONE = "dsp_apply_none"
 REASON_DSP_APPLY_ROLLBACK_FAILED = "dsp_apply_rollback_failed"
@@ -304,43 +301,25 @@ def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
     )
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
-
-    evaluation = evaluate_bass_extension_profile(
-        topology=evidence.output_topology(),
-        applied_baseline_state=load_applied_baseline_profile_state(),
+    from jasper.bass_extension.candidate_field import (
+        applied_bass_extension_field,
+        bass_extension_summary,
     )
-    if evaluation.status == "missing":
+
+    family = bass_extension_summary(
+        applied_bass_extension_field(load_applied_baseline_profile_state())
+    )
+    if family is None:
         return CheckResult(
             "bass extension profile", "ok", "bass extension: not commissioned",
             reason=REASON_BASS_EXTENSION_NOT_COMMISSIONED,
         )
-    if evaluation.status == "malformed":
-        return CheckResult(
-            "bass extension profile",
-            "fail",
-            f"bass extension profile is malformed: {evaluation.detail}",
-            reason=REASON_BASS_EXTENSION_MALFORMED,
-        )
-    if evaluation.status == "stale":
-        refusals = ",".join(refusal.value for refusal in evaluation.refusals)
-        return CheckResult(
-            "bass extension profile",
-            "warn",
-            f"bass extension profile is stale [{refusals}]: {evaluation.detail}",
-            reason=REASON_BASS_EXTENSION_STALE,
-        )
-    if evaluation.status == "bypassed":
-        return CheckResult(
-            "bass extension profile", "ok", "bass extension profile is bypassed",
-            reason=REASON_BASS_EXTENSION_BYPASSED,
-        )
-    assert evaluation.profile is not None
+    targets = family["targets"]
     return CheckResult(
         "bass extension profile",
         "ok",
-        f"accepted; deepest={evaluation.profile.targets[0].fp_hz:g}Hz "
-        f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
+        f"accepted ({family['adapter_id']}); "
+        f"deepest={targets[0]['fp_hz']:g}Hz natural={targets[-1]['fp_hz']:g}Hz",
     )
 
 @doctor_check()

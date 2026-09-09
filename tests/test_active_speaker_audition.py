@@ -107,12 +107,12 @@ def test_baseline_layer_drops_only_the_measured_correction_stages() -> None:
     applied = _applied_profile(topology)
 
     full_text, full_issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied, bass_extension=None,
     )
     reduced_text, reduced_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        bass_extension_profile=None,
+        bass_extension=None,
         drop_measured_correction=True,
     )
     assert full_issues == [] and reduced_issues == []
@@ -182,7 +182,7 @@ def test_the_household_layers_survive_the_reduction(
     applied = _applied_profile(topology)
     anchor_file = tmp_path / "anchor.yml"
     full_text, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied, bass_extension=None,
     )
     assert issues == [] and full_text is not None
     anchor_file.write_text(full_text, encoding="utf-8")
@@ -330,7 +330,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_profile(topology)
     full_text, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied, bass_extension=None,
     )
     assert issues == [] and full_text is not None
 
@@ -352,7 +352,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             recompose_applied_baseline_yaml(
                 topology,
                 applied_profile=applied_profile,
-                bass_extension_profile=None,
+                bass_extension=None,
                 drop_measured_correction=True,
             )
         ),

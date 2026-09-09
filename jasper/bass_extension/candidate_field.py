@@ -24,11 +24,11 @@ composing door and the persisted value are checked by different code.
 from __future__ import annotations
 
 import math
+from types import MappingProxyType
 from typing import Any, Mapping, NoReturn, Sequence
 
 from jasper.active_speaker._common import require_sha256_hex
 from jasper.bass_extension import BASS_EXTENSION_RUNTIME_ADAPTER_IDS
-from jasper.bass_extension.alignment import linkwitz_transform_params
 from jasper.bass_extension.refusals import BassExtensionRefusal
 from jasper.json_fields import finite_float
 
@@ -36,8 +36,11 @@ __all__ = [
     "BASS_EXTENSION_CANDIDATE_FIELD",
     "EVIDENCE_PASS",
     "NATURAL_TARGET_ID",
+    "NO_BASS_EXTENSION_PROFILE_SUMMARY",
     "BassCandidateFieldError",
+    "applied_bass_extension_field",
     "bass_extension_summary",
+    "graph_summary",
     "validate_bass_extension_field",
 ]
 
@@ -49,6 +52,13 @@ NATURAL_TARGET_ID = "natural"
 
 #: The verdict an evidence document must carry to protect anything.
 EVIDENCE_PASS = "pass"
+
+#: Graph authority for a speaker carrying no family: the emitted graph must
+#: hold no bass stage at all.
+NO_BASS_EXTENSION_PROFILE_SUMMARY: Mapping[str, Any] = MappingProxyType({
+    "authority_valid": True,
+    "runtime_block_required": False,
+})
 
 #: The plant a seat-cube fit can describe. Wider than any real cabinet corner:
 #: this is the "not a typo, not a unit error" bound, not a design bound.
@@ -304,6 +314,10 @@ def _protection(raw: Any, *, where: str, boost_headroom_db: float) -> dict[str, 
 
 def _sealed_filters(target: Mapping[str, Any], plant: Mapping[str, Any], where: str) -> None:
     """A non-natural target IS its Linkwitz transform, recomputed here."""
+    # lazy: alignment carries the numpy response models, and this module sits on
+    # the emitter's and the runtime proof's import paths.
+    from jasper.bass_extension.alignment import linkwitz_transform_params
+
     invalid = BassExtensionRefusal.TARGET_INVALID
     filters = target["filters"]
     if len(filters) != 1 or filters[0]["type"] != "LinkwitzTransform":
@@ -506,4 +520,56 @@ def bass_extension_summary(field: Mapping[str, Any] | None) -> dict[str, Any] | 
             for rung in validated["rungs"]
         ],
         "basis": validated["basis"],
+    }
+
+
+def applied_bass_extension_field(
+    applied_profile: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """The bass family one baseline profile carries, or ``None``.
+
+    THE accessor for the applied candidate's ``bass_extension``: the emitter
+    and every production runtime proof read the family here and nowhere else.
+    """
+    snapshot = (
+        applied_profile.get("recomposition_snapshot")
+        if isinstance(applied_profile, Mapping)
+        else None
+    )
+    field = (
+        snapshot.get(BASS_EXTENSION_CANDIDATE_FIELD)
+        if isinstance(snapshot, Mapping)
+        else None
+    )
+    return field if isinstance(field, Mapping) and field else None
+
+
+def graph_summary(field: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The authority evidence one emitted graph is proved against.
+
+    A field this module would refuse authorizes no stage at all, exactly as an
+    absent family does: the graph proof then requires the complete absence of
+    the bass block rather than trusting an unreadable family.
+    """
+    if not field:
+        return dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    try:
+        validated = validate_bass_extension_field(field)
+    except BassCandidateFieldError:
+        return dict(NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    natural = validated["rungs"][-1]["target"]
+    return {
+        "authority_valid": True,
+        "runtime_block_required": True,
+        "bass_owner_channels": list(validated["owner"]["channels"]),
+        "natural": {
+            "fp_hz": natural["fp_hz"],
+            "qp": natural["qp"],
+            "boost_headroom_db": natural["boost_headroom_db"],
+            "subsonic": (
+                dict(natural["subsonic"])
+                if natural["subsonic"] is not None
+                else None
+            ),
+        },
     }

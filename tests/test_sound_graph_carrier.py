@@ -23,7 +23,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
 
-import numpy as np
 import pytest
 import yaml
 
@@ -58,6 +57,7 @@ from jasper.sound.settings import SoundSettings, output_trim_db, save_sound_sett
 from tests.test_active_speaker_runtime_contract import (
     _applied_baseline,
     _active_baseline_yaml,
+    _sealed_field,
     _active_topology,
     _flat_yaml,
     _full_range_stereo,
@@ -863,65 +863,18 @@ def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
     assert "save a fresh crossover preview" in err.value.message
 
 
-@pytest.mark.parametrize(
-    "profile_kind",
-    ["accepted", "accepted_deferred", "missing", "bypassed", "stale"],
-)
-def test_active_recompose_threads_exact_desired_bass_evidence_and_publishes(
+@pytest.mark.parametrize("with_family", [True, False])
+def test_active_recompose_proves_the_applied_familys_graph_and_publishes(
     tmp_path,
-    profile_kind,
+    with_family,
 ) -> None:
     from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
 
     topology = _active_topology("mono", "active_2_way")
+    field = _sealed_field() if with_family else None
     applied = _applied_baseline()
-    accepted = _sealed_profile(topology, applied)
-    evaluated_profile = accepted
-    evaluation_status = "accepted"
-    emission_profile = accepted
-    proof_profile = accepted
-    if profile_kind == "accepted_deferred":
-        evaluated_profile = replace(
-            accepted,
-            enclosure={
-                "adapter_id": "ported_v1",
-                "adapter_version": 1,
-                "cabinet_fingerprint": "ported-cabinet",
-            },
-            natural={
-                "fb_hz": 43.1,
-                "knee_hz": 55.0,
-                "knee_slope_db_oct": 21.0,
-                "fit_rms_db": 0.4,
-                "natural_curve": {
-                    "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
-                    "magnitude_db": [0.0] * 96,
-                },
-                "notes": [],
-            },
-        )
-        emission_profile = evaluated_profile
-        proof_profile = evaluated_profile
-    if profile_kind == "missing":
-        evaluated_profile = None
-        evaluation_status = "missing"
-        emission_profile = None
-        proof_profile = None
-    elif profile_kind == "bypassed":
-        evaluated_profile = replace(accepted, status="bypassed")
-        evaluation_status = "bypassed"
-        emission_profile = None
-        proof_profile = evaluated_profile
-    elif profile_kind == "stale":
-        evaluated_profile = replace(accepted, baseline_fingerprint="0" * 64)
-        evaluation_status = "stale"
-        emission_profile = None
-        proof_profile = evaluated_profile
-    emitted = _active_baseline_yaml(
-        "mono",
-        2,
-        bass_extension_profile=emission_profile,
-    )
+    applied["recomposition_snapshot"]["bass_extension"] = field
+    emitted = _active_baseline_yaml("mono", 2, bass_extension=field)
     target = tmp_path / "sound_current.yml"
     from jasper.active_speaker.runtime_contract import (
         classify_bass_extension_graph as desired_classifier,
@@ -933,12 +886,6 @@ def test_active_recompose_threads_exact_desired_bass_evidence_and_publishes(
     ), mock.patch(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
         return_value=applied,
-    ), mock.patch(
-        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
-        return_value=SimpleNamespace(
-            status=evaluation_status,
-            profile=evaluated_profile,
-        ),
     ), mock.patch(
         "jasper.sound.profile.build_sound_filter_slots",
         return_value=(),
@@ -956,22 +903,21 @@ def test_active_recompose_threads_exact_desired_bass_evidence_and_publishes(
 
     assert result == emitted
     assert target.read_text(encoding="utf-8") == emitted
-    assert recompose.call_args.kwargs["bass_extension_profile"] is emission_profile
+    # The recompose is never told which family to emit: the applied snapshot's
+    # own field is its default, and the proof asks the same field.
+    assert "bass_extension" not in recompose.call_args.kwargs
     assert recompose.call_args.kwargs["out_path"] is None
-    assert prove.call_args.kwargs["desired_profile"] is proof_profile
+    assert prove.call_args.kwargs["desired_bass_extension"] == field
 
 
 def test_active_recompose_refuses_unsafe_graph_before_publishing(tmp_path) -> None:
     from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
 
     topology = _active_topology("mono", "active_2_way")
+    field = _sealed_field()
     applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
-    emitted = _active_baseline_yaml(
-        "mono",
-        2,
-        bass_extension_profile=profile,
-    )
+    applied["recomposition_snapshot"]["bass_extension"] = field
+    emitted = _active_baseline_yaml("mono", 2, bass_extension=field)
     tampered = emitted.replace(
         "names: [as_woofer_woofer_tweeter_lp, bass_ext_lt",
         "names: [bass_ext_lt",
@@ -988,9 +934,6 @@ def test_active_recompose_refuses_unsafe_graph_before_publishing(tmp_path) -> No
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
         return_value=applied,
     ), mock.patch(
-        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
-        return_value=SimpleNamespace(status="accepted", profile=profile),
-    ), mock.patch(
         "jasper.sound.profile.build_sound_filter_slots",
         return_value=(),
     ), mock.patch(
@@ -1006,7 +949,6 @@ def test_active_recompose_refuses_unsafe_graph_before_publishing(tmp_path) -> No
     assert exc.value.reason_code == "active_baseline_recompose_unavailable"
     assert target.read_bytes() == predecessor
     assert recompose.call_args.kwargs["out_path"] is None
-    assert recompose.call_args.kwargs["bass_extension_profile"] is profile
 
 
 def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
@@ -1018,12 +960,8 @@ def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
 
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
-    emitted = _active_baseline_yaml(
-        "mono",
-        2,
-        bass_extension_profile=profile,
-    )
+    field = _sealed_field()
+    emitted = _active_baseline_yaml("mono", 2, bass_extension=field)
     tampered = emitted.replace(
         "names: [as_woofer_woofer_tweeter_lp, bass_ext_lt",
         "names: [bass_ext_lt",
@@ -1049,7 +987,7 @@ def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
             recompose_active_baseline_for_bass_extension(
                 topology,
                 applied_profile=applied,
-                desired_profile=profile,
+                desired_profile=field,
                 current_config_path=selected,
                 preference_profile_path=preference_path,
                 sound_settings_path=settings_path,
@@ -1058,7 +996,7 @@ def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
     assert exc.value.reason_code == "bass_extension_recompose_unavailable"
 
 
-@pytest.mark.parametrize("profile_kind", ["missing", "bypassed"])
+@pytest.mark.parametrize("profile_kind", ["missing", "empty"])
 def test_bass_extension_recompose_proves_no_block_predecessors(
     tmp_path,
     profile_kind,
@@ -1069,12 +1007,7 @@ def test_bass_extension_recompose_proves_no_block_predecessors(
 
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_baseline()
-    desired_profile = None
-    if profile_kind == "bypassed":
-        desired_profile = replace(
-            _sealed_profile(topology, applied),
-            status="bypassed",
-        )
+    desired_profile = {} if profile_kind == "empty" else None
     emitted = _active_baseline_yaml("mono", 2)
     selected = tmp_path / "selected.yml"
     selected.write_text(emitted, encoding="utf-8")
@@ -1769,18 +1702,15 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
 
 
 def test_bass_extension_recompose_also_refuses_below_floor_by_type(tmp_path):
-    """The sibling seam's conversion, pinned while it is still latent.
+    """The sibling seam's conversion.
 
-    ``recompose_active_baseline_for_bass_extension`` has no production caller
-    yet, so this refusal cannot reach a household today. It is pinned anyway
-    because the seam converts EVERY other failure to :class:`CarrierCannotHostEq`
-    and an unconverted ``ActiveSpeakerConfigError`` here would be the /sound/eq/ defect
-    above repeated verbatim on the day bass extension is wired — and a
-    half-guarded pair reads as a guarded one to the next reader.
-
-    The reason code is this seam's own (``bass_extension_recompose_unavailable``,
-    what its siblings raise), not the preference-EQ seam's, so a caller
-    branching on reason_code still learns which seam refused.
+    It converts EVERY other failure to :class:`CarrierCannotHostEq`, and an
+    unconverted ``ActiveSpeakerConfigError`` here would be the /sound/eq/ defect
+    above repeated verbatim — a half-guarded pair reads as a guarded one to the
+    next reader. The reason code is this seam's own
+    (``bass_extension_recompose_unavailable``, what its siblings raise), not the
+    preference-EQ seam's, so a caller branching on reason_code still learns
+    which seam refused.
     """
     from jasper.sound.graph_carrier import (
         recompose_active_baseline_for_bass_extension,

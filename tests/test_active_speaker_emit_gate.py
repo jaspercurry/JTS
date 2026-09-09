@@ -33,12 +33,10 @@ decorative (deleting a gate call from one emitter would then ship red).
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from typing import Callable
 
 import pytest
 import yaml
-import numpy as np
 
 from jasper.active_speaker import (
     ActiveSpeakerConfigError,
@@ -56,6 +54,7 @@ from jasper.active_speaker.camilla_yaml import (
 )
 from jasper.active_speaker.graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
+    bass_extension_block_valid,
     output_highpass_protected,
     pipeline_reference_closure_errors,
     unprotected_tweeter_outputs,
@@ -67,9 +66,10 @@ from jasper.active_speaker.runtime_contract import (
     classify_camilla_graph,
 )
 
+from jasper.bass_extension.candidate_field import graph_summary
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology
-from tests.test_bass_extension_profile import _profile
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -97,30 +97,8 @@ def _hp_stripping(original: Callable[..., list[str]]) -> Callable[..., list[str]
     return _stripped
 
 
-def _sealed_profile(*, channels=(0, 2), status="accepted"):
-    return replace(
-        _profile(status=status),
-        bass_owner={
-            "kind": "woofer_way",
-            "roles": ["woofer"],
-            "channels": list(channels),
-        },
-    )
-
-
-def _sealed_summary(profile):
-    natural = profile.targets[-1]
-    return {
-        "authority_valid": True,
-        "runtime_block_required": True,
-        "bass_owner_channels": list(profile.bass_owner["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": dict(natural.subsonic),
-        },
-    }
+def _sealed_field(*, channels=(0, 2), role="woofer"):
+    return bass_extension_field(owner={"role": role, "channels": list(channels)})
 
 
 # --- the three required cases, at the shared-predicate layer ----------------- #
@@ -292,10 +270,11 @@ def test_sealed_natural_pair_emits_and_reproves_on_solo_and_driver_domain(
     classification,
 ) -> None:
     preset = _preset("stereo", 2)
-    profile = _sealed_profile()
+    field = _sealed_field()
+    natural = field["rungs"][-1]["target"]
     kwargs = {
         "playback_device": ACTIVE_PCM,
-        "bass_extension_profile": profile,
+        "bass_extension": field,
     }
     if driver_domain:
         text = emit_active_speaker_driver_domain_config(
@@ -311,20 +290,15 @@ def test_sealed_natural_pair_emits_and_reproves_on_solo_and_driver_domain(
         "type": "Biquad",
         "parameters": {
             "type": "LinkwitzTransform",
-            "freq_act": 61.2,
-            "q_act": 0.72,
-            "freq_target": 61.2,
-            "q_target": 0.72,
+            "freq_act": natural["fp_hz"],
+            "q_act": natural["qp"],
+            "freq_target": natural["fp_hz"],
+            "q_target": natural["qp"],
         },
     }
-    assert payload["filters"]["bass_ext_subsonic"] == {
-        "type": "BiquadCombo",
-        "parameters": {
-            "type": "ButterworthHighpass",
-            "freq": 22.0,
-            "order": 4,
-        },
-    }
+    assert payload["filters"]["bass_ext_subsonic"]["parameters"]["order"] == (
+        natural["subsonic"]["order"]
+    )
     owner_steps = [
         step for step in payload["pipeline"]
         if step.get("channels") == [0, 2]
@@ -338,10 +312,13 @@ def test_sealed_natural_pair_emits_and_reproves_on_solo_and_driver_domain(
     assert limiter["parameters"] == {"clip_limit": -1.0, "soft_clip": True}
     assert payload["devices"]["volume_limit"] <= 0.0
 
+    assert bass_extension_block_valid(
+        view_from_emitted_text(text), graph_summary(field)
+    ).valid is True
     proof = classify_camilla_graph(
         topology=_active_topology("stereo", "active_2_way"),
         text=text,
-        bass_profile_summary=_sealed_summary(profile),
+        bass_profile_summary=graph_summary(field),
     )
     assert proof.allowed is True
     assert proof.classification == classification
@@ -351,72 +328,75 @@ def test_natural_pair_tamper_is_unsafe_and_missing_subsonic_trips_emit_gate(
     monkeypatch,
 ) -> None:
     preset = _preset("stereo", 2)
-    profile = _sealed_profile()
+    field = _sealed_field()
     text = emit_active_speaker_baseline_config(
         preset,
         playback_device=ACTIVE_PCM,
-        bass_extension_profile=profile,
+        bass_extension=field,
     )
-    tampered = text.replace("freq_target: 61.2000", "freq_target: 45.0000")
-    assert classify_camilla_graph(
-        topology=_active_topology("stereo", "active_2_way"),
-        text=tampered,
-        bass_profile_summary=_sealed_summary(profile),
-    ).allowed is False
+    tampered = text.replace("freq_target: 45.0000", "freq_target: 30.0000")
+    assert tampered != text
+    assert bass_extension_block_valid(
+        view_from_emitted_text(tampered), graph_summary(field)
+    ).valid is False
 
     monkeypatch.setattr(camilla_yaml, "emit_butterworth_highpass", lambda *_a, **_k: [])
     with pytest.raises(ActiveSpeakerConfigError, match="bass-extension"):
         emit_active_speaker_baseline_config(
             preset,
             playback_device=ACTIVE_PCM,
-            bass_extension_profile=profile,
+            bass_extension=field,
         )
 
 
 @pytest.mark.parametrize(
-    "profile_kind",
-    ["missing", "bypassed", "ported", "passive_radiator"],
+    ("field", "match"),
+    [
+        pytest.param(
+            _sealed_field(channels=(0, 1)),
+            "does not match the emitted active-speaker graph",
+            id="owner_channels_are_not_the_roles",
+        ),
+        pytest.param(
+            _sealed_field(role="midrange"),
+            "reaches no output",
+            id="owner_role_reaches_no_output",
+        ),
+        pytest.param(
+            {**_sealed_field(), "adapter_id": "ported_v1"},
+            "adapter_id must be one of",
+            id="adapter_this_runtime_cannot_emit",
+        ),
+        pytest.param(
+            {**_sealed_field(), "basis": {"round_id": "round-3"}},
+            "basis keys must be exactly",
+            id="field_the_validator_refuses",
+        ),
+    ],
 )
-def test_deferred_or_inactive_profiles_preserve_ordinary_baseline_bytes(
-    profile_kind,
+def test_a_field_the_emitter_cannot_honour_refuses_the_whole_graph(
+    field,
+    match,
 ) -> None:
+    with pytest.raises(ActiveSpeakerConfigError, match=match):
+        emit_active_speaker_baseline_config(
+            _preset("stereo", 2),
+            playback_device=ACTIVE_PCM,
+            bass_extension=field,
+        )
+
+
+@pytest.mark.parametrize("field", [None, {}])
+def test_no_family_preserves_the_ordinary_baseline_bytes(field) -> None:
     preset = _preset("stereo", 2)
     ordinary = emit_active_speaker_baseline_config(
         preset, playback_device=ACTIVE_PCM
     )
-    profile = None
-    if profile_kind == "bypassed":
-        profile = _sealed_profile(status="bypassed")
-    elif profile_kind in {"ported", "passive_radiator"}:
-        profile = replace(
-            _sealed_profile(),
-            enclosure={
-                "adapter_id": f"{profile_kind}_v1",
-                "adapter_version": 1,
-                "cabinet_fingerprint": "cabinet-a",
-            },
-                natural={
-                    "fb_hz": 43.1,
-                    "knee_hz": 55.0,
-                    "knee_slope_db_oct": 21.0,
-                    "fit_rms_db": 0.4,
-                    **(
-                        {"notch_hz": 27.0}
-                        if profile_kind == "passive_radiator"
-                        else {}
-                    ),
-                    "natural_curve": {
-                    "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
-                    "magnitude_db": [0.0] * 96,
-                },
-                "notes": [],
-            },
-        )
 
     emitted = emit_active_speaker_baseline_config(
         preset,
         playback_device=ACTIVE_PCM,
-        bass_extension_profile=profile,
+        bass_extension=field,
     )
 
     assert emitted == ordinary

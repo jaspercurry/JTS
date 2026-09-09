@@ -19,6 +19,7 @@ from typing import Any, Mapping
 from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
 from jasper.bass_extension.candidate_field import (
     BASS_EXTENSION_CANDIDATE_FIELD,
+    applied_bass_extension_field,
     bass_extension_summary,
 )
 from jasper.camilla_config_contract import parse_camilla_devices_config
@@ -1066,10 +1067,8 @@ def read_active_speaker_setup_status(
             # Layer 2's applied family, carried whole so `/state` and the bass
             # tab read the applied profile through this one gather rather than
             # opening it again per surface.
-            BASS_EXTENSION_CANDIDATE_FIELD: (
-                protected_snapshot.get(BASS_EXTENSION_CANDIDATE_FIELD)
-                if protected_snapshot is not None
-                else None
+            BASS_EXTENSION_CANDIDATE_FIELD: applied_bass_extension_field(
+                protected_profile
             ),
             # WHY Layer-1a driver linearization did or didn't run for the
             # CURRENTLY APPLIED candidate; "" when never evaluated. Read off the

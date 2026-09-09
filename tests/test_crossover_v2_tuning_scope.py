@@ -257,12 +257,12 @@ def test_tuning_layers_exclude_saved_household_processing(tuning_profile, tmp_pa
         tuning_profile.topology, applied_profile=source,
         preference_filters=build_sound_filter_slots(load_profile(preference_path)),
         room_peqs=[PeqFilter(freq=80.0, q=2.0, gain=3.0)],
-        output_trim_db=-2.0, bass_extension_profile=None,
+        output_trim_db=-2.0, bass_extension=None,
     )
     assert household and not issues
     graph = yaml.safe_load(compile_tuning_graph(tuning_profile, scope=scope))
     clean, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=source, bass_extension_profile=None,
+        tuning_profile.topology, applied_profile=source, bass_extension=None,
         drop_measured_correction=scope == "base",
     )
     assert not issues and graph == yaml.safe_load(clean)

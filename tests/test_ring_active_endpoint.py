@@ -3087,10 +3087,6 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         "jasper.active_speaker.baseline_profile.promote_applied_baseline_candidate",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr(
-        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
-        lambda **k: SimpleNamespace(status="rejected", profile=None),
-    )
 
     def _recompose(topology, **kwargs):
         seen["playback_device"] = kwargs.get("playback_device")

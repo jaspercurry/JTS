@@ -2,33 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract: the sealed-only runtime-arming gate stays consistent across its
-five independent expressions.
+"""Contract: the sealed-only runtime-arming gate stays consistent across the
+sites that still spell it as a literal.
 
 ``BASS_EXTENSION_RUNTIME_ADAPTER_IDS`` (``jasper/bass_extension/__init__.py``)
-is the single source of truth for which enclosure-adapter id(s) are allowed
-to arm the bass-extension runtime block (subsonic-protection requirement,
-natural-target emission, etc.). Four other call sites independently
-re-implement the same gate as a literal ``"sealed_v1"`` comparison instead of
-importing the frozenset:
+is the single source of truth for which enclosure-adapter id(s) may arm the
+bass-extension runtime block. The emitter and the applied candidate's own
+graph summary now read the adapter through
+``jasper.bass_extension.candidate_field.validate_bass_extension_field``, which
+consumes the frozenset directly; the two sites below still re-implement the
+gate as a literal ``"sealed_v1"`` comparison, and both belong to the legacy
+profile record that retires with ``apply_bass_extension``:
 
-  * ``jasper/active_speaker/camilla_yaml.py::_bass_extension_emission``
-  * ``jasper/active_speaker/baseline_profile.py::_bass_extension_graph_summary``
   * ``jasper/active_speaker/runtime_contract.py::_evaluated_profile_summary``
   * ``jasper/bass_extension/__init__.py::apply_bass_extension`` (the
     subsonic-protection refusal check)
 
-This is a deliberate, tracked trade-off, not an oversight. Three of the
-four sites are hot files under active, concurrent ownership by another
-workstream; the fourth (``apply_bass_extension``) lives in this same module
-and could reference the frozenset with no import at all, but unifying it is
-deferred to the same single future change as the other three, not carved
-out early. The unification is intended to happen once a second adapter is
-armed and a plain literal comparison genuinely can't express the gate
-anymore — not before. Until then, this test is the drift tripwire: it
-AST-parses each enforcement site, extracts the adapter-id string
-literal(s) it compares against, and asserts they equal
-``BASS_EXTENSION_RUNTIME_ADAPTER_IDS``.
+Until those retire, this test is the drift tripwire: it AST-parses each
+enforcement site, extracts the adapter-id string literal(s) it compares
+against, and asserts they equal ``BASS_EXTENSION_RUNTIME_ADAPTER_IDS``.
 
 Scope, stated honestly: this test pins the literal *value set* compared at
 each site, not the gate's polarity — a ``!=`` accidentally flipped to
@@ -40,9 +32,9 @@ vanished comparison) rather than silently pass — update
 ``_references_adapter_id`` for the new name.
 
 **When this test fails:** do not patch just the one site that drifted.
-Update the frozenset AND all four enforcement sites together, deliberately,
-in the same change — pinning them to each other only has value if a failure
-here means "reconcile all five," never "silence this one assertion."
+Update the frozenset AND every enforcement site together, deliberately, in
+the same change — pinning them to each other only has value if a failure here
+means "reconcile them all," never "silence this one assertion."
 """
 from __future__ import annotations
 
@@ -53,19 +45,11 @@ from jasper.bass_extension import BASS_EXTENSION_RUNTIME_ADAPTER_IDS
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# (file, function) pairs for the four independently re-implemented copies of
-# the sealed_v1-only gate. Update this alongside any legitimate rename/move —
+# (file, function) pairs for the independently re-implemented copies of the
+# sealed_v1-only gate. Update this alongside any legitimate rename/move —
 # that's the intended "loud" failure path (see _find_function below), not a
 # reason to relax the test.
 _SITES: tuple[tuple[Path, str], ...] = (
-    (
-        ROOT / "jasper" / "active_speaker" / "camilla_yaml.py",
-        "_bass_extension_emission",
-    ),
-    (
-        ROOT / "jasper" / "active_speaker" / "baseline_profile.py",
-        "_bass_extension_graph_summary",
-    ),
     (
         ROOT / "jasper" / "active_speaker" / "runtime_contract.py",
         "_evaluated_profile_summary",
@@ -188,8 +172,8 @@ def test_bass_extension_runtime_gate_matches_single_source_of_truth() -> None:
         assert found == expected, (
             f"{rel}:{func_name} enforces adapter id(s) {sorted(found)}, but "
             "BASS_EXTENSION_RUNTIME_ADAPTER_IDS in jasper/bass_extension/"
-            f"__init__.py is {sorted(expected)}. These five expressions of "
-            "the same sealed-only gate have drifted apart. Reconcile them "
+            f"__init__.py is {sorted(expected)}. These expressions of the "
+            "same sealed-only gate have drifted apart. Reconcile them "
             "together, deliberately (see this test module's docstring for "
             "why the duplication exists and when to unify onto the "
             "frozenset directly) — do not patch only the site that changed."

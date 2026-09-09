@@ -86,6 +86,8 @@ from tests._camilla_readback_double import (
     camilla_default_filled,
 )
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from jasper.bass_extension.candidate_field import graph_summary
+from tests.test_bass_extension_candidate_field import bass_extension_field
 from tests.test_bass_extension_profile import _applied_baseline, _profile
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -271,7 +273,7 @@ def _active_baseline_yaml(
     room_peqs: tuple[PeqFilter, ...] = (),
     preference_filters: tuple[FilterSpec, ...] = (),
     output_trim_db: float = 0.0,
-    bass_extension_profile=None,
+    bass_extension=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
@@ -281,7 +283,7 @@ def _active_baseline_yaml(
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
-        bass_extension_profile=bass_extension_profile,
+        bass_extension=bass_extension,
     )
 
 
@@ -291,7 +293,7 @@ def _driver_domain_yaml(
     *,
     channel: str = "left",
     pair_trim_db: float = 0.0,
-    bass_extension_profile=None,
+    bass_extension=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_driver_domain_config(
@@ -300,7 +302,7 @@ def _driver_domain_yaml(
         program_channel=channel,
         pair_trim_db=pair_trim_db,
         baseline_id=f"follower-{layout}-{way}way",
-        bass_extension_profile=bass_extension_profile,
+        bass_extension=bass_extension,
     )
 
 
@@ -348,10 +350,12 @@ def _persisted_boundary(
     topology: OutputTopology,
     graph_text: str,
     profile=None,
+    field=None,
 ) -> dict[str, object]:
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(graph_text, encoding="utf-8")
     applied = _applied_baseline()
+    applied["recomposition_snapshot"]["bass_extension"] = field
     applied["status"] = "applied"
     applied["config"] = {"path": str(config)}
     applied_path = tmp_path / "applied-baseline.json"
@@ -383,6 +387,21 @@ def _sealed_profile(topology: OutputTopology, applied: dict):
         _profile(topology=topology, applied_baseline=applied),
         bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
     )
+
+
+def _sealed_field(*, channels=(0,)) -> dict:
+    """The applied candidate's family, naming the natural target the legacy
+    record names — so the apply-intent path proves the very same graph."""
+    natural = _profile().targets[-1]
+    field = bass_extension_field(
+        owner={"role": "woofer", "channels": list(channels)}
+    )
+    field["rungs"][-1]["target"].update({
+        "fp_hz": natural.fp_hz,
+        "qp": natural.qp,
+        "subsonic": dict(natural.subsonic),
+    })
+    return field
 
 
 def test_low_level_baseline_without_bass_authority_fails_closed() -> None:
@@ -421,6 +440,35 @@ def test_persisted_boot_boundary_accepts_stable_no_profile_baseline(
     assert graph.details["bass_extension_profile_summary"] == (
         NO_BASS_EXTENSION_PROFILE_SUMMARY
     )
+
+
+def test_persisted_boot_boundary_proves_the_applied_candidates_family(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    field = _sealed_field()
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2, bass_extension=field),
+        field=field,
+    )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is True
+    assert graph.details["bass_extension_profile_summary"] == graph_summary(field)
+    assert graph.details["bass_extension_profile_summary"][
+        "runtime_block_required"
+    ] is True
 
 
 @pytest.mark.parametrize(
@@ -484,24 +532,22 @@ def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
-    text = _active_baseline_yaml(
-        "mono", 2, bass_extension_profile=profile
-    )
+    field = _sealed_field()
+    text = _active_baseline_yaml("mono", 2, bass_extension=field)
 
     accepted = classify_bass_extension_graph(
         topology,
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
     )
     refused = classify_bass_extension_graph(
         topology,
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
         profile_path=tmp_path / "must-not-be-read.json",
     )
 
@@ -516,22 +562,18 @@ def test_desired_sealed_graph_requires_unchanged_bass_owner_limiter(
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_baseline()
-    profile = _sealed_profile(topology, applied)
+    field = _sealed_field()
     if graph_kind == "solo":
-        text = _active_baseline_yaml(
-            "mono", 2, bass_extension_profile=profile
-        )
+        text = _active_baseline_yaml("mono", 2, bass_extension=field)
     else:
-        text = _driver_domain_yaml(
-            "mono", 2, bass_extension_profile=profile
-        )
+        text = _driver_domain_yaml("mono", 2, bass_extension=field)
 
     pristine = classify_bass_extension_graph(
         topology,
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
     )
     assert pristine.allowed is True, pristine.issues
     assert pristine.classification == (
@@ -550,7 +592,7 @@ def test_desired_sealed_graph_requires_unchanged_bass_owner_limiter(
         evidence_source="desired",
         graph_text=_dump_baseline(text, payload),
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
     )
 
     assert graph.allowed is False
@@ -559,7 +601,7 @@ def test_desired_sealed_graph_requires_unchanged_bass_owner_limiter(
     }
 
 
-def test_desired_boundary_distinguishes_explicit_no_profile_from_omission() -> None:
+def test_desired_boundary_distinguishes_explicit_no_family_from_omission() -> None:
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_baseline()
     text = _active_baseline_yaml("mono", 2)
@@ -569,7 +611,7 @@ def test_desired_boundary_distinguishes_explicit_no_profile_from_omission() -> N
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=None,
+        desired_bass_extension=None,
     )
     omitted = classify_bass_extension_graph(
         topology,
@@ -582,17 +624,24 @@ def test_desired_boundary_distinguishes_explicit_no_profile_from_omission() -> N
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=object(),
+        desired_bass_extension=object(),
+    )
+    two_authorities = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_bass_extension=None,
+        desired_profile=None,
     )
 
     assert explicit_none.allowed is True
-    assert omitted.allowed is False
-    assert omitted.issues[0]["code"] == "bass_extension_source_invalid"
-    assert invalid.allowed is False
-    assert invalid.issues[0]["code"] == "bass_extension_source_invalid"
+    for refusal in (omitted, invalid, two_authorities):
+        assert refusal.allowed is False
+        assert refusal.issues[0]["code"] == "bass_extension_source_invalid"
 
 
-def test_persisted_boundaries_reject_explicit_desired_profile_evidence(
+def test_persisted_boundaries_reject_explicit_desired_evidence(
     tmp_path: Path,
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
@@ -610,7 +659,7 @@ def test_persisted_boundaries_reject_explicit_desired_profile_evidence(
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
         staged_metadata_path=authority["staged_metadata_path"],
-        desired_profile=None,
+        desired_bass_extension=None,
     )
     candidate = classify_bass_extension_graph(
         topology,
@@ -1455,7 +1504,7 @@ def test_pending_intent_authorizes_only_recorded_graph_profile_pair(
     profile = _sealed_profile(topology, applied)
     predecessor = _active_baseline_yaml("mono", 2).encode()
     desired = _active_baseline_yaml(
-        "mono", 2, bass_extension_profile=profile
+        "mono", 2, bass_extension=_sealed_field()
     ).encode()
     authority = _persisted_boundary(
         tmp_path,
@@ -1523,7 +1572,7 @@ def test_pending_intent_refuses_unpaired_surrogate_without_raising(
     profile = _sealed_profile(topology, applied)
     predecessor = _active_baseline_yaml("mono", 2).encode()
     desired = _active_baseline_yaml(
-        "mono", 2, bass_extension_profile=profile
+        "mono", 2, bass_extension=_sealed_field()
     ).encode()
     authority = _persisted_boundary(
         tmp_path,
