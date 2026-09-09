@@ -194,7 +194,7 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
         if (reason) *reason = "channels out of range 2..=8";
         return 1;
     }
-    if (g->rate != 48000) {
+    if (g->rate != JTS_RING_RATE_HZ) {
         if (reason) *reason = "rate unsupported (only 48000)";
         return 1;
     }
@@ -244,8 +244,9 @@ static void *slot_ptr(const jts_ring_writer_t *w, uint32_t slot_index) {
 
 static void clamped_nanosleep(uint32_t period_frames) {
     // 1/4 period, clamped to <= 2 ms (the prototype poll; productization is a
-    // FUTEX_WAIT on futex_word). period_ns = period_frames / 48000 * 1e9.
-    uint64_t period_ns = (uint64_t)period_frames * 1000000000ull / 48000ull;
+    // FUTEX_WAIT on futex_word). period_ns = period_frames / rate * 1e9.
+    uint64_t period_ns =
+        (uint64_t)period_frames * 1000000000ull / (uint64_t)JTS_RING_RATE_HZ;
     uint64_t nap_ns = period_ns / 4;
     if (nap_ns > 2000000ull) nap_ns = 2000000ull; // 2 ms cap
     if (nap_ns == 0) nap_ns = 1000ull;            // never spin hot
@@ -847,9 +848,9 @@ static int acquire_writer_lock(const char *path) {
     //     arm". It deliberately never passes O_CREAT — see the fchmod heal
     //     above for why a wrong-mode first creator is unrecoverable;
     //   - the doctor check named above.
-    // The suffix and this function's lock-path construction are pinned against
-    // their Python spellings by tests/test_ring_slot_ceiling_pin.py, so a change
-    // to either fails CI rather than drifting. Changing WHEN this lock is taken
+    // The suffix is pinned against its Rust and Python spellings through the
+    // generated ring ABI (rust/jasper-ring/layout.json), so a change to either
+    // fails CI rather than drifting. Changing WHEN this lock is taken
     // or released still changes what that barrier means: keep the "held for the
     // life of the mapping" property, or fix both readers in the same commit.
     uint64_t deadline = jts_ring_monotonic_ns() +

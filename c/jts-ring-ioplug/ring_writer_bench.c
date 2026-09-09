@@ -50,7 +50,7 @@ static void fill_slot(int16_t *buf, size_t frames, uint32_t channels, pattern_t 
         int16_t v = 0;
         switch (pat) {
             case PAT_TONE: {
-                double t = (double)(frame_base + f) / 48000.0;
+                double t = (double)(frame_base + f) / (double)JTS_RING_RATE_HZ;
                 v = (int16_t)(peak * sin(2.0 * M_PI * freq * t));
                 break;
             }
@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
     if (amplitude < 0.0) amplitude = 0.0;
 
     jts_ring_geometry_t g = {
-        .rate = 48000,
+        .rate = JTS_RING_RATE_HZ,
         .channels = 2,
         .sample_format = JTS_RING_SAMPLE_FORMAT_S16LE,
         .period_frames = period,
@@ -144,9 +144,9 @@ int main(int argc, char **argv) {
     int16_t *buf = malloc(n * sizeof(int16_t));
     if (!buf) { jts_ring_writer_close(&w); return 1; }
 
-    uint64_t total_periods = (uint64_t)(seconds * 48000.0 / (double)period);
+    uint64_t total_periods = (uint64_t)(seconds * (double)JTS_RING_RATE_HZ / (double)period);
     // period duration in ns for the paced loop.
-    uint64_t period_ns = (uint64_t)period * 1000000000ull / 48000ull;
+    uint64_t period_ns = (uint64_t)period * 1000000000ull / (uint64_t)JTS_RING_RATE_HZ;
     uint64_t frame_base = 0;
     uint64_t next_deadline = jts_ring_monotonic_ns();
 

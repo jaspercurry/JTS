@@ -26,6 +26,7 @@ const runner = buildFunction(
   [
     { path: repoPath("deploy/assets/shared/js/escape.js") },
     { path: repoPath("deploy/assets/shared/js/http.js") },
+    { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",

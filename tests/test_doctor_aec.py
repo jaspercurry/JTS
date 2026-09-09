@@ -12,57 +12,56 @@ from unittest.mock import patch
 
 import pytest
 
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_SCHEMA_VERSION
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli.doctor import _evidence, _shared, aec
 from jasper.control import aec_endpoints
-from tests._aec_bridge_helpers import _rms_log_line
 
 from .doctor_test_support import _stub_unit_active_states
 
 
 # --------------------------------------------- AEC bridge output assessment
 
+# The fixed monotonic clock every fixture here shares with the doctor: the
+# snapshot's window timestamps are read against it.
+_NOW_MONOTONIC = 1_000.0
+_WINDOW_MONOTONIC_MS = 999_000.0
 
 
-def _chip_rms_log_line(
-    ref: int, near: int, primary: int, level_delta_db: float,
-    raw0: int | None = None,
-) -> str:
-    """Synthesize one `chip_aec rms over` line — the shape the bridge emits
-    instead of the AEC3 one when production chip AEC is armed. Legs are the
-    fixed 150/210 ASR beams (`jasper/cli/aec_bridge.py`). `raw0=None`
-    reproduces a journal from a build that predates the raw-mic-0 token."""
-    raw0_token = "" if raw0 is None else f" raw0={raw0}"
-    return (
-        f"2026-09-02 17:00:00,000 INFO jasper.aec_bridge: "
-        f"chip_aec rms over 5.0s: ref={ref} near=chip_aec_210:{near} "
-        f"primary=chip_aec_150:{primary} "
-        f"level_delta={level_delta_db:.1f} dB{raw0_token} "
-        f"(frames=1 ref_q=0 mic_q=0 "
-        f"ref_starve=0 ref_clip=0.00% out_clip=0.00%)"
-    )
+def _window(
+    *,
+    ref: int,
+    mic: int,
+    level_db: float | None = None,
+    chip: bool = False,
+    monotonic_ms: float = _WINDOW_MONOTONIC_MS,
+) -> dict:
+    """One entry of the bridge snapshot's `rms.windows` list."""
+    return {
+        "ref": ref,
+        "mic": mic,
+        "level_db": level_db,
+        "chip": chip,
+        "monotonic_ms": monotonic_ms,
+    }
 
 
-@pytest.mark.parametrize(
-    "raw0, expected_mic",
-    [(2_900, 2_900), (None, 2_400)],
-    ids=["raw0-present", "raw0-absent-falls-back-to-near"],
-)
-def test_chip_window_mic_is_the_raw_capture_channel(raw0, expected_mic):
-    """The chip `near` beam is already cancelled, so it understates the
-    near-end level the music gate was calibrated on. `raw0` carries the
-    uncancelled capture channel and must win when the bridge emits it."""
-    w = aec._parse_rms_window(
-        _chip_rms_log_line(
-            ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
-            raw0=raw0,
-        )
-    )
+def _chip_window(*, ref: int, mic: int) -> dict:
+    """A window from the chip-AEC profile: the bridge resolves the raw
+    capture channel into `mic` and publishes no attenuation, because every
+    chip beam is cancelled upstream of it."""
+    return _window(ref=ref, mic=mic, level_db=None, chip=True)
 
-    assert w is not None
-    assert (w.ref, w.mic, w.level_db, w.chip) == (
-        1_200, expected_mic, None, True,
+
+def _windows(entries: list[dict]) -> list:
+    """Fixture entries read back through the real snapshot reader."""
+    return aec._rms_windows_from_stats(
+        {
+            "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
+            "rms": {"windows": entries},
+        },
+        _NOW_MONOTONIC,
     )
 
 
@@ -97,20 +96,14 @@ def _outputd_reference_status(
     }
 
 
-def _silent_ref_journal(windows: int = 8) -> str:
+def _silent_ref_entries(count: int = 8) -> list[dict]:
     """Mic loud acoustically throughout, ref silent throughout: the PR #75
     dsnoop rate-lock signature, and the regression this check exists for."""
-    return "\n".join(
-        _rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4)
-        for _ in range(windows)
-    )
+    return [_window(ref=0, mic=2_500, level_db=-0.4)] * count
 
 
-def _healthy_journal(windows: int = 8) -> str:
-    return "\n".join(
-        _rms_log_line(ref=1200, mic=2400, aec=150, attn_db=-24.1)
-        for _ in range(windows)
-    )
+def _healthy_entries(count: int = 8) -> list[dict]:
+    return [_window(ref=1_200, mic=2_400, level_db=-24.1)] * count
 
 
 _REASON_BRIDGE_OUTPUT_NO_WINDOWS = aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
@@ -123,122 +116,72 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
 
 
 @pytest.mark.parametrize(
-    "journal, status, reason",
+    "entries, status, reason",
     [
-        # An active bridge logs a window every RMS_LOG_INTERVAL_SEC
+        # An active bridge publishes a window every RMS_LOG_INTERVAL_SEC
         # (jasper/cli/aec_bridge.py): none is missing evidence.
-        ("", "warn", _REASON_BRIDGE_OUTPUT_NO_WINDOWS),
+        ([], "warn", _REASON_BRIDGE_OUTPUT_NO_WINDOWS),
+        # A window older than the assessed span is history, not evidence:
+        # the stats writer republishes it long after the loop wedged.
+        (
+            [
+                _window(
+                    ref=1_200, mic=2_400, level_db=-24.1,
+                    monotonic_ms=_WINDOW_MONOTONIC_MS - 91_000,
+                )
+            ],
+            "warn",
+            _REASON_BRIDGE_OUTPUT_NO_WINDOWS,
+        ),
         # Mic and ref both quiet — the speaker has been idle.
         (
-            "\n".join(
-                _rms_log_line(ref=0, mic=200, aec=30, attn_db=-16.5)
-                for _ in range(10)
-            ),
+            [_window(ref=0, mic=200, level_db=-16.5)] * 10,
             "ok",
             _REASON_BRIDGE_OUTPUT_IDLE,
         ),
-        (_healthy_journal(), "ok", _REASON_BRIDGE_OUTPUT_HEALTHY_WORK),
-        (_silent_ref_journal(), "fail", _REASON_BRIDGE_OUTPUT_REF_SILENT),
+        (_healthy_entries(), "ok", _REASON_BRIDGE_OUTPUT_HEALTHY_WORK),
+        (_silent_ref_entries(), "fail", _REASON_BRIDGE_OUTPUT_REF_SILENT),
         # Exactly one healthy_ref window flips the silent-ref pattern from fail
         # to ok: if the ref chain proved itself once, it is trusted.
         (
-            _silent_ref_journal(7)
-            + "\n"
-            + _rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0),
+            _silent_ref_entries(7)
+            + [_window(ref=300, mic=400, level_db=-14.0)],
             "ok",
             _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
         ),
         # 1-4 silent-ref windows are below the 5-count alarm but still
         # surfaced, so an intermittent glitch is visible before it tips over.
         (
-            _healthy_journal(6)
-            + "\n"
-            + "\n".join(
-                _rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4)
-                for _ in range(3)
-            ),
+            _healthy_entries(6)
+            + [_window(ref=0, mic=2_200, level_db=-0.4)] * 3,
             "ok",
             _REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
         ),
+        # All-chip: the chip cancels upstream, so no window carries an
+        # attenuation to threshold and the ref evidence is the whole verdict.
+        (
+            [_chip_window(ref=1_200, mic=2_400)] * 8,
+            "ok",
+            aec.REASON_BRIDGE_OUTPUT_CHIP_ONLY,
+        ),
     ],
-    ids=["empty", "idle", "healthy", "silent-ref", "one-healthy-window",
-         "below-alarm"],
+    ids=["empty", "aged-out", "idle", "healthy", "silent-ref",
+         "one-healthy-window", "below-alarm", "chip-only"],
 )
-def test_assess_aec_bridge_output_verdicts(journal, status, reason):
-    r = aec._assess_aec_bridge_output(journal)
+def test_assess_aec_bridge_output_verdicts(entries, status, reason):
+    r = aec._assess_aec_bridge_output(_windows(entries))
 
     assert r.status == status
     assert r.reason == reason
 
 
-@pytest.mark.parametrize(
-    "journal",
-    [
-        "\n".join(
-            _rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)
-            for _ in range(8)
-        ),
-        "\n".join(
-            _chip_rms_log_line(
-                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
-            )
-            for _ in range(8)
-        ),
-    ],
-    ids=["aec3", "chip"],
-)
-def test_assess_aec_bridge_output_counts_windows_in_both_log_shapes(journal):
-    """The bridge emits a different RMS line under chip AEC. Both shapes must
-    reach the assessment as counted windows: a shape the parser drops makes
-    the check report on zero evidence."""
-    lines = journal.split("\n")
-
-    total_windows = [
-        w for w in map(aec._parse_rms_window, lines) if w is not None
-    ]
-
-    assert len(total_windows) == len(lines) > 0
-    assert aec._assess_aec_bridge_output(journal).status == "ok"
-
-
-def test_chip_windows_never_count_as_attenuation_evidence():
-    """A chip `level_delta` of -24 dB reads like deep AEC3 attenuation but is
-    the delta between two beams the chip already cancelled, so it must never
-    be counted as proof the canceller did work."""
-    journal = "\n".join(
-        _chip_rms_log_line(
-            ref=1_200, near=2_400, primary=150, level_delta_db=-24.1,
-        )
-        for _ in range(8)
-    )
-
-    windows = [aec._parse_rms_window(line) for line in journal.split("\n")]
-
-    assert all(
-        w is not None
-        and w.chip
-        and w.level_db is None
-        and w.ref == 1_200
-        and w.mic == 2_400
-        for w in windows
-    )
-    assert aec._assess_aec_bridge_output(journal).status == "ok"
-
-
 def test_one_chip_window_does_not_displace_the_aec3_assessment():
-    """A restart across a profile change leaves both shapes in one journal.
-    The chip summary is for an all-chip journal; a mixed one still owes the
-    AEC3 verdict over its AEC3 windows."""
-    journal = "\n".join(
-        [_rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)] * 17
-        + [
-            _chip_rms_log_line(
-                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
-            )
-        ]
+    """A restart across a profile change leaves both profiles' windows in one
+    snapshot. The chip summary is for an all-chip snapshot; a mixed one still
+    owes the AEC3 verdict over its AEC3 windows."""
+    result = aec._assess_aec_bridge_output(
+        _windows(_healthy_entries(17) + [_chip_window(ref=1_200, mic=2_400)])
     )
-
-    result = aec._assess_aec_bridge_output(journal)
 
     assert result.status == "ok"
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
@@ -247,17 +190,15 @@ def test_one_chip_window_does_not_displace_the_aec3_assessment():
 def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
     """The 2026-05-16 false positive: loud room voice pushes silent_ref over
     threshold while at least one window proves the ref chain alive."""
-    lines = [
-        _rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4),
-        _rms_log_line(ref=0, mic=2400, aec=2300, attn_db=-0.4),
-        _rms_log_line(ref=0, mic=2600, aec=2500, attn_db=-0.3),
-        _rms_log_line(ref=0, mic=2100, aec=2050, attn_db=-0.2),
-        _rms_log_line(ref=0, mic=2300, aec=2250, attn_db=-0.2),
-        _rms_log_line(ref=800, mic=2400, aec=200, attn_db=-21.6),
-        _rms_log_line(ref=1100, mic=2800, aec=180, attn_db=-23.8),
-    ]
-
-    r = aec._assess_aec_bridge_output("\n".join(lines))
+    r = aec._assess_aec_bridge_output(
+        _windows(
+            _silent_ref_entries(5)
+            + [
+                _window(ref=800, mic=2_400, level_db=-21.6),
+                _window(ref=1_100, mic=2_800, level_db=-23.8),
+            ]
+        )
+    )
 
     assert r.status == "ok"
     assert r.reason == aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
@@ -276,7 +217,7 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
     The guard relaxes only on positive evidence of an idle loopback, never on
     uncertainty."""
     r = aec._assess_aec_bridge_output(
-        _silent_ref_journal(), music_chain_active=music_chain_active
+        _windows(_silent_ref_entries()), music_chain_active=music_chain_active
     )
 
     assert r.status == status
@@ -340,7 +281,7 @@ def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
     can't-name-a-hop reason rather than a reason built from data it did not
     prove."""
     result = aec._assess_aec_bridge_output(
-        _silent_ref_journal(),
+        _windows(_silent_ref_entries()),
         bridge_stats=bridge_stats,
         outputd_status=outputd_status,
         now=1_000.0,
@@ -363,7 +304,7 @@ def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
     outputd_status,
 ):
     result = aec._assess_aec_bridge_output(
-        _silent_ref_journal(),
+        _windows(_silent_ref_entries()),
         bridge_stats=_bridge_reference_stats("outputd_udp"),
         outputd_status=outputd_status,
         now=1_000.0,
@@ -398,7 +339,7 @@ def test_bridge_reference_provenance_rejects_untrustworthy_timestamps(
 
 
 def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch):
-    _stage_bridge_journal(monkeypatch, _silent_ref_journal())
+    _stage_bridge_windows(monkeypatch, _silent_ref_entries())
     monkeypatch.setattr(
         aec,
         "_read_outputd_status_for_aec_reference",
@@ -416,7 +357,7 @@ def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch
 def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
     monkeypatch,
 ):
-    _stage_bridge_journal(monkeypatch, _healthy_journal())
+    _stage_bridge_windows(monkeypatch, _healthy_entries())
     monkeypatch.setattr(
         aec,
         "_read_outputd_status_for_aec_reference",
@@ -442,68 +383,26 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
-def test_check_aec_output_health_warns_when_journal_unreadable_after_stats_ok(
-    monkeypatch, tmp_path: Path,
-):
-    """A v4 stats assessment proving reference health only covers transport/
-    queue admission — the RMS/silence content half never ran when the
-    journal can't be read, so this stays a finding (`warn`, its own
-    reason), not `ok`."""
-    _install_reference_health_check_fakes(
-        monkeypatch, tmp_path, stats=_reference_input_stats(), journal="",
-    )
-
-    def fake_run(command, **_kwargs):
-        if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
-            return _fake_journalctl_failure()
-        raise AssertionError(f"unexpected command: {command!r}")
-
-    monkeypatch.setattr(aec, "_run", fake_run)
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "warn"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE
-
-
-def test_check_aec_output_health_skips_when_journal_unreadable_and_no_stats(
-    monkeypatch,
-):
-    """With no v4 stats snapshot at all, a journal read failure really is
-    the only evidence channel available — nothing was observed — skipped,
-    not warn."""
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
-    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
-    monkeypatch.setattr(
-        aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
-    )
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "skipped"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE
-
-
 def _fake_journalctl_failure() -> SimpleNamespace:
     """A failed ``journalctl`` invocation: non-zero exit, no stdout."""
     return SimpleNamespace(returncode=1, stdout="", stderr="journalctl: failed")
 
 
-def _stage_bridge_journal(monkeypatch, journal: str) -> None:
-    def fake_run(command, **_kwargs):
-        return SimpleNamespace(stdout=journal, stderr="", returncode=0)
+def _no_subprocess(*_args, **_kwargs):
+    """`check_aec_bridge_output_health` reads only the bridge's stats
+    snapshot, so any fork from it is a regression."""
+    pytest.fail("check_aec_bridge_output_health must fork no subprocess")
 
+
+def _stage_bridge_windows(monkeypatch, entries: list[dict]) -> None:
+    stats = _reference_input_stats(rms_entries=entries)
     monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    monkeypatch.setattr(aec, "_run", fake_run)
+    monkeypatch.setattr(aec, "_run", _no_subprocess)
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
-    monkeypatch.setattr(
-        aec,
-        "_read_bridge_stats_snapshot",
-        lambda: _bridge_reference_stats("outputd_udp", now=1_000.0),
-    )
-    monkeypatch.setattr(aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: stats)
+    monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
+    monkeypatch.setattr(aec.time, "monotonic", lambda: _NOW_MONOTONIC)
 
 
 def test_loopback_playback_active_reads_proc_status(tmp_path):
@@ -542,8 +441,9 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
 
 def _reference_input_stats(
     *,
-    now_monotonic: float = 1_000.0,
-    schema_version: int = 4,
+    now_monotonic: float = _NOW_MONOTONIC,
+    schema_version: int = 5,
+    rms_entries: list[dict] | None = None,
     snapshot_age_sec: float = 0.5,
     process_age_sec: float = 60.0,
     updated_epoch_sec: float = 50_000.0,
@@ -578,6 +478,7 @@ def _reference_input_stats(
             ) * 1000,
         },
         "counters": {"ref_starved_frames": ref_starved_frames},
+        "rms": {"windows": [] if rms_entries is None else rms_entries},
     }
 
 
@@ -596,7 +497,7 @@ def _active_outputd_reference_status(
     }
 
 
-def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
+def _assess_reference_stats(stats: dict, *, now_monotonic: float = _NOW_MONOTONIC):
     return aec._assess_aec_reference_input_from_stats(
         stats,
         now_monotonic,
@@ -634,6 +535,12 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
             },
             "ok", True, "REASON_REF_STARTUP_GRACE",
         ),
+        # The `reference_input` block is unchanged between schema 4 and 5, so
+        # a bridge that has not yet been restarted onto 5 keeps the verdict.
+        (
+            {"schema_version": 4, "last_frame_age_ms": 5_100},
+            "fail", False, "REASON_REF_RECEIVER_STALE",
+        ),
     ],
     ids=[
         "recent-receiver-ok",
@@ -642,6 +549,7 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
         "route-mismatch-wrong-udp-endpoint",
         "formerly-nonzero-now-frozen-fails",
         "young-process-explicit-grace",
+        "previous-schema-keeps-the-verdict",
     ],
 )
 def test_assess_reference_input_status_and_grace(
@@ -667,7 +575,7 @@ def test_assess_reference_input_status_and_grace(
     [
         {},
         _reference_input_stats(schema_version=3),
-        _reference_input_stats(schema_version=5),
+        _reference_input_stats(schema_version=6),
     ],
     ids=["missing-schema", "old-schema", "future-schema"],
 )
@@ -693,10 +601,22 @@ def test_assess_reference_input_undeclared_schema_preserves_fallback(stats):
             _reference_input_stats(snapshot_age_sec=-0.1),
             "REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE",
         ),
+        # A snapshot declaring the RMS-window schema and publishing no usable
+        # block is malformed, not a rolling deploy: skipping it would hide
+        # the silent-reference regression this check exists for.
+        (
+            {**_reference_input_stats(), "rms": {"windows": "malformed"}},
+            "REASON_REF_CONTRACT_MISSING_FIELD",
+        ),
+        (
+            {k: v for k, v in _reference_input_stats().items() if k != "rms"},
+            "REASON_REF_CONTRACT_MISSING_FIELD",
+        ),
     ],
-    ids=["malformed", "writer-stale", "future-monotonic"],
+    ids=["malformed", "writer-stale", "future-monotonic",
+         "rms-block-malformed", "rms-block-absent"],
 )
-def test_assess_reference_input_declared_v4_fails_closed(stats, reason):
+def test_assess_reference_input_declared_schema_fails_closed(stats, reason):
     assessed = _assess_reference_stats(stats)
 
     assert assessed is not None
@@ -865,7 +785,6 @@ def _install_reference_health_check_fakes(
     tmp_path: Path,
     *,
     stats: dict | str,
-    journal: str,
 ) -> list[list[str]]:
     stats_path = tmp_path / "aec_bridge_stats.json"
     stats_path.write_text(
@@ -876,7 +795,7 @@ def _install_reference_health_check_fakes(
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891")
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
-    monkeypatch.setattr(aec.time, "monotonic", lambda: 1_000.0)
+    monkeypatch.setattr(aec.time, "monotonic", lambda: _NOW_MONOTONIC)
     monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
     monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
@@ -892,56 +811,60 @@ def _install_reference_health_check_fakes(
         fake_outputd_status,
     )
 
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
-            return SimpleNamespace(returncode=0, stdout=journal, stderr="")
-        raise AssertionError(f"unexpected command: {command!r}")
-
-    monkeypatch.setattr(aec, "_run", fake_run)
+    monkeypatch.setattr(aec, "_run", _no_subprocess)
     return calls
 
 
 @pytest.mark.parametrize(
     (
-        "stats_kwargs", "journal", "loopback_active", "expected_status",
-        "expected_reason", "journalctl_called", "outputd_status_calls",
+        "stats", "loopback_active", "expected_status",
+        "expected_reason", "outputd_status_calls",
     ),
     [
         (
-            {"last_frame_age_ms": 8_000}, "", False,
-            "fail", "REASON_REF_RECEIVER_STALE", False, 1,
+            _reference_input_stats(last_frame_age_ms=8_000), False,
+            "fail", "REASON_REF_RECEIVER_STALE", 1,
         ),
         (
-            {"last_frame_age_ms": 8_000}, _healthy_journal(8), False,
-            "fail", "REASON_REF_RECEIVER_STALE", False, 1,
-        ),
-        (
-            {"schema_version": 3}, "", False,
-            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", True, 0,
-        ),
-        (
-            {"schema_version": 5}, "", False,
-            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", True, 0,
-        ),
-        (
-            {"last_frame_age_ms": 100}, _silent_ref_journal(5), True,
-            "fail", "REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED", True, 1,
-        ),
-        (
-            {"last_frame_age_ms": 100},
-            _silent_ref_journal(5) + "\n" + _rms_log_line(
-                ref=900, mic=2_500, aec=180, attn_db=-22.8
+            _reference_input_stats(
+                last_frame_age_ms=8_000, rms_entries=_healthy_entries(8),
             ),
-            True,
-            "ok", "REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY", True, 0,
+            False, "fail", "REASON_REF_RECEIVER_STALE", 1,
+        ),
+        # No readable snapshot at all: the bridge is running, so its silence
+        # is missing evidence rather than a bridge predating the windows.
+        ("not-json", False, "warn", "REASON_BRIDGE_OUTPUT_WINDOWS_UNREADABLE", 0),
+        (
+            _reference_input_stats(schema_version=4), False,
+            "skipped", "REASON_BRIDGE_OUTPUT_WINDOWS_UNPUBLISHED", 0,
+        ),
+        # An unknown-future schema forfeits the reference contract but its
+        # windows still read, so the content assessment keeps its verdict.
+        (
+            _reference_input_stats(schema_version=6), False,
+            "warn", "REASON_BRIDGE_OUTPUT_NO_WINDOWS", 0,
+        ),
+        (
+            _reference_input_stats(
+                last_frame_age_ms=100, rms_entries=_silent_ref_entries(5),
+            ),
+            True, "fail", "REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED", 1,
+        ),
+        (
+            _reference_input_stats(
+                last_frame_age_ms=100,
+                rms_entries=_silent_ref_entries(5)
+                + [_window(ref=900, mic=2_500, level_db=-22.8)],
+            ),
+            True, "ok", "REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY", 0,
         ),
     ],
     ids=[
         "usb-invisible-to-loopback",
         "rms-cannot-override-stale-receiver",
-        "undeclared-schema-old",
-        "undeclared-schema-future",
+        "no-snapshot",
+        "previous-schema-publishes-no-windows",
+        "future-schema-keeps-window-content",
         "fresh-receiver-silent-content-fails",
         "fresh-receiver-one-healthy-window-ok",
     ],
@@ -949,25 +872,23 @@ def _install_reference_health_check_fakes(
 def test_check_reference_freshness_and_content(
     monkeypatch,
     tmp_path: Path,
-    stats_kwargs,
-    journal,
+    stats,
     loopback_active,
     expected_status,
     expected_reason,
-    journalctl_called,
     outputd_status_calls,
 ):
-    """The exact-v4 stats contract short-circuits journal content entirely
-    and can never be overridden by healthy RMS history (a stale receiver
-    fails even facing 8 healthy windows); an undeclared schema falls back to
-    the journal; and a fresh receiver still runs journal-content checks,
-    where a silent reference fails even with sustained mic activity but one
-    healthy window proves the reference chain works."""
+    """The stats contract short-circuits the window content entirely and can
+    never be overridden by healthy RMS history (a stale receiver fails even
+    facing 8 healthy windows); an unreadable snapshot and a bridge predating
+    the published windows separate missing evidence from a rolling deploy;
+    and a fresh receiver still runs the content checks, where a silent
+    reference fails even with sustained mic activity but one healthy window
+    proves the reference chain works."""
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(**stats_kwargs),
-        journal=journal,
+        stats=stats,
     )
     monkeypatch.setattr(
         aec, "_loopback_playback_active", lambda: loopback_active
@@ -977,7 +898,6 @@ def test_check_reference_freshness_and_content(
 
     assert result.status == expected_status
     assert result.reason == getattr(aec, expected_reason)
-    assert any(c[0] == "journalctl" for c in calls) == journalctl_called
     assert sum(c[0] == "outputd-status" for c in calls) == outputd_status_calls
 
 
@@ -993,7 +913,7 @@ def test_check_reference_freshness_and_content(
     ],
     ids=["receiver-stale", "writer-stale"],
 )
-def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
+def test_check_declared_schema_never_ages_from_fail_into_a_skip(
     monkeypatch,
     tmp_path: Path,
     snapshot_age_sec,
@@ -1006,14 +926,12 @@ def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
             snapshot_age_sec=snapshot_age_sec,
             last_frame_age_ms=100,
         ),
-        journal="",
     )
 
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
     assert result.reason == getattr(aec, reason)
-    assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
@@ -1027,39 +945,35 @@ def test_check_malformed_declared_v4_fails_without_row_traceback(
         monkeypatch,
         tmp_path,
         stats=stats,
-        journal="",
     )
 
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
     assert result.reason == aec.REASON_REF_CONTRACT_MISSING_FIELD
-    assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
-def test_check_oversized_json_integer_preserves_fallback_without_traceback(
+def test_check_oversized_json_integer_fails_without_a_row_traceback(
     monkeypatch,
     tmp_path: Path,
 ):
-    oversized = (
-        '{"schema_version":4,"reference_input":'
-        '{"snapshot_monotonic_ms":' + ("9" * 5_000) + "}}"
-    )
+    """A JSON-valid but absurd integer is an untrustworthy snapshot: the row
+    fails closed, never with a traceback."""
+    stats = _reference_input_stats()
+    stats["reference_input"]["snapshot_monotonic_ms"] = 10**4_000
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=oversized,
-        journal="",
+        stats=stats,
     )
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
 
     result = aec.check_aec_bridge_output_health()
 
-    assert result.status == "warn"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-    assert any(command[0] == "journalctl" for command in calls)
-    assert not any(command[0] == "outputd-status" for command in calls)
+    assert result.status == "fail"
+    assert result.reason == aec.REASON_REF_CONTRACT_INVALID_NUMERIC
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
 def test_applied_reference_source_reads_the_v4_receiver_not_the_legacy_plan():
@@ -1129,7 +1043,6 @@ def test_stale_env_ref_source_still_runs_the_authoritative_check(
         monkeypatch,
         tmp_path,
         stats=_reference_input_stats(last_frame_age_ms=8_000),
-        journal="",
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
@@ -1138,7 +1051,6 @@ def test_stale_env_ref_source_still_runs_the_authoritative_check(
 
     assert result.status == "fail"
     assert result.reason == aec.REASON_REF_RECEIVER_STALE
-    assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
@@ -1155,45 +1067,40 @@ def test_env_route_still_reaches_the_receiver_identity_fail(
     """
     stats = _reference_input_stats()
     stats["reference_input"]["source"] = "alsa"
-    calls = _install_reference_health_check_fakes(
+    _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
         stats=stats,
-        journal="",
     )
 
     result = aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
     assert result.reason == aec.REASON_REF_ROUTE_MISMATCH
-    assert not any(command[0] == "journalctl" for command in calls)
 
 
 def test_stale_env_inside_startup_grace_converges_to_ok(
     monkeypatch,
     tmp_path: Path,
 ):
-    """The ONE case where opening the gate turns a journal FAIL into an OK.
+    """The ONE case where opening the gate turns a content FAIL into an OK.
 
-    A bridge restarted seconds ago, a stale `alsa` env, and a journal
-    window still holding the PREDECESSOR's silent-ref windows: the
-    env-gated path FAILed on those windows, the OR path returns the
-    assessor's <=10 s startup grace OK *before* the journal is read.
+    A bridge restarted seconds ago, a stale `alsa` env, and silent-ref
+    windows still in the snapshot: the env-gated path FAILed on those
+    windows, the OR path returns the assessor's <=10 s startup grace OK
+    *before* the windows are assessed.
 
     That is convergence, not masking, and this pins it as intended: the
-    grace exists precisely so a previous process's windows cannot indict
-    this one, and an env-says-`outputd_udp` box has always taken this
-    same path. Its sibling below asserts the self-correction.
+    grace exists precisely so windows older than this process cannot indict
+    it, and an env-says-`outputd_udp` box has always taken this same path.
+    Its sibling below asserts the self-correction.
     """
-    predecessor_silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(8)
-    )
-    calls = _install_reference_health_check_fakes(
+    _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(process_age_sec=3.0),
-        journal=predecessor_silent_ref,
+        stats=_reference_input_stats(
+            process_age_sec=3.0, rms_entries=_silent_ref_entries(8),
+        ),
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
@@ -1202,7 +1109,6 @@ def test_stale_env_inside_startup_grace_converges_to_ok(
 
     assert result.status == "ok"
     assert result.reason == aec.REASON_REF_STARTUP_GRACE
-    assert not any(command[0] == "journalctl" for command in calls)
 
 
 def test_the_same_box_past_the_startup_grace_fails(
@@ -1212,18 +1118,15 @@ def test_the_same_box_past_the_startup_grace_fails(
     """The sibling: identical inputs, only `process_age` clears the grace.
 
     Proves the grace OK above is bounded and self-correcting rather than
-    a permanent downgrade — the same silent-ref journal now reaches the
-    FAIL branch.
+    a permanent downgrade — the same silent-ref windows now reach the FAIL
+    branch.
     """
-    predecessor_silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(8)
-    )
-    calls = _install_reference_health_check_fakes(
+    _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(process_age_sec=60.0),
-        journal=predecessor_silent_ref,
+        stats=_reference_input_stats(
+            process_age_sec=60.0, rms_entries=_silent_ref_entries(8),
+        ),
     )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
@@ -1232,36 +1135,6 @@ def test_the_same_box_past_the_startup_grace_fails(
 
     assert result.status == "fail"
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
-    assert any(command[0] == "journalctl" for command in calls)
-
-
-def test_neither_route_outputd_keeps_the_journal_fallback(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """Both ends off the outputd route → unchanged legacy journal policy.
-
-    This is what stops the OR from becoming "always enforce": a box neither
-    configured for nor running the outputd reference keeps the pre-existing
-    fallback and never pays for an outputd STATUS read.
-    """
-    stats = _reference_input_stats()
-    stats["reference_input"]["source"] = "alsa"
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=stats,
-        journal="",
-    )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "warn"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-    assert any(command[0] == "journalctl" for command in calls)
-    assert not any(command[0] == "outputd-status" for command in calls)
 
 
 @pytest.mark.parametrize(
@@ -1274,18 +1147,14 @@ def test_check_fresh_v4_journal_failure_uses_monotonic_identity(
     tmp_path: Path,
     updated_epoch_sec,
 ):
-    silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(5)
-    )
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
         stats=_reference_input_stats(
             updated_epoch_sec=updated_epoch_sec,
             last_frame_age_ms=100,
+            rms_entries=_silent_ref_entries(5),
         ),
-        journal=silent_ref,
     )
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
@@ -1300,19 +1169,16 @@ def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
     monkeypatch,
     tmp_path: Path,
 ):
-    stats = _reference_input_stats(last_frame_age_ms=100)
+    stats = _reference_input_stats(
+        last_frame_age_ms=100, rms_entries=_silent_ref_entries(5),
+    )
     stats["active_capture_plan"]["mic_reference_identity"] = {
         "ref_source": "alsa",
     }
-    silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(5)
-    )
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
         stats=stats,
-        journal=silent_ref,
     )
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
@@ -1337,20 +1203,21 @@ def test_check_legacy_non_outputd_fallback_skips_status(
     tmp_path: Path,
     legacy_source,
 ):
-    stats = _reference_input_stats(schema_version=3)
+    """A box neither configured for nor running the outputd reference keeps
+    the window-content policy and never pays for an outputd STATUS read —
+    what stops the OR gate in `check_aec_bridge_output_health` from becoming
+    "always enforce"."""
+    stats = _reference_input_stats(rms_entries=_silent_ref_entries(5))
+    stats["reference_input"]["source"] = legacy_source
     stats["active_capture_plan"]["mic_reference_identity"] = {
         "ref_source": legacy_source,
     }
-    silent_ref = "\n".join(
-        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
-        for _ in range(5)
-    )
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
         stats=stats,
-        journal=silent_ref,
     )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
     result = aec.check_aec_bridge_output_health()

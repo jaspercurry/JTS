@@ -65,7 +65,9 @@ def test_verb_vocabulary_is_closed_and_complete():
     assert restart_broker.ALLOWED_VERBS == frozenset({
         "restart", "try-restart", "start", "stop",
         "enable", "enable-now", "disable-now", "reset-failed",
+        "reboot", "poweroff",
     })
+    assert restart_broker.POWER_VERBS == frozenset({"reboot", "poweroff"})
 
 
 @pytest.mark.parametrize("verb,no_block,expected", [
@@ -182,6 +184,15 @@ def test_local_source_registry_units_are_broker_authorized(verb):
 class _FakeProc:
     returncode: int = 0
     stderr: str = ""
+
+
+def _record_popen(monkeypatch) -> list[list[str]]:
+    """Capture the argv of every detached spawn instead of running it."""
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda argv, **kw: spawned.append(list(argv)),
+    )
+    return spawned
 
 
 @pytest.fixture
@@ -511,6 +522,49 @@ def test_self_restart_is_queued_after_other_units(broker, monkeypatch):
         "--no-block",
         "jasper-control.service",
     ]]
+
+
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_power_verbs_run_unit_less_and_detached(broker, monkeypatch, verb):
+    """reboot/poweroff take the box down, so the broker spawns them detached
+    and answers `queued_unconfirmed` — it cannot outlive its own systemctl to
+    report a verdict."""
+    sock_path, calls, _ = broker
+    spawned = _record_popen(monkeypatch)
+    # The peer is this test process; grant it explicitly rather than relying
+    # on the runner's own uid being root or jasper-control.
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (os.getuid(),))
+
+    resp = _request_restart_retrying_transient_failures(
+        verb=verb, reason="dashboard", socket_path=sock_path,
+    )
+
+    assert spawned == [["systemctl", verb]]
+    assert calls == []  # never the blocking, waited-on path
+    assert resp["ok"] is True
+    assert resp["status"] == "queued_unconfirmed"
+    assert resp["units"] == []
+
+
+def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
+    """Every broker client uid may ask for a unit action; only root and
+    jasper-control may ask for a power verb. polkit grants login1
+    reboot/power-off to jasper-control alone, so jasper-web/mux/voice/input
+    must not reach it through the socket."""
+    sock_path, calls, _ = broker
+    spawned = _record_popen(monkeypatch)
+    # Any uid but the caller's: the peer is neither root nor jasper-control.
+    monkeypatch.setattr(
+        restart_broker, "_power_verb_uids", lambda: (os.getuid() + 1,),
+    )
+
+    resp = _request_restart_retrying_transient_failures(
+        verb="reboot", reason="dashboard", socket_path=sock_path,
+    )
+
+    assert resp["ok"] is False
+    assert spawned == []
+    assert calls == []
 
 
 def test_enable_now_maps_through_broker(broker):
@@ -1397,6 +1451,47 @@ def test_manage_units_no_fallback_when_non_root(tmp_path, monkeypatch):
     assert ran == []  # NO direct systemctl when non-root
 
 
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_manage_units_power_verb_fallback_gated_like_the_broker(
+    tmp_path, monkeypatch, verb,
+):
+    """Broker unreachable + a caller that is neither root nor jasper-control
+    -> refused, never a direct `systemctl reboot`/`poweroff`. The dead-broker
+    fallback must refuse exactly what the broker's own peer-uid check would
+    refuse (test_power_verb_is_refused_from_a_non_control_peer) -- a power
+    verb alone must not arm it for every non-root process."""
+    monkeypatch.setattr(
+        restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 1234)
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (0, 5678))
+    spawned = _record_popen(monkeypatch)
+
+    resp = restart_broker.manage_units(verb=verb, timeout=0.5)
+
+    assert resp["ok"] is False
+    assert spawned == []
+
+
+@pytest.mark.parametrize("verb", ["reboot", "poweroff"])
+def test_manage_units_power_verb_fallback_armed_for_jasper_control(
+    tmp_path, monkeypatch, verb,
+):
+    """The one non-root caller polkit actually grants login1
+    reboot/power-off to keeps its dead-broker fallback."""
+    monkeypatch.setattr(
+        restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(restart_broker, "_power_verb_uids", lambda: (0, 4242))
+    spawned = _record_popen(monkeypatch)
+
+    resp = restart_broker.manage_units(verb=verb, timeout=0.5)
+
+    assert resp["ok"] is True
+    assert spawned == [["systemctl", verb]]
+
+
 @pytest.mark.parametrize("call", ["request_restart", "manage_units"])
 def test_default_socket_path_is_resolved_at_call_time(call, tmp_path, monkeypatch):
     """Both client entry points must read DEFAULT_SOCKET_PATH when called, not
@@ -1453,28 +1548,32 @@ def test_default_socket_path_is_resolved_at_call_time(call, tmp_path, monkeypatc
         listener.close()
 
 
-def test_root_fallback_rejects_an_unknown_verb_without_running_systemctl(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("verb", [
+    "exec",    # outside the closed vocabulary
+    "reboot",  # in it, but a power verb never takes a unit
+])
+def test_root_fallback_refuses_what_the_broker_would_refuse(
+    tmp_path, monkeypatch, verb,
 ):
-    """The closed verb vocabulary must hold on the fallback path too.
+    """The broker's request validation must hold on the fallback path too.
 
-    The broker's own rejection is covered by
-    test_unknown_verb_rejected_without_running_anything, but _direct_systemctl
-    runs as ROOT and enforces the vocabulary separately. Mutation testing
-    (neutering its `verb not in ALLOWED_VERBS` guard) left the whole file
-    green, so nothing pinned it.
+    The broker's own rejections are covered by
+    test_unknown_verb_rejected_without_running_anything and
+    test_power_verbs_run_unit_less_and_detached, but _direct_systemctl runs as
+    ROOT and enforces them separately. Mutation testing (neutering its
+    `verb not in ALLOWED_VERBS` guard) left the whole file green, so nothing
+    pinned it.
     """
     monkeypatch.setattr(
         restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
     )
     monkeypatch.setattr(os, "geteuid", lambda: 0)  # root: fallback is armed
-    ran: list[list[str]] = []
+    ran = _record_popen(monkeypatch)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(list(argv)))
 
-    resp = restart_broker.manage_units("jasper-voice", verb="exec", timeout=0.5)
+    resp = restart_broker.manage_units("jasper-voice", verb=verb, timeout=0.5)
 
     assert resp["ok"] is False
-    assert "unknown verb" in resp["error"]
     assert ran == []  # never reached systemctl
 
 

@@ -49,7 +49,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0124](0124-one-rate-loop-and-the-summer-never-merges-with-the-reference-publisher.md) | One rate loop, and the summer never merges with the reference publisher | accepted |
 | [0125](0125-leader-tts-and-the-follower-cue-inject-pre-crossover.md) | Leader TTS and the follower fail-closed cue inject pre-crossover | accepted |
 | [0126](0126-a-subwoofer-crossover-executes-on-the-receiver.md) | A subwoofer's crossover executes on the receiver, on the one shared stereo stream | superseded by 0236 |
-| [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | accepted |
+| [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | superseded by 0269 |
 | [0169](0169-the-outputd-ordering-guard-compares-recorded-instants-not-computed-ages.md) | the outputd ordering guard compares recorded instants, not computed ages | accepted |
 | [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | amended by 0264 |
 | [0178](0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md) | Every shape the ring cannot serve parks under its own name | amended by 0187 |
@@ -61,6 +61,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0261](0261-the-grouping-and-dac-content-rings-are-128-frame-16-slot-s16-and-governed.md) | The grouping and dac-content rings are 128-frame, 16-slot, S16, and governed | accepted |
 | [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | accepted |
 | [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
+| [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | accepted |
 
 ## Volume & hearing
 
@@ -156,11 +157,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
 | [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | accepted |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
-| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | accepted |
+| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
 | [0240](0240-mic-absence-reason-is-a-code-vocabulary.md) | The voice-input-absent marker's `reason=` is a closed code vocabulary; `detail=` carries the prose | accepted |
 | [0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md) | The server-VAD path is deleted, not kept as a knob | accepted |
 | [0246](0246-arbitration-is-the-whole-of-peering.md) | Arbitration is the whole of peering | accepted |
+| [0267](0267-the-aec-bridge-restart-ladder-matches-controls.md) | The AEC bridge's restart ladder matches control's | accepted |
 
 ## Control plane, state & observability
 
@@ -184,7 +186,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0120](0120-one-management-frontend-gated-by-capability.md) | One management frontend for every install profile, gated by capability | accepted |
 | [0171](0171-rarely-viewed-dashboard-probes-run-in-short-lived-child-processes.md) | Rarely-viewed dashboard probes run in short-lived child processes | accepted |
 | [0187](0187-park-presentation-is-the-system-screen-only.md) | Park presentation is the system screen, not a banner | accepted |
-| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | accepted |
+| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0268 |
+| [0268](0268-the-conf-parity-exception-set-lives-in-the-test.md) | The conf-parity exception set lives in the test | accepted |
 
 ## Tuning & measurement
 

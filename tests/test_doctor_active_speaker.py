@@ -19,7 +19,7 @@ from jasper.cli.doctor import active_speaker
 from jasper.cli.doctor._evidence import evidence
 from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
 
-from .test_doctor_audio import _point_at_config
+from .test_doctor_audio_runtime_camilla import _point_at_config
 
 
 # ------------------------------------------------- active speaker runtime graph

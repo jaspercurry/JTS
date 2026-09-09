@@ -66,8 +66,8 @@ RING_B_CONTENT_FILE = os.path.join(RING_SHM_DIR, "content.ring")
 RING_ACTIVE_CONTENT_FILE = os.path.join(RING_SHM_DIR, "active-content.ring")
 # The adjacent lock file whose EXCLUSIVE ``flock`` a C ioplug WRITER holds for
 # the life of its mapping — ``JTS_RING_WRITER_LOCK_SUFFIX`` in
-# ``c/jts-ring-ioplug/jts_ring_shm.h``, pinned against that header by
-# ``tests/test_ring_slot_ceiling_pin.py`` so the two spellings cannot drift.
+# ``c/jts-ring-ioplug/jts_ring_shm.h``, pinned against the generated ring ABI
+# (``rust/jasper-ring/layout.json``) at both ends so they cannot drift.
 # Python is a reader of this lock (the grouping reconciler's active-content
 # release barrier, and the doctor's writer-exclusivity guard).
 #
@@ -92,8 +92,9 @@ def ring_writer_lock_path(ring_path: str) -> str:
 
 
 # The conf.d PCM block name for Ring A (fan-in's program ring). ``n_slots`` under
-# this block is the drift axis with ``JASPER_FANIN_RING_SLOTS`` (Ring B is the
-# ``jts_ring_playback`` block, paired with ``JASPER_OUTPUTD_SHM_RING_SLOTS``).
+# this block is the drift axis with ``JASPER_FANIN_RING_SLOTS``; Ring B is the
+# ``jts_ring_playback`` block, whose reader takes the depth from the shared
+# crate (``jasper_ring::RING_SLOTS``) rather than an env.
 RING_A_CONF_PCM = "jts_ring_capture"
 RING_B_CONF_PCM = "jts_ring_playback"
 RING_ACTIVE_CONF_PCM = RING_ACTIVE_PLAYBACK_DEVICE
@@ -119,6 +120,29 @@ RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 # rather than relying on an omitted key.
 RING_CONF_DEFAULT_FORMAT = "S16_LE"
 RING_CONF_DEFAULT_CHANNELS = 2
+
+# The depth :func:`render_ring_conf_wire` writes into the outputd-read blocks
+# (:data:`RING_CONF_N_SLOTS_PCMS`): ``jasper_ring::RING_SLOTS``, spelled as a
+# literal because the Pi cannot read ``rust/jasper-ring/layout.json``;
+# ``tests/test_ring_assets`` pins the two equal. outputd takes the depth from
+# the crate rather than an env, so rendering it here is what stops a
+# hand-edited conf.d from declaring a depth outputd never builds. The render
+# only runs on a box with a declared latency floor (:func:`ring_conf_wire_report`
+# skips ``no_declared_floor`` first); elsewhere the backstop is outputd's
+# fail-loud attach.
+RING_CONF_N_SLOTS = 2
+
+# The blocks :func:`render_ring_conf_wire` writes :data:`RING_CONF_N_SLOTS`
+# into: the two whose READER is jasper-outputd, which takes the ring depth
+# from ``jasper_ring::RING_SLOTS`` rather than an env. ``jts_ring_capture``
+# (Ring A) is deliberately excluded — its writer, jasper-fanin, still creates
+# the ring from the operator-tunable ``JASPER_FANIN_RING_SLOTS`` env
+# (``rust/jasper-fanin/src/config.rs``, ``.env.example`` documents 2..16 "must
+# match the conf.d n_slots"), and rendering this constant into that block
+# would shear a coherent operator override (env + conf.d) on the next
+# hardware reconcile. Render Ring A's n_slots too once jasper-fanin reads
+# ``jasper_ring::RING_SLOTS`` and ``JASPER_FANIN_RING_SLOTS`` is gone.
+RING_CONF_N_SLOTS_PCMS = (RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 
 
 def ring_ioplug_so_path(*, plugin_dir: str | None = None) -> str:
@@ -705,7 +729,7 @@ def _render_block_field(
     pattern: re.Pattern[str],
     key: str,
     value: str,
-    default: str,
+    default: str | None,
 ) -> str:
     """Return ``body`` with ``key`` declaring ``value``.
 
@@ -720,6 +744,10 @@ def _render_block_field(
       anchored after the block's ``n_slots`` (else ``period_frames``) line so
       the geometry keys stay together and the indentation is copied from the
       anchor.
+
+    ``default=None`` means the key has no absent-spelling this renderer will
+    accept and is always written — the shape :func:`ring_conf_n_slots` already
+    reads, where an omitted key is indeterminate rather than a declaration.
 
     A present key is never DELETED when it returns to the default: rewriting it
     to the explicit default converges just as exactly.
@@ -816,6 +844,17 @@ def render_ring_conf_wire(
       rule is "only from a DECLARED
       :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this function never
       consults the DAC registry itself.
+    - ``n_slots`` — only the outputd-read blocks
+      (:data:`RING_CONF_N_SLOTS_PCMS`: ``jts_ring_playback`` and
+      ``jts_ring_active_playback``), one shared value,
+      :data:`RING_CONF_N_SLOTS`. Not taken from ``wire``: the depth is a
+      compile-time property of the crate outputd links, not a per-box
+      resolution, and rendering it there is what stops a hand-edited conf.d
+      from declaring a depth outputd never builds. ``jts_ring_capture``
+      (Ring A) is left exactly as it is on disk: its writer, jasper-fanin,
+      still creates the ring from the operator-tunable
+      ``JASPER_FANIN_RING_SLOTS`` env, so rendering this constant there would
+      shear a coherent operator override. See :data:`RING_CONF_N_SLOTS_PCMS`.
     - ``format`` — every block, one shared value. The rings carry one wire
       format.
     - ``channels`` — PER BLOCK. ``jts_ring_capture`` (Ring A) declares
@@ -941,9 +980,18 @@ def render_ring_conf_wire(
                 "redeploy to reinstall it"
             )
         body = rendered[span[0] : span[1]]
-        # Channels first, then format: each insert anchors immediately after
+        # Slots first — it is the anchor the other two insert after — then
+        # channels, then format: each insert lands immediately after
         # ``n_slots``, so rendering in reverse leaves the file reading
         # period_frames / n_slots / format / channels in every block.
+        if pcm_name in RING_CONF_N_SLOTS_PCMS:
+            body = _render_block_field(
+                body,
+                pattern=_RING_CONF_N_SLOTS_RE,
+                key="n_slots",
+                value=str(RING_CONF_N_SLOTS),
+                default=None,
+            )
         body = _render_block_field(
             body,
             pattern=_RING_CONF_CHANNELS_RE,
@@ -1055,8 +1103,8 @@ RING_LIVENESS_TIMEOUT_NS = 2_000_000_000
 # The ``sample_format`` header field's wire values (layout.rs
 # SAMPLE_FORMAT_S16LE / SAMPLE_FORMAT_S32LE, mirrored by the C header's
 # JTS_RING_SAMPLE_FORMAT_*). These ids are written into the shared header and
-# compared field-by-field on attach, so they are a wire contract pinned to the
-# literals 1 and 2 by ``tests/test_ring_slot_ceiling_pin.py``.
+# compared field-by-field on attach, so they are a wire contract pinned against
+# the generated ring ABI by ``tests/test_ring_assets.py``.
 RING_SAMPLE_FORMAT_S16LE = 1
 RING_SAMPLE_FORMAT_S32LE = 2
 # Header sample_format id -> the ALSA format token the conf.d and the emitters

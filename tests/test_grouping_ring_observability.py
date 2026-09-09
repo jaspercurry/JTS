@@ -89,7 +89,7 @@ def _header(
 
     Using ``ring_assets``' offsets rather than literals keeps this helper honest
     about one thing only — the VALUES — and leaves the offsets themselves to the
-    cross-language pin in ``tests/test_ring_slot_ceiling_pin.py``.
+    cross-language pin in ``tests/test_ring_assets.py``.
     """
     head = bytearray(128)
     struct.pack_into("<I", head, ring_assets._RING_OFF_MAGIC, magic)

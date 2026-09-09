@@ -353,7 +353,7 @@ mod tests {
     /// The lane's wire at test scale: S16LE stereo, `TEST_PERIOD_FRAMES` slots.
     fn ring_geometry(period_frames: u32, n_slots: u32) -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: jasper_ring::RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames,

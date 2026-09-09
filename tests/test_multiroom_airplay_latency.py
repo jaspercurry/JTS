@@ -5,9 +5,11 @@
 """Bonded-leader AirPlay latency-fit observability (the "Stage D" gap).
 
 Pins the pure fit math, the fail-soft journal reader, the /state snapshot
-gate, the grouping doctor check, and the AirPlay-health classification of
-shairport's authoritative "too short" warning. Hardware-free: the journal
-edge and config loader are injected.
+gate, the doctor's fit-finding (folded into
+``jasper.cli.doctor.grouping.check_grouping_leader_pipe`` —
+``test_doctor_grouping.py`` pins that row end to end), and the AirPlay-health
+classification of shairport's authoritative "too short" warning.
+Hardware-free: the journal edge and config loader are injected.
 """
 from __future__ import annotations
 
@@ -296,43 +298,36 @@ def test_with_airplay_latency_fit_passes_through_non_dict():
     assert al.with_airplay_latency_fit(None) is None
 
 
-# ---------- doctor check ----------
+# ---------- doctor fit-finding ----------
+#
+# The active-leader gate itself (skip when not a bonded leader) is
+# ``check_grouping_leader_pipe``'s own concern now — this finding assumes an
+# already-confirmed leader and is pinned as an isolated function of
+# (buffer_ms, notified frames), same as ``assess_fit`` above.
 
 
-def _patch_doctor(monkeypatch, cfg, frames):
+def test_doctor_finding_fits_when_budget_is_the_default_free_regime(monkeypatch):
     import jasper.multiroom.airplay_latency as alm
-    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import _airplay_latency_fit_finding
 
-    monkeypatch.setattr(cfgmod, "load_config", lambda: cfg)
-    monkeypatch.setattr(alm, "read_notified_frames", lambda *a, **k: frames)
+    monkeypatch.setattr(alm, "read_notified_frames", lambda *a, **k: None)
+
+    detail, reason = _airplay_latency_fit_finding(_cfg(buffer_ms=400))
+
+    assert reason == ""
+    assert detail
 
 
-def test_doctor_skips_when_not_a_bonded_leader(monkeypatch):
+def test_doctor_finding_names_the_tight_reason_when_budget_is_too_short(monkeypatch):
+    import jasper.multiroom.airplay_latency as alm
     from jasper.cli.doctor import grouping as doctor_grouping
-    from jasper.cli.doctor.grouping import check_grouping_airplay_latency
+    from jasper.cli.doctor.grouping import _airplay_latency_fit_finding
 
-    _patch_doctor(monkeypatch, _cfg(enabled=False, role=""), frames=None)
-    res = check_grouping_airplay_latency()
-    assert res.status == "skipped"
-    assert res.reason == doctor_grouping.REASON_NOT_APPLICABLE
+    monkeypatch.setattr(alm, "read_notified_frames", lambda *a, **k: 5000)
 
+    detail, reason = _airplay_latency_fit_finding(_cfg(buffer_ms=400))
 
-def test_doctor_ok_when_budget_fits(monkeypatch):
-    from jasper.cli.doctor.grouping import check_grouping_airplay_latency
-
-    _patch_doctor(monkeypatch, _cfg(buffer_ms=400), frames=None)
-    res = check_grouping_airplay_latency()
-    assert res.status == "ok"
-
-
-def test_doctor_ok_when_budget_too_short(monkeypatch):
-    from jasper.cli.doctor import grouping as doctor_grouping
-    from jasper.cli.doctor.grouping import check_grouping_airplay_latency
-
-    _patch_doctor(monkeypatch, _cfg(buffer_ms=400), frames=5000)
-    res = check_grouping_airplay_latency()
-    assert res.status == "ok"
-    assert res.reason == doctor_grouping.REASON_AIRPLAY_LATENCY_TIGHT
+    assert reason == doctor_grouping.REASON_AIRPLAY_LATENCY_TIGHT
     # The s->ms scaling and remediation wording are prose; the underlying
     # residual math (0.56 s -> 560 ms for this same buffer_ms/frames pair) is
     # pinned directly against assess_fit in the pure-math tests above.

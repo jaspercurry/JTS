@@ -105,7 +105,6 @@ import {
   advancedSpecs,
   drawArea,
   drawPath,
-  freqToSlider,
   gx,
   gy,
   padB,
@@ -113,10 +112,10 @@ import {
   padR,
   padT,
   pointsFor,
-  sliderToFreq,
   specActive,
   summedDbAt
 } from "/assets/sound-profile/js/eq-curve.js";
+import { FREQUENCY_SLIDER_STEPS, freqToSlider, sliderToFreq } from "/assets/shared/js/frequency-scale.js";
 import {
   clamp,
   clone,
@@ -2847,7 +2846,7 @@ import {
     return '<div class="range-row">' +
       '<span class="range-row__label">' + escapeHtml(label) + '</span>' +
       '<div class="range">' + thumb +
-        '<input type="range" class="range__input" min="' + (opts.log ? 0 : min) + '" max="' + (opts.log ? 1000 : max) +
+        '<input type="range" class="range__input" min="' + (opts.log ? 0 : min) + '" max="' + (opts.log ? FREQUENCY_SLIDER_STEPS : max) +
           '" step="' + (opts.step || 0.1) + '" value="' + (opts.log ? freqToSlider(value, min, max) : value) +
           '" data-range="' + opts.kind + '" aria-label="' + escapeHtml(label) + '"></div>' +
       '<div class="range__readout"><span class="range__readout-value" data-readout="' + opts.kind + '">' +
