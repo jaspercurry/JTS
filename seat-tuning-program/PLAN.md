@@ -311,6 +311,8 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 02:28Z: Row 1.1 LANDED: PR #4557 squash-merged at `82e82a03b` on
+  green CI after the fix commit.
 - 2026-09-09 02:30Z: Row 1.1 LANDED: PR #4557 squash-merged at `82e82a03b` on
   green CI after the fix commit. Lane A proceeds to 1.2 (delete the room
   product); `room_limits.py` is on main so `variance_cap.py`/`target.py` go
