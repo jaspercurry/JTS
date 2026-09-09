@@ -57,6 +57,7 @@ PROG = "jasper-round-views"
 
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
+TAKES_EXACT_CAPTURE = (TAKES_THIS_ROUND, "--capture-id", "<capture-id>")
 TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
 TAKES_BUNDLE_AND_RING = (

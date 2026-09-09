@@ -59,7 +59,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from typing import Any
 
@@ -75,10 +74,10 @@ from ..platform.control_client import (
 )
 from ..platform.uds import local_status_json
 from .supervisor_runtime import (
-    build_asyncio_thread,
     resolve_env_mode,
     run_supervisor_loop,
     snapshot_or_disabled,
+    spawn_on_control_loop,
 )
 from ..multiroom.config import (
     SNAP_STREAM_ID,
@@ -581,7 +580,6 @@ class GroupingSupervisor:
 # wrt the instance and Python attribute reads are atomic at the
 # snapshot dict's resolution.
 _supervisor: GroupingSupervisor | None = None
-_supervisor_thread: threading.Thread | None = None
 
 
 def snapshot() -> dict[str, Any]:
@@ -592,18 +590,18 @@ def snapshot() -> dict[str, Any]:
     )
 
 
-def start_supervisor() -> threading.Thread | None:
-    """Start the supervisor in a background thread. No-op when
-    `JASPER_GROUPING_SUPERVISOR=disabled` (exact match, case-
+def start_supervisor() -> None:
+    """Start the supervisor on jasper-control's shared background loop.
+    No-op when `JASPER_GROUPING_SUPERVISOR=disabled` (exact match, case-
     insensitive). Idempotent under sequential calls — the sole
     caller is `jasper-control`'s single-threaded `main()`."""
-    global _supervisor, _supervisor_thread
-    if _supervisor_thread is not None:
-        return _supervisor_thread
+    global _supervisor
+    if _supervisor is not None:
+        return
     mode = resolve_env_mode("JASPER_GROUPING_SUPERVISOR")
     if mode == "disabled":
         log_event(logger, "grouping_supervisor.disabled")
-        return None
+        return
     if mode != "auto":
         logger.warning(
             "JASPER_GROUPING_SUPERVISOR=%r unrecognized; "
@@ -611,11 +609,9 @@ def start_supervisor() -> threading.Thread | None:
             mode,
         )
     _supervisor = GroupingSupervisor()
-    _supervisor_thread = build_asyncio_thread(
+    spawn_on_control_loop(
         target=_supervisor.run,
         name="grouping-supervisor",
         logger=logger,
         crash_event="grouping_supervisor.thread_crash",
     )
-    _supervisor_thread.start()
-    return _supervisor_thread

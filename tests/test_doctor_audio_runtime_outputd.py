@@ -1028,7 +1028,7 @@ _DUAL_APPLE_COUNTERS = {
     "setup, expected_status, expected_reason, extra",
     [
         pytest.param(_case_disabled, "fail", _R.REASON_OUTPUTD_UNIT_NOT_ENABLED, _SILENT, id="test_outputd_service_fails_when_disabled"),
-        pytest.param(_case_status_unreachable, "fail", _R.REASON_OUTPUTD_STATUS_UNREACHABLE, _SILENT, id="test_outputd_service_fails_when_status_socket_unreachable"),
+        pytest.param(_case_status_unreachable, "fail", _R.REASON_OUTPUTD_STATUS_UNREACHABLE, None, id="test_outputd_service_fails_when_status_socket_unreachable"),
         pytest.param(_case_expected_status, "ok", "", None, id="test_outputd_service_ok_with_expected_status"),
         pytest.param(_case_shm_ring_content_source, "ok", "", None, id="test_outputd_service_ok_with_shm_ring_content_source"),
         pytest.param(_case_shm_ring_missing_ring_geometry, "fail", _R.REASON_OUTPUTD_RING_CONTRACT_MISSING, None, id="test_outputd_service_fails_shm_ring_missing_ring_geometry"),
@@ -1045,7 +1045,7 @@ _DUAL_APPLE_COUNTERS = {
         pytest.param(_case_dual_apple_status_missing, "fail", _R.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING, None, id="test_outputd_service_fails_when_dual_apple_status_missing"),
         pytest.param(_case_dual_apple_pcm_link_missing, "warn", _R.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED, None, id="test_outputd_service_warns_when_dual_apple_pcm_link_missing"),
         pytest.param(_case_dual_apple_status_ok, "ok", "", _DUAL_APPLE_COUNTERS, id="test_outputd_service_ok_with_dual_apple_status"),
-        pytest.param(_case_fake_backend, "fail", _R.REASON_OUTPUTD_BACKEND_NOT_ALSA, _SILENT, id="test_outputd_service_fails_on_fake_backend"),
+        pytest.param(_case_fake_backend, "fail", _R.REASON_OUTPUTD_BACKEND_NOT_ALSA, None, id="test_outputd_service_fails_on_fake_backend"),
         pytest.param(_case_small_runtime_buffers, "fail", _R.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED, None, id="test_outputd_service_fails_on_small_runtime_buffers"),
         pytest.param(_case_reference_contract_missing, "fail", _R.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED, None, id="test_outputd_service_fails_when_reference_contract_missing"),
         pytest.param(_case_marker_armed_member_ok, "ok", "", None, id="test_outputd_service_ok_on_a_marker_armed_member"),

@@ -1271,7 +1271,7 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # Neither ring fits: a roleful box reaching here resolved no ACTIVE-ring
     # width (an explicit mono, or an indeterminate driven width), and a composite
     # reaches here only when it is PASSIVE. These shapes PARK under their own
-    # name (ADR-0178, jasper.control.transport_park) rather than falling back to
+    # name (ADR-0178, jasper.control.transport_eligibility) rather than falling back to
     # a second coupling.
     return False, (
         "saved output topology is not ring-eligible (the STEREO shm_ring is a "

@@ -48,11 +48,23 @@ def render_frequency_view(view: Mapping[str, Any], path: Path, *, selected: Sequ
         ax.semilogx(*zip(*points), color=color, linestyle="--" if run["slot"] == "b" else "-", label=f"{index + 1}. {run['slot'].upper()} · {curve['label']}")
         smoothing = curve.get("smoothing_fractional_octave")
         window = curve.get("window_ms", curve.get("gate_window_ms"))
-        take = curve.get("take_id") or curve.get("capture_id") or curve["id"]
         candidate = curve.get("candidate_id") or "not recorded"
-        graph = curve.get("graph_fingerprint") or meta.get("applied_graph_fingerprint") or "not recorded"
+        if curve.get("identity_scope") == "prediction_from_basis":
+            take = curve.get("basis_capture_id") or curve["id"]
+            graph = curve.get("basis_graph_fingerprint") or "not recorded"
+            identity = f"basis take: {take} | candidate: {candidate} | basis graph: {graph}"
+            if curve.get("measured_capture_id"):
+                measured_graph = curve.get("measured_graph_fingerprint") or "not recorded"
+                identity += (
+                    f" | measured take: {curve['measured_capture_id']}"
+                    f" | measured graph: {measured_graph}"
+                )
+        else:
+            take = curve.get("take_id") or curve.get("capture_id") or curve["id"]
+            graph = curve.get("graph_fingerprint") or meta.get("applied_graph_fingerprint") or "not recorded"
+            identity = f"{take} | candidate: {candidate} | graph: {graph}"
         span = f"{low:g}–{high if high is not None else 'unspecified'} Hz" if low or high else "not recorded (only saved bins shown)"
-        labels.append(fill(f"{index + 1}. {run['id']} | {take} | candidate: {candidate} | graph: {graph}", 150) + "\n"
+        labels.append(fill(f"{index + 1}. {run['id']} | {identity}", 150) + "\n"
                       f"    window: {str(window) + ' ms' if window is not None else 'not recorded'}; smoothing: {('1/' + str(smoothing) + ' octave') if smoothing else 'none' if smoothing == 0 else 'not recorded'}; valid: {span}; reference: {ref:.3f} dB")
     ax.axhline(0, color="#555", lw=.8, label="Flat display reference (0 dB)")
     ax.set(xlabel="Frequency (Hz)", ylabel="Level relative to saved reference (dB)", title="Frequency comparison · exact measurements remain the source of truth")

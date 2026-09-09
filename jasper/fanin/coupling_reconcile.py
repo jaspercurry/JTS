@@ -17,7 +17,7 @@ in outputd.env, whose single writer is ``_outputd_actions``. Ring A needs no
 declaration — fan-in fills it unconditionally.
 
 NO FALLBACK. A step that fails reports ``ok=False`` and the box PARKS visibly
-through :mod:`jasper.control.transport_park`; recovery from a bad deploy is
+through :mod:`jasper.control.transport_eligibility`; recovery from a bad deploy is
 ``git revert`` + redeploy (ADR-0100).
 
 NOT a per-tick hot path. A pass whose env and ring geometry are already coherent

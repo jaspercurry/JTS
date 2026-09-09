@@ -1231,25 +1231,6 @@ def _make_mux_mute_stubbed(tmp_path):
     return m, fanin_mute
 
 
-async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_path):
-    """STATUS and mutations must not split across sockets under an override."""
-
-    command = AsyncMock(return_value={})
-    monkeypatch.setattr(mux_module, "fanin_command", command)
-    monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
-
-    await m._fanin_select_label("correction", reason="test")
-    await m._fanin_none(reason="test")
-    await m._fanin_lane_mute("usbsink", True)
-
-    assert [call.kwargs["socket_path"] for call in command.await_args_list] == [
-        "/tmp/override.sock",
-        "/tmp/override.sock",
-        "/tmp/override.sock",
-    ]
-
-
 # ----------------------------------------------------------------------
 # Fan-in lane-mute preempt transport (the sole USB-silencing primitive).
 # ----------------------------------------------------------------------

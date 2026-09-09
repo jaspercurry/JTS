@@ -158,7 +158,7 @@ def _grouping_runtime(cfg: object) -> dict:
 @doctor_check()
 def check_grouping() -> CheckResult:
     """Verify /var/lib/jasper/grouping.env is consistent AND actually up,
-    and surface the composite pair-lock truth ``/state.grouping`` uses.
+    and surface the composite pair-lock truth the ``/grouping`` endpoint uses.
 
     Off by default (user opts in via the grouping web wizard), so OFF is
     `ok`. For ON, `warn` on two failure classes, worst wins:
@@ -183,7 +183,7 @@ def check_grouping() -> CheckResult:
     permanent warn), not a claim that the clock lock was confirmed.
 
     Both verdicts come from the same pure `derive_grouping_runtime` the
-    /state surface uses."""
+    ``/grouping`` endpoint uses."""
     label = "grouping"
     cfg = evidence.grouping_config()
     if not cfg.enabled:
