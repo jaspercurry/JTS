@@ -70,7 +70,7 @@ class VolumeRoutes(ControlHandlerMixin):
         if self._maybe_forward_pair_action_to_leader():
             return
         try:
-            state = asyncio.run(self._get_op())
+            state = self._get_op()
         except Exception as e:  # noqa: BLE001
             logger.exception("get volume failed")
             self._send_json({"error": str(e)}, status=502)
@@ -242,7 +242,7 @@ class VolumeRoutes(ControlHandlerMixin):
                 level=logging.INFO if first_decline else logging.DEBUG,
             )
             try:
-                state = asyncio.run(self._get_op())
+                state = self._get_op()
             except Exception as e:  # noqa: BLE001
                 # Same shape as _get_volume's guard: this reads the persisted
                 # projection, and a read failure is a 502, not a silent 200
