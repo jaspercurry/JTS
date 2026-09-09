@@ -4,31 +4,20 @@
 
 """The one owner of CamillaDSP's main fader — four ranked claim kinds.
 
-**18 production-reachable fader writers**, nine of which can interleave inside
-a single crossover-v2 measurement session with nothing arbitrating between them,
-collapse into one owner exposing four claim kinds: **household ·
-transient-duck · session-measurement · commissioning**. This module is that
-owner.
+Every fader writer in a process goes through this owner, as one of four claim
+kinds: **household · transient-duck · session-measurement · commissioning**.
 
-**What "ranked" means, exactly.** Three of the four kinds declare a LEVEL: an
-absolute dB the fader should read. They are totally ordered — household <
-session-measurement < commissioning — and the highest-ranked claim currently
-held is *the level in effect*. The fourth kind, the transient duck, declares no
-level at all: it is an ATTENUATION that composes below whichever level is in
-effect. That asymmetry is the design, not an omission — a duck that could win
-the level question would be a level claim with a confusing name.
+**What "ranked" means.** Three kinds declare a LEVEL — an absolute dB the fader
+should read — totally ordered household < session-measurement < commissioning,
+and the highest-ranked claim held is *the level in effect*. The transient duck
+declares no level: it is an ATTENUATION composing below whichever level is in
+effect. A lower-ranked level claim held under a higher-ranked one is **recorded
+and not written**, and is what the fader lands on when the higher claim
+releases.
 
-A lower-ranked level claim held under a higher-ranked one is **recorded and not
-written**. That is the whole point: a household volume change during a
-measurement session no longer moves the fader out from under the stimulus, and
-it is not lost either — it is what the fader lands on when the measurement
-claim releases.
-
-**One declared level.** Five overlapping notions collapse here:
-``listening_level``, ``measurement_volume_db``, ``locked_main_volume_db``
-and ``fader_db``. A claim's ``level_db`` is the only one left: any level a
-caller derives arrives as an argument to :meth:`VolumeOwner.acquire_level`,
-never as a second seat of truth.
+**One declared level.** A claim's ``level_db`` is the only seat of truth: any
+level a caller derives arrives as an argument to
+:meth:`VolumeOwner.acquire_level`.
 
 **One confirm tolerance, and it is not minted here.**
 :data:`~jasper.active_speaker.volume_latch.READBACK_TOLERANCE_DB` via
@@ -38,33 +27,26 @@ never as a second seat of truth.
 **The 0 dB ceiling is NOT this module's.** ``devices.volume_limit`` stays
 ``0.0`` and ``jasper.camilla._coerce_main_volume_db`` clamps every positive
 write; the owner sits BEHIND that door as its only caller, never as its
-exception. Nothing here re-implements or relaxes it — a fourth clamp owner
-would make the rule harder to read, not safer. The owner refuses only
-*non-finite* numbers, which is arithmetic integrity (a NaN would poison the
-``min`` below), not a safety clamp.
+exception. It refuses only *non-finite* numbers, which is arithmetic integrity
+(a NaN would poison the ``min`` below), not a safety clamp.
 
-**The release algebra is ADR-0004's** — see that ADR for all three constraints
-and the defects that bought them. The one thing not stated there, because it
-only arises once claims are ranked: a *level* claim's release restores the next
-level OUTRIGHT, while only a duck gives back its own attenuation.
+**The release algebra is ADR-0004's.** The one thing not stated there, because
+it only arises once claims are ranked: a *level* claim's release restores the
+next level OUTRIGHT, while only a duck gives back its own attenuation.
 
-**Every settle reads first** — the shape
-:func:`~jasper.active_speaker.volume_latch.hold_fader_at` already uses, and the
-reasons are its. Here it also means arbitration is not churn: re-deriving the
-whole target on every claim change would otherwise repeat writes CamillaDSP
+**Every settle reads first**, which keeps arbitration from churning: re-deriving
+the whole target on every claim change would otherwise repeat writes CamillaDSP
 ramps over 400 ms.
 
 **Doors are injected and must not raise.** The setter and getter are the
 holder's to bind, and the contract is
 :data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS`'s: report failure,
-never raise a transport error. A claim's ledger entry unwinds on ANY escape
-anyway, so a holder that breaks the contract loses its claim rather than
-stranding one.
+never raise a transport error. A claim's ledger entry unwinds on ANY escape, so
+a holder that breaks the contract loses its claim rather than stranding one.
 
 **In-memory, per process.** Durable volume-safety state belongs to the claim
-holders that own it. Cross-daemon ordering stays with the leases that already
-provide it. This owner arbitrates the writers inside one process, which is
-where all nine session collisions live.
+holders that own it, and cross-daemon ordering to the leases that already
+provide it.
 """
 
 from __future__ import annotations
@@ -103,10 +85,10 @@ __all__ = [
 SetFaderDb = Callable[[float], Awaitable[Any]]
 GetFaderDb = Callable[[], Awaitable[Any]]
 
-#: A release that waited longer than this for the owner's lock is disclosed.
-#: A duck release runs inside a shielded ``finally`` and a stranded duck is a
-#: silent speaker, so a long wait is worth a line even though it is correct.
-#: **Removal condition:** delete this when no owner operation can hold the lock
+#: A release that waited longer than this (seconds) for the owner's lock is
+#: disclosed: a duck release runs inside a shielded ``finally`` and a stranded
+#: duck is a silent speaker.
+#: **Removal condition:** delete when no owner operation can hold the lock
 #: across a fader round-trip — today an acquire can, bounded by
 #: ``CamillaController``'s 5 s attempt budget and its one retry.
 RELEASE_WAIT_DISCLOSE_S = 1.0
@@ -144,8 +126,7 @@ class VolumeClaimHandle:
     """What a holder gets back, and hands to :meth:`VolumeOwner.release`.
 
     Opaque by intent: a holder may read its own ``kind`` and ``level_db`` for
-    disclosure, but the arbitration is the owner's and a handle carries no
-    authority of its own.
+    disclosure, but a handle carries no authority of its own.
     """
 
     kind: ClaimKind
@@ -197,13 +178,11 @@ class VolumeOwner:
     in production ``CamillaController.set_volume_db`` and ``.get_volume_db``
     bound with ``best_effort=True``, so every write passes
     ``_coerce_main_volume_db``'s clamp and no transport error escapes into the
-    arbitration. Injection rather than a controller import keeps the owner free
-    of ``jasper.camilla``'s import graph and makes a test double a peer of
-    production rather than a mock of it.
+    arbitration. Injection rather than a controller import keeps the owner out
+    of ``jasper.camilla``'s import graph.
 
-    There is no tolerance knob. ``READBACK_TOLERANCE_DB`` is the repo's one
-    confirm tolerance and this wave's whole point is that it stays one; a
-    per-instance override would be a second answer waiting for a caller.
+    There is no tolerance knob: ``READBACK_TOLERANCE_DB`` is the repo's one
+    confirm tolerance.
     """
 
     def __init__(
@@ -257,18 +236,14 @@ class VolumeOwner:
         whether a session still owns the fader without being handed authority
         over that session's claim.
 
-        SYNCHRONOUS and non-blocking, like the readers above it — it takes no
-        lock, because its caller cannot await one: the measurement-pause
-        release runs on the REQUEST thread and bridges into the loop only via
-        ``run_async``.
+        SYNCHRONOUS and non-blocking, like the readers above it: its caller
+        cannot await, because the measurement-pause release runs on the REQUEST
+        thread and bridges into the loop only via ``run_async``.
 
-        That thread is also why this snapshots and the readers above it do
-        not. They are asked from loop-thread coroutines, where nothing can
-        mutate ``_claims`` between two bytecodes; this one is asked while the
-        loop thread may be taking or releasing a claim, and iterating the live
-        mapping across that raises "dictionary changed size during iteration".
-        ``tuple()`` of the view is one atomic C-level copy, so the answer is a
-        consistent instant rather than a torn read.
+        That thread is why this snapshots and the readers above it do not: it is
+        asked while the loop thread may be taking or releasing a claim, and
+        iterating the live mapping across that raises "dictionary changed size
+        during iteration". ``tuple()`` of the view is one atomic C-level copy.
         """
         return any(
             claim.kind is kind for claim in tuple(self._claims.values())
@@ -333,13 +308,12 @@ class VolumeOwner:
             handle = self._replace_household_claim(target)
             if await self._establish(handle, context="declare:household"):
                 return True
-            # The prior household claim is already gone — "the household
-            # level" is one fact and a declaration replaces it, never stacks.
-            # So on an unconfirmable write the owner names a level the fader
-            # does not carry, and the next release lands on the NEW one.
-            # Disclose rather than roll back: the declaration is the caller's
-            # intent, and restoring a level nobody asked for would be the
-            # quieter mistake, not the smaller one.
+            # The prior household claim is already gone: a declaration
+            # replaces it, never stacks. So on an unconfirmable write the owner
+            # names a level the fader does not carry and the next release lands
+            # on the NEW one. Disclosed rather than rolled back — restoring a
+            # level nobody asked for would be the quieter mistake, not the
+            # smaller one.
             log_event(
                 logger,
                 "volume.household_declare_unconfirmed",
@@ -422,18 +396,14 @@ class VolumeOwner:
         The one claim-taking skeleton behind all four verbs. Caller holds the
         lock.
 
-        ``True`` does not mean *"wrote something"*. A level claim outranked by
-        a higher one is in effect the moment it is RECORDED, which is all it
-        asked for — and recording cannot fail, so such a claim is never
-        refused for a write it never wanted. That is the only thing separating
-        this branch from letting :meth:`_apply` re-derive the same target,
-        which is why it is the branch the tests pin.
+        ``True`` does not mean *"wrote something"*: a level claim outranked by a
+        higher one is in effect the moment it is RECORDED, and recording cannot
+        fail, so such a claim is never refused for a write it never wanted.
 
         The rank short-circuit is a LEVEL claim's alone: a duck declares no
-        level, never answers *"what level is in effect"*, and so always
-        composes — :meth:`_apply` writes nothing when no level is held anyway.
+        level and always composes.
 
-        On failure the ledger KEEPS ``handle``. The callers give it back two
+        On failure the ledger KEEPS ``handle`` — the callers give it back two
         different ways, and :meth:`relevel`'s is not an unwind.
         """
         self._claims[handle.token] = handle
@@ -467,19 +437,17 @@ class VolumeOwner:
         """Take a half-taken claim out of the ledger and hand the fader back.
 
         Reached from a ``finally`` guarded by a success flag, so it runs on
-        EVERY exit an acquire did not complete — a refusal, a cancellation, or
-        a raise from the injected door. That last one is the contract violation
-        this owner cannot prevent: ``CamillaUnavailable`` is not in
-        :data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS` and naming
+        EVERY exit an acquire did not complete — a refusal, a cancellation, or a
+        raise from the injected door. That last one this owner cannot prevent:
+        ``CamillaUnavailable`` is not in
+        :data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS`, and naming
         it would mean importing ``jasper.camilla``, which imports this module.
-        Without the unwind it would leave a claim held by nobody, and every
-        later arbitration would answer against a level no holder owns. The pop
-        is synchronous and cannot fail, so the ledger is correct before
+        The pop is synchronous and cannot fail, so the ledger is correct before
         anything is awaited.
 
-        The fader hand-back is best-effort by design: if it is cancelled or the
-        door raises again, the ledger is already right and the next claim
-        settles. It must never mask the exception being unwound.
+        The fader hand-back is best-effort: if it is cancelled or the door raises
+        again, the ledger is already right and the next claim settles. It must
+        never mask the exception being unwound.
         """
         self._claims.pop(handle.token, None)
         try:
@@ -518,12 +486,11 @@ class VolumeOwner:
         async with self._lock:
             waited_s = time.monotonic() - waited_from
             if waited_s > RELEASE_WAIT_DISCLOSE_S:
-                # ONE arbiter is the wave's whole thesis, so a release waits
-                # for the lock rather than taking a fast path around it — a
-                # lock-free own-depth give-back would be the second writer
-                # this owner exists to delete. What that costs is disclosed
-                # instead of hidden: a duck release runs inside a shielded
-                # `finally`, and a stranded duck is a silent speaker.
+                # A release waits for the lock rather than taking a fast path
+                # around it: a lock-free own-depth give-back would be a second
+                # writer. The cost is disclosed rather than hidden, because a
+                # duck release runs inside a shielded `finally` and a stranded
+                # duck is a silent speaker.
                 log_event(
                     logger,
                     "volume.claim_release_waited",
@@ -558,45 +525,39 @@ class VolumeOwner:
                     depth_db=handle.depth_db or 0.0,
                 )
             # This read and :meth:`_settle`'s are NOT one question asked
-            # twice. They are separated by a round-trip and the fader is
-            # shared across daemons, so another writer can land a value while
-            # the first read is in flight. Settling on the earlier sample
-            # would skip the repair and leave that value standing.
+            # twice: they are separated by a round-trip and the fader is shared
+            # across daemons, so another writer can land a value while the first
+            # read is in flight.
             await self._settle(
                 settled, context=f"release:{handle.kind.value}",
             )
 
-    # ---- MS-14 ------------------------------------------------------------
+    # ---- proving a level is in effect -------------------------------------
 
     async def prove(self, handle: VolumeClaimHandle) -> float | None:
         """The fader reading, but only when it AGREES with this claim's level.
 
-        MS-14, and the shape ruling S10 preserves: ``None`` means *not proven*,
-        which refuses to BANK a capture — never to play the stimulus and never
-        to try again. Returning a drifted reading instead would hand a caller a
-        number to stamp into a record while the speaker played at a different
-        one, which is the 8.712 dB shape #2925 recorded.
+        ``None`` means *not proven*, which refuses to BANK a capture — never to
+        play the stimulus and never to try again. Returning a drifted reading
+        instead would hand a caller a number to stamp into a record while the
+        speaker played at a different one.
 
         ``None`` for every way a level can fail to be in effect: the claim was
         released, a higher-ranked claim preempted it, a duck is down over it,
         the fader could not be read, or the reading disagrees. Never gated on a
         diagnostics flag (ADR-0009) — the excitation-safety ledger admitted the
         program against the declared level, so this is that ledger's own
-        integrity rather than forensics that may be sampled.
+        integrity rather than samplable forensics.
 
-        **The read is UNCONDITIONAL**, taken before any of those verdicts is
-        decided. That is what keeps ``observed_db`` a real observation on every
-        line: short-circuiting a refusal ahead of the read would report "the
-        fader could not be read" for cases where it was never asked, stating an
-        observation JTS never made (#2085).
+        **The read is UNCONDITIONAL**, taken before any verdict is decided, so
+        ``observed_db`` is a real observation on every line: short-circuiting a
+        refusal ahead of the read would report "the fader could not be read" for
+        a case where it was never asked.
 
-        **Under the owner's lock, for the whole body.** The read is an await,
-        and without the lock a duck acquired while it was in flight would land
-        between the reading and the verdict — the verdict would then pass a
-        PRE-duck number that agrees with the level, while the speaker plays
-        ducked. That is a proven level the speaker never had, which is exactly
-        what MS-14 exists to refuse. Holding the lock makes the read and the
-        arbitration one decision.
+        **Under the owner's lock, for the whole body.** The read is an await, and
+        without the lock a duck acquired while it was in flight would land
+        between the reading and the verdict, which would then pass a PRE-duck
+        number that agrees with the level while the speaker plays ducked.
         """
         async with self._lock:
             expected = handle.level_db
@@ -655,20 +616,18 @@ class VolumeOwner:
         """Put the fader on ``target_db`` and prove it, writing only if needed.
 
         READ, then delegate to
-        :func:`~jasper.active_speaker.volume_latch.set_and_confirm_volume` —
-        the pre-read is the only part
-        :func:`~jasper.active_speaker.volume_latch.hold_fader_at`'s shape adds,
-        and it earns two things.
+        :func:`~jasper.active_speaker.volume_latch.set_and_confirm_volume`. The
+        pre-read earns two things:
 
         **Arbitration is not churn.** Every claim change re-derives the whole
-        target, so a household level re-declared under a held duck, or a
-        release landing where the fader already sits, would otherwise repeat a
-        write CamillaDSP ramps over 400 ms.
+        target, so a household level re-declared under a held duck, or a release
+        landing where the fader already sits, would otherwise repeat a write
+        CamillaDSP ramps over 400 ms.
 
-        **And drift is repaired, not patrolled for.** The pre-read puts back a
-        fader that drifted off a level nobody re-declared, so skipping a
-        redundant write never means skipping the check — which is what lets
-        wave 5e DELETE the 1 Hz reconciler rather than replace it.
+        **Drift is repaired, not patrolled for.** The pre-read puts back a fader
+        that drifted off a level nobody re-declared, so skipping a redundant
+        write never means skipping the check — which is why no periodic
+        reconciler is needed.
         """
         target = float(target_db)
         if fader_matches(
@@ -699,10 +658,9 @@ class VolumeOwner:
     ) -> None:
         """A claim came back and nothing declares where the fader belongs.
 
-        The owner writes nothing here — with no level claim it has no target,
-        and inventing one would be the nanny move. But silence is how a fader
-        parked far from anything stays unnoticed, so state the reading and the
-        depth that was just given up and let a support read judge it.
+        The owner writes nothing — with no level claim it has no target — but
+        states the reading and the depth just given up, so a fader parked far
+        from anything does not go unnoticed.
         """
         observed = await self._read()
         log_event(
@@ -723,13 +681,10 @@ class VolumeOwner:
     ) -> None:
         """One vocabulary, one question, discriminated by ``result=``.
 
-        The positive ``result=held`` line is the half that makes the negative
-        ones readable as evidence: absence of a refusal is otherwise
-        indistinguishable from a proof that never ran (#2198), and the whole
-        point of this seam is that a support read can tell the two apart.
-        ``observed_db`` is EMPTY only when the fader could not be read — the
-        one clean discriminator, and it is a real reading rather than an
-        inference because :meth:`prove`'s read is unconditional (#2085).
+        The positive ``result=held`` line is what makes the negative ones
+        readable as evidence: absence of a refusal is otherwise
+        indistinguishable from a proof that never ran. ``observed_db`` is EMPTY
+        only when the fader could not be read.
         """
         expected = handle.level_db
         log_event(
@@ -754,32 +709,22 @@ _process_owner: VolumeOwner | None = None
 def install_volume_owner(owner: VolumeOwner | None) -> None:
     """Register this process's fader owner. ``None`` clears it.
 
-    **Two ways a holder reaches the owner, and the split is not new.** A
-    process that already builds a long-lived ``VolumeCoordinator`` hands that
-    coordinator's ``volume_owner`` straight to its holders — ``CueDuck``
-    takes it as a constructor argument. A process that builds no
-    such coordinator has nothing to inject from: the ``/sound/`` floor-tone
-    audition, the crossover level lease and the measurement volume guard all
-    run inside socket-activated wizards whose request handlers are reached
-    from a router, not from a constructor they own.
+    **Two ways a holder reaches the owner.** A process that builds a long-lived
+    ``VolumeCoordinator`` hands that coordinator's ``volume_owner`` straight to
+    its holders. A process that builds no such coordinator has nothing to inject
+    from — the ``/sound/`` floor-tone audition, the crossover level lease and
+    the measurement volume guard run inside socket-activated wizards whose
+    request handlers are reached from a router. This is the same split
+    ``jasper.camilla.set_canonical_target_db_provider`` draws, for the same
+    processes.
 
-    This is the SAME split ``jasper.camilla.set_canonical_target_db_provider``
-    already draws, for the same processes, for the same reason — that function
-    exists because *"graph swaps run on ad-hoc ``primary_controller()``
-    instances no coordinator ever sees."* The prior art is what makes this a
-    shape rather than an exception.
-
-    A registration a process installs is one a test has to put back:
-    ``tests/conftest.py``'s ``_isolate_process_volume_owner`` is this owner's
-    half of the isolation ``_isolate_canonical_target_provider`` already does
-    for that provider.
+    ``tests/conftest.py``'s ``_isolate_process_volume_owner`` puts a
+    registration back between tests.
 
     **The registration is THE owner for its process, not one of several.** A
-    process that registers must not also construct a second owner, and a
-    process that injects registers the same instance it injects, so
-    :func:`volume_owner` never answers ``None`` where an owner exists. Two
-    owners over one fader is the arbitration failure this whole wave deletes,
-    wearing a new name.
+    process that registers must not also construct a second owner, and a process
+    that injects registers the same instance it injects, so
+    :func:`volume_owner` never answers ``None`` where an owner exists.
     """
     global _process_owner
     _process_owner = owner
@@ -788,8 +733,7 @@ def install_volume_owner(owner: VolumeOwner | None) -> None:
 def volume_owner() -> VolumeOwner | None:
     """This process's fader owner, or ``None`` where none was registered.
 
-    ``None`` is an honest answer, not a hole to plug: a caller that gets it is
-    running somewhere no owner was installed, and constructing one on the spot
-    would make it the second. Disclose and degrade — never mint.
+    ``None`` is an honest answer, not a hole to plug: constructing an owner on
+    the spot would make it the second one over the fader.
     """
     return _process_owner

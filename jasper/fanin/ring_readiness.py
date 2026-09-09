@@ -75,23 +75,16 @@ def _read_snapshot(path: str | Path) -> _EnvSnapshot:
         return _EnvSnapshot(env_path, "", False)
 
 
-# outputd's own declarations, read from the reconciler-owned outputd.env. The
-# FORMAT key is written by jasper-audio-hardware-reconcile (from
-# ``content_lane_format_for_coupling``), not by this reconciler — which is why
-# the width gate only compares it on a reconciled box. The CHANNELS key is
-# the DacProfile's active-lane width; unset means outputd derives 2
-# (``config.rs``: ``SinkMode::SingleAlsa => active_channels.unwrap_or(2)``).
+# outputd's own declarations, from the reconciler-owned outputd.env. The FORMAT
+# key is written by jasper-audio-hardware-reconcile, not by this reconciler,
+# which is why the width gate compares it only on a reconciled box. The CHANNELS
+# key is the DacProfile's active-lane width.
 #
 # BOTH keys DECLARE A DEFAULT when absent rather than being indeterminate, and
-# the defaults are the daemon's own (``config.rs``): an empty/unset
-# CONTENT_FORMAT resolves ``SampleFormat::S16Le``, and an unset ACTIVE_CHANNELS
-# resolves 2 on a single-ALSA sink. Reading an absent key as "unknown" would
-# refuse the arm for a wire the daemon has in fact declared, which is the wrong
-# refusal — the right one is a COMPARISON against the resolved wire.
-#
-# The format key and its default are owned by jasper.fanin_coupling; see the
-# comment beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the
-# resolver.
+# the defaults are the daemon's own (``config.rs``: an unset CONTENT_FORMAT
+# resolves ``SampleFormat::S16Le``, an unset ACTIVE_CHANNELS resolves 2 on a
+# single-ALSA sink). Reading an absent key as "unknown" would refuse the arm for
+# a wire the daemon has in fact declared.
 _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
 _OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
 
@@ -109,25 +102,20 @@ class RingWireDeclaration:
     """One declaring end's statement of the ring wire, and where it was read.
 
     ``sample_format`` / ``channels`` are ``None`` for an axis this end does not
-    declare — not a wildcard that matches anything, but "this end is silent
-    here", which the comparison reports rather than passes.
+    declare — not a wildcard, but "this end is silent here", which the comparison
+    reports rather than passes.
 
     ``ring`` is :data:`RING_A`, :data:`RING_B` or :data:`RING_ACTIVE` and selects
-    which channel count this end is held to; the three are separate axes by
-    design — Ring A is always the stereo program fan-in mixes, Ring B follows the
-    box's output topology, and the ACTIVE ring carries a roleful box's
-    post-crossover per-driver width — so the comparison cannot use one number.
-    (``active_ring_endpoint_proof`` still owns the ACTIVE ring's conf.d + marker
-    STAGING; what reaches here on that ring is the loaded CamillaDSP graph, whose
-    format and width nothing else compares.)
+    which channel count this end is held to. The three are separate axes: Ring A
+    is always the stereo program fan-in mixes, Ring B follows the box's output
+    topology, and the ACTIVE ring carries a roleful box's post-crossover
+    per-driver width.
 
     ``channels_excused`` marks an end that STRUCTURALLY states no channel count,
-    which is a different fact from one that tried and could not — only the
-    latter is an indeterminate declaration the gate refuses. It is a per-axis
-    flag rather than a reuse of ``note`` because the notes are not per-axis: the
-    outputd end carries a note explaining why its FORMAT is not compared before
-    arming, and that note must not also excuse its channels, which ARE compared
-    on an unarmed box.
+    a different fact from one that tried and could not — only the latter is an
+    indeterminate declaration the gate refuses. A per-axis flag rather than a
+    reuse of ``note``: the outputd end's note excuses its FORMAT before arming
+    and must not also excuse its channels, which ARE compared on an unarmed box.
     """
 
     end: str
@@ -149,18 +137,13 @@ class LoadedCamillaGraph:
     is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
     subset over that single read.
 
-    ``note`` is empty when the graph WAS read and non-empty saying why not
-    otherwise. It is never an exception: a box with no statefile yet is the
-    ordinary fresh-install state, and a gate that refused it would refuse the
-    unattended pass on every new box.
+    ``note`` is empty when the graph WAS read, and otherwise says why not. Never
+    an exception: a box with no statefile yet is the ordinary fresh-install
+    state.
 
-    ``text`` is the file's raw bytes-as-str, carried rather than discarded so a
-    caller that must inspect something the ``devices:`` subset does not model —
-    :func:`ring_endpoint_anchor_converged`'s per-output MUTE proof is the one —
-    can do it off the SAME read. Re-opening the file for that would let the
-    device answer and the mute answer come from two revisions of it, which is
-    the exact split this snapshot object exists to prevent. Empty whenever
-    ``note`` is set.
+    ``text`` is the file's raw text, carried so a caller inspecting something the
+    ``devices:`` subset does not model (the per-output MUTE proof) works off the
+    SAME read. Empty whenever ``note`` is set.
     """
 
     path: str
@@ -177,16 +160,11 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
     surface uses, so this adds no copy of the statefile scan and honours
     ``JASPER_CAMILLA_STATEFILE``.
 
-    ``config_path`` OVERRIDES the statefile read, and exists because the
-    statefile is the WEAKER of two available answers to "which graph is loaded".
-    It is a durable pointer with several writers (``write_camilla_statefile``
-    from ``baseline-reemit`` and ``runtime-safe-graph``, the pipe guard), so it
-    can move while the running daemon still holds the previous graph. A caller
-    that already has the DAEMON's own answer — ``reconcile_current_dsp``'s
-    payload carries ``current_config_path``, taken from
-    ``cam.get_config_file_path`` over CamillaDSP's websocket — passes it here so
-    the read is about the graph the daemon actually has. Omitted, the statefile
-    stays the answer, which is what every existing caller wants.
+    ``config_path`` OVERRIDES the statefile read, because the statefile is the
+    WEAKER of the two answers to "which graph is loaded": it is a durable pointer
+    with several writers, so it can move while the running daemon still holds the
+    previous graph. A caller holding the DAEMON's own answer
+    (``reconcile_current_dsp``'s ``current_config_path``) passes it here.
     """
     from jasper.active_speaker.environment import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
         read_camilla_statefile_config_path,
@@ -221,10 +199,8 @@ def load_topology_for_wire():
     """The saved output topology for a wire resolution, or ``None``.
 
     Fail-SOFT on every error: ``resolve_ring_wire(None)`` answers the shipped
-    stereo geometry, which is the right question for a box whose topology cannot
-    be read — and refusing to arm on an unreadable topology is
-    :func:`ring_topology_ready`'s decision to make, with its own documented
-    strict/lenient split, not this helper's.
+    stereo geometry, and refusing to arm on an unreadable topology is
+    :func:`ring_topology_ready`'s decision, not this helper's.
     """
     from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
         OutputTopologyError,
@@ -253,22 +229,15 @@ def _effective_env_value(
 
     Every audio daemon this module gates lists ``/etc/jasper/jasper.env`` as its
     FIRST ``EnvironmentFile=`` and its own ``/var/lib/jasper/<daemon>.env`` as a
-    LATER one, so the later file wins and the earlier one is the fallback
-    (``jasper-fanin.service``, ``jasper-outputd.service``).
-    ``outputd_latency_floor_actions`` relies on this: it REMOVES the generated
-    key from the later file precisely so the earlier one is the only
-    declaration left.
+    LATER one, so the later file wins and the earlier is the fallback.
+    ``outputd_latency_floor_actions`` relies on this: it REMOVES the generated key
+    from the later file so the earlier one is the only declaration left.
 
-    ``later_text`` is the caller's already-read snapshot of the later file (the
-    arm path holds one it may have just written); ``jasper.env`` is read here.
-    Returns the RAW string and its source path, applying no emptiness or parse
-    policy — each caller's own vocabulary for "declared but empty" differs, and
-    collapsing them here would make one of them wrong. ``source`` is meaningful
-    only when the value is not ``None``.
-
-    ONE chain, read by :func:`resolve_effective_fanin_ring_slots` and
-    :func:`resolve_effective_fanin_wire_format` rather than each hand-rolling
-    the fallback.
+    ``later_text`` is the caller's already-read snapshot of the later file;
+    ``jasper.env`` is read here. Returns the RAW string and its source path,
+    applying no emptiness or parse policy — each caller's vocabulary for
+    "declared but empty" differs. ``source`` is meaningful only when the value is
+    not ``None``.
     """
     raw = read_value(later_text, key)
     if raw is not None:
@@ -279,37 +248,23 @@ def _effective_env_value(
 def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     """fan-in's declared Ring-A wire format, and which file declared it.
 
-    Same ``jasper.env`` -> ``fanin.env`` chain systemd gives ``jasper-fanin``
-    (:func:`_effective_env_value`, shared with
-    :func:`resolve_effective_fanin_ring_slots`): looking only at
-    ``fanin.env`` would report the default while an operator's value in the
-    earlier system env still controls the next daemon start.
+    Same ``jasper.env`` -> ``fanin.env`` chain systemd gives ``jasper-fanin``:
+    looking only at ``fanin.env`` would report the default while an operator's
+    value in the earlier system env still controls the next daemon start.
 
     THE UNSET CASE GOES THROUGH THE RESOLVER'S OWN NORMALIZER, never a default
-    restated here. ``resolve_ring_wire_format`` is what both languages classify
-    this key with, so calling it is what keeps this end honest across a change to
-    the default — and the default HAS changed (narrow → wide). A restated
-    ``RING_WIRE_FORMAT`` here would have made every undeclared box declare narrow
-    at this end while the conf.d, the emitted stanzas and the resolver all
-    answered wide: a self-shear that refuses the arm fleet-wide, invented by the
-    gate rather than found by it.
+    restated here, so this end stays honest across a change to that default.
 
     An unrecognized token is returned VERBATIM rather than raised on: this
     function reports what an end declares, and
-    :func:`ring_edge_width_ready`'s comparison against the resolved wire is what
-    turns a bad token into a refusal (``resolve_wire_for_gate`` owns the parse
-    refusal itself, with the parser's own sentence). Raising here would throw
-    mid-arm from a reader whose whole job is to describe.
+    :func:`ring_edge_width_ready`'s comparison against the resolved wire turns a
+    bad token into a refusal. Raising here would throw mid-arm from a reader
+    whose job is to describe.
 
-    THIS END IS THE RESOLVER'S INPUT, and the width gate says so rather than
-    pretending otherwise: since ``resolve_ring_wire`` reads the same key off the
-    same chain, a live comparison of this end against the resolved wire agrees by
-    construction. It stays a declaration because this reader takes the caller's
-    fanin.env TEXT while the resolver reads the FILE — a snapshot that has
-    diverged from disk mid-write is the one divergence left to report, and
-    reporting it costs nothing. The independent witnesses on that axis are the
-    conf.d, outputd's env and the loaded graph, each written by a different
-    writer at a different time.
+    THIS END IS THE RESOLVER'S INPUT: it agrees by construction on the live path,
+    and stays a declaration only because this reader takes the caller's fanin.env
+    TEXT while the resolver reads the FILE. The independent witnesses are the
+    conf.d, outputd's env and the loaded graph.
     """
     raw, source = _effective_env_value(
         fanin_text, RING_WIRE_FORMAT_ENV_VAR, later_path=FANIN_ENV_PATH
@@ -325,16 +280,13 @@ def graph_wire_declarations(
     """What the LOADED CamillaDSP graph declares, for each lane that IS a ring.
 
     The graph is a declaring end only for a lane whose device is one of the three
-    ring PCMs (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`) — a lane on the
+    ring PCMs (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`): a lane on the
     dsnoop capture or the ALSA active lane declares a width for a transport that
-    is not the ring, and holding it to the ring's wire would refuse every box
-    that has not armed yet. So this returns ZERO declarations on an unarmed box
-    and one or two on an armed (or mid-arm) one, and the caller says which
-    happened rather than reporting the same sentence either way.
+    is not the ring. So this returns ZERO declarations on an unarmed box and one
+    or two on an armed one.
 
-    Both lanes are inspected, not just playback: the ring reaches a graph from
-    either side (Ring A is CamillaDSP's capture, Ring B and the ACTIVE ring are
-    its playback), and a device-keyed test costs nothing to apply twice.
+    Both lanes are inspected: the ring reaches a graph from either side (Ring A
+    is CamillaDSP's capture, Ring B and the ACTIVE ring its playback).
     """
     declarations: list[RingWireDeclaration] = []
     for lane in ("capture", "playback"):
@@ -370,24 +322,19 @@ def ring_wire_declarations(
     """What each of the ring's declaring ends says the wire is.
 
     The outputd FORMAT axis is compared only once the coupling reconciler has
-    written ``outputd.env`` at all (its bridge key is present). The reason is a
-    real ordering fact rather than caution:
+    written ``outputd.env`` at all (its bridge key is present), because
     ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by
-    ``jasper-audio-hardware-reconcile`` (from ``content_lane_format_for_coupling``),
-    NOT by this reconciler, so on a box neither pass has touched the value is
-    whatever the LAST hardware-reconcile rendered — comparing it would refuse
-    every box mid-convergence. Until then that end is reported as
-    not-yet-declared; after it is compared, which is where a degraded deploy's
-    half-moved format actually shows up.
+    ``jasper-audio-hardware-reconcile``, not by this reconciler: on a box neither
+    pass has touched, the value is whatever the LAST hardware reconcile rendered,
+    and comparing it would refuse every box mid-convergence.
 
     ``graph`` adds the loaded CamillaDSP graph's own ring lanes
-    (:func:`graph_wire_declarations`) — the end that made this list four rather
-    than five names. Omitting it is legal (an env-only comparison) and the gate
-    above is what refuses to CLAIM the graph agreed when it was not passed.
+    (:func:`graph_wire_declarations`). Omitting it is legal (an env-only
+    comparison); the caller is what refuses to CLAIM the graph agreed when it was
+    not passed.
     """
-    # An ABSENT conf.d is ``ring_assets_ready``'s refusal to own, not a second
-    # one here — one missing file should produce one reason. A conf.d that is
-    # PRESENT but declares no readable wire is a torn file, which no other gate
+    # An ABSENT conf.d is ``ring_assets_ready``'s refusal to own. A conf.d that
+    # is PRESENT but declares no readable wire is a torn file no other gate
     # inspects, so that one stays this gate's to refuse.
     conf_present = ring_assets.ring_asset_presence().conf_present
     conf_absent_note = (
@@ -421,9 +368,8 @@ def ring_wire_declarations(
             ring=RING_A,
             sample_format=fanin_format,
             # fan-in's mixer is stereo and NOT configurable
-            # (``mixer.rs``'s ``CHANNELS: u32 = 2``), mirrored here as
-            # RING_A_CHANNELS. Comparing it catches a resolver that starts
-            # answering a Ring A width the writer cannot produce.
+            # (``mixer.rs``'s ``CHANNELS: u32 = 2``). Comparing it catches a
+            # resolver answering a Ring A width the writer cannot produce.
             channels=RING_A_CHANNELS,
         ),
         RingWireDeclaration(
@@ -433,9 +379,9 @@ def ring_wire_declarations(
             sample_format=ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM) if conf_present else None,
             channels=ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM) if conf_present else None,
             note=conf_absent_note,
-            # An ABSENT conf.d states nothing on either axis and the asset gate
-            # owns that refusal; a PRESENT one that cannot be parsed is a torn
-            # file whose channels line this gate must refuse.
+            # An ABSENT conf.d states nothing on either axis and the asset
+            # gate owns that refusal; a PRESENT one that cannot be parsed is a
+            # torn file whose channels line this gate must refuse.
             channels_excused=not conf_present,
         ),
         RingWireDeclaration(
@@ -481,17 +427,14 @@ def ring_wire_declarations(
 def resolve_wire_for_gate(topology: Any = None) -> tuple[Any | None, str]:
     """``(wire, "")`` — or ``(None, why)`` when the box declares an illegal wire.
 
-    ``resolve_ring_wire`` FAILS LOUD on a
-    ``JASPER_FANIN_RING_WIRE_FORMAT`` value neither language recognizes, exactly
-    as ``jasper-fanin`` does (it parks at exit 78 rather than guessing). That is
-    right for an emitter, and wrong for a GATE: the arm has already written the
-    ring env by the time the preflights run, and an uncaught exception would skip
-    the snapshot restore that makes a refused arm non-destructive — leaving the
-    partial flip the whole fail-closed design exists to prevent.
+    ``resolve_ring_wire`` FAILS LOUD on a ``JASPER_FANIN_RING_WIRE_FORMAT`` value
+    neither language recognizes, which is right for an emitter and wrong for a
+    GATE: the arm has already written the ring env by the time the preflights
+    run, and an uncaught exception would skip the snapshot restore that makes a
+    refused arm non-destructive.
 
-    So every gate that needs the wire resolves it through here and turns a bad
-    declaration into a refusal with the parser's own sentence. One helper rather
-    than a ``try`` per gate: a gate added later gets the behaviour by using it.
+    So every gate that needs the wire resolves it through here, and a gate added
+    later gets the behaviour by using it.
     """
     try:
         return fanin_coupling.resolve_ring_wire(topology), ""
@@ -533,63 +476,43 @@ def ring_edge_width_ready(
     to arm: the gate fails closed and leaves the box exactly as it was found —
     never a fallback (ADR-0100) — naming the end and the value it declared.
     **Equality only, never a ranking**: no width-comparison primitive exists
-    in-repo for ALSA format strings and ``S24_3LE`` — live on the DAC edge —
-    already breaks any ordering by byte count, so this refuses ANY mismatch
-    rather than asserting a direction the code does not independently verify.
+    in-repo for ALSA format strings, and ``S24_3LE`` — live on the DAC edge —
+    breaks any ordering by byte count.
 
     THE ENDS, and what each contributes:
 
     - **fan-in** — ``JASPER_FANIN_RING_WIRE_FORMAT`` off the daemon's own env
       chain, plus its compile-time stereo mixer width. Its FORMAT axis is the
-      resolver's own input now (see
-      :func:`resolve_effective_fanin_wire_format`), so it agrees by construction
-      on the live path; the ends below are the independent ones;
+      resolver's own input, so it agrees by construction on the live path;
     - **the conf.d** — both stereo PCM blocks, PER BLOCK, because Ring A and
-      Ring B may legitimately differ on channels (Ring A is always the stereo
-      program; Ring B follows the box's output topology) and only the file can
-      say what the ioplug will attach with. The ACTIVE conf.d block is
-      deliberately NOT one of this gate's ends — ``active_ring_endpoint_proof``
-      proves it on its own path, with its own remedy;
+      Ring B may legitimately differ on channels and only the file says what the
+      ioplug will attach with. The ACTIVE conf.d block is deliberately NOT one of
+      this gate's ends — ``active_ring_endpoint_proof`` proves it on its own
+      path, with its own remedy;
     - **CamillaDSP's emitted stanzas** — the counterfactual "what would arming
-      emit", which is what catches the kwargs override path breaking (if
-      ``capture_kwargs_for_coupling`` ever stopped forcing the ring's own
-      format, the emit would silently fall back to the box-wide program-lane
-      default and mis-transcode every sample);
-    - **outputd** — its declared content format (once reconciled; see
-      :func:`ring_wire_declarations`) and its active-lane channel width;
+      emit", which catches ``capture_kwargs_for_coupling`` ever stopping forcing
+      the ring's own format (the emit would then fall back to the box-wide
+      program-lane default and mis-transcode every sample);
+    - **outputd** — its declared content format (once reconciled) and its
+      active-lane channel width;
     - **the LOADED CamillaDSP graph** — the config the statefile points at, for
-      each lane whose device IS a ring PCM.
+      each lane whose device IS a ring PCM. The counterfactual stanza end answers
+      what arming WOULD emit for the STEREO ring, not what is on this box's disk,
+      and on the ACTIVE-ring ladder it is not even the same ring; without this
+      end a shear between the resolver and the re-emitted graph would pass
+      unreported.
 
-    WHY THE LOADED GRAPH IS AN END. The counterfactual stanza end above answers
-    what arming WOULD emit for the STEREO ring, not what the graph on this box's
-    disk actually declares — and on the ACTIVE-ring ladder it is not even the
-    same ring, since that ladder moves the GRAPH first. A shear between the
-    resolver and the re-emitted graph would otherwise pass unreported: this gate
-    would prove the ends it could see and stay silent about the one it could
-    not, which is worse than a missing gate because it reads as covered. So the
-    graph is inspected, and when it CANNOT be (no statefile, unreadable config,
-    or a graph naming no ring PCM at all) the ok detail says so instead of
-    counting it.
+    NOT INSPECTED IS NOT REFUSED. A box that has not armed yet loads a non-ring
+    graph and a fresh box has no statefile, so an absent graph end costs the
+    message its claim, never the arm its verdict.
 
-    NOT INSPECTED IS NOT REFUSED, deliberately. A box that has not armed yet
-    loads a non-ring graph, and a fresh box has no statefile — refusing either
-    would refuse the unattended pass on every box in the fleet. So an absent
-    graph end costs the message its claim, never the arm its verdict.
-
-    ORDERING. This runs after topology eligibility, not first: on a box that
-    resolves no ring width the wire question is not well-posed
-    (``resolve_ring_wire`` falls back to the shipped stereo declaration there)
-    and a mismatch report would name the wrong defect.
-
-    The gate compares every ring against its own RESOLVED wire, never a policy
-    constant — so an operator's narrow pin is handled the same way as any other
-    end that declares narrow.
+    ORDERING. Runs after topology eligibility: on a box that resolves no ring
+    width the wire question is not well-posed and a mismatch report would name
+    the wrong defect.
 
     ``fanin_text`` / ``outputd_text`` / ``graph`` default to reading their
-    sources, so the gate stays callable with no arguments from
-    :func:`jasper.fanin.converge._ring_gates`; the arm path passes the snapshots
-    it has already written so the gate judges the text the daemons will actually
-    load. Each source is read ONCE per call.
+    sources, so the gate stays callable with no arguments; the arm path passes
+    the snapshots it has already written. Each source is read ONCE per call.
     """
     if fanin_text is None:
         fanin_text = _read_snapshot(FANIN_ENV_PATH).text
@@ -640,14 +563,11 @@ def ring_edge_width_ready(
                 f"{want_channels} (from {decl.source})"
             )
         elif decl.channels is None and not decl.channels_excused:
-            # SYMMETRY WITH THE FORMAT AXIS. An end that meant to state a channel
-            # count and could not is indeterminate, and an indeterminate end
-            # cannot be proven to match — the shape that reaches here is a
-            # PRESENT conf.d whose block declares ``channels`` twice with
-            # different values (``ring_assets.ring_conf_channels`` answers None for exactly
-            # that torn file), or an outputd key that will not parse as an int.
-            # Without this the channels axis passed such a box silently while
-            # the format axis refused it.
+            # SYMMETRY WITH THE FORMAT AXIS: an end that meant to state a
+            # channel count and could not is indeterminate. The shapes that
+            # reach here are a PRESENT conf.d whose block declares ``channels``
+            # twice with different values, or an outputd key that will not parse
+            # as an int.
             problems.append(
                 f"{decl.end} declares no channel count at all (from "
                 f"{decl.source}) — an indeterminate end cannot be proven to match"
@@ -662,10 +582,8 @@ def ring_edge_width_ready(
             "fails closed and leaves the box exactly as it was found — "
             "never a fallback (ADR-0100) — until they agree"
         )
-    # The COUNT and the NAMES come from the declarations that were actually
-    # compared, so the message cannot outlive an end being dropped from the
-    # list. The graph clause is what stops the ok from claiming an end this call
-    # never saw.
+    # The COUNT and the NAMES come from the declarations actually compared, so
+    # the message cannot outlive an end being dropped from the list.
     inspected = ", ".join(decl.end for decl in declarations)
     graph_inspected = any(
         decl.end.startswith("loaded CamillaDSP graph") for decl in declarations
@@ -690,13 +608,11 @@ def ring_edge_width_ready(
 def ring_wire_caps_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate: can the INSTALLED ioplug open this wire?
 
-    A RECORD COMPARE, never an open-probe. The reconciler must never open a ring
-    PCM to find out what the plugin can do: on an armed box the ioplug's SPSC
-    guard EBUSYs the probe, and probing a live ring is exactly the disturbance
-    the doctor's armed-skip exists to avoid. So the installer records the sha and
-    capability set of the ``.so`` it installed
-    (``deploy/lib/install/ring-platform.sh``) and this compares that record
-    against the resolved wire's needs — see
+    A RECORD COMPARE, never an open-probe: on an armed box the ioplug's SPSC
+    guard EBUSYs a probe, and probing a live ring is the disturbance the doctor's
+    armed-skip exists to avoid. The installer records the sha and capability set
+    of the ``.so`` it installed (``deploy/lib/install/ring-platform.sh``) and
+    this compares that record against the resolved wire's needs — see
     :func:`jasper.ring_assets.ring_ioplug_wire_supported`.
 
     THE WALK IT CLOSES. The ioplug build degrades to a WARN, so a failed rebuild
@@ -704,21 +620,14 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     If the resolved wire renders a conf.d ``format`` / ``channels`` key that old
     plugin does not parse, it refuses the device at ``open()`` with ``-EINVAL``
     and CamillaDSP cannot start against the ring — a crash loop on an
-    ALREADY-armed box.
+    ALREADY-armed box. Such a box is REFUSED here (its content lane parks,
+    ADR-0178) rather than arming into a CamillaDSP that cannot open the ring;
+    ``jasper-doctor``'s ``ring ioplug provenance`` check reports the state with
+    the redeploy remedy first.
 
-    LIVE ON EVERY BOX THAT HAS NOT PINNED ITSELF NARROW. The ring wire's
-    resolver defaults WIDE (``jasper.fanin_coupling.resolve_ring_wire_format``)
-    while the ioplug's compiled-in conf.d default stayed ``S16_LE``, so an
-    undeclared box needs the ``wire_format`` capability and this gate performs a
-    real record compare — hashing the ``.so`` and reading
-    ``RING_IOPLUG_PROVENANCE`` — on every pass. A box whose last deploy took the
-    ioplug-build WARN is therefore REFUSED here — a roleful box's content lane
-    parks (ADR-0178) — rather than arming into a CamillaDSP that cannot open
-    the ring. ``jasper-doctor``'s ``ring ioplug provenance``
-    check reports that state with the redeploy remedy BEFORE this gate acts on
-    it. The short-circuit arm survives for one shape only: a box an operator has
-    pinned to ``S16_LE`` through ``JASPER_FANIN_RING_WIRE_FORMAT`` (the rollback
-    lever; nothing in the repo writes that key).
+    The short-circuit — no record read at all — survives for one shape: a box an
+    operator has pinned to ``S16_LE``, the ioplug's own compiled-in conf.d
+    default.
 
     An unparseable declaration is refused here rather than raised — see
     :func:`resolve_wire_for_gate` for why a gate must not throw mid-arm.
@@ -733,14 +642,13 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
 def ring_assets_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate: are the ring-platform assets present?
 
-    Checked BEFORE arming the ring coupling. Fail-SAFE: if the ioplug ``.so`` /
-    conf.d / ``/dev/shm/jts-ring`` are not all present, arming would install a
-    CamillaDSP config whose ``jts_ring_capture`` plus post-DSP ring device
-    (``jts_ring_playback``, or ``jts_ring_active_playback`` on an armed roleful
-    box) cannot resolve — CamillaDSP would crash-loop on its statefile and the fan-in
-    ``StartLimitAction=reboot`` could compound it. So the reconciler refuses to
-    arm and leaves the box exactly as it was found — never a fallback to a
-    second transport (ADR-0100). Presence-only (the doctor owns the deep open-probe);
+    Fail-SAFE: if the ioplug ``.so`` / conf.d / ``/dev/shm/jts-ring`` are not all
+    present, arming would install a CamillaDSP config whose ring devices cannot
+    resolve — CamillaDSP would crash-loop on its statefile and the fan-in
+    ``StartLimitAction=reboot`` could compound it. So the reconciler leaves the
+    box exactly as it was found, never a fallback (ADR-0100).
+
+    Presence-only; the doctor owns the deep open-probe, and
     ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
     """
     presence = ring_assets.ring_asset_presence()
@@ -767,10 +675,9 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
        says; a block still on the shipped default while the graph declares a
        different width is a guaranteed attach failure.
 
-    Both are checked because they have different failure modes and different
-    remedies, so collapsing them into one reason would send an operator to the
-    wrong fix. Fail-CLOSED on anything indeterminate: an unreadable conf.d
-    declares nothing, which is not proof.
+    Both are checked: they have different failure modes and different remedies,
+    so one collapsed reason would send an operator to the wrong fix. Fail-CLOSED
+    on anything indeterminate — an unreadable conf.d declares nothing.
     """
     from jasper.active_speaker.runtime_contract import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
         active_ring_channels_for_topology,
@@ -818,41 +725,29 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
 def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     """Prove EVERY output of ``graph`` ends in a wired hard mute. (ok, why-not).
 
-    MEASURED, not inferred from a FILENAME or inherited from
-    ``stage_protected_startup_config``, a writer in another module it never
-    consults: a graph at the published anchor path with one output unmuted at
-    −20 dB, or one with every output at full scale, would both pass a filename
-    check while failing the claim "an all-muted anchor hosts no EQ". Neither is
-    reachable through a shipped writer (the stager blocks a non-muted emit with
-    ``staged_config_not_fully_muted``), but the acceptance is the last thing
-    between a graph at the ring endpoint and the drivers, so it measures the
-    fact it names rather than assuming it.
+    MEASURED, not inferred from a FILENAME: a graph at the published anchor path
+    with one output unmuted, or one at full scale, would pass a filename check
+    while failing the claim "an all-muted anchor hosts no EQ". This acceptance is
+    the last thing between a graph at the ring endpoint and the drivers.
 
-    THE WHOLE PROOF, not two thirds of it. This asks
-    :func:`~jasper.active_speaker.graph_safety.output_terminally_muted` — the
-    shared three-fact primitive ``runtime_contract._flat_output_terminally_muted``
-    also binds — for every output the graph declares: (1) the repo's one mute
-    idiom, an ``as_out{i}_commission_mute`` ``Gain`` at
-    :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` AND wired to channel ``i``;
-    (2) that the mute is TERMINAL — last name in its own ``Filter`` step, no
-    later step touching the channel; (3) no ``bypassed`` step anywhere.
+    THE WHOLE PROOF. Asks
+    :func:`~jasper.active_speaker.graph_safety.output_terminally_muted` for every
+    output the graph declares: (1) the repo's one mute idiom, an
+    ``as_out{i}_commission_mute`` ``Gain`` at :data:`STARTUP_MUTE_GAIN_DB` with
+    ``mute: true`` AND wired to channel ``i``; (2) the mute is TERMINAL — last
+    name in its own ``Filter`` step, no later step touching the channel; (3) no
+    ``bypassed`` step anywhere.
 
-    FACT 2 IS WHY THIS CALLS THE PRIMITIVE RATHER THAN COMPOSING FACT 1 ITSELF.
-    Composing fact 1 alone is satisfied by a graph that appends a ``+240 dB``
-    ``Gain`` as an extra pipeline step after the mute, appends that same gain
-    INTO the mute step's own ``names`` list, or appends a ``Dither`` step
-    (which *generates* signal into a muted channel) — the same three shapes
-    recorded in ``_parked_graph_allowed``'s docstring. A mute that merely
-    appears somewhere in the chain is not a mute.
+    Fact 2 is why this calls the primitive rather than composing fact 1 itself:
+    fact 1 alone is satisfied by a graph appending a ``+240 dB`` ``Gain`` after
+    the mute, appending that gain INTO the mute step's own ``names`` list, or
+    appending a ``Dither`` step, which generates signal into a muted channel.
 
     The width comes from the graph's own ``playback_channels``, which the caller
-    has already held to the topology-derived active-ring width, so this checks
-    every roleful output and cannot be satisfied by a graph that declares fewer.
+    has already held to the topology-derived active-ring width.
 
-    THE BYPASSED PRE-SCAN IS FOR THE MESSAGE, NOT THE VERDICT. The primitive
-    already refuses a bypassed graph (fact 3) but returns a bare ``bool``, so a
-    caller that wants to tell "a step is bypassed" apart from "this output is
-    not muted" has to ask separately. The verdict is the primitive's either way.
+    THE BYPASSED PRE-SCAN IS FOR THE MESSAGE, NOT THE VERDICT: the primitive
+    already refuses a bypassed graph but returns a bare ``bool``.
 
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
@@ -925,22 +820,19 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     from jasper.active_speaker.staging import load_staged_startup_config  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
 
     staged = load_staged_startup_config()
-    # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
-    # commissioning reader uses: that shape raises AttributeError on a record
-    # whose ``config`` is a truthy NON-mapping, and this reader sits inside the
-    # reconciler's ordered arm, where an escaping exception would skip the
-    # snapshot restore that makes a refused arm non-destructive. A malformed
-    # record is a refusal here, never a raise.
+    # ``isinstance`` rather than ``(… or {}).get(…)``: that shape raises
+    # AttributeError on a record whose ``config`` is a truthy NON-mapping, and an
+    # exception escaping the reconciler's ordered arm would skip the snapshot
+    # restore that makes a refused arm non-destructive.
     status = staged.get("status")
     config_record = staged.get("config")
     anchor_path = (
         config_record.get("path") if isinstance(config_record, Mapping) else None
     )
     if not anchor_path:
-        # The record's SHAPE, not merely its absence: "publishes no anchor" while
-        # the record itself says ``status='staged'`` is self-contradicting, and
-        # sends a debugging operator to re-stage when the real defect is a
-        # corrupt record.
+        # The record's SHAPE, not merely its absence: "publishes no anchor"
+        # while the record says ``status='staged'`` sends a debugging operator to
+        # re-stage when the real defect is a corrupt record.
         malformed = config_record is not None and not isinstance(
             config_record, Mapping
         )
@@ -955,10 +847,9 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
             + ", so the loaded graph cannot be proved to BE one"
         )
     if status != "staged":
-        # The record's LOCATOR without the record's VERDICT is the same trust
-        # gap as the mute proof: a ``blocked`` / ``unreadable`` record still
-        # carries a path, and accepting it would treat a run that the stager
-        # REFUSED as a published anchor.
+        # A ``blocked`` / ``unreadable`` record still carries a path, and
+        # accepting it would treat a run the stager REFUSED as a published
+        # anchor.
         return False, (
             f"the staged startup anchor record reports status={status!r}, not "
             "'staged' — a record the stager did not accept is not a published "
@@ -978,27 +869,21 @@ def graph_at_active_ring_endpoint(
     """Is THIS graph already at the ACTIVE ring endpoint, at this box's wire?
 
     Two axes, and deliberately only two: the ENDPOINT pair (capture is Ring A
-    and playback is the ACTIVE ring — both lanes, because a graph that plays
-    the ring while capturing the snd-aloop tap captures a device nobody writes,
-    the #2364 digital-silence trap) and the WIRE (every ring lane states the
-    box's resolved format AND channel width, via :func:`graph_wire_declarations`
-    and :func:`_wire_channels_for_ring`).
+    and playback is the ACTIVE ring — both lanes, because a graph that plays the
+    ring while capturing the snd-aloop tap captures a device nobody writes) and
+    the WIRE (every ring lane states the box's resolved format AND channel
+    width).
 
-    TWO CALLERS, ONE OWNER, and the split is the point.
-    :func:`ring_endpoint_anchor_converged` asks this between its anchor-identity
-    axis and its all-muted axis — it wants "the ANCHOR is already where the arm
-    wanted to put it". :mod:`jasper.fanin.converge`'s early convergence check
-    asks it alone, because its question is narrower: "has the transport move
-    already happened to whatever graph is loaded". Those differ on exactly the
-    class the convergence design admits as its first arm — a COMMISSIONED box
-    rides an applied baseline, not the staged anchor, so anchor identity is
-    false there forever and all-muted is false by design (a commissioned graph
-    plays). Asking the anchor predicate whole there would report NOT-converged
-    on every pass and re-emit the graph at every boot, deploy and hotplug,
-    which is the opposite of the idempotence that check's own budget rests on.
+    TWO CALLERS. :func:`ring_endpoint_anchor_converged` asks this between its
+    anchor-identity and all-muted axes; :mod:`jasper.fanin.converge` asks it
+    alone, because its question is narrower — "has the transport move already
+    happened to whatever graph is loaded". A COMMISSIONED box rides an applied
+    baseline, so anchor identity is false there forever and all-muted is false by
+    design, and asking the anchor predicate whole would re-emit its graph at
+    every boot, deploy and hotplug.
 
-    Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a
-    lane that declares no format or no channel count.
+    Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a lane
+    that declares no format or no channel count.
     """
     capture = graph.devices.get("capture_device")
     playback = graph.devices.get("playback_device")
@@ -1046,63 +931,39 @@ def ring_endpoint_anchor_converged(
 ) -> tuple[bool, str]:
     """Is the loaded graph ALREADY this box's staged anchor at the ring endpoint?
 
-    THE STATE THIS ANSWERS FOR, and why the camilla step needs it. A
-    mid-commission roleful box — the fleet-typical composite, which #2514 exists
-    to let onto the ring — boots from the all-muted staged startup anchor, not
-    from an applied baseline. ``reconcile_current_dsp`` resolves that graph to
-    :class:`~jasper.sound.graph_carrier._ActiveGraphCarrier` with
-    ``is_baseline=False``, which refuses to host EQ
-    (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL` -> status ``skipped``). That
-    refusal is CORRECT and unchanged: an all-muted transient graph must never be
-    re-emitted through a preference template. But the arm's camilla step reads
-    every ``skipped`` as "the ring config was NOT loaded", so an anchor-riding
-    box would otherwise never pass the arm — this function is what lets it, by
-    proving directly that nothing is left to re-emit.
+    THE STATE THIS ANSWERS FOR. A mid-commission roleful box boots from the
+    all-muted staged startup anchor, not from an applied baseline.
+    ``reconcile_current_dsp`` resolves that graph to a carrier with
+    ``is_baseline=False``, which correctly refuses to host EQ and reports
+    ``skipped``; the arm's camilla step reads every ``skipped`` as "the ring
+    config was NOT loaded", so an anchor-riding box would otherwise never pass
+    the arm. This proves directly that nothing is left to re-emit.
 
-    THE ACCEPTANCE IS A DIRECT PROOF, never a widening of the refusal. There is
-    genuinely nothing for a reconcile to do when the graph the statefile points
-    at IS the box's own published anchor AND that anchor already names the ring
-    endpoint at the box's wire: an all-muted anchor hosts no EQ, and the graph is
-    already where the arm wanted to put it. Each of those is proved from the
-    artifact on disk, through the owner that already answers for it:
+    Each axis is proved from the artifact on disk, through the owner that already
+    answers for it:
 
     1. **Identity** — the loaded graph's path is the path the box PUBLISHED as
-       its staged anchor (``load_staged_startup_config``'s ``config.path``, the
-       same record ``web_commissioning`` and ``/sound/`` key their anchor tests
-       on) on a record whose own ``status`` is ``staged``. The loaded path comes
-       from the DAEMON (``loaded_config_path``, which
-       ``reconcile_current_dsp``'s skip payload already carries as
-       ``current_config_path``) and falls back to the statefile only when the
-       caller has no daemon answer — see :func:`read_loaded_camilla_graph`.
-       A commissioning load lives at its own fixed path
-       (``DEFAULT_COMMISSIONING_CONFIG_NAME``) and therefore fails here, which is
-       the point: a per-driver commissioning graph is a transient with a driver
-       armed at level, and must never be read as a converged arm.
-    2+3. **Endpoint and wire** — :func:`graph_at_active_ring_endpoint`, which
-       owns both axes because :mod:`jasper.fanin.converge`'s early check asks
-       them WITHOUT axes 1 and 4 (see that function). The CHANNELS axis rides
-       along because this predicate is also consulted on the CONFIRM path, where
-       ``ring_edge_width_ready`` does not run — without it an armed anchor box
-       whose width later sheared would be reported converged forever instead of
-       refused like any other sheared box. Including it can only ever REFUSE more.
+       its staged anchor, on a record whose own ``status`` is ``staged``. The
+       loaded path comes from the DAEMON (``loaded_config_path``) and falls back
+       to the statefile only when the caller has no daemon answer. A
+       commissioning load lives at its own fixed path and therefore fails here:
+       a per-driver commissioning graph is a transient with a driver armed at
+       level, and must never be read as a converged arm.
+    2+3. **Endpoint and wire** — :func:`graph_at_active_ring_endpoint`. The
+       CHANNELS axis rides along because this predicate is also consulted on the
+       CONFIRM path, where ``ring_edge_width_ready`` does not run; without it an
+       armed anchor box whose width later sheared would be reported converged
+       forever.
     4. **All-muted** — every output the graph declares ends in a wired hard mute
-       at :data:`STARTUP_MUTE_GAIN_DB` (:func:`_anchor_is_all_muted`). This is
-       the fact the success detail NAMES, so it is the fact this measures rather
-       than inherits from the writer that emitted the file.
+       at :data:`STARTUP_MUTE_GAIN_DB` (:func:`_anchor_is_all_muted`).
 
     FAIL-CLOSED on anything indeterminate: an unreadable config, no published
     anchor, a record that is not ``staged``, a lane that declares no format or no
-    channel count, an unparseable or unmuted graph — every such shape falls
-    through to the caller's own existing refusal path unchanged.
+    channel count, an unparseable or unmuted graph.
 
     NOT a gate in :func:`jasper.fanin.converge._ring_gates` and not a preflight —
     it is the camilla step's own acceptance criterion, consulted only after
-    ``reconcile_current_dsp`` has already declined. **On the ARM path** that
-    puts it behind the whole preflight ladder, so it can neither admit nor refuse
-    an arm those gates have not already passed. **On the CONFIRM path it is the
-    only graph check that runs at all** — that path's gate,
-    :func:`ring_wire_caps_ready`, does not read the loaded graph — which is why
-    axes 3 and 4 are here rather than left to the arm's preflights.
+    ``reconcile_current_dsp`` has already declined.
     """
     graph = read_loaded_camilla_graph(loaded_config_path)
     if graph.note:
@@ -1135,71 +996,36 @@ def ring_endpoint_anchor_converged(
 def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     """May THIS composite sink ride the ACTIVE ring at the wire the box declares?
 
-    **Only at the WIDE wire.** Named and tested on its own so the
-    rule is greppable, but wired into exactly ONE call site —
-    :func:`ring_topology_ready`'s ACTIVE arm — because both arming paths (the
-    unattended ``--auto`` pass and the operator arm) reach the ring through that
-    one gate. A rule wired into one of two paths reads as covered while half of
-    it is not.
+    **Only at the WIDE wire.** Named on its own so the rule is greppable, but
+    wired into exactly ONE call site — :func:`ring_topology_ready`'s ACTIVE arm —
+    because both arming paths reach the ring through that gate.
 
-    THE REGRESSION THIS REFUSES, which is invisible on every other axis. Before
-    ADR-0100 retired the loopback coupling,
-    :func:`jasper.fanin_coupling.content_lane_format_for_coupling` selected the
-    CamillaDSP→outputd content hop's format BY coupling — ``DEFAULT_PLAYBACK_FORMAT``
-    (**S32_LE**) under ``loopback``, ``resolve_ring_wire().sample_format`` under
-    ``shm_ring`` (today it answers the ring's resolved format unconditionally;
-    see that function's own note). Moving a composite from its aloop lane onto a
-    NARROW ring, changing nothing else, would narrow the POST-crossover
-    per-driver program from 32 to 16 bits. That was the exact quantization class
-    the wide-output-path program exists to remove, arriving through a transport
-    change nobody would look at for it.
-
-    WHAT REACHES THIS REFUSAL NOW. The ring wire's resolver defaults WIDE, so an
-    undeclared composite converges with no declaration at all and passes here —
-    that generalization of this gate's own sentence is why the default moved
-    (convergence design §3.2). The one shape left is a box an operator has
-    PINNED to ``S16_LE``: this gate refuses to ride its rollback lever onto a
-    composite's per-driver program, and says so.
+    THE REGRESSION THIS REFUSES is invisible on every other axis: moving a
+    composite onto a NARROW ring, changing nothing else, narrows the
+    POST-crossover per-driver program from 32 to 16 bits. The rule is that the
+    post-crossover hop carries the i32 program spine's width and quantizes ONCE,
+    at the DAC edge; a 16-bit hop quantizes early and then again after outputd's
+    per-driver gain, trim and protection have scaled it.
 
     ``ring_edge_width_ready`` cannot catch it: that gate proves every declaring
     end states the SAME wire, and a narrow composite arm is perfectly
-    self-consistent — every end says ``S16_LE`` and it passes. Coherence is not
-    width. This is the only gate that asks whether the width itself is a
-    regression, and it asks it for the composite alone, because the composite is
-    the only sink whose ring arm is a fresh decision this campaign is making.
+    self-consistent. Coherence is not width.
 
-    THE SCOPE OF THE CLAIM. This is about the CamillaDSP→outputd HOP, not the DAC edge. The
-    composite's own ``final_edge_format`` is ``S16_LE`` today — the paired sink
-    has no packed-24 child write path (#2257) — so a reader may reasonably ask
-    what a 32-bit hop buys when the edge is 16 anyway. The answer is the
-    invariant, not a measured delta: the wide-output-path program's rule is that
-    the post-crossover hop carries the i32 program spine's width and quantizes
-    ONCE, at the edge, where the DAC's own format decides it. A 16-bit hop
-    quantizes early and then again after outputd's per-driver gain, trim and
-    protection have scaled it — and it silently pre-empts #2257, which exists to
-    widen that edge. No audible-harm figure is claimed here; none has been
-    measured on a composite.
-
-    NOT a policy override of the operator's declaration: the wire stays the
-    box's own ``JASPER_FANIN_RING_WIRE_FORMAT``, whose writer set is EMPTY — no
-    boot, deploy or udev pass can overwrite a pin, which is what makes it a real
-    rollback lever. This refuses the unsafe COMBINATION and names the remedy,
-    rather than silently rewriting the operator's file.
+    Since the resolver defaults WIDE, the only shape that reaches this refusal is
+    a box an operator has PINNED to ``S16_LE``. Not a policy override of that
+    declaration — the key's writer set stays EMPTY, which is what makes it a real
+    rollback lever — but a refusal of the unsafe COMBINATION, naming the remedy.
 
     THE REMEDY NAMES ALL THREE RUNGS. A roleful graph's capture and playback
-    formats are baked when it is EMITTED (``active_emit_devices`` resolves them
-    once, at emit), and the hardware reconciler re-renders only the conf.d and
-    outputd's env, not the graph — so setting the key and re-running the
-    hardware reconciler alone leaves the box's BOOT GRAPH still narrow, and the
-    next arm refuses again, this time from ``ring_edge_width_ready``, naming the
-    graph. So the remedy is the whole ladder, graph first — and in the
-    ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
-    uses (``jasper/cli/doctor/audio_runtime_ring.py``), because these two strings are
-    operator-copied text for the same three rungs and only that spelling pastes
-    into a shell and works.
+    formats are baked when it is EMITTED, and the hardware reconciler re-renders
+    only the conf.d and outputd's env, so setting the key and re-running the
+    reconciler alone leaves the BOOT GRAPH narrow and the next arm refuses again
+    from ``ring_edge_width_ready``. The ``sudo /opt/jasper/.venv/bin/…`` spelling
+    matches the doctor's own rollback ladder
+    (``jasper/cli/doctor/audio_runtime_ring.py``); only that spelling pastes into
+    a shell and works.
 
-    Non-composite topologies pass untouched — every roleful DAC array and
-    stereo-ring box keeps the wire it has today.
+    Non-composite topologies pass untouched.
     """
     from jasper.active_speaker.runtime_contract import topology_sink_is_composite  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
 
@@ -1263,19 +1089,17 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
 
     SCOPE, held deliberately narrow: arm 1 is the fingerprint compare ONLY.
     Applied-record DIVERGENCE (``applied_profile_displacement``) is another
-    gate's question and is NOT asked here.
+    gate's question.
 
     Everything else refuses, fail-CLOSED: an unreadable topology, no applied
     record and no anchor, a stale fingerprint, an anchor that is not terminally
     muted. The refusal names the runnable arm so a refused box has a way out.
 
-    A CORRUPT applied record is caught HERE rather than left to the caller.
+    A CORRUPT applied record is caught HERE rather than left to the caller:
     ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
-    own loader catches, but a non-UTF-8 byte — the SD-card / power-cut
-    truncation — raises ``UnicodeDecodeError`` straight past it, and the
-    caller's ``except`` would turn that into the one refusal in this gate
-    carrying no remediation. The SHARED loader is deliberately not widened; it
-    has other callers whose contracts are theirs.
+    own loader catches, but a non-UTF-8 byte (the SD-card / power-cut truncation)
+    raises ``UnicodeDecodeError`` straight past it, and the caller's ``except``
+    would turn that into a refusal carrying no remediation.
     """
     from jasper.active_speaker.baseline_profile import (  # lazy: import cost, pulls scipy via bass_extension (ADR-0226)
         applied_baseline_hardware_match,
@@ -1370,14 +1194,11 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
       so both stay refused.
 
     **Why an arm here and NOT a widening of ``topology_supports_shm_ring``.**
-    Making that predicate true for roleful is the forbidden one-liner: it has two
-    other consumers, and both would silently change meaning. The unattended
-    ``--auto`` pass would find every gate passing on a roleful box and AUTO-ARM
-    the fleet — marker absent, so outputd would refuse the pairing and park the
-    speaker with no operator anywhere near it. And ``jasper.sound.camilla_yaml``'s
-    flat-cutover defusal gate protects exactly the boxes that widening would
-    re-expose. The eligibility question genuinely differs per ring, so it is asked
-    per ring, here, where the endpoint proof is also in scope.
+    That predicate has two other consumers which would silently change meaning:
+    the unattended ``--auto`` pass would AUTO-ARM every roleful box with the
+    marker absent, so outputd would refuse the pairing and park the speaker, and
+    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
+    the boxes the widening would re-expose.
 
     Unreadable-topology policy is caller-selectable:
 
@@ -1424,12 +1245,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
             "before arming the full-range shm_ring coupling"
         )
     if active_ring_channels_for_topology(topology) is not None:
-        # A composite sink additionally has to clear the WIDE-wire rule.
-        # Asked BEFORE the endpoint proof because it is a property of
-        # the box's own declaration rather than of what the reconciler has
-        # staged, so its remedy ("declare the wide wire") is actionable whether
-        # or not the endpoint is up — and reporting the staging defect first
-        # would send an operator to fix the wrong thing twice.
+        # Asked BEFORE the endpoint proof: it is a property of the box's own
+        # declaration rather than of what the reconciler has staged, so its
+        # remedy is actionable whether or not the endpoint is up.
         wire_ok, wire_detail = composite_ring_wire_ready(topology)
         if not wire_ok:
             return False, wire_detail
@@ -1440,22 +1258,11 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
             f"topology resolves an active-ring width, but the endpoint is not "
             f"staged: {detail}"
         )
-    # Neither ring fits. Reaching HERE on a roleful box means it resolved no
-    # ACTIVE-ring width either — an explicit mono, or a roleful topology whose
-    # driven width is indeterminate; a roleful box that DOES resolve one was
-    # answered by the active arm above, admitted or refused on its wide-wire
-    # rule and endpoint proof. A composite reaches here only when it is
-    # PASSIVE (not roleful, so no active ring) — a roleful composite resolves 4.
-    # These shapes PARK under their own name instead
-    # (ADR-0178: passive-stereo-composite is #2982, explicit-mono is #3117) —
-    # see jasper.control.transport_park — rather than falling back to a
-    # second coupling.
-    # A plain single-sink speaker still needs an explicit passive stereo layout
-    # before this arm is legal. A stale roleful/subwoofer topology needs the same
-    # first recovery step: ``jasper-output-topology-reset`` clears it to the
-    # unconfigured, silent state. The household then saves a passive stereo
-    # layout and re-arms. Name both steps rather than implying reset itself arms
-    # the full-range ring.
+    # Neither ring fits: a roleful box reaching here resolved no ACTIVE-ring
+    # width (an explicit mono, or an indeterminate driven width), and a composite
+    # reaches here only when it is PASSIVE. These shapes PARK under their own
+    # name (ADR-0178, jasper.control.transport_park) rather than falling back to
+    # a second coupling.
     return False, (
         "saved output topology is not ring-eligible (the STEREO shm_ring is a "
         "full-range single-sink coupling; roleful/protected/subwoofer "
