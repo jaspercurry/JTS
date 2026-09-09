@@ -16,6 +16,7 @@ import math
 import re
 import shutil
 from collections import Counter
+import shlex
 from pathlib import Path
 
 import numpy as np
@@ -248,6 +249,103 @@ def diagnostic_round(tmp_path: Path) -> Path:
         })
         path.write_text(json.dumps(document))
     return root
+
+
+def test_inventory_discovers_one_exact_diagnostic_and_runs_its_command(
+    diagnostic_round: Path, capsys,
+) -> None:
+    summed = diagnostic_round / "bundle" / "b0" / "summed"
+    for capture_id in ("new-level", "new-shape"):
+        path = summed / f"summed_{capture_id}.json"
+        document = json.loads(path.read_text())
+        document.pop("branch_diagnostic")
+        path.write_text(json.dumps(document))
+
+    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
+    rows = {
+        row["artifact"]: row
+        for row in json.loads(capsys.readouterr().out)["artifacts"]
+    }
+    forward = rows["forward_model.json"]
+    command = shlex.split(forward["next_command"])
+    assert command == [
+        "jasper-round-views", "forward-model", str(diagnostic_round),
+        "--capture-id", "old",
+    ]
+    assert forward["required_inputs"] == []
+    assert cli_main(command[1:]) == 0
+    assert (diagnostic_round / "forward_model.json").is_file()
+
+
+def test_inventory_requires_a_capture_id_when_diagnostic_choice_is_ambiguous(
+    diagnostic_round: Path, capsys,
+) -> None:
+    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
+    rows = {
+        row["artifact"]: row
+        for row in json.loads(capsys.readouterr().out)["artifacts"]
+    }
+    forward = rows["forward_model.json"]
+
+    assert shlex.split(forward["next_command"])[-2:] == [
+        "--capture-id", "<capture-id>",
+    ]
+    assert forward["producer_needs_more_than_this_round"] is True
+    assert forward["required_inputs"] == ["<capture-id>"]
+
+
+@pytest.mark.parametrize("complete_supersedes", [False, True])
+def test_inventory_uses_only_the_latest_real_solo_basis(
+    tmp_path: Path, capsys, complete_supersedes: bool,
+) -> None:
+    round_dir = bank_measure_round(tmp_path)
+    if complete_supersedes:
+        bundle = next((round_dir / "bundle").iterdir())
+        artifacts = bundle / EVIDENCE_ROOT / "artifacts"
+        source = next(
+            path for path in artifacts.glob("**/*.json")
+            if json.loads(path.read_text()).get("phase") == PHASE_MEASURE
+        )
+        document = json.loads(source.read_text())
+        document["phase_composition"] = "complete_tune_measured"
+        (source.parent / "zzz-complete-tune.json").write_text(json.dumps(document))
+
+    assert cli_main(["inventory", str(round_dir), "--out", "-"]) == 0
+    rows = {
+        row["artifact"]: row
+        for row in json.loads(capsys.readouterr().out)["artifacts"]
+    }
+    forward = rows["forward_model.json"]
+    if complete_supersedes:
+        assert forward["next_command"] is None
+        assert forward["required_inputs"] == ["<capture-id>"]
+        assert forward["repair_reason"] == "forward_model_basis_missing"
+    else:
+        command = shlex.split(forward["next_command"])
+        assert command == ["jasper-round-views", "forward-model", str(round_dir)]
+        assert forward["required_inputs"] == []
+        assert cli_main(command[1:]) == 0
+        assert (round_dir / "forward_model.json").is_file()
+
+
+def test_inventory_survives_unreadable_diagnostic_metadata(
+    diagnostic_round: Path, capsys,
+) -> None:
+    broken = (
+        diagnostic_round / "bundle" / "b0" / "summed" / "summed_old.json"
+    )
+    broken.write_text("{")
+
+    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
+    rows = {
+        row["artifact"]: row
+        for row in json.loads(capsys.readouterr().out)["artifacts"]
+    }
+    forward = rows["forward_model.json"]
+
+    assert forward["next_command"] is None
+    assert forward["required_inputs"] == ["<capture-id>"]
+    assert forward["repair_reason"] == "round_capture_unreadable"
 
 
 def _bind_candidate_take(

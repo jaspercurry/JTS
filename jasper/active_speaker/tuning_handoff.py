@@ -87,8 +87,9 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any]) -> str:
             f"  {ORIENTATION_COMMAND}",
             "  It prints the reading order for the operator docs installed on "
             "this box, where this speaker stands, and what it can do next. "
-            "Read the runbook's \"The tool menu\" for which tool to run and "
-            "how; do not ask this prompt.",
+            "Read the runbook's \"Find the analysis that answers the question\" "
+            "first, then \"The tool menu\" for the selected tool's door; do not "
+            "ask this prompt.",
             "",
             "THE PROGRAM DOOR",
             f"  {PROGRAM_DOOR_COMMAND}",

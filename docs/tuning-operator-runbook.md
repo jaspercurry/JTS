@@ -58,7 +58,8 @@ Choose the order from the evidence and the next question.
    `/var/lib/jasper/active_speaker/campaigns/<round-id>/`, outside normal session
    retention. Keep completed valid takes even when another take fails.
 5. **Inspect and enrich.** `jasper-round-views inventory <round-dir>` shows
-   available artifacts and missing analyses. Run the relevant views, such as
+   available artifacts and commands for analyses the round can produce. Run
+   relevant views, such as
    `classify-features`, `distortion`, `directivity`, or `frozen`, before freezing
    evidence for a prescription. `per-seat --include agreement` shares its
    round read and seat preparation; add `directivity` or `co-metrics` only
@@ -200,21 +201,32 @@ candidate/graph/WAV/program identities, and clock/gate facts. View it with
 take with `--role woofer`, `tweeter`, or `summed` to inspect window sensitivity.
 Do not align each impulse to its own peak before comparing driver phase.
 
-Run `jasper-round-views forward-model <round-dir> --capture-id <id>` without a candidate to check
-whether woofer plus tweeter reconstructs the same take's measured sum under one
-common window; `--window-ms` selects a disclosed alternative. This closure is a
-model check, not proof that a changed candidate forecast is right. Before the
-first useful changed-candidate trial, save the forecast separately:
+When useful, read acoustic dependencies in this order: capture validity first,
+because an invalid take cannot support a comparison; branch balance before
+timing and polarity, because a weak branch limits cancellation; gates and poses,
+because a moving feature may come from the room or placement; then a candidate
+trial, because a forecast becomes evidence only when the changed sum is
+measured. Skip evidence already answered by a valid compatible take.
+
+Run `jasper-round-views forward-model <round-dir> --capture-id <id>` without a
+candidate to check whether woofer plus tweeter reconstructs the same take's
+measured sum under one common window; `--window-ms` selects a disclosed
+alternative. This closure checks the model. Before a useful changed-candidate
+trial, save the forecast separately:
 
 ```
 jasper-round-views forward-model <round-dir> --capture-id <id> \
   --candidate-json <full-candidate> --out forecast.json
 ```
 
+Poor same-take reconstruction or window closure weakens the forecast; use
+measured full-sum comparisons for the decision.
+
 The code resolves source/target metadata and timing, optionally through
-`--basis-candidate-json` or `--candidate-root`. After a safe candidate trial,
-capture that target once with the same `branches` program at the same pose.
-Compare its exact sum without overwriting the forecast:
+`--basis-candidate-json` or `--candidate-root`. Use the `branches` program for
+the target candidate's validation trial at the same pose. That trial records
+the target branches and sum. Compare its exact sum without overwriting the
+forecast:
 
 ```
 jasper-round-views forward-model <round-dir> --capture-id <id> \

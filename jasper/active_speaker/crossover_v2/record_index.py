@@ -15,7 +15,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import (
@@ -114,16 +114,14 @@ def _load(take: Path) -> Mapping[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def measurement_documents(bundle_dir: Path) -> tuple[tuple[Measurement, Mapping[str, Any]], ...]:
+def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:
     """Canonical takes and their metadata, read once and sorted by relative path."""
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    rows = []
-    for take in artifacts.glob(BANKED_TAKE_GLOB):
+    for take in sorted(artifacts.glob(BANKED_TAKE_GLOB), key=lambda path: path.as_posix()):
         document = _load(take)
         row = _row(take.relative_to(artifacts).as_posix(), document)
         if row is not None:
-            rows.append((Measurement(*row), document))
-    return tuple(sorted(rows, key=lambda item: item[0].path))
+            yield Measurement(*row), document
 
 
 def bundle_measurements(
