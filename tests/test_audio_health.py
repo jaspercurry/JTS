@@ -647,10 +647,10 @@ def _sample_coherence_park(
     outputd: dict | None = None,
     transport_park_state: dict | None = None,
 ) -> dict:
-    from jasper.control import transport_park
+    from jasper.control import transport_eligibility
 
     monkeypatch.setattr(
-        transport_park,
+        transport_eligibility,
         "snapshot",
         lambda: transport_park_state or {"status": "clear", "parks": []},
     )
@@ -4293,8 +4293,8 @@ def _live_parks() -> tuple[dict, ...]:
     and each class's operator detail and remedy get their own chance to leak
     onto the household card.
     """
-    from jasper.control import transport_park as transport_park_reader
-    from tests.test_transport_park import _PARK_CASES
+    from jasper.control import transport_eligibility as transport_park_reader
+    from tests.test_transport_eligibility import _PARK_CASES
 
     return tuple(
         transport_park_reader.snapshot(case.values[0], case.values[1])

@@ -14,15 +14,13 @@ the unit cannot exhaust another restart burst and re-enter the handler
 This module is the reader for ``jasper-doctor``'s
 ``check_camilla_recover_park``. The shared read half, and the reasoning
 behind its fail-soft posture, live in :mod:`jasper.control.park_record`.
-
-**Freshness.** Re-read on every call: jasper-control is not restarted when
-the graph parks, so a value captured at import would be permanently wrong.
 """
 from __future__ import annotations
 
 import os
 from typing import Any
 
+from ..json_fields import parse_utc_iso
 from . import park_record
 
 #: Must equal ``PARK_STATE``'s default in
@@ -51,8 +49,8 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
 
     ``{"status": "present", "parked": True, ...}``
         A park record, with the writer's own ``reason``/``detail``/``action``/
-        ``re_arm`` carried verbatim. The writer only ever writes on a park,
-        so a legible record IS a park.
+        ``re_arm``/``parked_utc`` carried verbatim, plus ``parked_at`` (epoch
+        seconds, parsed from ``parked_utc``; ``None`` on a malformed stamp).
 
     Never raises.
     """
@@ -65,13 +63,15 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
     if not reason:
         return {"status": "unintelligible", "parked": False, "path": target}
 
+    parked_utc = fields.get("parked_utc")
     return {
         "status": "present",
         "parked": True,
         "path": target,
         "reason": reason,
-        "parked_utc": fields.get("parked_utc"),
         "detail": fields.get("detail"),
         "action": fields.get("action"),
         "re_arm": fields.get("re_arm"),
+        "parked_utc": parked_utc,
+        "parked_at": parse_utc_iso(parked_utc) if parked_utc else None,
     }

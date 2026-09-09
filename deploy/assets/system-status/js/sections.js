@@ -51,8 +51,8 @@ export function waitingNote(spanGrid) {
 // framing sentence per status is written here.
 //
 // Class labels are DERIVED from the token rather than mapped, so a fifth
-// class added in jasper/control/transport_park.py appears here with no JS
-// edit and no second vocabulary to drift.
+// class added in jasper/control/transport_eligibility.py appears here with
+// no JS edit and no second vocabulary to drift.
 // Exported so the harness can pin status -> entry SELECTION by identity
 // instead of matching the copy, which would make every reword a test edit.
 export const PARK_HEADLINE = {
