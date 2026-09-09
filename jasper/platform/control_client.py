@@ -73,11 +73,19 @@ DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{CONTROL_PORT}"
 DEFAULT_TIMEOUT = 2.0
 
-# Cap on any HTTP response body a caller will read/decode, so neither a peer
-# that may not be a trusted JTS box nor a wedged local handler can make the
-# reader do unbounded work on a 415 MB box. One number for both response
-# paths: `_request` below and the rooms wizard's peer probes.
+# Cap on a body read from a PEER, which may not be a trusted JTS box, so it
+# cannot make the reader do unbounded work on a 415 MB box. Also bounds the
+# peer-derived text `peer_detail()` slices. Peer endpoints are the small
+# grouping projections, not the aggregates.
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
+
+# Cap on a body read from THIS box's jasper-control. The local aggregates are
+# legitimately large and they move: on jts3 (Pi 5, 2026-09-09) /system/snapshot
+# measured 53,407 B and then 62,850 B minutes later — 96% of the peer cap — with
+# /state at 46,858 B and /system/diagnostics at 32,557 B. The peer cap would
+# fail the local dashboard on the next block that grows, so the local read
+# gets its own number with room to move.
+LOCAL_RESPONSE_MAX_BYTES = 1024 * 1024
 
 # Cap on the peer-supplied detail `peer_detail()` returns, for a caller to
 # carry into `/state`, a journal line or a flash.
@@ -101,7 +109,21 @@ class ControlError(RuntimeError):
     level (connection refused, timeout, protocol error). A non-2xx HTTP
     response is NOT a ControlError — it is returned as
     :attr:`ControlResponse.status` for the caller to interpret.
+
+    :attr:`status` is None when nothing was answered, and carries the HTTP
+    status when the server did answer and the request failed after that (a
+    read error, or a body over the cap) — so a caller mapping this to
+    operator text can still say what the target replied.
     """
+
+    def __init__(self, *args: object, status: int | None = None) -> None:
+        super().__init__(*args)
+        self.status = status
+
+
+class ControlResponseTooLarge(ControlError):
+    """The response body exceeded the caller's cap. The target ANSWERED, so a
+    caller must not report this as unreachable."""
 
 
 class ControlResponse:
@@ -131,14 +153,19 @@ def _request(
     data: bytes | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     headers: dict[str, str] | None = None,
+    max_bytes: int = LOCAL_RESPONSE_MAX_BYTES,
 ) -> ControlResponse:
     """One blocking stdlib round-trip. Raises :class:`ControlError` on a
-    transport failure or a body over :data:`PEER_RESPONSE_MAX_BYTES`;
-    otherwise returns a :class:`ControlResponse` (including for non-2xx HTTP
-    statuses). Redirects are never followed — ``http.client`` hands back the
-    3xx as-is, so no request header is replayed to a target the caller did
-    not vet. No pooling — the fresh connection is always closed in
-    ``finally``, keeping the FD count flat on every outcome.
+    transport failure and :class:`ControlResponseTooLarge` on a body over
+    ``max_bytes``; otherwise returns a :class:`ControlResponse` (including
+    for non-2xx HTTP statuses). Redirects are never followed —
+    ``http.client`` hands back the 3xx as-is, so no request header is
+    replayed to a target the caller did not vet. No pooling — the fresh
+    connection is always closed in ``finally``, keeping the FD count flat on
+    every outcome.
+
+    ``max_bytes`` defaults to the local cap; a caller talking to a PEER
+    passes :data:`PEER_RESPONSE_MAX_BYTES`.
 
     ``body`` is a dict serialized to JSON; ``data`` is a pre-encoded JSON
     body sent verbatim (the byte-forwarding path the web wizards' proxy
@@ -173,12 +200,21 @@ def _request(
         conn.request(method, path, body=payload, headers=req_headers)
         resp = conn.getresponse()
         # Bounded read: a truncated body would fail `json()` downstream with
-        # no hint why, so an over-cap response is a transport failure.
-        raw = resp.read(PEER_RESPONSE_MAX_BYTES + 1)
-        if len(raw) > PEER_RESPONSE_MAX_BYTES:
+        # no hint why, so an over-cap response is an error, not a short body.
+        # Both failures below carry the answered status, so a caller cannot
+        # render them as "the speaker never replied".
+        try:
+            raw = resp.read(max_bytes + 1)
+        except (OSError, TimeoutError, http.client.HTTPException) as e:
             raise ControlError(
-                f"jasper-control {method} {path}: response exceeds "
-                f"{PEER_RESPONSE_MAX_BYTES} bytes"
+                f"jasper-control {method} {path}: HTTP {resp.status}: {e}",
+                status=resp.status,
+            ) from e
+        if len(raw) > max_bytes:
+            raise ControlResponseTooLarge(
+                f"jasper-control {method} {path}: HTTP {resp.status}: "
+                f"response exceeds {max_bytes} bytes",
+                status=resp.status,
             )
         return ControlResponse(resp.status, raw)
     except (OSError, TimeoutError, http.client.HTTPException) as e:
@@ -197,10 +233,11 @@ def request(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
     headers: dict[str, str] | None = None,
+    max_bytes: int = LOCAL_RESPONSE_MAX_BYTES,
 ) -> ControlResponse:
     return _request(
         method, path, base_url=base_url, body=body, data=data,
-        timeout=timeout, headers=headers,
+        timeout=timeout, headers=headers, max_bytes=max_bytes,
     )
 
 
@@ -210,8 +247,12 @@ def get(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
     headers: dict[str, str] | None = None,
+    max_bytes: int = LOCAL_RESPONSE_MAX_BYTES,
 ) -> ControlResponse:
-    return _request("GET", path, base_url=base_url, timeout=timeout, headers=headers)
+    return _request(
+        "GET", path, base_url=base_url, timeout=timeout, headers=headers,
+        max_bytes=max_bytes,
+    )
 
 
 def post(
@@ -222,10 +263,11 @@ def post(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
     headers: dict[str, str] | None = None,
+    max_bytes: int = LOCAL_RESPONSE_MAX_BYTES,
 ) -> ControlResponse:
     return _request(
         "POST", path, base_url=base_url, body=body, data=data,
-        timeout=timeout, headers=headers,
+        timeout=timeout, headers=headers, max_bytes=max_bytes,
     )
 
 
@@ -293,10 +335,12 @@ class AsyncControlClient:
     """
 
     def __init__(
-        self, base_url: str = DEFAULT_BASE_URL, *, timeout: float = DEFAULT_TIMEOUT
+        self, base_url: str = DEFAULT_BASE_URL, *, timeout: float = DEFAULT_TIMEOUT,
+        max_bytes: int = LOCAL_RESPONSE_MAX_BYTES,
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
+        self._max_bytes = max_bytes
 
     async def request(
         self, method: str, path: str, body: dict | None = None,
@@ -310,6 +354,7 @@ class AsyncControlClient:
             body=body,
             timeout=self._timeout,
             headers=headers,
+            max_bytes=self._max_bytes,
         )
 
     async def get(self, path: str) -> ControlResponse:

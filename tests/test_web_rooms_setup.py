@@ -42,8 +42,10 @@ import pytest
 from jasper.control import household_credential
 from jasper.platform.control_client import (
     PEER_DETAIL_MAX_CHARS,
+    PEER_RESPONSE_MAX_BYTES,
     ControlError,
     ControlResponse,
+    ControlResponseTooLarge,
 )
 from jasper.web import _common, rooms_peers, rooms_setup
 
@@ -1566,7 +1568,7 @@ def _stub_control_post(monkeypatch, result):
     """
     calls: list[dict] = []
 
-    def fake_post(path, body=None, *, base_url, timeout, headers):
+    def fake_post(path, body=None, *, base_url, timeout, headers, max_bytes=None):
         calls.append({
             "path": path,
             "body": body,
@@ -1586,8 +1588,11 @@ def _stub_control_get(monkeypatch, result):
     """`_stub_control_post`'s counterpart for the GET /grouping readers."""
     calls: list[dict] = []
 
-    def fake_get(path, *, base_url, timeout):
-        calls.append({"path": path, "base_url": base_url, "timeout": timeout})
+    def fake_get(path, *, base_url, timeout, max_bytes=None):
+        calls.append({
+            "path": path, "base_url": base_url, "timeout": timeout,
+            "max_bytes": max_bytes,
+        })
         if isinstance(result, Exception):
             raise result
         return result
@@ -1922,6 +1927,8 @@ def test_remote_json_get_success_forwards_request_and_timeout(monkeypatch):
         "path": "/state",
         "base_url": "http://192.168.1.9:8780",
         "timeout": 0.375,
+        # A peer is not this box: it gets the small cap, not the local one.
+        "max_bytes": PEER_RESPONSE_MAX_BYTES,
     }]
 
 
@@ -2015,6 +2022,24 @@ def test_remote_json_get_fails_soft_on_transport_timeout(monkeypatch):
     assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.125,
     ) == (None, "speaker is unreachable — check its power and network")
+
+
+def test_an_oversized_reply_is_not_reported_as_unreachable(monkeypatch):
+    """An over-cap body means the speaker ANSWERED, not that it is silent.
+    Reusing the unreachable wording would send the operator after power and
+    cabling that are both fine."""
+    _stub_control_get(monkeypatch, ControlError("peer timed out"))
+    _, unreachable = rooms_peers._get_remote_json_result(
+        "192.168.1.9", "/grouping", timeout=0.125,
+    )
+    _stub_control_get(
+        monkeypatch, ControlResponseTooLarge("over cap", status=200),
+    )
+    parsed, oversized = rooms_peers._get_remote_json_result(
+        "192.168.1.9", "/grouping", timeout=0.125,
+    )
+    assert parsed is None
+    assert oversized and oversized != unreachable
 
 
 def test_get_member_grouping_forwards_timeout_then_parses_domain(monkeypatch):

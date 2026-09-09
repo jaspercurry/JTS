@@ -123,8 +123,12 @@ def test_non_2xx_is_not_an_error(server):
 
 
 def test_transport_failure_raises_control_error():
-    with pytest.raises(client.ControlError):
+    with pytest.raises(client.ControlError) as excinfo:
         client.get("/state", base_url="http://127.0.0.1:1", timeout=0.2)
+    # Nothing answered, so there is no status — the attribute is always
+    # present so a caller need not branch on hasattr.
+    assert excinfo.value.status is None
+    assert not isinstance(excinfo.value, client.ControlResponseTooLarge)
 
 
 async def test_async_client_adjust_and_set_volume(server):
@@ -157,7 +161,7 @@ async def test_async_client_post_threads_headers_to_request(monkeypatch):
 
     def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
                      body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
-                     headers=None):
+                     headers=None, max_bytes=client.LOCAL_RESPONSE_MAX_BYTES):
         seen.update(method=method, path=path, headers=headers)
         return client.ControlResponse(200, b"{}")
 
@@ -180,7 +184,7 @@ async def test_async_client_headers_default_none_is_backward_compatible(monkeypa
 
     def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
                      body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
-                     headers=None):
+                     headers=None, max_bytes=client.LOCAL_RESPONSE_MAX_BYTES):
         seen["headers"] = headers
         return client.ControlResponse(200, b"{}")
 
@@ -374,9 +378,29 @@ def flood_server():
 
 def test_a_body_at_the_cap_is_read_and_one_byte_over_is_an_error(flood_server):
     cap = client.PEER_RESPONSE_MAX_BYTES
-    assert len(client.get(f"/{cap}", base_url=flood_server).body) == cap
-    with pytest.raises(client.ControlError):
-        client.get(f"/{cap + 1}", base_url=flood_server)
+    at_cap = client.get(f"/{cap}", base_url=flood_server, max_bytes=cap)
+    assert len(at_cap.body) == cap
+    with pytest.raises(client.ControlResponseTooLarge):
+        client.get(f"/{cap + 1}", base_url=flood_server, max_bytes=cap)
+
+
+def test_an_over_cap_body_reports_the_status_the_target_answered(flood_server):
+    """The target ANSWERED — a caller mapping this to operator text must be
+    able to say so rather than render "unreachable"."""
+    cap = client.PEER_RESPONSE_MAX_BYTES
+    with pytest.raises(client.ControlResponseTooLarge) as excinfo:
+        client.get(f"/{cap + 1}", base_url=flood_server, max_bytes=cap)
+    assert excinfo.value.status == 200
+    assert isinstance(excinfo.value, client.ControlError)
+
+
+def test_the_local_default_cap_admits_a_body_over_the_peer_cap(flood_server):
+    """This box's own aggregates (/state, /system/snapshot) measure well past
+    the peer cap, so the default must be the local one — a peer caller opts
+    into the smaller cap explicitly."""
+    assert client.LOCAL_RESPONSE_MAX_BYTES > client.PEER_RESPONSE_MAX_BYTES
+    over_peer = client.PEER_RESPONSE_MAX_BYTES + 1
+    assert len(client.get(f"/{over_peer}", base_url=flood_server).body) == over_peer
 
 
 @pytest.fixture()

@@ -25,7 +25,9 @@ from ..identity import reader as identity
 from ..control import household_credential
 from ..platform.control_client import (
     CONTROL_PORT,
+    PEER_RESPONSE_MAX_BYTES,
     ControlError,
+    ControlResponseTooLarge,
     get as control_get,
     peer_detail,
     post as control_post,
@@ -321,6 +323,7 @@ def post_grouping_to_member(
             base_url=f"http://{target}:{CONTROL_PORT}",
             timeout=CONTROL_HTTP_TIMEOUT_SEC,
             headers=headers,
+            max_bytes=PEER_RESPONSE_MAX_BYTES,
         )
     except ControlError as e:
         # A malformed or absent reply from one peer must not escape and crash
@@ -470,8 +473,15 @@ def _get_remote_json_result(
     """GET one bounded peer JSON object with a small diagnostic result."""
     try:
         resp = control_get(
-            path, base_url=f"http://{target}:{CONTROL_PORT}", timeout=timeout,
+            path,
+            base_url=f"http://{target}:{CONTROL_PORT}",
+            timeout=timeout,
+            max_bytes=PEER_RESPONSE_MAX_BYTES,
         )
+    except ControlResponseTooLarge:
+        # The speaker ANSWERED; calling that unreachable would send the
+        # operator to check power and cabling that are both fine.
+        return None, "speaker returned an oversized response"
     except ControlError:
         return None, "speaker is unreachable — check its power and network"
     if not resp.ok:
