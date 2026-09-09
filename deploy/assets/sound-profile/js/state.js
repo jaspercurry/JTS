@@ -45,6 +45,29 @@ var driverResearch = {
 };
 var crossoverPreview = {payload: null, preparing: false, error: ''};
 
+// The EQ editor's record (/sound/eq/). resetEqEditor() clears the naming
+// record as a unit: every entry point re-seeds nameMode and nameDraft, so an
+// exit that cleared `naming` alone would leave a stale pair behind it.
+var eqEditor = {
+  view: 'off',            // off | saved | draft
+  mode: 'simple',         // simple | peq
+  selectedId: null,       // selected library id on the Saved tab
+  editing: {kind: 'new'}, // new | {kind:'user',id,name} | {kind:'preset',id,name}
+  activeBand: 0,
+  naming: false,
+  nameMode: 'save',       // 'save' (new/copy) | 'rename'
+  nameDraft: '',
+  library: [],            // [{id,name,kind,editable,description,profile,...}]
+  simpleBands: [],        // [{key,field,label,freq_hz,type}] from /state
+  curvesById: {}
+};
+
+function resetEqEditor() {
+  eqEditor.naming = false;
+  eqEditor.nameMode = 'save';
+  eqEditor.nameDraft = '';
+}
+
 function el(id) { return document.getElementById(id); }
 // The crossover filters and slopes this page may OFFER, served on the island
 // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
@@ -109,7 +132,9 @@ export {
   crossoverVocabulary,
   driverResearch,
   el,
+  eqEditor,
   followerMode,
   outputTopology,
   pageMode,
+  resetEqEditor,
 };

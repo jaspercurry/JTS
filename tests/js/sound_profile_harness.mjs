@@ -975,6 +975,35 @@ async function testEqSliderDragSendsNoLiveAudioUntilRelease() {
   return { eqSliderDragSendsNoLiveAudioUntilRelease: true };
 }
 
+// Every way INTO the name box re-seeds the whole naming record, so every way
+// out has to clear the same record: a cancel that dropped only part of it
+// leaves the box sitting over the footer's real actions.
+async function testCancellingTheNameBoxClosesIt() {
+  const harness = setupHarness(baseFetch(), { mode: "eq" });
+  await harness.flush(); await harness.flush();
+  harness.elements.get("tab-draft").click();
+  await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "begin-name" });
+  await harness.flush();
+  if (!harness.elements.get("view-body").innerHTML.includes('id="name-input"')) {
+    fail("saving a profile should open the name box", {
+      html: harness.elements.get("view-body").innerHTML,
+    });
+  }
+
+  harness.dispatchClick({ "data-act": "cancel-name" });
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('id="name-input"')) {
+    fail("cancelling should close the name box", { html });
+  }
+  if (!html.includes('data-act="begin-name"')) {
+    fail("cancelling should restore the draft footer actions", { html });
+  }
+  return { cancellingTheNameBoxClosesIt: true };
+}
+
 async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   const settingsPosts = [];
   const auditionPosts = [];
@@ -8883,6 +8912,7 @@ async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
+results.push(await testCancellingTheNameBoxClosesIt());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testBlockedSettingsSaveRendersOnTheCard());
 results.push(await testBlockedEqCarrierIsThePageState());

@@ -136,9 +136,11 @@ import {
   crossoverVocabulary,
   driverResearch,
   el,
+  eqEditor,
   followerMode,
   outputTopology,
-  pageMode
+  pageMode,
+  resetEqEditor
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCommissionRoles,
@@ -192,23 +194,12 @@ import {
             profile_id: '', profile_name: ''};
   };
 
-  // Declared before FLAT() is first called below — zeroSimple() reads them.
-  var simpleBands = [];        // [{key,field,label,freq_hz,type}] from /state
   var limits = Object.assign({}, LIMIT_DEFAULTS);
 
-  var view = 'off';            // off | saved | draft
-  var mode = 'simple';         // simple | peq
-  var selectedId = null;       // selected library id on the Saved tab
   var draft = FLAT();          // working profile in the Draft tab
-  var editing = {kind: 'new'}; // new | {kind:'user',id,name} | {kind:'preset',id,name}
-  var activeBand = 0;
   var allCollapsed = false;
-  var naming = false;
-  var nameMode = 'save';       // 'save' (new/copy) | 'rename'
-  var nameDraft = '';
 
   var applied = FLAT();        // persisted profile
-  var library = [];            // [{id,name,kind,editable,description,profile,...}]
   var soundSettings = {
     headroom_trim_db: 0,
     match_loudness: false,
@@ -221,7 +212,6 @@ import {
   var i2sHat = null;
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
-  var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
   var liveSourceSeq = 0, liveSourcePending = false, liveSourceOptions = {};
@@ -278,10 +268,10 @@ import {
   }
   function zeroSimple() {
     var out = {};
-    (simpleBands.length ? simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
+    (eqEditor.simpleBands.length ? eqEditor.simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
       out[b.field] = 0;
     });
-    if (!simpleBands.length) {
+    if (!eqEditor.simpleBands.length) {
       ['sub_bass_db', 'bass_db', 'mid_db', 'presence_db', 'treble_db'].forEach(function(f) {
         if (!(f in out)) out[f] = 0;
       });
@@ -303,7 +293,7 @@ import {
     raw = raw || {};
     var simple = raw.simple_eq || {};
     var normSimple = {};
-    var bands = simpleBands.length ? simpleBands : [
+    var bands = eqEditor.simpleBands.length ? eqEditor.simpleBands : [
       {field: 'sub_bass_db'}, {field: 'bass_db'}, {field: 'mid_db'},
       {field: 'presence_db'}, {field: 'treble_db'}
     ];
@@ -333,19 +323,19 @@ import {
     });
   }
   function entryById(id) {
-    return library.find(function(e) { return e.id === id; }) || null;
+    return eqEditor.library.find(function(e) { return e.id === id; }) || null;
   }
-  function userEntries() { return library.filter(function(e) { return e.kind === 'custom'; }); }
-  function presetEntries() { return library.filter(function(e) { return e.kind === 'stock'; }); }
+  function userEntries() { return eqEditor.library.filter(function(e) { return e.kind === 'custom'; }); }
+  function presetEntries() { return eqEditor.library.filter(function(e) { return e.kind === 'stock'; }); }
   function fallbackSavedId() {
     if (entryById(DEFAULT_SAVED_ID)) return DEFAULT_SAVED_ID;
-    return library.length ? library[0].id : null;
+    return eqEditor.library.length ? eqEditor.library[0].id : null;
   }
   function selectedSavedEntry() {
-    var entry = entryById(selectedId);
+    var entry = entryById(eqEditor.selectedId);
     if (entry) return entry;
-    selectedId = fallbackSavedId();
-    return selectedId ? entryById(selectedId) : null;
+    eqEditor.selectedId = fallbackSavedId();
+    return eqEditor.selectedId ? entryById(eqEditor.selectedId) : null;
   }
   function selectedSavedProfile() {
     var entry = selectedSavedEntry();
@@ -355,16 +345,16 @@ import {
     profile = normalizeProfile(profile);
     if (profile.profile_id && entryById(profile.profile_id)) return profile.profile_id;
     var key = profileKey(profile);
-    var stock = library.find(function(e) { return e.kind === 'stock' && profileKey(e.profile) === key; });
+    var stock = eqEditor.library.find(function(e) { return e.kind === 'stock' && profileKey(e.profile) === key; });
     if (stock) return stock.id;
-    var custom = library.find(function(e) { return e.kind === 'custom' && profileKey(e.profile) === key; });
+    var custom = eqEditor.library.find(function(e) { return e.kind === 'custom' && profileKey(e.profile) === key; });
     if (custom) return custom.id;
     return 'stock:' + (profile.curve_id || 'flat');
   }
   // The profile the editor sources from (for the modified/dirty check).
   function sourceProfile() {
-    if (editing.kind === 'new') return FLAT();
-    var entry = entryById(editing.id);
+    if (eqEditor.editing.kind === 'new') return FLAT();
+    var entry = entryById(eqEditor.editing.id);
     return entry ? normalizeProfile(entry.profile) : FLAT();
   }
   function draftModified() {
@@ -378,22 +368,22 @@ import {
   }
   // The profile currently driving the speaker per the active tab.
   function liveProfile() {
-    if (view === 'off') return null;
-    if (view === 'saved') {
+    if (eqEditor.view === 'off') return null;
+    if (eqEditor.view === 'saved') {
       var entry = selectedSavedEntry();
       return entry ? normalizeProfile(entry.profile) : null;
     }
     return draft;
   }
   function liveLabel() {
-    if (view === 'off') return 'Bypass';
-    if (view === 'saved') {
+    if (eqEditor.view === 'off') return 'Bypass';
+    if (eqEditor.view === 'saved') {
       var entry = selectedSavedEntry();
       return entry ? entry.name : 'No profile selected';
     }
-    if (editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
-    var lead = editing.kind === 'preset' ? 'From preset: ' : 'Editing: ';
-    return lead + editing.name + (draftModified() ? ' · edited' : '');
+    if (eqEditor.editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
+    var lead = eqEditor.editing.kind === 'preset' ? 'From preset: ' : 'Editing: ';
+    return lead + eqEditor.editing.name + (draftModified() ? ' · edited' : '');
   }
 
   // ---- preview math ---------------------------------------------------
@@ -415,10 +405,10 @@ import {
   function bandQMax(type) {
     return (type === 'Highpass' || type === 'Lowpass') ? limits.cut_max_q : limits.max_q;
   }
-  function curveSpecs(profile) { return (curvesById[profile.curve_id] || {}).filters || []; }
+  function curveSpecs(profile) { return (eqEditor.curvesById[profile.curve_id] || {}).filters || []; }
   function simpleSpecs(profile) {
     var simple = profile.simple_eq || {};
-    return (simpleBands.length ? simpleBands : []).map(function(b) {
+    return (eqEditor.simpleBands.length ? eqEditor.simpleBands : []).map(function(b) {
       return {type: b.type, freq_hz: b.freq_hz, gain_db: simple[b.field] || 0,
               q: b.type === 'Peaking' ? 1.0 : undefined};
     });
@@ -438,7 +428,7 @@ import {
   // adds a frequency guide line (+ width shading for Peaking) — no per-band
   // marker lines or component curves clutter the default view.
   function drawBandMarkers(summed) {
-    if (view !== 'draft' || mode !== 'peq') return '';
+    if (eqEditor.view !== 'draft' || eqEditor.mode !== 'peq') return '';
     var expandedBand = expandedPeqBandIndex();
     var html = '';
     (draft.parametric_bands || []).forEach(function(b, i) {
@@ -464,8 +454,8 @@ import {
     return html;
   }
   function expandedPeqBandIndex() {
-    if (view !== 'draft' || mode !== 'peq' || allCollapsed || activeBand < 0) return -1;
-    return activeBand;
+    if (eqEditor.view !== 'draft' || eqEditor.mode !== 'peq' || allCollapsed || eqEditor.activeBand < 0) return -1;
+    return eqEditor.activeBand;
   }
   function renderGraph(payload, enabled) {
     var svg = el('plot');
@@ -515,8 +505,8 @@ import {
   function renderTabs() {
     ['off', 'saved', 'draft'].forEach(function(v) {
       var btn = el('tab-' + v);
-      btn.setAttribute('aria-pressed', v === view ? 'true' : 'false');
-      btn.classList.toggle('is-live', v === view);
+      btn.setAttribute('aria-pressed', v === eqEditor.view ? 'true' : 'false');
+      btn.classList.toggle('is-live', v === eqEditor.view);
     });
   }
   function render() {
@@ -543,8 +533,8 @@ import {
     }
     renderTabs();
     renderLiveGraph();
-    if (view === 'off') renderOff();
-    else if (view === 'saved') renderSaved();
+    if (eqEditor.view === 'off') renderOff();
+    else if (eqEditor.view === 'saved') renderSaved();
     else renderDraft();
     status(statusText, statusErr);
   }
@@ -684,13 +674,13 @@ import {
       '<button type="button" class="text-button" data-act="new-draft">' + ico('plus') + 'New</button></div>' +
       (users.length
         ? '<div class="list-card"><div class="list-card__rows">' +
-            users.map(function(e) { return profileRow(e, e.id === selectedId, true); }).join('') + '</div></div>'
+            users.map(function(e) { return profileRow(e, e.id === eqEditor.selectedId, true); }).join('') + '</div></div>'
         : '<div class="empty-card"><p>No profiles yet.</p>' +
             '<button type="button" class="btn btn--primary" data-act="new-draft">Create your first</button></div>') +
       '</section>';
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
-        presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
+        presets.map(function(e) { return profileRow(e, e.id === eqEditor.selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
   }
   function fmtVolumeFloor(v) {
@@ -2876,7 +2866,7 @@ import {
     '</div>';
   }
   function bandRow(band, index) {
-    var open = !allCollapsed && index === activeBand;
+    var open = !allCollapsed && index === eqEditor.activeBand;
     var type = band.type || 'Peaking';
     var shelf = type === 'Lowshelf' || type === 'Highshelf';
     var gainless = GAINLESS_TYPES.indexOf(type) >= 0;
@@ -2934,13 +2924,13 @@ import {
   function renderDraft() {
     var modeSection = '<section class="mode-toggle"><div class="section-header"><h2 class="eyebrow">Mode</h2></div>' +
       '<div class="segmented" id="mode-tabs">' +
-        '<button type="button" class="segmented__btn" data-mode="simple" aria-pressed="' + (mode === 'simple' ? 'true' : 'false') + '">Simple</button>' +
-        '<button type="button" class="segmented__btn" data-mode="peq" aria-pressed="' + (mode === 'peq' ? 'true' : 'false') + '">PEQ</button>' +
+        '<button type="button" class="segmented__btn" data-mode="simple" aria-pressed="' + (eqEditor.mode === 'simple' ? 'true' : 'false') + '">Simple</button>' +
+        '<button type="button" class="segmented__btn" data-mode="peq" aria-pressed="' + (eqEditor.mode === 'peq' ? 'true' : 'false') + '">PEQ</button>' +
       '</div></section>';
 
     var bandsContent;
-    if (mode === 'simple') {
-      var cols = (simpleBands.length ? simpleBands : []).map(function(slot, i) {
+    if (eqEditor.mode === 'simple') {
+      var cols = (eqEditor.simpleBands.length ? eqEditor.simpleBands : []).map(function(slot, i) {
         return simpleColumn(Object.assign({idx: i}, slot), draft.simple_eq[slot.field] || 0);
       }).join('');
       bandsContent = '<div class="bands-card bands-card--simple"><div class="simple-grid">' + cols + '</div></div>';
@@ -2951,7 +2941,7 @@ import {
         (draft.parametric_bands.length >= limits.max_parametric_bands ? ' disabled' : '') + '>' +
         ico('plus') + 'Add band</button></div></div>';
     }
-    var activeCount = mode === 'simple'
+    var activeCount = eqEditor.mode === 'simple'
       ? Object.keys(draft.simple_eq).filter(function(k) {
         return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
       }).length
@@ -2959,7 +2949,7 @@ import {
     var bandsSection = '<section class="bands-section"><div class="row-between">' +
       '<h2 class="eyebrow">Bands</h2>' +
       '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
-      (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
+      (eqEditor.mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
         (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
       '</div></div>' + bandsContent + '</section>';
 
@@ -2967,11 +2957,11 @@ import {
       '<section class="draft-footer">' + footerHtml() + '</section></div>';
   }
   function footerHtml() {
-    if (naming) {
-      var isRename = nameMode === 'rename';
+    if (eqEditor.naming) {
+      var isRename = eqEditor.nameMode === 'rename';
       return '<div class="naming-card">' +
         '<label class="eyebrow">' + (isRename ? 'Rename profile' : 'Name your profile') + '</label>' +
-        '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(nameDraft) + '">' +
+        '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(eqEditor.nameDraft) + '">' +
         '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="finalize-name">' +
             (isRename ? 'Rename' : 'Save profile') + '</button>' +
@@ -2979,7 +2969,7 @@ import {
         '</div></div>';
     }
     var dirty = draftModified();
-    if (editing.kind === 'user') {
+    if (eqEditor.editing.kind === 'user') {
       return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="overwrite" data-dirty-action' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
           '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
@@ -2988,7 +2978,7 @@ import {
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' +
             (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
-    if (editing.kind === 'preset') {
+    if (eqEditor.editing.kind === 'preset') {
       return '<div class="form-actions">' +
           '<button type="button" class="btn btn--primary" data-act="begin-name">Save as new</button>' +
           '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
@@ -3070,10 +3060,10 @@ import {
     liveSourcePending = false;
     liveSourceOptions = {};
     var seq = liveSourceSeq;
-    if (view === 'off') {
+    if (eqEditor.view === 'off') {
       return applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), options.okMsg, seq);
     }
-    if (view === 'saved') {
+    if (eqEditor.view === 'saved') {
       return applySavedSelection(options.okMsg, seq);
     }
     scheduleLiveDraft(options.immediate === false ? false : true);
@@ -3108,7 +3098,7 @@ import {
       var resp = await fetch(path, {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body || {})});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'profile update failed');
-      if (payload.profile_library) library = payload.profile_library;
+      if (payload.profile_library) eqEditor.library = payload.profile_library;
       return payload;
     } catch (e) {
       status('Could not update profiles: ' + e.message, true);
@@ -3281,9 +3271,9 @@ import {
 
   function ingestState(payload) {
     limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
-    simpleBands = limits.simple_bands || [];
-    if (payload.curves) { curvesById = {}; payload.curves.forEach(function(c) { curvesById[c.id] = c; }); }
-    if (payload.profile_library) library = payload.profile_library;
+    eqEditor.simpleBands = limits.simple_bands || [];
+    if (payload.curves) { eqEditor.curvesById = {}; payload.curves.forEach(function(c) { eqEditor.curvesById[c.id] = c; }); }
+    if (payload.profile_library) eqEditor.library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
     if (payload.sound_settings) soundSettings = payload.sound_settings;
     // Every /state and every successful apply carries the field, so a fixed
@@ -3295,7 +3285,7 @@ import {
 
   // ---- tab + edit transitions ----------------------------------------
   function setView(v) {
-    view = v;
+    eqEditor.view = v;
     render();
     // Off and Saved are durable: clicking Off applies a bypass; tapping a
     // saved profile applies it (see selectSaved). Draft is a live, non-
@@ -3311,21 +3301,21 @@ import {
     return applyProfile(profile, okMsg, sourceSeq);
   }
   function selectSaved(id) {
-    selectedId = id;
+    eqEditor.selectedId = id;
     render();
     requestLiveSource({immediate: true});
   }
   function newDraft() {
-    draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
-    view = 'draft'; status(''); render(); requestLiveSource({immediate: true});
+    draft = FLAT(); eqEditor.editing = {kind: 'new'}; eqEditor.mode = 'simple'; eqEditor.activeBand = 0; resetEqEditor();
+    eqEditor.view = 'draft'; status(''); render(); requestLiveSource({immediate: true});
   }
   function editEntry(id) {
     var entry = entryById(id);
     if (!entry) return;
     draft = normalizeProfile(entry.profile);
-    editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
-    mode = draft.parametric_bands.length ? 'peq' : 'simple';
-    activeBand = 0; naming = false; view = 'draft';
+    eqEditor.editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
+    eqEditor.mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    eqEditor.activeBand = 0; resetEqEditor(); eqEditor.view = 'draft';
     status('Editing ' + entry.name + '.'); render(); requestLiveSource({immediate: true});
   }
   // Body re-render + optimistic graph (via schedulePreview) + live audio.
@@ -3339,7 +3329,7 @@ import {
   function refreshActiveCount() {
     var e = el('active-count');
     if (!e) return;
-    var n = mode === 'simple'
+    var n = eqEditor.mode === 'simple'
       ? Object.keys(draft.simple_eq).filter(function(k) {
         return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
       }).length
@@ -3364,7 +3354,7 @@ import {
   // The Off/Saved/Draft tabs only exist on the solo page; a follower omits them.
   if (!followerMode && pageMode === 'eq') {
     ['off', 'saved', 'draft'].forEach(function(v) {
-      el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
+      el('tab-' + v).addEventListener('click', function() { if (eqEditor.view !== v) setView(v); });
     });
   }
   el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/sound/'; });
@@ -3382,11 +3372,11 @@ import {
     else if (act === 'delete') { deleteEntry(id); }
     else if (act === 'add-band') { addBand(); }
     else if (act === 'del-band') { delBand(index); }
-    else if (act === 'toggle-band') { activeBand = (activeBand === index && !allCollapsed) ? -1 : index; allCollapsed = false; renderDraft(); renderLiveGraph(); }
+    else if (act === 'toggle-band') { eqEditor.activeBand = (eqEditor.activeBand === index && !allCollapsed) ? -1 : index; allCollapsed = false; renderDraft(); renderLiveGraph(); }
     else if (act === 'toggle-collapse') { allCollapsed = !allCollapsed; renderDraft(); }
-    else if (act === 'begin-name') { naming = true; nameMode = 'save'; nameDraft = defaultName(); renderDraft(); focusNameInput(); }
-    else if (act === 'begin-rename') { naming = true; nameMode = 'rename'; nameDraft = editing.name || ''; renderDraft(); focusNameInput(); }
-    else if (act === 'cancel-name') { naming = false; renderDraft(); }
+    else if (act === 'begin-name') { eqEditor.naming = true; eqEditor.nameMode = 'save'; eqEditor.nameDraft = defaultName(); renderDraft(); focusNameInput(); }
+    else if (act === 'begin-rename') { eqEditor.naming = true; eqEditor.nameMode = 'rename'; eqEditor.nameDraft = eqEditor.editing.name || ''; renderDraft(); focusNameInput(); }
+    else if (act === 'cancel-name') { resetEqEditor(); renderDraft(); }
     else if (act === 'finalize-name') { finalizeName(); }
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
@@ -3458,7 +3448,7 @@ import {
             prevType !== 'Highpass' && prevType !== 'Lowpass') {
           b.q = 0.707;
         }
-        activeBand = bi;
+        eqEditor.activeBand = bi;
         onDraftChanged(true);
       }
     }
@@ -3565,7 +3555,7 @@ import {
       var bi = Number(row.getAttribute('data-index'));
       var band = draft.parametric_bands[bi];
       if (!band) return;
-      activeBand = bi;
+      eqEditor.activeBand = bi;
       if (range === 'freq') band.freq_hz = sliderToFreq(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
       if (range === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
       if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, bandQMax(band.type));
@@ -3577,7 +3567,7 @@ import {
     }
   });
   el('view-body').addEventListener('input', function(ev) {
-    if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
+    if (ev.target.id === 'name-input') { eqEditor.nameDraft = ev.target.value; return; }
     if (ev.target.id === 'set-headroom') {
       var ro = el('set-headroom-readout');           // live readout; commit on 'change'
       if (ro) ro.textContent = fmtTrim(ev.target.value);
@@ -3679,15 +3669,15 @@ import {
   el('view-body').addEventListener('keydown', function(ev) {
     if (ev.target.id !== 'name-input') return;
     if (ev.key === 'Enter') { ev.preventDefault(); finalizeName(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); naming = false; renderDraft(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); resetEqEditor(); renderDraft(); }
   });
 
   function switchMode(next) {
-    if (next === mode) return;
+    if (next === eqEditor.mode) return;
     if (next === 'simple') {
       // Snap to the simple template, copying nearest gain by log-frequency.
       var newSimple = zeroSimple();
-      (simpleBands || []).forEach(function(slot) {
+      (eqEditor.simpleBands || []).forEach(function(slot) {
         var nearest = null, best = 1.2;
         draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).forEach(function(b) {
           var dist = Math.abs(Math.log(b.freq_hz / slot.freq_hz) / Math.log(2));
@@ -3699,7 +3689,7 @@ import {
       draft.parametric_bands = [];
     } else {
       // Simple -> PEQ keeps the simple bands as gains; PEQ owns the bands going forward.
-      draft.parametric_bands = (simpleBands || []).filter(function(s) {
+      draft.parametric_bands = (eqEditor.simpleBands || []).filter(function(s) {
         return Math.abs(draft.simple_eq[s.field] || 0) >= ACTIVE_GAIN_EPSILON_DB;
       }).map(function(s) {
         // Simple EQ shelves ignore Q in the backend, but carrying a stable
@@ -3708,9 +3698,9 @@ import {
                 gain_db: draft.simple_eq[s.field], q: 1.0};
       });
       draft.simple_eq = zeroSimple();
-      activeBand = 0;
+      eqEditor.activeBand = 0;
     }
-    mode = next;
+    eqEditor.mode = next;
     onDraftChanged(true);
   }
   function addBand() {
@@ -3719,19 +3709,19 @@ import {
       return;
     }
     draft.parametric_bands.push({enabled: true, type: 'Peaking', freq_hz: 1000, gain_db: 0, q: 1});
-    activeBand = draft.parametric_bands.length - 1;
+    eqEditor.activeBand = draft.parametric_bands.length - 1;
     onDraftChanged(true);
   }
   function delBand(index) {
     draft.parametric_bands.splice(index, 1);
-    activeBand = Math.max(0, Math.min(activeBand, draft.parametric_bands.length - 1));
+    eqEditor.activeBand = Math.max(0, Math.min(eqEditor.activeBand, draft.parametric_bands.length - 1));
     onDraftChanged(true);
   }
   function resetDraft() {
     draft = sourceProfile();
-    if (editing.kind !== 'new') draft = withIdentity(draft, editing.id, editing.name);
-    mode = draft.parametric_bands.length ? 'peq' : 'simple';
-    activeBand = 0; naming = false;
+    if (eqEditor.editing.kind !== 'new') draft = withIdentity(draft, eqEditor.editing.id, eqEditor.editing.name);
+    eqEditor.mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    eqEditor.activeBand = 0; resetEqEditor();
     onDraftChanged(true);
   }
   function defaultName() {
@@ -3741,34 +3731,34 @@ import {
   }
   function focusNameInput() { var n = el('name-input'); if (n) { n.focus(); n.select(); } }
   async function finalizeName() {
-    naming = false;
-    if (nameMode === 'rename' && editing.kind === 'user') {
-      var newName = (nameDraft || '').trim() || editing.name || defaultName();
-      var rp = await profileMutate('./profiles/rename', {id: editing.id, name: newName});
+    eqEditor.naming = false;
+    if (eqEditor.nameMode === 'rename' && eqEditor.editing.kind === 'user') {
+      var newName = (eqEditor.nameDraft || '').trim() || eqEditor.editing.name || defaultName();
+      var rp = await profileMutate('./profiles/rename', {id: eqEditor.editing.id, name: newName});
       if (rp && rp.profile_entry) {
-        if (selectedId === editing.id) selectedId = rp.profile_entry.id;
-        editing = {kind: 'user', id: rp.profile_entry.id, name: rp.profile_entry.name};
+        if (eqEditor.selectedId === eqEditor.editing.id) eqEditor.selectedId = rp.profile_entry.id;
+        eqEditor.editing = {kind: 'user', id: rp.profile_entry.id, name: rp.profile_entry.name};
         status('Renamed to ' + rp.profile_entry.name + '.');
       }
       render();
       return;
     }
-    var name = (nameDraft || '').trim() || defaultName();
+    var name = (eqEditor.nameDraft || '').trim() || defaultName();
     var payload = await profileMutate('./profiles/save', {id: null, name: name, profile: draft});
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
-      library = payload.profile_library || library;
-      selectedId = entry.id; view = 'saved';
+      eqEditor.library = payload.profile_library || eqEditor.library;
+      eqEditor.selectedId = entry.id; eqEditor.view = 'saved';
       await requestLiveSource({okMsg: 'Saved ' + entry.name + '.', immediate: true});
       render();
     } else { render(); }
   }
   async function overwrite() {
-    if (editing.kind !== 'user') return;
-    var payload = await profileMutate('./profiles/save', {id: editing.id, name: editing.name, profile: draft});
+    if (eqEditor.editing.kind !== 'user') return;
+    var payload = await profileMutate('./profiles/save', {id: eqEditor.editing.id, name: eqEditor.editing.name, profile: draft});
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
-      selectedId = entry.id; view = 'saved';
+      eqEditor.selectedId = entry.id; eqEditor.view = 'saved';
       await requestLiveSource({okMsg: 'Updated ' + entry.name + '.', immediate: true});
       render();
     }
@@ -3780,8 +3770,8 @@ import {
     var payload = await profileMutate('./profiles/delete', {id: id});
     if (payload) {
       status('Deleted ' + entry.name + '.');
-      if (selectedId === id) {
-        selectedId = fallbackSavedId();
+      if (eqEditor.selectedId === id) {
+        eqEditor.selectedId = fallbackSavedId();
         render();
         requestLiveSource({immediate: true});
       } else {
@@ -5597,15 +5587,15 @@ import {
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
       ingestState(payload);
-      selectedId = findIdFor(applied);
+      eqEditor.selectedId = findIdFor(applied);
       // Open on Off when no EQ is effectively applied — bypassed (enabled
       // false) OR flat (no active filters). Open on Saved with the applied
       // profile marked active otherwise. filter_count is the backend's
       // authoritative signal (len(build_sound_filters); 0 when disabled/flat).
       if (payload.filter_count > 0) {
-        view = 'saved';
+        eqEditor.view = 'saved';
       } else {
-        view = 'off';
+        eqEditor.view = 'off';
       }
       render();
       // The Output page reads the I2S HAT off the topology payload; the
@@ -5635,7 +5625,7 @@ import {
     // profile back. Never gated on the page really going away: bfcache freezes
     // a page instead of unloading it, and a frozen page must not keep a draft
     // playing either.
-    if (view === 'draft') {
+    if (eqEditor.view === 'draft') {
       postJSON('./apply', normalizeProfile(applied), {keepalive: true})
         .catch(function() {});
     }
@@ -5645,7 +5635,7 @@ import {
   // holds is now stale. Re-run the live-draft path — the server answers
   // `stale`, which adopts the fresh epoch and asks for a control move.
   window.addEventListener('pageshow', function(event) {
-    if (event && event.persisted && view === 'draft') scheduleLiveDraft(true);
+    if (event && event.persisted && eqEditor.view === 'draft') scheduleLiveDraft(true);
   });
   if (followerMode || pageMode === 'speaker') loadLocalHardware();
   else loadState();
