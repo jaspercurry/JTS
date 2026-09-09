@@ -780,7 +780,7 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     name and file, reached through :func:`active_ring_channels_for_topology` and
     the endpoint marker. Widening it would auto-arm every roleful box in the
     fleet through the unattended ``--auto`` pass and re-expose the boxes
-    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects."""
+    ``jasper.sound.camilla_yaml``'s flat-boot-graph defusal gate protects."""
     return ring_channels_for_topology(topology) is not None
 
 
@@ -3643,7 +3643,7 @@ def classify_camilla_graph(
             # _flat_graph_allowed can clear it regardless of topology.
             CAMILLA_CLASS_PROGRAM_BAKE,
         }
-        or path_name in {"outputd-cutover.yml", "v1.yml"}
+        or path_name == "outputd-cutover.yml"
     )
     if is_flat:
         # Detect the File/pipe playback ONCE here (this scope has the config

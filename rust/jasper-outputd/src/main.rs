@@ -374,9 +374,9 @@ fn run_alsa(
     // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
     // ends from — so outputd declares one tuple and the crate's field-by-field
     // attach is the whole negotiation. The reader owns any staging its wire
-    // needs (see `ShmRingSource`), so a box that resolved some OTHER source —
-    // a `direct` declaration, or an armed round-trip marker — allocates nothing
-    // for it, which matters under `mlockall`.
+    // needs (see `ShmRingSource`), so a box that resolved the OTHER source — an
+    // armed round-trip marker — allocates nothing for it, which matters under
+    // `mlockall`.
     let mut shm_ring = match config.shm_ring.as_ref() {
         Some(ring) => {
             eprintln!(
@@ -408,38 +408,23 @@ fn run_alsa(
     // the bond's shared program coming back out of the sync engine, so the
     // leader is sample-locked with its members. An armed lane IS the content
     // source — it never falls back, and a period it cannot fill is silence
-    // (D4). `Config::from_env` has already refused both transports at once, so
-    // at most one arm is built here; neither armed (solo) leaves this loop
-    // byte-identical to before.
-    let dac_content_lane = config
-        .dac_content_ring
-        .as_deref()
-        .map(|path| ("ring", path))
-        .or_else(|| {
-            config
-                .dac_content_fifo
-                .as_deref()
-                .map(|path| ("fifo", path))
-        });
-    let mut dac_content = match dac_content_lane {
-        Some((transport, path)) => {
+    // (D4). Unarmed (solo) leaves this loop byte-identical to before.
+    let mut dac_content = match config.dac_content_ring.as_deref() {
+        Some(path) => {
             eprintln!(
-                "event=outputd.dac_content.enabled transport={} path={} channel={}",
-                transport,
+                "event=outputd.dac_content.enabled transport=ring path={} channel={}",
                 path,
                 config.dac_content_channel.as_str(),
             );
-            Some(if transport == "ring" {
+            Some(
                 DacContentSource::ring(
                     path,
                     config.dac_content_channel,
                     config.period_frames,
                     DAC_CONTENT_RING_SLOTS,
                 )
-                .map_err(|e| classify_ring_attach_error("dac_content", path, e))?
-            } else {
-                DacContentSource::fifo(path, config.dac_content_channel, config.period_frames)
-            })
+                .map_err(|e| classify_ring_attach_error("dac_content", path, e))?,
+            )
         }
         None => None,
     };
@@ -490,9 +475,9 @@ fn run_alsa(
         None
     };
     // Pair-balance trim: a runtime-adjustable linear gain on the round-trip
-    // content path (FIFO and inv-B fallback periods alike — no level jump on a
-    // starvation transition). <= 0 dB is enforced at config/control parse, so
-    // this can only attenuate.
+    // content path, starved periods included — no level jump on a starvation
+    // transition. <= 0 dB is enforced at config/control parse, so this can only
+    // attenuate.
     let zero_period = vec![0 as ProgramSample; content_period_samples];
     let dac_negotiated = sink.dac_negotiated();
     // Which source is live is fixed for the run (the loop below consults
@@ -566,19 +551,16 @@ fn run_alsa(
                 state.mark_shm_ring(src.metrics());
                 period_served = read? > 0;
             } else {
-                // ADR-0100: the ring-fed CamillaDSP chain is the only upstream
-                // outputd serves. A box that reaches here declared
-                // `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`, so no ring was
-                // attached and there is nothing else to read — it PARKS rather
-                // than playing silence. Park-class (EX_CONFIG 78) because no
-                // restart can change a declaration. Which NAMED park it is
-                // comes from `jasper.control.transport_park` (ADR-0178).
+                // Every resolved source attaches something above (ADR-0100: the
+                // central ring, or the round-trip marker's return ring), so
+                // reaching here means `Config::from_env` resolved a source this
+                // loop cannot read. PARK rather than play silence forever —
+                // park-class (EX_CONFIG 78), because no restart changes a
+                // resolution.
                 return Err(anyhow::anyhow!(
-                    "PARKED: no content upstream. \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct names the retired \
-                     snd-aloop route, which no longer exists, so outputd \
-                     attached no ring and has nothing to read. The SHM ring is \
-                     the one transport (ADR-0100): remove the stale \
+                    "PARKED: no content upstream. This box resolved a content \
+                     source that attached no ring, so there is nothing to read. \
+                     The SHM ring is the one transport (ADR-0100): remove any \
                      JASPER_OUTPUTD_CONTENT_BRIDGE line from \
                      /var/lib/jasper/outputd.env — an UNDECLARED bridge is the \
                      ring — or set it to shm_ring."
@@ -2021,7 +2003,7 @@ mod tests {
             sample_rate: 48_000,
             period_frames: 128,
             dac_buffer_frames: 256,
-            content_bridge_mode: ContentBridgeMode::Direct,
+            content_bridge_mode: ContentBridgeMode::ShmRing,
             shm_ring: None,
             chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
             chip_ref_sample_rate: 16_000,
@@ -2031,7 +2013,6 @@ mod tests {
             chip_ref_tee_path: None,
             reference_udp_target: None,
             control_socket_path: None,
-            dac_content_fifo: None,
             dac_content_ring: None,
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,

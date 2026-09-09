@@ -818,11 +818,13 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
     # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
     # canonical design feeds the snapserver pipe from the leader's
-    # CamillaDSP, so the env is no longer written anywhere. The former
-    # JASPER_OUTPUTD_DAC_CONTENT_FIFO exception was dropped the same day
-    # in the opposite direction: Increment 3 landed the outputd reader,
-    # so the name is now LIVE Rust-read config, exactly as this guard's
-    # bidirectional contract demands.)
+    # CamillaDSP, so the env is no longer written anywhere.)
+    # The round-trip lane's retired FIFO transport. outputd reads only the ring
+    # (ADR-0100), so nothing consumes this key; the grouping reconciler still
+    # writes it EMPTY on every branch, which is the disable-clears-stale idiom
+    # that heals a box carrying an armed one.
+    # REMOVAL CONDITION: goes when the reconciler stops emitting the key.
+    "JASPER_OUTPUTD_DAC_CONTENT_FIFO": "retired lane transport; written empty to clear stale, read by nothing",
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see
     # test_control_socket_paths_agree_across_processes). Setting this

@@ -240,7 +240,6 @@ def _assess(
         dac_content_marker_contradicted,
         ring_active_endpoint_armed,
     )
-    from ..multiroom.reconcile import OUTPUTD_DAC_CONTENT_FIFO_ENV
     from ..output_topology import load_output_topology_strict
 
     if topology is None:
@@ -334,30 +333,6 @@ def _assess(
                     "this bonded member carries both the dac-content lane marker "
                     "and a declared content bridge; outputd refuses that pair at "
                     "startup, so the speaker is silent with every unit green"
-                ),
-            )
-        )
-
-    # THE LEGACY FIFO SPELLING ONLY: it needs
-    # ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which no writer emits, so nothing
-    # produces its audio. The ring MARKER is SERVED and does not park (ADR-0220
-    # supersedes that row of ADR-0178). Read as a PATH, non-empty rather than
-    # present, because the grouping reconciler writes this key as an EMPTY
-    # string on every branch.
-    #
-    # EXPIRY: dies with outputd's own FIFO reader, after a bonded pair plays
-    # through the ring on metal (ADR-0220, #3118).
-    fifo_armed = bool((env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV) or "").strip())
-    if fifo_armed:
-        parks.append(
-            TransportPark(
-                park_class=PARK_GROUPED_DAC_CONTENT_LANE,
-                issue=ISSUE_GROUPED_ON_RING,
-                remedy=None,
-                detail=(
-                    "this box is a bonded grouping member pinned to the legacy "
-                    "raw-PCM FIFO round-trip lane, which needs a content bridge "
-                    "its writer no longer emits, so nothing produces its audio"
                 ),
             )
         )
