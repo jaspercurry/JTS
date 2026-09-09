@@ -53,6 +53,7 @@ REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
 _RESET_WINDOW_SEC = 300.0
 
 REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
+REASON_SUPPLY_VOLTAGE_SAMPLER_STALE = "supply_voltage_sampler_stale"
 REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
 REASON_UNDERVOLTAGE_NOW = "supply_voltage_undervoltage_now"
 REASON_UNDERVOLTAGE_HISTORY = "supply_voltage_undervoltage_history"
@@ -390,9 +391,7 @@ _UNDER_VOLTAGE_HISTORY_BIT = 0x1
 
 
 def _read_system_metrics_current() -> dict[str, Any] | None:
-    return _nested_dict(
-        evidence.control_system_snapshot().payload, "metrics", "current",
-    )
+    return evidence.system_metrics_current()
 
 
 @doctor_check()
@@ -404,6 +403,17 @@ def check_supply_voltage() -> CheckResult:
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
+        metrics = _nested_dict(evidence.control_system_snapshot().payload, "metrics")
+        sampled_at = metrics.get("last_sample_at") if metrics else None
+        if metrics is not None:
+            age = (
+                "warming up" if sampled_at is None
+                else f"{time.time() - sampled_at:.0f}s old"
+            )
+            return CheckResult(
+                name, "warn", f"jasper-control sampler stale ({age})",
+                reason=REASON_SUPPLY_VOLTAGE_SAMPLER_STALE,
+            )
         return CheckResult(
             name, "skipped", "jasper-control /system/snapshot unavailable",
             reason=REASON_SNAPSHOT_UNAVAILABLE,

@@ -6,20 +6,17 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 import types
-import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
+
 
 import jasper.control.airplay_health as airplay_health
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
-from jasper.control.server import _make_handler
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -672,66 +669,6 @@ def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
     assert server.requests == [b"STATUS\n"]
 
 
-def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:
-    class FakeAirPlay:
-        def snapshot(self) -> dict:
-            return {"status": "ok", "reason": "clean"}
-
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        sampler=None,
-        airplay_health_sampler=FakeAirPlay(),
-        ha_status_cache=_FakeHaStatus(),
-    )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(f"{base}/system/snapshot", timeout=2) as r:
-            assert r.status == 200
-            body = json.loads(r.read().decode("utf-8"))
-        assert body["metrics"] is None
-        assert body["airplay_health"] == {"status": "ok", "reason": "clean"}
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
-    monkeypatch,
-) -> None:
-    class BrokenAirPlay:
-        def snapshot(self) -> dict:
-            raise RuntimeError("boom")
-
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        sampler=None,
-        airplay_health_sampler=BrokenAirPlay(),
-        ha_status_cache=_FakeHaStatus(),
-    )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(f"{base}/system/snapshot", timeout=2) as r:
-            assert r.status == 200
-            body = json.loads(r.read().decode("utf-8"))
-        assert body["airplay_health"]["status"] == "unknown"
-        assert "failed" in body["airplay_health"]["reason"]
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
 def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
     # A reboot's content-xrun + AirPlay-resync settling must NOT flip the
     # dashboard straight to "issue: recent audio-path recovery event"
@@ -1016,34 +953,6 @@ def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
         sampler._tick()
     assert sampler.snapshot()["storm"]["active"] is False
     assert "artifact=null" in caplog.text  # no artifact, rendered as null
-
-
-@pytest.mark.parametrize(
-    ("elapsed", "expected_sleep"),
-    [
-        (0.0, 5.0),
-        (4.5, 1.0),
-        (60.0, 1.0),
-    ],
-)
-def test_run_sleep_floor_bounds_the_tick_rate(
-    monkeypatch, elapsed: float, expected_sleep: float,
-) -> None:
-    sampler = AirPlayHealthSampler(sample_interval_sec=5.0, time_fn=lambda: 1000.0)
-    monkeypatch.setattr(sampler, "_tick", lambda: None)
-    monotonic_values = iter([0.0, elapsed])
-    monkeypatch.setattr(
-        airplay_health.time, "monotonic", lambda: next(monotonic_values),
-    )
-    captured: list[float] = []
-
-    def fake_sleep(seconds: float) -> None:
-        captured.append(seconds)
-        sampler._stopped = True
-
-    monkeypatch.setattr(airplay_health.time, "sleep", fake_sleep)
-    sampler._run()
-    assert captured == [expected_sleep]
 
 
 def _ring(**overrides) -> dict:

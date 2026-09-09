@@ -19,7 +19,7 @@ from jasper.cli.doctor import active_speaker
 from jasper.cli.doctor._evidence import evidence
 from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
 
-from .test_doctor_audio import _point_at_config
+from .test_doctor_audio_runtime_camilla import _point_at_config
 
 
 # ------------------------------------------------- active speaker runtime graph
@@ -257,6 +257,7 @@ def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
 
     r = active_speaker.check_active_speaker_runtime_graph()
 
+    assert r.status == "warn"
     assert r.reason == active_speaker.REASON_GRAPH_PARKED_SILENT
     assert all(code in r.detail for code in codes)
 
@@ -320,6 +321,7 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
 
     r = active_speaker.check_active_speaker_runtime_graph()
 
+    assert r.status == "warn"
     assert r.reason == active_speaker.REASON_GRAPH_PARKED_SILENT
     # Follows the helper, and therefore does NOT offer the impossible action.
     assert parked_muted_exits(topology) in r.detail

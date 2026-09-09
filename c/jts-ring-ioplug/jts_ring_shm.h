@@ -34,13 +34,17 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 #define JTS_RING_SAMPLE_FORMAT_S16LE 1u
 #define JTS_RING_SAMPLE_FORMAT_S32LE 2u
 
+// The one rate a JTS ring carries; `jts_ring_geometry_validate` accepts no
+// other and the paced waits divide by it. Rust twin: `jasper_ring::RATE_HZ`.
+#define JTS_RING_RATE_HZ 48000u
+
 // Channel accept-set for the wire: 2..=8. Floor 2: every producer in the graph
 // is at least a stereo program; explicit mono is representable in the layout
 // but refused by policy. Ceiling 8: the widest registered DAC (DAC8x) is
-// 8-channel, and jasper-outputd bounds JASPER_OUTPUTD_ACTIVE_CHANNELS at
-// 2..=8. tests/test_ring_slot_ceiling_pin.py asserts JTS_RING_MAX_CHANNELS ==
-// MAX_RING_CHANNELS (rust/jasper-ring/src/layout.rs) == that outputd bound;
-// change all three in the same commit.
+// 8-channel, and jasper-outputd bounds JASPER_OUTPUTD_ACTIVE_CHANNELS by
+// reading this ceiling out of `jasper_ring`. test_ring_core asserts
+// JTS_RING_MAX_CHANNELS == the generated ring ABI's max_ring_channels
+// (rust/jasper-ring/layout.json); change both in the same commit.
 #define JTS_RING_MIN_CHANNELS 2u
 #define JTS_RING_MAX_CHANNELS 8u
 
@@ -63,9 +67,8 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // target_level (1536), so the rate controller chased an unreachable target and
 // drove the writer full into stall/underrun flapping. 16 slots => 2048 frames
 // >= target_level with headroom. See ADR-0261.
-// Must stay in lockstep with MAX_N_SLOTS (rust/jasper-ring/src/layout.rs) and
-// MAX_SHM_RING_SLOTS (rust/jasper-outputd/src/config.rs);
-// tests/test_ring_slot_ceiling_pin.py asserts all three equal.
+// Must stay in lockstep with MAX_N_SLOTS (rust/jasper-ring/src/layout.rs);
+// test_ring_core asserts it against the generated ring ABI's max_n_slots.
 #define JTS_RING_MAX_SLOTS 16u
 
 // Writer liveness window (ns): past this heartbeat age the reader treats the
@@ -278,8 +281,8 @@ size_t jts_ring_bytes_per_sample(uint32_t sample_format);
 // payload within JTS_RING_MAX_SLOT_BYTES. Both ends of the wire must accept
 // exactly this set — `jasper_ring::Geometry::validate_self` is the Rust half,
 // and a geometry one end creates but the other refuses fails at attach on-Pi.
-// The channel ceiling and format ids are pinned across the two by
-// tests/test_ring_slot_ceiling_pin.py.
+// The channel ceiling, the rate and the format ids are pinned across the two by
+// test_ring_core's test_header_matches_the_generated_ring_abi.
 int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason);
 
 // --- Writer attach / publish / close ---

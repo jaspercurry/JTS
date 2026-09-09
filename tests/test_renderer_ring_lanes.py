@@ -33,9 +33,13 @@ import pytest
 from jasper import renderer_lanes as rl
 from jasper import ring_assets
 from jasper.fanin_coupling import resolve_ring_wire_format
+from tests.ring_abi import ring_abi
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 REPO = Path(__file__).resolve().parent.parent
+#: The generated ring ABI (rendered from jasper_ring::layout), which the C
+#: header and jasper.ring_assets are both pinned against.
+RING_ABI = ring_abi()
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
 RING_CAPTURE_RS = REPO / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
 LANES_CONF = REPO / "deploy" / "alsa" / "conf.d" / "61-jts-renderer-lanes.conf"
@@ -1035,13 +1039,10 @@ def test_the_ring_writer_pid_offset_matches_the_ring_layout():
     bytes as a pid. The doctor would then compare a garbage pid's cgroup, decide
     the ring is held by a stranger, and FAIL a perfectly healthy armed lane (or,
     worse, coincidentally match and accept a real stray writer). Pinning the
-    offset and the width against `rust/jasper-ring/src/layout.rs` is the only
-    thing standing between that and a rename.
+    offset and the width against the generated ring ABI is the only thing
+    standing between that and a rename.
     """
-    layout = (REPO / "rust" / "jasper-ring" / "src" / "layout.rs").read_text()
-    m = re.search(r"pub const OFF_WRITER_PID: usize = (\d+);", layout)
-    assert m, "OFF_WRITER_PID moved or changed shape in the ring layout"
-    off = int(m.group(1))
+    off = RING_ABI["off_writer_pid"]
 
     src = (REPO / "jasper" / "renderer_lanes.py").read_text()
     fn = re.search(
@@ -1053,15 +1054,13 @@ def test_the_ring_writer_pid_offset_matches_the_ring_layout():
     body = fn.group(1)
     assert f"header[{off}:{off + 8}]" in body, (
         f"ring_writer_pid must read the writer pid at byte offset {off}..{off + 8} "
-        f"(rust/jasper-ring/src/layout.rs OFF_WRITER_PID = {off}); a drifted "
+        f"(the ring ABI's off_writer_pid = {off}); a drifted "
         "offset silently returns another field's bytes as a pid"
     )
     assert '"little"' in body, "the ring header is little-endian"
 
-    hb = re.search(r"pub const HEADER_BYTES: usize = (\d+);", layout)
-    assert hb, "HEADER_BYTES moved"
-    assert f"fh.read({hb.group(1)})" in body, (
-        "the reader must read the full header the layout declares"
+    assert f"fh.read({RING_ABI['header_bytes']})" in body, (
+        "the reader must read the full header the ring ABI declares"
     )
 
 
@@ -1477,15 +1476,10 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     reach `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) in
     exactly the contended case that proof exists for.
 
-    Pinned cross-language for the same reason `OFF_WRITER_PID` is: the two
+    Pinned cross-language for the same reason `off_writer_pid` is: the two
     values live in different languages and either could be changed alone.
     """
-    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
-    m = re.search(
-        r"#define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS (\d+)ull", header
-    )
-    assert m, "the ring's lock-wait constant moved or changed shape"
-    lock_wait_sec = int(m.group(1)) / 1000.0
+    lock_wait_sec = RING_ABI["open_lock_wait_timeout_ms"] / 1000.0
 
     src = (REPO / "jasper" / "cli" / "doctor" / "renderers.py").read_text()
     m = re.search(r'_PROBE_TIMEOUT_SEC = "([0-9.]+)"', src)
@@ -1502,11 +1496,11 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     )
     # And the dependency is named at BOTH ends, so neither reads as arbitrary.
     assert "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS" in src, (
-        "the Python side must name the C constant it depends on"
+        "the Python side must name the ring constant it depends on"
     )
-    assert "_PROBE_TIMEOUT_SEC" in header, (
-        "the C constant must name the doctor probe as a dependent"
-    )
+    assert "_PROBE_TIMEOUT_SEC" in (
+        REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
+    ).read_text(), "the C constant must name the doctor probe as a dependent"
 
 
 def test_the_c0_normalization_survives_the_FILE_read_end_to_end(tmp_path):
@@ -1777,11 +1771,8 @@ def test_the_doctor_ring_device_map_covers_every_registered_lane():
 
 
 def _ring_liveness_window_sec() -> float:
-    """The secondary guard's window, read from the C constant that owns it."""
-    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
-    m = re.search(r"#define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS (\d+)ull", header)
-    assert m, "the ring's writer-liveness constant moved or changed shape"
-    return int(m.group(1)) / 1_000_000_000.0
+    """The secondary guard's window, from the ring ABI that owns it."""
+    return RING_ABI["writer_liveness_timeout_ns"] / 1_000_000_000.0
 
 
 @pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
@@ -1796,7 +1787,8 @@ def test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window(la
     an operator intervenes. It is the one non-self-healing shape in this design.
 
     Pinned cross-file, same shape as the doctor-probe pin: the value lives in a
-    systemd unit and the bound lives in a C header, and neither may move alone.
+    systemd unit and the bound lives in the ring ABI, and neither may move
+    alone.
     """
     lane = rl.lane_by_label(label)
     assert lane is not None

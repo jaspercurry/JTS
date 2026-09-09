@@ -54,17 +54,11 @@ pub enum ContentBridgeMode {
     DacContentRing,
 }
 
-/// SHM ring reader settings; only meaningful when
-/// `content_bridge_mode == ShmRing`. Slot frames are NOT a separate env: the
-/// ring's `period_frames` is always outputd's `period_frames`, one less drift
-/// axis. `n_slots` defaults to 2 (ping-pong); 3 is the degraded widening,
-/// 4..=16 is negotiation headroom. The ceiling is 16 because CamillaDSP's
-/// playback BufferManager needs an ALSA buffer (== `n_slots * period_frames`)
-/// that clears both its negotiated size (next_pow2(3*chunksize)) and its
-/// `target_level`; at 4 slots the 512-frame buffer was below both and the rate
-/// controller wound up into stall flapping. Kept in lockstep with `MAX_N_SLOTS`
-/// (rust/jasper-ring/src/layout.rs) and `JTS_RING_MAX_SLOTS`
-/// (c/jts-ring-ioplug/jts_ring_shm.h).
+/// The CENTRAL ring's file; only meaningful when
+/// `content_bridge_mode == ShmRing`. Neither of the ring's other two geometry
+/// axes is an env: the slot is always outputd's `period_frames`, and the depth
+/// is `jasper_ring::RING_SLOTS`, the same compile-time constant the ioplug's
+/// conf.d block is rendered from — one less drift axis each.
 pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
 /// The ACTIVE ring's file — a roleful (crossover) box's POST-crossover
 /// per-driver hop, distinct from `DEFAULT_SHM_RING_PATH`'s full-range stereo
@@ -75,9 +69,6 @@ pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
 /// Only the allowlist in `Config::from_env` reads it; outputd never defaults to
 /// this path.
 pub const DEFAULT_ACTIVE_SHM_RING_PATH: &str = "/dev/shm/jts-ring/active-content.ring";
-pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
-pub const MIN_SHM_RING_SLOTS: u32 = 2;
-pub const MAX_SHM_RING_SLOTS: u32 = 16;
 
 /// The DAC-content RETURN ring — a grouping leader's round-trip ingress, read
 /// by `dac_content::DacContentSource`'s ring arm.
@@ -113,12 +104,6 @@ pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = jasper_ring::RING_SLOT_FRAMES;
 /// so it is a constant rather than an env knob.
 pub const ASSISTANT_REFERENCE_PATH: &str =
     "/var/lib/jasper/outputd_assistant_volume_reference.json";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShmRingConfig {
-    pub path: String,
-    pub n_slots: u32,
-}
 
 /// Final-output transport SHAPE — clock-domain shape, not DAC id. The
 /// transport dispatches on this; channel width + map ride as data, so a new
@@ -204,9 +189,8 @@ pub struct Config {
     pub period_frames: u32,
     pub dac_buffer_frames: u32,
     pub content_bridge_mode: ContentBridgeMode,
-    /// SHM ring reader settings; `Some` iff `content_bridge_mode == ShmRing`.
-    /// See `ShmRingConfig`.
-    pub shm_ring: Option<ShmRingConfig>,
+    /// SHM ring reader path; `Some` iff `content_bridge_mode == ShmRing`.
+    pub shm_ring: Option<String>,
     pub chip_ref_pcm: Option<String>,
     pub chip_ref_sample_rate: u32,
     pub chip_ref_period_frames: u32,
@@ -400,8 +384,15 @@ impl Config {
         // reconciler emits JASPER_OUTPUTD_ACTIVE_CHANNELS from the DacProfile's
         // active_outputd_lane_channels. A coherent single DAC reads + writes
         // this width end-to-end (single Apple 2ch == today; DAC8x 8ch); the
-        // composite shape is fixed at 4 (two stereo children).
-        let active_channels = env_optional_u16("JASPER_OUTPUTD_ACTIVE_CHANNELS", 2, 8)?;
+        // composite shape is fixed at 4 (two stereo children). The ceiling is
+        // the ring's own — a width outputd accepts here must be a width the
+        // ring can carry — so it is READ from `jasper_ring` rather than spelled
+        // as a second 8.
+        let active_channels = env_optional_u16(
+            "JASPER_OUTPUTD_ACTIVE_CHANNELS",
+            2,
+            jasper_ring::MAX_RING_CHANNELS as u16,
+        )?;
         let content_channels = match sink_mode {
             SinkMode::SingleAlsa => active_channels.unwrap_or(2),
             SinkMode::Composite => {
@@ -719,25 +710,12 @@ impl Config {
         // resolved source; the predicate above already rejected it on any sink
         // that is neither a full-range stereo L/R sink nor an armed ACTIVE-ring
         // endpoint, and the round-trip lane resolved a source of its own, so the
-        // two are mutually exclusive by resolution rather than by a guard. The
-        // remaining validation is the slot count.
+        // two are mutually exclusive by resolution rather than by a guard.
         let shm_ring = match content_bridge_mode {
-            ContentBridgeMode::ShmRing => {
-                let n_slots = env_u32("JASPER_OUTPUTD_SHM_RING_SLOTS", DEFAULT_SHM_RING_SLOTS)?;
-                if !(MIN_SHM_RING_SLOTS..=MAX_SHM_RING_SLOTS).contains(&n_slots) {
-                    anyhow::bail!(
-                        "JASPER_OUTPUTD_SHM_RING_SLOTS={} must be between {} and {} \
-                         (2 = ping-pong prototype, 3 = degraded widening, 4 = headroom)",
-                        n_slots,
-                        MIN_SHM_RING_SLOTS,
-                        MAX_SHM_RING_SLOTS
-                    );
-                }
-                Some(ShmRingConfig {
-                    path: env_str("JASPER_OUTPUTD_SHM_RING_PATH", DEFAULT_SHM_RING_PATH),
-                    n_slots,
-                })
-            }
+            ContentBridgeMode::ShmRing => Some(env_str(
+                "JASPER_OUTPUTD_SHM_RING_PATH",
+                DEFAULT_SHM_RING_PATH,
+            )),
             // No central hop: the armed marker's return lane IS the source.
             ContentBridgeMode::DacContentRing => None,
         };
@@ -761,8 +739,8 @@ impl Config {
         // writer is broken under every bridge.
         if content_bridge_mode == ContentBridgeMode::ShmRing {
             let is_active_path = shm_ring
-                .as_ref()
-                .is_some_and(|r| r.path == DEFAULT_ACTIVE_SHM_RING_PATH);
+                .as_deref()
+                .is_some_and(|path| path == DEFAULT_ACTIVE_SHM_RING_PATH);
             if is_active_path != ring_active_ok {
                 anyhow::bail!(
                     "the active ring path ({}) may be read ONLY by an armed active \
@@ -771,7 +749,7 @@ impl Config {
                      JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={}, \
                      JASPER_OUTPUTD_ACTIVE_LANE={}, JASPER_OUTPUTD_SINK={}",
                     DEFAULT_ACTIVE_SHM_RING_PATH,
-                    shm_ring.as_ref().map(|r| r.path.as_str()).unwrap_or(""),
+                    shm_ring.as_deref().unwrap_or(""),
                     is_active_path,
                     ring_active_endpoint,
                     active_lane,
@@ -1215,10 +1193,7 @@ mod tests {
             assert!(cfg.active_lane);
             assert!(cfg.ring_active_endpoint);
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
-            assert_eq!(
-                cfg.shm_ring.as_ref().unwrap().path,
-                DEFAULT_ACTIVE_SHM_RING_PATH
-            );
+            assert_eq!(cfg.shm_ring.as_deref(), Some(DEFAULT_ACTIVE_SHM_RING_PATH));
         });
     }
 
@@ -1322,7 +1297,7 @@ mod tests {
             assert_eq!(cfg.sink_mode, SinkMode::Composite);
             assert_eq!(cfg.content_channels, 4, "the composite ring is 4-channel");
             assert_eq!(
-                cfg.shm_ring.as_ref().map(|r| r.path.as_str()),
+                cfg.shm_ring.as_deref(),
                 Some(DEFAULT_ACTIVE_SHM_RING_PATH),
                 "it must read the ACTIVE ring, never the stereo one"
             );
@@ -1376,7 +1351,7 @@ mod tests {
                 let cfg = Config::from_env().unwrap();
                 assert!(!cfg.ring_active_endpoint);
                 assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
-                assert_eq!(cfg.shm_ring.as_ref().unwrap().path, DEFAULT_SHM_RING_PATH);
+                assert_eq!(cfg.shm_ring.as_deref(), Some(DEFAULT_SHM_RING_PATH));
             },
         );
     }
@@ -1972,23 +1947,19 @@ mod tests {
         with_env(&[], || {
             let cfg = Config::from_env().unwrap();
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
-            assert_eq!(
-                cfg.shm_ring.as_ref().map(|r| r.path.as_str()),
-                Some(DEFAULT_SHM_RING_PATH)
-            );
+            assert_eq!(cfg.shm_ring.as_deref(), Some(DEFAULT_SHM_RING_PATH));
         });
     }
 
     #[test]
-    fn parses_shm_ring_with_defaults_and_overrides() {
+    fn parses_shm_ring_path() {
         with_env(
             &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring"))],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
-                let ring = cfg.shm_ring.expect("shm_ring config present");
-                assert_eq!(ring.path, DEFAULT_SHM_RING_PATH);
-                assert_eq!(ring.n_slots, DEFAULT_SHM_RING_SLOTS);
+                let ring = cfg.shm_ring.expect("shm_ring path present");
+                assert_eq!(ring, DEFAULT_SHM_RING_PATH);
             },
         );
         with_env(
@@ -1998,12 +1969,10 @@ mod tests {
                     "JASPER_OUTPUTD_SHM_RING_PATH",
                     Some("/dev/shm/jts-ring/content.ring"),
                 ),
-                ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some("3")),
             ],
             || {
                 let ring = Config::from_env().unwrap().shm_ring.unwrap();
-                assert_eq!(ring.path, "/dev/shm/jts-ring/content.ring");
-                assert_eq!(ring.n_slots, 3);
+                assert_eq!(ring, "/dev/shm/jts-ring/content.ring");
             },
         );
     }
@@ -2018,49 +1987,6 @@ mod tests {
                     "alias {alias}"
                 );
             });
-        }
-    }
-
-    #[test]
-    fn shm_ring_rejects_out_of_range_slots() {
-        // 17 is one past the ceiling (16, so the ALSA playback buffer clears
-        // CamillaDSP's target_level); 1 is below the floor; 0 trips the
-        // generic env_u32 > 0 guard.
-        for slots in ["1", "17", "0"] {
-            with_env(
-                &[
-                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
-                    ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some(slots)),
-                ],
-                || {
-                    let err = Config::from_env().unwrap_err().to_string();
-                    assert!(
-                        err.contains("SHM_RING_SLOTS") || err.contains("must be > 0"),
-                        "slots={slots}: {err}"
-                    );
-                },
-            );
-        }
-    }
-
-    #[test]
-    fn shm_ring_accepts_deep_buffer_slot_counts() {
-        // The counts that give camilla's playback buffer real depth
-        // (>= target_level) must parse.
-        for slots in ["4", "8", "12", "16"] {
-            with_env(
-                &[
-                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
-                    ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some(slots)),
-                ],
-                || {
-                    let ring = Config::from_env()
-                        .unwrap_or_else(|e| panic!("slots={slots} should parse: {e}"))
-                        .shm_ring
-                        .expect("shm_ring config present");
-                    assert_eq!(ring.n_slots, slots.parse::<u32>().unwrap(), "slots={slots}");
-                },
-            );
         }
     }
 
