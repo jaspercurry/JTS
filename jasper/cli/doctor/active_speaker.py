@@ -37,6 +37,7 @@ REASON_SOUND_PROFILE_UNREADABLE = "sound_profile_unreadable"
 REASON_SOUND_PROFILE_NOT_ACTIVE = "sound_profile_not_active"
 
 REASON_BASS_EXTENSION_NOT_COMMISSIONED = "bass_extension_not_commissioned"
+REASON_BASS_EXTENSION_MALFORMED = "bass_extension_malformed"
 
 REASON_DSP_APPLY_NONE = "dsp_apply_none"
 REASON_DSP_APPLY_ROLLBACK_FAILED = "dsp_apply_rollback_failed"
@@ -321,8 +322,9 @@ def check_bass_extension_profile() -> CheckResult:
         return CheckResult(
             "bass extension profile",
             "fail",
-            f"applied bass family is unreadable: {refusal.detail}",
-            reason=str(refusal.reason),
+            f"applied bass family is unreadable [{refusal.reason}]: "
+            f"{refusal.detail}",
+            reason=REASON_BASS_EXTENSION_MALFORMED,
         )
     targets = [rung["target"] for rung in family["rungs"]]
     return CheckResult(
