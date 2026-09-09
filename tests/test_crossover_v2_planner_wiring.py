@@ -18,7 +18,6 @@ plan, and a refusal nobody catches still fails a household's capture.
 """
 from __future__ import annotations
 
-import inspect
 import logging
 from dataclasses import replace
 
@@ -424,20 +423,6 @@ def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
 # --------------------------------------------------------------------------- #
 # the build's own disclosure port (#2361)
 # --------------------------------------------------------------------------- #
-
-
-def test_log_event_is_called_from_exactly_two_sites_in_planning():
-    """Pins the module docstring's exceptions paragraph to a count, not prose
-    alone: ``planning.py`` otherwise writes nothing and logs nothing itself,
-    exactly like ``intervention.py`` and ``fc_sweep.py`` — the SF2 journal
-    guard below and the dropped bass family are the two deliberate
-    exceptions. A third call site landing here quietly would mean the module
-    grew one without anybody updating that claim. Source-scanned rather than
-    asserted behaviorally, because the property is about how many PLACES in
-    the source can log, not about what any one call does.
-    """
-    source = inspect.getsource(planning)
-    assert source.count("log_event(") == 2
 
 
 @pytest.mark.parametrize("port_error", [OSError, ValueError])

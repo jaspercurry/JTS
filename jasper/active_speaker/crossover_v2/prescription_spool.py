@@ -30,6 +30,7 @@ from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 from .bass_prescription import (
     BASS_PRESCRIPTION_KIND,
     BassPrescription,
+    bass_fit_body,
     read_bass_prescription,
 )
 from .blend_prescription import (
@@ -265,7 +266,7 @@ def _anchors(
     """
     if isinstance(prescription, BassPrescription):
         evidence = dict(bass_evidence or {})
-        fit = evidence.get("bass_fit") or {}
+        fit = bass_fit_body(evidence.get("bass_fit")) or {}
         return {
             ENVELOPE_KIND_FIELD: BASS_PRESCRIPTION_KIND,
             # The fit AS THE GATE READ IT, minus the curve it published for a
@@ -277,6 +278,7 @@ def _anchors(
             "bass_fit_sha256": prescription.bass_fit_sha256,
             "round_id": prescription.round_id,
             "ladder_evidence": dict(evidence.get("ladder_evidence") or {}),
+            "limiter_evidence": evidence.get("limiter_evidence"),
             "expected_owner_role": evidence.get("expected_owner_role"),
         }
     if isinstance(prescription, DriverPrescription):
@@ -560,20 +562,22 @@ def _validate(
     prescription: BlendPrescription | DriverPrescription | BassPrescription | None
     if staged_kind == BASS_PRESCRIPTION_KIND:
         banked_ladder = envelope.get("ladder_evidence")
+        banked_limiter = envelope.get("limiter_evidence")
         prescription = read_bass_prescription(
             read_prescription_bytes(payload),
             packet_fingerprint=envelope.get("packet_fingerprint"),
             bass_fit=envelope.get("bass_fit"),
             bass_fit_sha256=envelope.get("bass_fit_sha256"),
             round_id=envelope.get("round_id"),
+            # Both evidences exactly as the stage banked them, so a boosted
+            # target tampered in AFTER the stage refuses on
+            # `bass_prescription_protection_missing`.
             ladder=(
                 banked_ladder if isinstance(banked_ladder, Mapping) else {}
             ),
-            # `None` because the packet is gone and inventing a limiter
-            # evidence would be a self-certifying read. A boosted target
-            # tampered into the document then refuses on
-            # `bass_prescription_protection_missing`.
-            limiter=None,
+            limiter=(
+                banked_limiter if isinstance(banked_limiter, Mapping) else None
+            ),
             expected_owner_role=envelope.get("expected_owner_role"),
         )
     elif staged_kind == DRIVER_PRESCRIPTION_KIND:

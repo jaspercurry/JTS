@@ -233,6 +233,7 @@ def _evidence_path(
     artifact: str,
     reason: str,
     resolved: Path | None = None,
+    beside_packet: bool = False,
 ) -> Path:
     """Where this invocation's copy of ``artifact`` is.
 
@@ -240,7 +241,10 @@ def _evidence_path(
     itself (``room_median.json`` / ``--room-median``), which is what lets one
     resolver serve every door. ``resolved`` is this invocation's own answer,
     threaded back from the gate that already read it, so a later caller does
-    not walk the round tree again.
+    not walk the round tree again. ``beside_packet`` is the packet-bound
+    class's default only: ``packet`` writes its evidence beside the packet,
+    while a median beside a copied packet is nothing the room class vouched
+    for.
     """
     if resolved is not None:
         return resolved
@@ -250,7 +254,7 @@ def _evidence_path(
     if args.session_dir:
         round_dir = Path(args.session_dir)
         return default_out(round_inputs(round_dir), round_dir, artifact)
-    if args.packet:
+    if beside_packet and args.packet:
         return Path(args.packet).parent / artifact
     raise BlendPrescriptionRefused(
         reason,
@@ -266,6 +270,7 @@ def _round_evidence(
     artifact: str,
     reason: str,
     resolved: Path | None = None,
+    beside_packet: bool = False,
 ) -> tuple[Mapping[str, Any], str, Path]:
     """One round evidence document, the digest it is named by, and its path.
 
@@ -274,7 +279,13 @@ def _round_evidence(
     fail to be evidence -- absent, unreadable, not JSON, not an object -- is
     the door's own one reason.
     """
-    path = _evidence_path(args, artifact=artifact, reason=reason, resolved=resolved)
+    path = _evidence_path(
+        args,
+        artifact=artifact,
+        reason=reason,
+        resolved=resolved,
+        beside_packet=beside_packet,
+    )
     try:
         payload = read_source_bytes(str(path))
         document = json.loads(payload)
@@ -455,13 +466,19 @@ def _bass_gate(
     this" for the propose, the stage, and the take a round later.
     """
     fit, sha256, path = _round_evidence(
-        args, artifact=BASS_FIT_ARTIFACT, reason=FIT_UNAVAILABLE
+        args, artifact=BASS_FIT_ARTIFACT, reason=FIT_UNAVAILABLE, beside_packet=True
     )
     drivers = packet.get("drivers")
     owner_role = (
         drivers.get("bass_owner_role") if isinstance(drivers, Mapping) else None
     )
     requested = document.get("targets")
+    # Row 4.3's bundle does not exist, so today every boosted target refuses
+    # on `bass_prescription_protection_missing` -- the intended state, not a
+    # gap: only the natural target is admissible until the limiter evidence a
+    # boost rides on can be shown. The seam is banked beside the ladder's so
+    # the take re-gates from exactly what the stage saw.
+    limiter_evidence: Mapping[str, Any] | None = None
     ladder_evidence = _bass_ladder_evidence(
         path.parent,
         [entry for entry in requested if isinstance(entry, str)]
@@ -475,16 +492,13 @@ def _bass_gate(
         bass_fit_sha256=sha256,
         round_id=_packet_round_id(packet),
         ladder=ladder_evidence,
-        # Row 4.3's bundle does not exist, so today every boosted target
-        # refuses on `bass_prescription_protection_missing` -- the intended
-        # state, not a gap: only the natural target is admissible until the
-        # limiter evidence a boost rides on can be shown.
-        limiter=None,
+        limiter=limiter_evidence,
         expected_owner_role=owner_role,
     )
     return prescription, {
         "bass_fit": fit,
         "ladder_evidence": ladder_evidence,
+        "limiter_evidence": limiter_evidence,
         "expected_owner_role": owner_role,
     }
 
@@ -1722,7 +1736,8 @@ _BASS_FIT_HELP = (
     "the round's fitted bass family JSON -- the plant, the margin policy and "
     "the target family a bass prescription adopts from. Used for a "
     f"{BASS_PRESCRIPTION_KIND} document; defaults to {BASS_FIT_ARTIFACT} "
-    "beside the packet, else beside the round. The candidate's basis names "
+    "beside the round when a round directory was named, else beside "
+    "--packet. The candidate's basis names "
     f"this file's sha256, and {BASS_LADDER_DIRNAME}/*.json beside it is the "
     "protection evidence a boosted target needs"
 )

@@ -332,7 +332,7 @@ def test_the_bass_class_is_stageable(cli_round, tmp_path, capsys):
     assert answer["for_round_ordinal"] == 4
     # The fit is banked as the gate read it, minus the curve nothing re-gates.
     envelope = json.loads((tmp_path / "staged.json").read_text())
-    assert "curve" not in envelope["bass_fit"]
+    assert "rungs" in envelope["bass_fit"] and "curve" not in envelope["bass_fit"]
     assert envelope["expected_owner_role"] == "woofer"
     taken = spool.take_staged_prescription(
         round_ordinal=4, accepts=spool.STAGEABLE_KINDS
