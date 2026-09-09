@@ -117,6 +117,21 @@ def _nginx_location_block(nginx: str, location: str) -> str:
     raise AssertionError(f"missing nginx block: {location}")
 
 
+def _conf_locations(conf: str) -> set[str]:
+    """Every `location` header in a conf, listener-independent.
+
+    Rendered back as written — `"= /sound"`, `"~* ^/assets/.+\\.js$"`, bare
+    prefix `"/mic"` — so a conf that narrows a prefix block to an exact one
+    reads as a difference rather than as parity. A path mounted on both
+    listeners collapses to one entry.
+    """
+    return {
+        f"{modifier} {path}".strip()
+        for _ports, locations in _nginx_servers(conf)
+        for modifier, path in locations
+    }
+
+
 def _assert_strong_no_cache(block: str) -> None:
     assert (
         'add_header Cache-Control "no-store, no-cache, max-age=0, must-revalidate" always;'
@@ -695,6 +710,30 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert not re.search(r"location\s+=?\s*/correction", nginx)
 
 
+# The streambox profile ships no wake stack, so its conf mounts none of the
+# wake surfaces; every other `location` must exist in both. Removal condition
+# and the rest of the rule: ADR-0253 §7.
+_CONF_LOCATION_DIFF_ALLOWLIST = frozenset({
+    "/assistant/wake/",
+    "/mic",
+    "/wake-corpus/",
+    "/wake/",
+})
+
+
+def test_both_nginx_profiles_mount_the_same_locations() -> None:
+    """One conf may not gain a route the other silently misses.
+
+    Every documented difference is speaker-only, so the streambox conf holds
+    no location the speaker conf lacks in either direction.
+    """
+    speaker = _conf_locations(_NGINX_PATH.read_text(encoding="utf-8"))
+    streambox = _conf_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
+
+    assert speaker - streambox == _CONF_LOCATION_DIFF_ALLOWLIST
+    assert streambox - speaker == set()
+
+
 # Every Assistant page whose URL moved under the hub prefix (C.A1), and the
 # upstream it must still reach. `/wake/` is full-profile only: the streambox
 # never gets WAKE_DETECTION.
@@ -985,10 +1024,6 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert "location = /grouping" in nginx
 
 
-def _nginx_locations(nginx: str) -> set[str]:
-    return set(re.findall(r"^    location (?:= )?(/[^\s{]*)", nginx, re.M))
-
-
 def test_mic_pause_card_follows_wake_detection() -> None:
     """The /mic card is the always-on listen state, not the assistant.
 
@@ -1008,6 +1043,5 @@ def test_mic_pause_card_follows_wake_detection() -> None:
     # The /mic poll and mute POST short-circuit on this card being hidden, so
     # the control living inside it is what ties them to the gate above.
     assert 'id="mic-toggle"' in card.group("body")
-    assert "/mic" not in _nginx_locations(
-        _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
-    )
+    streambox = _conf_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
+    assert not [loc for loc in streambox if loc.split()[-1] == "/mic"]

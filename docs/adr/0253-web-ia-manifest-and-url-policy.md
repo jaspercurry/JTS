@@ -118,3 +118,10 @@ a path with a real external or bookmark tie gets one, so most moves are a
 clean cut with no redirect to prune later. Superseded: the per-page
 `inspect.getsource` route pins Phase D replaces, and the inline
 conf-comment slice check the conf-parity guard replaces.
+
+## Addendum 2026-09-09
+
+The §7 guard shipped as `_CONF_LOCATION_DIFF_ALLOWLIST` in
+`tests/test_landing_page_html.py`, which owns the live exception set:
+`/assistant/wake/`, `/mic`, `/wake-corpus/`, `/wake/`. The `/source` vs
+`/source/` mismatch §7 listed was fixed in the same PR, not allowlisted.
