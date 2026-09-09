@@ -778,10 +778,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-        "JASPER_FANIN_RING_SLOTS=8\n"
-    )
+    fanin.write_text("JASPER_FANIN_RING_SLOTS=8\n")
     outputd.write_text(_armed_outputd_env())
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 

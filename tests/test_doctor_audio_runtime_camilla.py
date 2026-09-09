@@ -210,7 +210,6 @@ def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
     needed the legacy FIFO round-trip spelling, which no writer emits.
     """
     plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
     )
@@ -238,7 +237,6 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )

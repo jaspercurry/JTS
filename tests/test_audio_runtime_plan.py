@@ -505,8 +505,6 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
     outputd_env.write_text(
         f"{OUTPUTD_DAC_BUFFER_KEY}=1536\n", encoding="utf-8"
     )
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("", encoding="utf-8")
     store = tmp_path / "audio_runtime_overrides.json"
     store.write_text(
         json.dumps({
@@ -532,7 +530,6 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
     ok, lines = validate_outputd_env(
         base_env=str(base_env),
         outputd_env=str(outputd_env),
-        fanin_env=str(fanin_env),
         camilla_statefile=DEFAULT_CAMILLA_STATEFILE_PATH,
         camilla2_statefile=DEFAULT_CAMILLA2_STATEFILE_PATH,
         overrides=str(store),
@@ -1896,7 +1893,6 @@ def test_the_low_latency_route_names_the_bond_not_a_bridge_to_set():
     """
     plan = audio_plan.build_audio_runtime_plan(
         base_env={audio_plan.AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         grouping_outputd_env={"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"},
     )
 
