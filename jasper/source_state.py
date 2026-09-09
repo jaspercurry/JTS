@@ -26,8 +26,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import bluealsa_probe
 from . import librespot_state
+from .bluetooth.avrcp import a2dp_sink_playing
 from .busctl import name_is_absent, run_busctl
 from .fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
@@ -299,17 +299,9 @@ def usbsink_direct_playing(
 
 
 async def bluetooth_playing_observed() -> bool | None:
-    """bluealsa-cli list-pcms prints one line per BlueALSA PCM path.
-    On an idle box this is empty; with a phone connected and an A2DP
-    stream open you get one or more lines like
-    /org/bluealsa/hci0/dev_XX_../a2dpsnk/source. Best-effort — can't
-    distinguish "phone connected, not playing" from "connected and
-    streaming" without AVRCP, which bluez-alsa doesn't expose
-    reliably."""
-    stdout = await bluealsa_probe.list_pcms(logger)
-    if stdout is None:
-        return None
-    return b"a2dpsnk/source" in stdout
+    """True while a phone has an A2DP transport to us, None when BlueZ is
+    unreachable. See :func:`jasper.bluetooth.avrcp.a2dp_sink_playing`."""
+    return await a2dp_sink_playing()
 
 
 async def bluetooth_playing() -> bool:

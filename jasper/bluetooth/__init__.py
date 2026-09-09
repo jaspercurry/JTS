@@ -19,8 +19,9 @@ Module layout:
   - engine.py       long-lived discovery owner, pair state machine, status events
   - scan.py         live ObjectManager observer + event stream
   - availability.py adapter path, control-plane unit, shared rfkill read
-  - avrcp.py        AVRCP transport controls (play/pause/next/etc.) for
-                    connected A2DP-sink devices
+  - avrcp.py        AVRCP transport controls (play/pause/next/etc.) plus the
+                    "does a phone have an A2DP transport to us" probe mux
+                    and the source-state poll read
   - handlers/       per-class behaviour (HID / A2DP-sink / default —
                     GATT-only peripherals fall through to default)
 
