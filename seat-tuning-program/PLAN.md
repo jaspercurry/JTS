@@ -219,7 +219,7 @@ disjoint files.
 |---|---|---|---|---|
 | 3.1 | Bind the bench: `PlayAndCapture` and `TargetPlan` against the engine's play path and the wired recorder; `jasper-bass-extension-bench --live` stops failing closed. | R | fixture run; live path reaches the recorder | **NN** |
 | 3.2b | **Added 2026-09-09, gates 3.3.** The adapters do not honour their own margin policy: `sealed.generate_family` ignores `subsonic_corner_ratio`/`subsonic_order` (ships 15 Hz 2nd-order where `conservative` declares 21.8 Hz 4th-order — at 10 Hz that is −1.8 dB against the policy's −21 dB, on a rung carrying +6 dB of infrasonic boost with no excursion model), and `generate_ported_family` ignores `boost_cap_db`. `_assert_bass_extension_safe` proves only the `LT → subsonic → limiter` ORDER, never the subsonic's values, so these numbers reach the DAC unchecked the moment 3.3's emission lands. Own PR, before 3.3. | C | **NN** |
-| 3.2 | `bass-fit` view: fit the seat-cube median below the ceiling to an extended-corner target family (one corner per rung); the declared plant (adapters as parameter models; `fit_plant` on the median for the effective corner) supplies excursion-versus-boost. Publishes per rung: filters, boost, headroom cost, excursion margin. | V | fixture median → family JSON | code-review |
+| 3.2 | **LANDED 2026-09-09 — PR #4641 squash-merged at `4157a6030`.** `bass-fit` view: fit the seat-cube median below the ceiling to an extended-corner target family (one corner per rung); the declared plant (adapters as parameter models; `fit_plant` on the median for the effective corner) supplies excursion-versus-boost. Publishes per rung: filters, boost, headroom cost, excursion margin. | V | fixture median → family JSON | code-review |
 | 3.3 | Layer-2 scheduled candidate kind: the family keyed by listening level for the bass owner, emitted as named biquads per rung; a rung is admissible only with its protection evidence (3.4). Absorbs `profile.py`. | C | door refuses an unverified rung; emitter round-trip | code-review high |
 | 3.4 | Protection ladder as a code-owned program: stepped-level sweeps at the seat, distortion-versus-level per rung, the sustain test, evidence banked per rung. A failing rung is inadmissible at that level. | P | fixture ladder; refusal codes | **NN** |
 | 3.5 | Runbook "Bass" section; menu rows. | A | menu `--check` | sanity |
@@ -317,6 +317,20 @@ cardioid channel's design · a database or memory service · new `JASPER_*`
 knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
+
+- 2026-09-09 15:25Z: **Row 3.2 LANDED**: PR #4641 squash-merged at `4157a6030`
+  (+1119/−38 over 16 files) after a Sonnet claim check (8/10 pass
+  independently, including a byte-for-byte `--dry-run` comparison against main
+  and a live end-to-end run), an Opus design review (REQUEST CHANGES, three
+  must-fixes, all fixed and re-verified: vented admission 31/72 → 0/72; the
+  published model now matches the plant the fit fitted, `max |model − plant|`
+  0.0; the pointer to the deleted `ladder.py` gone), and one CI round lost to
+  the orchestrator's own menu-staging error (see 15:12Z). `jasper-round-views
+  bass-fit` is on main and the duplicate `room_median.json` parser is gone —
+  the door's reader is the one reader tree-wide.
+  Carried forward: row **3.2b** (the adapters' margin-policy divergence) still
+  gates row 3.3; the missing excursion model is the owner's to rule on against
+  ADR-0260.
 
 - 2026-09-09 15:20Z: Wave 5/6 fact base gathered and banked at
   `facts/wave-5-6-facts.md` (verified at main `d112fa5a1`); wave 4's is at
