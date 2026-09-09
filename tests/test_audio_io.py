@@ -60,9 +60,13 @@ class _CaptureOutputdStream:
         self.volume_contexts: list[object | None] = []
         self.meter_pauses = 0
         self.meter_resumes = 0
+        self.ducks: list[bool] = []
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
+
+    def program_duck(self, on: bool) -> None:
+        self.ducks.append(on)
 
     def prepare_assistant(
         self,
@@ -770,6 +774,32 @@ async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypat
     assert saved == [("acme", "m1", "v1", measurement)]
 
 
+@pytest.mark.parametrize(
+    ("on", "wire"),
+    [(True, b"PROGRAM_DUCK_ON\n"), (False, b"PROGRAM_DUCK_OFF\n")],
+)
+def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
+    """The exact verb fan-in already parses. Depth is fan-in's — the wire
+    carries the requested state and nothing else."""
+    parent, child = socket.socketpair()
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    seen: list[bytes] = []
+
+    def serve() -> None:
+        seen.append(child.recv(64))
+        child.close()
+
+    server = threading.Thread(target=serve)
+    server.start()
+    try:
+        adapter.program_duck(on)
+    finally:
+        server.join(timeout=1.0)
+        adapter.close()
+
+    assert seen == [wire]
+
+
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
     parent, child = socket.socketpair()
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
@@ -1135,6 +1165,35 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
     finally:
         adapter.close()
         child.close()
+
+
+async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
+    """Otherwise the first assistant turn after a fan-in restart plays over
+    undimmed music: the duck is the only command that never writes audio, so
+    nothing else would heal the connection first."""
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
+    parent, child = socket.socketpair()
+    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream.close()
+    child.close()
+    p._stream = closed_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    assert await p.program_duck(True) is True
+    assert p._stream is replacement
+    assert replacement.ducks == [True]
+
+
+async def test_program_duck_reports_a_failure_when_there_is_no_connection():
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
+
+    assert await p.program_duck(True) is False
 
 
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):

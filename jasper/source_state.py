@@ -189,16 +189,19 @@ async def airplay_playing() -> bool:
     return await airplay_playing_observed() is True
 
 
-async def usbsink_playing() -> bool:
-    """USB activity from the sole live ingress owner: fan-in DIRECT.
+async def usbsink_streaming() -> bool:
+    """Is the host feeding us frames right now — the ARBITRATION predicate.
 
-    Read fan-in's bounded STATUS probe off the event loop, then require both
-    current direct-capture health and audible pre-mute level. Missing/old
-    snapshots fail soft to ``False``.
+    No audio-level component: a faint passage and a loud one both stream, so
+    quiet content cannot drop the source. This is the answer mux arbitrates
+    on, and therefore the one every "which source owns the speaker" fallback
+    must use so the two cannot disagree. The LEVEL predicate is
+    :func:`usbsink_direct_playing`, which display and ``/state`` surfaces
+    apply to a STATUS they already hold. Missing/old snapshots fail soft.
     """
 
     status = await asyncio.to_thread(read_fanin_status)
-    return usbsink_direct_playing(status) is True
+    return usbsink_direct_streaming(status) is True
 
 
 def usbsink_direct_streaming(

@@ -48,7 +48,7 @@ Renderer support:
             degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
-            from fan-in DIRECT-lane telemetry. See _usbsink_playing.
+            from fan-in DIRECT-lane telemetry. See _usbsink_streaming.
             Liveness is purely "is the host streaming frames to us" —
             there is no audio-LEVEL gate. A faint sound is still a
             sound; if USB is the only source, we play it.
@@ -228,6 +228,11 @@ class Mux:
         self._last_handoff: dict[str, Any] | None = None
         self._handoff_seq = 0
         self._transition_lock = asyncio.Lock()
+        # Last answer published outside a handoff. Mid-handoff the losing
+        # source has already stopped while the winner is not committed yet,
+        # and the honest "idle" would let the volume coordinator resolve a
+        # carrier against a lane this mux is about to leave.
+        self._last_active_source_name = Source.IDLE.value
         self._pending_auto_target: Source | None = None
         # Non-music diagnostic lanes (currently the correction/test lane) can
         # temporarily own the fan-in gate without changing the household's
@@ -429,7 +434,7 @@ class Mux:
     ) -> dict[Source, bool]:
         probes: dict[Source, Any] = {
             Source.SPOTIFY: spotify_playing(self._librespot_state_path),
-            Source.USBSINK: self._usbsink_playing(),
+            Source.USBSINK: self._usbsink_streaming(),
         }
         probes.update(
             (source, probe())
@@ -471,7 +476,7 @@ class Mux:
             )
         return resolved
 
-    async def _usbsink_playing(self) -> bool | None:
+    async def _usbsink_streaming(self) -> bool | None:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
@@ -922,13 +927,20 @@ class Mux:
         }
 
     def _active_source_name(self, current: dict[Source, bool]) -> str:
+        name = self._resolve_active_source_name(current)
+        if name == Source.IDLE.value and self._transition_lock.locked():
+            return self._last_active_source_name
+        self._last_active_source_name = name
+        return name
+
+    def _resolve_active_source_name(self, current: dict[Source, bool]) -> str:
         if self._test_fanin_label is not None:
             return self._test_fanin_label
         if self._manual_source is not None:
             return self._manual_source.value
         if self._winner is not None and current.get(self._winner, False):
             return self._winner.value
-        return "idle"
+        return Source.IDLE.value
 
     def _active_sources(self, current: dict[Source, bool]) -> list[Source]:
         return [source for source in MUSIC_SOURCES if current.get(source, False)]
@@ -1047,7 +1059,6 @@ class Mux:
             duck_active_probe=_make_duck_active_probe(),
             volume_context_publisher=volume_context_publisher_for_runtime(
                 os.environ,
-                dynamic_topology=True,
             ),
         )
         coordinator.load_persisted_level()
@@ -1382,6 +1393,19 @@ class Mux:
                         }
             elif command == "AUTO":
                 payload = await self.auto_select()
+            elif command.startswith("PREEMPT "):
+                # AirPlay only: its escalation is bounded by two 2 s busctl
+                # calls, which a client can wait out. Spotify's tier-2
+                # `try-restart` is an 8 s worst case no socket client can, and
+                # nothing calls the other lanes.
+                source_name = command.split(" ", 1)[1].strip()
+                if source_name != Source.AIRPLAY.value:
+                    payload = {
+                        "error": f"not a preemptable source {source_name!r}",
+                    }
+                else:
+                    await self._pause(Source.AIRPLAY)
+                    payload = {"preempted": Source.AIRPLAY.value}
             elif command.startswith("TEST_SELECT "):
                 parts = command.split()
                 if len(parts) != 3:

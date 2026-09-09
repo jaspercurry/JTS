@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
+from ..music_sources import MUSIC_SOURCE_VALUES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -408,15 +409,16 @@ def _active_source(
         else overall.get("active_source")
     )
 
+    # Mux's own answer to "what is audible now" — one field, not a second
+    # reconstruction from the manual pin and the raw winner. Mux also answers
+    # "idle" and, while a measurement holds the fan-in test lease, that lane's
+    # label; neither is a source this surface may report, and both must fall
+    # through to the raw-probe fallbacks below.
     mux_effective_source = None
     if isinstance(mux_status, dict):
-        raw_selected = mux_status.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_status.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
+        raw_effective = mux_status.get("active_source")
+        if raw_effective in MUSIC_SOURCE_VALUES:
+            mux_effective_source = raw_effective
 
     if voice_session:
         return "voice"
