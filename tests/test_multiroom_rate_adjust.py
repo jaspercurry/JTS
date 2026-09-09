@@ -661,7 +661,6 @@ def test_outputd_grouping_env_clears_when_not_active():
     round-trip lane has no transport of its own to declare (ADR-0100)."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         outputd_grouping_env,
     )
     for cfg in (
@@ -669,7 +668,6 @@ def test_outputd_grouping_env_clears_when_not_active():
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
     ):
         env = outputd_grouping_env(cfg)
-        assert env[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
         assert env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] == ""
         assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in env
 

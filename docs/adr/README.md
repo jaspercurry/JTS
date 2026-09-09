@@ -54,10 +54,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | accepted |
 | [0178](0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md) | Every shape the ring cannot serve parks under its own name | amended by 0187 |
 | [0184](0184-a-resolvable-width-with-no-armed-endpoint-signals-rather-than-parks.md) | A resolvable width with no armed endpoint signals, it does not park | accepted |
-| [0186](0186-the-endpoint-gate-stays.md) | The endpoint gate stays | accepted |
+| [0186](0186-the-endpoint-gate-stays.md) | The endpoint gate stays | superseded by 0262 |
 | [0189](0189-an-armed-endpoint-under-no-active-modes-discloses-on-non-composite-sinks.md) | An armed endpoint under no active modes discloses, on non-composite sinks | accepted |
-| [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | accepted |
+| [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | FIFO-retirement condition superseded by 0262 |
 | [0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md) | Independent subwoofers are deleted; a subwoofer on a DAC channel stays the active-speaker crossover's concern | accepted |
+| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | accepted |
 
 ## Volume & hearing
 

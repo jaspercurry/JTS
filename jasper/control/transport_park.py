@@ -58,7 +58,6 @@ if TYPE_CHECKING:
 PARK_PASSIVE_STEREO_COMPOSITE = "passive_stereo_composite"
 PARK_MONO_FULL_RANGE = "mono_full_range"
 PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED = "roleful_active_endpoint_unconverged"
-PARK_GROUPED_DAC_CONTENT_LANE = "grouped_dac_content_lane"
 PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE = "dac_content_marker_beside_bridge"
 
 #: The tracked rebuild issue each shape waits on, in the tree's ``#NNNN``

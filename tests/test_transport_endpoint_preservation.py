@@ -55,7 +55,6 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
-    RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
@@ -72,6 +71,10 @@ from tests.transport_camilla_fixtures import FakeCamilla
 
 ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
+
+# The snd-aloop tap ADR-0100 retired. No product module names it any more
+# (ADR-0262); it lives here as the pre-arm graph a box can still carry.
+RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 
 
 # --------------------------------------------------------------------------
