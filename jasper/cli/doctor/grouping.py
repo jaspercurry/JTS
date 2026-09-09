@@ -633,9 +633,27 @@ def check_grouping_leader_pipe() -> CheckResult:
     return CheckResult(label, "ok", f"leader CamillaDSP writes {SNAPFIFO}")
 
 
-def _parse_env_file(text: str) -> dict[str, str]:
-    """Parse reconciler-written env text through the canonical parser."""
-    return parse_env_mapping(text)
+def _outputd_grouping_env_or_error() -> tuple[dict[str, str], OSError | None]:
+    """``grouping-outputd.env``'s parsed mapping, read once per run — the
+    channel-pick and TTS-lane checks both consume it (ADR-0233 rule 4).
+
+    Missing file -> ``({}, None)``: absence is the ordinary state for a solo
+    box, not a fault. An existing-but-unreadable file -> ``({}, the
+    OSError)`` so a caller can still report the fault rather than treating
+    it as silently absent.
+    """
+    from ...env_load import OUTPUTD_GROUPING_ENV_FILE
+
+    def read() -> tuple[dict[str, str], OSError | None]:
+        path = Path(OUTPUTD_GROUPING_ENV_FILE)
+        if not path.exists():
+            return {}, None
+        try:
+            return parse_env_mapping(path.read_text()), None
+        except OSError as e:
+            return {}, e
+
+    return evidence.get("outputd_grouping_env", read)
 
 
 def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
@@ -726,8 +744,13 @@ def check_grouping_channel_pick() -> CheckResult:
         flat_output_allowed=flat_output_allowed,
         outputd_period_frames=period,
     )
-    path = Path(OUTPUTD_GROUPING_ENV_FILE)
-    if not path.exists():
+    env, env_err = _outputd_grouping_env_or_error()
+    if env_err is not None:
+        return CheckResult(
+            label, "skipped", f"could not read {OUTPUTD_GROUPING_ENV_FILE}: {env_err}",
+            reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
+        )
+    if not env and not Path(OUTPUTD_GROUPING_ENV_FILE).exists():
         if active_endpoint:
             return CheckResult(
                 label, "ok",
@@ -740,13 +763,6 @@ def check_grouping_channel_pick() -> CheckResult:
             "member — outputd is not wired for the round-trip lane (run "
             "jasper-grouping-reconcile)",
             reason=REASON_CHANNEL_PICK_LANE_MISSING,
-        )
-    try:
-        env = _parse_env_file(path.read_text())
-    except OSError as e:
-        return CheckResult(
-            label, "skipped", f"could not read {path}: {e}",
-            reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
         )
 
     want_channel = cfg.channel or "stereo"
@@ -884,16 +900,13 @@ def check_grouping_tts_lane() -> CheckResult:
             )
         return CheckResult(label, "ok", route.ok_detail)
 
-    outputd_env: dict[str, str] = {}
-    outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
-    if outputd_path.exists():
-        try:
-            outputd_env = _parse_env_file(outputd_path.read_text())
-        except OSError as e:
-            return CheckResult(
-                label, "skipped", f"could not read {outputd_path}: {e}",
-                reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
-            )
+    outputd_env, outputd_err = _outputd_grouping_env_or_error()
+    if outputd_err is not None:
+        return CheckResult(
+            label, "skipped",
+            f"could not read {OUTPUTD_GROUPING_ENV_FILE}: {outputd_err}",
+            reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
+        )
     outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")
     lane_armed = bool(outputd_socket)
 
