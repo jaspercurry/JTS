@@ -1682,10 +1682,10 @@ mod tests {
         assert_eq!(counters.tts_clients(), 0);
     }
 
-    /// A client that breaks the wire is dropped, and the break reaches the
-    /// counters both daemons publish from.
-    #[test]
-    fn serve_client_counts_a_protocol_error_and_drops_the_client() {
+    /// Drive one client through [`serve_client`]: write `payload`, then go
+    /// quiet and wait for the reader thread to end. That join is the "drops
+    /// the client" half of the pins below.
+    fn serve_client_payload(payload: &[u8]) -> TtsServerCounters {
         let counters = TtsServerCounters::default();
         let (tx, _rx) = std::sync::mpsc::sync_channel(1);
         let sink = TtsCommandSink {
@@ -1706,12 +1706,31 @@ mod tests {
             );
         });
 
-        client.write_all(b"NOT_A_COMMAND\n").unwrap();
+        client.write_all(payload).unwrap();
         client.flush().unwrap();
         handle.join().unwrap();
+        drop(client);
+        counters
+    }
+
+    /// A client that breaks the wire is dropped, and the break reaches the
+    /// counters both daemons publish from.
+    #[test]
+    fn serve_client_counts_a_protocol_error_and_drops_the_client() {
+        let counters = serve_client_payload(b"NOT_A_COMMAND\n");
 
         assert_eq!(counters.protocol_errors(), 1);
-        drop(client);
+        assert_eq!(counters.frame_timeouts(), 0);
+    }
+
+    /// A client that announces a payload and then stops writing is dropped on
+    /// the frame deadline, so its reader thread cannot park forever.
+    #[test]
+    fn serve_client_counts_a_frame_timeout_and_drops_the_client() {
+        let counters = serve_client_payload(b"AUDIO 1000\n");
+
+        assert_eq!(counters.frame_timeouts(), 1);
+        assert_eq!(counters.protocol_errors(), 0);
     }
 
     /// [`serve`] creates its socket's parent, hands every admitted connection

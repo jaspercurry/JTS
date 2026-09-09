@@ -225,21 +225,18 @@ pub fn spawn_tts_server(
     metrics: TtsMetrics,
 ) -> Result<()> {
     let slots = metrics.counters.slots().clone();
+    let sink = TtsCommandSink {
+        daemon: "outputd",
+        tx,
+        epoch,
+        counters: metrics.counters.clone(),
+    };
     jasper_tts_protocol::serve(
         "outputd",
         &path,
         slots,
         |line| eprintln!("{line}"),
-        move |stream| {
-            handle_tts_client(
-                stream,
-                tx.clone(),
-                flush_tx.clone(),
-                Arc::clone(&epoch),
-                metrics.clone(),
-                TTS_FRAME_DEADLINE,
-            )
-        },
+        move |stream| handle_tts_client(stream, &sink, &flush_tx, &metrics, TTS_FRAME_DEADLINE),
     )?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
     Ok(())
@@ -247,27 +244,20 @@ pub fn spawn_tts_server(
 
 fn handle_tts_client(
     stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    metrics: TtsMetrics,
+    sink: &TtsCommandSink,
+    flush_tx: &SyncSender<QueuedFlush>,
+    metrics: &TtsMetrics,
     frame_deadline: Duration,
 ) {
-    let sink = TtsCommandSink {
-        daemon: "outputd",
-        tx,
-        epoch,
-        counters: metrics.counters.clone(),
-    };
     serve_client(
-        &sink,
+        sink,
         stream,
         frame_deadline,
         |line| eprintln!("{line}"),
         || {
             metrics.requests.fetch_add(1, Ordering::Relaxed);
         },
-        |reader, sync| queue_flush(reader, &flush_tx, &sink.epoch, &metrics, sync),
+        |reader, sync| queue_flush(reader, flush_tx, &sink.epoch, metrics, sync),
     );
 }
 
@@ -552,8 +542,6 @@ impl TtsBridge {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-
     use crate::types::ProgramSample;
 
     /// One S16 sample at the program spine's scale. The TTS WIRE stays S16
@@ -1002,34 +990,5 @@ mod tests {
             sub_lsb, wide,
             "a quarter-LSB offset must reach outputd's mix, not round away",
         );
-    }
-
-    /// A client that announces a payload and then stops writing is dropped
-    /// and counted, so its reader thread cannot be parked forever.
-    #[test]
-    fn tts_client_stalled_mid_frame_is_disconnected_and_counted() {
-        let (tx, _rx, flush_tx, _flush_rx, metrics, epoch) =
-            tts_channels(DEFAULT_MAX_PENDING_FRAMES);
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let handle = {
-            let metrics = metrics.clone();
-            thread::spawn(move || {
-                handle_tts_client(
-                    server,
-                    tx,
-                    flush_tx,
-                    epoch,
-                    metrics,
-                    Duration::from_millis(20),
-                );
-            })
-        };
-
-        client.write_all(b"AUDIO 1000\n").unwrap();
-        client.flush().unwrap();
-        handle.join().unwrap();
-
-        assert_eq!(metrics.counters.frame_timeouts(), 1);
-        drop(client);
     }
 }
