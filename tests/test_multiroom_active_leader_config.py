@@ -316,6 +316,67 @@ def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> N
     assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
 
 
+@pytest.mark.parametrize("role", ["leader", "follower"])
+@pytest.mark.parametrize("unsupported_stage", [None, "blend", "headroom"])
+def test_pair_preserves_applied_tune_without_old_measurements(
+    monkeypatch, tmp_path, role, unsupported_stage,
+):
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    applied = baseline_profile_mod.build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview,
+        measurements=measurements, write=True,
+        state_path=tmp_path / "solo.json", config_path=tmp_path / "solo.yml",
+        validate=_valid_config,
+    )
+    assert applied["permissions"]["may_apply"]
+    applied["status"] = "applied"
+    snapshot = applied["recomposition_snapshot"]
+    snapshot["linearization"] = {
+        "woofer": [{"biquad_type": "Peaking", "freq": 910.0, "q": 1.23, "gain": -7.0}],
+        "tweeter": [{"biquad_type": "Highshelf", "freq": 8500.0, "q": 0.707, "gain": 8.0}],
+    }
+    snapshot["corrections"]["woofer"]["delay_ms"] = 0.11
+    snapshot["corrections"]["tweeter"]["gain_db"] = -10.8
+    if unsupported_stage == "blend":
+        snapshot["blend_correction"] = [
+            {"biquad_type": "Peaking", "freq": 2500.0, "q": 1.0, "gain": -2.0},
+        ]
+    if unsupported_stage == "headroom":
+        snapshot["corrections"]["tweeter"]["gain_db"] = 0.0
+    solo, issues = baseline_profile_mod.recompose_applied_baseline_yaml(
+        topology, applied_profile=applied, bass_extension_profile=None,
+    )
+    assert not issues
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
+    monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "follower.yml"))
+    monkeypatch.setattr(fc, "FOLLOWER_STATE_PATH", str(tmp_path / "follower.json"))
+    precheck = alc.precheck_active_leader if role == "leader" else fc.precheck_active_follower
+    if unsupported_stage:
+        error_type = alc.ActiveLeaderError if role == "leader" else fc.ActiveFollowerError
+        with pytest.raises(error_type) as exc:
+            asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
+        assert exc.value.reason == "baseline_not_ready"
+        assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
+        assert not Path(fc.FOLLOWER_CONFIG_PATH).exists()
+        return
+    asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
+    path = alc.CROSSOVER_CONFIG_PATH if role == "leader" else fc.FOLLOWER_CONFIG_PATH
+    paired = yaml.safe_load(Path(path).read_text())
+    original = yaml.safe_load(solo)
+    assert paired["pipeline"][2:] == original["pipeline"][1:]
+    assert {k: v for k, v in paired["filters"].items() if k != "pair_balance_trim"} == {
+        k: v for k, v in original["filters"].items() if k != "active_baseline_headroom"
+    }
+    assert paired["filters"]["pair_balance_trim"]["parameters"]["gain"] == -4.0
+    assert paired["devices"]["volume_limit"] == 0.0
+    assert paired["devices"]["capture"]["device"] == "jts_ring_grouping"
+    assert paired["mixers"]["channel_select"]["mapping"][0]["sources"][0]["channel"] == 1
+
+
 def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> None:
     """If camilla#2's emitted driver-domain graph cannot be re-proven, refuse to
     bond (no full-range emit) — the bake re-prove is never reached."""

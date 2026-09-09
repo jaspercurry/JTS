@@ -146,12 +146,7 @@ async def precheck_active_follower(
     snapclient is feeding the grouping ring.
     """
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
+    from .active_profile import build_grouped_profile  # lazy: optional tuning dependencies
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,
@@ -160,8 +155,6 @@ async def precheck_active_follower(
         OutputTopologyError,
         load_output_topology_strict,
     )
-
-    from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
 
     program_channel = program_channel_for(cfg.channel)
 
@@ -180,36 +173,14 @@ async def precheck_active_follower(
             "active follower cannot re-prove its graph — output topology is "
             f"missing/corrupt ({exc}); refusing to bond (no full-range emit)",
         ) from exc
-    design_draft = load_design_draft()
-    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
-
-    # Emit the driver-domain-only graph to the follower-specific path, capturing
-    # the grouping ring. The solo baseline state/config are untouched.
-    # ``validate`` is a test seam (mirrors apply_baseline_profile); production
-    # leaves it None so build uses the real CamillaDSP --check.
-    build_kwargs = {} if validate is None else {"validate": validate}
-    # The L0 emit gate inside emit_active_speaker_driver_domain_config raises
-    # ActiveSpeakerConfigError (a ValueError) if the driver-domain graph would
-    # ship an unprotected tweeter. Convert it to ActiveFollowerError (a
-    # RuntimeError) so the reconciler's `except RuntimeError` fail-safe-to-solo
-    # path catches it — a refused graph must fall back to solo, never crash the
-    # reconciler oneshot. Mirrors the graph_unprovable re-prove refusal below.
     try:
-        candidate = build_baseline_profile_candidate(
+        candidate = build_grouped_profile(
             topology,
-            design_draft=design_draft,
-            crossover_preview=crossover_preview,
-            measurements=measurements,
-            write=True,
             state_path=FOLLOWER_STATE_PATH,
             config_path=FOLLOWER_CONFIG_PATH,
-            capture_device=GROUPING_RING_PCM,
-            capture_format=GROUPING_RING_FORMAT,
-            driver_domain=True,
             program_channel=program_channel,
-            driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
-            **build_kwargs,
+            trim_db=cfg.trim_db,
+            validate=validate,
         )
     except ActiveSpeakerConfigError as exc:
         raise ActiveFollowerError(
