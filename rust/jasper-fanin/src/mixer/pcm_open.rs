@@ -87,7 +87,6 @@ fn lane_input(
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
-        trim: TrimControl::new(),
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         lane_fade: LaneFade::for_lane(label, config.sample_rate),

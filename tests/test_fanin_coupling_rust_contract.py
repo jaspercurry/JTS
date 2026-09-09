@@ -550,7 +550,7 @@ def test_cushion_decay_held_target_is_single_source_of_truth():
     state_text = _state_rs_text()
 
     # 1. The resampler OWNS the live held-target gauge, and hold_fill_frames reads
-    #    it (the setpoint render_period / trim_ring discipline toward).
+    #    it (the setpoint render_period disciplines toward).
     assert "held_target_frames: Arc<AtomicU64>" in resampler_text
     assert "self.held_target_frames.load(Ordering::Relaxed) as usize" in resampler_text, (
         "hold_fill_frames must read the live held-target gauge, not a static field"

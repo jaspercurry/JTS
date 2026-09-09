@@ -33,7 +33,6 @@ def _lane(**overrides: object) -> dict:
         "xrun_count": 0,
         "catchup_resync_frames": 0,
         "catchup_events": 0,
-        "trim": {"trims": 0, "trimmed_frames": 0, "pending": False},
     }
     base.update(overrides)
     return base
@@ -100,12 +99,6 @@ def test_lane_state_unproved_when_resampler_armed() -> None:
 def test_lane_state_proved_when_resampler_present_but_unarmed() -> None:
     status = _fanin_status(lane=_lane(resampler={"armed": False}))
     live_proof.prove_lane_state(status)  # does not raise
-
-
-def test_lane_state_unproved_when_trim_pending() -> None:
-    status = _fanin_status(lane=_lane(trim={"trims": 1, "trimmed_frames": 4, "pending": True}))
-    with pytest.raises(live_proof.IngressProofError):
-        live_proof.prove_lane_state(status)
 
 
 def test_lane_state_unproved_when_lane_absent() -> None:

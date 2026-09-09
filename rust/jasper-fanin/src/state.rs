@@ -17,11 +17,9 @@
 //!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
 //!     primitive for the USB lane — the only USB-silencing mechanism now that
 //!     fan-in owns the sole USB audio path and its mix-mute.
-//!   `TRIM [<label>]\n` → drop the queued excess on one lane (or every lane);
-//!     replies with a plaintext `OK`/`ERR` line, not a snapshot.
-//!   `DECAY_SNAP <label>\n` → collapse one lane's resampler decay to unity.
 //!   `TAP_ARM {json}\n` / `TAP_DISARM\n` → arm / disarm the DIRECT-capture
-//!     impulse tap; both reply with a plaintext line.
+//!     impulse tap (the route-latency lab harness); both reply with a
+//!     plaintext line, not a snapshot.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -65,9 +63,7 @@ use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 
 use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
-use crate::mixer::{
-    event_stamp_ms, DirectObservability, LaneSource, Mixer, RingObservability, TrimControl,
-};
+use crate::mixer::{event_stamp_ms, DirectObservability, LaneSource, Mixer, RingObservability};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -80,20 +76,6 @@ const COMMAND_LIMITS: CommandLimits = CommandLimits {
     max_command_bytes: 1024,
     read_timeout: Duration::from_secs(2),
 };
-
-/// Bound on how long a `TRIM` command waits for the mixer work loop to consume
-/// the armed `pending` flag and publish the dropped-frame delta. The work loop
-/// clears the flag at its next period boundary (~2.7–5.3 ms per period at
-/// 128–256 frames, 48 kHz), so 200 ms is dozens of periods of slack — enough to
-/// ride out a scheduling stall — while staying well under the connection read
-/// timeout (2 s) so a stuck reply can never pin the server thread. On timeout
-/// the reply is an honest `ERR` naming how much was dropped so far.
-const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
-
-/// Poll granularity while waiting for the work loop to service a `TRIM`. Short
-/// enough to return promptly once the flag clears (a trim usually completes in
-/// one period), long enough that the poll loop is not a busy-spin.
-const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -167,10 +149,6 @@ pub struct InputSnapshotSource {
     /// configured clock-crossing lane when the DEFAULT-OFF input resampler is
     /// armed; `None` (and absent from STATUS) for every lane otherwise.
     pub resampler: Option<LaneResamplerObservability>,
-    /// Per-lane TRIM control + counters, shared with the mixer work thread. The
-    /// `TRIM` command sets `pending` here; the work loop performs the drain and
-    /// bumps `trims` / `trimmed_frames`, which STATUS surfaces.
-    pub trim: Arc<TrimControl>,
     /// Per-lane MIX MUTE flag, shared with the mixer work thread. The
     /// `MUTE`/`UNMUTE <label>` command flips it; the work loop's SUM stage skips
     /// the lane while set (`lane_mix_contributes`), WITHOUT gating the pre-mute
@@ -220,7 +198,6 @@ impl StateServer {
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
                 resampler: inp.resampler_observability(),
-                trim: inp.trim_control(),
                 muted: inp.muted_flag(),
             })
             .collect();
@@ -289,15 +266,6 @@ impl StateServer {
             cmd if cmd.starts_with("UNMUTE ") => {
                 let label = cmd.trim_start_matches("UNMUTE ").trim();
                 self.mute_input_json(label, false)
-            }
-            "TRIM" => self.trim_command(None),
-            cmd if cmd.starts_with("TRIM ") => {
-                let label = cmd.trim_start_matches("TRIM ").trim();
-                self.trim_command(Some(label))
-            }
-            cmd if cmd.starts_with("DECAY_SNAP ") => {
-                let label = cmd.trim_start_matches("DECAY_SNAP ").trim();
-                self.decay_snap_command(label)
             }
             "TAP_DISARM" => self.tap_disarm_command(),
             cmd if cmd.starts_with("TAP_ARM ") => {
@@ -372,149 +340,17 @@ impl StateServer {
         }
     }
 
-    /// Handle a `TRIM` / `TRIM <label>` control command.
-    ///
-    /// `TRIM` (label `None`) requests a trim on EVERY lane; `TRIM <label>`
-    /// targets one. Because the state-server thread cannot touch the `!Sync`
-    /// capture `PCM` or the mixer-owned `LaneResampler` (both live on the mixer
-    /// work thread), this sets each target lane's `pending` flag with a
-    /// `Release` store and then briefly polls the lane's `trimmed_frames`
-    /// counter for the work loop to consume the flag and publish the delta —
-    /// reporting the frames ACTUALLY dropped from the resampler ring, not just
-    /// "the request was queued." Mirrors the SELECT/NONE split (control
-    /// sets a shared atomic; the work loop does the state-owning work).
-    ///
-    /// Reply is a plain-text line: `OK trimmed=<frames_dropped>` (summed across
-    /// targeted lanes) or `ERR <reason>`. Distinct from SELECT's JSON snapshot
-    /// because a trim is a fire-and-report action, not a state query — the
-    /// operator wants the one number back on the socket immediately. A lane
-    /// with no armed resampler (the reservoir lives only in the resampler ring)
-    /// clears its flag and reports 0 dropped — a documented no-op, not an error.
-    fn trim_command(&self, label: Option<&str>) -> String {
-        // Resolve the target lane set. An empty explicit label is an error;
-        // `None` (bare `TRIM`) means all lanes.
-        let targets: Vec<&InputSnapshotSource> = match label {
-            Some("") => return "ERR missing input label".to_string(),
-            Some(l) => match self.inputs.iter().find(|inp| inp.label == l) {
-                Some(inp) => vec![inp],
-                None => return format!("ERR unknown input label {}", l),
-            },
-            None => self.inputs.iter().collect(),
-        };
-
-        // Snapshot each target's cumulative trimmed_frames, arm the pending
-        // flag, then wait (bounded) for the work loop to advance the counter.
-        // The delta across all targets is the frames actually dropped.
-        let before: Vec<u64> = targets
-            .iter()
-            .map(|inp| {
-                let prev = inp.trim.trimmed_frames.load(Ordering::Relaxed);
-                // Release so the work loop's Acquire swap observes the request.
-                inp.trim.pending.store(true, Ordering::Release);
-                prev
-            })
-            .collect();
-
-        // Poll for the work loop to consume every armed flag. A trim that drops
-        // 0 frames (lane already at target, or unarmed) still clears its pending
-        // flag, so we wait on the flags clearing, not on the counter moving — a
-        // legitimate 0-frame trim must not spin out the whole timeout.
-        let deadline = Instant::now() + TRIM_WAIT_TIMEOUT;
-        loop {
-            let all_consumed = targets
-                .iter()
-                .all(|inp| !inp.trim.pending.load(Ordering::Acquire));
-            if all_consumed || Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(TRIM_WAIT_POLL);
-        }
-
-        let dropped: u64 = targets
-            .iter()
-            .zip(&before)
-            .map(|(inp, &prev)| {
-                inp.trim
-                    .trimmed_frames
-                    .load(Ordering::Relaxed)
-                    .saturating_sub(prev)
-            })
-            .sum();
-
-        // If a flag never cleared, the work loop didn't run within the window
-        // (daemon paused / no periods). Report honestly rather than claim 0.
-        let stuck = targets
-            .iter()
-            .any(|inp| inp.trim.pending.load(Ordering::Acquire));
-        if stuck {
-            info!(
-                "event=fanin.trim.request result=timeout label={} dropped_so_far={}",
-                label.unwrap_or("all"),
-                dropped,
-            );
-            return format!(
-                "ERR trim not serviced within {}ms (mixer loop idle?) dropped_so_far={}",
-                TRIM_WAIT_TIMEOUT.as_millis(),
-                dropped,
-            );
-        }
-
-        info!(
-            "event=fanin.trim.request result=ok label={} lanes={} dropped_frames={}",
-            label.unwrap_or("all"),
-            targets.len(),
-            dropped,
-        );
-        format!("OK trimmed={}", dropped)
-    }
-
-    /// Handle `DECAY_SNAP <label>` — force one still-locked cushion snap-back on
-    /// that lane, the only way to provoke a refill window on demand (ADR-0214).
-    /// Same control→work-loop handshake as `TRIM`: set the flag, wait bounded for
-    /// the loop to consume it, then report the window it actually opened. Reply
-    /// is plaintext, `OK refilling=<bool>` or `ERR <reason>`; `refilling=false`
-    /// is a legitimate no-op (decay off, or the target already at the ceiling).
-    fn decay_snap_command(&self, label: &str) -> String {
-        let target = match self.inputs.iter().find(|inp| inp.label == label) {
-            Some(inp) => inp,
-            None if label.is_empty() => return "ERR missing input label".to_string(),
-            None => return format!("ERR unknown input label {}", label),
-        };
-        target
-            .trim
-            .decay_snap_pending
-            .store(true, Ordering::Release);
-        let deadline = Instant::now() + TRIM_WAIT_TIMEOUT;
-        while target.trim.decay_snap_pending.load(Ordering::Acquire) && Instant::now() < deadline {
-            std::thread::sleep(TRIM_WAIT_POLL);
-        }
-        if target.trim.decay_snap_pending.load(Ordering::Acquire) {
-            return format!(
-                "ERR decay snap not serviced within {}ms (mixer loop idle?)",
-                TRIM_WAIT_TIMEOUT.as_millis(),
-            );
-        }
-        let refilling = target
-            .resampler
-            .as_ref()
-            .is_some_and(|r| r.decay_refilling.load(Ordering::Relaxed));
-        info!(
-            "event=fanin.decay_snap.request result=ok label={} refilling={}",
-            label, refilling,
-        );
-        format!("OK refilling={}", refilling)
-    }
-
     /// Handle `TAP_ARM {json}` (C4). Parses the remainder of the line with the
     /// bridge's `TapConfig::from_arm_body` (same keys, same validation/ceilings,
     /// same `/run/jasper-fanin/` path constraint), truncates the JSONL file
     /// synchronously so the reply only claims success once the file is a clean
     /// slate, publishes the config for the writer thread, then flips armed via
     /// `TapState::arm` (armed-before-generation ordering preserved). Reply is a
-    /// plaintext line like `TRIM` — `OK armed path=<path>` or `ERR <reason>`.
+    /// plaintext line — `OK armed path=<path>` or `ERR <reason>` — not a
+    /// snapshot.
     ///
-    /// The state-server thread touches only shared atomics/the config mutex here
-    /// (never the mixer-owned detector), mirroring the TRIM plumbing shape.
+    /// The state-server thread touches only shared atomics/the config mutex here,
+    /// never the mixer-owned detector.
     fn tap_arm_command(&self, body: &str) -> String {
         let Some(cfg) = TapConfig::from_arm_body(body) else {
             return "ERR bad arm params".to_string();
@@ -704,7 +540,7 @@ impl StateServer {
             // source: this lane's TRANSPORT — "direct" on the USB DIRECT lane
             // (reads hw:UAC2Gadget directly), "lane" on every aloop-reading
             // lane, "disabled" on a lane with no device at all. Always
-            // present, additive (the TRIM-block precedent) — C7. The token set
+            // present, additive — C7. The token set
             // is owned by `crate::mixer::LaneSource`, so this serializer cannot
             // invent a spelling the mixer does not use.
             push_kv_str(buf, "source", input.source.as_str());
@@ -760,26 +596,6 @@ impl StateServer {
                 "catchup_events",
                 input.catchup_events.load(Ordering::Relaxed),
             );
-            buf.push(',');
-            // TRIM counters (the standing-fill one-shot drop). `trims` is how
-            // many TRIMs actually dropped ≥1 frame on this lane; `trimmed_frames`
-            // is the cumulative total dropped from the resampler ring; `pending`
-            // shows an armed but not-yet-serviced request. All 0/false on a lane
-            // never trimmed (including every unarmed lane), so the shape is
-            // stable for the common case. Always present (unlike the optional
-            // resampler block) — a flat, greppable pair like the catch-up
-            // counters above.
-            buf.push_str(r#""trim":{"#);
-            push_kv_u64(buf, "trims", input.trim.trims.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "trimmed_frames",
-                input.trim.trimmed_frames.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_bool(buf, "pending", input.trim.pending.load(Ordering::Relaxed));
-            buf.push('}');
             // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
             // nested object only when armed on this lane — absent for every lane
             // when the feature is off, so the default STATUS shape is unchanged.
@@ -1248,8 +1064,6 @@ mod tests {
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // No resampler armed on this lane (the default).
                     resampler: None,
-                    // Never-trimmed lane: all counters 0, no pending request.
-                    trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     muted: Arc::new(AtomicBool::new(false)),
                 },
                 InputSnapshotSource {
@@ -1298,9 +1112,6 @@ mod tests {
                         decay_refilling: Arc::new(AtomicBool::new(false)),
                         decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
-                    // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
-                    // dropped total, no request currently pending.
-                    trim: Arc::new(TrimControl::test_fixture(3, 4608, false)),
                     muted: Arc::new(AtomicBool::new(false)),
                 },
                 InputSnapshotSource {
@@ -1377,7 +1188,6 @@ mod tests {
                         decay_refilling: Arc::new(AtomicBool::new(false)),
                         decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
-                    trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path
                     // tests flip this fixture's flag or drive it via mute_input_json.
                     muted: Arc::new(AtomicBool::new(false)),
@@ -1954,187 +1764,6 @@ mod tests {
         assert_eq!(
             parsed["inputs"][1]["pcm"].as_str(),
             Some("pcm\"\\\u{0008}\u{0085}"),
-        );
-    }
-
-    // ---- TRIM STATUS shape ------------------------------------------------
-
-    #[test]
-    fn snapshot_json_per_input_trim_block() {
-        let server = make_test_server();
-        let j = server.snapshot_json();
-        // Every lane renders a flat trim block (like the catch-up counters):
-        // spotify, airplay, and the direct usbsink lane → three.
-        assert_eq!(
-            j.matches(r#""trim":{"#).count(),
-            3,
-            "each lane must render exactly one trim block: {j}"
-        );
-        // spotify fixture: never trimmed.
-        assert!(
-            j.contains(r#""trim":{"trims":0,"trimmed_frames":0,"pending":false}"#),
-            "spotify trim block (never trimmed): {j}"
-        );
-        // airplay fixture: 3 trims, 4608 frames dropped.
-        assert!(
-            j.contains(r#""trim":{"trims":3,"trimmed_frames":4608,"pending":false}"#),
-            "airplay trim block (fixture): {j}"
-        );
-    }
-
-    // ---- TRIM command parse + dispatch ------------------------------------
-
-    #[test]
-    fn trim_command_rejects_empty_label() {
-        let server = make_test_server();
-        let resp = server.trim_command(Some(""));
-        assert_eq!(resp, "ERR missing input label");
-    }
-
-    #[test]
-    fn trim_command_rejects_unknown_label() {
-        let server = make_test_server();
-        let resp = server.trim_command(Some("bluetooth"));
-        assert_eq!(resp, "ERR unknown input label bluetooth");
-        // No flag armed on any lane.
-        for inp in &server.inputs {
-            assert!(!inp.trim.pending.load(Ordering::Acquire));
-        }
-    }
-
-    #[test]
-    fn trim_command_labeled_arms_only_the_target_and_reports_delta() {
-        // Run trim_command on a background thread and service the mixer work
-        // loop from THIS (main) thread. Inverting the roles removes the
-        // scheduler race a background servicer had against trim_command's
-        // TRIM_WAIT_TIMEOUT: under heavy CI parallelism a freshly-spawned
-        // servicer could be starved past the 200 ms wall-clock bound (the flag
-        // was serviced correctly but too late), a real starvation race, not a
-        // logic bug. The test thread is already running, so it services the
-        // armed flag the instant trim_command sets it and the reply always
-        // lands. The trimmed_frames write happens-before the pending release,
-        // so trim_command's Acquire load of the cleared flag sees the counter.
-        let server = std::sync::Arc::new(make_test_server());
-        let caller = std::sync::Arc::clone(&server);
-        let handle = std::thread::spawn(move || caller.trim_command(Some("airplay")));
-        // airplay is index 1. Service its flag as soon as trim_command arms it.
-        let airplay = &server.inputs[1];
-        loop {
-            if airplay.trim.pending.load(Ordering::Acquire) {
-                airplay
-                    .trim
-                    .trimmed_frames
-                    .fetch_add(1024, Ordering::Relaxed);
-                airplay.trim.pending.store(false, Ordering::Release);
-                break;
-            }
-            if handle.is_finished() {
-                break;
-            }
-            std::hint::spin_loop();
-        }
-        let resp = handle.join().unwrap();
-        assert_eq!(resp, "OK trimmed=1024", "got: {resp}");
-        // spotify (index 0) was never armed.
-        assert!(!server.inputs[0].trim.pending.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn trim_command_all_arms_every_lane_and_sums_delta() {
-        // See the sibling labeled test: trim_command runs on a background thread
-        // and the main (test) thread services EVERY lane's armed flag inline, so
-        // the servicing can never be starved past trim_command's 200 ms
-        // TRIM_WAIT_TIMEOUT on a contended CI runner. `trim_command(None)` arms
-        // every lane, so this must service all of them — `done` is sized to the
-        // real lane count (3: spotify/airplay/usbsink), not a hardcoded 2. Each
-        // lane gets a distinct amount (512 >> i) so the summed delta is
-        // unambiguous: 512 + 256 + 128 = 896.
-        let server = std::sync::Arc::new(make_test_server());
-        let caller = std::sync::Arc::clone(&server);
-        let handle = std::thread::spawn(move || caller.trim_command(None));
-        let mut done = vec![false; server.inputs.len()];
-        let mut expected: u64 = 0;
-        loop {
-            for (i, inp) in server.inputs.iter().enumerate() {
-                if !done[i] && inp.trim.pending.load(Ordering::Acquire) {
-                    let amount = 512u64 >> i;
-                    inp.trim.trimmed_frames.fetch_add(amount, Ordering::Relaxed);
-                    inp.trim.pending.store(false, Ordering::Release);
-                    done[i] = true;
-                    expected += amount;
-                }
-            }
-            if done.iter().all(|d| *d) || handle.is_finished() {
-                break;
-            }
-            std::hint::spin_loop();
-        }
-        let resp = handle.join().unwrap();
-        assert_eq!(resp, format!("OK trimmed={expected}"), "got: {resp}");
-    }
-
-    #[test]
-    fn trim_command_times_out_when_loop_never_services() {
-        // No work loop consumes the flag: bounded wait elapses, honest ERR.
-        let server = make_test_server();
-        let resp = server.trim_command(Some("spotify"));
-        assert!(
-            resp.starts_with("ERR trim not serviced within"),
-            "got: {resp}"
-        );
-        assert!(resp.contains("dropped_so_far=0"), "got: {resp}");
-    }
-
-    /// `DECAY_SNAP <label>` is the hardware lever for the refill window
-    /// (ADR-0214): it arms the lane's request flag and reports what the work loop
-    /// did, never claiming success on an unserviced request. Same
-    /// control→work-loop handshake as TRIM, so the same three shapes are pinned.
-    #[test]
-    fn decay_snap_command_arms_the_lane_and_reports_the_serviced_window() {
-        let server = make_test_server();
-        assert_eq!(
-            server.decay_snap_command("nope"),
-            "ERR unknown input label nope"
-        );
-        // Serviced by a stand-in work loop: the reply carries the lane's live
-        // window flag, not "the request was queued".
-        let usbsink = server
-            .inputs
-            .iter()
-            .find(|i| i.label == "usbsink")
-            .expect("usbsink fixture");
-        let trim = Arc::clone(&usbsink.trim);
-        let refilling = Arc::clone(
-            &usbsink
-                .resampler
-                .as_ref()
-                .expect("armed resampler")
-                .decay_refilling,
-        );
-        std::thread::spawn(move || {
-            while !trim.decay_snap_pending.load(Ordering::Acquire) {
-                std::thread::sleep(TRIM_WAIT_POLL);
-            }
-            refilling.store(true, Ordering::Relaxed);
-            trim.decay_snap_pending.store(false, Ordering::Release);
-        });
-        assert_eq!(server.decay_snap_command("usbsink"), "OK refilling=true");
-        // Nothing servicing it: honest timeout, not a claimed snap.
-        assert!(server
-            .decay_snap_command("spotify")
-            .starts_with("ERR decay snap not serviced within"));
-    }
-
-    #[test]
-    fn trim_command_via_handle_connection_replies_plaintext() {
-        // Exercise the full socket dispatch for `TRIM <label>`: the reply is the
-        // plain-text OK/ERR line, not a JSON snapshot.
-        let server = make_test_server();
-        // No work loop here, so spotify's flag never clears -> timeout ERR.
-        let response = exchange(&server, b"TRIM spotify\n");
-        assert!(
-            response.starts_with("ERR trim not serviced within"),
-            "got: {response}"
         );
     }
 

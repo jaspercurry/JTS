@@ -75,7 +75,7 @@ def _measurement_lane(
 
 
 def prove_lane_state(fanin_status: Mapping[str, Any]) -> None:
-    """R6a element (ii): the measurement lane is unmuted, unarmed, untrimmed."""
+    """R6a element (ii): the measurement lane is unmuted and unarmed."""
 
     lane = _measurement_lane(fanin_status)
     if lane.get("muted") is not False:
@@ -83,9 +83,6 @@ def prove_lane_state(fanin_status: Mapping[str, Any]) -> None:
     resampler = lane.get("resampler")
     if isinstance(resampler, Mapping) and resampler.get("armed") is True:
         raise IngressProofError("measurement lane resampler.armed is true")
-    trim = lane.get("trim")
-    if not isinstance(trim, Mapping) or trim.get("pending") is not False:
-        raise IngressProofError("measurement lane trim.pending is not false")
 
 
 def prove_lane_counters_unchanged(

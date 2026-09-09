@@ -846,13 +846,13 @@ impl TtsMixer {
                         self.refresh_program_duck();
                     }
                 }
-                TtsCommand::Flush | TtsCommand::FlushSync => {
+                TtsCommand::FlushSync => {
                     let frames = self.clear_queue();
                     self.active_segment_gain_db = None;
                     self.active_segment_kind = None;
                     self.active_segment_decision = None;
                     self.assistant_segment_playback = None;
-                    // Defensive: flushes are normally intercepted before the
+                    // Defensive: `FLUSH_SYNC` is normally intercepted before the
                     // command channel (see `handle_tts_client`) and handled by
                     // `drain_flushes`. If one ever reaches here, keep the
                     // ledger consistent with the now-cleared queue.
@@ -1234,13 +1234,8 @@ fn handle_tts_client(
     loop {
         match read_command_deadlined(&mut reader, frame_deadline) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(TtsCommand::Flush)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, false) {
-                    return;
-                }
-            }
             Ok(Some(TtsCommand::FlushSync)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, true) {
+                if !queue_flush(&mut reader, &flush_tx, &epoch) {
                     return;
                 }
             }
@@ -1280,32 +1275,23 @@ fn queue_flush(
     reader: &mut BufReader<UnixStream>,
     flush_tx: &SyncSender<QueuedFlush>,
     epoch: &AtomicU64,
-    sync: bool,
 ) -> bool {
     let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    if sync {
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        if flush_tx
-            .send(QueuedFlush {
-                epoch: next_epoch,
-                ack: Some(ack_tx),
-            })
-            .is_err()
-        {
-            return false;
-        }
-        let response = match ack_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(summary) => summary.to_json_line(),
-            Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-        };
-        return reader.get_mut().write_all(response.as_bytes()).is_ok();
-    }
-    flush_tx
+    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+    if flush_tx
         .send(QueuedFlush {
             epoch: next_epoch,
-            ack: None,
+            ack: Some(ack_tx),
         })
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    let response = match ack_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(summary) => summary.to_json_line(),
+        Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
+    };
+    reader.get_mut().write_all(response.as_bytes()).is_ok()
 }
 
 impl FlushSummary {
@@ -2312,7 +2298,7 @@ mod tests {
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Flush,
+            command: TtsCommand::FlushSync,
         })
         .unwrap();
         tx.send(QueuedTtsCommand {

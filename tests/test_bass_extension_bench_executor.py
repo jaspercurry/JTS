@@ -209,7 +209,6 @@ def _lane(**overrides: object) -> dict:
         "xrun_count": 0,
         "catchup_resync_frames": 0,
         "catchup_events": 0,
-        "trim": {"trims": 0, "trimmed_frames": 0, "pending": False},
     }
     base.update(overrides)
     return base

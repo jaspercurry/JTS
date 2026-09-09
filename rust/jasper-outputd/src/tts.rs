@@ -257,13 +257,8 @@ fn handle_tts_client(
     loop {
         match read_command_deadlined(&mut reader, frame_deadline) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(TtsCommand::Flush)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, &metrics, false) {
-                    return;
-                }
-            }
             Ok(Some(TtsCommand::FlushSync)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, &metrics, true) {
+                if !queue_flush(&mut reader, &flush_tx, &epoch, &metrics) {
                     return;
                 }
             }
@@ -304,33 +299,24 @@ fn queue_flush(
     flush_tx: &SyncSender<QueuedFlush>,
     epoch: &AtomicU64,
     metrics: &TtsMetrics,
-    sync: bool,
 ) -> bool {
     metrics.flush_requests.fetch_add(1, Ordering::Relaxed);
     let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    if sync {
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        if flush_tx
-            .send(QueuedFlush {
-                epoch: next_epoch,
-                ack: Some(ack_tx),
-            })
-            .is_err()
-        {
-            return false;
-        }
-        let response = match ack_rx.recv_timeout(FLUSH_ACK_TIMEOUT) {
-            Ok(summary) => summary.to_json_line(),
-            Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-        };
-        return reader.get_mut().write_all(response.as_bytes()).is_ok();
-    }
-    flush_tx
+    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+    if flush_tx
         .send(QueuedFlush {
             epoch: next_epoch,
-            ack: None,
+            ack: Some(ack_tx),
         })
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    let response = match ack_rx.recv_timeout(FLUSH_ACK_TIMEOUT) {
+        Ok(summary) => summary.to_json_line(),
+        Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
+    };
+    reader.get_mut().write_all(response.as_bytes()).is_ok()
 }
 
 // ---------------------------------------------------------------------
@@ -566,7 +552,7 @@ impl TtsBridge {
                 }
                 TtsCommand::SegmentEnd => self.close_open_segment(core),
                 // Handled in the client/flush threads; never enqueued.
-                TtsCommand::Flush | TtsCommand::FlushSync | TtsCommand::Close => {}
+                TtsCommand::FlushSync | TtsCommand::Close => {}
             }
         }
     }
