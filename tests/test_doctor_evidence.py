@@ -8,7 +8,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -238,30 +237,36 @@ def test_unit_state_is_none_without_systemctl(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "payload, expect_current",
+    "make_metrics, expect_current",
     [
-        ({"metrics": {"last_sample_at": time.time(), "current": {"a": 1}}}, True),
+        (lambda now: {"last_sample_at": now, "current": {"a": 1}}, True),
         (
-            {
-                "metrics": {
-                    "last_sample_at": time.time() - 2 * VCGENCMD_INTERVAL_SEC - 1,
-                    "current": {"a": 1},
-                },
+            lambda now: {
+                "last_sample_at": now - 2 * VCGENCMD_INTERVAL_SEC - 1,
+                "current": {"a": 1},
             },
             False,
         ),
-        ({"metrics": {"last_sample_at": None, "current": {"a": 1}}}, False),
-        ({}, False),
+        (lambda now: {"last_sample_at": None, "current": {"a": 1}}, False),
+        (lambda now: None, False),
     ],
     ids=["fresh", "stale", "warming_up", "absent_snapshot"],
 )
 def test_system_metrics_current_gates_on_sampler_freshness(
-    monkeypatch, payload, expect_current,
+    monkeypatch, make_metrics, expect_current,
 ):
     """``check_supply_voltage`` must not trust a wedged or still-warming-up
-    sampler's last throttled bits forever (ADR-0226)."""
+    sampler's last throttled bits forever (ADR-0226). ``now`` is a fixed
+    instant the test owns, not the wall clock: both the sample timestamp
+    and the read's fetch time must derive from it, or a fetch that lands a
+    perceptible instant after collection built the payload flips a "fresh"
+    case stale."""
     import jasper.platform.control_client as control
 
+    now = 1_700_000_000.0
+    monkeypatch.setattr(_evidence.time, "time", lambda: now)
+    metrics = make_metrics(now)
+    payload = {} if metrics is None else {"metrics": metrics}
     monkeypatch.setattr(control, "get_system_snapshot", lambda **kw: payload)
 
     current = Evidence().system_metrics_current()
