@@ -313,6 +313,16 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 11:40Z: Lane D now has eight branches (`3-1`, `3-1b-bench-field`,
+  `3-2`, `3-3a`, `3-3b`, `3-4a-rung-graph`, `3-4b-ladder-view`, `3-5-bass-docs`),
+  160–208 commits behind main, none opened as a PR, none rebased, the
+  pre-review notes unanswered. Nothing from lane D can land in this state.
+  Owner options: (a) tell the lane D session to rebase and open 3.1/3.2 now;
+  (b) stop it and hand integration to the orchestrator (rebase, apply the
+  pre-review fixes, open PRs per row). Not done unilaterally: the session is
+  still pushing (last 11:31Z), so a second author on those branches would
+  collide. No owner reply yet on the done-screen decision (#4502 has only
+  orchestrator comments).
 - 2026-09-09 10:10Z: Row 1.5 LANDED: PR #4604 squash-merged at `c06466a08` after
   the review round (calibration files `0640` with the registry root's group;
   `event=correction.calibration_unresolvable` on a swallowed read failure;
