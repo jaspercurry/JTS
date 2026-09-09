@@ -572,9 +572,9 @@ def _crossover_v2_status_block() -> dict | None:
     return crossover_v2_status_block()
 
 
-def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
+def _applied_grade_finding(block: dict) -> tuple[str, str]:
     """Was the applied crossover-v2 correction (if any) ever graded after it
-    landed? Returns ``(detail, reason, applied)`` for
+    landed? Returns ``(detail, reason)`` for
     :func:`check_crossover_v2_cloud_pipeline` to fold in — the cloud spec
     verdict alone cannot see a missing grade, since it only warns on a
     FAILING one.
@@ -583,14 +583,6 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
     (``crossover_v2_status_block``), and every surface — `/state`, the wizard,
     this check — reads it. Express-tier sessions omit the post-apply position
     group, so the VERIFY outcome carries them and either half satisfies this.
-
-    Never a warn/fail verdict of its own: an ungraded or failed correction is
-    a measurement finding no healer can act on (#2160 — grade and disclose,
-    do not gate). The producer's ``result`` code is disclosed beside the
-    grade and never gates it: this grades the CHECKING, and healthy sessions
-    legitimately reach ``inconclusive``. An unrecognised ``spatial`` word
-    names the word rather than guessing at it (#2242). See #2098, #2160,
-    #2464.
     """
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
@@ -619,10 +611,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
         + (f", result={grade.get('outcome')}" if grade.get("outcome") else "")
     )
     if state == GRADE_NOT_APPLIED:
-        # Not itself a finding: unlike every branch below, nothing has been
-        # applied yet, so this never competes with the cloud verdict's own
-        # reason for the row's one slot (see the caller).
-        return "no applied measured crossover", "", False
+        return "no applied measured crossover", ""
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
         # A non-empty word this build does not recognize is a later build's
@@ -639,7 +628,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
                 "is not one this build recognizes — treating it as unproven "
                 f"rather than guessing ({verify_text}); check for a "
                 "jasper-doctor update, or re-measure at /sound/speaker/crossover/",
-                REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED, True,
+                REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED,
             )
         if spatial == GRADE_SPATIAL_FAILED:
             worst = grade.get("spatial_worst_db")
@@ -656,14 +645,14 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
                 f"target{worst_text} — the tune stays on the speaker "
                 f"({verify_text}); re-measure at /sound/speaker/crossover/ or undo to "
                 "restore the previous sound",
-                REASON_APPLIED_GRADE_SPATIAL_FAILED, True,
+                REASON_APPLIED_GRADE_SPATIAL_FAILED,
             )
         if spatial == GRADE_SPATIAL_UNMEASURABLE:
             return (
                 f"applied; the post-apply group closed but its spatial grade "
                 f"could not be measured ({verify_text}) — re-measure at "
                 "/sound/speaker/crossover/ in a quieter room, or undo",
-                REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE, True,
+                REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
             )
         if grade.get("complete") is False:
             return (
@@ -672,12 +661,12 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
                 f"for this session, so it is unproven away from the mark "
                 f"({verify_text}) — finish the measurement at /sound/speaker/crossover/, "
                 "or undo",
-                REASON_APPLIED_GRADE_MARK_ONLY, True,
+                REASON_APPLIED_GRADE_MARK_ONLY,
             )
         return (
             f"applied and graded (state={state}, scope="
             f"{grade.get('scope') or 'n/a'}, {verify_text})",
-            "", True,
+            "",
         )
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         detail = (
@@ -686,12 +675,12 @@ def _applied_grade_finding(block: dict) -> tuple[str, str, bool]:
             "the previous sound"
         )
         if state == GRADE_INCONCLUSIVE:
-            return detail, REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE, True
-        return detail, REASON_APPLIED_GRADE_VERIFY_FAILED, True
+            return detail, REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE
+        return detail, REASON_APPLIED_GRADE_VERIFY_FAILED
     return (
         "applied but never graded: no post-apply check completed for this "
         "correction — re-verify at /sound/speaker/crossover/ to confirm it, or undo",
-        REASON_APPLIED_GRADE_NEVER_GRADED, True,
+        REASON_APPLIED_GRADE_NEVER_GRADED,
     )
 
 
@@ -709,19 +698,23 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     reported, it just does not drive the status. A failed spec is a WARN: an
     out-of-spec speaker is a measurement finding, not a broken daemon.
 
-    The grade finding takes the row's reason whenever a correction IS
-    applied — an un-warned cloud spec cannot see a correction that never got
-    graded; a correction not yet applied adds nothing the cloud reason
-    doesn't already say, so it never competes for the slot.
+    On an ``ok`` row the grade finding takes the reason when it has one — an
+    un-warned cloud spec cannot see a correction that never got graded. On a
+    ``warn`` row the cloud reason wins instead: the cloud spec failure is why
+    the row warned, and a grade reason must not hide that cause.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 
     label = "crossover v2 cloud pipeline"
     block = evidence.get("crossover_v2_status", _crossover_v2_status_block) or {}
-    grade_detail, grade_reason, grade_applied = _applied_grade_finding(block)
+    grade_detail, grade_reason = _applied_grade_finding(block)
 
     def _result(status: str, cloud_detail: str, cloud_reason: str) -> CheckResult:
-        reason = grade_reason if grade_applied and grade_reason else cloud_reason
+        reason = (
+            (cloud_reason or grade_reason)
+            if status == "warn"
+            else (grade_reason or cloud_reason)
+        )
         return CheckResult(label, status, f"{cloud_detail}; {grade_detail}", reason=reason)
 
     cloud = block.get("cloud")

@@ -257,10 +257,14 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
         (True, True, None, "ok", usbsink.REASON_HOST_STREAM_NO_CONTROL),
         (True, True, 0, "ok", usbsink.REASON_HOST_STREAM_IDLE),
         (True, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
+        # The readiness marker being inactive does not withdraw a composed,
+        # bound card — a wedged or still-streaming host (#3194) must still
+        # surface, marker or no marker.
+        (False, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
     ],
     ids=[
         "disabled", "missing", "present-no-control", "present-idle",
-        "present-streaming",
+        "present-streaming", "present-streaming-marker-inactive",
     ],
 )
 def test_check_usbsink_card_verdicts(

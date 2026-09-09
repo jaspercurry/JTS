@@ -85,9 +85,9 @@ CORE_MODULES: frozenset[str] = frozenset({
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
     # "voice" is NOT here — 4 of its voice-provider checks self-gate on
-    # ADR-0217, and the cloud-integration checks it also owns (Google, Home
-    # Assistant, Citi Bike) are just as inapplicable on a mic-less streambox
-    # as wake/cues below; both groups are named individually in
+    # ADR-0217 (streambox_awaiting_accessory); the other 2
+    # (check_provider_key, check_spend_cap) plus its 4 cloud-integration
+    # checks (Google, Home Assistant, Citi Bike) are named individually in
     # STREAMBOX_OMITTED_DOCTOR_CHECKS instead.
     "cues",
     "wake",

@@ -626,24 +626,26 @@ def _verify_cloud(*, passed, flatness):
         ),
         # #2160: a grade that EXISTS is not a grade that PASSED. This printed
         # "applied and graded" beside a cloud line reading spec=fail. The
-        # cloud_verify failure here also gates the row's own status — the
-        # grade finding still names the more specific cause.
+        # cloud_verify failure here also gates the row's own status, and its
+        # reason wins the row's reason on a WARN; the spatial-failed grade
+        # detail still rides the detail text.
         pytest.param(
             _v2_applied_state(
                 tier="full", verify={"outcome": "pass"},
                 cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
             ),
-            "warn", correction.REASON_APPLIED_GRADE_SPATIAL_FAILED,
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-failed",
         ),
         # passed=False with evaluable=False means "could not be measured", not
         # "failed" — SpecFlatness.passed's own read-it-with-evaluable rule.
+        # The cloud reason still wins the row's reason on this WARN.
         pytest.param(
             _v2_applied_state(
                 tier="full", verify={"outcome": "pass"},
                 cloud=_verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
             ),
-            "warn", correction.REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-unmeasurable",
         ),
         # #2098: a Full session verified only at the mark is not the claim Full
@@ -711,14 +713,15 @@ def _verify_cloud(*, passed, flatness):
             "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
-        # The mark-VERIFY finding still wins the row's reason even though the
-        # cloud spec here also fails — the row is one WARN either way.
+        # The cloud spec failure wins the row's reason on a WARN — it is why
+        # the row warned, and the mark-VERIFY finding must not hide that
+        # cause even though it also found something.
         pytest.param(
             _v2_applied_state(
                 tier="full", verify={"outcome": "inconclusive"},
                 cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
             ),
-            "warn", correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="inconclusive-behind-a-closed-group",
         ),
         # The result code is DISCLOSED beside the grade and never gates it:

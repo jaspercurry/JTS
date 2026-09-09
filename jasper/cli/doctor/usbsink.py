@@ -480,24 +480,27 @@ def check_usbsink_card() -> CheckResult:
 
     Once present, also folds in whether the HOST has actually started the
     stream (:func:`_usbsink_host_stream_finding`) — a fact only meaningful
-    once the card itself is confirmed there."""
+    once the card itself is confirmed there. The card is checked before the
+    readiness-marker gate: a composed, bound uac2.usb0 can keep host-streaming
+    or sit wedged (#3194) even with the marker down, and that is exactly the
+    state this disclosure exists to surface."""
+    if Path(UAC2_CARD_PATH).is_dir():
+        stream_detail, stream_reason = _usbsink_host_stream_finding()
+        return CheckResult(
+            "usbsink card", "ok",
+            f"UAC2Gadget card present (host will see the speaker as USB audio); "
+            f"{stream_detail}",
+            reason=stream_reason,
+        )
     inactive = _skip_when_usbsink_inactive("usbsink card")
     if inactive is not None:
         return inactive
-    if not Path(UAC2_CARD_PATH).is_dir():
-        return CheckResult(
-            "usbsink card", "fail",
-            "service active but /proc/asound/UAC2Gadget missing — "
-            f"{USBGADGET_UNIT} didn't compose/bind uac2.usb0. Check "
-            f"`systemctl status {USBGADGET_UNIT}` for the failure mode.",
-            reason=REASON_CARD_MISSING,
-        )
-    stream_detail, stream_reason = _usbsink_host_stream_finding()
     return CheckResult(
-        "usbsink card", "ok",
-        f"UAC2Gadget card present (host will see the speaker as USB audio); "
-        f"{stream_detail}",
-        reason=stream_reason,
+        "usbsink card", "fail",
+        "service active but /proc/asound/UAC2Gadget missing — "
+        f"{USBGADGET_UNIT} didn't compose/bind uac2.usb0. Check "
+        f"`systemctl status {USBGADGET_UNIT}` for the failure mode.",
+        reason=REASON_CARD_MISSING,
     )
 
 
