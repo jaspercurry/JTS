@@ -38,6 +38,7 @@ from tests.control_server_fixtures import (
     _isolate_household_secret,
     _post,
     _record_broker,
+    _recording_popen,
     server_with_coordinator,
 )
 
@@ -805,6 +806,31 @@ def test_system_action_reboot_audits_and_asks_the_broker(
         "event=system.action action=reboot" in rec.getMessage()
         for rec in caplog.records
     ), "reboot must emit an event=system.action audit line"
+
+
+def test_system_action_reboot_survives_a_dead_broker(
+    monkeypatch,
+    server_with_coordinator,
+):
+    """The broker's socket bind is deliberately non-fatal, so the dashboard
+    reboot must not hard-depend on it: with the socket unreachable
+    jasper-control still spawns the reboot itself and answers 202."""
+    import jasper.control.restart_broker as rb
+
+    base, _ = server_with_coordinator
+    popens: list[list[str]] = []
+
+    def _no_socket(*_a, **_kw):
+        raise rb.BrokerUnavailable("no such file")
+
+    monkeypatch.setattr(rb, "request_restart", _no_socket)
+    monkeypatch.setattr(rb.subprocess, "Popen", _recording_popen(popens))
+
+    status, body = _post(f"{base}/system/reboot", {})
+
+    assert status == 202
+    assert body["status"] == "accepted"
+    assert popens == [["systemctl", "reboot"]]
 
 
 def test_system_snapshot_audio_quality_fails_soft(

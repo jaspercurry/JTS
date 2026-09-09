@@ -29,6 +29,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from jasper.control import restart_broker
 from jasper.control.system_supervisor import (
     SystemSupervisor,
     _control_health_response_alive,
@@ -116,6 +117,22 @@ class _FakeSupervisor(SystemSupervisor):
 
     def _now(self) -> float:
         return self.now
+
+
+async def test_reboot_system_goes_through_the_restart_broker(tmp_path):
+    """The supervisor's T5.2 recovery reboot and the /system button share one
+    audited systemctl door — the supervisor must not keep a second spawn."""
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_manage_units(*units, verb="restart", **_kw):
+        calls.append((verb, units))
+        return {"ok": True}
+
+    sup = SystemSupervisor(reboot_state_path=tmp_path / "reboot.json")
+    with patch.object(restart_broker, "manage_units", fake_manage_units):
+        await sup.reboot_system()
+
+    assert calls == [("reboot", ())]
 
 
 async def test_all_probes_pass_keeps_counter_zero():
