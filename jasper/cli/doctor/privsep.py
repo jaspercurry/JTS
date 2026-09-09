@@ -41,6 +41,7 @@ import grp
 import os
 import pwd
 import stat as _stat
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
@@ -535,17 +536,19 @@ def check_daemon_readable_inputs() -> CheckResult:
     results = [(unit, _check_daemon(unit)) for unit in _MANIFEST_UNITS]
     worst = max((r.status for _, r in results), key=_STATUS_RANK.__getitem__)
     offenders = [(unit, r) for unit, r in results if r.status == worst]
-    reason = offenders[0][1].reason
     if worst == "ok":
+        skipped = len(results) - len(offenders)
         return CheckResult(
             label, "ok",
-            f"{len(offenders)}/{len(results)} daemon(s)' declared inputs readable",
-            reason=reason,
+            f"{len(offenders)} readable, {skipped} skipped",
+            reason=offenders[0][1].reason,
         )
-    names = ", ".join(unit for unit, _ in offenders)
-    return CheckResult(
-        label, worst, f"{names}: {offenders[0][1].detail}", reason=reason,
-    )
+    # Offenders can carry different reasons (e.g. one not-installed, another
+    # systemctl-unavailable) — report whichever reason covers the most units,
+    # and keep every offender's own detail instead of only the first's.
+    reason = Counter(r.reason for _, r in offenders).most_common(1)[0][0]
+    detail = "; ".join(f"{unit}: {r.detail}" for unit, r in offenders)
+    return CheckResult(label, worst, detail, reason=reason)
 
 
 @doctor_check()

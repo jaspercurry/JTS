@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor import privsep
+from jasper.cli.doctor import _shared, privsep
 from jasper.cli.doctor._shared import CheckResult
 from jasper.cli.doctor.privsep import MANIFEST, OUT_OF_SCOPE_NONROOT_UNITS
 from tests.systemd_unit_helpers import value_for, values_for
@@ -260,15 +260,22 @@ def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch
              "jasper-voice": ("warn", privsep.REASON_INPUTS_UNREADABLE)},
             "warn", privsep.REASON_INPUTS_UNREADABLE,
         ),
+        (
+            {unit: ("skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE)
+             for unit in privsep._MANIFEST_UNITS},
+            "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE,
+        ),
     ],
-    ids=["all-ok", "skips-do-not-fail-row", "one-warn", "two-warn"],
+    ids=["all-ok", "skips-do-not-fail-row", "one-warn", "two-warn", "all-skipped"],
 )
 def test_merged_check_rolls_up_the_manifest(
     monkeypatch, overrides, expected_status, expected_reason
 ):
     """One row for the whole spec table: `ok` unless a unit's declared inputs
     are unreadable (`warn`, naming every such unit); a unit skipped for this
-    profile (not installed, runs as root, ...) never fails the row alone."""
+    profile (not installed, runs as root, ...) never fails the row alone. When
+    every unit is skipped (e.g. no systemctl), the row itself reports skipped
+    rather than ok (ADR-0233 rule 3: a check that did not run says skipped)."""
     def fake_check_daemon(unit: str) -> CheckResult:
         status, reason = overrides.get(unit, ("ok", privsep.REASON_INPUTS_READABLE))
         return CheckResult(f"daemon reads: {unit}", status, unit, reason=reason)
@@ -277,9 +284,17 @@ def test_merged_check_rolls_up_the_manifest(
     result = privsep.check_daemon_readable_inputs()
     assert result.status == expected_status
     assert result.reason == expected_reason
-    if expected_status == "warn":
-        for unit in overrides:
-            assert unit in result.detail
+
+
+def test_merged_check_is_total_without_systemctl(monkeypatch):
+    """With systemctl unavailable, every real per-daemon check resolves to a
+    skip, and the merged row stays skipped rather than raising or reporting
+    ok — mirrors the pre-merge per-daemon total-without-systemctl guarantee."""
+    monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
+
+    result = privsep.check_daemon_readable_inputs()
+    assert result.status == "skipped"
+    assert result.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_classify_warn_overflow_truncates(tmp_path: Path):
