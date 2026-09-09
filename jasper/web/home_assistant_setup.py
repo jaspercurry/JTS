@@ -75,6 +75,7 @@ from ._common import (
     csrf_field_html,
     form_guarded,
     header_guarded,
+    read_guarded,
     json_island,
     mask_secret,
     restart_voice_daemon,
@@ -982,39 +983,37 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     _GET_ROUTES = {"/": _get_index}
 
+    @read_guarded
     def _post_discover(handler: BaseHTTPRequestHandler) -> None:
-        # Read-only network probe — no CSRF. Still guard the read: without
-        # it a DNS-rebinding origin could trigger the LAN scan.
-        if not guard_read_request(handler):
-            return
+        # Read-only network probe — no CSRF. `@read_guarded` still refuses a
+        # DNS-rebinding or cross-site origin, so neither can trigger the LAN
+        # scan.
         instances = discover_sync(
             cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC),
         )
         send_json_response(handler, {"instances": instances})
 
+    @read_guarded
     def _post_ready(handler: BaseHTTPRequestHandler) -> None:
         # Lightweight readiness — one HA call. Used by the connected-state
         # JS to poll for "is the daemon back up + HA still reachable"
-        # without re-fetching the agent list on every iteration.
-        # Read-only; guard the read so a DNS-rebinding origin can't probe
-        # HA state.
-        if not guard_read_request(handler):
-            return
+        # without re-fetching the agent list on every iteration. Read-only;
+        # `@read_guarded` keeps a DNS-rebinding or cross-site origin from
+        # probing HA state.
         state = read_env_file(cfg["state_path"])
         send_json_response(handler, ready_sync(
             state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
             verify_ssl=_verify_ssl_from_state(state),
         ))
 
+    @read_guarded
     def _post_verify(handler: BaseHTTPRequestHandler) -> None:
         # /verify uses whatever URL+token are saved (no form body) — the
         # "Test connection" button and the agent picker's on-load fetch
-        # both call this against the persisted state. Read-only; no CSRF
-        # needed, but guard the read: the response leaks the configured HA
-        # URL, instance name, version, and agent list, so a DNS-rebinding
-        # origin must not be able to fetch it.
-        if not guard_read_request(handler):
-            return
+        # both call this against the persisted state. Read-only, so no CSRF
+        # token; the response leaks the configured HA URL, instance name,
+        # version, and agent list, so `@read_guarded` is what keeps a
+        # DNS-rebinding or cross-site origin from fetching it.
         state = read_env_file(cfg["state_path"])
         send_json_response(handler, verify_sync(
             state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),

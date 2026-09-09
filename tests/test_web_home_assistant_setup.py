@@ -212,7 +212,12 @@ def _handler_cls():
     return ha._make_handler({"state_path": "/tmp/ha-does-not-matter.env"})
 
 
-def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
+def _make_request(
+    path: str,
+    body: bytes = b"",
+    cookies: str = "",
+    headers: dict[str, str] | None = None,
+) -> Any:
     """Build a *real* /assistant/ha/ Handler instance wired to a synthetic request.
 
     Mirrors tests/test_web_wifi_setup.py's `_make_request`. The route
@@ -226,7 +231,7 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
     ``.status`` / ``.sent_headers`` (with a ``header_values(name)`` reader),
     matching the attribute surface the handler tests assert against.
     """
-    headers = {}
+    headers = dict(headers or {})
     if cookies:
         headers["Cookie"] = cookies
     handler, _ = make_real_handler(
@@ -283,18 +288,36 @@ def test_post_unknown_route_404s():
 
 
 @pytest.mark.parametrize("route", ["/discover", "/ready", "/verify"])
-def test_read_only_post_routes_pass_through_read_guard(route, monkeypatch):
-    # DNS-rebinding defence: these read-only POST routes must consult
-    # guard_read_request() and abort the work (no HA probe, no state
-    # leak) when it rejects. The guard sends its own rejection response.
+@pytest.mark.parametrize(
+    "fetch_metadata",
+    [
+        {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"},
+        {
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        },
+    ],
+    ids=["fetch", "auto-submitting-form"],
+)
+def test_read_only_post_routes_reject_cross_site_callers(
+    route, fetch_metadata, monkeypatch,
+):
+    # These read-only POST routes carry no CSRF token, so `@read_guarded` is
+    # the whole guard. It must refuse a cross-site top-level navigation as
+    # well as a cross-site fetch: the permissive navigation default exists
+    # for links into a GET page, and letting it through here would let an
+    # attacker page's auto-submitting form run the probe.
     called = {"discover": 0, "ready": 0, "verify": 0}
     monkeypatch.setattr(ha, "discover_sync", lambda *a, **k: called.__setitem__("discover", 1) or [])
     monkeypatch.setattr(ha, "ready_sync", lambda *a, **k: called.__setitem__("ready", 1) or {})
     monkeypatch.setattr(ha, "verify_sync", lambda *a, **k: called.__setitem__("verify", 1) or {})
     monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    monkeypatch.setattr(ha, "guard_read_request", lambda handler, **k: False)
-    h = _make_request(route, body=b"")
+    h = _make_request(
+        route, body=b"", headers={"Host": "jts.local", **fetch_metadata},
+    )
     h.do_POST()
+    assert h.status == int(http.HTTPStatus.FORBIDDEN)
     assert called == {"discover": 0, "ready": 0, "verify": 0}
 
 
@@ -309,8 +332,10 @@ def test_read_only_post_routes_pass_through_read_guard(route, monkeypatch):
 def test_read_only_post_routes_run_when_guard_allows(route, fake, payload_key, monkeypatch):
     monkeypatch.setattr(ha, fake, lambda *a, **k: {"ok": True} if payload_key is None else [])
     monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    monkeypatch.setattr(ha, "guard_read_request", lambda handler, **k: True)
-    h = _make_request(route, body=b"")
+    h = _make_request(
+        route, body=b"",
+        headers={"Host": "jts.local", "Sec-Fetch-Site": "same-origin"},
+    )
     h.do_POST()
     assert h.status == 200
 

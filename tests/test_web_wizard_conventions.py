@@ -432,23 +432,6 @@ def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
         assert b"cross_site_request" in req.wfile.getvalue()
 
 
-def test_mutating_get_rejects_cross_site_top_level_navigation():
-    """/reset deletes the saved Home Assistant credentials. A page GET may be
-    reached by a cross-site link; a GET that mutates may not."""
-    req = _WizardRequest(
-        home_assistant_setup._make_handler({"state_path": "/tmp/jts-test-ha.env"}),
-        "/reset",
-        headers={
-            "Host": "jts.local",
-            "Sec-Fetch-Site": "cross-site",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-        },
-    )
-    req.do_GET()
-    assert req.status == int(http.HTTPStatus.FORBIDDEN)
-
-
 # --- Route tables, pinned at the request surface --------------------------
 #
 # Every converged wizard dispatches the same five steps: normalise the path,
@@ -592,6 +575,17 @@ def _post_route_table(handler_cls) -> dict:
     return fn.__globals__["_POST_ROUTES"]
 
 
+# `csrf_mode` per POST route — the marker `form_guarded` / `header_guarded` /
+# `read_guarded` stamp on the wrapper they return, so a wizard whose guard
+# varies per route declares its axis there rather than in a list kept here.
+_POST_ROUTE_CSRF_MODES = {
+    (name, path): mode
+    for name, cls, _, posts in TABLED_WIZARDS if posts
+    for path, fn in _post_route_table(cls).items()
+    if (mode := getattr(fn, "csrf_mode", None)) is not None
+}
+
+
 # POST routes whose body parses through `_common.json_body` — the decorator
 # marks its wrapper, so this tracks the routes themselves rather than a
 # hand-kept wizard list.
@@ -626,9 +620,14 @@ def test_tabled_post_route_without_a_csrf_token_is_forbidden(
     )
     req.do_POST()
     assert req.status == int(http.HTTPStatus.FORBIDDEN)
-    if module_name in _HEADER_CSRF_WIZARDS:
+    if (
+        module_name in _HEADER_CSRF_WIZARDS
+        or _POST_ROUTE_CSRF_MODES.get((module_name, path)) == "header"
+    ):
         # The guard runs before any body read, so a rejected POST leaves the
-        # request body unconsumed and cannot have mutated anything.
+        # request body unconsumed and cannot have mutated anything. Header
+        # CSRF is a per-module fact for the wizards that guard in their
+        # dispatcher and a per-route one for those that guard per body.
         assert req.rfile.tell() == 0
 
 

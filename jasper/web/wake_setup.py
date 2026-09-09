@@ -101,6 +101,7 @@ from ._common import (
     form_guarded,
     forward_control_token_headers,
     header_guarded,
+    json_body,
     proxy_get,
     proxy_post,
     read_json_body,
@@ -766,20 +767,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     _GET_ROUTES = {"/": _get_index, "/detection.json": _get_detection}
 
     @header_guarded
-    def _post_layer(handler: BaseHTTPRequestHandler) -> None:
+    @json_body
+    def _post_layer(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
         # The prefix route reaches this body through the same bare
         # handler_fn(handler) shape the table holds, so the leg name is
         # re-derived here; do_POST has already rejected an unknown one.
         layer = route_path(handler.path)[len("/layer/"):]
-        body, err = read_json_body(handler, max_bytes=_LAYER_BODY_LIMIT)
-        if err is not None:
-            send_proxy_json(
-                handler,
-                json.dumps({"error": err}).encode(),
-                status=400,
-            )
-            return
-        enabled = body.get("enabled") if body is not None else None
+        enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             send_proxy_json(
                 handler,
@@ -800,16 +796,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         send_proxy_json(handler, resp, status=status)
 
     @header_guarded
-    def _post_profile(handler: BaseHTTPRequestHandler) -> None:
-        body, err = read_json_body(handler, max_bytes=_LAYER_BODY_LIMIT)
-        if err is not None:
-            send_proxy_json(
-                handler,
-                json.dumps({"error": err}).encode(),
-                status=400,
-            )
-            return
-        profile = body.get("profile") if body is not None else None
+    @json_body
+    def _post_profile(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        profile = body.get("profile")
         if not isinstance(profile, str) or profile not in _VALID_PROFILES:
             send_proxy_json(
                 handler,
@@ -829,16 +820,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         send_proxy_json(handler, resp, status=status)
 
     @header_guarded
-    def _post_sensitivity(handler: BaseHTTPRequestHandler) -> None:
-        body, err = read_json_body(handler, max_bytes=_LAYER_BODY_LIMIT)
-        if err is not None:
-            send_proxy_json(
-                handler,
-                json.dumps({"error": err}).encode(),
-                status=400,
-            )
-            return
-        value = body.get("value") if body is not None else None
+    @json_body
+    def _post_sensitivity(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        value = body.get("value")
         try:
             value = float(value)
         except (TypeError, ValueError):
@@ -867,16 +853,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         send_proxy_json(handler, resp, status=status)
 
     @header_guarded
-    def _post_usb_mic(handler: BaseHTTPRequestHandler) -> None:
-        body, err = read_json_body(handler, max_bytes=_LAYER_BODY_LIMIT)
-        if err is not None:
-            send_proxy_json(
-                handler,
-                json.dumps({"error": err}).encode(),
-                status=400,
-            )
-            return
-        enabled = body.get("enabled") if body is not None else None
+    @json_body
+    def _post_usb_mic(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             send_proxy_json(
                 handler,
@@ -898,16 +879,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         send_proxy_json(handler, resp, status=status)
 
     @header_guarded
-    def _post_usb_mic_leg(handler: BaseHTTPRequestHandler) -> None:
-        body, err = read_json_body(handler, max_bytes=_LAYER_BODY_LIMIT)
-        if err is not None:
-            send_proxy_json(
-                handler,
-                json.dumps({"error": err}).encode(),
-                status=400,
-            )
-            return
-        leg = body.get("leg") if body is not None else None
+    @json_body
+    def _post_usb_mic_leg(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        leg = body.get("leg")
         if not isinstance(leg, str) or not leg.strip():
             send_proxy_json(
                 handler,
@@ -1007,6 +983,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
+
+        def _read_json(self) -> dict[str, Any] | None:
+            """The adapter `@json_body` calls: the parsed body, or None
+            after answering the client the same 400 the route bodies used
+            to send by hand."""
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
+            if err is not None:
+                send_proxy_json(
+                    self, json.dumps({"error": err}).encode(), status=400,
+                )
+                return None
+            return body
 
         def do_GET(self) -> None:  # noqa: N802
             handler_fn = _GET_ROUTES.get(route_path(self.path))

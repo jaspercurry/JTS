@@ -12,27 +12,27 @@ handlers, page layouts, form bodies.
 
 ## Conventions for new wizards
 
-Every wizard's request handler should look like this:
+A wizard is two route tables of bare `handler_fn(handler)` callables and a
+dispatcher that routes, guards, and calls — nothing else:
 
-    def do_GET(self):
-        if path == "/":
-            if not guard_read_request(self):
-                return
-            ctx = begin_request(self)
-            send_html_response(self, render_page(
-                ctx["csrf_token"], status_msg=ctx["flash"],
-            ))
+    _GET_ROUTES = {"/": _get_index, "/state": _get_state}
+    _POST_ROUTES = {"/save": _post_save, "/clear": _post_clear}
 
     def do_POST(self):
-        # Route-check before CSRF-check: unknown paths return 404
-        # without revealing the CSRF state.
-        if path not in ("/save", "/clear", …):
+        # Unknown paths 404 before any guard, never revealing CSRF state.
+        handler_fn = _POST_ROUTES.get(route_path(self.path))
+        if handler_fn is None:
             self.send_error(HTTPStatus.NOT_FOUND); return
-        form = read_form(self)
-        if not guard_mutating_request(self, form):
+        if not guard_mutating_request(self):
             reject_csrf(self); return
-        # ... handle ...
-        send_see_other(self, "./", flash="Saved.")
+        handler_fn(self)
+
+`do_GET` is the same shape with `guard_read_request(self)`. `route_path`
+makes `/save`, `/save/` and `/save?x=1` one key. Dispatcher-guarded POST
+bodies wear `@json_body`. A wizard whose guard varies per route guards no
+POST in `do_POST`; each body declares its own — `@form_guarded` (token in
+the form body), `@header_guarded` (token in the header), `@read_guarded`
+(read-only probe: no token, cross-site navigations refused).
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
@@ -1276,6 +1276,9 @@ def reject_csrf(handler: BaseHTTPRequestHandler) -> None:
     handler.wfile.write(body)
 
 
+# Each wrapper below stamps `csrf_mode` on the callable it returns, so a
+# route table declares per route which axis guards it. tests/
+# test_web_wizard_conventions.py pins each mode's behaviour off that marker.
 def form_guarded(
     fn: Callable[[BaseHTTPRequestHandler, dict[str, str]], None],
 ) -> Callable[[BaseHTTPRequestHandler], None]:
@@ -1290,6 +1293,7 @@ def form_guarded(
             reject_csrf(handler)
             return
         fn(handler, form)
+    setattr(route, "csrf_mode", "form")
     return route
 
 
@@ -1306,6 +1310,24 @@ def header_guarded(
             reject_csrf(handler)
             return
         fn(handler)
+    setattr(route, "csrf_mode", "header")
+    return route
+
+
+def read_guarded(
+    fn: Callable[[BaseHTTPRequestHandler], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """The siblings' third axis, for a POST that only reads: no CSRF token,
+    but the read guard runs with cross-site top-level navigations refused,
+    so a cross-site auto-submitting form cannot reach the body. The
+    permissive default exists for links and OAuth redirect-follows into a
+    GET page; a POST has neither."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        if not guard_read_request(handler, allow_cross_site_navigation=False):
+            return
+        fn(handler)
+    setattr(route, "csrf_mode", "read")
     return route
 
 
