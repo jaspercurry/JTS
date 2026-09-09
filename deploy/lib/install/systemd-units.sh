@@ -1299,7 +1299,7 @@ PY
     # the file once more so no reader can mistake an older generation for this
     # install's.
     rm -f /run/jasper-source-intent/status.json
-    if ! /usr/bin/timeout --foreground --kill-after=5s 2803s \
+    if ! /usr/bin/timeout --foreground --kill-after=5s 2737s \
         /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
             --reason install --invalidate-status-before; then
         rm -f /run/jasper-source-intent/status.json

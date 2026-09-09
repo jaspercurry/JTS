@@ -28,7 +28,7 @@ StateDirectoryMode=0755
 # and a final margin. The handoff uses `start`, never restart, so an ordered
 # source transition is not cut in half; grouping succeeds only after source
 # park/restore does. Tests derive this 6546 s value from the child bounds.
-TimeoutStartSec=6546
+TimeoutStartSec=6414
 EnvironmentFile=-/etc/jasper/jasper.env
 # grouping.env is wizard-owned data, not a process environment. The Python
 # reconciler parses that fixed file itself; importing it here would let a
