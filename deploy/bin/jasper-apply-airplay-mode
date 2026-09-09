@@ -533,7 +533,7 @@ derive_audio_backend_latency_offset() {
     local bonded_extra_sec
     local camilla_fields
     local fanin_fields outputd_fields
-    local fanin_delay_frames fanin_ring_occupancy fanin_period_frames
+    local fanin_ring_occupancy fanin_period_frames
     local outputd_ring_occupancy outputd_slot_frames outputd_dac_delay_frames
 
     config="$(camilla_config_path || true)"
