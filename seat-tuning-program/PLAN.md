@@ -318,6 +318,44 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 15:45Z: #4643's fix round landed at `af3e7a79a` (conflict with the
+  merged 3.2 resolved, main merged in twice, never rebased). Three of the six
+  findings are closed as instructed, and three produced findings of their own
+  that matter more than the fixes:
+  - **The bench still cannot run the protocol's sustain hold, and now refuses
+    it honestly instead of failing at the speaker.** The preflight
+    (`bench_hold_exceeds_declared_duration`) fires before the fader leaves the
+    floor. But `effective_sweep_duration_limit_s` is
+    `min(declared, driver_sweep_duration_s(role))` and the code-side table caps
+    a woofer at 12 s, so no owner authoring reaches the protocol's 30/60/90 s.
+    The fix agent refused both available shortcuts — raising the cap, and
+    describing the hold as a chain of ≤ 4 s sweeps, which changes no thermal
+    exposure — and named the honest fix: **a sustain-hold limit distinct from
+    `max_sweep_duration_s` in the driver-safety profile**, a schema and
+    fingerprint change deserving its own reviewed PR. **This is a new required
+    row before wave 4.1 can run**, alongside `activation.py:186`'s pre-existing
+    #2202 defect.
+  - **The adversarial review's memory blocker was overstated, and the fix agent
+    said so with numbers.** The ~200 MB figure is the cost of correlating the
+    whole capture, but the caller's existing slice already bounded it to ~24 s;
+    measured peak on a 90 s hold was 50.3 MB before and 48.5 MB after. The real
+    defect was the inert backstop, now restored. Recorded because a fixer
+    correcting a reviewer with measurements is the behaviour this process wants.
+  - **The orchestrator's B1 ruling was declined, with evidence.** The ruling
+    said per-driver caps must come from the summed admission gate. The fix agent
+    found that gate applies `peak <= cap` to every role unconditionally, and
+    against the repo's own fixture the tweeter cap is −65 dBFS against the
+    bench's −55 dBFS effective, so **every bench pass would refuse** — for
+    content two octaves inside the tweeter's stopband; and that crediting the
+    declared high-pass with a dB figure is the separately-reviewed protection
+    model the frozen protocol excludes. It closed the defect instead with
+    `assert_driver_caps_evaluated`, resolving every role through
+    `resolve_driver_excitation_ceilings` and judging a driver against its cap
+    when the stimulus band reaches it, requiring a declared protection filter
+    otherwise. **A focused adversarial re-check of that deviation is running;
+    #4643 does not merge until it returns.** If it confirms the numbers, the
+    ruling in the 14:05Z entry is superseded by this one.
+
 - 2026-09-09 15:35Z: Handoff refreshed against verified state (`origin/main`
   `4157a6030`). Two facts a successor must not get wrong:
   - **Row 3.3 has a branch nobody has reviewed.**
