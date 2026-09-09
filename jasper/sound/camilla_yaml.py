@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -624,12 +623,13 @@ def emit_sound_config(
         )
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={profile_id})" if profile_id else ""
+    # Playback sink: ALSA loopback (solo — the default, byte-identical)
+    # or the bonded-leader File/pipe sink feeding snapserver. Identical
+    # indentation so the surrounding template is sink-agnostic.
     if playback_pipe_path is not None:
-        # FIFO writes wait for a whole kernel page to drain (16 KiB on Pi 5).
-        # Keep capture running through that pause; the wire is stereo S16_LE.
-        queuelimit = max(
-            queuelimit, math.ceil(os.sysconf("SC_PAGESIZE") / (width * 2 * chunksize))
-        )
+        # D4: pinned to DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see
+        # the guard above and the constant's own comment
+        # (jasper.camilla_config_contract).
         playback_yaml = f"""  playback:
     type: File
     channels: {width}

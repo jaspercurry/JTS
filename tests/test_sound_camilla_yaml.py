@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import pytest
-import yaml as yaml_parser
 
 from jasper.camilla_config_contract import PeqFilter
 from jasper.sound.camilla_yaml import (
@@ -399,20 +398,18 @@ def test_extract_room_peqs_stays_quiet_on_solo_configs(caplog):
     )
 
 
-@pytest.mark.parametrize("page_bytes,queue_chunks", [(4096, 4), (16384, 16)])
-def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader(
-    monkeypatch, page_bytes, queue_chunks,
-):
-    monkeypatch.setattr("jasper.sound.camilla_yaml.os.sysconf", lambda _: page_bytes)
+def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader():
+    """The bonded-leader playback axis: playback becomes a File sink
+    writing the shared stereo program to snapserver's FIFO; capture and
+    the rest of the config are untouched. Pairs with room_peqs_right
+    (the leader-bake combo)."""
     yaml = emit_sound_config(
         SoundProfile(enabled=True, curve_id="harman", simple_eq=SimpleEq()),
         room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
         room_peqs_right=[PeqFilter(freq=120.0, q=2.0, gain=-2.0)],
         enable_rate_adjust=False,
         playback_pipe_path="/run/jasper-snapserver/snapfifo",
-        chunksize=256,
     )
-    assert yaml_parser.safe_load(yaml)["devices"]["queuelimit"] == queue_chunks
     assert "type: File" in yaml
     assert 'filename: "/run/jasper-snapserver/snapfifo"' in yaml
     assert "enable_rate_adjust: false" in yaml
