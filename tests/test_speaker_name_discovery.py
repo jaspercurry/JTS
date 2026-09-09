@@ -12,30 +12,48 @@ POST handler (speaker_setup.py:_find_conflicts -> asyncio.run) indefinitely.
 from __future__ import annotations
 
 import asyncio
-import time
+import logging
 
 import dbus_next.aio
+import pytest
 
+import jasper.identity.speaker_name_discovery as speaker_name_discovery
 from jasper.identity.speaker_name_discovery import find_bluetooth_conflicts
+from tests._log_events import event_fields
 
 
 class _HangingMessageBus:
-    """A dbus_next MessageBus stand-in whose connect() never resolves."""
+    """A dbus_next MessageBus stand-in that hangs at a chosen call point."""
 
-    def __init__(self, **_kwargs) -> None:
-        pass
+    def __init__(self, *, hang: str, **_kwargs) -> None:
+        self._hang = hang
 
     async def connect(self) -> "_HangingMessageBus":
-        await asyncio.Event().wait()  # never set: simulates a wedged system bus
+        if self._hang == "connect":
+            await asyncio.Event().wait()  # never set: simulates a wedged connect
         return self
 
+    async def introspect(self, *_args, **_kwargs):
+        if self._hang == "introspect":
+            await asyncio.Event().wait()  # never set: simulates a wedged introspect
+        raise AssertionError("introspect should not be reached in this case")
 
-async def test_find_bluetooth_conflicts_bounds_a_wedged_bus(monkeypatch) -> None:
-    monkeypatch.setattr(dbus_next.aio, "MessageBus", lambda **kw: _HangingMessageBus(**kw))
+    def disconnect(self) -> None:
+        pass
 
-    start = time.monotonic()
-    result = await find_bluetooth_conflicts("Kitchen", timeout=0.05)
-    elapsed = time.monotonic() - start
+
+@pytest.mark.parametrize("hang", ["connect", "introspect"])
+async def test_find_bluetooth_conflicts_bounds_a_wedged_bus(
+    monkeypatch, caplog, hang: str,
+) -> None:
+    monkeypatch.setattr(speaker_name_discovery, "_BLUEZ_SCAN_MARGIN_SEC", 0.05)
+    monkeypatch.setattr(
+        dbus_next.aio, "MessageBus", lambda **kw: _HangingMessageBus(hang=hang, **kw),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=speaker_name_discovery.__name__):
+        result = await find_bluetooth_conflicts("Kitchen", timeout=0.05)
 
     assert result == []  # fail-open, same contract as every other scan failure here
-    assert elapsed < 5.0  # bound is timeout + 2s (~2.05s here); a real hang never returns
+    fields = event_fields(caplog, "speaker_name.bluetooth_scan_timeout")
+    assert fields["timeout_sec"] == "0.05"

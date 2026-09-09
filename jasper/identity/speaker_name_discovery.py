@@ -30,9 +30,13 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable
 
+from ..log_event import log_event
 from .speaker_name import normalize_name
 
 logger = logging.getLogger(__name__)
+
+# Covers connect() + two introspects + stop_discovery beyond the scan itself.
+_BLUEZ_SCAN_MARGIN_SEC = 2.0
 
 
 MDNS_SERVICE_TYPES = {
@@ -166,7 +170,7 @@ async def find_bluetooth_conflicts(
         return []
 
     try:
-        async with asyncio.timeout(timeout + 2):
+        async with asyncio.timeout(timeout + _BLUEZ_SCAN_MARGIN_SEC):
             bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
             try:
                 intro_root = await bus.introspect("org.bluez", "/")
@@ -212,7 +216,10 @@ async def find_bluetooth_conflicts(
             finally:
                 bus.disconnect()
     except TimeoutError as e:
-        logger.warning("speaker-name bluetooth scan timed out: %s", e)
+        log_event(
+            logger, "speaker_name.bluetooth_scan_timeout",
+            level=logging.WARNING, timeout_sec=timeout, error=str(e),
+        )
         return []
 
 
