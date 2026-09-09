@@ -7,7 +7,7 @@
 `NAV` renders the landing page's settings groups, the `/sound/` and
 `/assistant/` hub pages (`render_hub`, rows whose `parent` is the hub path)
 and, as pages adopt `entry()`, feeds them their title and back link
-(docs/web-ia.md §1-§2). Stdlib only, like `_common`'s page shell it calls:
+(docs/web-ia.md §1-§2). Stdlib only, like `chrome`'s page shell it calls:
 this runs under the system interpreter at install time.
 `requires` lists a row's gates outermost first; a group whose rows share the
 outermost one carries it on the `<section>` and the rest gate the row.
@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from ._common import canonical_header, canonical_page, json_island
+from .chrome import canonical_header, canonical_page, json_island
 
 
 class NavRow(NamedTuple):
@@ -42,21 +42,21 @@ NAV: tuple[NavRow, ...] = (
     NavRow("Sources", "AirPlay sync", "/airplay/", "/", ("local_sources",),
            "airplay", "", "Synced"),
     NavRow("Sound", "Sound", "/sound/", "/", ("content_dsp",),
-           "sliders", "", "EQ · Speakers · Room · Bass"),
+           "sliders", "", "EQ · Speakers · Pair · Bass"),
     NavRow("Sound", "EQ", "/sound/eq/", "/sound/", ("content_dsp",),
            "sound", "", "Profiles · Simple EQ · PEQ"),
-    NavRow("Sound", "Sound setup", "/sound/setup/", "/sound/", ("content_dsp",),
-           "sliders", "", "Volume · Outputs · Commissioning"),
-    NavRow("Sound", "Active speaker", "/sound/speaker/crossover/", "/sound/",
+    NavRow("Sound", "Speaker setup", "/sound/speaker/", "/sound/", ("content_dsp",),
+           "sound", "", "Layout · Drivers · Commissioning"),
+    NavRow("Sound", "Active speaker", "/sound/speaker/crossover/", "/sound/speaker/",
            ("content_dsp",), "wave", "", "Crossover measurement"),
+    NavRow("Sound", "Output", "/sound/output/", "/sound/", ("content_dsp",),
+           "sliders", "", "Audio HAT · Volume shaping"),
     NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/",
            ("content_dsp", "pair_management"), "peers", "",
            "Group speakers · Wake response"),
     NavRow("Sound", "Speaker timing", "/sound/pair/sync/", "/sound/pair/",
            ("content_dsp", "pair_management"), "wave", "",
            "Timing between the two speakers"),
-    NavRow("Sound", "Room correction", "/sound/room/", "/sound/", ("content_dsp",),
-           "wave", "", "Microphone measurement"),
     NavRow("Sound", "Bass", "/sound/bass/", "/sound/", ("content_dsp",),
            "sound", "", "Bass-management status"),
     NavRow("Sound", "Measurements", "/sound/measurements/", "/sound/",

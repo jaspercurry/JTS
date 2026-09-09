@@ -51,13 +51,16 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0126](0126-a-subwoofer-crossover-executes-on-the-receiver.md) | A subwoofer's crossover executes on the receiver, on the one shared stereo stream | superseded by 0236 |
 | [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | accepted |
 | [0169](0169-the-outputd-ordering-guard-compares-recorded-instants-not-computed-ages.md) | the outputd ordering guard compares recorded instants, not computed ages | accepted |
-| [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | accepted |
+| [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | amended by 0264 |
 | [0178](0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md) | Every shape the ring cannot serve parks under its own name | amended by 0187 |
 | [0184](0184-a-resolvable-width-with-no-armed-endpoint-signals-rather-than-parks.md) | A resolvable width with no armed endpoint signals, it does not park | accepted |
-| [0186](0186-the-endpoint-gate-stays.md) | The endpoint gate stays | accepted |
+| [0186](0186-the-endpoint-gate-stays.md) | The endpoint gate stays | superseded by 0262 |
 | [0189](0189-an-armed-endpoint-under-no-active-modes-discloses-on-non-composite-sinks.md) | An armed endpoint under no active modes discloses, on non-composite sinks | accepted |
-| [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | accepted |
+| [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | amended by 0262 |
 | [0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md) | Independent subwoofers are deleted; a subwoofer on a DAC channel stays the active-speaker crossover's concern | accepted |
+| [0261](0261-the-grouping-and-dac-content-rings-are-128-frame-16-slot-s16-and-governed.md) | The grouping and dac-content rings are 128-frame, 16-slot, S16, and governed | accepted |
+| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | accepted |
+| [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
 
 ## Volume & hearing
 
@@ -87,10 +90,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0151](0151-a-new-source-is-camilla-master-until-it-proves-an-observable-volume-surface.md) | A new source is Camilla-master until it proves an observable volume surface | accepted |
 | [0185](0185-latency-is-monitored-and-adapted-never-certified.md) | Latency is monitored and adapted, never certified | accepted |
 | [0191](0191-usb-transport-is-not-gated-on-derived-state.md) | USB transport is not gated on derived state | accepted |
-| [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | accepted |
+| [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | amended by 0266 |
 | [0221](0221-source-start-gates-are-marker-files-published-by-the-coordinator.md) | Source start gates are marker files published by the coordinator | accepted |
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
-| [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | accepted |
+| [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | amended by 0266 |
+| [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
 
 ## Multiroom & grouping
 
@@ -236,6 +240,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260 |
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
-| [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | accepted |
+| [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265 |
 | [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
 | [0263](0263-a-ring-ended-camilladsp-graph-takes-the-ring-geometry.md) | A ring-ended CamillaDSP graph takes the ring geometry | accepted |
+| [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |

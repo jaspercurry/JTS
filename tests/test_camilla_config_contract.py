@@ -9,9 +9,6 @@ import pytest
 from jasper.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
     DEFAULT_QUEUELIMIT,
-    POST_DSP_PLAYBACK_DEVICES,
-    UNPAIRED_POST_DSP_PLAYBACK_DEVICES,
-    _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
@@ -321,14 +318,3 @@ def test_the_certified_ring_pairing_agrees_with_the_sink_rule():
         RING_ACTIVE_PLAYBACK_DEVICE
     )
 
-
-def test_the_unpaired_endpoints_are_exactly_the_ones_the_map_does_not_pair():
-    """`transport_coherence_report` routes a playback device on the ABSENCE of a
-    pairing, so the two sets must partition the post-DSP endpoints — a member in
-    both would let one device be simultaneously paired and unpaired."""
-
-    paired = set(_OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE)
-
-    assert paired <= POST_DSP_PLAYBACK_DEVICES
-    assert paired & UNPAIRED_POST_DSP_PLAYBACK_DEVICES == set()
-    assert paired | UNPAIRED_POST_DSP_PLAYBACK_DEVICES == POST_DSP_PLAYBACK_DEVICES

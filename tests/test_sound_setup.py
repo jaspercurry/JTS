@@ -69,6 +69,7 @@ from jasper.sound.settings import (
 )
 from jasper.volume_curve import percent_to_db
 from jasper.web import (
+    nav,
     sound_active_speaker,
     sound_profile_apply,
     sound_setup,
@@ -464,13 +465,13 @@ def test_active_speaker_ui_level_match_helpers():
 
 
 def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
-    """commission-load serializes against room correction / balance / sync: when
-    one is active it refuses with a distinct reason (not a camilla touch) so the
-    UI shows the correct message instead of "another driver is being tested"."""
+    """commission-load serializes against balance / sync: when one is active it
+    refuses with a distinct reason (not a camilla touch) so the UI shows the
+    correct message instead of "another driver is being tested"."""
     from jasper.web import active_speaker_flow
 
     monkeypatch.setattr(
-        active_speaker_flow, "blocking_measurement_phase", lambda: "correction:sweeping"
+        active_speaker_flow, "blocking_measurement_phase", lambda: "sync:measuring"
     )
 
     def _camilla_must_not_be_called():
@@ -484,7 +485,7 @@ def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
     )
     assert payload["status"] == "refused"
     assert payload["reason"] == "measurement_in_progress"
-    assert payload["blocking_phase"] == "correction:sweeping"
+    assert payload["blocking_phase"] == "sync:measuring"
 
 
 @contextmanager
@@ -805,18 +806,24 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert read_calls == [len(body)]
 
 
-# The EQ chrome the /sound/setup/ page must not render: the Off/Saved/Draft
+# The EQ chrome the hardware pages must not render: the Off/Saved/Draft
 # tablist and the now-playing plot are content-DSP surfaces.
 _EQ_ONLY_CHROME = ('id="tab-off"', 'id="tab-saved"', 'id="tab-draft"', 'id="plot"')
 
 
+def _crossover_child_row() -> tuple[str, str]:
+    """The nav row /sound/speaker/ links itself, as (relative href, label)."""
+    row = nav.entry("/sound/speaker/crossover/")
+    return row.path.removeprefix(row.parent), row.label
+
+
 @pytest.mark.parametrize(
     ("page_mode", "title"),
-    [("eq", "EQ"), ("setup", "Sound setup")],
+    [("eq", "EQ"), ("speaker", "Speaker setup"), ("output", "Output")],
 )
 def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
-    """Both modes share the design system and the static module; only the EQ
-    mode renders the Off/Saved/Draft chrome, and neither inlines logic."""
+    """All three modes share the design system and the static module; only the
+    EQ mode renders the Off/Saved/Draft chrome, and none inlines logic."""
     html = sound_setup._index_html(page_mode=page_mode).decode()
 
     assert "/assets/app.css" in html
@@ -838,6 +845,41 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     else:
         assert 'id="view-body"' in html
         assert not any(marker in html for marker in _EQ_ONLY_CHROME)
+    # Only the speaker page links its child row, and RELATIVELY: an absolute
+    # link would land the household on the self-signed 443 origin (#2632).
+    # Both halves come from the nav row that owns the child page.
+    href, label = _crossover_child_row()
+    child = re.findall(
+        r'<a class="btn" href="([^"]*)">' + re.escape(label) + "</a>", html
+    )
+    assert child == ([href] if page_mode == "speaker" else [])
+    assert "/sound/speaker/crossover/" not in html
+
+
+@pytest.mark.parametrize(
+    ("header", "title"),
+    [
+        ("eq", "EQ"),
+        ("speaker", "Speaker setup"),
+        ("output", "Output"),
+        # nginx sets the header on every page block, so an absent or unknown
+        # value only reaches the daemon by a hand-typed request: answer with
+        # the one page every profile serves rather than guessing.
+        ("", "EQ"),
+        ("setup", "EQ"),
+    ],
+)
+def test_the_page_mode_header_picks_the_page(tmp_path: Path, header, title):
+    """`X-JTS-Sound-Page` is the whole seam between one daemon and three URLs
+    (ADR-0253 §3): nginx sets it per location block and strips the prefix."""
+    with sound_server(tmp_path) as base:
+        request = urllib.request.Request(base + "/")
+        if header:
+            request.add_header("X-JTS-Sound-Page", header)
+        html = urllib.request.urlopen(request, timeout=5).read().decode()
+
+    assert f"<title>{title}</title>" in html
+    assert f'class="app-header__title">{title}' in html
 
 
 def _island_payload(html: str) -> dict:
@@ -948,7 +990,7 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert "Sound is controlled by the pair leader" in html
     assert leader_paths == ["/sound/eq/"]
     assert "http://jts3.local/sound/eq/" in html
-    assert 'href="/sound/setup/">Open local sound setup</a>' in html
+    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
     # EQ is entirely leader-owned on a follower; no local commissioning module.
     assert "/assets/sound-profile/js/main.js" not in html
     assert 'id="sound-page-data"' in html
@@ -966,25 +1008,56 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
-def test_setup_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
+def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/setup/",
+        lambda path="/": leader_paths.append(path)
+        or "http://jts3.local/sound/speaker/",
     )
 
-    html = sound_setup._index_html("csrf-token", page_mode="setup").decode()
+    html = sound_setup._index_html("csrf-token", page_mode="speaker").decode()
 
-    assert leader_paths == ["/sound/setup/"]
-    assert "http://jts3.local/sound/setup/" in html
+    assert leader_paths == ["/sound/speaker/"]
+    assert "http://jts3.local/sound/speaker/" in html
     assert 'id="view-body"' in html
     assert "/assets/sound-profile/js/main.js" in html
-    assert '"mode": "setup"' in html
+    assert '"mode": "speaker"' in html
     assert '"follower": true' in html
     assert 'id="tab-off"' not in html
     assert 'id="plot"' not in html
+    # The local page owns the driver domain, so it offers no way back to it.
+    assert "Open local speaker setup" not in html
+    # It is also the follower's ONLY way into its own crossover wizard: the
+    # row moved under this page, so nothing else links it. Relative, on the
+    # origin the household is already on (#2632).
+    href, label = _crossover_child_row()
+    assert f'<a class="btn" href="{href}">{label}</a>' in html
+    assert "/sound/speaker/crossover/" not in html
+
+
+def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
+    """Volume shaping is the leader's PROGRAM domain, so the follower's Output
+    page is delegation-only — with a path to the local page it does own."""
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    leader_paths = []
+    monkeypatch.setattr(
+        sound_setup,
+        "bonded_follower_leader_web_url",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/output/",
+    )
+
+    html = sound_setup._index_html("csrf-token", page_mode="output").decode()
+
+    assert leader_paths == ["/sound/output/"]
+    assert "http://jts3.local/sound/output/" in html
+    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
+    assert "/assets/sound-profile/js/main.js" not in html
+    assert 'id="view-body"' not in html
+    # The crossover row hangs under Speaker setup, not this page.
+    assert _crossover_child_row()[1] + "</a>" not in html
 
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
@@ -1247,12 +1320,15 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     repo = Path(__file__).resolve().parents[1]
     unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
     nginx = (repo / "deploy/nginx-jasper.conf").read_text()
-    proxy = nginx.split("location /sound/setup/", 1)[1].split("}", 1)[0]
-    streambox_proxy = (repo / "deploy/nginx-jasper-streambox.conf").read_text().split("location /sound/setup/", 1)[1].split("}", 1)[0]
+    streambox = (repo / "deploy/nginx-jasper-streambox.conf").read_text()
     assert "TimeoutStartSec=50s" in unit
     assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
-    assert "proxy_read_timeout 65s;" in proxy
-    assert "proxy_read_timeout 65s;" in streambox_proxy
+    # The I2S HAT control POSTs through /sound/output/; the speaker page shares
+    # the backend and the same bound.
+    for conf in (nginx, streambox):
+        for page in ("/sound/speaker/", "/sound/output/"):
+            block = conf.split(f"location {page} {{", 1)[1].split("}", 1)[0]
+            assert "proxy_read_timeout 65s;" in block
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():
@@ -1334,9 +1410,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"prepare-active-tone\"" not in js
     assert "data-act=\"verify-active-tone\"" not in js
     assert "activeSpeaker.playback" not in js
-    assert "var activeSpeakerSetupOpen = false;" in js
-    assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
-    assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
     assert "No active driver test" not in js
     assert "no separate direct-DAC driver test in the product UI" not in js
     assert "id=\"active-speaker-level\"" not in js
@@ -1495,7 +1568,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Main speakers" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
-    assert "var outputTemplateDraftAxes = {layout: '', speakerMode: ''};" in js
+    # The axis draft itself runs through the DOM in
+    # tests/js/sound_profile_harness.mjs: activeCrossoverFirstStepRendered (both
+    # axes offered on a fresh page) and activeRouteLimitsRenderedTemplates (a
+    # pick is held and narrows the grid).
     assert "function outputTemplateChoiceDisabled(count, axis, value, axes)" in js
     assert "function outputTemplateUnavailableReason(template, topology, hasSubwoofer)" in js
     assert "This install can test and apply up to " in js
@@ -2562,7 +2638,7 @@ def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path
 def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
     monkeypatch, tmp_path: Path, shape,
 ):
-    """THE FLIP, at the surface the owner hit: /sound/setup/ refused these
+    """THE FLIP, at the surface the owner hit: /sound/speaker/ refused these
     layouts on the InnoMaker, and now accepts them.
 
     The board declares the width-2 active outputd lane, so the one predicate
@@ -2604,7 +2680,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     calls: list[dict] = []
     sentinel = {"ok": True, "action": "start"}
     grouping_env = tmp_path / "grouping-outputd.env"
-    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=/run/armed.fifo\n")
+    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n")
     grouping_complete = False
 
     def fake_manage_units(*units, **kwargs):
@@ -2617,7 +2693,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
                 call["units"] == ("jasper-audio-hardware-reconcile.service",)
                 for call in calls
             )
-            grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n")
+            grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=\n")
             grouping_complete = True
         if units == ("jasper-audio-hardware-reconcile.service",):
             assert grouping_complete is True
@@ -2642,7 +2718,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     # A topology replacement first parks audio, then waits for the root
     # reconciler to make outputd agree with the final saved topology.
     assert calls[1]["no_block"] is False
-    assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n"
+    assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_LANE=\n"
     assert saved["reconcile"] is sentinel
     assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
 
@@ -5316,10 +5392,10 @@ def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
     assert "function requestLiveSource(options)" in js
     assert "function reconcileLiveSource()" in js
     assert "requestLiveSource({immediate: true});" in set_view_body
-    assert "if (view === 'saved')" in reconcile_body
+    assert "if (eqEditor.view === 'saved')" in reconcile_body
     assert "return applySavedSelection(options.okMsg, seq);" in reconcile_body
     assert "if (act === 'browse-presets') { setView('saved'); }" in js
-    assert "selectedId = fallbackSavedId();" in delete_body
+    assert "eqEditor.selectedId = fallbackSavedId();" in delete_body
     assert "requestLiveSource({immediate: true});" in delete_body
     assert "selectedId = findIdFor(applied);" in load_body
 
@@ -5370,7 +5446,6 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         "partialSavePreservesUnchosenEnclosure",
         "directCrossoverEditRefreshesProposalAndFooter",
         "tweeterTypeChangeInvalidatesCopiedResearchBinding",
-        "activeSpeakerSetupTogglePersistsAcrossRender",
         # The cross-child verdict is a warning, so the notice IS the disclosure:
         # evaluate_output_topology reports speaker_group_spans_child_devices
         # without blocking the save, and nothing else tells the household. This
@@ -5421,7 +5496,7 @@ def test_sound_css_marks_live_sources_with_red_dots():
     js = sound_page_js()
     css = _SOUND_CSS.read_text()
 
-    assert "btn.classList.toggle('is-live', v === view);" in js
+    assert "btn.classList.toggle('is-live', v === eqEditor.view);" in js
     assert ".app-header__tabs .segmented__btn.is-live::after" in css
     assert ".profile-row__dot--on" in css
     assert "background: var(--destructive);" in css
@@ -5688,7 +5763,10 @@ def test_state_probes_the_carrier_with_the_household_output_trim(
     assert probed == [payload["output_trim_db"]] == [6.0]
 
 
-def test_state_skips_the_carrier_probe_off_the_eq_page(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("header", ["speaker", "output"])
+def test_state_skips_the_carrier_probe_off_the_eq_page(
+    tmp_path: Path, monkeypatch, header,
+):
     """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
     renders the editor, so no other page pays for it."""
     import jasper.camilla
@@ -5706,14 +5784,14 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(tmp_path: Path, monkeypat
     )
 
     def _must_not_probe(*_args, **_kwargs):
-        raise AssertionError("the setup page must not probe the loaded graph")
+        raise AssertionError("a hardware page must not probe the loaded graph")
 
     monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _must_not_probe)
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(
             urllib.request.Request(
-                f"{base}/state", headers={"X-JTS-Sound-Page": "setup"},
+                f"{base}/state", headers={"X-JTS-Sound-Page": header},
             )
         ) as resp:
             assert resp.status == 200
@@ -7344,8 +7422,8 @@ def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
 def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
     """The re-mute teardown may not let ANY exception escape uncopied.
 
-    /sound/ and /sound/room/ both run the combined-test re-mute from a
-    ``finally`` and both import this one helper. /sound/room/ used to catch a
+    /sound/ runs the combined-test re-mute from a ``finally`` through this one
+    helper. A sibling caller used to catch a
     five-entry tuple (``CamillaUnavailable``, ``OSError``, ``RuntimeError``,
     ``ValueError``, ``TypeError``), so a rollback failing with anything else —
     a ``KeyError`` out of a payload, an ``AttributeError`` off a stubbed
@@ -7891,7 +7969,7 @@ def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
     # still holding the prompt back.
     assert payload["binding"]["hostname"] == "jts7.local"
     assert payload["binding"]["design_draft_revision"] == 5
-    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/setup/"
+    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
 
 
 def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(

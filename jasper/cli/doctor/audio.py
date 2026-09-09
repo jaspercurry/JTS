@@ -588,7 +588,7 @@ def check_output_hardware_stray_apple_dongle() -> CheckResult:
     return CheckResult(
         "Output hardware Apple dongle", "warn",
         f"{state.apple_dac_count} Apple dongle(s) present beside the registered "
-        f"{state.profile_id} DAC — unplug the dongle, or select it under /sound/setup/",
+        f"{state.profile_id} DAC — unplug the dongle, or select it under /sound/speaker/",
         reason=REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE,
     )
 

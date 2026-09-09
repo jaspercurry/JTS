@@ -53,11 +53,7 @@ from jasper.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )
-from jasper.camilla_config_contract import (
-    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-    DEFAULT_TARGET_LEVEL,
-)
-from jasper.cli.audio_config import main as audio_config_main
+from jasper.camilla_config_contract import DEFAULT_TARGET_LEVEL
 from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -939,7 +935,7 @@ def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
     """A grouped pipe SINK owns playback — and ONLY playback.
 
     Dropping the capture half too was a silent-bond hazard, not a no-op: this is
-    the path a bonded leader's /sound or /sound/room/ save re-emits camilla#1
+    the path a bonded leader's /sound save re-emits camilla#1
     through (graph_carrier -> apply_capture_precedence), and camilla#1 is the
     producer of the WHOLE bond's audio. Under an armed ring, keeping the
     emitter's `plug:jasper_capture` default there points the LIVE config at the
@@ -1236,34 +1232,6 @@ def test_an_unwritten_coupling_key_is_the_ring():
     as running one. Undeclared IS the ring — on both ends."""
     for coupling in (None, "", "   "):
         assert transport_topology_for_coupling(coupling).name == COUPLING_SHM_RING
-
-
-def test_the_retired_aloop_active_lane_has_no_registered_capture_pairing(capsys):
-    """The ONE negative guard for the retired snd-aloop ACTIVE pair.
-
-    It replaces three tests that pinned that pairing as live: a
-    derives-the-reader case, a coherence-accepts case, and a CLI-resolves case.
-    Those asserted a pairing that no longer exists — #2534 deleted the PCMs and
-    the ACTIVE ring is now the one legal ACTIVE endpoint, so no box has an
-    outputd capture half for this device either. Absence is the assertion, and
-    it is deliberately made ONCE: three separate re-points of a dead pairing
-    would be three places to keep agreeing about nothing.
-    """
-    assert audio_config_main(
-        [
-            "outputd-capture-device",
-            "--playback-device",
-            ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-        ]
-    ) != 0
-    assert "no outputd capture endpoint is registered" in capsys.readouterr().out
-
-
-def test_audio_config_rejects_unregistered_outputd_playback(capsys):
-    assert audio_config_main(
-        ["outputd-capture-device", "--playback-device", "future_unknown_lane"]
-    ) == 1
-    assert "no outputd capture endpoint" in capsys.readouterr().out
 
 
 def test_output_endpoint_evidence_preserves_missing_statefile_reason(tmp_path):

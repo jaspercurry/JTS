@@ -108,16 +108,16 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
         sent.append((path, context, timeout))
 
     monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
-    from jasper import env_load
+    from jasper import tts_routing
 
-    real_parse = env_load.parse_env_file
+    real_parse = tts_routing.parse_env_file
 
     def counted_parse(path):
         nonlocal parse_calls
         parse_calls += 1
         return real_parse(path)
 
-    monkeypatch.setattr(env_load, "parse_env_file", counted_parse)
+    monkeypatch.setattr(tts_routing, "parse_env_file", counted_parse)
     grouping_env = tmp_path / "grouping-voice.env"
     # Confirmed post-DSP member (stage + outputd socket): the same wire message
     # now flows to outputd.
@@ -137,8 +137,7 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
     assert sent == [("/run/jasper-outputd/tts.sock", context, 0.5)]
     assert parse_calls == 1
 
-    # A legacy socket-only override (no stage) is ambiguous → fail closed; no
-    # new send.
+    # A socket with no stage names no mix stage → fail closed; no new send.
     grouping_env.write_text(
         "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
     )

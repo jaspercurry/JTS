@@ -33,25 +33,13 @@ from jasper.fanin_coupling import (
 # fan-in -> CamillaDSP transport (ADR-0100), so an emit that receives no coupling
 # kwargs must still name a lane fan-in actually writes.
 DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
-# The snd-aloop tap ADR-0100 retired. Its ALSA definition is gone, so this name
-# no longer resolves on a box; it survives to RECOGNIZE the retired route in a
-# graph an unreconciled box still carries, never to emit it.
-RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 # Playback is Ring B, aliased for the same reason capture is aliased to Ring A:
 # the ring is the only CamillaDSP -> outputd transport (ADR-0100), so a
 # generated correction or sound-profile config must name the lane outputd
 # actually reads. Routing a profile anywhere else would take music around
 # jasper-outputd while TTS still went through it.
 DEFAULT_PLAYBACK_DEVICE = RING_PLAYBACK_DEVICE
-# The snd-aloop playback half ADR-0100 retired — the twin of
-# RETIRED_ALOOP_CAPTURE_DEVICE, and the key the outputd-capture pairing below is
-# still written against. Its ALSA definition is gone too, so the pairing below
-# resolves a name that no box can open: the lookup exists to CLASSIFY a graph
-# carrying the retired route, never to hand a caller a lane to write.
-RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
-DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
-ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
 # axis) and the active-speaker parked graph's /dev/null File sink are pinned
@@ -70,48 +58,19 @@ DEFAULT_PIPE_SINK_FORMAT = "S16_LE"
 # compatibility through the driver-domain round-trip tests.
 DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 
-# The post-DSP ALSA transport's two halves, paired. Every ABSENCE is a decision:
-# a ring has no outputd capture PCM at all (outputd reads the ring FILE), and
-# #2534 deleted the snd-aloop ACTIVE lane's PCM definitions. Adding an entry
-# would invent a lane nothing opens; `transport_coherence_report` reads the
-# absence as meaningful and owns what each missing pairing MEANS, through
-# UNPAIRED_POST_DSP_PLAYBACK_DEVICES below.
-#
-# The one entry is NOT trimmable on its own: the audio-hardware reconciler
-# resolves this map once per pass against RETIRED_ALOOP_PLAYBACK_DEVICE and
-# hard-exits 66 when the lookup misses, so deleting it while that gate stands
-# parks EVERY box on EVERY reconcile. ADR-0186 rules the gate and this entry
-# stay; the gate goes first, or the two go together.
-_OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
-    RETIRED_ALOOP_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
-}
-
-# Every endpoint a post-DSP CamillaDSP graph can name, paired or not.
+# Every endpoint a post-DSP CamillaDSP graph can name. NONE of them has an
+# outputd capture PCM: outputd reads a ring FILE, #2534 deleted the snd-aloop
+# ACTIVE lane's PCM definitions, and ADR-0262 retired the snd-aloop pair
+# outright. Membership is not a disposition — the two rings get opposite ones
+# from the same absent capture, and ``transport_coherence_report`` owns that
+# split.
 POST_DSP_PLAYBACK_DEVICES = frozenset(
     (
-        RETIRED_ALOOP_PLAYBACK_DEVICE,
         ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
         RING_ACTIVE_PLAYBACK_DEVICE,
     )
 )
-# PAIRING only — "is there a registered outputd capture for this playback
-# device" — never disposition: the two rings get opposite dispositions from the
-# same absent pairing, and ``transport_coherence_report`` owns that split.
-UNPAIRED_POST_DSP_PLAYBACK_DEVICES = (
-    POST_DSP_PLAYBACK_DEVICES - _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE.keys()
-)
-
-
-def outputd_capture_device_for_playback(playback_device: object) -> str | None:
-    """Return outputd's paired capture endpoint for a Camilla playback PCM.
-
-    This is the single vocabulary boundary for the two halves of the post-DSP
-    ALSA transport. Callers resolve one playback device and derive its reader;
-    they must not independently choose active/passive lane strings.
-    """
-
-    return _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE.get(str(playback_device or ""))
 
 
 DEFAULT_SAMPLE_RATE = 48000

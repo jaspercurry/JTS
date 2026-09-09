@@ -54,7 +54,7 @@ from jasper.audio_hardware.config_txt import boot_config_path
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
-from jasper.env_file import read_env_file, read_env_file_text
+from jasper.env_file import read_env_file
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
@@ -67,7 +67,6 @@ from jasper.output_hardware import (
     degraded_marker_path,
     state_path,
 )
-from jasper.ring_assets import conf_pcm_type
 from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.shell_env import render_shell_assignments
 
@@ -83,7 +82,6 @@ AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 FANIN_UNIT = "jasper-fanin.service"
 COUPLING_AUTO_UNIT = "jasper-fanin-coupling-auto.service"
 
-DEFAULT_OUTPUTD_PLAYBACK_DEVICE = "outputd_content_playback"
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This module
 # never CHOOSES it; the active-lane decision reports which endpoint the live
 # graph targets, and this literal is only how the answer is recognized. Mirrors
@@ -644,99 +642,6 @@ class Pass:
         self.finish_outputd_env_stage()
         return True
 
-    # -- the endpoint contract ----------------------------------------------
-
-    def outputd_env_effective(self) -> dict[str, str]:
-        """Every env key outputd RUNS, from BOTH LAYERS in the unit's
-        ``EnvironmentFile=`` order (later wins), read ONCE.
-
-        An operator key in jasper.env — which this reconciler honours by
-        DROPPING its own line from outputd.env — is therefore visible here.
-        UNSET vs EMPTY: outputd's ``env_str`` falls back only on an UNSET
-        variable, so a stated-but-empty key keeps its stated value, which is why
-        callers resolve their fallback with ``.get(key, fallback)`` rather than
-        ``or``.
-        """
-        return {
-            **read_env_file(self.env_file),
-            **read_env_file(self.outputd_env_file),
-        }
-
-    def asound_artifact_parks_outputd_dac(self) -> bool:
-        """Does the ALSA artifact ON DISK render ``pcm.outputd_dac`` as null?
-
-        Reads the rendered artifact rather than re-deriving what this pass
-        WOULD render: on the endpoint-contract path this pass renders nothing,
-        so the alias outputd actually opens is whatever an earlier pass left.
-        Fail closed — an absent or unreadable template is not evidence.
-        """
-        return conf_pcm_type(
-            read_env_file_text(self.asound_template)[0] or "", "outputd_dac"
-        ) == "null"
-
-    def park_preserved_env_if_clockless(self) -> bool:
-        """Turn a preserve-runtime-env fallback into the do-no-harm park when
-        the env it would preserve is the CLOCKLESS PAIR.
-
-        The preserved env opens the REAL ALSA backend at the single-ALSA DAC
-        edge while the ALSA artifact on disk renders that same alias as ``type
-        null``. Nothing then paces outputd's RT loop from either side, so it
-        spins until LimitRTTIME SIGKILLs it — three per burst, then
-        StartLimitAction=reboot (jts.local 2026-08-14, issue #2489).
-
-        EVERY conjunct reads an artifact rather than re-deriving one, and
-        exactly ONE key moves: the preserved env is known to parse and start,
-        so flipping whether ALSA is opened at all turns it into a paced idle.
-        Writing more would be worse. Gated on a valid observation, which is
-        what makes this pass's verdict authoritative enough to overrule the env
-        on disk. Returns whether it parked.
-        """
-        if not self.observed.valid:
-            return False
-        effective = self.outputd_env_effective()
-        if effective.get("JASPER_OUTPUTD_BACKEND", "alsa") != "alsa":
-            return False
-        if effective.get("JASPER_OUTPUTD_SINK", "single_alsa") != "single_alsa":
-            return False
-        if effective.get("JASPER_OUTPUTD_DAC_PCM", "outputd_dac") != "outputd_dac":
-            return False
-        if not self.asound_artifact_parks_outputd_dac():
-            return False
-        # A write that did not LAND is not a park; a write the file already
-        # satisfied is (this pass's caller must still log action=park).
-        if (
-            self.try_set_env_file_var(
-                self.outputd_env_file, [("JASPER_OUTPUTD_BACKEND", "fake")]
-            )
-            is None
-        ):
-            return False
-        self.log(
-            "outputd_env_clockless_park",
-            outputd_env=self.outputd_env_file,
-            backend="alsa->fake",
-            dac_pcm="outputd_dac",
-            asound_template=_log_token(self.asound_template),
-            output_dac_id=_log_token(self.output_dac_id),
-            output_dac_recognized=int(self.output_dac_recognized),
-            detail="preserved_env_opened_alsa_at_a_null_parked_dac",
-        )
-        return True
-
-    def outputd_endpoint_contract_failed(self, playback_device: str) -> int:
-        """Land in a state that idles rather than one that spins, then fail."""
-        action = (
-            "park_backend_fake"
-            if self.park_preserved_env_if_clockless()
-            else "preserve_runtime_env"
-        )
-        self.log(
-            "outputd_endpoint_contract_failed",
-            playback_device=playback_device,
-            action=action,
-        )
-        return 66
-
     # -- registry and graph probes ------------------------------------------
 
     def saved_topology(self) -> Any | None:
@@ -890,28 +795,6 @@ class Pass:
             ("JASPER_OUTPUTD_DAC_FORMAT", dac_format),
             ("JASPER_OUTPUTD_SINK", dac_sink),
         ], dac_format
-
-    def resolved_content_format(self) -> str:
-        """The CamillaDSP -> outputd content lane's sample format, from the one
-        policy function that also decides what CamillaDSP emits. Empty when the
-        probe could not answer, which the caller reads as "leave the key alone"
-        rather than "write a guess" — a hardcoded fallback here would be a
-        second spelling of DEFAULT_PLAYBACK_FORMAT, and an empty value would
-        silently narrow a wide box.
-
-        NOT the DAC edge: that is JASPER_OUTPUTD_DAC_FORMAT, a separate hop
-        with its own declaration, and the two legitimately differ.
-        """
-        try:
-            # lazy: patch target — the tests replace it on the source
-            # module, which only a per-call import sees.
-            from jasper.fanin_coupling import content_lane_format_for_coupling
-
-            return content_lane_format_for_coupling()
-        # noqa reason: any failure leaves the key alone rather than narrowing the
-        # content lane; the caller marks the pass degraded.
-        except Exception:  # noqa: BLE001
-            return ""
 
     # -- route and latency-floor env ----------------------------------------
 
@@ -1114,8 +997,19 @@ class Pass:
         prelude: list[EnvAction] = [("JASPER_OUTPUTD_CONTENT_PCM", None)]
         # The CONTENT lane's width is a function of the fan-in coupling, never
         # of the DAC, so unlike the edge format it is emitted once ahead of the
-        # per-hardware branches and is always definitive.
-        content_format = self.resolved_content_format()
+        # per-hardware branches and is always definitive. An empty answer means
+        # leave the key alone rather than write a guess — a fallback here would
+        # be a second spelling of DEFAULT_PLAYBACK_FORMAT.
+        try:
+            # lazy: patch target — the tests replace it on the source
+            # module, which only a per-call import sees.
+            from jasper.fanin_coupling import content_lane_format_for_coupling
+
+            content_format = content_lane_format_for_coupling()
+        # noqa reason: any failure leaves the key alone rather than narrowing the
+        # content lane; the pass is marked degraded below.
+        except Exception:  # noqa: BLE001
+            content_format = ""
         if content_format:
             prelude.append(("JASPER_OUTPUTD_CONTENT_FORMAT", content_format))
         else:
@@ -1195,7 +1089,7 @@ class Pass:
         if declares_no_lane:
             # The registry answered: this DAC declares no active outputd lane,
             # so the width gate never ran. Fixed only by choosing a different
-            # layout at /sound/setup/. Same literal as that save-guard's
+            # layout at /sound/speaker/. Same literal as that save-guard's
             # refusal reason.
             graph_status = "dac_no_active_lane"
         elif active_lane_cap is not None:
@@ -1770,15 +1664,6 @@ class Pass:
             return 74
         self.apply_observed_single_policy()
         self.apply_observed_composite_policy()
-
-        # lazy: patch target — the tests replace it on the source module,
-        # which only a per-call import sees.
-        from jasper.camilla_config_contract import outputd_capture_device_for_playback
-
-        if not outputd_capture_device_for_playback(DEFAULT_OUTPUTD_PLAYBACK_DEVICE):
-            return self.outputd_endpoint_contract_failed(
-                DEFAULT_OUTPUTD_PLAYBACK_DEVICE
-            )
 
         env_changed = 0
         # dac_env_changed tracks ONLY a DAC-identity/card move — the class of

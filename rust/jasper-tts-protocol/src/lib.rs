@@ -33,8 +33,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use jasper_daemon::json::{event_age_ms, NEVER_MS};
 use jasper_daemon::HELPER_STACK_BYTES;
 
 pub mod assistant_reference;
@@ -818,6 +819,12 @@ pub struct TtsServerCounters {
     frame_timeouts: Arc<AtomicU64>,
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
+    /// Milliseconds after `epoch` at the last dropped AUDIO command, or
+    /// [`NEVER_MS`] while nothing has been dropped.
+    last_drop_ms: Arc<AtomicU64>,
+    /// Monotonic reference for `last_drop_ms`, captured once and copied (not
+    /// re-read) by every clone, so all holders age a drop identically.
+    epoch: Instant,
 }
 
 impl Default for TtsServerCounters {
@@ -827,6 +834,8 @@ impl Default for TtsServerCounters {
             frame_timeouts: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
+            last_drop_ms: Arc::new(AtomicU64::new(NEVER_MS)),
+            epoch: Instant::now(),
         }
     }
 }
@@ -843,6 +852,8 @@ impl TtsServerCounters {
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
+        self.last_drop_ms
+            .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
     pub fn mark_frame_timeout(&self) {
@@ -867,6 +878,16 @@ impl TtsServerCounters {
 
     pub fn dropped_audio_frames(&self) -> u64 {
         self.dropped_audio_frames.load(Ordering::Relaxed)
+    }
+
+    /// How long ago the last AUDIO command was dropped, `None` until one is.
+    /// Recency for `dropped_commands`: a count that stopped moving hours ago
+    /// reads differently from one a live overload is still bumping.
+    pub fn last_drop_age_ms(&self) -> Option<u64> {
+        event_age_ms(
+            self.epoch.elapsed().as_millis() as u64,
+            self.last_drop_ms.load(Ordering::Relaxed),
+        )
     }
 }
 

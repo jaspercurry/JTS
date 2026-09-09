@@ -57,6 +57,7 @@ so every ``wake_corpus_setup.NAME`` keeps resolving for existing callers.
 from __future__ import annotations
 
 import argparse
+import functools
 import html
 import json
 import logging
@@ -209,17 +210,18 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 # one-page chrome or dialog snippets.
 from jasper.web._common import (
     JsonBodyError,
-    canonical_header,
-    canonical_page,
+    RouteFn,
+    dispatch_get,
+    dispatch_post,
     guard_mutating_host,
-    guard_read_request,
-    json_island,
     json_body,
+    prefix_route,
     read_json_object,
+    resolve_samples,
     route_path,
     send_json_response,
-    toggle_html,
 )
+from jasper.web.chrome import canonical_header, canonical_page, json_island, toggle_html
 from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -374,66 +376,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ----- routing --------------------------------------------------
     #
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> callable taking the handler) defined below this
-    # class; do_DELETE and the few <id>-prefix routes (e.g. GET
-    # /api/clip/<id>/wav) are matched inline since they aren't exact
-    # paths. Mirrors the route-table pattern in
-    # jasper/control/server.py.
-    #
-    # ORDERING IS LOAD-BEARING:
-    #   - Every method recognizes its route shape first, so unknown paths 404
-    #     without revealing read-guard or CSRF state.
-    #   - GET is read-guarded but NOT CSRF-protected (read-only). POST +
-    #     DELETE check CSRF after route recognition and before any body read.
-    #   - do_POST dispatches after the CSRF check; `@json_body` reads and
-    #     parses the route's body, so no body is read before the guard.
-    #   - Prefix routes that don't fit an exact-match table
-    #     (`/api/clip/<id>/wav` GET, `/api/clip|session/<id>` DELETE) are
-    #     handled explicitly, in the same position as before.
+    # GET and POST ride the shared seam. do_DELETE stays hand-rolled: its
+    # `/api/clip|session/<id>` shapes are prefix routes with no table, and
+    # the seam covers GET/POST only. GET is read-guarded but NOT
+    # CSRF-protected (read-only); every POST route body wears
+    # `_csrf_guarded`, this recorder's sanctioned bespoke scheme, which
+    # runs before `@json_body` reads anything.
 
     def do_GET(self) -> None:  # noqa: N802
-        url = urlparse(self.path)
-        path = route_path(self.path)
-        clip_wav_route = path.startswith("/api/clip/") and path.endswith("/wav")
-        level_route = path == "/api/recording/level"
-
-        if not (
-            path == "/"
-            or path in _GET_ROUTES
-            or clip_wav_route
-            or level_route
-        ):
-            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-            return
-        if not guard_read_request(self):
-            return
-
-        if path == "/":
-            html_text = _render_index_html(self.csrf_token)
-            data = html_text.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
-
-        handler_fn = _GET_ROUTES.get(path)
-        if handler_fn is not None:
-            handler_fn(self)
-            return
-
-        if clip_wav_route:
-            self._serve_wav(path, url)
-            return
-
-        if level_route:
-            self._serve_level_sse()
-            return
-
-        self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+        dispatch_get(self, _GET_ROUTES, resolve=_resolve_clip_wav)
 
     def _serve_level_sse(self) -> None:
         """Server-Sent Events stream of the live AEC-ON RMS in dBFS.
@@ -520,22 +471,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- POST -------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
-        path = route_path(self.path)
-
-        # Route-check before CSRF-check (the _common.py wizard
-        # convention): bogus paths return 404 without revealing
-        # CSRF state.
-        handler_fn = _POST_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-            return
-
-        # All POSTs are mutating — require CSRF token. _check_csrf
-        # sends the 403 itself; we just return on failure.
-        if not self._check_csrf():
-            return
-
-        handler_fn(self)
+        dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     # ----- DELETE -----------------------------------------------------
 
@@ -1041,28 +977,67 @@ def _post_voice_daemon(handler: _Handler, body: dict[str, Any]) -> None:
     })
 
 
+def _get_index(handler: _Handler) -> None:
+    data = _render_index_html(handler.csrf_token).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def _get_recording_level(handler: _Handler) -> None:
+    handler._serve_level_sse()
+
+
+def _get_clip_wav(handler: _Handler) -> None:
+    handler._serve_wav(route_path(handler.path), urlparse(handler.path))
+
+
+# `/api/clip/<id>/wav` carries a path parameter, so it rides the seam's
+# resolve hook rather than an exact table key; `_serve_wav` rejects a
+# malformed id.
+_resolve_clip_wav = resolve_samples({"/api/clip/sample/wav": _get_clip_wav})(
+    prefix_route("/api/clip/", "/wav", _get_clip_wav),
+)
+
+
+def _csrf_guarded(fn: RouteFn) -> RouteFn:
+    """Run this recorder's bespoke server-token CSRF check before the route
+    body — the sanctioned exception to the shared double-submit chokepoint.
+    `_check_csrf` sends its own 403; a rejected POST reads no body."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        if not handler._check_csrf():
+            return
+        fn(handler)
+    setattr(route, "csrf_mode", "header")
+    return route
+
+
 # ----- route tables (exact path -> callable taking the handler) -----
-# Prefix routes (/api/clip/<id>/wav, the DELETE /api/clip|session/<id>
-# forms) are handled explicitly in the do_* methods because they don't
-# fit an exact-match table. test_get_routes_resolve_via_render_and_module
-# asserts the ES module's relative api paths stay in sync.
+# test_get_routes_resolve_via_render_and_module asserts the ES module's
+# relative api paths stay in sync.
 
 _GET_ROUTES = {
+    "/": _get_index,
     "/api/status": _get_status,
     "/api/clips": _get_clips,
     "/api/sessions": _get_sessions,
     "/api/usb-mic/status": _get_usb_mic_status,
+    "/api/recording/level": _get_recording_level,
 }
 _POST_ROUTES = {
-    "/api/session": _post_session,
-    "/api/capture-plan": _post_capture_plan,
-    "/api/session/load": _post_session_load,
-    "/api/session/unload": _post_session_unload,
-    "/api/clip/start": _post_clip_start,
-    "/api/clip/stop": _post_clip_stop,
-    "/api/bridge-outputs": _post_bridge_outputs,
-    "/api/corpus-test-mode": _post_corpus_test_mode,
-    "/api/voice-daemon": _post_voice_daemon,
+    "/api/session": _csrf_guarded(_post_session),
+    "/api/capture-plan": _csrf_guarded(_post_capture_plan),
+    "/api/session/load": _csrf_guarded(_post_session_load),
+    "/api/session/unload": _csrf_guarded(_post_session_unload),
+    "/api/clip/start": _csrf_guarded(_post_clip_start),
+    "/api/clip/stop": _csrf_guarded(_post_clip_stop),
+    "/api/bridge-outputs": _csrf_guarded(_post_bridge_outputs),
+    "/api/corpus-test-mode": _csrf_guarded(_post_corpus_test_mode),
+    "/api/voice-daemon": _csrf_guarded(_post_voice_daemon),
 }
 
 

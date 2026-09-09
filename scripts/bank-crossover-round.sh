@@ -57,10 +57,6 @@ remote() {
 
 echo "Banking crossover-v2 round from ${PI_USER}@${PI_HOST} -> ${DEST}/" >&2
 
-# --------------------------------------------------------------------- #
-# 1. Evidence bundle — the newest session bundle by mtime, whole tree.
-#    Gates exit 3 below: this IS the round's identity.
-# --------------------------------------------------------------------- #
 bundle_ok=0
 bundle_status="no session bundles found on the Pi"
 BUNDLE="${2:-$(remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")}"
@@ -70,8 +66,9 @@ if [[ -n "$BUNDLE" && ! "$BUNDLE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
 fi
 if [[ -n "$BUNDLE" ]]; then
     mkdir -p "$DEST/bundle"
+    # tar may stop at its end marker before the sender finishes archive padding.
     if remote "sudo tar -C /var/lib/jasper/active_speaker/sessions -cf - '$BUNDLE'" \
-            | tar -C "$DEST/bundle" -xf -; then
+            | { tar -C "$DEST/bundle" -xf - && cat > /dev/null; }; then
         bundle_ok=1
         bundle_status="ok ($BUNDLE)"
         echo "bundle -> $DEST/bundle/$BUNDLE" >&2

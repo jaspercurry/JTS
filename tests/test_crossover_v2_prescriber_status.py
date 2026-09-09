@@ -692,7 +692,7 @@ def test_every_printed_url_follows_the_configured_hostname(
 
     assert payload["speaker"]["hostname"] == hostname
     assert payload["speaker"]["crossover_url"] == f"http://{hostname}/sound/speaker/crossover/"
-    assert payload["speaker"]["declaration_url"] == f"http://{hostname}/sound/setup/"
+    assert payload["speaker"]["declaration_url"] == f"http://{hostname}/sound/speaker/"
     for other in {"jts.local", "jts3.local", "kitchen.local"} - {hostname}:
         assert f"http://{other}" not in json.dumps(payload)
 
@@ -712,7 +712,7 @@ def test_a_speaker_with_no_declaration_is_handed_the_page_that_makes_one(
     _, payload = _status([str(session)], capsys)
 
     assert payload["declared"]["available"] is False
-    assert payload["speaker"]["declaration_url"] == "http://jts5.local/sound/setup/"
+    assert payload["speaker"]["declaration_url"] == "http://jts5.local/sound/speaker/"
 
 
 def test_the_handoff_url_survives_an_unset_hostname(tmp_path, capsys, monkeypatch):
@@ -743,7 +743,7 @@ def test_the_handoff_page_is_the_one_the_household_actually_opens():
 
 
 @pytest.mark.parametrize(
-    "path", [cli.CROSSOVER_PAGE_PATH, cli.SOUND_SETUP_PAGE_PATH]
+    "path", [cli.CROSSOVER_PAGE_PATH, cli.SPEAKER_SETUP_PAGE_PATH]
 )
 def test_every_path_this_tool_prints_is_a_route_nginx_serves(path):
     """A URL an operator cannot open is worse than no URL at all.
@@ -904,7 +904,7 @@ def test_a_missing_declaration_carries_the_reason_and_the_page_that_fixes_it(
 
     assert payload["declared"]["available"] is False
     assert payload["declared"]["reason"] == "source_absent"
-    assert payload["speaker"]["declaration_url"].endswith("/sound/setup/")
+    assert payload["speaker"]["declaration_url"].endswith("/sound/speaker/")
 
 
 def test_drivers_and_applied_profile_are_true_defaults_not_documentation(

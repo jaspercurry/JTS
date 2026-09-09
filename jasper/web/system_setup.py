@@ -50,17 +50,16 @@ from typing import Any
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
-    canonical_page,
+    dispatch_get,
+    dispatch_post,
     forward_control_token_headers,
     proxy_get,
     proxy_post,
-    reject_csrf,
     route_path,
     send_html_response,
     send_proxy_json,
-    guard_read_request,
-    guard_mutating_request,
 )
+from .chrome import canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +97,6 @@ def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
 def _make_handler(
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> type[BaseHTTPRequestHandler]:
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) so the handlers can close over
-    # `control_base`, same as this function has always done.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         send_html_response(
@@ -188,23 +183,10 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802
             # nginx strips the /system/ prefix so we see paths like
             # "/" and "/data.json".
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="header")
 
     return Handler
 

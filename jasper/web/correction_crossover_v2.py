@@ -72,6 +72,8 @@ from typing import (
 
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 # The stage-capability vocabulary this module publishes and binds (#2291 Phase
 # 4). EAGER, unlike every other ``jasper.active_speaker`` import here, because
 # these are module-level NAMES rather than call-time dependencies — a lazy
@@ -1221,10 +1223,6 @@ def enforce_session_volume_ceiling_if_stale(
     reaches the release with no outcome at all. :func:`_release_pause_best_effort`
     owns that contract for all three drains.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumeRestoreResult,
-    )
-
     plan = session_volume_plan()
     try:
         if not plan.stale_active():
@@ -1265,12 +1263,7 @@ def v2_volume_recovery_active() -> bool:
         return True  # fail-closed: an unreadable state still offers recovery
 
 
-#: The ``recovery`` value :func:`recover_session_volume` reports for a
-#: deferral, so its caller can say something true without importing the enum.
-#: Mirrors ``SessionVolumeRestoreResult.DEFERRED.value`` — this module keeps
-#: ``session_volume_plan`` out of its runtime import graph (the import above is
-#: ``TYPE_CHECKING``-only), and a test pins the two equal so they cannot drift.
-RECOVERY_DEFERRED = "deferred"
+RECOVERY_DEFERRED = SessionVolumeRestoreResult.DEFERRED.value
 
 
 def recover_session_volume(
@@ -1289,10 +1282,6 @@ def recover_session_volume(
     ``DEFERRED`` therefore reports failure here, and the caller's copy says
     what is actually true — the restore lands when that session finishes.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumeRestoreResult,
-    )
-
     plan = session_volume_plan()
     try:
         result = run_async(
@@ -1336,10 +1325,6 @@ def reconcile_session_volume_for_new_session(
     The pause is :func:`_release_pause_best_effort`'s call, not this one's:
     this arm reaches it with no outcome whenever ``abandon`` raises.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumeRestoreResult,
-    )
-
     plan = session_volume_plan()
     enforce_session_volume_ceiling_if_stale(run_async, camilla_factory)
     if plan.measurement_volume_db is None or plan.needs_recovery:
@@ -2409,7 +2394,7 @@ def default_setup_calibration_for_v2() -> Any | None:
 
     Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
     the household had a resolvable stored mic (a UMIK-2 by serial, ingested
-    via ``/sound/room/calibration/fetch``). Root cause:
+    through ``jasper-mic-calibration``). Root cause:
     ``resolve_setup_calibration`` is only as good as the reference the capture
     carries in ``setup.calibration``, and a v2 session has no
     calibration-picker screen of its own (design: CHECK's own pilot pairs
@@ -4895,6 +4880,8 @@ def prepare_v2_session(
                 accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
                 applied=bool(prior_raw.get("applied")),
                 gain_plan_db=prior_raw.get("gain_plan_db"),
+                measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
+                measure_gain_retry_used=bool(prior_raw.get("measure_gain_retry_used")),
                 attempt_history=attempt_history_from_state(prior_raw),
                 last_attempt_decision=(
                     dict(prior_decision)
@@ -5110,6 +5097,8 @@ def prepare_v2_session(
                 accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
+                measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
+                measure_gain_retry_used=bool(state.get("measure_gain_retry_used")),
                 index_phase_map=opening.plan.index_phase_map,
                 measure_predicted_sum=predicted_sum,
                 measure_predicted_spec_report=predicted_spec,
@@ -5291,22 +5280,30 @@ def prepare_v2_session(
         return rc
 
     async def _run(pi_session: Any) -> None:
-        """Drive the walk the preparer built.
-
-        The session's own lifetime is NOT driven here. Both halves live in the
-        volume hooks: ``open`` after the plan has written its durable intent
-        (the claim is the first fader mutation, and the intent must be on disk
-        before it — that ordering is what a crash in the gap survives), and
-        ``close`` where the graph goes back, before the plan's fader drain.
-        The runner calls those hooks, so the session opens and closes inside
-        the same span this coroutine owns — without this body being able to
-        reorder either.
-        """
+        """Close the evidence bundle after the worker releases the speaker."""
         if held is None:
             raise RuntimeError(
                 "the v2 measurement session was run before it was opened"
             )
-        await held.run(pi_session)
+        completed = False
+        try:
+            await held.run(pi_session)
+            completed = True
+        finally:
+            state = load_v2_state() or {}
+            restored = (state.get("execution") or {}).get("volume_restore")
+            if (
+                state.get("session_id") == pi_session.session_id
+                and not held.tuning.is_open
+                and restored in {
+                    SessionVolumeRestoreResult.EXACT_RESTORED,
+                    SessionVolumeRestoreResult.EMERGENCY_ATTENUATED,
+                    SessionVolumeRestoreResult.ALREADY_RESOLVED,
+                }
+            ):
+                closed = mark_state(Path(evidence_store.bundle_dir), "closed")
+                if closed is None and completed:
+                    raise OSError("the measurement bundle could not be closed")
 
     def _request_stop() -> None:
         with stop_lock:

@@ -25,7 +25,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
-    RETIRED_ALOOP_PLAYBACK_DEVICE,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
     DRIVER_DOMAIN_PAIR_TRIM_FILTER,
@@ -133,10 +132,11 @@ BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 BASS_EXTENSION_LT_FILTER = "bass_ext_lt"
 BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
-    # The RETIRED snd-aloop stereo lane by its own name: `DEFAULT_PLAYBACK_DEVICE`
-    # is Ring B now (ADR-0100) and is already covered by its literal below.
-    RETIRED_ALOOP_PLAYBACK_DEVICE,
     "jasper_out",
+    # The retired snd-aloop stereo lane by its own name: an old asound.conf can
+    # still resolve these on a box that has not reconciled since the retirement.
+    "outputd_content_playback",
+    "outputd_content_capture",
     # The full-range STEREO ring: pointing an active emitter at it would put
     # POST-crossover per-driver audio on a full-range path. The ACTIVE ring
     # (``jts_ring_active_playback``) is the legal target and is deliberately NOT

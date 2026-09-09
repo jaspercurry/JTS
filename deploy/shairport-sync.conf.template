@@ -55,12 +55,11 @@ general = {
     //   -( (ring_a_frames + camilla_frames + ring_b_frames + outputd_frames)
     //      / samplerate + bonded_extra_sec )
     // ring_a_frames — Ring A (fan-in -> CamillaDSP), richest evidence
-    //   first: jasper-fanin STATUS output.snd_pcm_delay_frames (the real
-    //   ALSA queue depth — correct on a loopback box); else
-    //   output.ring.occupancy x output.period_frames (the ring's LIVE
-    //   fill, refreshed every render period — what a ring box actually
-    //   uses, since fan-in reaches CamillaDSP over SHM with no ALSA delay
-    //   to sample, ADR-0100); else a jasper.ring_assets parse of the
+    //   first: jasper-fanin STATUS output.ring.occupancy x
+    //   output.period_frames (the ring's LIVE fill, refreshed every render
+    //   period — the only live Ring A evidence, since fan-in reaches
+    //   CamillaDSP over SHM with no ALSA delay to sample, ADR-0100 and
+    //   ADR-0266); else a jasper.ring_assets parse of the
     //   shipped deploy/alsa/conf.d/60-jts-ring.conf (period_frames x
     //   n_slots); else a hardcoded default matching that same file. Ring A
     //   runs pinned full in steady state (STATUS full_waits/published

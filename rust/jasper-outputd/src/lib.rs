@@ -27,21 +27,16 @@ pub mod config;
 // detector over whichever content source is live (#3458).
 pub mod content_fill;
 pub mod core;
-// outputd's multi-room role: the `dac_content` reader (Increment 3) — the
-// round-trip lane a grouping member's snapclient feeds. The canonical design
-// has CamillaDSP feed the snapserver pipe, not outputd.
+// outputd's multi-room role: the `dac_content` reader — the round-trip lane
+// a grouping member's snapclient feeds. The canonical design has CamillaDSP
+// feed the snapserver pipe, not outputd.
 pub mod dac_content;
 pub mod fake;
 pub mod ledger;
-pub mod loudness;
 pub mod mixer;
 // Ring B: the SHM ping-pong ring content-source reader — the one central
 // transport from CamillaDSP to the DAC (ADR-0100).
 pub mod shm_ring_source;
-// Observe-only software-AEC reference clock drift estimator (research-doc
-// increment 2): composes the shared jasper-clock DLL to measure :9891-reference
-// vs DAC-playout drift in ppm. Never warps audio.
-pub mod dac_clock;
 pub mod state;
 pub mod tts;
 pub mod types;

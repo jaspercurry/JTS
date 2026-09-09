@@ -231,6 +231,7 @@ class VoiceUsageStore(UsageStore):
                     if cleanup:
                         disk.close_dangling_intervals()
                         with self._condition:
+                            self._refreshed = 0.0
                             self._cleanup_requested = False
                     if item is not None:
                         key, row = item

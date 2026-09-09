@@ -22,7 +22,6 @@ from jasper import env_load
 from jasper.cli.doctor import audio_runtime_ring
 from jasper.control import transport_park
 from jasper.control.transport_park import (
-    PARK_GROUPED_DAC_CONTENT_LANE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
@@ -42,7 +41,6 @@ from tests.test_composite_ring_arm_enabling import (
 )
 from tests.test_runtime_contract_ring import _dual_apple_stereo
 
-_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 #: The ring transport's arming marker, spelled as a LITERAL for the same
 #: reason the issue numbers below are: a case built from the constant it
 #: checks would move both sides together under a rename and stop pinning
@@ -246,14 +244,6 @@ _PARK_CASES = (
         "--endpoint ring && sudo systemctl start jasper-audio-hardware-reconcile",
         id="roleful_active_endpoint_unconverged",
     ),
-    pytest.param(
-        _full_range_stereo(),
-        {**_ARMED, _FIFO_ENV: "/run/jasper-grouping/member-content.fifo"},
-        PARK_GROUPED_DAC_CONTENT_LANE,
-        "#3118",
-        None,
-        id="grouped_dac_content_lane",
-    ),
 )
 
 
@@ -367,29 +357,8 @@ def test_converged_active_endpoint_does_not_park():
 @pytest.mark.parametrize(
     "env",
     [
-        pytest.param({_FIFO_ENV: "/run/x.fifo"}, id="fifo_only"),
-        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="fifo_and_marker"),
-    ],
-)
-def test_the_legacy_fifo_spelling_arms_the_grouped_park(env):
-    """THE FIFO SPELLING ALONE keeps this class, and its issue.
-
-    The FIFO half still needs ``CONTENT_BRIDGE=direct``, which no writer emits
-    and which outputd refuses beside the marker, so it has no producer and the
-    box is silent. A box carrying BOTH still parks: the FIFO is the half that
-    cannot run.
-    """
-    parks = transport_park.snapshot(_full_range_stereo(), env)["parks"]
-    assert _classes(parks) == {PARK_GROUPED_DAC_CONTENT_LANE}
-    assert _by_class(parks, PARK_GROUPED_DAC_CONTENT_LANE)["issue"] == "#3118"
-
-
-@pytest.mark.parametrize(
-    "env",
-    [
         pytest.param({_LANE_ENV: "1"}, id="marker_only"),
         pytest.param({_LANE_ENV: "on"}, id="marker_word"),
-        pytest.param({_LANE_ENV: "1", _FIFO_ENV: ""}, id="marker_with_cleared_fifo"),
     ],
 )
 def test_a_marker_armed_member_is_served_and_does_not_park(env):
@@ -424,20 +393,12 @@ def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
     "env",
     [
         pytest.param({}, id="neither_key"),
-        pytest.param({_FIFO_ENV: ""}, id="fifo_cleared"),
-        pytest.param({_FIFO_ENV: "", _LANE_ENV: ""}, id="ungrouped_clears_both"),
-        pytest.param({_FIFO_ENV: "   "}, id="fifo_whitespace_only"),
+        pytest.param({_LANE_ENV: ""}, id="ungrouping_clears_the_marker"),
         pytest.param({_LANE_ENV: "0"}, id="marker_off"),
     ],
 )
-def test_an_unarmed_lane_parks_under_neither_spelling(env):
-    """THE kill test for this class.
-
-    The FIFO is read as a non-empty PATH, because the grouping reconciler writes
-    it as an EMPTY string on every branch — and stripped, because a
-    whitespace-only value is not a path and
-    ``transport_park._assess`` — now the only reader of that key — strips it too.
-    """
+def test_an_unarmed_lane_does_not_park(env):
+    """THE kill test for this class."""
     assert transport_park.snapshot(_full_range_stereo(), env)["status"] == "ok"
 
 
@@ -503,9 +464,13 @@ def test_a_box_in_two_classes_reports_both():
     """A bonded mono speaker waits on #3117 AND #3118; a first-match verdict
     would hide one of them from the operator who has to clear both."""
     parks = transport_park.snapshot(
-        _mono_awaiting_its_output(), {_FIFO_ENV: "/run/x.fifo"}
+        _mono_awaiting_its_output(),
+        {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring", _LANE_ENV: "1"},
     )["parks"]
-    assert _classes(parks) == {PARK_MONO_FULL_RANGE, PARK_GROUPED_DAC_CONTENT_LANE}
+    assert _classes(parks) == {
+        PARK_MONO_FULL_RANGE,
+        transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
+    }
 
 
 def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):

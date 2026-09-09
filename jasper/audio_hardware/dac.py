@@ -712,7 +712,7 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # enters active mode only when a LEGAL active graph is already the live
     # CamillaDSP config (active_graph_status -> outputd_active_lane_decision),
     # which only commissioning produces — so this flag makes the layout
-    # SELECTABLE at /sound/setup/ and leaves a running box byte-identically
+    # SELECTABLE at /sound/speaker/ and leaves a running box byte-identically
     # passive until it is commissioned.
     #
     # Remaining per-board work, which does not gate the lane: chip-AEC

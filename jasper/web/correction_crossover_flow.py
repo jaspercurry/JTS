@@ -12,7 +12,7 @@ from http import HTTPStatus
 from typing import Any, Mapping
 
 from ..log_event import log_event
-from ._common import canonical_header, canonical_page
+from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     header = canonical_header(
         "Active speaker",
-        back_href=f"http://{html.escape(hostname, quote=True)}/sound/",
-        back_label="Sound",
+        back_href=f"http://{html.escape(hostname, quote=True)}/sound/speaker/",
+        back_label="Speaker setup",
     )
     body = f"""
 {header}
@@ -34,7 +34,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div class="crossover-card__footer">
       <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
       <p class="form-hint">
-        <a href="http://{html.escape(hostname, quote=True)}/sound/setup/">Remove the active crossover entirely</a>
+        <a href="http://{html.escape(hostname, quote=True)}/sound/speaker/">Remove the active crossover entirely</a>
         — this returns the speaker to a plain stereo crossover.
       </p>
     </div>

@@ -663,8 +663,7 @@ def emit_sound_config(
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.
 # Source: jasper.sound.camilla_yaml.emit_sound_config
-# DO NOT HAND-EDIT — update http://jts.local/sound/room/ or
-# http://jts.local/sound/eq/ instead.
+# DO NOT HAND-EDIT — update http://jts.local/sound/eq/ instead.
 #
 # Structure mirrors deploy/camilladsp/outputd-cutover.yml.
 # Room-correction PEQs, when present, run before sound-curve /
@@ -884,7 +883,7 @@ def emit_flat_outputd_cutover_config(
     )
 
 
-# The flat cutover config is read by whoever loads it (CamillaDSP, the runtime
+# The flat boot graph is read by whoever loads it (CamillaDSP, the runtime
 # contract's classifier, the camillagui config browser), not only by a
 # group-jasper daemon, so it is world-readable — wider than the 0640 the
 # ordinary sound configs get from `CONFIG_FILE_MODE`.
@@ -951,8 +950,8 @@ def render_flat_cutover_configs(
     * **corrupt** — refuse. ``flat_graph_channel_plan`` fails SOFT (mutes
       nothing) because its other callers all have a guard behind them, but the
       reconciler has none: it renders on boot / udev / topology-save, and
-      CamillaDSP loads the cutover from its statefile on its next start with no
-      ordering to this. A soft failure there would overwrite a healthy
+      CamillaDSP loads the flat boot graph from its statefile on its next
+      start with no ordering to this. A soft failure there would overwrite a healthy
       width-matched graph with an unmuted one and log success — silently, in the
       hazard direction. Keeping the previous file is the fail-closed answer.
     """

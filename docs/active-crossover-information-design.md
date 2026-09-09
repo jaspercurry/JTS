@@ -11,10 +11,11 @@ The old commissioning capture host and summed-graph lane are retired
 ([ADR-0197](adr/0197-the-commissioning-capture-stack-is-deleted.md),
 [ADR-0230](adr/0230-the-summed-graph-commissioning-lane-is-deleted.md)). Their
 records and readers do not establish a current capture route. The wired
-crossover path replaces the phone relay; [Room](room-correction-information-design.md)
-still has local browser capture over HTTPS, as
-[ADR-0222](adr/0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md)
-notes. There is no fixed seed/linearize/align/verify campaign.
+crossover path replaces the phone relay
+([ADR-0222](adr/0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md)).
+Room is a layer of the same toolbox and measures the same way
+([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
+There is no fixed seed/linearize/align/verify campaign.
 
 ## Product goal
 

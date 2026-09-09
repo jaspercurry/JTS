@@ -28,7 +28,6 @@ Renderer support:
             alongside the new winner. try-restart releases that lane
             only while the source is still active, so a concurrently
             disabled or role-parked source is not resurrected.
-            Off-switch: JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing" AND non-empty MPRIS
             Metadata xesam:title (source_state.airplay_playing) — the
@@ -102,7 +101,6 @@ from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
     spotify_playing_observed as spotify_playing,
-    usbsink_direct_frames_read,
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
@@ -147,36 +145,6 @@ SHAIRPORT_NATIVE_PATH = "/org/gnome/ShairportSync"
 SHAIRPORT_NATIVE_IFACE = "org.gnome.ShairportSync"
 
 
-def _spotify_preempt_restart_disabled() -> bool:
-    """Env-var escape hatch for the Spotify-preempt Tier 2 escalation.
-
-    JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts preempt to "Web API
-    only, mix-on-failure". Default: enabled.
-    """
-    return os.environ.get(
-        "JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "",
-    ).strip().lower() == "disabled"
-
-
-def _usbsink_preempt_disabled() -> bool:
-    """Env-var escape hatch for the USB-sink preempt mechanism.
-
-    JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env short-circuits
-    ``_usbsink_set_preempt``: mux stops MUTE/UNMUTE-ing the fan-in usbsink lane
-    when another source wins, so USB behaves like an unsupported source (audio
-    briefly mixes when a new source starts). Read fresh on every call, so it
-    takes effect without a redeploy or daemon restart. Default: enabled.
-    """
-    return os.environ.get(
-        "JASPER_USBSINK_PREEMPT", "",
-    ).strip().lower() == "disabled"
-
-
-# Combo-mode USB streaming debounce, in mux ticks (POLL_INTERVAL_SEC = 1 Hz).
-# Rides through a brief delivery gap (a status miss / a momentary stall) so the
-# source doesn't flap; a real pause stops the frames and macOS tears the stream
-# down, so the counter genuinely stalls and USB releases after this many ticks.
-USBSINK_COMBO_STOP_TICKS = 2
 ALERT_COALESCE_SEC = 0.05
 # A transient unreadable probe must not synthesize stop/start flutter, but a
 # permanently dead adapter must not pin a vanished winner forever. Hold an
@@ -202,53 +170,6 @@ def event_backed_probes() -> dict[Source, Callable[[], Any]]:
         Source.AIRPLAY: airplay_playing,
         Source.BLUETOOTH: bluetooth_playing,
     }
-
-
-@dataclass(frozen=True)
-class ComboLiveness:
-    """Temporal state for combo-mode USB frames-flowing detection.
-
-    ``streaming`` is "is the host feeding us frames right now" — there is NO
-    audio-LEVEL component. A faint sound and a loud one both stream frames and
-    therefore produce the same authoritative source-start edge; level is
-    display-only and does not participate in arbitration, so a quiet passage
-    keeps the counter advancing rather than reading "stopped". New fan-in builds
-    publish a 20 Hz-derived streaming edge; this state machine remains the
-    rolling-upgrade fallback for older STATUS shapes. A host that actually tears
-    the stream down stops frames and releases after the stop hysteresis.
-    """
-
-    prev_frames: int | None = None
-    idle_ticks: int = 0
-    streaming: bool = False
-
-
-def step_combo_liveness(
-    state: ComboLiveness,
-    frames: int | None,
-    *,
-    stop_ticks: int,
-) -> ComboLiveness:
-    """Advance the combo-USB streaming state by one mux tick.
-
-    A combo box is ``streaming`` on a tick iff the fan-in DIRECT-lane counter
-    ``frames`` grew since the previous tick. A first reading or counter reset
-    re-baselines without inventing a delta; flat frames drop after
-    ``stop_ticks`` consecutive non-advancing patrols; missing frames are
-    unknown and retain the complete prior state, because a STATUS miss is not
-    evidence that a stream stopped.
-    """
-    prev = state.prev_frames
-    if frames is None:
-        return state
-    advanced = frames is not None and prev is not None and frames > prev
-    new_prev = frames if frames is not None else prev
-    if advanced:
-        return ComboLiveness(new_prev, 0, True)
-    if not state.streaming:
-        return ComboLiveness(new_prev, 0, False)
-    idle = state.idle_ticks + 1
-    return ComboLiveness(new_prev, idle, idle < stop_ticks)
 
 
 @dataclass
@@ -308,7 +229,6 @@ class Mux:
         # before USB becomes the winner and once all other sources go idle, so
         # source selection and the lane mute cannot disagree.
         self._usbsink_preempted = False
-        self._usbsink_combo = ComboLiveness()
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
         self._handoff_seq = 0
@@ -555,36 +475,12 @@ class Mux:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
-        New fan-in builds publish an edge-detected ``direct.streaming`` boolean
-        from their existing frame counter; older builds fall back to counter
-        deltas across patrols. There is NO audio-level gate. A missing or
+        Fan-in publishes an edge-detected ``direct.streaming`` boolean from its
+        host-input frame counter. There is NO audio-level gate. A missing or
         non-direct snapshot is unknown and retains the arbiter's last-known
         state; do not issue a second STATUS probe.
         """
-        fanin = await self._fanin_status_best_effort()
-        streaming = usbsink_direct_streaming(fanin)
-        if streaming is not None:
-            # Keep fallback state coherent for rolling upgrades/downgrades.
-            frames = usbsink_direct_frames_read(fanin)
-            self._usbsink_combo = ComboLiveness(
-                prev_frames=(
-                    frames
-                    if frames is not None
-                    else self._usbsink_combo.prev_frames
-                ),
-                idle_ticks=0,
-                streaming=streaming,
-            )
-            return streaming
-        frames = usbsink_direct_frames_read(fanin)
-        if frames is None:
-            return None
-        self._usbsink_combo = step_combo_liveness(
-            self._usbsink_combo,
-            frames,
-            stop_ticks=USBSINK_COMBO_STOP_TICKS,
-        )
-        return self._usbsink_combo.streaming
+        return usbsink_direct_streaming(await self._fanin_status_best_effort())
 
     async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
         return await local_status_json(
@@ -992,10 +888,6 @@ class Mux:
                 ),
                 "last": self._last_reconcile,
             },
-            "usbsink": {
-                # Always true: fan-in DIRECT-captures the gadget on every box.
-                "combo": True,
-            },
         }
 
     def _source_status_payload(
@@ -1151,12 +1043,6 @@ class Mux:
                 os.environ,
                 dynamic_topology=True,
             ),
-            handoff_settle_sec=float(os.environ.get(
-                "JASPER_SOURCE_HANDOFF_SETTLE_SEC", "0.45",
-            )),
-            push_settle_sec=float(os.environ.get(
-                "JASPER_SOURCE_PUSH_SETTLE_SEC", "0.75",
-            )),
         )
         coordinator.load_persisted_level()
         self._volume_coordinator = coordinator
@@ -1534,13 +1420,6 @@ class Mux:
             # Tier 1 failed. An un-pauseable librespot owns its private fan-in
             # lane and keeps streaming, so it would be summed with the new
             # winner; escalate to force a release.
-            if _spotify_preempt_restart_disabled():
-                logger.warning(
-                    "spotify pause: no Web API account could pause the "
-                    "JTS device; escalation disabled — AirPlay and "
-                    "Spotify will mix until the user pauses on phone",
-                )
-                return
             logger.warning(
                 "spotify pause: Web API failed; escalating to "
                 "`systemctl try-restart librespot.service` to force "
@@ -1642,42 +1521,21 @@ class Mux:
         re-emits the same decision doesn't generate stale commands.
         ``self._usbsink_preempted`` advances only on success, so a failure is a
         bounded WARN plus graceful mixing and mux re-attempts on the next tick
-        (1 Hz, no storm); the escape hatch degrades to never-silence."""
+        (1 Hz, no storm)."""
         if self._usbsink_preempted == silenced:
             return
-        if _usbsink_preempt_disabled():
-            # Escape hatch active. Log once per state change so the
-            # operator sees the preempt being skipped without spam.
-            log_event(
-                logger,
-                "usbsink.preempt_skipped",
-                silenced=silenced,
-                reason=reason,
-                via="JASPER_USBSINK_PREEMPT=disabled",
-            )
-            self._usbsink_preempted = silenced
-            return
-        await self._usbsink_set_preempt_fanin(silenced, reason=reason)
-
-    async def _usbsink_set_preempt_fanin(
-        self, silenced: bool, *, reason: str,
-    ) -> None:
-        """Preempt transport: MUTE/UNMUTE the fan-in usbsink lane.
-
-        The mute is applied at fan-in's mix stage only; the lane's capture and
-        per-lane telemetry (frames_read / rms_dbfs) are untouched, so combo
-        liveness still reads the host's true activity. NOT persisted by fan-in
-        — a fan-in restart comes up unmuted, and
-        ``_reassert_usbsink_preempt_mute`` re-mutes on the next tick."""
         try:
             await self._fanin_lane_mute(USBSINK_FANIN_LABEL, silenced)
         except Exception as e:  # noqa: BLE001
             # Tracked flag deliberately NOT advanced, so the next tick
             # re-attempts.
-            logger.warning(
-                "usbsink fanin lane mute failed (muted=%s reason=%s): %s; "
-                "audio may briefly mix",
-                silenced, reason, e,
+            log_event(
+                logger,
+                "usbsink.preempt_failed",
+                silenced=silenced,
+                reason=reason,
+                error=str(e),
+                level=logging.WARNING,
             )
             return
         self._usbsink_preempted = silenced
@@ -1701,10 +1559,8 @@ class Mux:
         (it logs only on a real flip, so no steady-state journal spam) and
         fail-soft.
 
-        No-op when USB isn't preempted or when the escape hatch is set."""
+        No-op when USB isn't preempted."""
         if not self._usbsink_preempted:
-            return
-        if _usbsink_preempt_disabled():
             return
         try:
             await self._fanin_lane_mute(USBSINK_FANIN_LABEL, True)

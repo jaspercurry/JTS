@@ -86,8 +86,7 @@ class ReemitResult:
 
     ``yaml`` is always the emitted config text (the durable path also writes
     it to ``out_path``); ``room_peq_count`` is how many room-correction PEQs
-    the carrier emitted. For ``/sound`` this is the preserved count; for
-    ``/sound/room/`` it is the explicitly replaced count.
+    the carrier emitted. For ``/sound`` this is the preserved count.
     """
 
     yaml: str

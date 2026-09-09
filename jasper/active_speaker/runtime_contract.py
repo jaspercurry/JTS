@@ -174,7 +174,7 @@ UNCONFIGURED_PARKED_EXIT = (
 # that predicate). Naming an impossible action first sends a household down a
 # road with no end, so the capability-aware surfaces use this instead.
 PARKED_MUTED_EXITS_NO_ACTIVE_LANE = (
-    "reset output setup at /sound/setup/, then choose an explicit passive "
+    "reset output setup at /sound/speaker/, then choose an explicit passive "
     "layout (passive sends full-range to every output and requires a built-in "
     "passive crossover), "
     "or attach an active-capable DAC"
@@ -613,7 +613,7 @@ def roleful_identity_confirmed(
     """Whether every ASSIGNED lane of a ROLEFUL topology is confirmed by ear.
 
     Stated once because two owners need the same answer:
-    :func:`safe_graph_for_current_topology` and the ``/sound/setup/`` identity
+    :func:`safe_graph_for_current_topology` and the ``/sound/speaker/`` identity
     endpoint. It reads the topology directly, so there is no marker file to
     drift. Scope is narrow on purpose: a passive full-range topology carries no
     crossover, so an unconfirmed lane there is a channel-swap annoyance rather
@@ -780,7 +780,7 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     name and file, reached through :func:`active_ring_channels_for_topology` and
     the endpoint marker. Widening it would auto-arm every roleful box in the
     fleet through the unattended ``--auto`` pass and re-expose the boxes
-    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects."""
+    ``jasper.sound.camilla_yaml``'s flat-boot-graph defusal gate protects."""
     return ring_channels_for_topology(topology) is not None
 
 
@@ -3643,7 +3643,7 @@ def classify_camilla_graph(
             # _flat_graph_allowed can clear it regardless of topology.
             CAMILLA_CLASS_PROGRAM_BAKE,
         }
-        or path_name in {"outputd-cutover.yml", "v1.yml"}
+        or path_name == "outputd-cutover.yml"
     )
     if is_flat:
         # Detect the File/pipe playback ONCE here (this scope has the config

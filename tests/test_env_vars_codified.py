@@ -103,7 +103,6 @@ _UNCODIFIED = {
     "JASPER_CORRECTION_CALIBRATION_DIR",
     "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH",
     "JASPER_CORRECTION_ROOT",
-    "JASPER_CORRECTION_SESSIONS_DIR",
     "JASPER_DSP_APPLY_STATE_PATH",
     "JASPER_DTLN_MODEL_DIR",
     "JASPER_FANIN_ENV_FILE",
@@ -187,10 +186,8 @@ _UNCODIFIED = {
     "JASPER_AEC_USB_MIXER_CARD",
     "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
     # -- USB-sink volume-observer internals. The operator-facing members of
-    #    the family (JASPER_USBSINK_PREEMPT — the mux fan-in-mute escape hatch,
-    #    _CAPTURE_DEVICE, _MIXER_CARD) are documented in .env.example and are not
-    #    in this list. (The _PREEMPT_HOST/_PREEMPT_PORT HTTP wiring was removed
-    #    with the aloop solo path; mux silences USB by muting the fan-in lane.)
+    #    the family (_CAPTURE_DEVICE, _MIXER_CARD) are documented in
+    #    .env.example and are not in this list.
     "JASPER_USBSINK_CONTROL_URL",
     "JASPER_USBSINK_LOG_LEVEL",
     # -- Internal timing / safety tunables with code defaults, below
@@ -200,8 +197,6 @@ _UNCODIFIED = {
     "JASPER_GROK_SESSION_MAX_SEC",
     "JASPER_OPENAI_PROACTIVE_BUFFER_SEC",
     "JASPER_OPENAI_SESSION_MAX_SEC",
-    "JASPER_SOURCE_HANDOFF_SETTLE_SEC",
-    "JASPER_SOURCE_PUSH_SETTLE_SEC",
     "JASPER_TTS_DRAIN_TAIL_SEC",
     "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT",
     "JASPER_VOLUME_REGRESS_AFTER_SEC",
@@ -211,17 +206,8 @@ _UNCODIFIED = {
     #    JASPER_HOSTNAME like JASPER_MANAGEMENT_URL; override is for
     #    nonstandard reverse-proxy setups only).
     "JASPER_GOOGLE_SETUP_URL",
-    # -- Calibration-agent advisor LLM selection — lab CLI
-    #    (jasper/calibration_agent/cli.py), not a speaker daemon; its
-    #    --advisor-* flags are the primary interface.
-    "JASPER_CALIBRATION_ADVISOR_MODEL",
-    "JASPER_CALIBRATION_ADVISOR_OPENAI_BASE_URL",
-    "JASPER_CALIBRATION_ADVISOR_PROVIDER",
-    "JASPER_CALIBRATION_ADVISOR_TIMEOUT_SEC",
     # -- Debug capture toggles (off unless an operator exports one for
-    #    a single diagnosis session; raw OpenAI session audio dumps,
-    #    correction measurement bundle retention).
-    "JASPER_CORRECTION_SAVE_BUNDLES",
+    #    a single diagnosis session; raw OpenAI session audio dumps).
     "JASPER_DEBUG_OPENAI_AUDIO_DIR",
     "JASPER_DEBUG_RECORD_OPENAI_AUDIO",
 }
