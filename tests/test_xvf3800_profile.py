@@ -312,3 +312,64 @@ def test_env_key_constant_not_written_by_reconciler_keeps_its_name(
     # every reader of /etc/jasper/jasper.env or /var/lib/jasper/aec_mode.env.
     assert constant == literal
     assert constant not in _reconciler_written_aec_keys()
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_target_id", "publishes_build_provenance"),
+    [
+        pytest.param(
+            "VARIANT_6CH", "legacy_square_6ch", True, id="legacy_square_flashed",
+        ),
+        pytest.param(
+            "VARIANT_2CH", "legacy_square_6ch", True, id="legacy_square_stock",
+        ),
+        pytest.param(
+            "VARIANT_FLEX_LINEAR_6CH", "flex_linear_6ch", False, id="flex_linear",
+        ),
+        pytest.param(
+            "VARIANT_FLEX_CIRCULAR_6CH",
+            "flex_circular_6ch",
+            False,
+            id="flex_circular",
+        ),
+    ],
+)
+def test_recording_provenance_names_the_detected_board_s_firmware(
+    monkeypatch, variant, expected_target_id, publishes_build_provenance,
+):
+    """A Flex recording used to carry the legacy square blob's name, hash date
+    and build-repo hash beside a `geometry: linear` that contradicted them
+    (#4361). Provenance now comes off the detected board's own registry row,
+    and a family that publishes no build provenance omits those keys rather
+    than borrowing another family's.
+    """
+    from jasper.mics import xvf3800
+    from jasper.wake_corpus import runtime_probe
+
+    board = getattr(xvf3800, variant)
+    monkeypatch.setattr(
+        runtime_probe.xvf3800,
+        "detect_runtime_profile",
+        lambda **_kwargs: xvf3800.RuntimeProfile(
+            present=True,
+            variant=board,
+            alsa_card_name=board.alsa_card_name,
+            capture_channels=board.capture_channels,
+            chip_beam_plan=xvf3800.chip_beam_plan_for_variant(board),
+            reason="test",
+        ),
+    )
+
+    _probe, identity = runtime_probe.mic_probe_and_identity()
+
+    target = xvf3800.FIRMWARE_UPDATE_TARGETS_BY_ID[expected_target_id]
+    firmware = identity["recommended_firmware"]
+    assert firmware["blob"] == target.filename
+    assert firmware["sha256"] == target.sha256
+    assert identity["geometry"] == target.geometry
+    if publishes_build_provenance:
+        assert firmware["known_good_as_of"] == target.known_good_as_of
+        assert firmware["build_repo_hash"] == target.build_repo_hash
+    else:
+        assert "known_good_as_of" not in firmware
+        assert "build_repo_hash" not in firmware

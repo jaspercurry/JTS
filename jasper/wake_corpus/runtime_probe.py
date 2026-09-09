@@ -418,6 +418,9 @@ def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         xvf_present = runtime_profile.present
         capture_channels = runtime_profile.capture_channels
         recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
+        firmware_target = xvf3800.recommended_firmware_target(
+            runtime_profile.variant_id
+        )
         probe_error = None
         identity: dict[str, Any] = {
             "family": (
@@ -441,14 +444,28 @@ def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
                 "present": xvf_present,
                 "capture_channels": capture_channels,
             },
+            # Provenance for the DETECTED board, never the legacy square
+            # build's by default: a Flex recording used to carry a blob name
+            # BRINGUP.md says not to run on a linear board, beside a
+            # `geometry: linear` that contradicted it (#4361). Keys a family
+            # does not publish are omitted rather than borrowed.
             "recommended_firmware": {
                 "capture_channels": recommended_channels,
                 "raw_mic_indices": list(
                     xvf3800.RECOMMENDED_FIRMWARE.raw_mic_indices,
                 ),
-                "known_good_as_of": xvf3800.FIRMWARE_KNOWN_GOOD_AS_OF,
-                "blob": xvf3800.FIRMWARE_BLOB_6CH,
-                "build_repo_hash": xvf3800.FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
+                "blob": firmware_target.filename if firmware_target else "",
+                "sha256": firmware_target.sha256 if firmware_target else "",
+                **(
+                    {"known_good_as_of": firmware_target.known_good_as_of}
+                    if firmware_target and firmware_target.known_good_as_of
+                    else {}
+                ),
+                **(
+                    {"build_repo_hash": firmware_target.build_repo_hash}
+                    if firmware_target and firmware_target.build_repo_hash
+                    else {}
+                ),
                 "supported_6ch_variants": [
                     {
                         "variant_id": variant.variant_id,
