@@ -49,6 +49,7 @@ from jasper.env_load import (
     OUTPUTD_ENV_PATH,
     OUTPUTD_GROUPING_ENV_FILE,
     env_file_path,
+    outputd_reconciled_env,
     read_env_file_state,
 )
 from jasper.fanin.ring_readiness import saved_topology_reader
@@ -56,11 +57,14 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_PLAYBACK_DEVICE,
     TransportTopology,
     capture_half,
     dac_content_lane_marker_armed,
     outputd_content_is_central_ring,
 )
+from jasper.multiroom.config import load_config as load_grouping_config
+from jasper.output_hardware import load_state as load_output_hardware_state
 from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.transport_coherence import (
     transport_coherence_report,
@@ -1159,8 +1163,6 @@ def outputd_period_frames_as_loaded(
     daemon would not start at all, so nothing may be armed on it.
     """
     if env is None:
-        from jasper.env_load import outputd_reconciled_env
-
         env = outputd_reconciled_env()
     raw = str(env.get(OUTPUTD_PERIOD_KEY) or "").strip()
     if not raw:
@@ -1227,29 +1229,18 @@ def build_audio_runtime_plan_from_system(
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
     profile_id = ""
-    try:
-        from jasper.output_hardware import load_state
-
-        hardware_state = load_state(output_hardware_state_path)
-        if hardware_state is not None:
-            profile_id = hardware_state.profile_id
-    except ImportError:
-        profile_id = ""
-    # Lazy: this module is imported at module level by
-    # jasper.multiroom.active_leader_config, so a top-level multiroom import
-    # here would be a cycle.
-    route_mode: RouteMode = "unknown"
-    try:
-        from jasper.multiroom.config import load_config
-
-        route_mode = route_mode_from_grouping_config(load_config(grouping_env_path))
-    except ImportError:
-        route_mode = "unknown"
+    hardware_state = load_output_hardware_state(output_hardware_state_path)
+    if hardware_state is not None:
+        profile_id = hardware_state.profile_id
+    route_mode: RouteMode = route_mode_from_grouping_config(
+        load_grouping_config(grouping_env_path)
+    )
     # The statefile's own reader, not a second one: this plan and the doctor's
     # `current correction` check must never disagree about which config is
-    # loaded. Lazy like the other collaborators above — module level would make
-    # a widely-imported plan module pull the active-speaker tree.
-    from jasper.active_speaker.environment import read_camilla_statefile_config_path
+    # loaded.
+    from jasper.active_speaker.environment import (  # lazy: import cost, keeps the plan off the active-speaker tree (ADR-0226)
+        read_camilla_statefile_config_path,
+    )
 
     correction_config_path = read_camilla_statefile_config_path()
     return build_audio_runtime_plan(
@@ -1450,8 +1441,9 @@ def output_endpoint_evidence_from_statefiles(
     as :class:`TransportTopology`.
     """
 
-    from jasper.active_speaker.environment import parse_camilla_statefile_config_path
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.active_speaker.environment import (  # lazy: import cost, keeps the plan off the active-speaker tree (ADR-0226)
+        parse_camilla_statefile_config_path,
+    )
 
     fallback: dict[str, Any] | None = None
     errors: list[str] = []

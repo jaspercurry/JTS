@@ -12,16 +12,20 @@ to the ACTIVE ring on an armed roleful box). See ADR-0100 — a topology the rin
 cannot serve parks under its own name
 (:mod:`jasper.control.transport_park`); it never falls back.
 
-This module is import-cheap (stdlib only) so socket-activated web surfaces and
-the config emitters can resolve the ring without pulling in NumPy/SciPy.
+This module is import-cheap (stdlib plus :mod:`jasper.env_file`) so
+socket-activated web surfaces and the config emitters can resolve the ring
+without pulling in NumPy/SciPy.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, TypedDict, cast
+
+from jasper.env_file import read_value
 
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
@@ -380,7 +384,6 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
     indeterminate marker must never assert an active-ring endpoint.
     """
     if env is None:
-        from jasper.env_file import read_value
         from jasper.env_load import OUTPUTD_ENV_PATH  # lazy: read at call time
 
         try:
@@ -500,9 +503,6 @@ def read_declared_ring_wire_format() -> str:
     the ordinary unarmed state — but a file that IS readable and declares a
     value this repo does not recognize raises, exactly as fan-in would.
     """
-    from pathlib import Path
-
-    from jasper.env_file import read_value
     from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH  # lazy: read at call time
 
     for path in (FANIN_ENV_PATH, BASE_ENV_PATH):
@@ -593,9 +593,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
     ring_b_channels = RING_A_CHANNELS
     ring_active_channels: int | None = None
     if topology is not None:
-        # Lazy import: the topology layer is heavy and this module is imported by
-        # the socket-activated wizards (see the module docstring).
-        from jasper.active_speaker.runtime_contract import (
+        from jasper.active_speaker.runtime_contract import (  # lazy: import cost, this module is imported by the socket-activated wizards
             active_ring_channels_for_topology,
             ring_channels_for_topology,
         )
@@ -733,11 +731,10 @@ def dac_content_lane_marker_armed(env: "Mapping[str, str]") -> bool:
     tested mere PRESENCE would call a cleared bond armed, because that writer
     clears by writing the key EMPTY.
 
-    The lazy import is deliberate: ``jasper.multiroom.dac_content_ring`` reaches
-    this module through ``jasper.ring_assets``, so naming it at module level
-    would close that into a cycle.
     """
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from jasper.multiroom.dac_content_ring import (  # lazy: cycle with jasper.multiroom.dac_content_ring via jasper.ring_assets
+        DAC_CONTENT_LANE_ENV,
+    )
 
     return _outputd_env_bool(env.get(DAC_CONTENT_LANE_ENV))
 

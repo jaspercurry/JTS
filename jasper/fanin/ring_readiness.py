@@ -28,24 +28,7 @@ from typing import Any
 
 import yaml
 
-from jasper import fanin_coupling, output_topology, ring_assets
-from jasper.active_speaker.camilla_yaml import (
-    STARTUP_MUTE_GAIN_DB,
-    output_commission_mute_name,
-)
-from jasper.active_speaker.environment import read_camilla_statefile_config_path
-from jasper.active_speaker.graph_safety import (
-    output_terminally_muted,
-    view_from_yaml_dict,
-)
-from jasper.active_speaker.runtime_contract import (
-    CONTRACT_UNCONFIGURED,
-    active_ring_channels_for_topology,
-    classify_output_contract,
-    topology_sink_is_composite,
-    topology_supports_shm_ring,
-)
-from jasper.active_speaker.staging import load_staged_startup_config
+from jasper import fanin_coupling, ring_assets
 from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.env_file import read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
@@ -61,7 +44,6 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMAT_ENV_VAR,
     RING_WIRE_FORMAT_WIDE,
 )
-from jasper.output_topology import OutputTopologyError
 
 
 # A ring readiness gate returns (ok, detail) and fails CLOSED.
@@ -206,6 +188,10 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
     the read is about the graph the daemon actually has. Omitted, the statefile
     stays the answer, which is what every existing caller wants.
     """
+    from jasper.active_speaker.environment import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+        read_camilla_statefile_config_path,
+    )
+
     config_path = config_path or read_camilla_statefile_config_path()
     if not config_path:
         return LoadedCamillaGraph(
@@ -240,8 +226,13 @@ def load_topology_for_wire():
     :func:`ring_topology_ready`'s decision to make, with its own documented
     strict/lenient split, not this helper's.
     """
+    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
     try:
-        return output_topology.load_output_topology_strict()
+        return load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError):
         return None
 
@@ -781,6 +772,10 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
     wrong fix. Fail-CLOSED on anything indeterminate: an unreadable conf.d
     declares nothing, which is not proof.
     """
+    from jasper.active_speaker.runtime_contract import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+        active_ring_channels_for_topology,
+    )
+
     if not fanin_coupling.ring_active_endpoint_armed():
         return False, (
             "outputd's active-ring endpoint marker "
@@ -862,6 +857,15 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
     """
+    from jasper.active_speaker.camilla_yaml import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+    from jasper.active_speaker.graph_safety import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+        output_terminally_muted,
+        view_from_yaml_dict,
+    )
+
     try:
         payload = yaml.safe_load(graph.text)
     except yaml.YAMLError as exc:
@@ -918,6 +922,8 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
 
     Fail-CLOSED on every unreadable or self-contradicting record shape.
     """
+    from jasper.active_speaker.staging import load_staged_startup_config  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+
     staged = load_staged_startup_config()
     # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
     # commissioning reader uses: that shape raises AttributeError on a record
@@ -1106,6 +1112,8 @@ def ring_endpoint_anchor_converged(
     if not is_anchor:
         return False, identity_problem
 
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+
     at_endpoint, endpoint_detail = graph_at_active_ring_endpoint(graph)
     if not at_endpoint:
         return False, endpoint_detail
@@ -1193,6 +1201,8 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     Non-composite topologies pass untouched — every roleful DAC array and
     stereo-ring box keeps the wire it has today.
     """
+    from jasper.active_speaker.runtime_contract import topology_sink_is_composite  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+
     if topology is None or not topology_sink_is_composite(topology):
         return True, "not a composite sink; the wide-wire rule does not apply"
     try:
@@ -1271,8 +1281,14 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         applied_baseline_hardware_match,
         load_applied_baseline_profile_state,
     )
+    from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
     try:
-        topology = output_topology.load_output_topology_strict()
+        topology = load_output_topology_strict()
         contract = classify_output_contract(topology)
     except (OutputTopologyError, OSError, ValueError) as exc:
         return False, (
@@ -1374,8 +1390,19 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
       topology's OPINION rather than an arm decision.
     """
+    from jasper.active_speaker.runtime_contract import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+        CONTRACT_UNCONFIGURED,
+        active_ring_channels_for_topology,
+        classify_output_contract,
+        topology_supports_shm_ring,
+    )
+    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
     try:
-        topology = output_topology.load_output_topology_strict()
+        topology = load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
         if strict_unreadable:
             # An unreadable topology is NOT proven eligible — fail closed and
