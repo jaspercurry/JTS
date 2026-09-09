@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
+from .platform import wire
 from .platform.uds import daemon_command
 from .platform.uds import mux_socket_command as _mux_socket_command
 from .log_event import log_event
@@ -127,8 +128,7 @@ async def _acquire_measurement_gate(
 
     try:
         payload = await _mux_socket_command(
-            "TEST_SELECT "
-            f"{MEASUREMENT_FANIN_LABEL} {gate_owner}",
+            wire.mux_test_select(MEASUREMENT_FANIN_LABEL, gate_owner),
             timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
         )
     except (
@@ -170,7 +170,7 @@ async def _release_measurement_gate(
     for attempt in range(3):
         try:
             payload = await _mux_socket_command(
-                f"TEST_RELEASE {gate_owner}",
+                wire.mux_test_release(gate_owner),
                 timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
             )
             if isinstance(payload, Mapping) and (
@@ -199,7 +199,7 @@ async def _release_measurement_gate(
             # cleanup tell another feature's owner apart without releasing it.
             try:
                 status = await _mux_socket_command(
-                    "STATUS", timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
+                    wire.STATUS, timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
                 )
             except (
                 OSError,
@@ -397,7 +397,9 @@ async def _check_no_active_voice_session(
     treated as "voice daemon down, so no session".
     """
     try:
-        status = await _voice_uds_command(socket_path, "STATUS", timeout=2.0)
+        status = await _voice_uds_command(
+            socket_path, wire.STATUS, timeout=2.0,
+        )
     except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(

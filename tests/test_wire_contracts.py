@@ -499,21 +499,12 @@ def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
     assert capacity.group(1) == fixture.group(1)
 
 
-def test_fanin_control_command_vocabulary_matches_mux():
-    """mux drives fan-in's source gate over the UDS with a one-line text
-    command. Pin the verbs on both sides, plus the error-shape key mux
-    raises on."""
-    state_rs = FANIN_STATE_RS.read_text()
-    mux_py = (REPO / "jasper" / "mux.py").read_text()
-    control_py = (REPO / "jasper" / "platform" / "uds.py").read_text()
-    for verb in ('"STATUS"', '"NONE"', '"SELECT '):
-        assert verb in state_rs, f"fanin state.rs no longer handles {verb}"
-    assert 'socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)' in mux_py
-    # state.rs error responses carry {"error": ...}; mux raises on it.
-    assert '"error":' in state_rs
-    assert '"error" in payload' in control_py
+def test_fanin_refuses_with_the_error_key_its_python_client_raises_on():
+    """fan-in answers a refusal as ``{"error": ...}``; platform/uds turns that
+    into the RuntimeError every mux caller classifies on (pinned in
+    tests/test_platform_uds.py). The verbs themselves, and that fan-in still
+    dispatches on each of them, are pinned in tests/test_platform_wire.py."""
+    assert '"error":' in FANIN_STATE_RS.read_text()
 
 
 def test_control_socket_paths_agree_across_processes(monkeypatch):

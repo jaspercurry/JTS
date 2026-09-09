@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .platform import wire
 from .platform.uds import mux_socket_command
 
 logger = logging.getLogger(__name__)
@@ -175,7 +176,7 @@ async def stop_renderers(names: list[str]) -> None:
     for name in names:
         try:
             if name == "airplay":
-                await mux_socket_command(f"PREEMPT {Source.AIRPLAY.value}")
+                await mux_socket_command(wire.mux_preempt(Source.AIRPLAY.value))
             elif name == "bluetooth":
                 await bluetooth_avrcp_call("Pause")
             else:

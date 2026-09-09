@@ -15,6 +15,7 @@ from typing import Any
 from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
+from ...platform import wire
 from ...volume_curve import db_to_percent
 from .. import measurement_hold
 from .. import server as _server
@@ -101,7 +102,7 @@ class VolumeRoutes(ControlHandlerMixin):
         return None
 
     def _get_source_state(self) -> None:
-        result = self._mux_cmd_or_error("STATUS", log_label="source STATUS")
+        result = self._mux_cmd_or_error(wire.STATUS, log_label="source STATUS")
         if result is not None:
             self._send_json(_augment_source_payload(result))
 
@@ -374,9 +375,9 @@ class VolumeRoutes(ControlHandlerMixin):
         body = self._read_json()
         source = str(body.get("source") or "").strip().lower()
         if source == "auto":
-            cmd = "AUTO"
+            cmd = wire.MUX_AUTO
         elif source in _server.SOURCE_SELECT_IDS:
-            cmd = f"SELECT {source}"
+            cmd = wire.mux_select(source)
         else:
             choices = ", ".join(sorted(_server.SOURCE_SELECT_IDS))
             self._send_json(

@@ -94,6 +94,7 @@ from .bluetooth.avrcp import bluetooth_avrcp_call
 from .busctl import system_busctl
 from .control import restart_broker
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command, fanin_command, local_status_json
 from .source_state import (
@@ -1247,11 +1248,11 @@ class Mux:
 
     async def _fanin_select_label(self, label: str) -> dict[str, Any]:
         return await fanin_command(
-            f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
+            wire.fanin_select(label), socket_path=FANIN_CONTROL_SOCKET,
         )
 
     async def _fanin_none(self) -> dict[str, Any]:
-        return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
+        return await fanin_command(wire.FANIN_NONE, socket_path=FANIN_CONTROL_SOCKET)
 
     async def _fanin_lane_mute(
         self, label: str, muted: bool,
@@ -1261,9 +1262,9 @@ class Mux:
         A per-lane silence on the same mux→fan-in control channel as the
         selected-input gate (SELECT/NONE), orthogonal to selection and to
         volume. Lane-general, like SELECT."""
-        verb = "MUTE" if muted else "UNMUTE"
         return await fanin_command(
-            f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
+            wire.fanin_lane_mute(label, muted=muted),
+            socket_path=FANIN_CONTROL_SOCKET,
         )
 
     async def _fanin_select_best_effort(
@@ -1733,7 +1734,7 @@ def _make_duck_active_probe() -> Any:
             # Seconds, TOTAL: voice STATUS is a synchronous attribute read,
             # so a slower answer means the daemon is wedged.
             response = await daemon_command(
-                socket_path, "STATUS", timeout=1.0, daemon="voice_daemon",
+                socket_path, wire.STATUS, timeout=1.0, daemon="voice_daemon",
             )
         except (OSError, RuntimeError, ValueError):
             return None

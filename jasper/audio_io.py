@@ -30,6 +30,7 @@ from .audio_buffer import AudioBuffer, InputFrame
 from .assistant_volume import EffectiveVolumeContext
 from .dsp_numpy import resample_poly
 from .log_event import log_event
+from .platform import wire
 from .tts_routing import FANIN_TTS_SOCKET
 from . import wake_ports
 
@@ -751,7 +752,9 @@ class _OutputdStreamAdapter:
         # fixed for the life of the daemon; see `TtsWireWidth` in
         # rust/jasper-tts-protocol/src/lib.rs for why the reader honours the
         # declaration rather than assuming one.
-        self._audio_verb = "AUDIO32" if wire_wide else "AUDIO"
+        self._audio_verb = (
+            wire.TTS_AUDIO_WIDE if wire_wide else wire.TTS_AUDIO_NARROW
+        )
         self._sock = sock
         self._sock.settimeout(_OUTPUTD_IPC_IO_TIMEOUT_SEC)
         self._recv_buffer = bytearray()
@@ -795,9 +798,9 @@ class _OutputdStreamAdapter:
         try:
             if send_close:
                 if self._active_segment is not None:
-                    self._sendall_locked(b"SEGMENT_END\n")
+                    self._send_line(wire.TTS_SEGMENT_END)
                     self._active_segment = None
-                self._sendall_locked(b"CLOSE\n")
+                self._send_line(wire.TTS_CLOSE)
         except OSError:
             pass
         self._poison(reason=None)
@@ -880,6 +883,16 @@ class _OutputdStreamAdapter:
         finally:
             self._lock.release()
 
+    def _send_line(
+        self,
+        command: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
+        self._sendall_locked(
+            wire.encode(command), deadline_monotonic=deadline_monotonic,
+        )
+
     def _sendall_locked(
         self,
         data: bytes,
@@ -925,13 +938,11 @@ class _OutputdStreamAdapter:
 
     def set_gain_db(self, db: float) -> None:
         with self._bounded_lock():
-            self._sendall_locked(f"GAIN {db:.3f}\n".encode("ascii"))
+            self._send_line(wire.tts_gain(db))
 
     def program_duck(self, on: bool) -> None:
-        # Depth is fan-in's: it owns the attenuation this verb switches on.
-        verb = b"PROGRAM_DUCK_ON\n" if on else b"PROGRAM_DUCK_OFF\n"
         with self._bounded_lock():
-            self._sendall_locked(verb)
+            self._send_line(wire.tts_program_duck(on))
 
     def prepare_assistant(
         self,
@@ -954,24 +965,15 @@ class _OutputdStreamAdapter:
             )
             return
         with self._bounded_lock():
-            parts = [
-                "PREPARE_ASSISTANT",
-                provider,
-                model,
-                voice,
-                f"{float(tts_envelope_lufs):.2f}",
-            ]
-            if volume_context is not None:
-                parts.extend(
-                    [
-                        f"{volume_context.canonical_db:.3f}",
-                        f"{volume_context.downstream_db:.3f}",
-                        f"{volume_context.tts_envelope_lufs:.3f}",
-                        "1" if volume_context.muted else "0",
-                        str(int(volume_context.stamp_boot_ns)),
-                    ]
+            self._send_line(
+                wire.tts_prepare_assistant(
+                    provider=provider,
+                    model=model,
+                    voice=voice,
+                    tts_envelope_lufs=tts_envelope_lufs,
+                    volume_context=volume_context,
                 )
-            self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
+            )
 
     def pause_content_meter(
         self,
@@ -979,14 +981,14 @@ class _OutputdStreamAdapter:
         deadline_monotonic: float | None = None,
     ) -> None:
         with self._bounded_lock(deadline_monotonic=deadline_monotonic):
-            self._sendall_locked(
-                b"CONTENT_METER_PAUSE\n",
+            self._send_line(
+                wire.TTS_CONTENT_METER_PAUSE,
                 deadline_monotonic=deadline_monotonic,
             )
 
     def resume_content_meter(self) -> None:
         with self._bounded_lock():
-            self._sendall_locked(b"CONTENT_METER_RESUME\n")
+            self._send_line(wire.TTS_CONTENT_METER_RESUME)
 
     def start_segment(
         self,
@@ -1005,23 +1007,20 @@ class _OutputdStreamAdapter:
             if self._active_segment == segment:
                 return
             if self._active_segment is not None:
-                self._sendall_locked(b"SEGMENT_END\n")
-            parts = ["SEGMENT_START", segment[0], segment[1]]
-            if profile_tokens is not None:
-                parts.extend(profile_tokens)
-            self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
+                self._send_line(wire.TTS_SEGMENT_END)
+            self._send_line(wire.tts_segment_start(*segment))
             self._active_segment = segment
 
     def end_segment(self) -> None:
         with self._bounded_lock():
             if self._active_segment is None:
                 return
-            self._sendall_locked(b"SEGMENT_END\n")
+            self._send_line(wire.TTS_SEGMENT_END)
             self._active_segment = None
 
     def write(self, data: bytes) -> None:
         with self._bounded_lock():
-            self._sendall_locked(f"{self._audio_verb} {len(data)}\n".encode("ascii"))
+            self._send_line(wire.tts_audio(self._audio_verb, len(data)))
             self._sendall_locked(data)
 
     def abort(self) -> None:
@@ -1030,7 +1029,7 @@ class _OutputdStreamAdapter:
     def flush_sync(self) -> dict | None:
         with self._bounded_lock():
             try:
-                self._sendall_locked(b"FLUSH_SYNC\n")
+                self._send_line(wire.TTS_FLUSH_SYNC)
                 self._active_segment = None
                 line = self._readline_locked(_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC)
             except TimeoutError:
@@ -1188,7 +1187,7 @@ class TtsPlayout:
             logger,
             "tts_wire.resolved",
             width="S32_LE" if self._wire_wide else "S16_LE",
-            verb="AUDIO32" if self._wire_wide else "AUDIO",
+            verb=wire.TTS_AUDIO_WIDE if self._wire_wide else wire.TTS_AUDIO_NARROW,
             frame_bytes=self._frame_bytes,
             source="explicit" if wire_wide is not None else "box_declaration",
             socket=socket_path,
