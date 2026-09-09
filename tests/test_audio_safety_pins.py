@@ -31,7 +31,7 @@ import pytest
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
-from jasper.audio_io import TtsPlayout
+from jasper.tts_playout import TtsPlayout
 
 REPO = Path(__file__).resolve().parents[1]
 

@@ -638,7 +638,7 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     # pinned together rather than one of them drifting away silently.
     assert (
         '"tts_wire.resolved"'
-        in (REPO / "jasper" / "audio_io.py").read_text()
+        in (REPO / "jasper" / "tts_playout.py").read_text()
     ), "jasper-voice must publish the width it resolved, to pair with fan-in's"
 
     assert '"PROGRAM_DUCK_ON"' in proto_rs

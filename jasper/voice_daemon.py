@@ -16,11 +16,8 @@ from enum import Enum
 from jasper.log_event import log_event
 
 from .audio_buffer import AudioBuffer
-from .audio_io import (
-    InputDeviceUnavailable,
-    MicCapture,
-    TtsPlayout,
-)
+from .mic_capture import InputDeviceUnavailable, MicCapture
+from .tts_playout import TtsPlayout
 from .wake_events import (
     WakeEventStore,
     make_event_id,

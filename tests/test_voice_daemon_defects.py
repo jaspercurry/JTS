@@ -12,7 +12,7 @@ import weakref
 
 import pytest
 
-from jasper.audio_io import InputDeviceUnavailable
+from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice_daemon import State, idle_watchdog
 
 from ._log_events import event_fields

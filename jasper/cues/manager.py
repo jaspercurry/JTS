@@ -35,7 +35,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
-from ..audio_io import wait_tts_drained_owned
+from ..tts_playout import wait_tts_drained_owned
 from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (

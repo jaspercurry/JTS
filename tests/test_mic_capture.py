@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -16,11 +18,13 @@ import pytest
 from jasper.wake_ports import parse_udp_device
 
 from tests._sounddevice_stub import stub_sounddevice
-from jasper.audio_io import CAPTURE_MAX_FRAMES, _CaptureQueue, _UdpMicProtocol
-
-from jasper.audio_io import (
+import jasper.mic_capture as mic_capture
+from jasper.mic_capture import (
+    CAPTURE_MAX_FRAMES,
     MicCapture,
     UdpMicCapture,
+    _CaptureQueue,
+    _UdpMicProtocol,
     make_mic_capture,
 )
 
@@ -137,7 +141,7 @@ async def test_direct_capture_closes_device_when_lifecycle_fails(
     if close_fails:
         stream.close.side_effect = RuntimeError("close")
     stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=lambda **kwargs: stream))
-    monkeypatch.setattr("jasper.audio_io._log_audio_open_failure", Mock())
+    monkeypatch.setattr("jasper.mic_capture._log_audio_open_failure", Mock())
     cap = MicCapture("unused")
     with pytest.raises(RuntimeError) as caught:
         async with cap:
@@ -200,7 +204,7 @@ async def test_capture_overload_keeps_recent_order_and_bounds_notifications(tran
 async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
     queue = _CaptureQueue()
     now = [10.0]
-    monkeypatch.setattr("jasper.audio_io.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("jasper.mic_capture.time.monotonic", lambda: now[0])
     queue.put_nowait(np.array([1], dtype=np.int16))
     now[0] = 12.0
     queue.put_nowait(np.array([2], dtype=np.int16))
@@ -208,3 +212,40 @@ async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
     assert queue.last_frame.captured_at == 12.0
     assert queue.last_frame.discontinuity
     assert queue.dropped_frames == 1
+
+
+def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "jasper.mic_presence.read_mic_presence",
+        lambda: SimpleNamespace(absent_confirmed=True),
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.mic_capture"):
+        mic_capture._log_audio_open_failure("MicCapture", "hw:1,0", RuntimeError("boom"))
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+async def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
+    """The decimating mic path resamples on `jasper.dsp_numpy`.
+
+    scipy is ~58 MB resident for the life of jasper-voice, whose
+    `jts-mic.slice` sets `MemorySwapMax=0` (issue #3697), and the callback
+    is the one place the mic path could reach for it. Blocking the import
+    here fails a reintroduced `from scipy.signal import ...` outright.
+    """
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.signal", None)
+    cap = mic_capture.MicCapture(
+        "hw:1,0", capture_rate=48_000, capture_channels=2,
+    )
+    cap._queue = mic_capture._CaptureQueue()
+    frames = mic_capture.MicCapture.OUTPUT_FRAME_SAMPLES * 3
+    indata = np.random.default_rng(7).integers(
+        -20_000, 20_000, size=(frames, 2), dtype=np.int16,
+    )
+
+    cap._callback(indata, frames, None, None)
+
+    chunk = await cap._queue.get()
+    assert chunk.dtype == np.int16
+    assert chunk.shape == (mic_capture.MicCapture.OUTPUT_FRAME_SAMPLES,)
+    assert mic_capture.resample_poly.__module__ == "jasper.dsp_numpy"
