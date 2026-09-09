@@ -93,10 +93,9 @@ from . import librespot_state, mux_mode_persistence
 from .airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
-from .platform.uds import local_status_json
-from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
+from .platform.uds import daemon_command, fanin_command, local_status_json
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
@@ -1692,29 +1691,6 @@ def _fmt_db(value: float | None) -> str:
     return "none" if value is None else f"{value:.1f}"
 
 
-async def _voice_socket_command(
-    socket_path: str, cmd: str, *, timeout: float = 1.0,
-) -> dict[str, Any]:
-    async with asyncio.timeout(1.0):
-        reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("voice daemon returned no response")
-    payload = json.loads(line.decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise RuntimeError("voice daemon returned non-object JSON")
-    return payload
-
-
 def _make_duck_active_probe() -> Any:
     socket_path = os.environ.get(
         "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
@@ -1722,18 +1698,12 @@ def _make_duck_active_probe() -> Any:
 
     async def probe() -> bool | None:
         try:
-            response = await _voice_socket_command(
-                socket_path, "STATUS", timeout=1.0,
+            # Seconds, TOTAL: voice STATUS is a synchronous attribute read,
+            # so a slower answer means the daemon is wedged.
+            response = await daemon_command(
+                socket_path, "STATUS", timeout=1.0, daemon="voice_daemon",
             )
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            json.JSONDecodeError,
-        ):
+        except (OSError, RuntimeError, ValueError):
             return None
         camilla_locked = response.get("camilla_volume_locked")
         if isinstance(camilla_locked, bool):

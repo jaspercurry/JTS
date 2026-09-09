@@ -2440,27 +2440,3 @@ def test_debounce_ticks_constant_removed():
     assert not hasattr(Mux, "DEBOUNCE_TICKS")
 
 
-async def test_voice_socket_command_times_out_on_stalled_connect(monkeypatch):
-    """A wedged voice-daemon listener must not hang _voice_socket_command's
-    connect past its 1s bound -- it feeds the duck-active probe polled on
-    mux's control path."""
-    async def _hang(*_a, **_kw):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(mux_module.asyncio, "open_unix_connection", _hang)
-
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(
-            mux_module._voice_socket_command(
-                "/tmp/jasper-test-stalled.sock", "STATUS",
-            ),
-            timeout=10.0,
-        )
-    elapsed = loop.time() - start
-    assert elapsed < 3.0, (
-        f"_voice_socket_command took {elapsed:.1f}s against a stalled "
-        "listener -- its connect must raise within its own 1.0s "
-        "asyncio.timeout bound, not the test's outer safety net"
-    )

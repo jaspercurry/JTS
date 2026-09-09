@@ -23,7 +23,6 @@ the effective audible source, then delegates to MPRIS / Spotify Web API
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any
@@ -31,7 +30,7 @@ from typing import Any
 from . import librespot_state
 from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
-from .platform.status_socket import MUX_CONTROL_SOCKET_PATH
+from .platform.uds import mux_socket_command
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
@@ -113,43 +112,11 @@ class RendererClient:
         without the field all return ``None``.
         """
         try:
-            async with asyncio.timeout(1.0):
-                reader, writer = await asyncio.open_unix_connection(
-                    MUX_CONTROL_SOCKET_PATH
-                )
-        except (FileNotFoundError, ConnectionRefusedError,
-                asyncio.TimeoutError, OSError) as e:
-            logger.debug("mux status unavailable: %s", e)
-            return None
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11
-            # wait_for SWALLOWS a CancelledError that arrives in the same
-            # tick its awaited future completes (Lib/asyncio/tasks.py:
-            # `except CancelledError: if fut.done(): return fut.result()`).
-            # VolumeObserver._run is a cancellation-only `while True:` and
-            # reaches this call EVERY tick through a directly-awaited chain
-            # (_tick -> VolumeCoordinator._active_source -> here) with no
-            # asyncio.gather in between to restore the parent's cancel -- so
-            # a swallowed cancel here makes the observer immortal and hangs
-            # VolumeObserver.stop()'s `await self._task` (#2003, same class
-            # as #1935/#1952). Do not "simplify" this back to wait_for while
-            # 3.11 is supported.
-            async with asyncio.timeout(1.0):
-                line = await reader.readline()
-        except (asyncio.TimeoutError, ConnectionResetError, OSError) as e:
-            logger.debug("mux STATUS failed: %s", e)
-            return None
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            payload = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
+            # mux STATUS is a synchronous snapshot on the daemon's side.
+            payload = await mux_socket_command("STATUS", timeout=1.0)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug("mux STATUS unavailable: %s", e)
             return None
         effective = payload.get("active_source")
         return effective if isinstance(effective, str) else None
