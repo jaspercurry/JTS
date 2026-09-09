@@ -35,12 +35,11 @@ from ._common import (
 logger = logging.getLogger("jasper.web.correction_setup")
 
 MAX_JSON_BODY_BYTES = 64 * 1024
-MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # Browser captures are mono 16-bit PCM at 48 kHz. A normal 10 s sweep
 # upload is ~1 MB; 32 MB leaves generous room for measurement-window
 # setup latency while still avoiding unbounded reads in the Pi web
 # process. nginx's client_max_body_size must stay >= the largest of these
-# four caps so the app, not a raw 413, refuses an oversized body.
+# three caps so the app, not a raw 413, refuses an oversized body.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 
