@@ -716,7 +716,7 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
 # The streambox profile ships no wake stack, so its conf mounts none of the
 # wake surfaces; every other `location` must exist in both, on the same
 # listener. Keyed by listener ports: all four are plain-HTTP mounts.
-# Removal condition and the rest of the rule: ADR-0253 §7, ADR-0267.
+# Removal condition and the rest of the rule: ADR-0253 §7, ADR-0268.
 _CONF_LOCATION_DIFF_ALLOWLIST = {
     frozenset({80}): frozenset({
         "/assistant/wake/",

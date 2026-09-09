@@ -185,8 +185,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0120](0120-one-management-frontend-gated-by-capability.md) | One management frontend for every install profile, gated by capability | accepted |
 | [0171](0171-rarely-viewed-dashboard-probes-run-in-short-lived-child-processes.md) | Rarely-viewed dashboard probes run in short-lived child processes | accepted |
 | [0187](0187-park-presentation-is-the-system-screen-only.md) | Park presentation is the system screen, not a banner | accepted |
-| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0267 |
-| [0267](0267-the-conf-parity-exception-set-lives-in-the-test.md) | The conf-parity exception set lives in the test | accepted |
+| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0268 |
+| [0268](0268-the-conf-parity-exception-set-lives-in-the-test.md) | The conf-parity exception set lives in the test | accepted |
 
 ## Tuning & measurement
 
