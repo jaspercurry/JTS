@@ -862,7 +862,7 @@ def check_usb_combo_consistency() -> CheckResult:
             + audio.detail,
             reason=REASON_SOURCE_INTENT_INVALID,
         )
-    from jasper.fanin.ring_health import FANIN_ENV_PATH
+    from jasper.fanin.ring_readiness import FANIN_ENV_PATH
 
     try:
         fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")

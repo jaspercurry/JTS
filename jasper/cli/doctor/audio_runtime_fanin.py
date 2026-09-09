@@ -90,9 +90,7 @@ REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE = "host_clock_actuator_unavailable"
 REASON_HOST_CLOCK_L2_FALLBACK = "host_clock_l2_fallback"
 REASON_HOST_CLOCK_PROBING = "host_clock_probing"
 
-REASON_COUPLING_FILE_ABSENT = "coupling_file_absent"
 REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
-REASON_COUPLING_TOKEN_UNKNOWN = "coupling_token_unknown"
 REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
 REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
@@ -795,47 +793,6 @@ def check_fanin_tts_drops() -> CheckResult:
             reason=REASON_FANIN_TTS_FRAME_TIMEOUTS,
         )
     return CheckResult(name, "ok", f"none since fan-in start ({budget})")
-
-
-@doctor_check()
-def check_fanin_coupling_value() -> CheckResult:
-    """The persisted fan-in coupling must be a RECOGNIZED token.
-
-    jasper-fanin REFUSES an unrecognized value at start (exit 78) and the
-    ``--auto`` reconciler converges it; this surfaces the stale value until that
-    pass runs. An ABSENT key is not that state: fan-in serves the ring for it
-    (ADR-0100), so a box the reconciler has not written yet is ``ok``.
-    """
-    from jasper.fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
-    from jasper.fanin_coupling import COUPLING_ENV_VAR, COUPLING_SHM_RING
-    from jasper.env_file import read_value
-
-    label = "fan-in coupling value"
-    try:
-        text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        return CheckResult(
-            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
-            reason=REASON_COUPLING_FILE_ABSENT,
-        )
-    # The raw token is read for the MESSAGE only; the verdict is the shared
-    # predicate's, so this surface cannot drift from what fan-in serves.
-    raw = read_value(text, COUPLING_ENV_VAR)
-    if not persisted_coupling_feeds_ring(text=text):
-        return CheckResult(
-            label,
-            "warn",
-            f"{COUPLING_ENV_VAR}={raw!r} in {FANIN_ENV_PATH} names a removed/unknown "
-            "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
-            "the file.",
-            reason=REASON_COUPLING_TOKEN_UNKNOWN,
-        )
-    return CheckResult(
-        label,
-        "ok",
-        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
-    )
 
 
 def _requires_roleful_graph() -> bool:

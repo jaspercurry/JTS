@@ -419,7 +419,7 @@ def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     composite arm that rode such a pin onto the ring, without this gate, would
     quantize the post-crossover per-driver program from 32 to 16 bits.
     """
-    from jasper.fanin.ring_health import composite_ring_wire_ready
+    from jasper.fanin.ring_readiness import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
@@ -456,7 +456,7 @@ def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
     that spelling pastes into a shell and works — a bare `jasper-active-speaker`
     is not on an operator's PATH.
     """
-    from jasper.fanin.ring_health import composite_ring_wire_ready
+    from jasper.fanin.ring_readiness import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
@@ -478,7 +478,7 @@ def test_a_composite_at_the_wide_wire_passes_the_rule(monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S32_LE"
     )
-    from jasper.fanin.ring_health import composite_ring_wire_ready
+    from jasper.fanin.ring_readiness import composite_ring_wire_ready
 
     ok, detail = composite_ring_wire_ready(_composite_active_2way())
     assert ok is True
@@ -487,7 +487,7 @@ def test_a_composite_at_the_wide_wire_passes_the_rule(monkeypatch):
 
 def test_the_wide_wire_rule_leaves_every_non_composite_box_alone(monkeypatch):
     """jts3's roleful DAC8x arm and every stereo-ring box keep today's wire."""
-    from jasper.fanin.ring_health import composite_ring_wire_ready
+    from jasper.fanin.ring_readiness import composite_ring_wire_ready
 
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
@@ -501,21 +501,15 @@ def test_the_wide_wire_rule_is_wired_into_the_active_arm(monkeypatch, tmp_path):
     """HALF-GUARDED SITES READ AS COVERED. The rule is only worth anything if
     ``ring_topology_ready`` actually calls it, so assert the refusal reaches the
     gate both arming paths use — not just the helper in isolation."""
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin import ring_readiness
 
-    monkeypatch.setattr(
-        coupling_reconcile,
-        "load_output_topology_strict",
-        _composite_active_2way,
-        raising=False,
-    )
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", _composite_active_2way
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
     )
-    ok, detail = coupling_reconcile.ring_topology_ready()
+    ok, detail = ring_readiness.ring_topology_ready()
     assert ok is False
     assert "WIDE wire" in detail, detail
 
@@ -575,9 +569,9 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     (§12 decision 1) changed which roleful boxes are admitted, never whether a
     bare one is.
     """
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin import converge, ring_readiness
 
-    gate_names = [name for name, _ in coupling_reconcile.default_ring_gates()]
+    gate_names = [name for name, _ in converge._ring_gates()]
     assert "ring_roleful_unattended" in gate_names
 
     monkeypatch.setattr(
@@ -588,7 +582,7 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", _composite_active_2way
     )
-    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 

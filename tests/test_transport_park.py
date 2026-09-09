@@ -680,7 +680,7 @@ def _loaded_graph(monkeypatch, *, note="", converged=True, detail="elsewhere"):
     gate is the claim, and a signal that read the graph on every box would
     cost every box a file read to answer a question about none of them.
     """
-    from jasper.fanin import ring_health
+    from jasper.fanin import ring_readiness
 
     reads: list[object] = []
 
@@ -688,9 +688,9 @@ def _loaded_graph(monkeypatch, *, note="", converged=True, detail="elsewhere"):
         reads.append(args)
         return SimpleNamespace(note=note)
 
-    monkeypatch.setattr(ring_health, "read_loaded_camilla_graph", _read)
+    monkeypatch.setattr(ring_readiness, "read_loaded_camilla_graph", _read)
     monkeypatch.setattr(
-        ring_health,
+        ring_readiness,
         "graph_at_active_ring_endpoint",
         lambda graph: (converged, detail),
     )

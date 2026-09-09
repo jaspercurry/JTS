@@ -149,46 +149,6 @@ def test_committed_unconfigured_topology_persists_parked_path_through_camilla(
     assert controller.raw_sets  # temporary park happened before final path load
 
 
-def test_transaction_resolves_persisted_coupling_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from jasper.fanin import ring_health
-
-    topology = _topology([])
-    controller = _Controller(tmp_path / "graph.lock")
-    coupling_reads: list[str] = []
-    selected_couplings: list[str | None] = []
-    real_select = runtime_convergence.safe_graph_for_current_topology
-
-    def read_coupling() -> str:
-        coupling_reads.append("read")
-        return "shm_ring"
-
-    def capture_coupling(*args, **kwargs):
-        selected_couplings.append(kwargs.get("coupling"))
-        return real_select(*args, **kwargs)
-
-    monkeypatch.setattr(ring_health, "read_persisted_coupling", read_coupling)
-    monkeypatch.setattr(
-        runtime_convergence, "safe_graph_for_current_topology", capture_coupling
-    )
-    monkeypatch.setattr(
-        runtime_convergence,
-        "materialise_safe_graph_decision",
-        lambda *_args, **_kwargs: None,
-    )
-
-    result = runtime_convergence.park_and_commit_topology(
-        topology,
-        lambda: topology,
-        controller_factory=lambda: controller,
-    )
-
-    assert result.convergence.ok is True
-    assert coupling_reads == ["read"]
-    assert selected_couplings == ["shm_ring"]
-
-
 def test_post_publication_fsync_failure_does_not_restore_old_graph(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -315,7 +275,6 @@ def test_flat_fallback_is_composed_before_load(
             prior_config_path="/tmp/prior.yml",
             profile_path=None,
             config_dir=None,
-            coupling=None,
         )
     )
 
@@ -375,7 +334,6 @@ def test_stay_parked_skips_selection_so_a_re_pin_cannot_resume_audio(
             prior_config_path=str(playing),
             profile_path=None,
             config_dir=None,
-            coupling=None,
         )
     )
 
@@ -390,7 +348,6 @@ def test_stay_parked_skips_selection_so_a_re_pin_cannot_resume_audio(
             prior_config_path=str(playing),
             profile_path=None,
             config_dir=None,
-            coupling=None,
             stay_parked=True,
             parked_reason="confirm the re-pinned outputs before audio resumes",
         )

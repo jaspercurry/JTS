@@ -347,17 +347,11 @@ def _print_runtime_safe_graph_summary(
 
 
 def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
-    # The persisted fan-in coupling decides the flat fallback: a ring-armed box
-    # (shm_ring) re-seeds the ring flat config, not the loopback one (finding 5).
-    # --coupling lets install.sh pass the live value explicitly; when omitted we
-    # read the persisted intent from fanin.env (fail-safe to loopback), so a bare
-    # operator run still seeds the right graph.
     result = converge_boot_statefile(
         topology_path=args.topology,
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
-        coupling=args.coupling,
         applied_baseline_path=args.applied_baseline_state,
         staged_metadata_path=args.staged_metadata,
         consider_applied_baseline=not args.no_applied_baseline,
@@ -1147,13 +1141,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--flat-config",
         default=str(DEFAULT_FLAT_OUTPUTD_CONFIG),
         help="normal full-range outputd config path",
-    )
-    runtime.add_argument(
-        "--coupling",
-        default=None,
-        help=(
-            "persisted fan-in coupling; when omitted, read from fanin.env"
-        ),
     )
     runtime.add_argument(
         "--applied-baseline-state",

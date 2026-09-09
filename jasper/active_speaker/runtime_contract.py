@@ -4562,7 +4562,6 @@ def safe_graph_for_current_topology(
     preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     parked_config_path: str | Path | None = None,
-    coupling: str | None = None,
     applied_baseline_path: str | Path | None = None,
     profile_path: str | Path | None = None,
     intent_path: str | Path | None = None,

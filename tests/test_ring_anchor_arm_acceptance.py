@@ -35,7 +35,7 @@ from jasper.fanin.coupling_reconcile import (
     CAMILLA_ANCHOR_CONVERGED_DETAIL,
     CARRIER_TRANSIENT_ACTIVE_REFUSAL,
 )
-from jasper.fanin.ring_health import ring_endpoint_anchor_converged
+from jasper.fanin.ring_readiness import ring_endpoint_anchor_converged
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -156,7 +156,7 @@ def _stage_box(
     import json
 
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
-    from jasper.fanin import ring_health as rh
+    from jasper.fanin import ring_readiness as rh
 
     configs = tmp_path / "configs"
     configs.mkdir(parents=True, exist_ok=True)
@@ -306,7 +306,6 @@ def _arm_with_camilla_detail(tmp_path, detail: str):
         restart_outputd=lambda: (True, ""),
         reconcile_camilla=lambda: (True, detail),
         kick_hardware_reconcile=lambda: (True, ""),
-        restart_voice=lambda: (True, ""),
     )
 
 

@@ -194,7 +194,7 @@ def resolve_live_active_endpoint(
 
     # Lazy: runtime_contract owns which devices are legal active endpoints.
     from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES
-    from jasper.fanin.ring_health import read_loaded_camilla_graph
+    from jasper.fanin.ring_readiness import read_loaded_camilla_graph
 
     graph = read_loaded_camilla_graph()
     device = graph.devices.get("playback_device")

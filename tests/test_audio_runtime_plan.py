@@ -23,8 +23,8 @@ from jasper.audio_runtime_overrides import (
     RuntimeOverrideEntry,
 )
 from jasper.audio_runtime_plan import (
-    AUDIO_RUNTIME_OVERRIDE_KEYS,
     AUDIO_ROUTE_PROFILE_KEY,
+    ROUTE_POLICY_OUTPUTD_OFF_RING,
     FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
@@ -59,7 +59,6 @@ from jasper.camilla_config_contract import (
 from jasper.cli.audio_config import main as audio_config_main
 from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     TRANSPORT_DAC_CONTENT_RING,
@@ -101,7 +100,6 @@ def test_shm_ring_plan_keeps_the_dac_floor_as_the_camilla_policy():
     plan = build_audio_runtime_plan(
         profile_id=APPLE_USB_C_DONGLE_ID,
         route_mode="solo",
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "256",
             "JASPER_CAMILLA_TARGET_LEVEL": "1536",
@@ -140,7 +138,6 @@ def test_plan_reports_the_emitted_geometry_the_config_declares(tmp_path):
 
     plan = build_audio_runtime_plan(
         route_mode="solo",
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "1024",
             "JASPER_CAMILLA_TARGET_LEVEL": "2048",
@@ -164,8 +161,7 @@ def test_plan_reports_the_emitted_geometry_the_config_declares(tmp_path):
     assert (
         build_audio_runtime_plan(
             route_mode="solo",
-            fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        ).camilla_emitted
+            ).camilla_emitted
         is None
     )
 
@@ -849,30 +845,6 @@ def test_usb_low_latency_route_rejects_any_non_ring_bridge_literal():
         assert ok.route_policy_errors == (), (outputd_env, ok.route_policy_errors)
 
 
-def test_usb_low_latency_route_reads_each_daemon_own_accept_set():
-    """The claim rides the one transport, and each half is asked its own rule.
-
-    A persisted `loopback` is a coupling jasper-fanin REFUSES (exit 78,
-    `rust/jasper-fanin/src/config.rs`), so the box cannot be on the measured
-    transport and the claim is refused. An ABSENT key is the ring — that is
-    what fan-in serves — so a box the reconciler has not written yet keeps its
-    shipped claim. Demanding the written token instead turned every such box
-    permanently red.
-    """
-    def _errors(**fanin_env):
-        return build_audio_runtime_plan(
-            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-            fanin_env=fanin_env,
-            route_mode="solo",
-        ).route_policy_errors
-
-    assert _errors() == ()
-    assert _errors(JASPER_FANIN_CAMILLA_COUPLING="shm_ring") == ()
-    assert _errors(JASPER_FANIN_CAMILLA_COUPLING="") == ()
-    assert len(_errors(JASPER_FANIN_CAMILLA_COUPLING="loopback")) == 1
-    assert len(_errors(JASPER_FANIN_CAMILLA_COUPLING="transport_pipe")) == 1
-
-
 def test_route_config_hash_includes_fanin_direct_period():
     base_env = {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
     default_plan = build_audio_runtime_plan(base_env=base_env, route_mode="solo")
@@ -1017,46 +989,6 @@ def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
     # surfaces instead of being silently stringified.
     assert capture_half(full) == {k: full[k] for k in CAPTURE_HALF_KEYS}
     assert capture_half({}) == {}
-
-
-def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
-    plan = build_audio_runtime_plan(
-        overrides={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        route_mode="solo",
-        override_label="/var/lib/jasper/audio_runtime_overrides.json",
-    )
-
-    setting = plan.setting(COUPLING_ENV_VAR)
-
-    assert COUPLING_ENV_VAR not in AUDIO_RUNTIME_OVERRIDE_KEYS
-    assert setting.value == ""
-    assert setting.source_kind == "packaged_default"
-    assert setting.override_value is None
-    assert any(
-        "is ignored" in warning
-        and "jasper-fanin-coupling-reconcile" in warning
-        for warning in plan.warnings
-    )
-
-
-def test_plan_recognizes_shm_ring_coupling_without_false_warning():
-    # The Ring A transport: the plan reuses fanin_coupling's SSOT
-    # (VALID_COUPLINGS), so setting JASPER_FANIN_CAMILLA_COUPLING=shm_ring
-    # surfaces value=shm_ring and does NOT emit the spurious
-    # "is not recognized; resolved to loopback" warning it used to when the plan
-    # kept an independent {loopback, transport_pipe} set. This is the drift the
-    # Ring A Rust half flagged: resolve_coupling recognized shm_ring while the
-    # plan warned it did not.
-    plan = build_audio_runtime_plan(
-        route_mode="solo",
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-    )
-
-    setting = plan.setting(COUPLING_ENV_VAR)
-    assert setting.value == COUPLING_SHM_RING
-    assert not any(
-        "is not recognized" in warning for warning in plan.warnings
-    ), plan.warnings
 
 
 # --------------------------------------------------------------------------
@@ -1233,27 +1165,16 @@ def test_each_unarmed_member_cell_names_which_condition_refused_it():
     assert refused.reason == LANE_REFUSED_PERIOD
 
 
-@pytest.mark.parametrize(
-    "coupling,outputd_env",
-    [
-        ("loopback", {}),
-        ("transport_pipe", {}),
-        (COUPLING_SHM_RING, {"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}),
-    ],
-)
-def test_an_off_ring_box_still_publishes_ring_a_and_no_post_dsp_hop(
-    coupling, outputd_env
-):
+def test_an_off_ring_box_still_publishes_ring_a_and_no_post_dsp_hop():
     """ADR-0100: the fan-in -> CamillaDSP hop does not branch.
 
-    Either END being off the one transport — a token fan-in refuses, or a
-    content bridge that is not the ring — makes the shape off_ring, and only the
-    POST-DSP half goes away with it: fan-in serves Ring A or parks, so this
-    layer publishes Ring A either way and names no second route for the hop
-    outputd is not taking.
+    A content bridge that is not the ring makes the shape off_ring, and only the
+    POST-DSP half goes away with it: fan-in serves Ring A or parks, so this layer
+    publishes Ring A either way and names no second route for the hop outputd is
+    not taking.
     """
     topology = transport_topology_for_coupling(
-        coupling, outputd_env=outputd_env
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}
     ).to_dict()
 
     assert topology["name"] == TRANSPORT_OFF_RING
@@ -1263,12 +1184,11 @@ def test_an_off_ring_box_still_publishes_ring_a_and_no_post_dsp_hop(
     assert topology["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
 
 
-def test_an_unwritten_coupling_key_is_the_ring():
+def test_an_unwritten_box_is_the_ring():
     """The defect this replaced: an unset key resolved to a route ADR-0100
     deleted, so a healthy box the reconciler had not written yet was described
-    as running one. Undeclared IS the ring — on both ends."""
-    for coupling in (None, "", "   "):
-        assert transport_topology_for_coupling(coupling).name == COUPLING_SHM_RING
+    as running one. Undeclared IS the ring."""
+    assert transport_topology_for_coupling().name == COUPLING_SHM_RING
 
 
 def test_the_retired_aloop_active_lane_has_no_registered_capture_pairing(capsys):
@@ -1332,12 +1252,11 @@ def test_output_endpoint_evidence_marks_non_output_graph_unknown(tmp_path):
 
 def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():
     plan = build_audio_runtime_plan(
-        fanin_env={COUPLING_ENV_VAR: "loopback"},
         route_mode="solo",
     )
     payload = plan.to_dict()
 
-    assert payload["transport_topology"]["name"] == TRANSPORT_OFF_RING
+    assert payload["transport_topology"]["name"] == COUPLING_SHM_RING
     assert payload["correction_latency_eligibility"]["eligible"] is True
     assert (
         payload["correction_latency_eligibility"]["minimum_phase_or_iir"]
@@ -1499,7 +1418,6 @@ def test_usb_low_latency_accepts_coherent_shm_ring_pair():
     # ring-armed box's shipped low-latency claim goes permanently red (gap 8).
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         route_mode="solo",
     )
@@ -1521,7 +1439,6 @@ def test_coherent_shm_ring_preserves_camilla_device_mismatch_errors(tmp_path):
 
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         route_mode="solo",
         correction_config_path=str(config),
@@ -1532,34 +1449,21 @@ def test_coherent_shm_ring_preserves_camilla_device_mismatch_errors(tmp_path):
     assert any("wrong_ring_playback" in error for error in plan.route_policy_errors)
 
 
-def test_usb_low_latency_rejects_partial_ring_flip_fanin_only():
-    # shm_ring fan-in + direct outputd = partial flip -> rejected.
+def test_usb_low_latency_refuses_an_outputd_bridge_off_the_ring():
+    # The route's measured pair is Ring A plus a CENTRAL post-DSP ring; a bridge
+    # naming anything else is not that pair.
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "direct"},
         route_mode="solo",
     )
-    assert plan.route_policy_errors
-    assert any("partial flip" in e or "shm_ring" in e for e in plan.route_policy_errors)
-
-
-def test_usb_low_latency_rejects_partial_ring_flip_outputd_only():
-    # A retired fan-in token + shm_ring outputd = partial flip -> rejected.
-    plan = build_audio_runtime_plan(
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: "loopback"},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
-        route_mode="solo",
-    )
-    assert plan.route_policy_errors
+    assert ROUTE_POLICY_OUTPUTD_OFF_RING in plan.route_policy_reason_codes
 
 
 def test_usb_low_latency_accepts_the_one_transport():
     """A reconciled box — the ring named at both ends — certifies."""
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: COUPLING_SHM_RING},
         route_mode="solo",
     )
@@ -1567,9 +1471,7 @@ def test_usb_low_latency_accepts_the_one_transport():
 
 
 def test_transport_topology_for_shm_ring_names_both_ring_devices():
-    topo = transport_topology_for_coupling(
-        COUPLING_SHM_RING, fanin_env={}, outputd_env={}
-    ).to_dict()
+    topo = transport_topology_for_coupling(fanin_env={}, outputd_env={}).to_dict()
     assert topo["name"] == COUPLING_SHM_RING
     assert topo["fanin_to_camilla"]["transport"] == "shm_ring"
     assert topo["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
@@ -1612,7 +1514,6 @@ def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evide
 
     assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     errors = transport_coherence_report(
-        coupling=COUPLING_SHM_RING,
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         camilla_devices={
             "capture_device": "jts_ring_capture",
@@ -1646,7 +1547,6 @@ def test_transport_coherence_shm_ring_flags_a_ring_end_that_declares_another_wir
         ),
     )
     errors = transport_coherence_report(
-        coupling=COUPLING_SHM_RING,
         outputd_env={
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
@@ -1720,7 +1620,7 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
             period_frames=fc.RING_SLOT_FRAMES,
         ),
     )
-    topo = transport_topology_for_coupling(COUPLING_SHM_RING).to_dict()
+    topo = transport_topology_for_coupling().to_dict()
     assert topo["fanin_to_camilla"]["format"] == "S32_LE"
     assert topo["fanin_to_camilla"]["channels"] == 2
     assert topo["camilla_to_outputd"]["format"] == "S32_LE"
@@ -1759,7 +1659,6 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch
         ),
     )
     errors = transport_coherence_report(
-        coupling=COUPLING_SHM_RING,
         outputd_env={
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
@@ -1791,7 +1690,6 @@ def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees(monkeypatch):
     )
     assert (
         transport_coherence_report(
-            coupling=COUPLING_SHM_RING,
             outputd_env={
                 OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
                 "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
@@ -1810,7 +1708,6 @@ def test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing():
     # missing-evidence doctrine, same as an absent Camilla config.
     assert (
         transport_coherence_report(
-            coupling=COUPLING_SHM_RING,
             outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
             camilla_devices={
                 "capture_device": "jts_ring_capture",
@@ -1843,7 +1740,6 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
         ),
     )
     errors = transport_coherence_report(
-        coupling=COUPLING_SHM_RING,
         outputd_env={
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
             "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
@@ -1877,7 +1773,6 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
     )
     assert (
         transport_coherence_report(
-            coupling=COUPLING_SHM_RING,
             outputd_env={
                 OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
                 "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
@@ -1890,66 +1785,6 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
             },
         ).errors
         == ()
-    )
-
-
-@pytest.mark.parametrize("marker", ["", "1"], ids=["stereo", "active"])
-@pytest.mark.parametrize(
-    "bridge_lines,reported",
-    [
-        # STATED explicitly — the only way to be off the ring now. An ABSENT
-        # key used to appear here too, back when absence resolved `direct`; it
-        # resolves the RING now (outputd's own default), so that row moved to
-        # the coherent control below rather than being deleted.
-        ({"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}, "direct"),
-        # A retired lab spelling is equally off the ring, and equally a
-        # contradiction under a ring plan.
-        ({"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"}, "rate_match"),
-    ],
-)
-def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
-    marker, bridge_lines, reported
-):
-    """Ring A and the post-DSP ring are ONE coupling and must move together.
-
-    The half-flipped box this catches: fan-in is told to write Ring A while
-    outputd is still on its ALSA content lane, so CamillaDSP's capture side and
-    outputd's read side are on different transports and nothing crosses. It is
-    an ERROR whatever the endpoint marker says, which is why the marker is
-    parametrized — the guard reads the coupling and the bridge only, and a test
-    pinned to one marker would pass while the other silently lost its guard.
-
-    Kept distinct from the ring-path waypoint deliberately: this is not a
-    projection lagging its source. The bridge is a transport CHOICE with its own
-    writer, no derivation makes it converge, and no ladder rung creates this
-    state — so it refuses rather than notes.
-    """
-    outputd_env = {
-        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": marker,
-        "JASPER_OUTPUTD_SHM_RING_PATH": (
-            "/dev/shm/jts-ring/active-content.ring"
-            if marker
-            else "/dev/shm/jts-ring/content.ring"
-        ),
-        **bridge_lines,
-    }
-
-    report = transport_coherence.transport_coherence_report(
-        coupling="shm_ring", outputd_env=outputd_env
-    )
-
-    assert report.notes == (), report
-    bridge_errors = [e for e in report.errors if "must move together" in e]
-    assert len(bridge_errors) == 1, report.errors
-    assert f"JASPER_OUTPUTD_CONTENT_BRIDGE={reported}" in bridge_errors[0]
-    # ...and the shape says so too: one end off the transport puts the whole box
-    # off it, so no ring endpoint pair is published for a hop outputd is not
-    # taking.
-    assert (
-        transport_coherence.transport_topology_for_coupling(
-            "shm_ring", outputd_env=outputd_env
-        ).name
-        == TRANSPORT_OFF_RING
     )
 
 
@@ -1972,7 +1807,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
     )
 
     topology = transport_coherence.transport_topology_for_coupling(
-        "shm_ring", outputd_env=_MARKER_ARMED_ENV
+        outputd_env=_MARKER_ARMED_ENV
     )
 
     assert topology.name == TRANSPORT_DAC_CONTENT_RING
@@ -1984,7 +1819,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
     assert (
         topology.fanin_to_camilla["camilla_capture_device"]
         == transport_coherence.transport_topology_for_coupling(
-            "shm_ring", outputd_env={}
+            outputd_env={}
         ).fanin_to_camilla["camilla_capture_device"]
     )
 
@@ -2002,7 +1837,6 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
     healthy = transport_coherence.transport_coherence_report(
-        coupling="shm_ring",
         outputd_env=_MARKER_ARMED_ENV,
         camilla_devices={
             "capture_device": RING_CAPTURE_DEVICE,
@@ -2015,7 +1849,6 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
     # The SAME call with only the capture device changed: the one error is
     # produced by that difference and nothing else.
     stranded = transport_coherence.transport_coherence_report(
-        coupling="shm_ring",
         outputd_env=_MARKER_ARMED_ENV,
         camilla_devices={
             "capture_device": "jasper_content_capture",
@@ -2039,7 +1872,7 @@ def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
     all well" would send every consumer past a daemon that cannot start.
     """
     report = transport_coherence.transport_coherence_report(
-        coupling="shm_ring", outputd_env=_CONTRADICTED_ENV
+        outputd_env=_CONTRADICTED_ENV
     )
 
     assert len(report.errors) == 1, report
@@ -2049,7 +1882,7 @@ def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
     # start as the healthy Ring A + Ring B pair.
     assert (
         transport_coherence.transport_topology_for_coupling(
-            "shm_ring", outputd_env=_CONTRADICTED_ENV
+            outputd_env=_CONTRADICTED_ENV
         ).name
         == TRANSPORT_OFF_RING
     )
@@ -2089,7 +1922,6 @@ def test_an_undeclared_bridge_under_a_ring_plan_is_coherent(marker):
     demonstrably playing speaker SILENT.
     """
     report = transport_coherence.transport_coherence_report(
-        coupling="shm_ring",
         outputd_env={
             "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": marker,
             "JASPER_OUTPUTD_SHM_RING_PATH": (
@@ -2109,7 +1941,7 @@ def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch)
     The ACTIVE ring's width is the one axis that reads the saved topology, so an
     armed endpoint is where a pass would otherwise read it once per consumer.
     """
-    import jasper.fanin.ring_health as rh
+    import jasper.fanin.ring_readiness as rh
 
     outputd_env = {
         "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": "1",
@@ -2128,18 +1960,16 @@ def test_a_shared_topology_reader_reads_once_and_changes_no_verdict(monkeypatch)
     monkeypatch.setattr(rh, "load_topology_for_wire", _load)
 
     unshared = transport_coherence.transport_coherence_report(
-        coupling="shm_ring", outputd_env=outputd_env
+        outputd_env=outputd_env
     )
     assert len(reads) == 1
 
     reads.clear()
     shared = transport_coherence.transport_coherence_report(
-        coupling="shm_ring",
         outputd_env=outputd_env,
         read_saved_topology=read_saved_topology,
     )
     transport_coherence.transport_topology_for_coupling(
-        "shm_ring",
         outputd_env=outputd_env,
         read_saved_topology=read_saved_topology,
     )

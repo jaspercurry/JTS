@@ -762,55 +762,34 @@ async def test_a_blocked_prepare_names_the_guard_that_actually_owns_it(
 # 6. THE ARMED-TRANSPORT GATE AT THE LOAD ALTITUDE (#2412 Wave 3).
 #
 # The prepare gate is a pure builder and reads no daemon env, so it proves
-# COHERENCE, not LIVENESS: a ring/ring graph on a box whose fan-in is loopback-
-# coupled, or whose endpoint was never armed, is self-consistent, loads cleanly
-# and plays to nobody. The two conjuncts have two OWNERS — the coupling in
-# `fanin.env`, the ACTIVE-endpoint marker in `outputd.env`, one reconciler each —
-# so each case moves ONE term with the other armed, and a crossed
-# mutant-to-test mapping cannot score a survival.
+# COHERENCE, not LIVENESS: a ring/ring graph on a box whose endpoint was never
+# armed is self-consistent, loads cleanly and plays to nobody. Since ADR-0100
+# fan-in fills Ring A on every box, so the live term is the ACTIVE-endpoint
+# marker in `outputd.env` alone.
 # --------------------------------------------------------------------------
 
 
-_ABSENT_FILE = object()
-
-_FEED_UNARMED = "commissioning_ring_feed_unarmed"
 _ENDPOINT_UNARMED = "commissioning_active_endpoint_unarmed"
-# Each code carries its OWN reconciler's remedy and the two are not
-# interchangeable; no structured field carries the command, so it is asserted in
-# the household message.
-_REMEDY = {
-    _FEED_UNARMED: "jasper-fanin-coupling-reconcile",
-    _ENDPOINT_UNARMED: "jasper-audio-hardware-reconcile",
-}
+# The code carries its reconciler's remedy; no structured field carries the
+# command, so it is asserted in the household message.
+_REMEDY = {_ENDPOINT_UNARMED: "jasper-audio-hardware-reconcile"}
 
 
-def _ring_transport_state(monkeypatch, tmp_path, *, coupling, marker: str):
-    """Point BOTH reconciler-owned files at ``tmp_path`` and write the state.
+def _ring_transport_state(monkeypatch, tmp_path, *, marker: str):
+    """Point the reconciler-owned outputd.env at ``tmp_path`` and write the state.
 
-    Real files rather than stubbed predicates: the gate's contract is that it
-    reads each file FRESH on every call, and a monkeypatched predicate cannot
-    fail that way. ``coupling=None`` writes the file with the key ABSENT and
-    ``_ABSENT_FILE`` writes no file at all — the two shapes a box carries before
-    the reconciler has ever named a transport.
+    A real file rather than a stubbed predicate: the gate's contract is that it
+    reads it FRESH on every call, and a monkeypatched predicate cannot fail that
+    way.
     """
-    from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-    )
+    from jasper.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
 
-    fanin_env = Path(tmp_path) / "fanin.env"
     outputd_env = Path(tmp_path) / "outputd.env"
-    if coupling is not _ABSENT_FILE:
-        fanin_env.write_text(
-            "" if coupling is None else f"{COUPLING_ENV_VAR}={coupling}\n",
-            encoding="utf-8",
-        )
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
-    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
-    return fanin_env, outputd_env
+    return outputd_env
 
 
 def _ring_load_preflight(topology, preset, out_dir, device=RING_ACTIVE_PLAYBACK_DEVICE):
@@ -830,44 +809,33 @@ def _ring_load_preflight(topology, preset, out_dir, device=RING_ACTIVE_PLAYBACK_
 
 
 @pytest.mark.parametrize(
-    "coupling, marker, corrupt, blocked_by",
+    "marker, corrupt, blocked_by",
     [
-        ("shm_ring", "1", None, frozenset()),
-        ("", "1", None, frozenset()),
-        (None, "1", None, frozenset()),
-        (_ABSENT_FILE, "1", None, frozenset()),
-        ("loopback", "1", None, frozenset({_FEED_UNARMED})),
-        ("shm_ring", "0", None, frozenset({_ENDPOINT_UNARMED})),
-        ("shm_ring", "1", "fanin", frozenset({_FEED_UNARMED, _ENDPOINT_UNARMED})),
-        ("shm_ring", "1", "outputd", frozenset({_FEED_UNARMED, _ENDPOINT_UNARMED})),
+        ("1", False, frozenset()),
+        ("0", False, frozenset({_ENDPOINT_UNARMED})),
+        ("1", True, frozenset({_ENDPOINT_UNARMED})),
     ],
-    ids=["declared", "empty_value", "absent_key", "absent_file", "refused_token",
-         "endpoint_unarmed", "corrupt_fanin", "corrupt_outputd"],
+    ids=["armed", "endpoint_unarmed", "corrupt_outputd"],
 )
-async def test_the_guarded_load_verdict_follows_the_two_reconciler_files(
-    commissioning_box, tmp_path, monkeypatch, coupling, marker, corrupt, blocked_by,
+async def test_the_guarded_load_verdict_follows_the_reconciler_file(
+    commissioning_box, tmp_path, monkeypatch, marker, corrupt, blocked_by,
 ):
-    """The load gate's verdict, one term at a time, with the fully-armed control.
+    """The load gate's verdict, with the armed control.
 
-    ADR-0100 left one transport: ``jasper-fanin`` serves an absent key, an empty
-    value and ``shm_ring`` alike and refuses anything else as a config-class
-    fault (exit 78, the unit parks), so only a refused value says the ring is
-    unfed. A non-UTF-8 file raises ``UnicodeDecodeError`` — a ``ValueError``,
-    not an ``OSError`` — which would leave this preflight, the first caller to
-    read either file, and take the blocker with it; both conjuncts fail closed
-    there because a decode failure says nothing about which file was bad.
+    A non-UTF-8 file raises ``UnicodeDecodeError`` — a ``ValueError``, not an
+    ``OSError`` — which would leave this preflight, the first caller to read the
+    file, and take the blocker with it; it fails closed there instead.
     """
     topology, preset = commissioning_box
-    fanin_env, outputd_env = _ring_transport_state(
-        monkeypatch, tmp_path, coupling=coupling, marker=marker
-    )
-    if corrupt is not None:
-        target = fanin_env if corrupt == "fanin" else outputd_env
-        target.write_bytes(b"JASPER_FANIN_CAMILLA_COUPLING=\xff\xfeshm_ring\n")
+    outputd_env = _ring_transport_state(monkeypatch, tmp_path, marker=marker)
+    if corrupt:
+        outputd_env.write_bytes(
+            b"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=\xff\xfe1\n"
+        )
         # The byte really is undecodable, so this case cannot pass because the
         # file happened to stay readable.
         with pytest.raises(UnicodeDecodeError):
-            target.read_text(encoding="utf-8")
+            outputd_env.read_text(encoding="utf-8")
 
     preflight = _ring_load_preflight(topology, preset, tmp_path / "load")
 
@@ -893,14 +861,11 @@ async def test_the_guarded_load_verdict_follows_the_two_reconciler_files(
 async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     commissioning_box, tmp_path, monkeypatch,
 ):
-    """SCOPE: a non-ring graph needs no ring armed and consults neither file —
-    both are pointed at paths that do not exist, so the readers would refuse if
+    """SCOPE: a non-ring graph needs no ring armed and consults no file — it is
+    pointed at a path that does not exist, so the reader would refuse if
     consulted, and the gate passing is what says an unarmed fleet box on the
     ALSA active lane behaves as it did before the wave."""
     topology, preset = commissioning_box
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(tmp_path / "gone" / "fanin.env")
-    )
     monkeypatch.setattr(
         "jasper.env_load.OUTPUTD_ENV_PATH", str(tmp_path / "gone" / "outputd.env")
     )
@@ -913,36 +878,28 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     assert not _codes(preflight) & set(_REMEDY), preflight["issues"]
 
 
-@pytest.mark.parametrize(
-    "first, second, code",
-    [
-        (("loopback", "1"), ("shm_ring", "1"), _FEED_UNARMED),
-        (("shm_ring", "0"), ("shm_ring", "1"), _ENDPOINT_UNARMED),
-    ],
-    ids=["coupling", "marker"],
-)
 async def test_the_guarded_load_re_reads_the_transport_state_every_call(
-    commissioning_box, tmp_path, monkeypatch, first, second, code,
+    commissioning_box, tmp_path, monkeypatch,
 ):
     """The state is read FRESH per call, never cached from the first one.
 
     This preflight runs inside the long-lived control daemon and the
-    socket-activated wizards, which never ``EnvironmentFile=``d either file and
+    socket-activated wizards, which never ``EnvironmentFile=``d the file and
     stay alive across a reconcile: a reader that cached would keep refusing a
     box an operator had just armed.
     """
     topology, preset = commissioning_box
-    _ring_transport_state(monkeypatch, tmp_path, coupling=first[0], marker=first[1])
+    _ring_transport_state(monkeypatch, tmp_path, marker="0")
 
     blocked = _ring_load_preflight(topology, preset, tmp_path / "before")
-    assert code in _codes(blocked), blocked["issues"]
+    assert _ENDPOINT_UNARMED in _codes(blocked), blocked["issues"]
     assert _gate(blocked, "commissioning_transport_armed")["passed"] is False
 
-    _ring_transport_state(monkeypatch, tmp_path, coupling=second[0], marker=second[1])
+    _ring_transport_state(monkeypatch, tmp_path, marker="1")
     rearmed = _ring_load_preflight(topology, preset, tmp_path / "after")
 
     assert _gate(rearmed, "commissioning_transport_armed")["passed"] is True
-    assert code not in _codes(rearmed), rearmed["issues"]
+    assert _ENDPOINT_UNARMED not in _codes(rearmed), rearmed["issues"]
 
 
 # --------------------------------------------------------------------------
@@ -1262,7 +1219,7 @@ async def test_the_unattended_mute_proof_gains_no_caller():
         # "this box may BOOT, because nothing can make a sound"
         "jasper/active_speaker/runtime_contract.py::_flat_output_terminally_muted",
         # "this box may ARM ITSELF onto the ring, for the same reason"
-        "jasper/fanin/ring_health.py::_anchor_is_all_muted",
+        "jasper/fanin/ring_readiness.py::_anchor_is_all_muted",
     }, callers
 
 

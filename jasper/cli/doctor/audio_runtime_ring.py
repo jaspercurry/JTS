@@ -554,7 +554,7 @@ def _resolved_ring_wire():
     ``resolve_wire_for_gate``'s to report.
     """
     try:
-        from ...fanin.ring_health import resolve_wire_for_gate
+        from ...fanin.ring_readiness import resolve_wire_for_gate
 
         wire, _problem = resolve_wire_for_gate(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
@@ -991,7 +991,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.ring_health import (
+        from jasper.fanin.ring_readiness import (
             FANIN_ENV_PATH,
             resolve_effective_fanin_ring_slots,
         )

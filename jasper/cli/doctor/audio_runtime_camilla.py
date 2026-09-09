@@ -225,7 +225,6 @@ def check_audio_runtime_plan() -> CheckResult:
         f"profile={plan.profile_id}, route={plan.route_mode}, "
         f"route_profile={plan.route_profile.route_id}, "
         f"route_hash={plan.route_config_hash}, "
-        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value or '(unset)'}, "
         f"camilla_policy={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
         + (

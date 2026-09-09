@@ -204,7 +204,7 @@ def _endpoint_graph_refusal() -> str | None:
     and the surfaces that own that shape (``active_speaker_parked``,
     ``camilla_recover``) are already loud about it.
     """
-    from ..fanin.ring_health import (
+    from ..fanin.ring_readiness import (
         graph_at_active_ring_endpoint,
         read_loaded_camilla_graph,
     )

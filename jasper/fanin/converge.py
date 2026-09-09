@@ -13,8 +13,8 @@ human is not a working speaker, it is the #2261 park. This is the lever, pulled
 by the unattended pass at the three events that already exist: boot, deploy, and
 a DAC hotplug.
 
-IT IS ONE STEP, NOT A SEQUENCER. The already-landed gates decide whether this
-box may be on the ring — ``ring_roleful_unattended_ready`` (P6) is the whole
+IT IS ONE STEP, NOT A SEQUENCER. The ring readiness gates decide whether this
+box may be on the ring — ``ring_roleful_unattended_ready`` is the whole
 admission argument and none of it is restated here. This function only asks the
 questions those gates cannot: is the graph already there, and is the applied
 record still the truth. Then it moves the graph and lets the pass carry on.
@@ -57,6 +57,31 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 
+def _ring_gates() -> "tuple[tuple[str, object], ...]":
+    """The ring-readiness proofs a graph move must pass, in ONE order.
+
+    ORDER IS A DIAGNOSTIC DECISION, not cost: the coarser roleful-admission
+    refusal is the one an operator of a crossover box needs to read, then asset
+    presence before the two gates that READ those assets, then capability before
+    width (a plugin that cannot parse the wire's fields is a blunter refusal
+    than any per-end disagreement).
+
+    ``ring_topology_ready`` is deliberately absent: its roleful arm ends in
+    ``active_ring_endpoint_proof``, which reads the marker derived from the
+    graph this step has not moved yet, so requiring it would BE the fixed point
+    this step closes. The coupling reconcile that follows re-runs it, so it is
+    proved just after the write instead of before it.
+    """
+    from jasper.fanin import ring_readiness as rr
+
+    return (
+        ("ring_roleful_unattended", rr.ring_roleful_unattended_ready),
+        ("ring_assets", rr.ring_assets_ready),
+        ("ring_wire_caps", rr.ring_wire_caps_ready),
+        ("ring_edge_width", rr.ring_edge_width_ready),
+    )
+
+
 def _emit(result: str, *, reason: str, detail: str = "", level: int = logging.INFO) -> str:
     log_event(
         logger,
@@ -86,7 +111,8 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     from jasper.active_speaker.runtime_contract import (
         active_ring_channels_for_topology,
     )
-    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin import ring_readiness as rr
+    from jasper.fanin.coupling_reconcile import _start_audio_hardware_reconcile
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
     # Fail-closed on an unreadable topology: a graph move cannot be proved right
@@ -106,30 +132,19 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     # all-muted — both false forever on a box riding an applied baseline, so
     # asking it here would re-emit a commissioned box's graph at every boot,
     # deploy and hotplug.
-    graph = cr.read_loaded_camilla_graph()
+    graph = rr.read_loaded_camilla_graph()
     if graph.note:
         return _emit(
             "preflight_refused",
             reason=reason,
             detail=f"cannot read the loaded CamillaDSP graph ({graph.note})",
         )
-    converged, converged_detail = cr.graph_at_active_ring_endpoint(graph)
+    converged, converged_detail = rr.graph_at_active_ring_endpoint(graph)
     if converged:
         return _emit("already_converged", reason=reason, detail=converged_detail)
 
-    # PROVE BEFORE MOVING — FOUR of ``default_ring_gates()``'s five.
-    #
-    # THE ONE SKIPPED. ``ring_topology``'s roleful arm ends in
-    # ``active_ring_endpoint_proof``, which reads the marker derived from the
-    # graph this has not moved yet — requiring it here IS the fixed point. The
-    # coupling reconcile that follows re-runs it, so it is proved just after the
-    # write instead of before it.
-    #
-    # Every gate this runs comes from ``default_ring_gates()``, never a second
-    # list.
-    for name, gate in cr.default_ring_gates():
-        if name == "ring_topology":
-            continue
+    # PROVE BEFORE MOVING: a graph move is a hearing event (see _ring_gates).
+    for name, gate in _ring_gates():
         try:
             ok, detail = gate()
         except (OSError, ValueError) as exc:
@@ -184,7 +199,7 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
         return _emit(
             "reemit_refused", reason=reason, detail=detail, level=logging.WARNING
         )
-    kick_ok, kick_detail = cr._start_audio_hardware_reconcile(reason=reason)
+    kick_ok, kick_detail = _start_audio_hardware_reconcile(reason=reason)
     return _emit(
         "graph_reemitted",
         reason=reason,
@@ -228,29 +243,12 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
     except SystemExit as exc:  # the CLI's own parser.exit on a config error
         rc = int(exc.code or 0)
     except Exception as exc:  # noqa: BLE001 - availability wrap around an ENTIRE CLI
-        # BREADTH IS THE POINT HERE, and it is the one frame in this module where
-        # that is true. main()'s own converter turns exactly THREE classes into
-        # parser.exit — ActiveSpeakerConfigError, OutputTopologyError, OSError —
-        # so everything else the CLI's whole tree can raise (KeyError, TypeError,
-        # AttributeError, ImportError, RuntimeError, ...) arrives here live. Past
-        # this frame the box loses its RECONCILE, not merely its convergence,
-        # which is the contract this step exists to keep. The failure set of an
-        # entire CLI cannot be enumerated the way a module's own reads can.
-        #
-        # THREE CLAIMS, THREE EVIDENCE CLASSES, kept apart rather than blurred
-        # together as "reachable shapes":
-        #   MEASURED     the abort itself — a narrowed catch here drops the
-        #                unattended pass, run against this frame.
-        #   DEMONSTRATED a type-confused applied record reaching here, pinned by
-        #                the TypeError injection at _cmd_baseline_reemit in
-        #                tests/test_active_endpoint_convergence.py.
-        #   ARGUED       a mid-deploy ImportError, reasoned from the fact that
-        #                this pass runs WHILE install.sh rsyncs Python under it
-        #                and both modules lazy-import. Never reproduced.
-        #
-        # The THREE narrow catches elsewhere in this module (the topology read,
-        # the gate loop, the applied-record read) stay narrow — they guard this
-        # module's own reads, whose raise set really is derived.
+        # BREADTH IS THE POINT: main()'s own converter turns exactly three
+        # classes into parser.exit, so everything else the CLI's whole tree can
+        # raise arrives here live. Past this frame the box loses its RECONCILE,
+        # not merely its convergence. The three narrow catches elsewhere in this
+        # module guard this module's own reads, whose raise set really is
+        # derived, and stay narrow.
         return False, f"baseline-reemit raised: {type(exc).__name__}: {exc}"
     if rc == 0:
         return True, ""

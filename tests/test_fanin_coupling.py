@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from jasper.fanin_coupling import (
-    COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAPTURE_DEVICE,
@@ -17,8 +16,6 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMAT,
     RING_WIRE_FORMAT_WIDE,
     capture_kwargs_for_coupling,
-    coupling_value_removed,
-    resolve_coupling,
     resolve_ring_path,
     resolve_ring_slots,
     ring_capacity_frames,
@@ -27,32 +24,6 @@ from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
-from .fanin_env_fixtures import declare_fanin_env
-
-
-def test_resolve_coupling_names_the_ring_or_nothing():
-    # ONE transport (ADR-0100): the resolver either names it or answers None.
-    # None is "this file names no transport" — an unwritten key and a retired
-    # token alike — never a second route; `coupling_value_removed` is what tells
-    # those two apart.
-    assert resolve_coupling(" SHM_RING ") == COUPLING_SHM_RING
-    assert resolve_coupling("Shm_Ring") == COUPLING_SHM_RING
-    for raw in ("loopback", "fifo", "pipe", "disabled", "transport_pipe",
-                None, "", "  "):
-        assert resolve_coupling(raw) is None
-
-
-def test_coupling_value_removed_flags_every_token_but_the_ring():
-    # True iff present but not in VALID_COUPLINGS. Since ADR-0100 that includes
-    # `loopback` — the retired route a migrating box may still carry — alongside
-    # the older removed tokens and any typo. Unset / empty is NOT "removed": an
-    # absent key is the ordinary state of a box the reconciler has not written.
-    assert coupling_value_removed("loopback") is True
-    assert coupling_value_removed("transport_pipe") is True
-    assert coupling_value_removed("fifo") is True
-    assert coupling_value_removed("shm_ring") is False
-    assert coupling_value_removed(None) is False
-    assert coupling_value_removed("") is False
 
 
 def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
@@ -179,24 +150,13 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
 
     The emitters that reach this — jasper-web `/sound/`, jasper-correction-web
     `/sound/room/`, and the correction session's mid-EQ-apply re-emit — do not
-    `EnvironmentFile=` fanin.env, so `os.environ` carries no coupling token, and
-    a box that has never been written carries none on disk either. While the
-    loopback route existed that resolved to `{}` and the caller kept its dsnoop
-    defaults. With the ring the only transport, a `{}` fallthrough would emit a
-    graph whose capture names a lane nothing writes — a dead-lane CamillaDSP
-    config, applied silently in the middle of an EQ save. So: no env, no file,
-    the full ring topology.
+    `EnvironmentFile=` fanin.env. With the ring the only transport, a `{}`
+    fallthrough would emit a graph whose capture names a lane nothing writes — a
+    dead-lane CamillaDSP config, applied silently in the middle of an EQ save.
+    So: no env, no file, the full ring topology.
     """
     from jasper import fanin_coupling
 
-    # Nothing declares a coupling: not the process env, and not the file — which
-    # this test also proves is never consulted.
-    def _boom(*a, **k):
-        raise AssertionError("the capture kwargs must not depend on a coupling token")
-
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling", _boom
-    )
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
 
     assert fanin_coupling.coupling_capture_kwargs_from_env() == {
@@ -205,37 +165,6 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT_WIDE,
     }
-
-
-@pytest.mark.parametrize(
-    "fanin_text,wide",
-    [
-        ("", True),
-        ("JASPER_FANIN_CAMILLA_COUPLING=\n", True),
-        ("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", True),
-        ("JASPER_FANIN_CAMILLA_COUPLING=loopback\n", False),
-        ("JASPER_FANIN_CAMILLA_COUPLING=wat\n", False),
-    ],
-    ids=["absent_key", "empty", "declared", "retired_token", "typo"],
-)
-def test_assistant_wire_width_reads_the_file_through_the_shared_predicate(
-    monkeypatch, tmp_path, fanin_text, wide
-):
-    """The FILE-default half of `assistant_wire_is_wide`, on a wide-format box.
-
-    ADR-0100 left one transport, so `jasper-fanin` serves an absent key, an empty
-    value and the token alike; only a value it REFUSES (exit 78, the unit parks)
-    takes the box off the wide wire. Requiring the literal token here resolved
-    NARROW on every unwritten box while the daemon on it ran WIDE (#3655).
-    """
-    from jasper import fanin_coupling
-
-    declare_fanin_env(monkeypatch, tmp_path, fanin_text)
-
-    assert (
-        fanin_coupling.assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT_WIDE)
-        is wide
-    )
 
 
 # --- Ring B (outputd content bridge) vocabulary + coherence (P2) -------------

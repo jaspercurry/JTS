@@ -1862,7 +1862,6 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     # this is the cheap second layer, not the guarantee.
     for code in (
         "commissioning_transport_ends_disagree",
-        "commissioning_ring_feed_unarmed",
         "commissioning_active_endpoint_unarmed",
         "ring_wire_declaration_invalid",
         "commission_live_state_stale",

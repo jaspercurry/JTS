@@ -12,10 +12,10 @@ ONE TRANSPORT (ADR-0100). fan-in writes Ring A (program.ring) that CamillaDSP
 captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
 Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or,
 on a roleful box whose active endpoint is armed, to the ACTIVE ring
-(active-content.ring) via ``jts_ring_active_playback``. Both ends are ONE
-coherent state: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring`` (fanin.env) AND
-``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's path/slots
-(outputd.env). ``_outputd_actions`` is the single writer of that pair.
+(active-content.ring) via ``jts_ring_active_playback``. The post-DSP end is
+declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path/slots
+(outputd.env); ``_outputd_actions`` is its single writer. Ring A needs no
+declaration at all — fan-in fills it unconditionally (ADR-0100).
 
 NO FALLBACK. A pass writes the ring state and, when something moved, converges
 the daemons in the order :func:`_converge_ring` documents. A step that fails
@@ -23,8 +23,7 @@ reports ``ok=False`` and the box PARKS visibly through
 :mod:`jasper.control.transport_park`; recovery from a bad deploy is
 ``git revert`` + redeploy (ADR-0100).
 
-SINGLE WRITER of the topology keys it owns: ``JASPER_FANIN_CAMILLA_COUPLING``
-in ``/var/lib/jasper/fanin.env`` and the Ring B bridge keys in
+SINGLE WRITER of the topology keys it owns: the Ring B bridge keys in
 ``/var/lib/jasper/outputd.env``. The order-preserving single-key helpers
 (:mod:`jasper.env_file`) leave neighboring operator/reconciler lines intact.
 
@@ -47,11 +46,7 @@ from typing import IO
 
 from jasper.atomic_io import (
     CONFIG_FILE_MODE,
-    ENV_FILE_LOCK_TIMEOUT_SECONDS,
-    advisory_file_lock,
-    atomic_write_text,
     env_key_action,
-    env_lock_path,
     locked_upsert_env_file,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
@@ -68,43 +63,23 @@ from jasper.fanin.latency_mode import (
     read_requested_mode as read_usb_latency_mode,
 )
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
-    RING_WIRE_FORMAT,
-    RING_WIRE_FORMAT_ENV_VAR,
-    RING_WIRE_FORMAT_WIDE,
-    assistant_wire_is_wide,
-    read_declared_ring_wire_format,
     resolve_outputd_ring_path,
     resolve_outputd_ring_slots,
-    resolve_ring_wire_format,
 )
 from jasper.log_event import log_event
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
-from jasper.fanin.ring_health import (
-    _anchor_is_all_muted,
+from jasper.fanin.ring_readiness import (
     _EnvSnapshot,
     _read_snapshot,
-    _staged_anchor_identity,
-    read_loaded_camilla_graph,
     resolve_effective_fanin_ring_slots,
     resolve_effective_fanin_wire_format,
-    ring_assets_ready,
-    ring_edge_width_ready,
     ring_endpoint_anchor_converged,
-    ring_topology_ready,
-    ring_wire_caps_ready,
-)
-
-# Nothing below reads this; jasper/fanin/converge BINDs it on this module, so
-# moving it is a behaviour change, not a rename.
-from jasper.fanin.ring_health import (
-    graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
 )
 from jasper.logging_setup import configure_logging
 
@@ -113,22 +88,24 @@ logger = logging.getLogger(__name__)
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
-# NOT part of the ordered audio-graph bounce. jasper-voice is restarted by this
-# module for exactly ONE reason: a coupling flip changed the box's resolved
-# ASSISTANT wire width, which voice resolves once at start. See
-# :func:`_try_restart_voice`.
-VOICE_UNIT = "jasper-voice.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
 # actions into outputd.env. It is the single writer of
 # ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the spine below starts it
 # before restarting outputd — see :func:`_converge_ring`.
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
-# Legacy env key of a deleted coupling (the Camilla -> outputd File playback
-# pipe). Nothing writes it; retained ONLY so ``_outputd_actions`` can UNSET a
-# stale value off a migrating box's outputd.env. A one-way migration sweep
-# target, not vocabulary.
+# Legacy env keys of deleted selectors. Nothing writes either; each is retained
+# ONLY so a reconcile pass can UNSET a stale value off a migrating box's env
+# file. One-way migration sweeps, not vocabulary.
+#
+# Remove once every deployed Pi has booted a build carrying this sweep; the
+# Camilla -> outputd File playback pipe (ADR-0100).
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
+# Remove once every deployed Pi has booted a build carrying this sweep; the
+# fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
+# still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
+# behind here would park the unit.
+_LEGACY_FANIN_COUPLING_ENV = "JASPER_FANIN_CAMILLA_COUPLING"
 
 # Cross-invocation serialization of the reconcile ENTRY verbs.
 # NOT under /run/jasper — that is jasper-voice's RuntimeDirectory, reaped on
@@ -235,71 +212,6 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
     :data:`_CAMILLA_START_TIMEOUT_SEC` budgets it as a dependency.
     """
     return _restart_unit(FANIN_UNIT, reason=reason, timeout=8.0)
-
-
-def _try_restart_voice(reason: str) -> tuple[bool, str]:
-    """``try-restart`` jasper-voice through the broker. (ok, detail).
-
-    ``try-restart``, not ``restart``, and the difference is load-bearing: a
-    stopped jasper-voice must STAY stopped. A no-mic box parks the unit through
-    its ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` gate, and an
-    operator can stop it deliberately; a coupling flip is not permission to
-    start either one. ``try-restart`` is a no-op on an inactive unit.
-
-    Not in ``_CRASH_BUDGET_UNITS``: this fires only on an actual width
-    TRANSITION — at most once per coupling flip — so it cannot walk the
-    start-limit window the way the per-transaction fan-in bounces could.
-    """
-    return _restart_unit(VOICE_UNIT, verb="try-restart", reason=reason, timeout=8.0)
-
-
-def _assistant_width_token(env_path: str | Path) -> str:
-    """The box's resolved ASSISTANT wire width, from the persisted files.
-
-    Read through :func:`jasper.fanin_coupling.assistant_wire_is_wide` — the same
-    rule ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls and
-    ``jasper-voice`` resolves at start — so this observes the transition voice
-    would observe.
-
-    BOTH halves come from ``env_path`` when it declares them, and only then fall
-    back to the standard ``jasper.env`` -> ``fanin.env`` chain (where the format
-    key may legitimately live in the base file). With an explicit path, reading
-    the coupling from the caller's file and the format from a module constant
-    would make the predicate only accidentally coherent.
-    """
-    try:
-        try:
-            text = Path(env_path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            # NO FILE is a declaration of nothing on both halves — the
-            # ``EnvironmentFile=-`` state `persisted_coupling_feeds_ring` reads
-            # as the ring, with the format falling back to the chain below. A
-            # file that EXISTS but cannot be read is different and is NOT caught
-            # here: it falls to the narrow `except` below.
-            text = ""
-        raw_format = read_value(text, RING_WIRE_FORMAT_ENV_VAR)
-        wire_format = (
-            resolve_ring_wire_format(raw_format)
-            if raw_format is not None
-            else read_declared_ring_wire_format()
-        )
-        wide = assistant_wire_is_wide(
-            wire_format=wire_format,
-            # The RAW token, not `read_persisted_coupling`'s resolved answer:
-            # the transport half turns on the REFUSED value, which "the ring or
-            # nothing" cannot spell. `or ""` keeps this half AUTHORITATIVE —
-            # `assistant_wire_is_wide` reads `None` as "not supplied" and would
-            # fall back to the default fanin.env, discarding the caller's
-            # env_path. A file naming no transport is the ring (ADR-0100).
-            coupling=read_value(text, COUPLING_ENV_VAR) or "",
-        )
-    except (OSError, ValueError):
-        # An unreadable/typo'd declaration is fan-in's fault to report (it parks
-        # at exit 78). Resolving narrow here matches what jasper-voice resolves
-        # in the same situation (`jasper.audio_io.tts_wire_is_wide` catches the
-        # same two and returns False), so the comparison stays honest.
-        return RING_WIRE_FORMAT
-    return RING_WIRE_FORMAT_WIDE if wide else RING_WIRE_FORMAT
 
 
 # How long a blocking START of jasper-camilla may take.
@@ -463,12 +375,11 @@ def _daemon_op_ceiling_sec(
 
 # Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
 # the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
-# 10 s), and five :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS` waits (10 s each: the
-# combo write, the fanin and outputd writes, and both ``_restore_snapshot``
-# calls on the failure path) — the in-process figures
-# jasper-fanin-coupling-auto.service's own tally carries, which no broker
+# 10 s), and three :data:`~jasper.atomic_io.ENV_FILE_LOCK_TIMEOUT_SECONDS` waits
+# (10 s each: the combo write and the fanin and outputd writes) — the in-process
+# figures jasper-fanin-coupling-auto.service's own tally carries, which no broker
 # multiplier touches.
-_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 89.0
+_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 69.0
 
 
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
@@ -500,9 +411,6 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
         _COUPLING_AUTO_NON_DAEMON_WORK_SEC
         + op(_HARDWARE_RECONCILE_TIMEOUT_SEC, False)  # endpoint-convergence kick
         + spine
-        # An assistant-width TRANSITION inside the pass try-restarts voice. Not
-        # a crash-budget unit, so no reset preamble.
-        + op(8.0, False)
         + combo
         + op(_KICK_ACCEPT_TIMEOUT_SEC, False)  # grouping re-bake kick
     )
@@ -757,55 +665,30 @@ def reconcile_coupling(
     reason: str,
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
-    apply: bool = True,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     reconcile_camilla: "DaemonOp | None" = None,
     kick_hardware_reconcile: "DaemonOp | None" = None,
-    restart_voice: "DaemonOp | None" = None,
 ) -> CouplingResult:
-    """Converge the box onto the ring, then bound the two transients it can open.
+    """Converge the box onto the ring, then kick the bonded leader's re-bake.
 
-    The convergence itself is :func:`_converge_ring`; this wrapper adds the two
-    things that must happen AROUND it rather than inside.
+    The convergence itself is :func:`_converge_ring`; this wrapper adds the one
+    thing that must happen AROUND it rather than inside.
 
     THE BONDED LEADER'S BAKED CAPTURE. A bonded ACTIVE leader's camilla#1 carries
     the coupling's capture device, baked at BOND time; nothing else re-derives it
     when this pass moves the env, and the two units are unordered — so a pass
-    that moved the coupling kicks the grouping re-bake.
-
-    THE ASSISTANT WIRE. The box's assistant IPC width is ``wire_format ==
-    S32_LE`` AND a coupling fan-in does not refuse
-    (:func:`jasper.fanin_coupling.assistant_wire_is_wide`), and ``jasper-voice``
-    resolves it ONCE at start — it is not restarted by the ordered audio-graph
-    bounce. So a pass that moves the coupling can leave voice speaking the old
-    width into a fan-in that now expects the other one. That is converted
-    losslessly and logged (``event=fanin.tts_wire_width_mismatch``), but without
-    this it is a STANDING disagreement rather than a transient. Comparing the
-    resolved width across the pass and issuing one ``try-restart`` makes the
-    window the length of a convergence.
-
-    Both reads are file-fresh and go through the same rule voice uses. The
-    restart is best-effort: a failure is logged and never changes the pass's
-    verdict, because the coupling IS converged either way.
+    that moved the env kicks the grouping re-bake.
     """
-    # REMOVE once no box carries a refused coupling token: that is the only
-    # `before` state whose width this pass can move.
-    before = _assistant_width_token(env_path)
     result = _converge_ring(
         reason=reason,
         env_path=env_path,
         outputd_env_path=outputd_env_path,
-        apply=apply,
         restart_fanin=restart_fanin,
         restart_outputd=restart_outputd,
         reconcile_camilla=reconcile_camilla,
         kick_hardware_reconcile=kick_hardware_reconcile,
     )
-    if not apply:
-        # Staging/migration writes the env but runs no daemon ops; restarting
-        # voice here would be the one daemon op an apply=False pass performed.
-        return result
     if result.changed and result.ok:
         # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
         # (TimeoutStartSec=6546) and killing the client would not cancel the
@@ -821,25 +704,6 @@ def reconcile_coupling(
             reason=reason, detail=kick_detail or None,
             level=logging.INFO if kicked else logging.WARNING,
         )
-    after = _assistant_width_token(env_path)
-    if after == before:
-        return result
-    do_restart_voice = restart_voice or (lambda: _try_restart_voice(reason=reason))
-    ok, detail = do_restart_voice()
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result=(
-            "assistant_width_voice_restarted"
-            if ok
-            else "assistant_width_voice_restart_failed"
-        ),
-        reason=reason,
-        assistant_width_before=before,
-        assistant_width_after=after,
-        detail=detail or None,
-        level=logging.INFO if ok else logging.WARNING,
-    )
     return result
 
 
@@ -848,7 +712,6 @@ def _converge_ring(
     reason: str,
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
-    apply: bool = True,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     reconcile_camilla: "DaemonOp | None" = None,
@@ -875,9 +738,8 @@ def _converge_ring(
     the shared fan-in daemon.
 
     NOTHING IS ROLLED BACK: a failing step returns ``ok=False`` with the reason
-    and the box parks under its own name. ``apply=False`` writes the env only
-    (staging/migration). The daemon ops are injectable for tests and default to
-    the real broker + reconcile_current_dsp.
+    and the box parks under its own name. The daemon ops are injectable for
+    tests and default to the real broker + reconcile_current_dsp.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
@@ -897,7 +759,7 @@ def _converge_ring(
 
     fanin_new_text, fanin_changed = _apply_action(
         fanin_snapshot.text,
-        RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_SHM_RING),
+        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
     )
     outputd_new_text, outputd_changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(outputd_snapshot.text)
@@ -926,9 +788,7 @@ def _converge_ring(
                 fanin_new_text, _ = _write_env_actions(
                     fanin_snapshot.path,
                     lambda _text: (
-                        RuntimeEnvAction(
-                            "set", COUPLING_ENV_VAR, COUPLING_SHM_RING
-                        ),
+                        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
                     ),
                 )
             if outputd_changed:
@@ -936,8 +796,6 @@ def _converge_ring(
                     outputd_snapshot.path, _outputd_actions
                 )
         except OSError as e:
-            _restore_snapshot(fanin_snapshot)
-            _restore_snapshot(outputd_snapshot)
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
@@ -959,16 +817,6 @@ def _converge_ring(
         )
 
     _sync_process_env_for_emit(outputd_new_text)
-
-    if not apply:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="written",
-            changed=changed,
-            reason=reason,
-        )
-        return CouplingResult(ok=True, changed=changed)
 
     # GEOMETRY HEALS, every pass — not only when the coupling-flip WRITE moves.
     # A box already on the ring with a stale slot count or a stale on-disk ring
@@ -1103,7 +951,6 @@ def reconcile_auto(
     reason: str = "auto",
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
-    apply: bool = True,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
     usb_latency_mode: str | None = None,
@@ -1245,7 +1092,6 @@ def reconcile_auto(
         reason=reason,
         env_path=env_path,
         outputd_env_path=outputd_env_path,
-        apply=apply,
         restart_fanin=restart_fanin,
         restart_outputd=restart_outputd,
         reconcile_camilla=reconcile_camilla,
@@ -1257,7 +1103,7 @@ def reconcile_auto(
     # the new combo is not live until fan-in restarts. Issue one —
     # CamillaDSP-coordinated so it cannot RTTIME-SIGKILL camilla off the ring.
     restarted_for_combo = False
-    if apply and combo_changed and not coupling_result.restarted_fanin:
+    if combo_changed and not coupling_result.restarted_fanin:
         do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
         do_stop_camilla = stop_camilla or (lambda: _stop_camilla(reason=reason))
         do_start_camilla = start_camilla or (lambda: _start_camilla(reason=reason))
@@ -1355,158 +1201,6 @@ CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
 # and from the refusal reason, so the journal AND the operator's stdout line say
 # which of the three happened.
 CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
-
-
-def ring_topology_ready_strict() -> tuple[bool, str]:
-    """``ring_topology_ready`` fail-CLOSED on an unreadable topology.
-
-    See the ``strict_unreadable`` note on :func:`ring_topology_ready`: a
-    topology this pass cannot read cannot prove anything about the graph it
-    would move.
-    """
-    return ring_topology_ready(strict_unreadable=True)
-
-
-def ring_roleful_unattended_ready() -> tuple[bool, str]:
-    """May an unattended pass MOVE a ROLEFUL box's graph? Fail-closed, two arms.
-
-    It refuses by DEFAULT and admits exactly two proven graph shapes. Both arms
-    are about the GRAPH's provenance — never about the box's topology SHAPE,
-    which :func:`ring_topology_ready` owns one gate later:
-
-    1. **A hardware-fingerprint-matched applied baseline** —
-       :func:`~jasper.active_speaker.baseline_profile.applied_baseline_hardware_match`,
-       the same predicate the emitter fails closed on. What a converging pass
-       then moves is the graph a human already approved for THIS hardware, with
-       driver values byte-preserved. A real DAC swap fails the fingerprint and
-       lands in the default refusal.
-    2. **The all-muted staged anchor** — the loaded graph IS this box's published
-       anchor (:func:`_staged_anchor_identity`) AND every output it declares ends
-       in a wired terminal mute (:func:`_anchor_is_all_muted`). It emits silence,
-       so it cannot be a hearing event on any hardware.
-
-    SCOPE, held deliberately narrow: arm 1 is the fingerprint compare ONLY.
-    Applied-record DIVERGENCE (``applied_profile_displacement``) is another
-    gate's question and is NOT asked here.
-
-    Everything else refuses, fail-CLOSED: an unreadable topology, no applied
-    record and no anchor, a stale fingerprint, an anchor that is not terminally
-    muted. The refusal names the runnable arm so a refused box has a way out.
-
-    A CORRUPT applied record is caught HERE rather than left to the caller.
-    ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
-    own loader catches, but a non-UTF-8 byte — the SD-card / power-cut
-    truncation — raises ``UnicodeDecodeError`` straight past it, and the
-    caller's ``except`` would turn that into the one refusal in this gate
-    carrying no remediation. The SHARED loader is deliberately not widened; it
-    has other callers whose contracts are theirs.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        applied_baseline_hardware_match,
-        load_applied_baseline_profile_state,
-    )
-    from jasper.active_speaker.runtime_contract import classify_output_contract
-    from jasper.output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
-
-    try:
-        topology = load_output_topology_strict()
-        contract = classify_output_contract(topology)
-    except (OutputTopologyError, OSError, ValueError) as exc:
-        return False, (
-            f"topology unreadable ({exc}); an unattended pass cannot prove this "
-            "box is not roleful, so it leaves the graph alone (fail-closed)"
-        )
-    if not contract.requires_roleful_graph:
-        return True, "topology is not roleful"
-
-    # Arm 1 — an applied baseline that still matches this hardware.
-    stale_detail = ""
-    try:
-        applied = load_applied_baseline_profile_state()
-    except (OSError, ValueError) as exc:
-        applied = None
-        stale_detail = (
-            f"the applied active-speaker record could not be read "
-            f"({type(exc).__name__})"
-        )
-    if applied is not None:
-        _snapshot, hardware_issues = applied_baseline_hardware_match(
-            topology, applied_profile=applied
-        )
-        if not hardware_issues:
-            return True, (
-                "roleful, and this box's applied active-speaker profile still "
-                "matches the hardware (topology identity and fingerprint both "
-                "current), so a converging pass moves the graph a human already "
-                "approved for these drivers"
-            )
-        stale_detail = "; ".join(
-            str(issue.get("code", "")) for issue in hardware_issues
-        )
-
-    # Arm 2 — the all-muted staged anchor.
-    graph = read_loaded_camilla_graph()
-    anchor_detail = graph.note or ""
-    if not graph.note:
-        is_anchor, identity_problem = _staged_anchor_identity(graph)
-        if is_anchor:
-            muted, mute_problem = _anchor_is_all_muted(graph)
-            if muted:
-                return True, (
-                    "roleful, but the loaded graph IS this box's published "
-                    "all-muted startup anchor, which emits silence on any "
-                    "hardware"
-                )
-            anchor_detail = mute_problem
-        else:
-            anchor_detail = identity_problem
-
-    return False, (
-        "roleful topology, and neither proven arm holds: the applied baseline "
-        f"({stale_detail or 'no applied active-speaker profile on this box'}) "
-        f"and the all-muted staged anchor ({anchor_detail}). Leaving the graph "
-        "where it is; re-apply the speaker profile at /sound/setup/, then run "
-        "`jasper-fanin-coupling-reconcile shm_ring`."
-    )
-
-
-# THE ring preflights, in ONE order.
-#
-# ORDER IS A DIAGNOSTIC DECISION, not cost. Each gate sits ahead of the gates
-# whose answers would be MEANINGLESS or MISLEADING without it: topology
-# eligibility first, because a box that resolves no ring width makes the wire
-# question ill-posed (``resolve_ring_wire`` falls back to the shipped stereo
-# declaration there, so a wire mismatch would name the wrong defect on a roleful
-# box); asset presence before the two gates that READ those assets; capability
-# before width, because a plugin that cannot parse the wire's fields is a
-# blunter refusal than any per-end disagreement.
-_SHARED_RING_PREFLIGHTS: tuple[tuple[str, RingGate], ...] = (
-    ("ring_topology", ring_topology_ready_strict),
-    ("ring_assets", ring_assets_ready),
-    ("ring_wire_caps", ring_wire_caps_ready),
-    ("ring_edge_width", ring_edge_width_ready),
-)
-
-
-def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
-    """The ring preflights an unattended graph move must pass, in one order.
-
-    Its one caller is :func:`jasper.fanin.converge.converge_active_endpoint`,
-    which runs this set before re-emitting a roleful box's graph onto the ACTIVE
-    ring — a graph move is a hearing event, so it is proved first. These are NOT
-    a transport decision: the ring is the only transport (ADR-0100) and a box
-    that fails them parks under its own name rather than resolving a route.
-
-    The order is :data:`_SHARED_RING_PREFLIGHTS`' (documented there); this
-    prepends ``ring_roleful_unattended``, the coarser question, because its
-    refusal is the one an operator of a crossover box needs to read.
-    """
-    return (
-        ("ring_roleful_unattended", ring_roleful_unattended_ready),
-    ) + _SHARED_RING_PREFLIGHTS
 
 
 def _migrate_stale_fanin_ring_slots(
@@ -1746,31 +1440,6 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     return deleted
 
 
-def _restore_snapshot(snapshot: _EnvSnapshot) -> None:
-    """Restore the env file to its pre-write contents. Best-effort.
-
-    Runs from ``_converge_ring``'s except branch, after ``_write_env_actions``
-    already released the per-file lock — so the rollback write reacquires it
-    under the same shape.
-    """
-    try:
-        with advisory_file_lock(
-            env_lock_path(os.fspath(snapshot.path)),
-            timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS,
-        ):
-            if snapshot.existed:
-                atomic_write_text(
-                    snapshot.path,
-                    snapshot.text,
-                    mode=CONFIG_FILE_MODE,
-                    preserve_target_owner=True,
-                )
-            elif snapshot.path.exists():
-                snapshot.path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
 def _write_env_actions(
     path: Path,
     build_actions: Callable[[str], tuple[RuntimeEnvAction, ...]],
@@ -1860,8 +1529,9 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     one end reading or writing a ring nobody serves.
 
     It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key — a
-    one-way migration sweep so a box that once armed it converges clean on its
-    next reconcile.
+    one-way migration sweep (see its constant) so a box that once armed it
+    converges clean on its next reconcile. The fanin.env half of the pass sweeps
+    ``JASPER_FANIN_CAMILLA_COUPLING`` the same way.
 
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     outputd enforces a biconditional between the two — the active ring file may
@@ -1927,7 +1597,7 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     write uses, so the in-process env can never carry a different ring than the
     file just written.
     """
-    os.environ[COUPLING_ENV_VAR] = COUPLING_SHM_RING
+    os.environ.pop(_LEGACY_FANIN_COUPLING_ENV, None)
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
     os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
@@ -2110,11 +1780,6 @@ def main(argv: "list[str] | None" = None) -> int:
         ),
     )
     parser.add_argument("--reason", default="cli")
-    parser.add_argument(
-        "--no-apply",
-        action="store_true",
-        help="write the env only; skip the daemon transition (staging).",
-    )
     args = parser.parse_args(argv)
     _modes = [args.auto, args.coupling is not None]
     if sum(bool(m) for m in _modes) > 1:
@@ -2175,10 +1840,10 @@ def _run_entry_verb(args) -> int:
 
     # Converge the ACTIVE endpoint before the ring convergence reads it.
     # Inside the entry flock, so it can never interleave with another pass.
-    # UNATTENDED PATH ONLY, and skipped under --no-apply, which promises
-    # env-only staging. A refusal is NOT an abort: it leaves the box as it found
-    # it and the box parks under its own name if nothing carries its program.
-    if args.auto and not args.no_apply:
+    # UNATTENDED PATH ONLY. A refusal is NOT an abort: it leaves the box as it
+    # found it and the box parks under its own name if nothing carries its
+    # program.
+    if args.auto:
         from jasper.fanin.converge import converge_active_endpoint
 
         # Guarded because this step runs BEFORE the rest of the pass: a
@@ -2201,7 +1866,7 @@ def _run_entry_verb(args) -> int:
             )
 
     if args.auto:
-        auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
+        auto = reconcile_auto(reason=args.reason)
         print(
             f"coupling auto: gadget={auto.gadget_present} "
             f"usb_intent={auto.usb_intent_enabled} "
@@ -2217,10 +1882,7 @@ def _run_entry_verb(args) -> int:
         )
         return 0 if auto.ok else 1
 
-    result = reconcile_coupling(
-        reason=args.reason,
-        apply=not args.no_apply,
-    )
+    result = reconcile_coupling(reason=args.reason)
     print(
         f"coupling reconcile: ok={result.ok} changed={result.changed} "
         f"outputd={result.restarted_outputd} fanin={result.restarted_fanin} "

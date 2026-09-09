@@ -320,7 +320,6 @@ def _empty_transport() -> dict[str, Any]:
 
 def _transport_state(
     *,
-    coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None,
     topology: Any,
@@ -347,7 +346,6 @@ def _transport_state(
     from ..transport_coherence import transport_coherence_report
 
     report = transport_coherence_report(
-        coupling=coupling,
         outputd_env=dict(outputd_env),
         camilla_devices=camilla_devices,
     )
@@ -430,7 +428,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         DEFAULT_CAMILLA_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from ..fanin_coupling import COUPLING_ENV_VAR
     from ..output_topology import load_output_topology
 
     evidence = output_endpoint_evidence_from_statefiles(
@@ -448,13 +445,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     # second read of the same two files: this sampler runs every 60 s.
     outputd_env = dict(plan.outputd_env)
     return _transport_state(
-        # The plan's resolved COUPLING TOKEN, never `plan.transport_topology`'s
-        # shape NAME. `transport_coherence_report` re-derives the shape itself
-        # from that token plus outputd's bridge and endpoint marker, so a shape
-        # name here reads as a token naming no transport — on an armed roleful
-        # box the shape is `shm_ring_active`, which is not a coupling, and the
-        # substitution reported a playing speaker as parked (#2376).
-        coupling=str(plan.setting(COUPLING_ENV_VAR).value),
         outputd_env=outputd_env,
         camilla_devices=evidence.devices,
         topology=load_output_topology(),

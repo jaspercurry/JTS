@@ -506,10 +506,10 @@ def _stage_ring_geometry(
     monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_A_PROGRAM_FILE", str(program))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env)
+        "jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env)
     )
     return fanin_env, program
 
@@ -782,7 +782,7 @@ def test_any_missing_asset_is_a_hard_fail(monkeypatch, tmp_path, staged):
 
     There is no second transport to degrade onto: the graph cannot resolve its
     ring devices at all, so there is no "loopback still carries audio" warn to
-    fall back to. The verdict must not depend on read_persisted_coupling, so
+    fall back to. The verdict must not depend on a transport declaration, so
     this never stubs it, and it must never open-probe a live ring.
     """
     _stage_assets(monkeypatch, tmp_path, **staged)
@@ -984,20 +984,11 @@ def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
     assert not ring.exists(), "residue left behind after a failed probe"
 
 
-# --- The verdict is independent of the persisted token ----------------
+# --- The verdict is unconditional -------------------------------------------
 
 
-def _arm_ring(monkeypatch):
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
-
-
-def test_a_missing_asset_fails_whatever_the_persisted_token_says(
-    monkeypatch, tmp_path
-):
-    """The verdict does NOT turn on the coupling any more, and that is the fix.
+def test_a_missing_asset_fails(monkeypatch, tmp_path):
+    """The verdict does NOT turn on a transport declaration, and that is the fix.
 
     It used to: an armed box FAILED and an unarmed one merely WARNED "inert
     platform incomplete (loopback still active)". ADR-0100 retired that route,
@@ -1005,21 +996,12 @@ def test_a_missing_asset_fails_whatever_the_persisted_token_says(
     claimed a transport the box does not have — a speaker emitting nothing,
     reported as degraded-but-playing, which is exactly the reported-as-healthy
     case the transport parks exist to prevent.
-
-    Both polarities are driven, because one alone would also pass against a
-    check that still branched and happened to be tested on the branch that
-    matches.
     """
     _stage_assets(monkeypatch, tmp_path, so=False)
 
-    def _verdict(label):
-        res = audio_runtime_ring.check_ring_platform_assets()
-        assert res.status == "fail", label
-        assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING, label
-
-    _verdict("persisted token not rewritten yet")
-    _arm_ring(monkeypatch)
-    _verdict("persisted token names the ring")
+    res = audio_runtime_ring.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING
 
 
 # --- The open-probe asks for what the CONF.D DECLARES, never the resolver ----
