@@ -545,8 +545,8 @@ pub fn run_host_clock_thread(
     // shutdown path. A stopped thread must NEVER leave the host slaved.
     // A panic here aborts the whole process (workspace `panic = "abort"`,
     // shared across the binary's dependency graph) instead of unwinding to
-    // this point, so SIGKILL / watchdog is the only recovery path for that
-    // case: the unit's combo-gated ExecStopPost belt-and-braces (C6).
+    // this point: the process exits via SIGABRT, and the unit's combo-gated
+    // ExecStopPost neutralizes the pitch immediately (C6).
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
     hc.set_control_status(actuator.status(signals.capture_generation.load(Ordering::Relaxed)));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
