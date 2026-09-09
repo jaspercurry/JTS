@@ -446,32 +446,6 @@ async def _audition_profile(
     return payload
 
 
-async def audition_profile(
-    profile: SoundProfile,
-    *,
-    audition_mode: str = "draft",
-    profile_path: str | Path,
-    library_path: str | Path | None = None,
-    config_dir: str | Path,
-    camilla_factory: Callable[[], Any] = _camilla,
-) -> dict[str, Any]:
-    """Public backend seam for reversible preference-EQ auditions.
-
-    The web route and the calibration-advisor action runner share this
-    implementation, so model-suggested auditions inherit ``/sound/audition``'s
-    config validation, room-PEQ preservation and no-persist semantics.
-    """
-
-    return await _audition_profile(
-        profile,
-        audition_mode=audition_mode,
-        profile_path=profile_path,
-        library_path=library_path,
-        config_dir=config_dir,
-        camilla_factory=camilla_factory,
-    )
-
-
 async def _live_draft_profile(
     profile: SoundProfile,
     *,

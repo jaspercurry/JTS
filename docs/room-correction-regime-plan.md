@@ -102,10 +102,8 @@ later direct-sound recheck establish different claims.
 Room v1 remains IIR magnitude correction. Inverting a room's non-minimum-phase
 response at one seat does not repair it throughout the listening area. FIR with
 useful low-frequency resolution can require enough latency to conflict with
-smart-speaker duties. The [FIR note](../jasper/calibration_agent/corpus/filter-design/fir-room-correction.md)
-retains filter classes and latency calculations; the current Room latency
-contract remains in force. A source survey is not evidence that JTS offers FIR
-room-filter authoring.
+smart-speaker duties. The current Room latency contract remains in force. A
+source survey is not evidence that JTS offers FIR room-filter authoring.
 
 ## D7 — Spatial protocol
 

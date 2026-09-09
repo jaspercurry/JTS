@@ -6,8 +6,7 @@
 
 The browser can grant a microphone while silently changing capture
 settings. Keep these facts in one deterministic report so the UI,
-debug bundles, confidence model, and future calibration agent all
-reason from the same evidence.
+debug bundles and confidence model all reason from the same evidence.
 """
 from __future__ import annotations
 

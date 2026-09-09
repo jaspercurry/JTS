@@ -6,7 +6,7 @@
 
 Owns the single background asyncio loop and the sync-to-async bridge onto it,
 the per-request CamillaController factory, both bounded request-body readers
-(JSON and WAV) with their caps, and the three request exceptions the routes
+(JSON and WAV) with their caps, and the two request exceptions the routes
 raise.
 
 :mod:`jasper.web.correction_capture`, :mod:`jasper.web.correction_handlers`
@@ -57,10 +57,6 @@ class BadRequest(ValueError):
 
 class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
-
-
-class TuningSetupUnavailable(RequestConflict):
-    """The optional tuning assistant has no configured model credential."""
 
 
 # Lazy-init on first use so importing this module is cheap (lets `python -m

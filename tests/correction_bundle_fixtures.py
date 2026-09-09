@@ -319,9 +319,8 @@ def write_golden_correction_bundle(
     # record_raw_capture_artifact maps noise/repeat by name and defaults
     # everything else -- verify captures included -- to raw_capture). These
     # were once a fixture-only vocabulary (capture_audio / noise_audio /
-    # repeat_audio / verify_audio) that no writer in the tree emitted, which
-    # is how calibration_agent's private-audio allowlist came to be written
-    # against strings production never produces.
+    # repeat_audio / verify_audio) that no writer in the tree emitted, so a
+    # reader keyed on those strings matched nothing production produces.
     for rel_path, kind in (
         ("captures/p0.wav", "raw_capture"),
         ("noise/p0_pre.wav", "noise_capture"),

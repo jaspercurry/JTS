@@ -211,13 +211,6 @@ _UNCODIFIED = {
     #    JASPER_HOSTNAME like JASPER_MANAGEMENT_URL; override is for
     #    nonstandard reverse-proxy setups only).
     "JASPER_GOOGLE_SETUP_URL",
-    # -- Calibration-agent advisor LLM selection — lab CLI
-    #    (jasper/calibration_agent/cli.py), not a speaker daemon; its
-    #    --advisor-* flags are the primary interface.
-    "JASPER_CALIBRATION_ADVISOR_MODEL",
-    "JASPER_CALIBRATION_ADVISOR_OPENAI_BASE_URL",
-    "JASPER_CALIBRATION_ADVISOR_PROVIDER",
-    "JASPER_CALIBRATION_ADVISOR_TIMEOUT_SEC",
     # -- Debug capture toggles (off unless an operator exports one for
     #    a single diagnosis session; raw OpenAI session audio dumps,
     #    correction measurement bundle retention).

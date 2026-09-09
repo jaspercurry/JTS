@@ -559,35 +559,6 @@ def test_disclosure_and_nudge_state_the_ceiling_not_the_filters():
     )
 
 
-def test_advisor_packet_carries_the_cap_so_the_model_sees_the_refusal():
-    """Without it the tuning model sees uncorrected residual and no reason for
-    it, and would advise correcting harder — the advice the cap exists to
-    refuse."""
-    from jasper.calibration_agent import correction_advisor
-
-    freqs, measured, positions = _fixture()
-    design = strategy.design_correction(
-        measured, freqs, position_magnitudes=positions,
-    )
-
-    class _Session:
-        design_report = design.report
-        peqs = design.peqs
-
-    packet = correction_advisor.build_correction_advisor_context(_Session())
-    summary = packet["correction"]["spatial_variance_cap"]
-    assert summary["available"] is True
-    assert summary["n_bins_capped"] == design.report[
-        "spatial_variance_cap"]["n_bins_capped"]
-    assert summary["max_overshoot_db"] == pytest.approx(
-        design.report["spatial_variance_cap"]["max_overshoot_db"]
-    )
-    # The note keeps the two registers apart rather than labelling the whole
-    # block one way (the ceiling counts vs the measured filter action).
-    assert "not a count of filters removed" in summary["note"]
-    assert "measured on the filters that shipped" in summary["note"]
-
-
 # --------------------------------------------------------------------------
 # Graceful degradation: never a crash, always a stated reason.
 # --------------------------------------------------------------------------

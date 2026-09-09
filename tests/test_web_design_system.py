@@ -395,7 +395,7 @@ OFF_LADDER_HELD: dict[str, set[str]] = {
     "deploy/assets/airplay/airplay.css": {"10px"},
     "deploy/assets/bluetooth/bluetooth.css": {"0.7rem", "0.85rem", "0.95rem"},
     "deploy/assets/correction/correction.css": {
-        "0.72rem", "0.82rem", "0.85rem", "0.93rem", "0.94rem", "0.95rem",
+        "0.72rem", "0.82rem", "0.93rem", "0.94rem", "0.95rem",
         "0.9rem", "1.08rem", "1rem",
     },
     "deploy/assets/correction/crossover.css": {

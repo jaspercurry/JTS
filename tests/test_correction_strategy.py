@@ -266,9 +266,8 @@ def test_boosts_capped_and_crossover_exclusion_each_own_their_reduction():
     Each warning must claim exactly its own reduction — boosts_capped reports
     the CAP's work (6.0 -> 3.0, computed pre-exclusion), never a false
     'capped ... to 0.0 dB to preserve headroom' that misattributes the
-    crossover exclusion to headroom. This report is the assistant-readable
-    audit (P6's tuning-LLM input), so a wrong reason would be narrated to the
-    household.
+    crossover exclusion to headroom. This report is the audit an operator
+    reads, so a wrong reason would be narrated to the household.
     """
     freqs = _log_freqs()
     corner = 80.0

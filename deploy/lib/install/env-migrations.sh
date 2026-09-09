@@ -150,13 +150,11 @@ heal_shared_state_modes() {
         "d:2770:${STATE_DIR}/active_speaker_stimuli"
         "d:2770:${STATE_DIR}/active_speaker_tone_artifacts"
     )
-    # The tuning spend ledger is SQLite, written in place rather than
-    # replaced, so a root-owned file left by the pre-drop jasper-correction-web
-    # would raise "attempt to write a readonly database" for the new writer —
-    # the file must stay writable by the non-owner in group jasper, and here
-    # that failure would silently stop the paid tuning calls counting against
-    # the household spend cap. 0644 is the mode jasper.web.correction_tuning
-    # maintains for its group-`jasper` readers.
+    # The tuning spend ledger is SQLite and is still summed into household
+    # spend (jasper.usage.household_usage_reader); a root-owned file left by
+    # the pre-drop jasper-correction-web must stay readable by group `jasper`
+    # or the aggregate silently drops it. Nothing writes it any more; heal
+    # the mode, expect no growth.
     for sidecar in \
         "${STATE_DIR}/usage-tuning.db" \
         "${STATE_DIR}/usage-tuning.db-wal" \

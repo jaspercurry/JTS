@@ -59,22 +59,6 @@ __HEADER__
   <button id="current-correction-reset" type="button" class="btn btn--danger" hidden>Reset correction</button>
 </section>
 
-<!-- P6 tuning assistant. The envelope's sections list owns top-level
-     visibility; tuning_llm fills the nudge/actions inside it. The paid call
-     happens ONLY on a tap. -->
-<section id="tuning-panel" data-envelope-section="tuning" class="tuning-panel" hidden aria-live="polite">
-  <h2 class="tuning-title">Tuning assistant</h2>
-  <p id="tuning-nudge" class="tuning-nudge" hidden></p>
-  <div id="tuning-actions" class="tuning-actions" hidden>
-    <button id="tuning-interpret" type="button" class="btn">Explain my room</button>
-    <button id="tuning-propose" type="button" class="btn">Suggest a tweak</button>
-  </div>
-  <p id="tuning-status" class="tuning-status" hidden></p>
-  <div id="tuning-explanation" class="tuning-explanation" hidden></div>
-  <p id="tuning-provenance" class="tuning-provenance" hidden></p>
-  <div id="tuning-proposals" class="tuning-proposals"></div>
-</section>
-
 <section id="readiness-blocker" data-envelope-section="readiness-blocker" class="banner banner--danger" hidden role="alert">
   <p id="readiness-blocker-message"></p>
   <a id="readiness-blocker-action" class="btn" hidden href=""></a>

@@ -47,7 +47,6 @@ ENVELOPE_KEYS = {
     "failure",
     "startup_recovery",
     "progress",
-    "tuning_llm",
 }
 
 LOGICAL_SCREENS = {
@@ -207,7 +206,7 @@ def test_unknown_state_value_fails_closed_instead_of_offering_start():
         envelope.screen_for_state("some_future_state")
 
 
-def test_analyzing_never_offers_apply_or_paid_tuning():
+def test_analyzing_offers_no_next_action():
     sess = _FakeSession(SessionState.ANALYZING)
     env = envelope.build_envelope(sess)
 
@@ -218,7 +217,6 @@ def test_analyzing_never_offers_apply_or_paid_tuning():
         "Analyzing the measurement now. This usually takes a few seconds."
     )
     assert env["next_action"] is None
-    assert env["tuning_llm"]["offered"] is False
 
 
 def test_verify_analysis_stays_on_verify_progress_without_actions():
@@ -233,67 +231,22 @@ def test_verify_analysis_stays_on_verify_progress_without_actions():
         "Analyzing the measurement now. This usually takes a few seconds."
     )
     assert env["next_action"] is None
-    assert env["tuning_llm"]["offered"] is False
 
 
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_nine():
+def test_schema_version_is_ten():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
-    # v4 (P6) added the `tuning_llm` affordance block.
     # v5 added the level-before-sweep actions; v6 makes the ordered section
     # list the sole whole-page visibility authority; v7 adds
     # closed blocker/failure presentation data; v8 adds run defaults; v9 adds
     # the required server-owned progress labels, summary template, and repeat
     # disclosure after v8 had shipped.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 9
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 10
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 9
-
-
-def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
-    # P6: the affordance block always carries `offered` (measurement-screen
-    # gate) + `available`/`provider`; `nudge` when no OpenAI key is
-    # configured. READY maps to the review screen (a measurement screen).
-    # HERMETIC: availability is monkeypatched so BOTH branches are pinned
-    # deterministically regardless of the test host's key state (a keyed
-    # dev box must not silently skip the nudge assertions).
-    from jasper.calibration_agent import key_provisioning as kp
-
-    monkeypatch.setattr(
-        kp, "availability",
-        lambda **_: kp.TuningAvailability(
-            available=False, model="",
-            nudge="Add an OpenAI key at /assistant/voice/ …",
-        ),
-    )
-    env = envelope.build_envelope(_FakeSession(SessionState.READY))
-    block = env["tuning_llm"]
-    assert block["offered"] is True
-    assert block["provider"] == "openai"
-    # Offered-but-unavailable: the nudge is present, no model id leaks.
-    assert block["available"] is False
-    assert isinstance(block["nudge"], str) and block["nudge"]
-    assert "model" not in block
-
-    monkeypatch.setattr(
-        kp, "availability",
-        lambda **_: kp.TuningAvailability(available=True, model="gpt-5.4"),
-    )
-    env2 = envelope.build_envelope(_FakeSession(SessionState.READY))
-    block2 = env2["tuning_llm"]
-    assert block2["offered"] is True
-    assert block2["available"] is True
-    assert block2["model"] == "gpt-5.4"
-    assert "nudge" not in block2
-
-
-def test_tuning_llm_not_offered_before_measurement():
-    # Pre-measurement screens (idle/mic/sweep) never offer the affordance.
-    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
-    assert env["tuning_llm"]["offered"] is False
+    assert env["schema_version"] == 10
 
 
 @pytest.mark.parametrize("recovery", [
@@ -363,7 +316,6 @@ def test_section_vocabulary_is_exact_and_room_owned():
         "apply-status",
         "verification",
         "result-proof",
-        "tuning",
         "reports",
     }
 
@@ -385,15 +337,15 @@ def test_section_vocabulary_is_exact_and_room_owned():
             SessionState.AWAITING_CAPTURE,
             ["placement", "position-capture"],
         ),
-        (SessionState.READY, ["measurement-review", "tuning"]),
-        (SessionState.APPLIED, ["apply-status", "tuning"]),
+        (SessionState.READY, ["measurement-review"]),
+        (SessionState.APPLIED, ["apply-status"]),
         (
             SessionState.AWAITING_VERIFY_CAPTURE,
-            ["placement", "verification", "tuning"],
+            ["placement", "verification"],
         ),
         (
             SessionState.VERIFIED,
-            ["current-correction", "result-proof", "tuning"],
+            ["current-correction", "result-proof"],
         ),
     ],
 )
@@ -991,7 +943,7 @@ def test_a_fail_severity_finding_is_a_warn_nudge_not_a_blocker():
 
     This used to assert the opposite of every line below: a ``fail``-severity
     confidence finding produced NO nudge, a ``measurement_evidence_unsafe``
-    failure block, ``next_action is None``, and no tuning assistant. That
+    failure block and ``next_action is None``. That
     ``measurement_evidence_failure`` blocker refused ``/apply`` with a 422 and
     withdrew the Apply button on a prediction about how good the evidence was
     — not on any component-damage mechanism in the doctrine's closed hard-stop
@@ -1017,7 +969,6 @@ def test_a_fail_severity_finding_is_a_warn_nudge_not_a_blocker():
     assert env["nudges"][0]["severity"] == "warn"
     assert env["failure"] is None
     assert env["next_action"] is not None
-    assert env["tuning_llm"]["offered"] is True
     # The retired blocker's copy reserved "safety" for an evidence-quality
     # doubt; the doctrine keeps that word for the hard-stop list.
     assert "safety checks" not in env["verdict_text"]
@@ -1243,7 +1194,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
 
     assert set(body) == ENVELOPE_KEYS
     assert body["startup_recovery"] is None
-    assert body["schema_version"] == 9
+    assert body["schema_version"] == 10
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {

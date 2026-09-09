@@ -27,7 +27,7 @@ import {
 import { float32ToWav } from "./capture.js";
 import { canvas, chartShowFilter, drawChart } from "./chart.js";
 import {
-  describeFilters, formatAppliedAt, formatBytes, orientationLabel,
+  formatAppliedAt, formatBytes, orientationLabel,
 } from "./format.js";
 import { clearQuality, renderQuality } from "./quality.js";
 import {
@@ -83,16 +83,6 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
   var wizardNextBtn = document.getElementById('wizard-next');
   var readinessBlockerMessage = document.getElementById('readiness-blocker-message');
   var readinessBlockerAction = document.getElementById('readiness-blocker-action');
-  // P6 tuning assistant elements.
-  var tuningPanel = document.getElementById('tuning-panel');
-  var tuningNudge = document.getElementById('tuning-nudge');
-  var tuningActions = document.getElementById('tuning-actions');
-  var tuningInterpretBtn = document.getElementById('tuning-interpret');
-  var tuningProposeBtn = document.getElementById('tuning-propose');
-  var tuningStatus = document.getElementById('tuning-status');
-  var tuningExplanation = document.getElementById('tuning-explanation');
-  var tuningProvenance = document.getElementById('tuning-provenance');
-  var tuningProposals = document.getElementById('tuning-proposals');
   var constraintsBlock = document.getElementById('constraints');
   var rowsTbody = document.getElementById('constraint-rows');
   var errBanner = document.getElementById('err-banner');
@@ -232,7 +222,7 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
     'placement', 'capture-setup',
     'local-certificate-warning', 'level-check', 'position-capture',
     'measurement-review', 'apply-status', 'verification', 'result-proof',
-    'tuning', 'reports',
+    'reports',
   ];
   var sectionNodes = {};
   KNOWN_SECTION_IDS.forEach(function (sectionId) {
@@ -1542,244 +1532,6 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
     if (env.screen === 'review' || env.screen === 'result') {
       drawEnvelopeCurves(env);
     }
-    renderTuning(env.tuning_llm);
-  }
-
-  // P6: render the tuning-assistant affordance from the envelope's
-  // tuning_llm block ({offered, available, provider, model?, nudge?}).
-  // Whole-section visibility is owned only by renderSections(). This function
-  // fills the section's internals: when offered but the household has no
-  // OpenAI key, show only the nudge; when available, show the two per-tap
-  // actions. A missing block clears both internal affordances.
-  function renderTuning(block) {
-    if (!tuningPanel) return;
-    if (!block || !block.offered) {
-      tuningActions.hidden = true;
-      tuningNudge.hidden = true;
-      return;
-    }
-    if (block.available) {
-      tuningNudge.hidden = true;
-      tuningActions.hidden = false;
-    } else {
-      tuningActions.hidden = true;
-      tuningNudge.textContent = String(block.nudge || 'Tuning assistant unavailable.');
-      tuningNudge.hidden = false;
-    }
-  }
-
-  // Set the tuning status line (a short "thinking…" / error string).
-  function setTuningStatus(text) {
-    if (!tuningStatus) return;
-    if (!text) { tuningStatus.hidden = true; tuningStatus.textContent = ''; return; }
-    tuningStatus.textContent = String(text);
-    tuningStatus.hidden = false;
-  }
-
-  function setTuningBusy(busy) {
-    if (tuningInterpretBtn) tuningInterpretBtn.disabled = busy;
-    if (tuningProposeBtn) tuningProposeBtn.disabled = busy;
-  }
-
-  // Render the plain-language explanation panel + the provenance note.
-  // Untrusted model text reaches the DOM only via textContent.
-  function renderTuningExplanation(payload) {
-    if (tuningExplanation) {
-      var text = String((payload && payload.explanation) || '');
-      tuningExplanation.textContent = text;
-      hideEl(tuningExplanation, !text);
-    }
-    if (tuningProvenance) {
-      var prov = payload && payload.provenance;
-      if (prov && prov.ok === false && prov.unverified && prov.unverified.length) {
-        // The assistant stated a number that isn't in the measurement — flag
-        // it so the reader doesn't trust an authored figure as a fact.
-        tuningProvenance.textContent =
-          'Note: some figures above were not in the measurement and may be '
-          + 'the assistant guessing — trust the plotted curve, not those numbers.';
-        tuningProvenance.hidden = false;
-      } else {
-        tuningProvenance.hidden = true;
-        tuningProvenance.textContent = '';
-      }
-    }
-  }
-
-  function setTuningError(e) {
-    setTuningStatus(safeErrorMessage(
-      e,
-      'The tuning assistant could not continue. Try again.'
-    ));
-  }
-
-  async function onTuningInterpret() {
-    setTuningBusy(true);
-    setTuningStatus('Reading your measurement…');
-    if (tuningProposals) tuningProposals.innerHTML = '';
-    try {
-      var resp = await fetch(endpoint('interpret'), {
-        method: 'POST', headers: jsonHeaders(), body: '{}',
-      });
-      if (!resp.ok) {
-        throw await responseError(
-          resp,
-          'The tuning assistant could not continue. Try again.'
-        );
-      }
-      var payload = await resp.json();
-      renderTuningExplanation(payload);
-      setTuningStatus('');
-    } catch (e) {
-      setTuningError(e);
-    } finally {
-      setTuningBusy(false);
-    }
-  }
-
-  async function onTuningPropose() {
-    setTuningBusy(true);
-    setTuningStatus('Thinking about a tweak…');
-    try {
-      var resp = await fetch(endpoint('propose'), {
-        method: 'POST', headers: jsonHeaders(), body: '{}',
-      });
-      if (!resp.ok) {
-        throw await responseError(
-          resp,
-          'The tuning assistant could not continue. Try again.'
-        );
-      }
-      var payload = await resp.json();
-      renderTuningExplanation(payload);
-      renderTuningProposals(payload.proposals || []);
-      setTuningStatus('');
-    } catch (e) {
-      setTuningError(e);
-    } finally {
-      setTuningBusy(false);
-    }
-  }
-
-  // Render each proposal as its own card. A room-correction proposal shows
-  // what the deterministic simulation predicts, any notes it raised, and an
-  // Apply button (which confirms, then POSTs /propose/apply). A
-  // preference/target move is phrased as a question (taste, not a
-  // correction claim).
-  function renderTuningProposals(proposals) {
-    if (!tuningProposals) return;
-    tuningProposals.innerHTML = '';
-    if (!proposals.length) return;
-    proposals.forEach(function (p) {
-      if (!p || typeof p !== 'object') return;
-      if (p.kind === 'room_correction') {
-        tuningProposals.appendChild(buildCorrectionProposalCard(p));
-      } else if (p.kind === 'preference_question') {
-        tuningProposals.appendChild(buildTargetProposalCard(p));
-      }
-    });
-  }
-
-  function buildCorrectionProposalCard(p) {
-    var card = document.createElement('div');
-    card.className = 'tuning-proposal';
-    if (p.rationale) {
-      var rat = document.createElement('p');
-      rat.className = 'tuning-proposal-rationale';
-      rat.textContent = String(p.rationale);
-      card.appendChild(rat);
-    }
-    var filters = document.createElement('div');
-    filters.className = 'tuning-proposal-filters';
-    filters.textContent = describeFilters(p.correction_peqs || []);
-    card.appendChild(filters);
-    // Predicted improvement from the deterministic simulation (server number).
-    var delta = p.simulation && p.simulation.predicted_rms_delta_db;
-    if (typeof delta === 'number') {
-      var detail = document.createElement('p');
-      detail.className = 'tuning-proposal-detail';
-      detail.textContent = 'Predicted: ' + Math.abs(delta).toFixed(1) + ' dB '
-        + (delta >= 0 ? 'closer to' : 'further from') + ' your target.';
-      card.appendChild(detail);
-    }
-    // Disclosure, not a veto: the household reads the notes and decides.
-    var notes = (p.simulation && p.simulation.issues) || [];
-    if (notes.length) {
-      var why = document.createElement('p');
-      why.className = 'tuning-proposal-detail';
-      why.textContent = 'Worth knowing — ' + notes.map(function (i) {
-        return i.message || i.code;
-      }).join('; ');
-      card.appendChild(why);
-    }
-    var applyBtn = document.createElement('button');
-    applyBtn.type = 'button';
-    applyBtn.className = 'btn btn--primary';
-    applyBtn.textContent = 'Apply this correction';
-    applyBtn.addEventListener('click', function () { applyCorrectionProposal(p, applyBtn); });
-    card.appendChild(applyBtn);
-    return card;
-  }
-
-  function buildTargetProposalCard(p) {
-    var card = document.createElement('div');
-    card.className = 'tuning-proposal';
-    if (p.rationale) {
-      var rat = document.createElement('p');
-      rat.className = 'tuning-proposal-rationale';
-      rat.textContent = String(p.rationale);
-      card.appendChild(rat);
-    }
-    // Suggestion-only, honestly: there is no apply path for a target move.
-    // Preference is subjective — phrase it as a question and tell the
-    // household where to change the target themselves. This is plain text,
-    // NOT a link to #target-select: that picker lives inside
-    // #measurement-options, which the router hides on the review screen, so
-    // an anchor would silently scroll nowhere. The instruction stands on
-    // its own.
-    var q = document.createElement('p');
-    q.className = 'tuning-question';
-    var dest = p.target_id ? ('a "' + p.target_id + '" target') : ('a warmth of ' + p.warmth);
-    q.textContent = 'This would move you toward ' + dest
-      + ' — worth a listen? Pick it under Target curve when you next measure.';
-    card.appendChild(q);
-    return card;
-  }
-
-  async function applyCorrectionProposal(p, btn) {
-    var ok = await jtsConfirm(
-      'Apply this correction to your speaker? You can undo it with Reset.',
-      {}
-    );
-    if (!ok) return;
-    if (btn) btn.disabled = true;
-    setTuningStatus('Applying…');
-    try {
-      var resp = await fetch(endpoint('propose/apply'), {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({ confirm: true, correction_peqs: p.correction_peqs }),
-      });
-      if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
-      var payload = await resp.json();
-      if (payload.applied) {
-        setTuningStatus('Applied. Measure once more to verify it worked.');
-        pollState();
-        refreshEnvelope();
-      } else {
-        var failure = null;
-        try { failure = validatePublicFailure(payload.failure || null); }
-        catch (_e) {}
-        setTuningStatus(
-          failure ? failure.text : 'That suggestion was not applied.'
-        );
-        if (btn) btn.disabled = false;
-        pollState();
-        refreshEnvelope();
-      }
-    } catch (e) {
-      setTuningStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE));
-      if (btn) btn.disabled = false;
-    }
   }
 
   // Draw the envelope's already-smoothed curves and server-classified fill.
@@ -2834,8 +2586,6 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
   });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   cancelMeasureBtn.addEventListener('click', function () { cancelMeasurement(); });
-  if (tuningInterpretBtn) tuningInterpretBtn.addEventListener('click', function () { onTuningInterpret(); });
-  if (tuningProposeBtn) tuningProposeBtn.addEventListener('click', function () { onTuningPropose(); });
   document.addEventListener('visibilitychange', function () {
     // Re-acquire the wake lock the OS dropped while we were backgrounded,
     // but only while a capture is actually live.

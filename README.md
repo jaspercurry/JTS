@@ -175,7 +175,6 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   active_speaker/ audio_measurement/ correction/ attribution/
                      The speaker tuning + measurement program
   mics/ xvf/ audio_hardware/  Mic families, XVF3800 control, DAC registry
-  calibration_agent/ Runtime tuning-knowledge corpus + bundle intake
 rust/              jasper-fanin (mixer), jasper-outputd (final output owner),
                      jasper-ring, jasper-resampler, jasper-clock and crates
 c/                 jts-ring-ioplug: ALSA shared-memory ring plugin

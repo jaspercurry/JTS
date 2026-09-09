@@ -58,12 +58,3 @@ export function reportIssueList(items, fallback) {
     ) + '</li>';
   }).join('') + '</ul>';
 }
-
-export function describeFilters(peqs) {
-  return peqs.map(function (f) {
-    var g = Number(f.gain_db);
-    var sign = g >= 0 ? '+' : '';
-    return Math.round(Number(f.freq_hz)) + ' Hz, Q ' + Number(f.q).toFixed(1)
-      + ', ' + sign + g.toFixed(1) + ' dB';
-  }).join('  •  ');
-}
