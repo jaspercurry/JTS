@@ -3888,7 +3888,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         let _ = std::fs::remove_file(&lane_path);
-        let input = ring_capture::test_ring_lane(MEASUREMENT_LANE, &lane_path, lane_geometry);
+        let input =
+            ring_capture::tests::test_ring_lane(MEASUREMENT_LANE, &lane_path, lane_geometry);
         let mut lane_writer = TestRingWriter::create_or_attach(&lane_path, lane_geometry).unwrap();
         assert!(lane_writer.try_publish_slot(&vec![PROGRAM; period_samples]));
 
