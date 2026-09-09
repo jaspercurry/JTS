@@ -9,6 +9,11 @@ cube, in situ, room gain included (ADR-0260 section 3). Every number published
 comes from the enclosure adapter, :mod:`jasper.bass_extension.alignment` and
 :mod:`jasper.bass_extension.targets` — this module masks, smooths and joins,
 and invents no physics of its own.
+
+The median arrives as a value, never as a document: the room door
+(:func:`~jasper.active_speaker.crossover_v2.room_prescription.read_room_median`)
+is the one reader of ``room_median.json``, so a median fitted here is exactly
+one that door would prescribe against, and the view holds that seam.
 """
 from __future__ import annotations
 
@@ -20,7 +25,6 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.adapters import SEALED_ADAPTER, adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
-    MIN_CURVE_POINTS,
     CabinetInfo,
     CaptureRole,
     EnclosureAdapter,
@@ -29,13 +33,18 @@ from jasper.bass_extension.adapters.base import (
     TargetSpec,
     passband_normalize,
 )
-from jasper.bass_extension.adapters.sealed import SealedPlantFit, declared_plant
+from jasper.bass_extension.adapters.sealed import declared_plant
 from jasper.bass_extension.alignment import lt_boost_db
 from jasper.bass_extension.profile import BassExtensionRefusal
 from jasper.bass_extension.targets import MarginPolicy, digital_anchor_level
 from jasper.json_fields import finite_float
 
 if TYPE_CHECKING:
+    # Runtime-free on purpose: ``active_speaker`` imports ``bass_extension`` at
+    # module level (baseline_profile, runtime_contract), so the value's type is
+    # all this module may take from that side.
+    from jasper.active_speaker.crossover_v2.room_prescription import RoomMedian
+
     from jasper.bass_extension.adapters.base import PlantFit
 
 #: 1/3 octave: the in-room median carries modal ripple the adapter's own
@@ -55,17 +64,6 @@ class SeatFitRefused(ValueError):
         super().__init__(str(reason))
         self.reason = str(reason)
         self.detail = dict(detail)
-
-
-@dataclass(frozen=True)
-class SeatMedian:
-    """One seat cube's median magnitude, and the ceiling it is trusted to."""
-
-    freqs_hz: np.ndarray
-    median_db: np.ndarray
-    ceiling_hz: float
-    ceiling_source: str
-    n_positions: int
 
 
 @dataclass(frozen=True)
@@ -99,60 +97,30 @@ class SeatFit:
     owner_role: str
     owner_target_id: str
     margin: str
+    #: Where the fitted plant rolls off: the natural rung's own corner, which
+    #: is the one corner every adapter defines. ``effective_q`` is ``None``
+    #: where the adapter's alignment has no single Q (ported, PR).
+    effective_corner_hz: float
+    effective_q: float | None
+    #: The adapter's own fit record, verbatim, plus where it came from.
     effective_plant: Mapping[str, Any]
+    plant_source: str
+    #: The fit residual, or ``None`` where a declared plant stood in for it.
+    fit_rms_db: float | None
     fit_refusal: Mapping[str, str] | None
     rungs: tuple[Rung, ...]
     curve: Mapping[str, list[float]]
     ceiling_hz: float
     ceiling_source: str
     n_positions: int
+    #: The level the median was read against, dB. The fit is level-blind — the
+    #: adapters passband-normalize what they read — so this is disclosed for a
+    #: reader putting the published curves back at measurement level, and is
+    #: not an input to any number here.
+    level_reference_db: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def _unreadable(**detail: Any) -> SeatFitRefused:
-    return SeatFitRefused(BassExtensionRefusal.MEDIAN_UNREADABLE, detail)
-
-
-def _float_array(value: Any, field: str) -> np.ndarray:
-    if not isinstance(value, (list, tuple)):
-        raise _unreadable(field=field, problem="not_a_list")
-    numbers = [finite_float(item) for item in value]
-    if any(number is None for number in numbers):
-        raise _unreadable(field=field, problem="not_finite_numeric")
-    return np.asarray(numbers, dtype=np.float64)
-
-
-def read_seat_median(payload: Mapping[str, Any]) -> SeatMedian:
-    """One ``room_median.json`` document as a curve, or a named refusal.
-
-    The document is the seat lane's room-median view (issue #4502).
-    """
-
-    if not isinstance(payload, Mapping):
-        raise _unreadable(problem="not_an_object")
-    freqs = _float_array(payload.get("freqs_hz"), "freqs_hz")
-    median = _float_array(payload.get("median_db"), "median_db")
-    if freqs.size != median.size:
-        raise _unreadable(problem="length_mismatch", n_freqs=int(freqs.size),
-                          n_median=int(median.size))
-    if freqs.size == 0 or np.any(freqs <= 0.0) or np.any(np.diff(freqs) <= 0.0):
-        raise _unreadable(field="freqs_hz", problem="not_positive_ascending")
-    ceiling = finite_float(payload.get("ceiling_hz"))
-    if ceiling is None or ceiling <= 0.0:
-        raise _unreadable(field="ceiling_hz", problem="not_positive")
-    below = int(np.count_nonzero(freqs <= ceiling))
-    if below < MIN_CURVE_POINTS:
-        raise _unreadable(problem="too_few_points_below_ceiling", n_points=below,
-                          min_points=MIN_CURVE_POINTS, ceiling_hz=ceiling)
-    positions = payload.get("n_positions")
-    if isinstance(positions, bool) or not isinstance(positions, int) or positions < 1:
-        raise _unreadable(field="n_positions", problem="not_a_positive_int")
-    source = payload.get("ceiling_source")
-    if not isinstance(source, str):
-        raise _unreadable(field="ceiling_source", problem="ceiling_source_must_be_text")
-    return SeatMedian(freqs, median, float(ceiling), source, positions)
 
 
 def bass_owner_target(safety_profile: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -214,7 +182,7 @@ def cabinet_of(target: Mapping[str, Any]) -> tuple[EnclosureAdapter, CabinetInfo
     )
 
 
-def _rung(target: TargetSpec, f0_hz: float | None, margin: MarginPolicy) -> Rung:
+def _rung(target: TargetSpec, corner_hz: float, margin: MarginPolicy) -> Rung:
     transformed = any(
         spec.get("type") == "LinkwitzTransform" for spec in target.filters
     )
@@ -223,15 +191,40 @@ def _rung(target: TargetSpec, f0_hz: float | None, margin: MarginPolicy) -> Rung
         max_listening_level=digital_anchor_level(
             float(target.boost_headroom_db), margin.digital_margin_db
         ),
-        lt_boost_db=(
-            lt_boost_db(f0_hz, target.fp_hz)
-            if transformed and f0_hz is not None else 0.0
-        ),
+        lt_boost_db=lt_boost_db(corner_hz, target.fp_hz) if transformed else 0.0,
     )
 
 
+def _plant(
+    fitted: PlantFit | FitRefusal,
+    *,
+    adapter: EnclosureAdapter,
+    declared: DeclaredPlant | None,
+) -> tuple[PlantFit, dict[str, str] | None]:
+    """The plant to size the family from, and the refusal it stood in for."""
+
+    if not isinstance(fitted, FitRefusal):
+        return fitted, None
+    # A declared f0/Q describes a sealed plant and nothing else, so it can only
+    # stand in for the sealed fit.
+    if declared is None or adapter is not SEALED_ADAPTER:
+        raise SeatFitRefused(BassExtensionRefusal.PLANT_UNRESOLVED, {
+            "refusal": fitted.refusal, "detail": fitted.detail,
+            "adapter_id": adapter.adapter_id,
+            "declared_plant": declared is not None,
+        })
+    stood_in = declared_plant(declared.f0_hz, declared.q0)
+    if isinstance(stood_in, FitRefusal):
+        raise SeatFitRefused(BassExtensionRefusal.PLANT_UNRESOLVED, {
+            "problem": "declared_plant_outside_domain",
+            "error": stood_in.detail,
+            "f0_hz": declared.f0_hz, "q0": declared.q0,
+        })
+    return stood_in, {"refusal": fitted.refusal, "detail": fitted.detail}
+
+
 def fit_seat_median(
-    median: SeatMedian,
+    median: RoomMedian,
     *,
     adapter: EnclosureAdapter,
     cabinet: CabinetInfo,
@@ -242,43 +235,25 @@ def fit_seat_median(
 ) -> SeatFit:
     """Fit the plant on the median below the ceiling and size its family."""
 
-    below = median.freqs_hz <= median.ceiling_hz
-    freqs = median.freqs_hz[below]
+    # The room door refuses a grid reaching past ``ceiling_hz``, so the whole
+    # median is already the band this smooths and fits.
+    freqs = median.freqs_hz
     smoothed = smooth_fractional_octave(
-        freqs, median.median_db[below], fraction=_SMOOTHING_FRACTION
+        freqs, median.median_db, fraction=_SMOOTHING_FRACTION
     )
     curve = MagnitudeCurve(
         tuple(float(value) for value in freqs),
         tuple(float(value) for value in smoothed),
     )
 
-    fitted = adapter.fit_plant({CaptureRole.SEAT_MEDIAN: curve}, cabinet)
-    fit_refusal: dict[str, str] | None = None
-    plant: PlantFit
-    if isinstance(fitted, FitRefusal):
-        # A declared f0/Q describes a sealed plant and nothing else, so it can
-        # only stand in for the sealed fit.
-        if declared is None or adapter is not SEALED_ADAPTER:
-            raise SeatFitRefused(BassExtensionRefusal.PLANT_UNRESOLVED, {
-                "refusal": fitted.refusal, "detail": fitted.detail,
-                "adapter_id": adapter.adapter_id,
-                "declared_plant": declared is not None,
-            })
-        stood_in = declared_plant(declared.f0_hz, declared.q0)
-        if isinstance(stood_in, FitRefusal):
-            raise SeatFitRefused(BassExtensionRefusal.PLANT_UNRESOLVED, {
-                "problem": "declared_plant_outside_domain",
-                "error": stood_in.detail,
-                "f0_hz": declared.f0_hz, "q0": declared.q0,
-            })
-        plant = stood_in
-        fit_refusal = {"refusal": fitted.refusal, "detail": fitted.detail}
-    else:
-        plant = fitted
-
-    sealed = plant if isinstance(plant, SealedPlantFit) else None
-    f0_hz = None if sealed is None else sealed.f0_hz
+    plant, fit_refusal = _plant(
+        adapter.fit_plant({CaptureRole.SEAT_MEDIAN: curve}, cabinet),
+        adapter=adapter, declared=declared,
+    )
     family = adapter.generate_family(plant, margin=margin)
+    # Every adapter ends its family with the natural alignment: its corner is
+    # the plant's own, whatever the enclosure's model calls it.
+    natural = family[-1]
     model = np.asarray(
         adapter.predicted_response(plant, family[-1], freqs), dtype=np.float64
     )
@@ -287,15 +262,13 @@ def fit_seat_median(
         owner_role=owner_role,
         owner_target_id=owner_target_id,
         margin=margin.name,
-        effective_plant={
-            "f0_hz": f0_hz,
-            "q0": None if sealed is None else sealed.q0,
-            "fit_rms_db": None if fit_refusal else plant.fit_rms_db,
-            "source": "declared" if fit_refusal else "seat_median_fit",
-            "notes": list(plant.notes),
-        },
+        effective_corner_hz=natural.fp_hz,
+        effective_q=natural.qp,
+        effective_plant=plant.to_dict(),
+        plant_source="declared" if fit_refusal else "seat_median_fit",
+        fit_rms_db=None if fit_refusal else plant.fit_rms_db,
         fit_refusal=fit_refusal,
-        rungs=tuple(_rung(target, f0_hz, margin) for target in family),
+        rungs=tuple(_rung(target, natural.fp_hz, margin) for target in family),
         curve={
             "freqs_hz": [float(value) for value in freqs],
             "median_smoothed_db": [float(v) for v in passband_normalize(freqs, smoothed)],
@@ -304,4 +277,5 @@ def fit_seat_median(
         ceiling_hz=median.ceiling_hz,
         ceiling_source=median.ceiling_source,
         n_positions=median.n_positions,
+        level_reference_db=median.level_reference_db,
     )

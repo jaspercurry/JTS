@@ -11,6 +11,11 @@
   rung's target, its transform, its boost, and the maximum listening level
   that boost costs. Writes ``bass_fit.json``.
 
+The median is read through the room door's own reader
+(:mod:`~jasper.active_speaker.crossover_v2.room_prescription`), so a median
+fitted here is exactly one that door would prescribe against — a gated or
+mixed median refuses by the door's own name rather than being fitted.
+
 The fit is in situ — the median carries room gain, and that is the point
 (ADR-0260 section 3). Offline: no audio plays and no device is opened. Nothing
 here applies a rung; sizing the family and installing one are different doors.
@@ -25,6 +30,11 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
+from jasper.active_speaker.crossover_v2.room_prescription import (
+    RoomMedian,
+    RoomPrescriptionRefused,
+    read_room_median,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import (
     DRIVERS_DEFAULT_PATH,
     round_inputs,
@@ -37,16 +47,16 @@ from jasper.bass_extension.seat_fit import (
     bass_owner_target,
     cabinet_of,
     fit_seat_median,
-    read_seat_median,
 )
 from jasper.bass_extension.targets import MARGINS
-from jasper.cli._refusal import EXIT_UNREADABLE, read_source_bytes
+from jasper.cli._refusal import EXIT_UNREADABLE, read_source_bytes, stage
 from jasper.json_fields import sha256_file
 
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
+    _ROUND_TOOL_ERRORS,
     _write,
     answer,
     default_out,
@@ -55,6 +65,19 @@ from ._common import (
 
 #: The room-median view's artifact is this view's input.
 MEDIAN_FILENAME = ARTIFACT_BY_VIEW["room-median"].artifact
+
+
+def _median(path: Path) -> tuple[RoomMedian, str]:
+    """One median document as a value, and the digest of the bytes it came
+    from — how a later door names the median this family was sized on.
+
+    A missing or unparsable file is the ROUND failing to carry its median,
+    which is the load stage's code; a document the room door will not read is
+    that door's own refusal, raised through.
+    """
+    raw = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_source_bytes, str(path))
+    document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, json.loads, raw)
+    return read_room_median(document), hashlib.sha256(raw).hexdigest()
 
 
 def _cmd_bass_fit(args: argparse.Namespace) -> int:
@@ -74,16 +97,11 @@ def _cmd_bass_fit(args: argparse.Namespace) -> int:
     )
 
     try:
-        raw = read_source_bytes(str(median_path))
-        median = read_seat_median(json.loads(raw))
-    except SeatFitRefused as exc:
+        median, median_sha256 = _median(median_path)
+    except RoomPrescriptionRefused as exc:
+        # A document that will not read into a median is the INPUT failing, not
+        # this view declining a round it read.
         return refused_by_name(exc.reason, exc.detail, code=EXIT_UNREADABLE)
-    except (OSError, ValueError) as exc:
-        return refused_by_name(
-            BassExtensionRefusal.MEDIAN_UNREADABLE,
-            {"path": str(median_path), "error": str(exc)},
-            code=EXIT_UNREADABLE,
-        )
 
     draft = load_design_draft(draft_path)
     if draft.get("status") == "unreadable":
@@ -120,9 +138,7 @@ def _cmd_bass_fit(args: argparse.Namespace) -> int:
         return refused_by_name(exc.reason, exc.detail)
 
     published = fit.to_dict()
-    published["median"] = {
-        "path": str(median_path), "sha256": hashlib.sha256(raw).hexdigest(),
-    }
+    published["median"] = {"path": str(median_path), "sha256": median_sha256}
     published["design_draft"] = {
         "path": str(draft_path), "sha256": sha256_file(draft_path),
     }
@@ -132,18 +148,27 @@ def _cmd_bass_fit(args: argparse.Namespace) -> int:
         args.out,
         default_out(inputs, round_dir, ARTIFACT_BY_VIEW[args.command].artifact),
     )
-    plant = fit.effective_plant
     deepest = min(fit.rungs, key=lambda rung: rung.target.fp_hz)
     return answer(
         args.command, out=written,
-        effective_f0_hz=plant["f0_hz"], effective_q0=plant["q0"],
-        fit_rms_db=plant["fit_rms_db"], plant_source=plant["source"],
+        effective_corner_hz=fit.effective_corner_hz, effective_q=fit.effective_q,
+        fit_rms_db=fit.fit_rms_db, plant_source=fit.plant_source,
         adapter_id=fit.adapter_id, owner_role=fit.owner_role, margin=fit.margin,
         ceiling_hz=fit.ceiling_hz, rung_count=len(fit.rungs),
         deepest_target_id=deepest.target.target_id,
+        deepest_fp_hz=deepest.target.fp_hz,
+        deepest_lt_boost_db=deepest.lt_boost_db,
         deepest_boost_headroom_db=deepest.target.boost_headroom_db,
         deepest_max_listening_level=deepest.max_listening_level,
-        line=f"bass-fit -> {written or 'stdout'}",
+        line=(
+            f"bass-fit: {fit.plant_source} corner {fit.effective_corner_hz:g} Hz"
+            + (f" Q {fit.effective_q:.2f}" if fit.effective_q is not None else "")
+            + f"; {len(fit.rungs)} rung(s), deepest {deepest.target.target_id} at "
+            f"{deepest.target.fp_hz:g} Hz (+{deepest.lt_boost_db:.1f} dB, costs "
+            f"{deepest.target.boost_headroom_db:.1f} dB, level "
+            f"{deepest.max_listening_level})"
+            + (f" -> {written}" if written else "")
+        ),
     )
 
 

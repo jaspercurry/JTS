@@ -8,6 +8,9 @@ The median here is a MEASUREMENT, not a model: a driver's second-order roll-off
 under a gentle low shelf standing in for room gain, plus seeded noise. Room
 gain is included on purpose (ADR-0260 section 3), so what the fit recovers is
 the in-room plant, not the datasheet one — the bars below are what that costs.
+
+The document reads through the room door's own reader, which is where a
+malformed or gated median is refused; nothing here re-tests that reader.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.bass_extension.adapters.base import (
     CabinetInfo,
     CaptureRole,
@@ -31,17 +35,17 @@ from jasper.bass_extension.profile import BassExtensionRefusal
 from jasper.bass_extension.seat_fit import (
     DeclaredPlant,
     SeatFitRefused,
-    SeatMedian,
     bass_owner_target,
     cabinet_of,
     fit_seat_median,
-    read_seat_median,
 )
 from jasper.bass_extension.targets import MARGINS
+from tests.room_median_fixture import median_document
 
-#: 20-320 Hz: the commissioning floor up past the ceiling a seat cube carries.
-FREQS = np.geomspace(20.0, 320.0, 120)
+#: 1/24 octave from the room floor to the last bin under the ceiling, as the
+#: room door requires a median's grid to sit.
 CEILING_HZ = 300.0
+FREQS = 20.0 * 2.0 ** (np.arange(94) / 24.0)
 CABINET = CabinetInfo("sealed", 1, 165.0, 220.0)
 MARGIN = MARGINS["conservative"]
 
@@ -80,28 +84,16 @@ def _third_order_db() -> np.ndarray:
     return _in_room(butterworth_highpass_db(FREQS, 61.0, 3))
 
 
-def median_document(magnitude_db: np.ndarray) -> dict:
-    """One ``room_median.json`` payload, in the shape the view writes."""
-    return {
-        "freqs_hz": FREQS.tolist(),
-        "median_db": magnitude_db.tolist(),
-        "spread_db": [1.5] * FREQS.size,
-        "n_positions": 9,
-        "positions": [{"id": "seat-a", "deviation_db": [0.0] * FREQS.size}],
-        "ceiling_hz": CEILING_HZ,
-        "ceiling_source": "applied_candidate",
-        "window": "ungated",
-    }
+def seat_median_json(magnitude_db: np.ndarray) -> dict:
+    """One ``room_median.json`` payload around that median."""
+    return median_document(FREQS.tolist(), magnitude_db.tolist(), ceiling_hz=CEILING_HZ)
 
 
-def _median(magnitude_db: np.ndarray) -> SeatMedian:
-    return SeatMedian(
-        freqs_hz=FREQS, median_db=magnitude_db, ceiling_hz=CEILING_HZ,
-        ceiling_source="applied_candidate", n_positions=9,
-    )
+def _median(magnitude_db: np.ndarray):
+    return read_room_median(seat_median_json(magnitude_db))
 
 
-def _fit(median: SeatMedian, **overrides):
+def _fit(median, **overrides):
     return fit_seat_median(median, **{
         "adapter": SEALED_ADAPTER, "cabinet": CABINET, "margin": MARGIN,
         "declared": None, "owner_role": "woofer",
@@ -114,12 +106,17 @@ def _fit(median: SeatMedian, **overrides):
     "f0_hz,q0", ((38.0, 0.9), (45.0, 0.707), (55.0, 0.8), (61.0, 0.6)),
 )
 def test_the_seat_median_recovers_the_plant_that_made_it(f0_hz, q0):
-    plant = _fit(_median(seat_median_db(f0_hz, q0))).effective_plant
+    fit = _fit(_median(seat_median_db(f0_hz, q0)))
 
-    assert plant["source"] == "seat_median_fit"
-    assert plant["f0_hz"] == pytest.approx(f0_hz, rel=0.10)
-    assert plant["q0"] == pytest.approx(q0, abs=0.15)
-    assert plant["fit_rms_db"] >= 0.0
+    assert fit.plant_source == "seat_median_fit"
+    assert fit.effective_corner_hz == pytest.approx(f0_hz, rel=0.10)
+    assert fit.effective_q == pytest.approx(q0, abs=0.15)
+    assert fit.fit_rms_db >= 0.0
+    # The adapter's own record, verbatim; the corner and Q are read off it.
+    assert fit.effective_plant == {
+        "f0_hz": fit.effective_corner_hz, "q0": fit.effective_q,
+        "fit_rms_db": fit.fit_rms_db, "notes": [],
+    }
 
 
 def test_the_family_runs_deepest_first_and_ends_at_the_natural_alignment():
@@ -128,6 +125,7 @@ def test_the_family_runs_deepest_first_and_ends_at_the_natural_alignment():
 
     assert len(fit.rungs) > 1
     assert natural.target.filters == ()
+    assert natural.target.fp_hz == fit.effective_corner_hz
     assert natural.lt_boost_db == 0.0
     assert all(rung.lt_boost_db > 0.0 for rung in fit.rungs[:-1])
     assert [rung.target.fp_hz for rung in fit.rungs] == sorted(
@@ -137,15 +135,33 @@ def test_the_family_runs_deepest_first_and_ends_at_the_natural_alignment():
     assert levels == sorted(levels, reverse=True)
 
 
+def test_every_rung_carries_the_chain_and_the_cost_the_apply_door_reads():
+    rungs = _fit(_median(seat_median_db(45.0, 0.707))).to_dict()["rungs"]
+
+    for rung in rungs:
+        target = rung["target"]
+        assert target["subsonic"]["type"] == "ButterworthHighpass"
+        assert target["boost_headroom_db"] >= 0.0
+        assert 0 <= rung["max_listening_level"] <= 100
+        assert [spec["type"] for spec in target["filters"]] == (
+            ["LinkwitzTransform"] if rung["lt_boost_db"] > 0.0 else []
+        )
+
+
 def test_the_model_curve_is_published_beside_the_median_it_was_fitted_to():
     fit = _fit(_median(seat_median_db(45.0, 0.707)))
     curve = fit.curve
 
     assert set(curve) == {"freqs_hz", "median_smoothed_db", "model_db"}
     assert len({len(values) for values in curve.values()}) == 1
-    assert max(curve["freqs_hz"]) <= CEILING_HZ
+    assert max(curve["freqs_hz"]) <= fit.ceiling_hz == CEILING_HZ
     assert fit.ceiling_source == "applied_candidate"
-    assert fit.n_positions == 9
+    assert fit.n_positions == 7
+    # The door reads the median against its own level, and the fit is blind to
+    # that level; the reference is carried so the curves can be put back.
+    assert fit.level_reference_db == pytest.approx(
+        float(np.median(seat_median_db(45.0, 0.707)))
+    )
     # Both published curves are levelled on the one passband rule the adapters
     # level on, so they can be read against each other.
     passband = np.asarray(curve["freqs_hz"]) >= 200.0
@@ -165,10 +181,11 @@ def test_a_roll_off_no_sealed_plant_explains_refuses_without_a_declared_one():
 def test_the_declared_plant_stands_in_and_the_refusal_it_stood_in_for_is_disclosed():
     fit = _fit(_median(_third_order_db()), declared=DeclaredPlant(52.0, 0.68))
 
-    assert fit.effective_plant["source"] == "declared"
-    assert fit.effective_plant["f0_hz"] == 52.0
-    assert fit.effective_plant["q0"] == 0.68
-    assert fit.effective_plant["fit_rms_db"] is None
+    assert fit.plant_source == "declared"
+    assert fit.effective_corner_hz == 52.0
+    assert fit.effective_q == 0.68
+    assert fit.fit_rms_db is None
+    assert fit.effective_plant["notes"] == ["declared"]
     assert set(fit.fit_refusal or {}) == {"refusal", "detail"}
 
 
@@ -179,38 +196,6 @@ def test_a_declared_plant_outside_the_adapters_own_domain_refuses(declared):
 
     assert refused.value.reason == BassExtensionRefusal.PLANT_UNRESOLVED
     assert refused.value.detail["problem"] == "declared_plant_outside_domain"
-
-
-@pytest.mark.parametrize("mutation,problem", (
-    ({"freqs_hz": None}, "not_a_list"),
-    ({"freqs_hz": [1.0, 2.0, "3"]}, "not_finite_numeric"),
-    ({"median_db": [0.0, 0.0]}, "length_mismatch"),
-    ({"freqs_hz": [30.0, 20.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0],
-      "median_db": [0.0] * 8}, "not_positive_ascending"),
-    ({"ceiling_hz": 0.0}, "not_positive"),
-    ({"ceiling_hz": None}, "not_positive"),
-    ({"ceiling_hz": 22.0}, "too_few_points_below_ceiling"),
-    ({"n_positions": 0}, "not_a_positive_int"),
-    ({"n_positions": True}, "not_a_positive_int"),
-    ({"ceiling_source": None}, "ceiling_source_must_be_text"),
-))
-def test_a_median_document_that_is_not_a_curve_is_unreadable(mutation, problem):
-    payload = {**median_document(seat_median_db(45.0, 0.707)), **mutation}
-
-    with pytest.raises(SeatFitRefused) as refused:
-        read_seat_median(payload)
-
-    assert refused.value.reason == BassExtensionRefusal.MEDIAN_UNREADABLE
-    assert refused.value.detail["problem"] == problem
-
-
-def test_a_well_formed_median_document_reads_back_as_its_own_grid():
-    median = read_seat_median(median_document(seat_median_db(45.0, 0.707)))
-
-    assert median.ceiling_hz == CEILING_HZ
-    assert median.ceiling_source == "applied_candidate"
-    assert median.n_positions == 9
-    assert median.freqs_hz.shape == FREQS.shape
 
 
 @pytest.mark.parametrize("target,reason", (
