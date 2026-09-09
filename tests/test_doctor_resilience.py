@@ -529,40 +529,46 @@ def test_supervisor_snapshots_quiet_is_ok():
     [
         (
             5.0,
-            {"shairport": {"enabled": True, "restart_count": 12}},
+            {},
             "ok",
             resilience.REASON_SUPERVISOR_COUNTERS_RESET,
         ),
         (
             3600.0,
-            {"shairport": {"enabled": True, "restart_count": 12}},
-            "warn",
-            resilience.REASON_SUPERVISOR_ISSUES,
+            {},
+            "ok",
+            "",
         ),
         (
             5.0,
-            {"shairport": {"enabled": True, "consecutive_failures": 3}},
+            {"shairport": {"enabled": True, "restart_count": 2}},
             "warn",
             resilience.REASON_SUPERVISOR_ISSUES,
         ),
         (
             None,
-            {"shairport": {"enabled": True, "restart_count": 12}},
-            "warn",
-            resilience.REASON_SUPERVISOR_ISSUES,
+            {},
+            "ok",
+            "",
         ),
     ],
-    ids=["counters-reset-recent", "counters-settled", "live-flag-stays-warn", "uptime-unavailable"],
+    ids=[
+        "quiet-within-reset-window",
+        "quiet-settled",
+        "nonzero-counter-always-warns",
+        "uptime-property-absent",
+    ],
 )
 def test_supervisor_snapshots_check_uses_control_uptime_for_counter_reset(
     monkeypatch, uptime_sec, resilience_state, expected_status, expected_reason,
 ):
     """A jasper-control restart zeroes every supervisor counter with no
-    marker of its own; the check reads jasper-control's own unit uptime
+    marker of its own. A QUIET row within jasper-control's own unit uptime
     (`ActiveEnterTimestampMonotonic`, in the doctor's shared unit-state
-    batch) to tell a freshly-reset counter from settled history. A live
-    flag (still-failing, still-starved) stays `warn` regardless of uptime,
-    and an unreadable uptime falls back to today's `warn`."""
+    batch) says the quiet reading only covers time since that restart. A
+    nonzero counter always `warn`s regardless of uptime: the shairport
+    supervisor alone needs a 60s cold start plus 3x30s probe failures
+    before it restarts anything, so it cannot be benign accumulation."""
     monkeypatch.setattr(resilience, "_read_resilience_state", lambda: resilience_state)
     overrides = {}
     if uptime_sec is not None:

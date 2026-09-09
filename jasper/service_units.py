@@ -11,6 +11,7 @@ Stdlib only: the doctor imports this on every run.
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Any, Mapping, Sequence
 
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
@@ -259,6 +260,24 @@ def run_systemctl(
         check=False,
         timeout=timeout,
     )
+
+
+def unit_uptime_sec(record: Mapping[str, Any] | None) -> float | None:
+    """Seconds since a ``read_unit_states`` record's unit last (re)started,
+    from its ``active_enter_timestamp_monotonic``. None when the record or
+    the timestamp is unavailable.
+
+    ``ActiveEnterTimestampMonotonic`` and ``CLOCK_MONOTONIC`` are the same
+    kernel clock, so there is no NTP-skew case to guard against.
+    """
+    started_us = record.get("active_enter_timestamp_monotonic") if record else None
+    if not isinstance(started_us, int) or started_us <= 0:
+        return None
+    try:
+        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    except OSError:
+        return None
+    return (now_us - started_us) / 1e6
 
 
 def _show(args: list[str], timeout: float) -> str | None:

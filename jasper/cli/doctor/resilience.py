@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
+from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...service_units import unit_unstable
+from ...service_units import unit_unstable, unit_uptime_sec
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
@@ -46,14 +47,10 @@ REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
 REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
 
-# A jasper-control restart zeroes every supervisor's in-memory counters with
-# no marker of its own. Within this many seconds of jasper-control's own
-# unit uptime, a nonzero counter is freshly-accumulated, not settled
-# history, so the row reads `ok` with a reason instead of `warn` — but only
-# for accumulated-counter issues; a live flag (still-starved, still-failing)
-# stays `warn` regardless of uptime.
-_SUPERVISOR_COUNTERS_RESET_WINDOW_SEC = 300.0
-_CONTROL_UNIT = "jasper-control.service"
+# A jasper-control restart wipes every supervisor counter with no marker
+# of its own; within this window afterward, a quiet row says so instead
+# of reading as settled history. A nonzero counter gets no such grace.
+_RESET_WINDOW_SEC = 300.0
 
 REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
 REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
@@ -287,7 +284,6 @@ def _classify_supervisor_snapshots(
     non-converging repair loop is visible during one-shot diagnostics too.
     """
     issues: list[str] = []
-    live_issue = False
 
     shairport = resilience.get("shairport")
     if isinstance(shairport, dict) and shairport.get("enabled") is not False:
@@ -296,7 +292,6 @@ def _classify_supervisor_snapshots(
         suppressed = _int_field(shairport, "suppressed_count")
         if consecutive:
             issues.append(f"shairport probe failing consecutive={consecutive}")
-            live_issue = True
         if restarts:
             issues.append(f"shairport supervisor restarts={restarts}")
         if suppressed:
@@ -307,7 +302,6 @@ def _classify_supervisor_snapshots(
         consecutive = _int_field(grouping, "consecutive_starved")
         if grouping.get("last_poll_starved") is True or consecutive:
             issues.append(f"grouping lane starved consecutive={consecutive}")
-            live_issue = True
         kicks = _int_field(grouping, "kick_count")
         rate_limited = _int_field(grouping, "rate_limited_count")
         if kicks:
@@ -327,7 +321,6 @@ def _classify_supervisor_snapshots(
             if reassert.get("last_ok") is False:
                 detail = str(reassert.get("last_detail") or "failed")
                 issues.append(f"grouping peer reassert last failed: {detail}")
-                live_issue = True
 
     system = resilience.get("system_supervisor")
     if isinstance(system, dict) and system.get("enabled") is not False:
@@ -338,33 +331,24 @@ def _classify_supervisor_snapshots(
         if consecutive:
             suffix = f" last_failed={failed_probe}" if failed_probe else ""
             issues.append(f"system supervisor probe failing consecutive={consecutive}{suffix}")
-            live_issue = True
         if reboots:
             issues.append(f"system supervisor reboots={reboots}")
         if suppressed:
             issues.append(f"system supervisor reboot suppressed={suppressed}")
 
     if issues:
-        # A negative/unreadable uptime is untrusted, same as
-        # _classify_reboot_state's future-dated skew guard: fall through to
-        # warn rather than trust a clock that has not settled.
-        if (
-            not live_issue
-            and control_uptime_sec is not None
-            and 0 <= control_uptime_sec < _SUPERVISOR_COUNTERS_RESET_WINDOW_SEC
-        ):
-            return CheckResult(
-                "supervisor runtime snapshots", "ok",
-                f"jasper-control up {control_uptime_sec:.0f}s — counters "
-                "reset by that restart, not settled history: "
-                + "; ".join(issues),
-                reason=REASON_SUPERVISOR_COUNTERS_RESET,
-            )
         return CheckResult(
             "supervisor runtime snapshots",
             "warn",
             "; ".join(issues),
             reason=REASON_SUPERVISOR_ISSUES,
+        )
+    if control_uptime_sec is not None and control_uptime_sec < _RESET_WINDOW_SEC:
+        return CheckResult(
+            "supervisor runtime snapshots", "ok",
+            f"counters started {control_uptime_sec:.0f}s ago at the jasper-control "
+            "restart — history before it is not visible",
+            reason=REASON_SUPERVISOR_COUNTERS_RESET,
         )
     return CheckResult(
         "supervisor runtime snapshots",
@@ -375,22 +359,6 @@ def _classify_supervisor_snapshots(
 
 def _read_resilience_state() -> dict[str, Any] | None:
     return _nested_dict(evidence.control_state().payload, "resilience")
-
-
-def _control_uptime_sec() -> float | None:
-    """Seconds since jasper-control's current run started, from the
-    ``ActiveEnterTimestampMonotonic`` the doctor's unit-state batch already
-    carries. None when the unit state or the timestamp is unavailable.
-    """
-    state = evidence.unit_state(_CONTROL_UNIT)
-    started_us = state.get("active_enter_timestamp_monotonic") if state else None
-    if not isinstance(started_us, int) or started_us <= 0:
-        return None
-    try:
-        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
-    except (OSError, AttributeError):
-        return None
-    return (now_us - started_us) / 1e6
 
 
 @doctor_check()
@@ -404,8 +372,10 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
             "jasper-control /state unavailable",
             reason=REASON_CONTROL_UNAVAILABLE,
         )
+    # jasper-control's own uptime, already in the doctor's unit-state batch.
+    control_uptime_sec = unit_uptime_sec(evidence.unit_state(_CONTROL_UNIT))
     return _classify_supervisor_snapshots(
-        resilience, control_uptime_sec=_control_uptime_sec(),
+        resilience, control_uptime_sec=control_uptime_sec,
     )
 
 
