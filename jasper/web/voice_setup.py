@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Voice provider configuration wizard at /assistant/voice/.
+"""Voice configuration wizard at /assistant/voice/.
 
 UX: a single page with distinct sections for the voice decisions:
 enter provider API keys, choose the active configured provider, select
@@ -1025,7 +1025,7 @@ def _index_html(
     #   pricing sections       ← standalone pricing forms
     #   <button form="save-form">  ← the Save submit explicitly attaches
     body = f"""
-{canonical_header("Voice provider")}
+{canonical_header("Voice", back_href="/assistant/", back_label="Assistant")}
 {pair_banner_html()}
 <main class="page">
   {canonical_banner(status_msg)}
@@ -1073,7 +1073,7 @@ def _index_html(
 <script type="module" src="/assets/voice/js/main.js"></script>
 """
     return canonical_page(
-        "Voice provider",
+        "Voice",
         body,
         csrf_token=csrf_token,
         page_css_href=VOICE_PAGE_CSS_HREF,
