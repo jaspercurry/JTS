@@ -165,50 +165,55 @@ async def find_bluetooth_conflicts(
         logger.warning("speaker-name duplicate bluetooth unavailable: %s", e)
         return []
 
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
-        intro_root = await bus.introspect("org.bluez", "/")
-        om = bus.get_proxy_object(
-            "org.bluez", "/", intro_root,
-        ).get_interface("org.freedesktop.DBus.ObjectManager")
-        conflicts: dict[str, NameConflict] = {}
-
-        async def _collect() -> None:
-            managed = await om.call_get_managed_objects()
-            for candidate in _bluetooth_names_from_managed_objects(managed):
-                if _key(candidate) == target:
-                    conflicts[candidate.casefold()] = NameConflict(
-                        protocol="Bluetooth",
-                        name=candidate,
-                        detail="BlueZ device cache/discovery",
-                    )
-
-        await _collect()
-        adapter_path = f"/org/bluez/{adapter}"
-        try:
-            intro_adapter = await bus.introspect("org.bluez", adapter_path)
-            adapter_iface = bus.get_proxy_object(
-                "org.bluez", adapter_path, intro_adapter,
-            ).get_interface("org.bluez.Adapter1")
+        async with asyncio.timeout(timeout + 2):
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
             try:
-                await adapter_iface.call_start_discovery()
-            except DBusError as e:
-                if "in progress" not in str(e).lower():
-                    raise
-            try:
-                await asyncio.sleep(timeout)
+                intro_root = await bus.introspect("org.bluez", "/")
+                om = bus.get_proxy_object(
+                    "org.bluez", "/", intro_root,
+                ).get_interface("org.freedesktop.DBus.ObjectManager")
+                conflicts: dict[str, NameConflict] = {}
+
+                async def _collect() -> None:
+                    managed = await om.call_get_managed_objects()
+                    for candidate in _bluetooth_names_from_managed_objects(managed):
+                        if _key(candidate) == target:
+                            conflicts[candidate.casefold()] = NameConflict(
+                                protocol="Bluetooth",
+                                name=candidate,
+                                detail="BlueZ device cache/discovery",
+                            )
+
                 await _collect()
-            finally:
+                adapter_path = f"/org/bluez/{adapter}"
                 try:
-                    await adapter_iface.call_stop_discovery()
-                except DBusError:
-                    pass
-        except Exception as e:  # noqa: BLE001
-            logger.warning("speaker-name bluetooth discovery failed: %s", e)
+                    intro_adapter = await bus.introspect("org.bluez", adapter_path)
+                    adapter_iface = bus.get_proxy_object(
+                        "org.bluez", adapter_path, intro_adapter,
+                    ).get_interface("org.bluez.Adapter1")
+                    try:
+                        await adapter_iface.call_start_discovery()
+                    except DBusError as e:
+                        if "in progress" not in str(e).lower():
+                            raise
+                    try:
+                        await asyncio.sleep(timeout)
+                        await _collect()
+                    finally:
+                        try:
+                            await adapter_iface.call_stop_discovery()
+                        except DBusError:
+                            pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("speaker-name bluetooth discovery failed: %s", e)
 
-        return sorted(conflicts.values(), key=lambda c: c.name)
-    finally:
-        bus.disconnect()
+                return sorted(conflicts.values(), key=lambda c: c.name)
+            finally:
+                bus.disconnect()
+    except TimeoutError as e:
+        logger.warning("speaker-name bluetooth scan timed out: %s", e)
+        return []
 
 
 async def find_name_conflicts(
