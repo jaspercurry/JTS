@@ -267,7 +267,6 @@ def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResu
         "fail",
         f"CROSSED TRANSPORT PAIR: {stranded} — this speaker is SILENT while "
         f"every daemon looks healthy. {remedy}",
-        speaker_silent=True,
         reason=reason,
     )
 
@@ -1499,6 +1498,5 @@ def check_ring_transport_park() -> CheckResult:
         "fail",
         "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
-        speaker_silent=True,
         reason=REASON_TRANSPORT_PARKED,
     )

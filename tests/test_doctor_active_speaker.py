@@ -16,7 +16,7 @@ import pytest
 import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli.doctor import active_speaker
-from jasper.cli.doctor._evidence import evidence
+from jasper.cli.doctor._evidence import StatusRead, evidence
 from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
 
 from .test_doctor_audio_runtime_camilla import _point_at_config
@@ -186,6 +186,15 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
 
 
+def _seed_control_reports_playing() -> None:
+    """A published `clean` verdict: a muted-but-running graph is a silence
+    jasper-control cannot see, so these rows must flag it anyway."""
+    evidence.seed(
+        "control_system_snapshot",
+        StatusRead({"audio_health": {"signal_path": {"code": "clean"}}}),
+    )
+
+
 @pytest.mark.parametrize(
     "stage, status, reason, silent",
     [
@@ -198,7 +207,10 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
             _stage_unreadable_statefile, "fail",
             active_speaker.REASON_CAMILLA_STATEFILE_UNREADABLE, False,
         ),
-        (_stage_missing_config, "fail", active_speaker.REASON_CAMILLA_CONFIG_MISSING, False),
+        (
+            _stage_missing_config, "fail",
+            active_speaker.REASON_CAMILLA_CONFIG_MISSING, False,
+        ),
         (
             _stage_unconfigured_parked, "warn",
             active_speaker.REASON_GRAPH_PARKED_SILENT, True,
@@ -208,8 +220,6 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
             _stage_blocker_bearing_parked, "warn",
             active_speaker.REASON_GRAPH_PARKED_SILENT, True,
         ),
-        # Parked over an unfixable layout: a `fail` that is also provably
-        # silent, which the summary line supports (#2471).
         (
             _stage_incomplete_passive_parked, "fail",
             active_speaker.REASON_GRAPH_LAYOUT_INCOMPLETE, True,
@@ -229,12 +239,10 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
 def test_active_speaker_runtime_graph_branches(
     monkeypatch, tmp_path, stage, status, reason, silent
 ):
-    """One row per outcome of the merged check.
-
-    ``speaker_silent`` rides along because only the parked branch may claim it
-    (#2471): an unreadable topology is proof of not knowing, and a legal graph
-    is not silence.
-    """
+    """One row per outcome of the merged check, each under a jasper-control
+    verdict of `clean`: only the parked branches claim ``speaker_silent``, and
+    they claim it without consulting that verdict."""
+    _seed_control_reports_playing()
     stage(monkeypatch, tmp_path)
 
     r = active_speaker.check_active_speaker_runtime_graph()
@@ -650,6 +658,7 @@ def test_active_speaker_startup_hold_verdicts(
 ):
     from jasper.active_speaker.startup_hold import hold_staged_startup
 
+    _seed_control_reports_playing()
     assert hold_staged_startup() is True
     anchor = tmp_path / "active_speaker_staged_startup.yml"
     state = tmp_path / "startup_load.json"
