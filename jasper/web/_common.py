@@ -1129,13 +1129,14 @@ _FLASH_DETAIL_CAP = 220
 def flash_error(
     handler: BaseHTTPRequestHandler,
     prefix: str,
-    exc: BaseException,
+    exc: BaseException | str,
 ) -> None:
     """Redirect to `./` with a failure banner built from `exc`.
 
-    A provider token-endpoint rejection or an `OSError` can quote the very
-    credential it was handed, so the text is scrubbed and bounded before it
-    reaches the flash cookie and the rendered banner."""
+    A provider token-endpoint rejection, an `OSError`, or a raw
+    provider-echoed query value (e.g. an OAuth callback's `error=`) can
+    quote the very credential it was handed, so the text is scrubbed and
+    bounded before it reaches the flash cookie and the rendered banner."""
     detail = redact_secrets(str(exc))[:_FLASH_DETAIL_CAP]
     send_see_other(handler, "./", flash=f"{prefix}: {detail}")
 
@@ -1164,31 +1165,6 @@ def send_rejected_form(
         render(csrf_token=ctx["csrf_token"], status_msg=flash),
         status=http.HTTPStatus.UNPROCESSABLE_ENTITY,
     )
-
-
-def redirect_with_legacy_msg(
-    handler: BaseHTTPRequestHandler,
-    location: str,
-) -> None:
-    """Redirect while translating a legacy ``?msg=...`` to a flash cookie.
-
-    Google and Spotify still have older call sites that encode their status
-    message in the redirect target.  Keep their compatibility behavior in one
-    place while new code calls ``send_see_other(..., flash=...)`` directly.
-    """
-    parsed = urllib.parse.urlparse(location)
-    if parsed.query:
-        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        messages = query.pop("msg", None)
-        flash = (messages[0] if messages else "").strip()
-        if flash:
-            clean_query = urllib.parse.urlencode(query, doseq=True)
-            clean_location = urllib.parse.urlunparse(
-                parsed._replace(query=clean_query),
-            )
-            send_see_other(handler, clean_location, flash=flash)
-            return
-    send_see_other(handler, location)
 
 
 def mask_secret(value: str) -> str:

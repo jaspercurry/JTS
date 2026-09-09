@@ -180,12 +180,24 @@ class _FakeHandler:
         self.sent_html: list[bytes] = []
         self.redirects: list[str] = []
         self.errors: list[int] = []
+        # Only populated when a test leaves `send_see_other` unpatched, to
+        # inspect the actual response headers (e.g. the Set-Cookie value).
+        self.response_headers: list[tuple[str, str]] = []
 
     def address_string(self) -> str:  # used by log_message
         return "test"
 
     def send_error(self, code, *a, **k):
         self.errors.append(int(code))
+
+    def send_response(self, status, *a, **k):
+        pass
+
+    def send_header(self, name, value):
+        self.response_headers.append((name, value))
+
+    def end_headers(self):
+        pass
 
 
 def _bind(HandlerClass, path):
@@ -198,7 +210,7 @@ def _bind(HandlerClass, path):
         fn = getattr(HandlerClass, attr)
         if callable(fn) and (attr.startswith("do_") or attr.startswith("_handle_")
                              or attr in {"_render_index", "_exchange_code",
-                                         "_redirect", "_send_html"}):
+                                         "_send_html"}):
             bound[attr] = fn.__get__(fake, HandlerClass)
     for name, m in bound.items():
         setattr(fake, name, m)
@@ -231,6 +243,7 @@ def patched_common():
     with mock.patch.object(google_setup, "begin_request",
                            return_value={"csrf_token": CSRF, "flash": ""}) as br, \
          mock.patch.object(google_setup, "send_html_response") as shr, \
+         mock.patch.object(google_setup, "send_see_other", send_see_other), \
          mock.patch.object(web_common, "send_see_other", send_see_other), \
          mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
          mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
@@ -253,27 +266,12 @@ def _cfg(**over):
     return base
 
 
-def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        google_setup,
-        "redirect_with_legacy_msg",
-        lambda handler, location: calls.append((handler, location)),
-    )
-    fake = _make_bound_handler(_cfg(), "/")
-
-    fake._redirect("./?msg=Saved")
-
-    assert calls == [(fake, "./?msg=Saved")]
-
-
 def _flash(send_see_other_mock) -> str:
     """Return the user-visible message from the most recent send_see_other
-    call. The handler routes most messages through `_redirect("./?msg=…")`,
-    which the flash-cookie compat shim turns into
-    `send_see_other(self, "./", flash="…")` — so the text lands in the
-    `flash` kwarg, not the URL. A direct `send_see_other(self, url)` has no
-    flash; this returns the URL in that case so callers can match either."""
+    call. Most routes call `send_see_other(self, "./", flash="…")`, so the
+    text lands in the `flash` kwarg, not the URL. A direct
+    `send_see_other(self, url)` (the OAuth-start redirect) has no flash;
+    this returns the URL in that case so callers can match either."""
     call = send_see_other_mock.call_args
     if call.kwargs.get("flash"):
         return call.kwargs["flash"]
@@ -379,12 +377,18 @@ def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
 
 
 def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
+    """D.7: this route used to build `./?msg=Credentials+cleared.`; it must
+    now redirect to a clean `./` with the message in the flash cookie."""
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _make_bound_handler(cfg, "/reset-credentials")
     with mock.patch.object(google_setup, "_delete_creds_file") as dcf:
         fake.do_POST()
     assert dcf.call_args.args == (cfg["creds_path"],)
     assert patched_common.restart_voice_daemon.called
+    location = patched_common.send_see_other.call_args.args[1]
+    assert location == "./"
+    assert "msg=" not in location
+    assert patched_common.send_see_other.call_args.kwargs["flash"] == "Credentials cleared."
 
 
 def test_setup_credentials_failure_flashes_instead_of_raising(patched_common, tmp_path):
@@ -506,9 +510,6 @@ def test_start_rejects_bad_name(patched_common, tmp_path):
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _make_bound_handler(cfg, "/start")
     fake.do_POST()
-    # The route calls self._redirect("./?msg=Invalid+name…"); the flash-cookie
-    # compat shim splits that into send_see_other(self, "./", flash="Invalid name…")
-    # — so the human message lands in the `flash` kwarg, not the URL.
     assert "Invalid name" in _flash(patched_common.send_see_other)
 
 
@@ -556,8 +557,8 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     # Nonce consumed (single-use).
     assert "nonce123" not in google_setup._PENDING_FLOWS
     assert patched_common.restart_voice_daemon.called
-    # Redirected back to / with a success flash (via the _redirect shim, so the
-    # "Linked …" text is in the flash kwarg, and the URL is the cleaned "./").
+    # Redirected back to / with a success flash: "Linked …" lands in the
+    # flash kwarg, and the URL is the plain "./".
     assert "Linked" in _flash(patched_common.send_see_other)
 
 
@@ -604,3 +605,18 @@ def test_callback_with_error_redirects_without_exchange(patched_common):
         fake.do_GET()
         assert not ex.called
     assert patched_common.send_see_other.called
+
+
+def test_callback_with_long_error_caps_the_flash_cookie():
+    # An unauthenticated GET can carry an arbitrary ?error= value. It must
+    # be redacted and length-capped the same as any exception-derived
+    # flash (google_setup routes it through the same `flash_error` helper),
+    # so it can't inflate the Set-Cookie header. `send_see_other` is left
+    # unpatched here so the real cookie-building code runs end to end.
+    fake = _make_bound_handler(_cfg(), "/callback?error=" + "x" * 2000)
+    with mock.patch.object(fake, "_exchange_code") as ex:
+        fake.do_GET()
+        assert not ex.called
+    cookie = next(v for n, v in fake.response_headers if n == "Set-Cookie")
+    flash = urllib.parse.unquote(cookie.split(";", 1)[0].split("=", 1)[1])
+    assert len(flash) <= len("Google returned error: ") + web_common._FLASH_DETAIL_CAP

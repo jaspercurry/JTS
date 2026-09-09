@@ -14,7 +14,6 @@ from __future__ import annotations
 import ast
 import functools
 import http
-import inspect
 import json
 import re
 import textwrap
@@ -362,27 +361,6 @@ def _google_handler_cls():
     })
 
 
-def test_legacy_msg_redirect_handlers_are_thin_shared_helper_delegates():
-    for handler_cls in (_spotify_handler_cls(), _google_handler_cls()):
-        source = textwrap.dedent(inspect.getsource(handler_cls._redirect))
-        function = ast.parse(source).body[0]
-        assert isinstance(function, ast.FunctionDef)
-        assert len(function.body) == 1
-        statement = function.body[0]
-        assert isinstance(statement, ast.Expr)
-        call = statement.value
-        assert isinstance(call, ast.Call)
-        assert isinstance(call.func, ast.Name)
-        assert call.func.id == "redirect_with_legacy_msg"
-        assert len(call.args) == 2
-        assert all(isinstance(arg, ast.Name) for arg in call.args)
-        assert [arg.id for arg in call.args] == [
-            "self",
-            "location",
-        ]
-        assert call.keywords == []
-
-
 def test_oauth_callbacks_allow_cross_site_top_level_navigation():
     headers = {
         "Host": "jts.local",
@@ -408,8 +386,8 @@ def test_oauth_redirect_follow_index_allows_cross_site_top_level_navigation():
         "Sec-Fetch-Dest": "document",
     }
     cases = (
-        (_spotify_handler_cls(), "/?msg=Linked+Spotify"),
-        (_google_handler_cls(), "/?msg=Linked+Google"),
+        (_spotify_handler_cls(), "/"),
+        (_google_handler_cls(), "/"),
     )
     for handler_cls, path in cases:
         req = _WizardRequest(handler_cls, path, headers=headers)

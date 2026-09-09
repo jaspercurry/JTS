@@ -71,10 +71,10 @@ from ._common import (
     guard_read_request,
     read_env_file,
     read_form,
-    redirect_with_legacy_msg,
     reject_csrf,
     restart_voice_daemon,
     send_html_response,
+    send_see_other,
     write_env_file,
     SECRET_ENV_MODE,
 )
@@ -751,9 +751,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            redirect_with_legacy_msg(self, location)
-
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
@@ -781,17 +778,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state = qs.get("state", [""])[0]  # CSRF nonce
                 err = qs.get("error", [""])[0]
                 if err:
-                    self._redirect(
-                        f"./?msg=Google+returned+error:+{urllib.parse.quote(err)}"
-                    )
+                    # Google's own text, unbounded — cap/redact like every
+                    # other flash so a long ?error= can't balloon the cookie.
+                    flash_error(self, "Google returned error", err)
                     return
                 if not (code and state):
-                    self._redirect("./?msg=Missing+code+or+state+from+Google")
+                    send_see_other(self, "./", flash="Missing code or state from Google")
                     return
                 creds = _creds(cfg)
                 if not all(creds):
-                    self._redirect(
-                        "./?msg=Credentials+were+cleared+mid-flow.+Start+over."
+                    send_see_other(
+                        self, "./",
+                        flash="Credentials were cleared mid-flow. Start over.",
                     )
                     return
                 # Validate the CSRF nonce: pop-once, and reject an unknown
@@ -800,9 +798,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _gc_pending()
                 entry = _PENDING_FLOWS.pop(state, None)
                 if entry is None:
-                    self._redirect(
-                        "./?msg=That+authorization+expired+or+wasn't+started"
-                        "+from+this+speaker.+Start+over."
+                    send_see_other(
+                        self, "./",
+                        flash=(
+                            "That authorization expired or wasn't started"
+                            " from this speaker. Start over."
+                        ),
                     )
                     return
                 account_name, verifier, _created = entry
@@ -817,9 +818,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _restart_voice_daemon()
                 # No account name / token in the line — personal data + secret.
                 log_event(logger, "google.link", client=self.address_string())
-                self._redirect(
-                    f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
-                )
+                send_see_other(self, "./", flash=f"Linked {account_name} successfully")
                 return
 
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -887,14 +886,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             client_id = form.get("client_id", "").strip()
             client_secret = form.get("client_secret", "").strip()
             if not (client_id and client_secret):
-                self._redirect(
-                    "./?msg=Both+Client+ID+and+Client+Secret+are+required."
-                )
+                send_see_other(self, "./", flash="Both Client ID and Client Secret are required.")
                 return
             if not _CLIENT_ID_RE.fullmatch(client_id):
-                self._redirect(
-                    "./?msg=Client+ID+should+end+in+.apps.googleusercontent.com"
-                    "+-+double-check+the+value+from+Google+Cloud+Console."
+                send_see_other(
+                    self, "./",
+                    flash=(
+                        "Client ID should end in .apps.googleusercontent.com"
+                        " - double-check the value from Google Cloud Console."
+                    ),
                 )
                 return
             try:
@@ -908,10 +908,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _restart_voice_daemon()
             # Action + requester only — never the client_id/secret.
             log_event(logger, "google.credentials", client=self.address_string())
-            self._redirect(
-                "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+"
-                "OAuth+client."
-            )
+            send_see_other(self, "./", flash="Credentials saved. Now add the redirect URL to your OAuth client.")
 
         def _handle_reset_credentials(self) -> None:
             try:
@@ -922,18 +919,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             _restart_voice_daemon()
             log_event(logger, "google.reset", client=self.address_string())
-            self._redirect("./?msg=Credentials+cleared.")
+            send_see_other(self, "./", flash="Credentials cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
             creds = _creds(cfg)
             if not all(creds):
-                self._redirect("./?msg=Set+up+Google+credentials+first.")
+                send_see_other(self, "./", flash="Set up Google credentials first.")
                 return
             name = form.get("name", "").strip()
             if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
-                self._redirect(
-                    "./?msg=Invalid+name+(letters/digits/_-+only)"
-                )
+                send_see_other(self, "./", flash="Invalid name (letters/digits/_- only)")
                 return
             registry = GoogleRegistry.load(cfg["registry_path"])
             token_path = default_token_path_for(name)
@@ -967,7 +962,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # fresh Flow (no shared state across requests), so the verifier
             # has to ride along, keyed by the nonce Google round-trips back.
             _PENDING_FLOWS[nonce] = (name, flow.code_verifier, time.monotonic())
-            self._redirect(auth_url)
+            send_see_other(self, auth_url)
 
         def _handle_remove(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
@@ -985,9 +980,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         pass
                 _restart_voice_daemon()
                 log_event(logger, "google.unlink", client=self.address_string())
-                self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
+                send_see_other(self, "./", flash=f"Removed {name}")
             else:
-                self._redirect("./?msg=Account+not+found")
+                send_see_other(self, "./", flash="Account not found")
 
         def _handle_default(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
@@ -999,11 +994,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # (No restart here: Google's default is read lazily, but the
                 # config change is still worth the audit line.)
                 log_event(logger, "google.default", client=self.address_string())
-                self._redirect(
-                    f"./?msg=Default+set+to+{urllib.parse.quote(name)}"
-                )
+                send_see_other(self, "./", flash=f"Default set to {name}")
             else:
-                self._redirect("./?msg=Account+not+found")
+                send_see_other(self, "./", flash="Account not found")
 
         def _exchange_code(
             self, account_name: str, code: str, verifier: str | None,
