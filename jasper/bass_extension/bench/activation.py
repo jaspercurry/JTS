@@ -43,6 +43,7 @@ from jasper.active_speaker.graph_safety import (
     view_from_camilla_dict,
 )
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.camilla import CamillaUnavailable
 
 
 class ActivationError(RuntimeError):
@@ -183,11 +184,12 @@ async def snapshot_predecessor(controller: Any) -> PredecessorSnapshot:
     # is the JTS-authored file straight off disk, which omits defaulted keys.
     # Canonicalize it through the same ReadConfig path (issue #2202) so the two
     # sides are compared on equal footing.
-    normalized_file_text = await controller.normalize_config_raw(
-        file_text, best_effort=False,
-    )
-    if not isinstance(normalized_file_text, str):
-        raise ActivationError("config file did not normalize to a config")
+    try:
+        normalized_file_text = await controller.normalize_config_raw(
+            file_text, best_effort=False,
+        )
+    except (ValueError, CamillaUnavailable) as exc:
+        raise ActivationError(f"config file {path!r} did not normalize: {exc}") from exc
     file_parsed = _parse_running_config(normalized_file_text)
     running_fp = _graph_fingerprint(parsed)
     if running_fp != _graph_fingerprint(file_parsed):

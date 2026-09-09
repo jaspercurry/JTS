@@ -19,6 +19,7 @@ from jasper.bass_extension.bench.activation import (
     snapshot_predecessor,
     temporary_bass_activation,
 )
+from jasper.camilla import CamillaUnavailable
 
 from ._async_wait import wait_signalled
 from ._camilla_readback_double import camilla_canonicalize, camilla_readback
@@ -303,6 +304,24 @@ async def test_snapshot_matches_when_file_differs_only_in_camilla_default_fillin
     predecessor = await snapshot_predecessor(controller)
 
     assert predecessor.graph_fingerprint
+
+
+async def test_snapshot_wraps_normalize_failure_as_activation_error(
+    config_file: Path,
+) -> None:
+    # normalize_config_raw(best_effort=False) can raise CamillaUnavailable (or
+    # its CamillaConfigRejected subclass) when CamillaDSP is down or rejects
+    # the file; the runner only catches BenchAborted, so this must surface as
+    # ActivationError rather than aborting the whole campaign.
+    controller = FakeController(config_file)
+
+    async def _normalize(config: str, *, best_effort: bool = False) -> str:
+        raise CamillaUnavailable("camilla is down")
+
+    controller.normalize_config_raw = _normalize
+
+    with pytest.raises(ActivationError):
+        await snapshot_predecessor(controller)
 
 
 async def test_snapshot_refuses_when_file_is_semantically_different(
