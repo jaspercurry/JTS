@@ -524,6 +524,21 @@ def test_supervisor_snapshots_quiet_is_ok():
     assert res.status == "ok"
 
 
+def test_supervisor_snapshots_ok_when_counters_recently_reset():
+    res = _classify_supervisor_snapshots(
+        {
+            "shairport": {
+                "enabled": True,
+                "restart_count": 12,
+                "counters_since": time.time() - 5,
+            },
+        },
+    )
+
+    assert res.status == "ok"
+    assert res.reason == resilience.REASON_SUPERVISOR_COUNTERS_RESET
+
+
 @pytest.mark.parametrize(
     "grouping_supervisor",
     [

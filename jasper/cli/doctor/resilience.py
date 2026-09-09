@@ -44,6 +44,13 @@ REASON_VOICE_UNIT_NO_PROVIDER = "voice_unit_no_provider_configured"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
+REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
+
+# A jasper-control restart zeroes every supervisor's counters with no other
+# marker. Within this many seconds of that reset (per snapshot's
+# `counters_since`), a nonzero count is freshly-accumulated, not settled
+# history, so the row reads `ok` with a reason instead of `warn`.
+_SUPERVISOR_COUNTERS_RESET_WINDOW_SEC = 300.0
 
 REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
 REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
@@ -328,6 +335,22 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
             issues.append(f"system supervisor reboot suppressed={suppressed}")
 
     if issues:
+        since = None
+        for key in ("shairport", "grouping_supervisor", "system_supervisor"):
+            snap = resilience.get(key)
+            candidate = snap.get("counters_since") if isinstance(snap, dict) else None
+            if isinstance(candidate, (int, float)):
+                since = candidate
+                break
+        age = None if since is None else time.time() - since
+        if age is not None and age < _SUPERVISOR_COUNTERS_RESET_WINDOW_SEC:
+            return CheckResult(
+                "supervisor runtime snapshots", "ok",
+                f"supervisor counters reset {age:.0f}s ago (jasper-control "
+                "restart) — history predating the reset is gone; check "
+                "journalctl for recurring failures",
+                reason=REASON_SUPERVISOR_COUNTERS_RESET,
+            )
         return CheckResult(
             "supervisor runtime snapshots",
             "warn",

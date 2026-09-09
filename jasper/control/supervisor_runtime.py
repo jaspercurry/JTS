@@ -15,10 +15,16 @@ import logging
 import os
 import random
 import threading
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from jasper.log_event import log_event
+
+# Keyed by id(supervisor instance) — bound methods re-wrap on every attribute
+# access, so the instance itself is the stable identity across snapshot()
+# calls. Reset only by a process restart, same as the counters it dates.
+_counters_since: dict[int, float] = {}
 
 
 async def run_supervisor_loop(
@@ -67,10 +73,19 @@ def resolve_env_mode(
 def snapshot_or_disabled(
     snapshot_fn: Callable[[], dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Return live supervisor state or the common not-running shape."""
+    """Return live supervisor state or the common not-running shape.
+
+    Stamps `counters_since` (epoch seconds) with when this snapshot's
+    counters started — first observation, which a jasper-control restart
+    resets along with the counters themselves — so a silent counter reset
+    is visible on /state instead of reading as a quiet history.
+    """
     if snapshot_fn is None:
         return {"enabled": False}
-    return snapshot_fn()
+    snapshot = snapshot_fn()
+    key = id(getattr(snapshot_fn, "__self__", snapshot_fn))
+    snapshot["counters_since"] = _counters_since.setdefault(key, time.time())
+    return snapshot
 
 
 def build_asyncio_thread(
