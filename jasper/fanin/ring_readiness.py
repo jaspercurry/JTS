@@ -15,6 +15,12 @@ The ``*_ready`` / ``*_proof`` / ``*_converged`` gates answer ``(ok, detail)``
 and fail CLOSED, so a box whose ring cannot be proved is left exactly as
 it was found and the move is declined (never a fallback — ADR-0100); each
 gate's own docstring owns why.
+
+Every ``# lazy: import cost`` below defers the same two trees:
+:mod:`jasper.active_speaker` and :mod:`jasper.output_topology`.
+``tests/test_audio_runtime_plan.py`` pins them out of
+:mod:`jasper.audio_runtime_plan`'s import closure, which reaches this module
+at module scope (ADR-0226).
 """
 
 from __future__ import annotations
@@ -164,7 +170,7 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
     previous graph. A caller holding the DAEMON's own answer
     (``reconcile_current_dsp``'s ``current_config_path``) passes it here.
     """
-    from jasper.active_speaker.environment import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.environment import (  # lazy: import cost
         read_camilla_statefile_config_path,
     )
 
@@ -201,7 +207,7 @@ def load_topology_for_wire():
     :func:`ring_topology_ready`'s decision, not this helper's.
     """
     try:
-        from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+        from jasper.output_topology import (  # lazy: import cost
             OutputTopologyError,
             load_output_topology_strict,
         )
@@ -677,7 +683,7 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
     so one collapsed reason would send an operator to the wrong fix. Fail-CLOSED
     on anything indeterminate — an unreadable conf.d declares nothing.
     """
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.runtime_contract import (  # lazy: import cost
         active_ring_channels_for_topology,
     )
 
@@ -750,11 +756,11 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
     """
-    from jasper.active_speaker.camilla_yaml import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.camilla_yaml import (  # lazy: import cost
         STARTUP_MUTE_GAIN_DB,
         output_commission_mute_name,
     )
-    from jasper.active_speaker.graph_safety import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.graph_safety import (  # lazy: import cost
         output_terminally_muted,
         view_from_yaml_dict,
     )
@@ -816,7 +822,7 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
 
     Fail-CLOSED on every unreadable or self-contradicting record shape.
     """
-    from jasper.active_speaker.staging import load_staged_startup_config  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.staging import load_staged_startup_config  # lazy: import cost
 
     staged = load_staged_startup_config()
     # ``isinstance`` rather than ``(… or {}).get(…)``: that shape raises
@@ -972,7 +978,7 @@ def ring_endpoint_anchor_converged(
     if not is_anchor:
         return False, identity_problem
 
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost
 
     at_endpoint, endpoint_detail = graph_at_active_ring_endpoint(graph)
     if not at_endpoint:
@@ -1026,7 +1032,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
 
     Non-composite topologies pass untouched.
     """
-    from jasper.active_speaker.runtime_contract import topology_sink_is_composite  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.runtime_contract import topology_sink_is_composite  # lazy: import cost
 
     if topology is None or not topology_sink_is_composite(topology):
         return True, "not a composite sink; the wide-wire rule does not apply"
@@ -1104,8 +1110,8 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         applied_baseline_hardware_match,
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
-    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+    from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost
+    from jasper.output_topology import (  # lazy: import cost
         OutputTopologyError,
         load_output_topology_strict,
     )
@@ -1210,13 +1216,13 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
       topology's OPINION rather than an arm decision.
     """
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost, tests pin that importing this module stays off the active-speaker tree (ADR-0226)
+    from jasper.active_speaker.runtime_contract import (  # lazy: import cost
         CONTRACT_UNCONFIGURED,
         active_ring_channels_for_topology,
         classify_output_contract,
         topology_supports_shm_ring,
     )
-    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+    from jasper.output_topology import (  # lazy: import cost
         OutputTopologyError,
         load_output_topology_strict,
     )

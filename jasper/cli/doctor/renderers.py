@@ -138,7 +138,6 @@ class RendererProbe:
     """
 
     name: str
-    unit: str
     user: str = ""
     device: str = ""
     declared_device: str = ""
@@ -1318,9 +1317,7 @@ def renderer_probes() -> tuple[RendererProbe, ...]:
         device = parse_dev()
         if device is None:
             probes.append(
-                RendererProbe(
-                    name, unit, detail="config not found (not installed?)"
-                )
+                RendererProbe(name, detail="config not found (not installed?)")
             )
             continue
         # A ${VAR} reference is what systemd would substitute at ExecStart
@@ -1332,7 +1329,6 @@ def renderer_probes() -> tuple[RendererProbe, ...]:
             probes.append(
                 RendererProbe(
                     name,
-                    unit,
                     device=resolved_device,
                     declared_device=device,
                     outcome=PROBE_UNIT_NOT_LOADED,
@@ -1351,7 +1347,6 @@ def renderer_probes() -> tuple[RendererProbe, ...]:
         probes.append(
             RendererProbe(
                 name,
-                unit,
                 user=user or "root",
                 device=resolved_device,
                 declared_device=device,
