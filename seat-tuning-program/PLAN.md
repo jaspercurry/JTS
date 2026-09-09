@@ -24,6 +24,22 @@ an approved filter policy or a permanent exclusion from Room.
 [PR #4663](https://github.com/jaspercurry/JTS/pull/4663). Neither is a stereo
 capture or hardware proof. The existing speaker-tuning owner keeps that flow.
 
+**Audit fixes in review:** [#4677](https://github.com/jaspercurry/JTS/pull/4677)
+keeps accepted room correction in the applied snapshot;
+[#4678](https://github.com/jaspercurry/JTS/pull/4678) captures complete room
+candidates and retains their measured speaker/calibration basis;
+[#4679](https://github.com/jaspercurry/JTS/pull/4679) compares common coverage
+with disclosed level alignment and capture compatibility;
+[#4680](https://github.com/jaspercurry/JTS/pull/4680) enforces adapter boost and
+subsonic policy on generated filters. These extend the existing owners; no new
+session runner, state store or correction framework was added.
+
+**Next:** rows 1.6/2.4, one real mono baseline and room-candidate seat cloud,
+then save/reload and listen. The full local merge lane passed 27,297 tests;
+the final DSP rounding refinement passed 639 adapter tests and independent
+review. This is software proof. Stereo rows 2.8–2.10, upper-band research and
+volume-dependent bass protection remain open.
+
 ## How to resume from a fresh session
 
 1. `git fetch origin main claude/loudspeaker-tuning-architecture-iephfa`; read this
@@ -290,7 +306,7 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 | Row | Concern | Tag | Proof / dependency |
 |---|---|---|---|
 | 2.5 | **PARTIAL — ADR-0277 landed in PR #4663; it records the 11-position default and preserves saved cubes.** Record other program decisions in append-only ADRs where needed. Resolve cabinet/side identity and the per-role vs per-cabinet trim ambiguity with the speaker owner. Upper-band policy stays open under 2.11. | A | Current decision and implementation scope agree; no retroactive rewrite of ADR history. |
-| 2.6 | **LANDED — PR #4662, `cafc26dc7`.** One room summary per declared side, exact candidate, played graph, scope, level and calibration reference. Reuses the canonical record reader; keys positions by physical pose, discloses repeats/unusable takes and common valid frequency coverage. Prescription, grade and bass fit carry the selected basis. Current records without a side or resolved calibration status report those facts as unknown. | V | Two candidates at seven poses yield separate seven-position summaries; retakes do not add positions. Narrow measured coverage still checks filter tails against the complete room policy band. |
+| 2.6 | **LANDED — #4662; follow-up #4678 in review.** One room summary per side and compatible measured set. Uses the canonical record reader, unique physical poses and common valid frequency coverage. New captures retain the resolved calibration curve identity and the accepted speaker source from the profile used to compile playback. Room composition preserves that basis and discloses match, difference or unknown; legacy missing facts stay unknown. | V | Separate candidates do not mix; retakes do not add positions. Narrow coverage still checks filter tails against the full room policy band. |
 | 2.7 | **LANDED — PR #4663, `b4e4ddda4`.** Registers the 11-position default (§1a) once; old `seat/cube` and `seat/express` identities retain their coordinates. Prompts/counts come from the registry; the runbook and generated menu agree. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Fixture preview and staged records agree on 11 mono sweeps. No hardware walk yet; stereo reaches 22 only after 2.8. No duplicated product pose list. |
 | 2.8 | Side-solo capture through each cabinet's accepted speaker tune, left then right at a held pose. Extend shared scope/routing with the speaker owner; account for side-specific level/trim and protection. | P | **NN**: actual graph mutes the other side and preserves all driver protection; receipt identifies the side; one Start per pose batch. |
 | 2.9 | **Moved from 6.1.** Per-side room emission and extraction, converged with `room_peqs_right`. Keep every side's evidence and filters separate; use a common target only over supported coverage. Extend the existing budget, apply and restore owners. | E | **NN**: distinct left/right filters survive candidate fingerprint, emission, readback, trial, apply and restore; mono behavior preserved. Remove the stereo refusal only once this path exists. |
@@ -303,10 +319,10 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 | Row | Concern | Tag | Proof | Gate |
 |---|---|---|---|---|
 | 3.1 | Bind the bench: `PlayAndCapture` and `TargetPlan` against the engine's play path and the wired recorder; `jasper-bass-extension-bench --live` stops failing closed. | R | fixture run; live path reaches the recorder | **NN** |
-| 3.2b | **Gates 3.3.** Enforce the margin policy on each adapter's actual generated response: sealed subsonic ratio/order must follow the policy; sealed and ported/PR boost must obey its cap. Keep the physical-protection and digital-budget claims distinct. Rebuild affected families after correction. | C | Parameterized policy/response behavior, including low-Q sealed and ported/PR cases; actual protective-filter values survive emission. | **NN** |
+| 3.2b | **IN REVIEW — #4680; gates 3.3.** Generated sealed, ported and PR filters obey the selected boost cap. Sealed subsonic ratio/order now use the existing margin policy. Rebuild affected families after landing; digital headroom remains distinct from driver protection proof. | C | Independent emitted-coefficient tests across the admitted sealed fit domain and all margins; subsonic values survive emission. | **NN** |
 | 3.2 | **LANDED — PR #4641, `4157a6030`.** `bass-fit` fits an effective in-room response and publishes a family, filter boost and digital level bound. It does not publish measured driver displacement, heat limits or excursion margin. Compatible room evidence supplies the fit, not protection proof. | V | fixture median → family JSON | code-review |
 | 3.3 | **OPEN — PR #4660.** Layer-2 candidate family for the bass owner, with evidence-bound rungs and named filters. Review current refs afresh; the old rebase recipe is stale. Preserve natural-at-rest until the runtime work is complete. First emission support is sealed; ported/PR analysis does not imply runtime support. | C/E | door refuses an unverified boosted rung; emitter round-trip; one candidate authority replaces legacy profile/apply intent | **NN** |
-| 3.1c | Distinct sustain-hold limit in the driver-safety schema and fingerprint; sweep limits stay separate. Fix the known activation/readback issue #2202 before the supervised campaign. This is required before a 30–90 s hold, not permission to raise sweep caps. | P | Hold and sweep admission use their own declared/code-side limits; graph proof matches live readback. | **NN** |
+| 3.1c | Distinct sustain-hold limit in the driver-safety schema and fingerprint; sweep limits stay separate. Activation/readback normalization landed in **#4670**. The sustain contract is still required before a 30–90 s hold; it does not raise sweep caps. | P | Hold and sweep admission use their own limits; graph proof matches live readback. | **NN** |
 | 3.4 | Protection ladder as a code-owned program: stepped-level sweeps at the seat, distortion-versus-level per rung, the sustain test, evidence banked per rung. A failing rung is inadmissible at that level. | P | fixture ladder; refusal codes | **NN** |
 | 3.5 | Runbook "Bass" section; menu rows. | A | menu `--check` | sanity |
 
