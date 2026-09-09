@@ -12,6 +12,15 @@ verified aplay — wrapped by the wired capture kernel (a
 audio, ``mint_wired_answer`` after). There is no second recorder and no second
 admission: the pieces this bench needs already exist and are consumed here.
 
+``play_program``'s three seams are composed here rather than by
+``crossover_v2.composition.bind_program_playback_seams``: that binder's
+``play_wav`` opens with ``confirm_graph_is_live``, which requires the running
+config to be byte-equal to a submitted YAML — and a candidate rung deliberately
+patches ``clip_limit`` onto the running graph after installing it
+(:func:`~jasper.bass_extension.bench.activation.temporary_bass_activation`),
+which that read-back would refuse. The bench proves its own graph there instead,
+through ``_prove_active_graph`` and the fingerprinted read-back.
+
 The executor generates and pads every stimulus (R6) and hands this module one
 content-addressed artifact; nothing here generates or modifies stimulus bytes.
 What this module adds is the bench's own framing of that path: the two fader
@@ -126,6 +135,11 @@ BENCH_LOCK_SOURCE = "bass_extension_bench"
 #: images to clear, so it needs a floor window and nothing more).
 SUSTAIN_PRE_ROLL_S = 1.0
 
+#: Added to the program's own duration for ``verified_program_aplay``'s
+#: timeout, which bounds the aplay subprocess: the device open and the drain
+#: happen inside it. Scaled off the program rather than fixed, because a bass
+#: hold runs minutes — one ceiling would either kill a long hold or wait out a
+#: wedged short one.
 PLAYBACK_TIMEOUT_MARGIN_S = 15.0
 
 REFUSE_COMMANDED_VOLUME = "bench_commanded_volume_mismatch"
@@ -271,7 +285,9 @@ class AdmissionContext:
     """What the engine's re-admission reads.
 
     ``resolve_conductor_context`` supplies every field; the bench never derives
-    one of them itself.
+    one of them itself. Narrowed to those six rather than taking its
+    :class:`~jasper.active_speaker.crossover_v2.conductor_context.V2ConductorContext`
+    whole, so what re-admission reads is the whole of what this seam can reach.
     """
 
     topology: Any

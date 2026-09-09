@@ -249,6 +249,13 @@ PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
         (("jasper", "web"),),
         "the CLI is a front end beside the wizard, not a client of one",
     ),
+    (
+        "jasper/bass_extension",
+        (("jasper", "web"), ("jasper", "cli")),
+        "a measurement program under the engine (it may import "
+        "audio_measurement and active_speaker); its bench is DRIVEN by the "
+        "CLI, never a client of one",
+    ),
 )
 
 

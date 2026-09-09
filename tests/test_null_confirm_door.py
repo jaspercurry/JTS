@@ -987,7 +987,7 @@ def test_a_give_back_failure_after_a_clean_walk_still_renders_json(
     tmp_path, monkeypatch, capsys,
 ):
     """The verified gap: every coordinate measured and banked, then the door's
-    own exit could not put the entry graph back. ``_give_back`` raises that
+    own exit could not put the entry graph back. ``give_back`` raises that
     OUTSIDE the loop's own mid-run catch (door.py's ``finally``,
     ``body_error=None``) — this pins that the row already on disk is still
     reported rather than lost to a bare traceback.
@@ -1073,7 +1073,7 @@ def test_a_lossy_take_is_still_graded_with_its_faults_disclosed(
     A take the recorder says was not whole is still read for a depth, and the
     row says so — the integrity report, ``capture_intact: false`` and the
     fault list — so a grader can tell it from a clean one. Promotion condition
-    lives beside ``frame_ledger.capture_faults``.
+    lives beside this walk's own `_row` disclosure block.
     """
     _hardware_free_walk(monkeypatch, depth_db=-18.5, integrity=report)
     _install_door(monkeypatch)

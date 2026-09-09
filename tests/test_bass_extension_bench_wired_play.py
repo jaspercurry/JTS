@@ -33,7 +33,10 @@ from jasper.active_speaker.crossover_v2.volume_claim import (
     OwnerVolumeDoor,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.active_speaker.program_admission import readmit_program_from_wav
+from jasper.active_speaker.program_admission import (
+    ProgramAdmissionRefusal,
+    readmit_program_from_wav,
+)
 from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 from jasper.active_speaker.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from jasper.audio_measurement.frame_ledger import REPORT_KEY_RENDER_GAPS
@@ -752,7 +755,7 @@ async def test_play_surfaces_a_refused_admission_and_aborts_the_recorder(
         await _play(pieces)
 
     assert raised.value.reason == wired_play.REFUSE_ADMISSION
-    assert "program_channel_peak_over_cap" in raised.value.detail
+    assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP.value in raised.value.detail
     assert pieces.rig.pcm is not None and pieces.rig.pcm.closed is True
     assert not (
         pieces.sink.bundle_dir / TARGET_ID / "sweep_transparency-capture.wav"
@@ -773,7 +776,7 @@ async def test_play_refuses_bytes_rendered_under_the_authorized_peak(
         )
 
     assert raised.value.reason == wired_play.REFUSE_ADMISSION
-    assert "program_manifest_peak_mismatch" in raised.value.detail
+    assert ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH.value in raised.value.detail
 
 
 @pytest.mark.parametrize(

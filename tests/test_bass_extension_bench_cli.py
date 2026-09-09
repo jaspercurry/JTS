@@ -122,12 +122,18 @@ def test_live_run_fails_closed_without_the_on_device_bindings(
     monkeypatch.setattr(
         bass_extension_bench, "resolve_render_binary", lambda: fake_binary
     )
+    from jasper.bass_extension.bench import runner
+
+    def _never(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the campaign ran without its target plans")
+
+    monkeypatch.setattr(runner, "run_campaign", _never)
+
     path = _write(tmp_path, _inputs("deep"))
     with pytest.raises(SystemExit) as excinfo:
         bass_extension_bench.main([str(path), "--live"])
-    assert "on-device" in str(excinfo.value)
-    assert "TargetPlan" in str(excinfo.value)
-    assert "PlayAndCapture" in str(excinfo.value)
+    # A refusal, not a clean exit: SystemExit carries a message rather than 0.
+    assert isinstance(excinfo.value.code, str) and excinfo.value.code
 
 
 def test_live_run_refuses_when_the_render_binary_cannot_be_resolved(

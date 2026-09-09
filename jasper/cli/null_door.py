@@ -735,7 +735,7 @@ async def _run(args: argparse.Namespace) -> int:
                     [name for name, _row in written],
                 ) from exc
     except SessionGraphError as exc:
-        # `_give_back` can raise this OUTSIDE the loop's own catch: a clean
+        # `give_back` can raise this OUTSIDE the loop's own catch: a clean
         # walk whose door exit failed to put the entry graph back. `written`
         # already holds every row this walk earned.
         raise NullRunInterrupted(
