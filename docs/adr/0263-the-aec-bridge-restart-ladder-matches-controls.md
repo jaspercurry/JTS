@@ -1,4 +1,4 @@
-# ADR-0261: The AEC bridge's restart ladder matches control's
+# ADR-0263: The AEC bridge's restart ladder matches control's
 
 - **Date:** 2026-09-09
 - **Status:** Accepted

@@ -64,7 +64,7 @@ Restart=on-failure
 SuccessExitStatus=78
 RestartPreventExitStatus=78
 # Matches jasper-voice. With StartLimitBurst=4, a transient fault gives
-# ~20 s before StartLimitAction=reboot. See ADR-0251, ADR-0261.
+# ~20 s before StartLimitAction=reboot. See ADR-0251, ADR-0263.
 RestartSec=5
 
 # jasper-control runs as a dedicated non-root
