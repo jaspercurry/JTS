@@ -553,15 +553,16 @@ def test_design_language_doc_is_reachable_and_dated():
 # `.app-header` (recurrence: /balance/ [deleted], /sync/ [moved]).   #
 # ---------------------------------------------------------------- #
 
-# A "page" is a *_setup.py/*_flow.py module that owns a page shell (it calls
-# canonical_page() itself). A pure router that delegates every GET route to
-# another such module (correction_setup.py -> correction_room_flow etc.) or a
-# stateless helper (pair_flow.py, active_speaker_flow.py) renders no shell of
-# its own and is not a page for this guard.
+# A "page" is a *_setup.py/*_flow.py/*_page.py module that owns a page shell
+# (it calls canonical_page() itself). A pure router that delegates every GET
+# route to another such module (correction_setup.py -> correction_room_flow
+# etc.) or a stateless helper (pair_flow.py, active_speaker_flow.py) renders
+# no shell of its own and is not a page for this guard.
 _PAGE_SHELL_MODULES = tuple(
     p for p in (
         sorted((ROOT / "jasper" / "web").glob("*_setup.py"))
         + sorted((ROOT / "jasper" / "web").glob("*_flow.py"))
+        + sorted((ROOT / "jasper" / "web").glob("*_page.py"))
     )
     if "canonical_page(" in p.read_text()
 )

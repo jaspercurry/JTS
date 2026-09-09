@@ -46,6 +46,7 @@ from jasper.web.nav import NAV, hub_paths, render_hub
 
 WEB_SETUP_FILES = (
     *Path("jasper/web").glob("*_setup.py"),
+    *Path("jasper/web").glob("*_page.py"),
     Path("jasper/web/correction_room_flow.py"),
 )
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
@@ -1248,7 +1249,7 @@ _PAGE_MODULE = {
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
-    "/assistant/voice/": "voice_setup",
+    "/assistant/voice/": "voice_page",
     "/assistant/wake/": "wake_setup",
     "/assistant/chat/": "chat_setup",
     "/assistant/tools/": "tools_setup",
