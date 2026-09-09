@@ -8,6 +8,7 @@ import pytest
 
 from jasper.active_speaker import setup_status
 from jasper.bass_extension.candidate_field import bass_extension_summary
+from jasper.bass_extension.refusals import BassExtensionRefusal
 from jasper.cli.doctor import active_speaker as doctor_audio
 from jasper.cli.doctor.active_speaker import check_bass_extension_profile
 
@@ -37,17 +38,26 @@ def test_doctor_reads_the_applied_candidates_family(monkeypatch):
 
 @pytest.mark.parametrize(
     "applied",
-    [
-        None,
-        {"recomposition_snapshot": {}},
-        {"recomposition_snapshot": {"bass_extension": {"owner": "wrong shape"}}},
-    ],
+    [None, {"recomposition_snapshot": {}}],
 )
 def test_doctor_reports_no_family_when_none_is_applied(monkeypatch, applied):
     result = _doctor_result(monkeypatch, applied)
 
     assert result.status == "ok"
     assert result.reason == doctor_audio.REASON_BASS_EXTENSION_NOT_COMMISSIONED
+
+
+def test_doctor_fails_on_a_family_it_cannot_read(monkeypatch):
+    """An unreadable family is not an uncommissioned one: the runtime proof
+    refuses this speaker's graph, and the doctor must say which bound broke."""
+    result = _doctor_result(
+        monkeypatch,
+        {"recomposition_snapshot": {"bass_extension": {"owner": "wrong shape"}}},
+    )
+
+    assert result.status == "fail"
+    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_MALFORMED
+    assert BassExtensionRefusal.FIELD_MALFORMED in result.detail
 
 
 def _setup(field) -> dict:

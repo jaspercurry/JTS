@@ -302,19 +302,29 @@ def check_bass_extension_profile() -> CheckResult:
         load_applied_baseline_profile_state,
     )
     from jasper.bass_extension.candidate_field import (
+        BassCandidateFieldError,
         applied_bass_extension_field,
-        bass_extension_summary,
+        validate_bass_extension_field,
     )
 
-    family = bass_extension_summary(
-        applied_bass_extension_field(load_applied_baseline_profile_state())
-    )
-    if family is None:
+    field = applied_bass_extension_field(load_applied_baseline_profile_state())
+    if field is None:
         return CheckResult(
             "bass extension profile", "ok", "bass extension: not commissioned",
             reason=REASON_BASS_EXTENSION_NOT_COMMISSIONED,
         )
-    targets = family["targets"]
+    try:
+        family = validate_bass_extension_field(field)
+    except BassCandidateFieldError as refusal:
+        # The runtime proof already refuses this speaker's graph; say WHY here
+        # rather than reading an unreadable family as an uncommissioned one.
+        return CheckResult(
+            "bass extension profile",
+            "fail",
+            f"applied bass family is unreadable: {refusal.detail}",
+            reason=str(refusal.reason),
+        )
+    targets = [rung["target"] for rung in family["rungs"]]
     return CheckResult(
         "bass extension profile",
         "ok",
