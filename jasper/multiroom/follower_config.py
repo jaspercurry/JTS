@@ -482,6 +482,7 @@ async def _prove_live_bass_extension_graph(
     expected_config_path: str | Path,
     expected_classification: str,
     statefile_path=None,
+    settle_timeout_s: float = 2.0,
 ):
     """Canonical live graph/profile proof shared by both active bond roles."""
 
@@ -495,23 +496,37 @@ async def _prove_live_bass_extension_graph(
     from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
     from jasper.output_topology import load_output_topology_strict
 
-    proof = await classify_active_bass_extension_graph(
-        load_output_topology_strict(),
-        statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
-        read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
-        canonicalize_graph_text=lambda raw: cam.normalize_config_raw(
-            raw, best_effort=False
-        ),
-        applied_baseline_path=baseline_profile_state_path(),
-        profile_path=DEFAULT_PROFILE_PATH,
-        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
-        staged_metadata_path=staged_metadata_path(),
-    )
-    if (
-        not proof.allowed
-        or proof.config_path != str(expected_config_path)
-        or proof.classification != expected_classification
-    ):
+    deadline = asyncio.get_running_loop().time() + settle_timeout_s
+    while True:
+        proof = await classify_active_bass_extension_graph(
+            load_output_topology_strict(),
+            statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
+            read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+            canonicalize_graph_text=lambda raw: cam.normalize_config_raw(
+                raw, best_effort=False
+            ),
+            applied_baseline_path=baseline_profile_state_path(),
+            profile_path=DEFAULT_PROFILE_PATH,
+            intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+            staged_metadata_path=staged_metadata_path(),
+        )
+        if (
+            proof.allowed
+            and proof.config_path == str(expected_config_path)
+            and proof.classification == expected_classification
+        ):
+            return proof
+        unsettled = (
+            proof.allowed and proof.config_path != str(expected_config_path)
+        ) or any(
+            issue.get("code") == "bass_extension_active_snapshot_unstable"
+            for issue in proof.issues
+        )
+        # Reload acknowledges the requested path before the running graph and
+        # persisted statefile switch. Keep the full proof across that transition.
+        if unsettled and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+            continue
         issue = proof.issues[0] if proof.issues else {}
         code = issue.get("code") or proof.classification
         # Carry the issue MESSAGE, not just the code: the codes are coarse
@@ -524,7 +539,6 @@ async def _prove_live_bass_extension_graph(
             f"classification={proof.classification!r})"
             + (f": {detail}" if detail else "")
         )
-    return proof
 
 
 async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | None:
