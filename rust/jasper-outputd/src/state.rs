@@ -24,8 +24,8 @@ use crate::dac_content::DacContentMetrics;
 use crate::tts::TtsMetrics;
 use crate::types::SampleFormat;
 use jasper_daemon::json::{
-    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64, push_kv_i64_opt,
-    push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt,
+    event_age_ms, json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64,
+    push_kv_i64_opt, push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt, NEVER_MS,
 };
 use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 use jasper_daemon::DaemonHooks;
@@ -40,7 +40,6 @@ const COMMAND_LIMITS: CommandLimits = CommandLimits {
     max_command_bytes: 256,
     read_timeout: Duration::from_secs(2),
 };
-const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
 const DAC_CONTENT_TRIM_DB_MIN_TENTHS: i32 = -240;
 const DAC_CONTENT_TRIM_DB_MAX_TENTHS: i32 = 0;
@@ -1840,14 +1839,6 @@ fn subtract_saturating(value: &AtomicU64, delta: u64) {
     let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_sub(delta))
     });
-}
-
-fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
-    if event_ms == NEVER_MS {
-        None
-    } else {
-        Some(uptime_ms.saturating_sub(event_ms))
-    }
 }
 
 fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
