@@ -561,7 +561,6 @@ def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
     needed the legacy FIFO round-trip spelling, which no writer emits.
     """
     plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
     )
@@ -589,7 +588,6 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
@@ -803,12 +801,12 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     # Imported BEFORE the patch below: it copies env_load's constants at import
     # time, so importing it inside the patched window would bake in the tmp path.
     import jasper.fanin.coupling_reconcile  # noqa: F401
-    import jasper.fanin.ring_health as ring_health
+    import jasper.fanin.ring_readiness as ring_readiness
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
-    monkeypatch.setattr(ring_health, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(ring_readiness, "FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
 

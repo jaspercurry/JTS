@@ -871,8 +871,6 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
             str(statefile),
             "--flat-config",
             str(flat),
-            "--coupling",
-            "loopback",
             "--no-applied-baseline",
             "--write-statefile",
             "--json",
@@ -881,7 +879,7 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert calls == [("select_flat", {"topology": topology, "coupling": "loopback"})]
+    assert calls == [("select_flat", {"topology": topology})]
     assert payload["statefile_written"] is True
 
 

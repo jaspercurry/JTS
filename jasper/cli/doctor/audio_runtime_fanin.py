@@ -100,9 +100,7 @@ REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE = "host_clock_actuator_unavailable"
 REASON_HOST_CLOCK_L2_FALLBACK = "host_clock_l2_fallback"
 REASON_HOST_CLOCK_PROBING = "host_clock_probing"
 
-REASON_COUPLING_FILE_ABSENT = "coupling_file_absent"
 REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
-REASON_COUPLING_TOKEN_UNKNOWN = "coupling_token_unknown"
 REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
 REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
@@ -876,50 +874,6 @@ def check_fanin_sched_policy() -> CheckResult:
     return CheckResult(name, "ok", policy)
 
 
-@doctor_check()
-def check_fanin_coupling_value() -> CheckResult:
-    """The persisted fan-in coupling must be a RECOGNIZED token.
-
-    jasper-fanin REFUSES an unrecognized value at start (exit 78) and the
-    ``--auto`` reconciler converges it; this surfaces the stale value until that
-    pass runs. An ABSENT key is not that state: fan-in serves the ring for it
-    (ADR-0100), so a box the reconciler has not written yet is ``ok``.
-    """
-    from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
-        COUPLING_SHM_RING,
-        coupling_value_removed,
-    )
-
-    label = "fan-in coupling value"
-    env = evidence.fanin_env()
-    if env is None:
-        return CheckResult(
-            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
-            reason=REASON_COUPLING_FILE_ABSENT,
-        )
-    # `coupling_value_removed` is the same predicate `persisted_coupling_feeds_ring`
-    # applies to fanin.env's own read, so this verdict cannot drift from what
-    # fan-in serves.
-    raw = env.get(COUPLING_ENV_VAR)
-    if coupling_value_removed(raw):
-        return CheckResult(
-            label,
-            "warn",
-            f"{COUPLING_ENV_VAR}={raw!r} in {FANIN_ENV_PATH} names a removed/unknown "
-            "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
-            "the file.",
-            reason=REASON_COUPLING_TOKEN_UNKNOWN,
-        )
-    return CheckResult(
-        label,
-        "ok",
-        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
-    )
-
-
 def _requires_roleful_graph() -> bool:
     """Does the saved topology need a per-driver (crossover) graph?
 
@@ -952,12 +906,8 @@ def check_fanin_coupling() -> CheckResult:
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
-    running fan-in is on the ring whatever that file says, and a healthy box's
-    key may not be written yet (coupling-auto runs
-    ``After=jasper-fanin.service``). The file's own legacy-token question
-    belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
-    what this graph writes to :func:`check_content_transport_coherence`.
+    KEYED ON THE LOADED GRAPH. Whether outputd consumes what this graph writes
+    belongs to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,

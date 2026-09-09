@@ -265,7 +265,7 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     ``*_format``, ``*_type`` and ``*_filename`` join ``*_device`` /
     ``*_channels`` because the callers that judge a lane judge several of its
     fields at once — the ring's width gate
-    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) and the doctor's
+    (``jasper.fanin.ring_readiness.ring_edge_width_ready``) and the doctor's
     coupling and playback-format checks — and one file read per field lets
     those answers come from different revisions of it. A key is omitted when
     the block declares no such field, exactly like the others, so every

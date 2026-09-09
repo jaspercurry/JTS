@@ -2,15 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ring health: what this box can be PROVED to declare about the ring.
+"""Ring readiness: what this box can be PROVED to declare about the ring.
 
 Everything here READS — the ring platform assets, both geometry axes, the wire
 each declaring end states, the loaded CamillaDSP graph, the ACTIVE-ring
-endpoint's staging, the persisted coupling. Nothing here writes env, moves a
-daemon, or decides an order; that is :mod:`jasper.fanin.coupling_reconcile`,
-which composes these answers into the ordered arm/disarm and is the single
-writer of the keys they read. The dependency is one-way: this module imports
-nothing from that one.
+endpoint's staging. Nothing here writes env, moves a daemon, or decides an
+order; that is :mod:`jasper.fanin.coupling_reconcile`, which composes these
+answers into the ordered convergence and is the single writer of the keys they
+read. The dependency is one-way: this module imports nothing from that one.
 
 The ``*_ready`` / ``*_proof`` / ``*_converged`` gates answer ``(ok, detail)``
 and fail CLOSED, so a box whose ring cannot be proved is left exactly as
@@ -31,18 +30,19 @@ from jasper.camilla_config_contract import devices_playback_is_pipe
 from jasper.env_file import env_value, read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
-    COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     OUTPUTD_DEFAULT_CONTENT_FORMAT,
-    coupling_value_removed,
-    resolve_coupling,
 )
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
     GROUPING_RING_FORMAT,
     GROUPING_RING_PCM,
 )
+
+
+# A ring readiness gate returns (ok, detail) and fails CLOSED.
+RingGate = Callable[[], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def _read_snapshot(path: str | Path) -> _EnvSnapshot:
 # outputd's own declarations, read from the reconciler-owned outputd.env. The
 # FORMAT key is written by jasper-audio-hardware-reconcile (from
 # ``content_lane_format_for_coupling``), not by this reconciler — which is why
-# the width gate only compares it on an already-armed box. The CHANNELS key is
+# the width gate only compares it on a reconciled box. The CHANNELS key is
 # the DacProfile's active-lane width; unset means outputd derives 2
 # (``config.rs``: ``SinkMode::SingleAlsa => active_channels.unwrap_or(2)``).
 #
@@ -357,21 +357,20 @@ def ring_wire_declarations(
     *,
     fanin_text: str,
     outputd_text: str,
-    armed: bool,
     graph: LoadedCamillaGraph | None = None,
 ) -> tuple[RingWireDeclaration, ...]:
     """What each of the ring's declaring ends says the wire is.
 
-    ``armed`` gates the outputd FORMAT axis, and the reason is a real ordering
-    fact rather than caution: ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by
+    The outputd FORMAT axis is compared only once the coupling reconciler has
+    written ``outputd.env`` at all (its bridge key is present). The reason is a
+    real ordering fact rather than caution:
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by
     ``jasper-audio-hardware-reconcile`` (from ``content_lane_format_for_coupling``),
-    NOT by this reconciler. A pre-arm box's value is simply whatever the LAST
-    hardware-reconcile pass rendered, not proven current for THIS arm — the
-    function answers the ring's resolved format unconditionally (see its own
-    note), so comparing it against the ring wire at preflight time would refuse
-    every arm on a box mid-convergence. So before the arm that end is reported
-    as not-yet-declared; once armed it is compared, which is where a degraded
-    deploy's half-moved format actually shows up.
+    NOT by this reconciler, so on a box neither pass has touched the value is
+    whatever the LAST hardware-reconcile rendered — comparing it would refuse
+    every box mid-convergence. Until then that end is reported as
+    not-yet-declared; after it is compared, which is where a degraded deploy's
+    half-moved format actually shows up.
 
     ``graph`` adds the loaded CamillaDSP graph's own ring lanes
     (:func:`graph_wire_declarations`) — the end that made this list four rather
@@ -411,6 +410,9 @@ def ring_wire_declarations(
         )
     except ValueError:
         outputd_channels = None
+    reconciled = bool(
+        (read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
+    )
     outputd_format_raw = read_value(outputd_text, OUTPUTD_CONTENT_FORMAT_ENV_VAR)
     outputd_format = (
         outputd_format_raw.strip()
@@ -464,11 +466,11 @@ def ring_wire_declarations(
             end="outputd (Ring B reader)",
             source=str(OUTPUTD_ENV_PATH),
             ring=RING_B,
-            sample_format=outputd_format if armed else None,
+            sample_format=outputd_format if reconciled else None,
             channels=outputd_channels,
             note=(
                 ""
-                if armed
+                if reconciled
                 else (
                     f"{OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
                     "whatever the hardware reconciler last rendered until it "
@@ -560,7 +562,7 @@ def ring_edge_width_ready(
       ``capture_kwargs_for_coupling`` ever stopped forcing the ring's own
       format, the emit would silently fall back to the box-wide program-lane
       default and mis-transcode every sample);
-    - **outputd** — its declared content format (once armed; see
+    - **outputd** — its declared content format (once reconciled; see
       :func:`ring_wire_declarations`) and its active-lane channel width;
     - **the LOADED CamillaDSP graph** — the config the statefile points at, for
       each lane whose device IS a ring PCM.
@@ -592,9 +594,9 @@ def ring_edge_width_ready(
 
     ``fanin_text`` / ``outputd_text`` / ``graph`` default to reading their
     sources, so the gate stays callable with no arguments from
-    :func:`default_ring_gates`; the arm path passes the snapshots it has already
-    written so the gate judges the text the daemons will actually load. Each
-    source is read ONCE per call.
+    :func:`jasper.fanin.converge._ring_gates`; the arm path passes the snapshots
+    it has already written so the gate judges the text the daemons will actually
+    load. Each source is read ONCE per call.
     """
     if fanin_text is None:
         fanin_text = _read_snapshot(FANIN_ENV_PATH).text
@@ -606,13 +608,9 @@ def ring_edge_width_ready(
     wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
     if wire is None:
         return False, wire_problem
-    armed = resolve_coupling(read_value(fanin_text, COUPLING_ENV_VAR)) == (
-        COUPLING_SHM_RING
-    )
     declarations = ring_wire_declarations(
         fanin_text=fanin_text,
         outputd_text=outputd_text,
-        armed=armed,
         graph=graph,
     )
 
@@ -1124,8 +1122,8 @@ def ring_endpoint_anchor_converged(
     channel count, an unparseable or unmuted graph — every such shape falls
     through to the caller's own existing refusal path unchanged.
 
-    NOT a gate in :func:`default_ring_gates` and not a preflight — it is the
-    camilla step's own acceptance criterion, consulted only after
+    NOT a gate in :func:`jasper.fanin.converge._ring_gates` and not a preflight —
+    it is the camilla step's own acceptance criterion, consulted only after
     ``reconcile_current_dsp`` has already declined. **On the ARM path** that
     puts it behind the whole preflight ladder, so it can neither admit nor refuse
     an arm those gates have not already passed. **On the CONFIRM path it is the
@@ -1277,6 +1275,114 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     )
 
 
+def ring_roleful_unattended_ready() -> tuple[bool, str]:
+    """May an unattended pass MOVE a ROLEFUL box's graph? Fail-closed, two arms.
+
+    It refuses by DEFAULT and admits exactly two proven graph shapes. Both arms
+    are about the GRAPH's provenance — never about the box's topology SHAPE,
+    which :func:`ring_topology_ready` owns one gate later:
+
+    1. **A hardware-fingerprint-matched applied baseline** —
+       :func:`~jasper.active_speaker.baseline_profile.applied_baseline_hardware_match`,
+       the same predicate the emitter fails closed on. What a converging pass
+       then moves is the graph a human already approved for THIS hardware, with
+       driver values byte-preserved. A real DAC swap fails the fingerprint and
+       lands in the default refusal.
+    2. **The all-muted staged anchor** — the loaded graph IS this box's published
+       anchor (:func:`_staged_anchor_identity`) AND every output it declares ends
+       in a wired terminal mute (:func:`_anchor_is_all_muted`). It emits silence,
+       so it cannot be a hearing event on any hardware.
+
+    SCOPE, held deliberately narrow: arm 1 is the fingerprint compare ONLY.
+    Applied-record DIVERGENCE (``applied_profile_displacement``) is another
+    gate's question and is NOT asked here.
+
+    Everything else refuses, fail-CLOSED: an unreadable topology, no applied
+    record and no anchor, a stale fingerprint, an anchor that is not terminally
+    muted. The refusal names the runnable arm so a refused box has a way out.
+
+    A CORRUPT applied record is caught HERE rather than left to the caller.
+    ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
+    own loader catches, but a non-UTF-8 byte — the SD-card / power-cut
+    truncation — raises ``UnicodeDecodeError`` straight past it, and the
+    caller's ``except`` would turn that into the one refusal in this gate
+    carrying no remediation. The SHARED loader is deliberately not widened; it
+    has other callers whose contracts are theirs.
+    """
+    # Lazy: jasper.active_speaker imports this package, and this gate is the
+    # only reader of the baseline record here.
+    from jasper.active_speaker.baseline_profile import (
+        applied_baseline_hardware_match,
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    try:
+        topology = load_output_topology_strict()
+        contract = classify_output_contract(topology)
+    except (OutputTopologyError, OSError, ValueError) as exc:
+        return False, (
+            f"topology unreadable ({exc}); an unattended pass cannot prove this "
+            "box is not roleful, so it leaves the graph alone (fail-closed)"
+        )
+    if not contract.requires_roleful_graph:
+        return True, "topology is not roleful"
+
+    # Arm 1 — an applied baseline that still matches this hardware.
+    stale_detail = ""
+    try:
+        applied = load_applied_baseline_profile_state()
+    except (OSError, ValueError) as exc:
+        applied = None
+        stale_detail = (
+            f"the applied active-speaker record could not be read "
+            f"({type(exc).__name__})"
+        )
+    if applied is not None:
+        _snapshot, hardware_issues = applied_baseline_hardware_match(
+            topology, applied_profile=applied
+        )
+        if not hardware_issues:
+            return True, (
+                "roleful, and this box's applied active-speaker profile still "
+                "matches the hardware (topology identity and fingerprint both "
+                "current), so a converging pass moves the graph a human already "
+                "approved for these drivers"
+            )
+        stale_detail = "; ".join(
+            str(issue.get("code", "")) for issue in hardware_issues
+        )
+
+    # Arm 2 — the all-muted staged anchor.
+    graph = read_loaded_camilla_graph()
+    anchor_detail = graph.note or ""
+    if not graph.note:
+        is_anchor, identity_problem = _staged_anchor_identity(graph)
+        if is_anchor:
+            muted, mute_problem = _anchor_is_all_muted(graph)
+            if muted:
+                return True, (
+                    "roleful, but the loaded graph IS this box's published "
+                    "all-muted startup anchor, which emits silence on any "
+                    "hardware"
+                )
+            anchor_detail = mute_problem
+        else:
+            anchor_detail = identity_problem
+
+    return False, (
+        "roleful topology, and neither proven arm holds: the applied baseline "
+        f"({stale_detail or 'no applied active-speaker profile on this box'}) "
+        f"and the all-muted staged anchor ({anchor_detail}). Leaving the graph "
+        "where it is; re-apply the speaker profile at /sound/speaker/, then run "
+        "`jasper-fanin-coupling-reconcile shm_ring`."
+    )
+
+
 def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for topology eligibility.
 
@@ -1309,16 +1415,12 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
 
     Unreadable-topology policy is caller-selectable:
 
-    - ``strict_unreadable=True``: fail-CLOSED. Both the unattended ``--auto``
-      pass AND the explicit operator arm use this. For the auto pass: an
-      unattended default that armed on an unreadable topology would
-      arm→rollback on every boot/deploy the file is transiently corrupt. For
-      the OPERATOR arm: outputd's own guard is not a sufficient backstop by
-      itself — it fails open on that same error (the topology read failure
-      clears the active-lane marker, so the stereo predicate then admits the
-      ring) — so the operator arm stays fail-CLOSED too: a human is present to
-      fix an unreadable topology, and refusing costs them a rerun where
-      admitting costs a park.
+    - ``strict_unreadable=True``: fail-CLOSED, for a caller deciding whether to
+      MOVE a graph. An arm decision taken on an unreadable topology would
+      arm→rollback on every boot/deploy the file is transiently corrupt, and
+      outputd's own guard is not a sufficient backstop by itself — it fails open
+      on that same error (the topology read failure clears the active-lane
+      marker, so the stereo predicate then admits the ring).
     - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
       topology's OPINION rather than an arm decision.
     """
@@ -1435,50 +1537,3 @@ def resolve_effective_fanin_ring_slots(
             raw=raw,
             error=str(e),
         )
-
-
-def read_persisted_coupling(
-    env_path: str | os.PathLike = FANIN_ENV_PATH,
-) -> str | None:
-    """The transport ``fanin.env`` NAMES, through :func:`resolve_coupling`.
-
-    ``None`` when the file is unreadable or names nothing this repo recognizes.
-    That resolver's note applies here too: this is a statement about the FILE,
-    never a live daemon state. Doctor + observability use it to compare the
-    persisted intent against the live fan-in transport."""
-    try:
-        text = Path(env_path).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return resolve_coupling(read_value(text, COUPLING_ENV_VAR))
-
-
-def persisted_coupling_feeds_ring(
-    env_path: str | os.PathLike = FANIN_ENV_PATH,
-    *,
-    text: str | None = None,
-) -> bool:
-    """Does ``fanin.env`` leave fan-in filling Ring A?
-
-    ADR-0100 left one transport, so ``jasper-fanin`` serves an absent key, an
-    empty value and :data:`COUPLING_SHM_RING` alike — and no file at all, loaded
-    as ``EnvironmentFile=-`` — while refusing anything else as a config-class
-    fault (exit 78, the unit parks). Naming nothing is therefore a fan-in ON the
-    ring; only a value this repo no longer recognizes says the ring is unfed.
-
-    A file that EXISTS but cannot be read or decoded is corruption rather than a
-    declaration and raises, leaving the caller to pick a direction;
-    :func:`read_persisted_coupling` folds that into ``None`` instead.
-
-    ``text`` answers for a snapshot the caller has ALREADY read — the same rule
-    over the same key, so a caller that holds ``fanin.env``'s text for another
-    reason does not read the file twice and cannot spell the rule a second way.
-    An empty string is the no-file case: it declares nothing, so it feeds the
-    ring.
-    """
-    if text is None:
-        try:
-            text = Path(env_path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return True
-    return not coupling_value_removed(read_value(text, COUPLING_ENV_VAR))

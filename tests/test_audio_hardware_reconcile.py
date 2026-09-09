@@ -3277,8 +3277,8 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
             _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE
         ),
         topology=_active_topology("mono", "active_2_way"),
-        coupling="loopback",
         marker=None,
+        content_bridge="direct",
     )
 
     assert rc == 0, out
@@ -3682,23 +3682,21 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("initial_fanin_env", "initial_outputd_env"),
+    "initial_outputd_env",
     [
-        pytest.param(None, None, id="loopback-the-unset-default"),
-        # Ring A and Ring B move together; without Ring B's bridge the
-        # reconciler's own transport-coherence validator rejects the stage
-        # (correctly) before the format axis is reachable.
+        pytest.param(None, id="unwritten-box"),
+        # Without Ring B's bridge the reconciler's own transport-coherence
+        # validator rejects the stage (correctly) before the format axis is
+        # reachable.
         pytest.param(
-            "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
-            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n",
-            id="armed-shm-ring",
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", id="reconciled-box"
         ),
     ],
 )
 def test_reconcile_emits_the_wide_content_format(
-    tmp_path: Path, initial_fanin_env: str | None, initial_outputd_env: str | None
+    tmp_path: Path, initial_outputd_env: str | None
 ):
-    """Both couplings carry the wide program lane, plumbed verbatim from
+    """Both boxes carry the wide program lane, plumbed verbatim from
     content_lane_format_for_coupling.
 
     An operator narrow pin (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) is not
@@ -3713,7 +3711,6 @@ def test_reconcile_emits_the_wide_content_format(
         APPLE_LISTING,
         "--reason",
         "test",
-        initial_fanin_env=initial_fanin_env,
         initial_outputd_env=initial_outputd_env,
     )
 

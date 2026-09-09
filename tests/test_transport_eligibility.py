@@ -645,7 +645,7 @@ def _loaded_graph(monkeypatch, *, note="", converged=True, detail="elsewhere"):
     gate is the claim, and a signal that read the graph on every box would
     cost every box a file read to answer a question about none of them.
     """
-    from jasper.fanin import ring_health
+    from jasper.fanin import ring_readiness
 
     reads: list[object] = []
 
@@ -653,9 +653,9 @@ def _loaded_graph(monkeypatch, *, note="", converged=True, detail="elsewhere"):
         reads.append(args)
         return SimpleNamespace(note=note)
 
-    monkeypatch.setattr(ring_health, "read_loaded_camilla_graph", _read)
+    monkeypatch.setattr(ring_readiness, "read_loaded_camilla_graph", _read)
     monkeypatch.setattr(
-        ring_health,
+        ring_readiness,
         "graph_at_active_ring_endpoint",
         lambda graph: (converged, detail),
     )
@@ -707,12 +707,12 @@ def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
 def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch, leader, fault):
     import yaml
 
-    from jasper.fanin import ring_health
+    from jasper.fanin import ring_readiness
     from jasper.fanin_coupling import resolve_ring_wire
     from jasper.multiroom.reconcile import SNAPFIFO
 
     topology = _active_topology("stereo", "active_2_way")
-    monkeypatch.setattr(ring_health, "load_topology_for_wire", lambda: topology)
+    monkeypatch.setattr(ring_readiness, "load_topology_for_wire", lambda: topology)
     wire = resolve_ring_wire(topology)
     endpoint = {
         "capture": {"type": "Alsa", "device": "jts_ring_grouping", "format": "S16_LE", "channels": 2},
