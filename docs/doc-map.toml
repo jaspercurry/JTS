@@ -858,6 +858,7 @@ safety = "hardware-risk"
 code = [
   "jasper/peering/**",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "jasper/accessories/**",
   # The per-connection BLE connection-event reservation the WiiM mic adapter
   # requests on every reconnect. It lives in jasper/cli/ because it is a
@@ -888,6 +889,7 @@ code = [
   "jasper/install_profile.py",
   "jasper/tts_routing.py",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/net/control_advert.py",
   # Shared primitives the /sound/pair/ directory + friendly-name advert ride on:
@@ -1122,6 +1124,7 @@ code = [
   "jasper/control/household_credential.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/web/rooms_setup.py",
+  "jasper/web/rooms_peers.py",
   "tests/test_control_server.py",
   "tests/test_household_credential.py",
 ]
