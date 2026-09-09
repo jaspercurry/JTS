@@ -778,14 +778,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state = qs.get("state", [""])[0]  # CSRF nonce
                 err = qs.get("error", [""])[0]
                 if err:
-                    send_see_other(self, "./", flash=f"Google returned error: {err}")
+                    # Google's own text, unbounded — cap/redact like every
+                    # other flash so a long ?error= can't balloon the cookie.
+                    flash_error(self, "Google returned error", err)
                     return
                 if not (code and state):
                     send_see_other(self, "./", flash="Missing code or state from Google")
                     return
                 creds = _creds(cfg)
                 if not all(creds):
-                    send_see_other(self, "./", flash="Credentials were cleared mid-flow. Start over.")
+                    send_see_other(
+                        self, "./",
+                        flash="Credentials were cleared mid-flow. Start over.",
+                    )
                     return
                 # Validate the CSRF nonce: pop-once, and reject an unknown
                 # or expired one so a forged callback can't link an

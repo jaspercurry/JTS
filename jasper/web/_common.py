@@ -1129,13 +1129,14 @@ _FLASH_DETAIL_CAP = 220
 def flash_error(
     handler: BaseHTTPRequestHandler,
     prefix: str,
-    exc: BaseException,
+    exc: BaseException | str,
 ) -> None:
     """Redirect to `./` with a failure banner built from `exc`.
 
-    A provider token-endpoint rejection or an `OSError` can quote the very
-    credential it was handed, so the text is scrubbed and bounded before it
-    reaches the flash cookie and the rendered banner."""
+    A provider token-endpoint rejection, an `OSError`, or a raw
+    provider-echoed query value (e.g. an OAuth callback's `error=`) can
+    quote the very credential it was handed, so the text is scrubbed and
+    bounded before it reaches the flash cookie and the rendered banner."""
     detail = redact_secrets(str(exc))[:_FLASH_DETAIL_CAP]
     send_see_other(handler, "./", flash=f"{prefix}: {detail}")
 

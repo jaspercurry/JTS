@@ -495,6 +495,48 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     assert leaked not in caplog.text
 
 
+def test_oauth_callback_with_error_redirects_without_exchange(monkeypatch):
+    """A provider `error=` redirects home with a flash and never reaches
+    the token exchange."""
+    handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
+    exchanged = []
+    monkeypatch.setattr(
+        handler_cls, "_exchange_code",
+        lambda self, *a, **k: exchanged.append(True),
+    )
+    h = _Request(handler_cls, "/oauth-callback?error=access_denied")
+    h.do_GET()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert h.header_values("Location") == ["./"]
+    assert exchanged == []
+    cookies = h.header_values("Set-Cookie")
+    assert any(
+        "jts_flash=Spotify%20returned%20error%3A%20access_denied" in c
+        for c in cookies
+    )
+
+
+def test_oauth_callback_rejects_unknown_state_without_exchange(monkeypatch):
+    # CSRF guard: a forged or expired callback state must not run the
+    # token exchange.
+    handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
+    spotify_setup._PENDING_FLOWS.clear()
+    exchanged = []
+    monkeypatch.setattr(
+        handler_cls, "_exchange_code",
+        lambda self, *a, **k: exchanged.append(True),
+    )
+    h = _Request(handler_cls, "/oauth-callback?code=abc&state=forged")
+    h.do_GET()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert h.header_values("Location") == ["./"]
+    assert exchanged == []
+    cookies = h.header_values("Set-Cookie")
+    assert any("expired" in urllib.parse.unquote(c) for c in cookies)
+
+
 def test_playlist_preview_is_json_and_needs_no_csrf(monkeypatch):
     # Read-only AJAX endpoint: returns JSON, no CSRF required.
     monkeypatch.setattr(spotify_setup, "parse_playlist_uri", lambda raw: "")

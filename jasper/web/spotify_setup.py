@@ -1082,7 +1082,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             state = (qs.get("state") or [""])[0]
             err = (qs.get("error") or [""])[0]
             if err:
-                send_see_other(self, "./", flash=f"Spotify returned error: {err}")
+                # Spotify's own text, unbounded — cap/redact like every
+                # other flash so a long ?error= can't balloon the cookie.
+                flash_error(self, "Spotify returned error", err)
                 return
             if not (code and state):
                 send_see_other(self, "./", flash="Missing code or state from Spotify")
