@@ -520,7 +520,7 @@ def _wrap_transit_page(
     body_main: str,
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     """Assemble the canonical document shell around the page's <main> content.
 
@@ -879,7 +879,10 @@ def _bus_card_html(
             for s in group:
                 bare = s.stop_id.removeprefix("MTA_")
                 is_active = bare in saved_ids_norm
-                cls = "stop-row active" if is_active else "stop-row"
+                cls = (
+                    "stop-row stop-row--nested active"
+                    if is_active else "stop-row stop-row--nested"
+                )
                 # Per-stop routes (SIRI ∪ OBA). When SIRI returned
                 # nothing for this stop, fall through to whatever
                 # OBA said (better than blank for off-peak stops).
@@ -903,7 +906,7 @@ def _bus_card_html(
                     + ">"
                 )
                 direction_rows.append(f"""
-<label class="{cls}" style="padding-left:1.6em">
+<label class="{cls}">
   {checkbox}
   <span class="name">{html.escape(dir_label)}</span>
   {routes_label}
@@ -1091,7 +1094,7 @@ def _citibike_card_html(
   <p class="eyebrow">Household-wide preference</p>
   {ebike_checkbox_html}
 
-  <p class="eyebrow" style="margin-top:1.1rem">Stations near you</p>
+  <p class="eyebrow stations-heading">Stations near you</p>
   {rows_html}
 
   <input type="hidden" name="citibike_stations" id="citibike-stations-hidden"
@@ -1323,7 +1326,7 @@ def _index_html(
     *,
     routes_state: dict[str, str] | None = None,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     coords = _coords(state)
     routes_state = routes_state or {}
@@ -1431,7 +1434,7 @@ def _index_html(
 
 {_advanced_section_html(state, csrf_token)}
 
-<form method="post" action="clear" id="clear-form" style="margin-top:2rem"
+<form method="post" action="clear" id="clear-form" class="clear-form"
       data-confirm="Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured."
       data-confirm-danger="1">
   {csrf_field_html(csrf_token) if csrf_token else ''}
@@ -1483,6 +1486,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         status_msg=ctx["flash"],
                         back_href=safe_back_href(
                             (qs.get("return_to") or [""])[0],
+                            default="/assistant/",
                         ),
                     )
                 except Exception as e:  # noqa: BLE001
