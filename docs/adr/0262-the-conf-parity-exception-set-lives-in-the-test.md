@@ -1,4 +1,4 @@
-# ADR-0261: The conf-parity exception set lives in the test
+# ADR-0262: The conf-parity exception set lives in the test
 
 - **Date:** 2026-09-09
 - **Status:** Accepted. Supersedes (partial)
