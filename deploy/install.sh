@@ -1055,8 +1055,9 @@ from jasper.audio_measurement.calibration import migrate_stored_sign_conventions
 
 counts = migrate_stored_sign_conventions()
 # `uploads_untouched` is the household-visible number the doctor's
-# "uploaded calibration sign" advisory follows up on: uploaded records carry
-# the household's OWN sign declaration and are never flipped here.
+# "correction state dirs" row (REASON_UPLOADED_CALIBRATION_SIGN_REVIEW)
+# follows up on: uploaded records carry the household's OWN sign
+# declaration and are never flipped here.
 print(
     "repaired={} scanned={} already_response={} uploads_untouched={} "
     "unreadable={} write_failed={}".format(

@@ -892,7 +892,7 @@ def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
     present-but-out-of-range or unparseable value FAILS LOUD (:class:`ValueError`)
     rather than silently clamping — the ioplug/daemon geometry must never shear.
     Range :data:`OUTPUTD_RING_SLOTS_MIN`..=:data:`OUTPUTD_RING_SLOTS_MAX` mirrors
-    the Rust ``MIN_SHM_RING_SLOTS`` / ``MAX_SHM_RING_SLOTS`` (config.rs).
+    ``jasper_ring::{MIN_N_SLOTS, MAX_N_SLOTS}`` (``rust/jasper-ring/layout.json``).
     """
     if raw_slots is None:
         return DEFAULT_OUTPUTD_RING_SLOTS

@@ -199,8 +199,8 @@ ExecStart=/opt/jasper/bin/jasper-fanin
 # (JASPER_FANIN_USB_DIRECT=enabled + JASPER_FANIN_HOST_CLOCK=enabled) the
 # `fanin-host-clock` thread owns the gadget's "Capture Pitch 1000000" ctl and
 # resets it to neutral on every clean exit path — but SIGKILL / OOM-kill /
-# watchdog abort skip that in-process cleanup, and a host must never stay
-# slaved to a command from a daemon that is no longer running.
+# watchdog abort / panic abort skip that in-process cleanup, and a host must
+# never stay slaved to a command from a daemon that is no longer running.
 #
 # The owner gate matches the daemon: fan-in writes a non-neutral pitch only when
 # BOTH JASPER_FANIN_HOST_CLOCK and JASPER_FANIN_USB_DIRECT are enabled. Requiring

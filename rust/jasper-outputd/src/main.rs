@@ -387,24 +387,24 @@ fn run_alsa(
     // armed round-trip marker — allocates nothing for it, which matters under
     // `mlockall`.
     let shm_ring = match config.shm_ring.as_ref() {
-        Some(ring) => {
+        Some(path) => {
             eprintln!(
                 "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} format={} sample_rate={}",
-                ring.path,
-                ring.n_slots,
+                path,
+                jasper_ring::RING_SLOTS,
                 config.period_frames,
                 config.content_channels,
                 config.content_format.as_str(),
                 config.sample_rate,
             );
             let src = ShmRingSource::new(
-                &ring.path,
+                path,
                 config.period_frames,
                 config.content_channels,
                 config.content_format,
-                ring.n_slots,
+                jasper_ring::RING_SLOTS,
             )
-            .map_err(|e| classify_ring_attach_error("shm_ring", &ring.path, e))?;
+            .map_err(|e| classify_ring_attach_error("shm_ring", path, e))?;
             Some(src)
         }
         None => None,
@@ -1661,7 +1661,7 @@ mod tests {
         let _writer = TestRingWriter::create_or_attach(
             &path,
             Geometry {
-                rate: 48_000,
+                rate: jasper_ring::RATE_HZ,
                 channels: 2,
                 sample_format: SAMPLE_FORMAT_S16LE,
                 period_frames: 128,

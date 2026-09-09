@@ -619,8 +619,8 @@ def check_ring_ioplug_provenance() -> CheckResult:
 # (``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS``, 500 ms): ``acquire_writer_lock``
 # opens the lock file FIRST and only then spins on ``flock`` until that budget
 # expires, so for up to that long a healthy box legitimately has TWO processes
-# holding an fd on one ``.writer.lock``. Pinned against the header by
-# ``tests/test_ring_slot_ceiling_pin.py``.
+# holding an fd on one ``.writer.lock``. Pinned against the generated ring ABI
+# by ``tests/test_doctor_audio_runtime_ring.py``.
 _WRITER_LOCK_CONFIRM_DELAY_SEC = 0.75
 # Resolved at CALL time below, so a test can repoint it at a synthetic tree.
 _PROC_ROOT = "/proc"

@@ -150,8 +150,8 @@ def test_happy_path_deduplicates_shared_unix_user_members(tmp_path: Path):
 
     assert result.status == "ok", result.detail
     # Pure formatting behavior: repeated Unix-identity members dedupe by name.
-    assert "readable only by jasper-web, jasper-voice" in result.detail
-    assert "jasper-web, jasper-voice, jasper-web" not in result.detail
+    assert result.detail.count("jasper-web") == 1
+    assert "jasper-voice" in result.detail
 
 
 def test_world_readable_file_fails_over_exposure(tmp_path: Path):
@@ -210,7 +210,7 @@ def test_fail_outranks_warn(tmp_path: Path):
     assert result.status == "fail", result.detail
     assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
     # Fail still discloses the co-occurring availability warning count.
-    assert "availability warning" in result.detail
+    assert "+2 availability warning" in result.detail
 
 
 def test_dir_missing_setgid_warns(tmp_path: Path):
@@ -287,7 +287,7 @@ def test_overflow_truncates(tmp_path: Path):
     assert result.status == "fail"
     assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
     # Pure formatting behavior: the shown-list caps with an overflow marker.
-    assert "more)" in result.detail
+    assert "+3 more)" in result.detail
 
 
 def test_reports_never_contain_the_secret_value(tmp_path: Path):
@@ -299,6 +299,8 @@ def test_reports_never_contain_the_secret_value(tmp_path: Path):
     result = sc._classify_compartment(
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
+    assert result.status == "fail"
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
     assert "SECRET-VALUE-NEVER-IN-OUTPUT" not in result.detail
 
 
