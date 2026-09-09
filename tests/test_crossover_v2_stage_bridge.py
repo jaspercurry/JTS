@@ -469,7 +469,7 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
     task = asyncio.create_task(prepared.run_and_consume(
         SimpleNamespace(session_id=_MINTED_CAPTURE_SESSION_ID),
     ))
-    await cleanup_started.wait()
+    await wait_signalled(cleanup_started, "measurement cleanup started", producer=task)
     assert json.loads((bundle / "info.json").read_text())["state"] == "open"
     if write_failed:
         monkeypatch.setattr(v2host, "mark_state", lambda *args: None)
