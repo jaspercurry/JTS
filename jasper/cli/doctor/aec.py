@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -92,7 +91,7 @@ REASON_BRIDGE_WRONG_FIRMWARE = "bridge_off_wrong_firmware"
 REASON_BRIDGE_DOWN_READY_PRESENT = "bridge_down_ready_marker_present"
 REASON_BRIDGE_DOWN_READY_ABSENT = "bridge_down_ready_marker_absent"
 
-# `_assess_aec_reference_input_from_stats`'s schema-v4 contract branches.
+# `_assess_aec_reference_input_from_stats`'s schema contract branches.
 REASON_REF_CONTRACT_NOT_OBJECT = "ref_contract_not_object"
 REASON_REF_CONTRACT_MISSING_FIELD = "ref_contract_missing_field"
 REASON_REF_CONTRACT_INVALID_NUMERIC = "ref_contract_invalid_numeric"
@@ -116,7 +115,6 @@ REASON_REF_RECEIVER_CURRENT = "ref_receiver_current"
 
 # `_assess_aec_bridge_output` + `check_aec_bridge_output_health`'s own branches.
 REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING = "bridge_output_bridge_not_running"
-REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE = "bridge_output_journal_unreadable"
 REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC = "bridge_output_ref_silent_no_music"
 # The four `_aec_reference_failure_remediation` localization outcomes: which
 # hop the remediation could name, each pointing at a different fix.
@@ -649,53 +647,81 @@ def check_aec_bridge_running() -> CheckResult:
     )
 
 
-# The bridge emits one of two RMS window shapes at RMS_LOG_INTERVAL_SEC
-# cadence (jasper/cli/aec_bridge.py), chosen by whether production chip AEC
-# is armed:
-#   software AEC3: "rms over Ns: ref=15694 mic=2077 aec=311 →
-#                   attenuation=-16.5 dB (...)"
-#   chip AEC:      "chip_aec rms over Ns: ref=15694 near=chip_aec_210:2077
-#                   primary=chip_aec_150:311 level_delta=-16.5 dB raw0=2411
-#                   (...)"
-# `raw0` is the raw mic-0 capture channel. Optional: builds before it emitted
-# only the chip-cancelled beams, and the bridge omits it for a window that
-# drained no raw0 frames.
-_AEC_RMS_RE = re.compile(
-    r"rms over [\d.]+s: ref=(?P<ref>\d+) mic=(?P<mic>\d+) aec=\d+ → "
-    r"attenuation=(?P<level>-?\d+\.\d+) dB"
-)
-_CHIP_AEC_RMS_RE = re.compile(
-    r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<near>\d+) "
-    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB(?: raw0=(?P<raw0>\d+))?"
-)
+def _finite_number(value: object, field: str) -> float:
+    """A finite float from untrusted snapshot JSON, else ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} is not a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} is not representable") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _nonnegative_number(value: object, field: str) -> float:
+    number = _finite_number(value, field)
+    if number < 0:
+        raise ValueError(f"{field} must be finite and nonnegative")
+    return number
 
 
 class _RmsWindow(NamedTuple):
-    """`mic` is the least-cancelled near-end level each shape offers: AEC3
-    `mic` (capture lane 1), chip `raw0` (truly-raw capture channel 2), or the
-    cancelled `near` beam when a chip line carries no `raw0`.
-    `level_db` is AEC3 `attenuation` and is None on chip AEC, whose
-    `level_delta` compares two beams the chip already cancelled."""
+    """One finished RMS window as the bridge publishes it
+    (`jasper/aec/bridge_telemetry.py`, `rms.windows`).
 
-    ref: int
-    mic: int
+    `mic` is the least-cancelled near-end level the running profile offers:
+    the AEC3 capture lane, or the chip's raw mic-0 channel. `level_db` is
+    AEC3 attenuation and is None on chip AEC, whose beam-to-beam delta
+    compares two beams the chip already cancelled."""
+
+    ref: float
+    mic: float
     level_db: float | None
     chip: bool
 
 
-def _parse_rms_window(line: str) -> _RmsWindow | None:
-    """Parse either bridge RMS log shape into one record, else None."""
-    if m := _CHIP_AEC_RMS_RE.search(line):
-        return _RmsWindow(
-            ref=int(m["ref"]), mic=int(m["raw0"] or m["near"]),
-            level_db=None, chip=True,
-        )
-    if m := _AEC_RMS_RE.search(line):
-        return _RmsWindow(
-            ref=int(m["ref"]), mic=int(m["mic"]),
-            level_db=float(m["level"]), chip=False,
-        )
-    return None
+def _rms_windows_from_stats(
+    stats: dict | None, now_monotonic: float,
+) -> list[_RmsWindow] | None:
+    """The RMS windows the running bridge published, or None when it
+    publishes none: no snapshot, or a bridge older than schema
+    `_AEC_BRIDGE_STATS_SCHEMA_VERSION`.
+
+    Windows older than `_AEC_RMS_WINDOW_SPAN_SEC` are dropped. The stats
+    writer is its own thread, so a wedged processing loop keeps republishing
+    the last windows it produced; ageing them out keeps that missing
+    evidence instead of stale health.
+    """
+    rms = stats.get("rms") if isinstance(stats, dict) else None
+    if not isinstance(rms, dict) or not isinstance(rms.get("windows"), list):
+        return None
+    cutoff_ms = (now_monotonic - _AEC_RMS_WINDOW_SPAN_SEC) * 1000.0
+    windows: list[_RmsWindow] = []
+    for entry in rms["windows"]:
+        if not isinstance(entry, dict):
+            continue
+        level_db = entry.get("level_db")
+        try:
+            at_ms = _nonnegative_number(
+                entry.get("monotonic_ms"), "monotonic_ms",
+            )
+            window = _RmsWindow(
+                ref=_nonnegative_number(entry.get("ref"), "ref"),
+                mic=_nonnegative_number(entry.get("mic"), "mic"),
+                level_db=(
+                    None
+                    if level_db is None
+                    else _finite_number(level_db, "level_db")
+                ),
+                chip=bool(entry.get("chip")),
+            )
+        except ValueError:
+            continue
+        if at_ms >= cutoff_ms:
+            windows.append(window)
+    return windows
 
 
 # Thresholds for `check_aec_bridge_output_health`.
@@ -708,15 +734,20 @@ _AEC_MIC_MUSIC_THRESHOLD = 1500  # RMS
 # music is 1000+ RMS.
 _AEC_REF_SILENT_THRESHOLD = 50
 
+# Span of published RMS windows the assessment reads. Long enough to ride
+# past the transient install.sh produces when it restarts the bridge, short
+# enough that a sustained outage is not diluted by older history.
+_AEC_RMS_WINDOW_SPAN_SEC = 90.0
+
 # The bridge rewrites its stats snapshot every 0.5 s. A snapshot older than
-# this belongs to a stopped/wedged writer and retains the journal fallback used
-# by older bridge revisions.
+# this belongs to a stopped/wedged writer.
 _BRIDGE_STATS_FRESH_SEC = 30.0
 
-# Schema 4 adds authoritative receiver-side progress for the reference input.
-# UDP send success is not delivery proof, so only the bridge's successful
-# conversion + bounded-queue enqueue advances this signal.
-_AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION = 4
+# Schema 4 added authoritative receiver-side progress for the reference input
+# (UDP send success is not delivery proof, so only the bridge's successful
+# conversion + bounded-queue enqueue advances it); schema 5 added the `rms`
+# windows this check assesses.
+_AEC_BRIDGE_STATS_SCHEMA_VERSION = 5
 # A bridge younger than this has not necessarily bound its receiver yet.
 _AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC = 10.0
 # outputd publishes a 20 ms reference frame continuously, so a gap this long
@@ -774,11 +805,12 @@ def _assess_aec_reference_input_from_stats(
 ) -> tuple[CheckResult, bool] | None:
     """Assess current bridge-side reference receiver progress.
 
-    Returns ``(result, startup_grace)`` for exact schema v4. ``None`` preserves
-    the journal assessment for missing, older, and unknown-future schemas. A
-    malformed or stale declared-v4 snapshot fails closed instead of aging into
-    the legacy fallback. The second element lets the caller suppress previous-
-    process journal windows during the explicit startup grace.
+    Returns ``(result, startup_grace)`` for the exact current schema.
+    ``None`` leaves the verdict to the published RMS windows for missing,
+    older, and unknown-future schemas. A malformed or stale snapshot of the
+    current schema fails closed instead of aging out of the contract. The
+    second element lets the caller suppress the window content assessment
+    during the explicit startup grace.
 
     ``configured_source`` is the route the CALLER resolved from the env plus
     the bridge's own published snapshot, not the env value alone (see
@@ -794,7 +826,7 @@ def _assess_aec_reference_input_from_stats(
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version != _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION
+        or schema_version != _AEC_BRIDGE_STATS_SCHEMA_VERSION
     ):
         return None
 
@@ -808,23 +840,13 @@ def _assess_aec_reference_input_from_stats(
         return (
             CheckResult(
                 "AEC bridge output", "fail",
-                f"bridge reference freshness schema v4 is untrustworthy: "
+                f"bridge reference freshness schema "
+                f"v{_AEC_BRIDGE_STATS_SCHEMA_VERSION} is untrustworthy: "
                 f"{detail}. {localization}",
                 reason=reason,
             ),
             False,
         )
-
-    def nonnegative_number(value: object, field: str) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field} is not a number")
-        try:
-            number = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"{field} is not representable") from exc
-        if not math.isfinite(number) or number < 0:
-            raise ValueError(f"{field} must be finite and nonnegative")
-        return number
 
     reference_input = stats.get("reference_input")
     if not isinstance(reference_input, dict):
@@ -837,15 +859,15 @@ def _assess_aec_reference_input_from_stats(
         endpoint = reference_input["endpoint"]
         frames_enqueued = reference_input["frames_enqueued"]
         last_frame_age_ms = reference_input["last_frame_age_ms"]
-        snapshot_monotonic_ms = nonnegative_number(
+        snapshot_monotonic_ms = _nonnegative_number(
             reference_input["snapshot_monotonic_ms"],
             "reference_input.snapshot_monotonic_ms",
         )
-        process_age_ms = nonnegative_number(
+        process_age_ms = _nonnegative_number(
             reference_input["process_age_ms"],
             "reference_input.process_age_ms",
         )
-        current_monotonic_sec = nonnegative_number(
+        current_monotonic_sec = _nonnegative_number(
             now_monotonic,
             "doctor monotonic clock",
         )
@@ -908,7 +930,7 @@ def _assess_aec_reference_input_from_stats(
         receiver_age_sec: float | None = None
     else:
         try:
-            receiver_age_at_snapshot_sec = nonnegative_number(
+            receiver_age_at_snapshot_sec = _nonnegative_number(
                 last_frame_age_ms,
                 "reference_input.last_frame_age_ms",
             ) / 1000.0
@@ -986,7 +1008,7 @@ def _assess_aec_reference_input_from_stats(
     )
 
 def _assess_aec_bridge_output(
-    journal_text: str,
+    windows: list[_RmsWindow],
     music_chain_active: bool | None = None,
     *,
     bridge_stats: dict | None = None,
@@ -994,11 +1016,11 @@ def _assess_aec_bridge_output(
     outputd_status: dict | None = None,
     now: float | None = None,
 ) -> CheckResult:
-    """Pure-function assessment of the bridge's `rms over` log
-    output. Split out from `check_aec_bridge_output_health` so the
-    parser can be unit-tested without mocking subprocess.
+    """Pure-function assessment of the RMS windows the bridge published.
+    Split out from `check_aec_bridge_output_health` so every verdict is
+    unit-testable without a live snapshot.
 
-    Counts three quantities across the journal window:
+    Counts three quantities across the windows:
       - silent_ref_count: windows with mic-loud (>threshold) + ref-silent
       - healthy_ref_windows: windows where ref ≥ silent-threshold (any signal)
       - healthy_windows: windows with mic-loud + meaningful attenuation
@@ -1022,33 +1044,29 @@ def _assess_aec_bridge_output(
     open", NOT "the speaker is silent". Pass False when a check upstream
     has verified the loopback playback side is closed; the FAIL branch
     will then return OK with an explanatory message instead. Default
-    None preserves the old behavior (used by tests that want to
-    exercise the journal parser in isolation).
+    None preserves the old behavior (used by tests that exercise the
+    window assessment in isolation).
     """
     silent_ref_count = 0
     healthy_ref_windows = 0
     healthy_windows = 0
-    total_windows = 0
+    total_windows = len(windows)
     chip_windows = 0
 
-    for line in journal_text.split("\n"):
-        w = _parse_rms_window(line)
-        if w is None:
-            continue
-        total_windows += 1
+    for w in windows:
         if w.chip:
             chip_windows += 1
         # ref ≥ silent-threshold = the reference chain delivered
         # real samples in this window. Any single occurrence proves the
-        # chain works end-to-end. Both shapes carry the same `ref`: the
+        # chain works end-to-end. Both profiles carry the same `ref`: the
         # outputd speaker monitor, upstream of whichever AEC runs.
         if w.ref >= _AEC_REF_SILENT_THRESHOLD:
             healthy_ref_windows += 1
         # mic > music-threshold = something acoustic was loud enough to
         # plausibly be music (ambient is ~600 RMS, well below). ref <
         # silent-threshold = ref path silent in this window.
-        # The threshold carries over to chip AEC because `mic` is `raw0`
-        # there, measured at ~1.2-1.8x the cancelled beams
+        # The threshold carries over to chip AEC because `mic` is the raw
+        # mic-0 channel there, measured at ~1.2-1.8x the cancelled beams
         # (docs/AEC-DIAG-06-xvf-format-level-profile.md:252).
         if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
@@ -1107,18 +1125,18 @@ def _assess_aec_bridge_output(
             reason=remediation_reason,
         )
 
-    # An active bridge writes an RMS window at RMS_LOG_INTERVAL_SEC cadence
-    # (jasper/cli/aec_bridge.py), so an empty 90 s window is missing
-    # evidence, not evidence of health: a restart loop, a wedged processing
-    # thread, or a journal not capturing INFO all look like this. Warn
-    # rather than assert an unverified ok.
+    # An active bridge publishes an RMS window at RMS_LOG_INTERVAL_SEC
+    # cadence (jasper/cli/aec_bridge.py), so an empty span is missing
+    # evidence, not evidence of health: a restart loop or a wedged
+    # processing thread both look like this. Warn rather than assert an
+    # unverified ok.
     if total_windows == 0:
         return CheckResult(
             "AEC bridge output", "warn",
-            "no recent RMS windows logged while the bridge is running "
-            "(expected periodic windows) — bridge may have just restarted, "
-            "or its processing loop is wedged. Check: journalctl -u "
-            "jasper-aec-bridge -e",
+            "the bridge has published no RMS window in the last "
+            f"{_AEC_RMS_WINDOW_SPAN_SEC:g}s while running (expected periodic "
+            "windows) — it may have just restarted, or its processing loop "
+            "is wedged. Check: journalctl -u jasper-aec-bridge -e",
             reason=REASON_BRIDGE_OUTPUT_NO_WINDOWS,
         )
 
@@ -1159,8 +1177,9 @@ def _assess_aec_bridge_output(
     if healthy_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
-            f"no music activity in last 90 s "
-            f"({total_windows} log windows; no AEC work to evaluate){mixed}",
+            f"no music activity in last {_AEC_RMS_WINDOW_SPAN_SEC:g} s "
+            f"({total_windows} published windows; no AEC work to "
+            f"evaluate){mixed}",
             reason=REASON_BRIDGE_OUTPUT_IDLE,
         )
 
@@ -1188,17 +1207,16 @@ def check_aec_bridge_output_health() -> CheckResult:
     says ok, leaving the wake detector consuming an un-cancelled mic
     with music blasting through it.
 
-    Exact schema-v4 monotonic stats are authoritative for current
-    outputd-UDP receiver progress: a freshness failure returns before
-    RMS or the USB-blind loopback heuristic can hide it. A freshness
-    success proves only transport/queue admission, so journal content
-    is still assessed. Missing, older, unknown-future, and unreadable
-    schemas retain the bridge's last 90 s of `rms over` lines as a
-    rolling-deploy fallback; malformed or stale declared-v4 stats fail
-    closed. 90 s rides past the transient that install.sh produces
-    during an older-bridge deploy without missing a sustained outage.
-    Both assessment paths are pure functions so they can be
-    unit-tested without subprocess mocks."""
+    Both halves read one file, the bridge's stats snapshot. The exact
+    current schema's monotonic stats are authoritative for outputd-UDP
+    receiver progress: a freshness failure returns before the RMS windows
+    or the USB-blind loopback heuristic can hide it. A freshness success
+    proves only transport/queue admission, so the published windows are
+    still assessed; a malformed or stale snapshot of the current schema
+    fails closed. A bridge older than the schema publishes no windows at
+    all (rolling deploy: install.sh restarts it minutes after this code
+    lands), which is missing evidence, not a fault — skipped. Both
+    assessments are pure functions over the snapshot."""
     parked = _parked_follower_result("AEC bridge output")
     if parked is not None:
         return parked
@@ -1223,7 +1241,7 @@ def check_aec_bridge_output_health() -> CheckResult:
         f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, '9891').strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
-    # EITHER end saying `outputd_udp` enables the authoritative v4 freshness
+    # EITHER end saying `outputd_udp` enables the authoritative freshness
     # contract (the fail-closed direction): the env states intent, the
     # bridge's own snapshot states what it applied, and the two diverge on a
     # box parked by a pre-P7-1 reconciler (retired `alsa` spelling on disk
@@ -1262,36 +1280,24 @@ def check_aec_bridge_output_health() -> CheckResult:
             return stats_result
         if startup_grace:
             return stats_result
-        # A non-startup OK from the exact-v4 assessor means it already proved
-        # that reference_input source/endpoint match this outputd route. Carry
-        # that identity into journal-content remediation; do not re-rank it
-        # through the legacy epoch-based active_capture_plan fallback.
+        # A non-startup OK from the exact-schema assessor means it already
+        # proved that reference_input source/endpoint match this outputd
+        # route. Carry that identity into content remediation; do not re-rank
+        # it through the legacy epoch-based active_capture_plan fallback.
         trusted_reference_identity = ("outputd_udp", expected_endpoint)
 
-    # Rolling-deploy fallback: use a 90-second window, not 5 minutes.
-    # Rationale: install.sh restarts an older bridge, and there's a transient
-    # (~30-90 s) where the bridge is running but its ref capture
-    # hasn't reconnected yet. Within 90 s of deploy completion, that
-    # transient looks like the broken state we're trying to catch.
-    # Looking at the most recent 90 s only avoids the false-positive
-    # while still being long enough to confirm sustained failures.
-    proc = _run(
-        ["journalctl", "-u", "jasper-aec-bridge.service",
-         "--since", "90 sec ago", "--no-pager", "--output", "cat"],
-        timeout=8.0,
-    )
-    if proc.returncode != 0:
+    windows = _rms_windows_from_stats(bridge_stats, now_monotonic)
+    if windows is None:
+        detail = (
+            "the running bridge publishes no RMS windows (stats snapshot "
+            f"predates schema {_AEC_BRIDGE_STATS_SCHEMA_VERSION}), so its "
+            "output content is unobserved"
+        )
         if stats_assessment is not None:
-            return CheckResult(
-                "AEC bridge output", "warn",
-                f"could not read journal for content assessment: "
-                f"{proc.stderr.strip() or 'unknown error'}; {stats_result.detail}",
-                reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
-            )
+            detail += f"; {stats_assessment[0].detail}"
         return CheckResult(
-            "AEC bridge output", "skipped",
-            f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
-            reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
+            "AEC bridge output", "skipped", detail,
+            reason=REASON_BRIDGE_OUTPUT_NO_WINDOWS,
         )
 
     now_epoch = time.time()
@@ -1301,15 +1307,15 @@ def check_aec_bridge_output_health() -> CheckResult:
         else None
     )
     music_chain_active = _loopback_playback_active()
-    journal_result = _assess_aec_bridge_output(
-        proc.stdout,
+    content_result = _assess_aec_bridge_output(
+        windows,
         music_chain_active=music_chain_active,
         bridge_stats=bridge_stats,
         trusted_reference_identity=trusted_reference_identity,
         now=now_epoch,
     )
     if (
-        journal_result.status == "fail"
+        content_result.status == "fail"
         and (
             (
                 trusted_reference_identity is not None
@@ -1321,8 +1327,8 @@ def check_aec_bridge_output_health() -> CheckResult:
             )
         )
     ):
-        journal_result = _assess_aec_bridge_output(
-            proc.stdout,
+        content_result = _assess_aec_bridge_output(
+            windows,
             music_chain_active=music_chain_active,
             bridge_stats=bridge_stats,
             trusted_reference_identity=trusted_reference_identity,
@@ -1330,8 +1336,8 @@ def check_aec_bridge_output_health() -> CheckResult:
             now=now_epoch,
         )
     if stats_assessment is not None:
-        journal_result.detail += f"; {stats_assessment[0].detail}"
-    return journal_result
+        content_result.detail += f"; {stats_assessment[0].detail}"
+    return content_result
 
 
 def _read_bridge_stats_snapshot() -> dict | None:
@@ -1349,10 +1355,10 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     by a pre-P7-1 reconciler still carries the retired ``alsa`` spelling in
     /etc/jasper/jasper.env while the bridge converged to ``outputd_udp``.
 
-    Reads the schema-v4 ``reference_input.source``, NOT
+    Reads the ``reference_input.source`` receiver block, NOT
     ``active_capture_plan.mic_reference_identity.ref_source``. The two are
     written from the same resolved value, but where they disagree this
-    module's shipped ruling is that the v4 receiver block wins and the
+    module's shipped ruling is that the receiver block wins and the
     epoch-based plan is the legacy fallback (see the ``trusted_reference_
     identity`` comment in ``check_aec_bridge_output_health``); reading the
     plan here would have inverted that.
@@ -1361,7 +1367,7 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     None and the caller falls back to the env value, which is what keeps a
     rolling deploy (or an unwritten /run snapshot) from changing behaviour.
     No freshness gate here: staleness is the assessor's own contract, which
-    fails closed on a stale declared-v4 snapshot rather than skipping it.
+    fails closed on a stale current-schema snapshot rather than skipping it.
     """
     if not isinstance(stats, dict):
         return None

@@ -976,10 +976,12 @@ def _aec_loop(  # noqa: PLR0915
                     # Omitted, not zeroed, when the window drained no raw0
                     # frames: doctor reads a present `raw0` as the near-end
                     # level, and `raw0=0` would pin its music gate off.
+                    raw0_rms = (
+                        math.sqrt(sum_raw0_sq / raw0_window_frames)
+                        if raw0_window_frames else None
+                    )
                     raw0_token = (
-                        " raw0=%.0f"
-                        % math.sqrt(sum_raw0_sq / raw0_window_frames)
-                        if raw0_window_frames else ""
+                        "" if raw0_rms is None else " raw0=%.0f" % raw0_rms
                     )
                     if mic_rms > 1.0:
                         attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
@@ -1014,6 +1016,18 @@ def _aec_loop(  # noqa: PLR0915
                             _ref_starved_frames,
                             ref_clip_pct, out_clip_pct,
                         )
+                    _bridge_stats.record_rms_window(
+                        ref=ref_rms,
+                        mic=(
+                            (mic_rms if raw0_rms is None else raw0_rms)
+                            if production_chip_aec_enabled
+                            else mic_rms
+                        ),
+                        level_db=(
+                            None if production_chip_aec_enabled else attn_db
+                        ),
+                        chip=production_chip_aec_enabled,
+                    )
                 last_log = now
                 rms_window_frames = 0
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0

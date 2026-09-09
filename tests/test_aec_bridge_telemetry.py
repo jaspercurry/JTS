@@ -141,6 +141,10 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
         mode="chip_aec", leg="chip_aec_150", fallback_active=True,
     )
     stats.mark_leg_unavailable("dtln", error="no onnx")
+    # Both profiles' windows: AEC3 carries its attenuation, chip AEC carries
+    # None because its beams are cancelled upstream of the bridge.
+    stats.record_rms_window(ref=1_200.4, mic=2_400.6, level_db=-24.1, chip=False)
+    stats.record_rms_window(ref=980.0, mic=2_900.0, level_db=None, chip=True)
 
     path = tmp_path / "aec_bridge_stats.json"
     stats.write_snapshot(path)
@@ -154,7 +158,7 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
     assert written == snapshot
 
     assert snapshot == {
-        "schema_version": 4,
+        "schema_version": 5,
         "sample_rate_hz": 16000,
         "frame_samples": 320,
         "out_frame_samples": 1280,
@@ -182,6 +186,18 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
         },
         "leg_engines": {
             "dtln": {"enabled": True, "loaded": False, "error": "no onnx"},
+        },
+        "rms": {
+            "windows": [
+                {
+                    "ref": 1200, "mic": 2401, "level_db": -24.1,
+                    "chip": False, "monotonic_ms": 1234500,
+                },
+                {
+                    "ref": 980, "mic": 2900, "level_db": None,
+                    "chip": True, "monotonic_ms": 1234500,
+                },
+            ],
         },
         "capture_stream": {
             "sample_rate_hz": 16000,
