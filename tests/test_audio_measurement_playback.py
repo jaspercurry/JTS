@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_measurement import correction_lane, playback
+from jasper.audio_measurement import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.correction import playback as correction_playback
 
@@ -858,9 +858,8 @@ def test_correction_compatibility_surface_preserves_types_and_defaults() -> None
     assert correction_playback.PlaybackError is playback.PlaybackError
     assert correction_playback.PlaybackFailureCode is playback.PlaybackFailureCode
     assert issubclass(correction_playback.TonePlayer, playback.TonePlayer)
-    # None is the transport-reader sentinel since P6c-ii: the lane device
-    # stopped being a def-time constant (a frozen default would ignore an
-    # arm); play_sweep resolves correction_play_device() per call.
+    # None is the transport-reader sentinel: play_sweep resolves
+    # correction_play_device() per call.
     assert (
         inspect.signature(correction_playback.play_sweep)
         .parameters["alsa_device"]
@@ -1029,53 +1028,6 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
         [sys.executable, "-c", probe], text=True, stderr=subprocess.STDOUT
     )
     assert out.strip() == "False"
-
-
-# --- #2626: both aplay spawns carry the correction-lane umask ----------------
-
-
-async def test_both_aplay_spawns_carry_the_correction_lane_umask(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every correction-lane `aplay` spawn sets `CORRECTION_PLAY_UMASK` (#2626).
-
-    WHY THIS IS A SILENT-FAILURE SHAPE, not tidiness. `jasper-correction-web
-    .service` runs with `UMask=0077`. If one of these spawns is ever the
-    CREATOR of an armed correction ring file, the ring lands `0600` and the
-    non-root fan-in end cannot write its header half — no error at this end,
-    no audio at the other. Every wrapper in
-    `jasper.audio_measurement.correction_lane` already rides the umask; these
-    two module-local spawns were the exceptions.
-
-    Both are asserted in one test because the failure is the same for either,
-    and a per-site test would let one be deleted without noticing the pair
-    broke. The `umask` keyword reaches the child because
-    `create_subprocess_exec` forwards unknown keywords to `subprocess.Popen`
-    — the mechanism is pinned empirically in `tests/test_correction_lane_play
-    .py`; this test pins the CALL, which is what regressed.
-    """
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-    seen: list[dict] = []
-
-    async def create(*_args, **kwargs):
-        seen.append(kwargs)
-        return _ExitedProcess()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-
-    await playback.play_wav(wav_path, alsa_device="test_pcm", timeout_s=2.0)
-    await playback.TonePlayer(wav_path, alsa_device="test_pcm").play()
-
-    assert len(seen) == 2, seen
-    assert [kwargs.get("umask") for kwargs in seen] == [
-        correction_lane.CORRECTION_PLAY_UMASK,
-        correction_lane.CORRECTION_PLAY_UMASK,
-    ]
-    # Value pinned too: a `umask=` present but wrong is the same silent
-    # failure, so the kwarg's presence alone is not the claim.
-    assert correction_lane.CORRECTION_PLAY_UMASK == 0o007
 
 
 @pytest.mark.parametrize("reaped", [True, False])

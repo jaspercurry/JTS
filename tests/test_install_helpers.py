@@ -3653,6 +3653,7 @@ def test_install_removes_the_retired_audio_topology_state():
         "\n}\n", 1
     )[0]
     assert 'rm -f "${STATE_DIR}/audio_topology.env"' in body
+    assert 'rm -f "${STATE_DIR}/renderer_lanes.env"' in body
 
     # That it actually RUNS, on both profiles (a box only carries the ghost
     # file if it predates the retirement, which is true on either tier), is

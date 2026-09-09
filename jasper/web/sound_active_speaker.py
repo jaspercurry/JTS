@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
-# correction_play_device is the lane's one transport reader: payloads resolve
-# the device fresh so they report the transport the spawn actually used.
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,

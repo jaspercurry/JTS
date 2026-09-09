@@ -88,7 +88,7 @@ def _render(
     # Absent by default (a nonexistent sentinel path): ring geometry falls
     # back to the script's DEFAULT_RING_A/B_LATENCY_FRAMES, which mirror the
     # shipped 60-jts-ring.conf values (256 / 128) — see
-    # test_airplay_renderer_ring_conf_geometry_propagates for the parsed path.
+    # test_airplay_ring_conf_geometry_propagates for the parsed path.
     if ring_alsa_conf_content is not None:
         ring_alsa_conf.write_text(ring_alsa_conf_content)
     else:
@@ -119,11 +119,6 @@ def _render(
             "JASPER_OUTPUTD_STATUS_SOCKET": str(
                 outputd_status_socket or tmp_path / "no-outputd-status.sock"
             ),
-            # Hermetic: never read the HOST's renderer-lane map — on an
-            # armed box these tests would otherwise render the ring device.
-            # The armed/disarmed device behavior itself is pinned end to end
-            # in tests/test_renderer_ring_lanes.py's conf-renderer facts.
-            "JASPER_RENDERER_LANES_ENV": str(tmp_path / "no-renderer-lanes.env"),
         }
     )
     if extra_env:
@@ -587,10 +582,6 @@ def test_renderer_device_placeholder_validated(tmp_path: Path):
         """,
     )
     assert "__RENDERER_DEVICE__" not in rendered
-    # With no renderer-lane map (the harness pins one that does not exist),
-    # the device falls back to the shipped snd-aloop lane — the
-    # byte-identical fleet default. The armed→ring flip is pinned in
-    # tests/test_renderer_ring_lanes.py.
     assert 'output_device = "shairport_substream"' in rendered
 
 
@@ -631,7 +622,7 @@ devices:
 """
 
 
-def test_airplay_renderer_ring_conf_geometry_propagates(tmp_path: Path):
+def test_airplay_ring_conf_geometry_propagates(tmp_path: Path):
     """A ring retune (different period_frames/n_slots in the shipped ALSA
     ring conf) must change the derived offset — the geometry is parsed via
     jasper.ring_assets at render time, never hardcoded blind, so a future

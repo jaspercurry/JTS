@@ -423,6 +423,7 @@ PY
 # audio_topology.env's presence AND no Pi still has /etc/asound.conf.dmix-mode-backup.
 remove_retired_audio_topology_state() {
     rm -f "${STATE_DIR}/audio_topology.env" /etc/asound.conf.dmix-mode-backup
+    rm -f "${STATE_DIR}/renderer_lanes.env"
 }
 
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi

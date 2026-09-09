@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     import asyncio
     import os
 
-# Lane name on an unarmed box.
 CORRECTION_SUBSTREAM = "correction_substream"
 
 # Where the lane's generated WAVs are cached. deploy/install.sh creates it and
@@ -23,18 +22,10 @@ CORRECTION_SUBSTREAM = "correction_substream"
 # tree for the literal, which is spelled outside Python too.
 CORRECTION_TONE_DIR = Path("/var/lib/jasper/correction/tones")
 
-# 0o007: shared ring HEADER must land 0660 (pinned `UMask=0007` in tests/test_renderer_ring_lanes.py); root's inherited 0022 breaks it.
-CORRECTION_PLAY_UMASK = 0o007
-
 
 def correction_play_device() -> str:
-    """The ALSA PCM the correction lane opens right now; resolved fresh per call so an arm/disarm change takes effect on the next spawn."""
-    from jasper import renderer_lanes as rl
-
-    lane = rl.lane_by_label("correction")
-    if lane is None:  # fail-safe; provably dead while the registry row exists
-        return CORRECTION_SUBSTREAM
-    return rl.device_for(lane, "correction" in rl.read_armed_labels())
+    """The ALSA PCM the correction lane opens."""
+    return CORRECTION_SUBSTREAM
 
 
 def correction_play_argv(wav_path: str | os.PathLike[str]) -> list[str]:
@@ -53,7 +44,6 @@ def popen_correction_play(
         correction_play_argv(wav_path),
         stdout=stdout,
         stderr=stderr,
-        umask=CORRECTION_PLAY_UMASK,
     )
 
 
@@ -63,14 +53,13 @@ async def exec_correction_play(
     stdout: int | None,
     stderr: int | None,
 ) -> asyncio.subprocess.Process:
-    """Spawn a correction-lane ``aplay`` for asyncio callers; ``umask=`` reaches the child via ``create_subprocess_exec``'s pass-through to :class:`subprocess.Popen`."""
+    """Spawn a correction-lane ``aplay`` for asyncio callers."""
     import asyncio
 
     return await asyncio.create_subprocess_exec(
         *correction_play_argv(wav_path),
         stdout=stdout,
         stderr=stderr,
-        umask=CORRECTION_PLAY_UMASK,
     )
 
 
@@ -85,5 +74,4 @@ def run_correction_play(
         capture_output=True,
         text=True,
         timeout=timeout,
-        umask=CORRECTION_PLAY_UMASK,
     )

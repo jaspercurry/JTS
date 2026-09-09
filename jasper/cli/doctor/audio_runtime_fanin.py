@@ -154,7 +154,7 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-#: The lane roster on a box with NO renderer lane armed (the shipped fleet shape).
+#: The `(label, pcm)` roster fan-in's STATUS should report.
 _FANIN_EXPECTED_ALOOP_INPUTS = [
     ("spotify", "hw:Loopback,1,0"),
     ("airplay", "hw:Loopback,1,1"),
@@ -162,28 +162,6 @@ _FANIN_EXPECTED_ALOOP_INPUTS = [
     ("usbsink", "hw:Loopback,1,3"),
     ("correction", "hw:Loopback,1,4"),
 ]
-
-
-def _fanin_expected_inputs(
-    lanes_env: str | None = None,
-) -> list[tuple[str, str]]:
-    """The `(label, pcm)` roster fan-in's STATUS should report on THIS box.
-
-    An armed renderer-ingress lane reports its RING PATH as its `pcm`, so the
-    armed set is read from the lane map (`jasper.renderer_lanes`) fan-in itself
-    reads rather than compared against a hardcoded list.
-    """
-    from jasper import renderer_lanes as rl
-
-    armed = (
-        rl.read_armed_labels()
-        if lanes_env is None
-        else rl.read_armed_labels(lanes_env)
-    )
-    return [
-        (label, rl.expected_fanin_lane_pcm(label, pcm, armed))
-        for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
-    ]
 
 
 # The assistant-loudness gain floor, and the only fixed bound the shared Rust
@@ -500,7 +478,7 @@ def check_fanin_service() -> CheckResult:
     faults: list[tuple[str, str]] = []
     if progress_age > FANIN_STALE_MS:
         faults.append((REASON_FANIN_PROGRESS_STALE, "the work loop may be wedged"))
-    expected_inputs = _fanin_expected_inputs()
+    expected_inputs = list(_FANIN_EXPECTED_ALOOP_INPUTS)
     # Order-insensitive but multiplicity-preserving: a lane-map reordering is
     # not drift, but a duplicated lane must still be caught, which a `set`
     # compare forgives by collapsing the duplicate. A payload with a
@@ -520,7 +498,7 @@ def check_fanin_service() -> CheckResult:
         faults.append((
             REASON_FANIN_INPUTS_DRIFTED,
             f"input roster drifted: {roster_detail} — check "
-            "/var/lib/jasper/fanin.env and /var/lib/jasper/renderer_lanes.env",
+            "/var/lib/jasper/fanin.env",
         ))
     if input_buffer_frames < 4096:
         faults.append((
@@ -995,10 +973,7 @@ def check_fanin_coupling() -> CheckResult:
 #   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
 #
 # Deriving rather than tabulating makes retirement MECHANICAL: a pair stops
-# being registered the moment its owning constant stops naming it. The roster is
-# read in its ALOOP form, not through `_fanin_expected_inputs()`, because a
-# ring-armed renderer lane still RESERVES its aloop pair, so the registered set
-# must not flap with arming state.
+# being registered the moment its owning constant stops naming it.
 #
 # Pairs 5, 6 and 7 are absent because no owner names them: their PCM
 # definitions are gone, so an open pair in that range has resurrected a

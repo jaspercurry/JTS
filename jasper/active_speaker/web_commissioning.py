@@ -69,11 +69,6 @@ from jasper.active_speaker.startup_load import (
     staged_topology_match_status,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
-# P6c-ii dissolved the static COMMISSION_TONE_ALSA_DEVICE alias: the lane's
-# device is no longer one import-time constant but this box's armed-vs-unarmed
-# transport, resolved fresh per use by correction_play_device() (the lane's
-# one reader) so a spawn and the payload reporting it can never disagree in
-# steady state about which transport the box is on.
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
     correction_play_device,

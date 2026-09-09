@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper import renderer_lanes as rl
+from jasper.audio_runtime_plan import DEFAULT_FANIN_INPUT_BUFFER_FRAMES
 from jasper.fanin_coupling import resolve_ring_wire_format
 from tests.install_surface import installer_text
 from tests.shairport_template_helpers import (
@@ -28,12 +28,13 @@ from tests.shairport_template_helpers import (
 
 REPO = Path(__file__).resolve().parents[1]
 
-# The airplay ring lane's geometry, from the same constants the lane is built
-# from: one drained slot is the delay grain, the whole ring is the depth.
-_LANE_GRAIN_SEC = rl.FANIN_RUST_DEFAULTS["JASPER_FANIN_PERIOD_FRAMES"] / 48_000
-_LANE_DEPTH_SEC = (
-    rl.FANIN_UNIT_DEFAULTS["JASPER_FANIN_INPUT_BUFFER_FRAMES"] / 48_000
-)
+# The airplay aloop lane's geometry at 48 kHz: fan-in reads one period at a
+# time, so a period is the delay grain, and snd-aloop locks the writer's
+# buffer to the capture side fan-in opens, so that buffer is the depth.
+# 256 is jasper-fanin's own JASPER_FANIN_PERIOD_FRAMES default
+# (rust/jasper-fanin/src/config.rs); no Python surface owns it.
+_LANE_GRAIN_SEC = 256 / 48_000
+_LANE_DEPTH_SEC = DEFAULT_FANIN_INPUT_BUFFER_FRAMES / 48_000
 
 
 def _non_comment(text: str) -> str:
@@ -66,7 +67,7 @@ def test_asoundrc_has_no_legacy_renderer_dmix():
     assert not re.search(r"^pcm\.jasper_renderer_in\s*\{", rc, re.MULTILINE)
 
 
-def test_asoundrc_declares_private_renderer_lanes():
+def test_asoundrc_declares_the_private_renderer_substreams():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     # No usbsink_substream: USB audio is DIRECT-captured by jasper-fanin from
     # hw:UAC2Gadget (the aloop solo write lane hw:Loopback,0,3 was removed

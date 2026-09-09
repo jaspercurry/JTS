@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import renderer_lanes, ring_assets
+from jasper import ring_assets
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
@@ -132,17 +132,6 @@ def _strip_conf_comments(text: str) -> str:
             _REPO / "deploy/alsa/conf.d/60-jts-ring.conf",
             ring_assets.RING_CONF_PCMS,
             1,
-        ),
-        (
-            _REPO / "deploy/alsa/conf.d/61-jts-renderer-lanes.conf",
-            tuple(
-                pcm
-                for lane in renderer_lanes.RENDERER_LANES
-                for pcm in (
-                    renderer_lanes.ring_conf_pcm_name(lane.label), lane.ring_device,
-                )
-            ),
-            2,
         ),
         (_GROUPING_CONF, (GROUPING_RING_PCM,), 1),
     ],
@@ -529,8 +518,8 @@ def test_the_installer_ships_the_grouping_confd():
     0644 is load-bearing (AGENTS.md, the PR #214 class): a definition only root
     can read is a name the non-root renderer users cannot resolve. Asserting
     the install LINE rather than a doctor presence check is the sibling
-    precedent — ``61-jts-renderer-lanes.conf`` is covered exactly this way, and
-    :func:`jasper.ring_assets.ring_asset_presence` deliberately stays scoped to
+    precedent — ``63-jts-ring-dac-content.conf`` is covered exactly this way,
+    and :func:`jasper.ring_assets.ring_asset_presence` deliberately stays scoped to
     the coupling's own conf.d, because it is the shm_ring ACTIVATION gate: a
     missing grouping conf.d must not refuse the fan-in coupling's arm.
     """
@@ -600,12 +589,6 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
         # escalation premise it rests on, are in
         # tests/test_dac_content_ring_platform.py.
         DAC_CONTENT_RING_FILE,
-        # The renderer-ingress lanes are the case on the OTHER side of the
-        # escalation line that is still unlinked: a stale lane ring detaches
-        # fan-in and fails the renderer's own open, which is silent and
-        # permanent rather than bounded and visible. Membership pin in
-        # tests/test_install_ring_platform_sequencing.py.
-        f"{ring_assets.RING_SHM_DIR}/{renderer_lanes.RENDERER_RING_PREFIX}*.ring",
     }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
     assert GROUPING_RING_FILE not in removed
     # The asymmetry is stated where the lines are, not only here.
@@ -618,6 +601,14 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
 # --- T-6: the writer's unit adopts the ring-writer contract -----------------
 
 
+def _ring_liveness_window_sec() -> float:
+    """The secondary guard's window, read from the C constant that owns it."""
+    header = (_REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
+    m = re.search(r"#define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS (\d+)ull", header)
+    assert m, "the ring's writer-liveness constant moved or changed shape"
+    return int(m.group(1)) / 1_000_000_000.0
+
+
 def test_snapclient_restarts_slower_than_the_ring_liveness_window():
     """The grouping ring's WRITER must clear the ring's own liveness window.
 
@@ -627,13 +618,10 @@ def test_snapclient_restarts_slower_than_the_ring_liveness_window():
     the boundary — which is a respawn racing its own predecessor into an
     avoidable ``-EBUSY``.
 
-    The bound is READ FROM THE C CONSTANT that owns it, through the same parse
-    the renderer-lane pin uses. A bespoke "2 s" here would be a second owner of
-    a number the header decides, and the two would drift the first time it
-    moved.
+    The bound is READ FROM THE C CONSTANT that owns it. A bespoke "2 s" here
+    would be a second owner of a number the header decides, and the two would
+    drift the first time it moved.
     """
-    from tests.test_renderer_ring_lanes import _ring_liveness_window_sec
-
     text = _read(_SNAPCLIENT_UNIT)
     m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)s?$", text, re.M)
     assert m, "jasper-snapclient.service declares no RestartSec"

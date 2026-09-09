@@ -54,8 +54,7 @@ GROUPING_RING_FILE = f"{RING_SHM_DIR}/grouping.ring"
 
 #: Where the installer places that conf.d block
 #: (``deploy/lib/install/ring-platform.sh``'s ``install_jts_ring_conf_assets``).
-#: Sibling of :data:`jasper.ring_assets.RING_CONF_D` and
-#: :data:`jasper.renderer_lanes.RENDERER_LANES_CONF_D`.
+#: Sibling of :data:`jasper.ring_assets.RING_CONF_D`.
 GROUPING_RING_CONF_D = "/etc/alsa/conf.d/62-jts-ring-grouping.conf"
 
 #: The wire, spelled in the conf.d block rather than inherited from the ioplug's

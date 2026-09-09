@@ -20,10 +20,10 @@
 #      build does not churn.
 #   2. the system-wide (0644, renderer-user resolvable) /etc/alsa/conf.d
 #      drop-ins, each shipped verbatim from deploy/alsa/conf.d:
-#      60-jts-ring.conf (the coupling's three PCMs), 61-jts-renderer-lanes.conf
-#      (the renderer-ingress lanes) and 62-jts-ring-grouping.conf (the bonded
-#      endpoint's snapcast ingress). One block per install step below, so a
-#      missing source file names itself.
+#      60-jts-ring.conf (the coupling's three PCMs) and
+#      62-jts-ring-grouping.conf (the bonded endpoint's snapcast ingress).
+#      One block per install step below, so a missing source file names
+#      itself.
 #   3. /etc/tmpfiles.d/jts-ring.conf — the /dev/shm/jts-ring directory
 #      lifecycle (group-writable, setgid), shipped from
 #      deploy/tmpfiles/jts-ring.conf and applied via systemd-tmpfiles.
@@ -307,23 +307,8 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${conf_src} missing; jts_ring PCM definitions not installed" >&2
     fi
 
-    # 1b. Renderer-ingress lane PCMs (U3 / P6). Same shape and same reason as
-    #     the block above: system-wide 0644 so the non-root renderer users can
-    #     resolve the names. INERT until a lane is armed — a PCM definition is
-    #     not an open, and no renderer points at one of these until
-    #     `jasper-audio-config renderer-lanes --arm` has written the matching
-    #     device override.
-    local lanes_src="${REPO_DIR}/deploy/alsa/conf.d/61-jts-renderer-lanes.conf"
-    if [[ -f "${lanes_src}" ]]; then
-        install -d -m 0755 /etc/alsa/conf.d
-        install -m 0644 "${lanes_src}" /etc/alsa/conf.d/61-jts-renderer-lanes.conf
-        echo "  Installed /etc/alsa/conf.d/61-jts-renderer-lanes.conf (renderer-lane ring PCMs; inert until a lane is armed)"
-    else
-        echo "  WARN: ${lanes_src} missing; renderer-ingress lane PCMs not installed" >&2
-    fi
-
-    # 1c. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
-    #     two blocks above: system-wide 0644 so any user can resolve the name.
+    # 1b. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
+    #     block above: system-wide 0644 so any user can resolve the name.
     #     It has three consumers now — snapclient's `--soundcard` and both
     #     active-endpoint prechecks' CamillaDSP capture device, all naming
     #     pcm.jts_ring_grouping (jasper/multiroom/grouping_ring.py) — but a PCM
@@ -339,8 +324,8 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${grouping_src} missing; grouping-ingress ring PCM not installed" >&2
     fi
 
-    # 1d. DAC-content return ring PCM (#3118). Same shape and same reason as the
-    #     three blocks above: system-wide 0644 so any user can resolve the name.
+    # 1c. DAC-content return ring PCM (#3118). Same shape and same reason as the
+    #     two blocks above: system-wide 0644 so any user can resolve the name.
     #     A bonded DUMB member's snapclient opens it for write and jasper-outputd
     #     reads it as that box's sole content source; every solo box parses one
     #     block and opens nothing.
@@ -401,10 +386,6 @@ install_jts_ring_platform() {
     # knowledge to own it — on a box that has no ACTIVE ring the file does not
     # exist and `rm -f` is a no-op.
     #
-    # Lane rings (`lane-<label>.ring`) are create-or-attach from both ends. A
-    # geometry change under an unchanged armed set never reaches the arm-path
-    # deleter, so a stale ring makes the writer's open fail (rc=-22) until unlinked.
-    #
     # Safe because nothing needs the header to SURVIVE a deploy: the ring is
     # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and
     # outputd's `RingReader::create_or_attach` each do O_CREAT|O_EXCL then
@@ -459,5 +440,4 @@ install_jts_ring_platform() {
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring
     rm -f /dev/shm/jts-ring/dac-content.ring
-    rm -f /dev/shm/jts-ring/lane-*.ring
 }

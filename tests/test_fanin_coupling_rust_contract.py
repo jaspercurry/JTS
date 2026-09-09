@@ -49,9 +49,6 @@ _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
 _FANIN_DIRECT_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
 )
-_FANIN_RING_CAPTURE_RS = (
-    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
-)
 _OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
 _RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 
@@ -94,12 +91,6 @@ def _direct_capture_rs_text() -> str:
     if not _FANIN_DIRECT_CAPTURE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_DIRECT_CAPTURE_RS}")
     return _FANIN_DIRECT_CAPTURE_RS.read_text(encoding="utf-8")
-
-
-def _ring_capture_rs_text() -> str:
-    if not _FANIN_RING_CAPTURE_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_RING_CAPTURE_RS}")
-    return _FANIN_RING_CAPTURE_RS.read_text(encoding="utf-8")
 
 
 def _source_text(path: Path) -> str:
@@ -590,15 +581,10 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
     blind to it, so nothing counts these; the guard has to be structural.
 
-    Two owners, both off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
-    `snd_pcm_close`) and `fanin-ring-attacher` (`RingReader::create_or_attach`,
-    whose inter-process `flock` is bounded at 500 ms — ~187 slots — and which
-    needs no USB host at all to fire: a ring lane detached by a geometry shear or
-    a permission refusal stays detached until an operator clears it, paying that
-    every ~2 s: #2538).
+    One owner, off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
+    `snd_pcm_close`).
     """
     direct_text = _direct_capture_rs_text()
-    ring_text = _ring_capture_rs_text()
 
     # 1. The direct-lane opener thread owns every gadget open and close.
     assert "pub(super) fn spawn(" in direct_text
@@ -631,69 +617,6 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     assert "opener.request(" in reopen_body and ".poll()" in reopen_body, (
         "the Absent retry must queue an open and poll for the result"
     )
-
-    # 2. The ring-lane attacher thread owns every reattach (#2538).
-    assert "pub(super) fn spawn(" in ring_text
-    assert '.name(format!("fanin-ring-attacher-{label}"))' in ring_text, (
-        "the ring attacher must be its own named thread, one per lane"
-    )
-    ring_code = _rust_code_only(ring_text)
-    # `attach_ring` — and through it `RingReader::create_or_attach` — has exactly
-    # TWO production callers: the attacher thread, and `open_ring_input`, which
-    # runs in `Mixer::new` on the constructing thread and is not the render loop.
-    # The test module's own call sites are excluded by SLICING it off rather than
-    # by budgeting for them, so a new test can never loosen the guard.
-    ring_production_code = ring_code[: ring_code.index("mod tests {")]
-    assert _call_sites("RingReader::create_or_attach", ring_production_code) == 1, (
-        "`create_or_attach` may be spelled once, inside `attach_ring`"
-    )
-    attacher_start = ring_production_code.index("fn spawn(")
-    attacher_end = ring_production_code.index("fn publish_pending(", attacher_start)
-    assert (
-        _call_sites("attach_ring", ring_production_code[attacher_start:attacher_end])
-        == 1
-    ), "the attacher thread performs the attach"
-    construction_start = ring_production_code.index("fn open_ring_input(")
-    construction_end = ring_production_code.index(
-        "fn read_ring_and_render(", construction_start
-    )
-    assert (
-        _call_sites(
-            "attach_ring", ring_production_code[construction_start:construction_end]
-        )
-        == 1
-    ), "the CONSTRUCTION attach stays inline — `Mixer::new` is not the render loop"
-    # The ~2 s Detached retry is a poll + queue, never an inline attach. SCOPED
-    # assertion FIRST, before the whole-file count below: a re-inline trips both,
-    # and the one that fires is the one whose message the next reader gets.
-    reattach_start = ring_production_code.index("fn maybe_reattach_ring(")
-    reattach_end = ring_production_code.index("fn adopt_attach_outcome(", reattach_start)
-    reattach_body = ring_production_code[reattach_start:reattach_end]
-    assert not _call_sites("attach_ring", reattach_body), (
-        "the ~2 s Detached retry must not attach the ring on the render thread — "
-        "`create_or_attach` takes a 500 ms-bounded flock inside a 5.33 ms period"
-    )
-    assert "attacher.request(" in reattach_body and ".poll()" in reattach_body, (
-        "the Detached retry must queue an attach and poll for the result"
-    )
-    # Backstop for a re-inline the scoped slice above would not see: a NEW caller
-    # somewhere else in the file that the render loop can reach.
-    assert _call_sites("attach_ring", ring_production_code) == 3, (
-        "`attach_ring` has exactly three spellings in production code: its own "
-        "definition, the attacher thread, and `open_ring_input`. A fourth means "
-        "a new caller — check it is not on the render thread."
-    )
-    # And the retry latches are phase-seeded so lanes cannot retry in lockstep.
-    assert "pub(super) const fn reattach_phase(" in ring_production_code
-    assert "reattach_phase(lane_index, lane_count)" in ring_production_code, (
-        "each ring lane must seed its retry latch from its own phase"
-    )
-
-    # 3. Both queues are observable in STATUS (depth / in-flight), so a hanging
-    #    device open or a hanging attach is visible rather than silent.
-    state_text = _state_rs_text()
-    assert '"reopen_pending"' in state_text
-    assert '"attach_pending"' in state_text
 
 
 def test_servo_thread_exit_clears_reverse_signals():

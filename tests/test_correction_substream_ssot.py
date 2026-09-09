@@ -59,7 +59,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper import renderer_lanes
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.correction import playback
 
@@ -114,30 +113,13 @@ def test_owning_module_value_is_the_expected_lane_name() -> None:
 
 
 def test_known_consuming_sites_resolve_to_the_ssot() -> None:
-    """The sites that still hold a named copy of the LANE NAME agree with it.
+    """The one site that still holds a named copy of the LANE NAME agrees.
 
-    Since P6c-ii the lane's ACTIVE device is not a constant anywhere — it is
-    ``correction_play_device()``'s per-call answer (the owning module's
-    transport reader, pinned by ``tests/test_renderer_ring_lanes.py``'s
-    unitless device facts). What remains constant is the lane's NAME on the
-    shipped snd-aloop transport, and exactly two consumers still hold a
-    named copy of it: ``jasper.correction.playback``'s Room-compat
-    re-export, and the ``correction`` row's ``aloop_device`` in
-    ``jasper.renderer_lanes`` (which imports the SSOT rather than
-    respelling the literal).
-
-    Seven historical aliases are gone rather than listed here: P6c-0
-    dissolved ``sound_setup.VOLUME_FLOOR_TONE_ALSA_DEVICE``,
-    ``sync_flow.PLAYBACK_DEVICE``, and ``balance_flow.PLAYBACK_DEVICE``;
-    P6c-ii dissolved ``web_commissioning.COMMISSION_TONE_ALSA_DEVICE``
-    (and sound_setup's import of it),
-    ``program_playback.CORRECTION_SUBSTREAM``, and
-    ``correction.playback.DEFAULT_ALSA_DEVICE`` — those surfaces resolve
-    the device through the reader at call time instead of naming it.
+    Every other consumer resolves the device through
+    ``correction_play_device()`` at call time instead of naming it; what
+    remains is ``jasper.correction.playback``'s Room-compat re-export.
     """
     assert playback.CORRECTION_SUBSTREAM == CORRECTION_SUBSTREAM
-    lane = renderer_lanes.lane_by_label("correction")
-    assert lane is not None and lane.aloop_device == CORRECTION_SUBSTREAM
 
 
 def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:

@@ -513,7 +513,6 @@ exhaustive_ignores = [
   "outputd_failure_reconcile_state",
   "peering",
   "renderer",
-  "renderer_lanes",
   "research",
   "ring_assets",
   "sound",

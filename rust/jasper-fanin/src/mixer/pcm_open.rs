@@ -61,8 +61,6 @@ pub(super) fn open_input(
         pcm: Some(pcm),
         direct: None,
         direct_opener: None,
-        ring: None,
-        ring_attacher: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
@@ -76,14 +74,13 @@ pub(super) fn open_input(
         trim: TrimControl::new(),
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
-        ring_obs: None,
         lane_fade: LaneFade::for_lane(label, config.sample_rate),
     })
 }
 
 /// A lane's SPINE-SCALE period buffer — allocated on a wide wire, empty on a
-/// narrow one. The ONE place that decides, for every lane source (aloop, ring,
-/// USB direct), whether that lane carries its period at spine scale.
+/// narrow one. The ONE place that decides, for every lane source (aloop, USB
+/// direct), whether that lane carries its period at spine scale.
 ///
 /// Non-empty `read_buf_wide` is not merely a buffer — it is the lane's OWN
 /// width switch, read by the drain (which side of the capture fork), by the
@@ -176,8 +173,6 @@ pub(super) fn open_direct_input(
         pcm: None,
         direct: Some(direct),
         direct_opener,
-        ring: None,
-        ring_attacher: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
@@ -210,7 +205,6 @@ pub(super) fn open_direct_input(
             card_gen_reopens: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
-        ring_obs: None,
         lane_fade: LaneFade::for_lane(label, config.sample_rate),
     }
 }

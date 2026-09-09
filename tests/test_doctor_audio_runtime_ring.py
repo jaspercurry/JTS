@@ -19,7 +19,6 @@ from jasper.audio_hardware.dac import (
     LatencyFloor,
     latency_floor_for,
 )
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_reconcile
@@ -27,7 +26,6 @@ from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
-from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 
 from ._doctor_audio_runtime_fixtures import (
     _fanin_status_payload,
@@ -141,107 +139,6 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     assert split.status == "fail", split.detail
     assert split.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
-
-
-# ---- renderer ring lanes: the unarmed fleet default is healthy ----------
-
-
-def test_unarmed_renderer_lanes_report_skipped(monkeypatch):
-    """An unarmed box (the fleet default) formed no verdict, and is not failing.
-
-    ADR-0233 rule 3: a check that did not run says `skipped`, never `ok`. It
-    must also stay exit-0 — the next test drives the same result through the
-    real render path to pin that.
-    """
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "skipped"
-    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANES_UNARMED
-
-
-def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
-    """The fleet-wide repro, inverted into a guard: drive the unarmed
-    result through the doctor's REAL render/exit path and require exit 0.
-    A status outside the vocabulary reaches render()'s else-branch and
-    becomes exit 1, so this pin breaks on the defect CLASS, not just
-    today's literal."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    exit_code = doctor.render([result])
-    capsys.readouterr()  # swallow render()'s printed report
-    assert exit_code == 0
-
-
-def _resting_ring_entry(label):
-    """An armed lane's STATUS entry: attached, never fed since attach."""
-    from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
-
-    return {
-        "label": label,
-        "source": FANIN_INPUT_SOURCE_RING,
-        "frames_read": 0,
-        "ring": {
-            "attached": True,
-            "startup_empty_reads": 40,
-            "empty_reads": 0,
-            "writer_alive": False,
-            "occupancy": 0,
-            "epoch_resets": 0,
-        },
-    }
-
-
-def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
-    """An armed correction lane that has never been fed is RESTING, not
-    broken (U3/P6c-ii): its writers are ephemeral measurement spawns, so
-    between measurements the ring sits attached with only startup empty
-    reads — the same "not a fault" class as a paused renderer. The
-    never-fed WARN diagnoses a DAEMON renderer that failed to reopen its
-    ring after an arm; applying it to an on-demand lane would put a
-    standing false warning on every armed box.
-
-    Stated residual: resting and broken-at-open are byte-identical to
-    this check, so the ok does not prove the writer path."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
-    evidence.seed(
-        f"status:{FANIN_STATUS_SOCKET}",
-        _evidence.StatusRead({"inputs": [_resting_ring_entry("correction")]}),
-    )
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "ok"
-    assert result.reason == ""
-
-
-def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
-    """Control for the on-demand carve-out: a unit-ful lane in the same
-    never-fed state keeps the WARN and its restart-the-unit remedy — the
-    carve-out is keyed on the lane's writers, not applied lane-wide."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(
-        rl, "read_armed_labels", lambda *a, **kw: ("spotify", "correction")
-    )
-    evidence.seed(
-        f"status:{FANIN_STATUS_SOCKET}",
-        _evidence.StatusRead(
-            {
-                "inputs": [
-                    _resting_ring_entry("spotify"),
-                    _resting_ring_entry("correction"),
-                ]
-            }
-        ),
-    )
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "warn"
-    # The daemon lane is the problem; the on-demand lane beside it is not.
-    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANE_NEVER_FED
 
 
 # ===========================================================================

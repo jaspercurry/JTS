@@ -24,7 +24,6 @@ mod direct_capture;
 mod dsp;
 mod lane_fade;
 mod pcm_open;
-mod ring_capture;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
@@ -54,9 +53,7 @@ use dsp::{
     ramp_program_duck, saturate_to_i16, WIDE_BYTES_PER_SAMPLE,
 };
 use lane_fade::LaneFade;
-use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input, spine_read_buf};
-use ring_capture::read_ring_and_render;
-pub use ring_capture::RingLaneObservability;
+use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input};
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -1236,17 +1233,15 @@ fn format_ring_stall_event(event: &RingStallEvent) -> String {
 /// Which transport a fan-in lane's audio arrives over — the vocabulary STATUS
 /// publishes as each input's `source`, and the ONE place those tokens are spelled.
 ///
-/// The three are alternatives, not layers: exactly one applies to a lane, and the
+/// The two are alternatives, not layers: exactly one applies to a lane, and the
 /// lane's read path, its `pcm` field's emptiness, and this token all follow from
-/// the same pair of `Option`s (see [`Input::lane_source`]).
+/// the same `Option` (see [`Input::lane_source`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneSource {
     /// An snd-aloop capture substream — the shipped default for every renderer.
     Lane,
     /// The USB gadget capture, read directly (`hw:UAC2Gadget`).
     Direct,
-    /// A per-renderer SHM slot ring written by the renderer's `jts_ring` ioplug.
-    Ring,
 }
 
 impl LaneSource {
@@ -1254,20 +1249,15 @@ impl LaneSource {
         match self {
             Self::Lane => "lane",
             Self::Direct => "direct",
-            Self::Ring => "ring",
         }
     }
 }
 
 pub struct Input {
-    /// The aloop capture PCM for this lane. `None` on the two lane sources that
-    /// do not read an aloop substream at all: the USB DIRECT lane
-    /// (`direct.is_some()`), whose audio comes from the `hw:UAC2Gadget` capture in
-    /// `direct`, and a renderer-ingress RING lane (`ring.is_some()`), whose audio
-    /// comes from the SHM slot ring in `ring`. Every other lane has `Some`.
-    ///
-    /// At most one of `direct` / `ring` is ever `Some`: they are alternative lane
-    /// SOURCES, and `Mixer::new` picks exactly one arm per lane.
+    /// The aloop capture PCM for this lane. `None` on the one lane source that
+    /// does not read an aloop substream at all: the USB DIRECT lane
+    /// (`direct.is_some()`), whose audio comes from the `hw:UAC2Gadget` capture
+    /// in `direct`. Every other lane has `Some`.
     pcm: Option<PCM>,
     /// DEFAULT-OFF USB DIRECT capture. `Some` only on the usbsink lane when
     /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`
@@ -1279,17 +1269,6 @@ pub struct Input {
     /// loop hands every `snd_pcm_open` / `snd_pcm_close` to it rather than
     /// running one inside the period budget.
     direct_opener: Option<direct_capture::DirectOpener>,
-    /// DEFAULT-EMPTY renderer-ingress ring capture. `Some` only on a lane whose
-    /// label is in `JASPER_FANIN_RENDERER_RING_LANES`; the lane then reads
-    /// `/dev/shm/jts-ring/lane-<label>.ring` instead of its aloop substream.
-    /// `None` (and `pcm.is_some()`) on every unarmed lane.
-    ring: Option<ring_capture::RingCapture>,
-    /// The ring lane's deferred ATTACH channel (#2538). `Some` alongside `ring`;
-    /// `None` if the attacher thread could not be spawned. The render loop hands
-    /// every `RingReader::create_or_attach` — and the bounded inter-process
-    /// `flock` inside it — to this thread rather than running one inside the
-    /// period budget. One per lane, so each lane's in-flight latch is its own.
-    ring_attacher: Option<ring_capture::RingAttacher>,
     pub label: String,
     pub pcm_name: String,
     /// Per-input read buffer (i16 interleaved stereo). Reused as the
@@ -1348,13 +1327,9 @@ pub struct Input {
     /// `Some` only on the USB DIRECT lane (`direct.is_some()`); STATUS renders a
     /// `direct{}` block from it.
     direct_obs: Option<DirectObservability>,
-    /// OPTIONAL renderer-ingress ring observability, shared with the state-server
-    /// thread. `Some` only on a ring lane (`ring.is_some()`); STATUS renders a
-    /// `ring{}` block from it.
-    ring_obs: Option<ring_capture::RingLaneObservability>,
     /// Per-lane WAKE FADE-IN and SELECTION FADE state (issue #3443). Held by
     /// every lane and usable at both lane scales, because it runs over this
-    /// lane's rendered period — the one thing all four read arms produce.
+    /// lane's rendered period — the one thing every read arm produces.
     /// Silence is tracked before the selection gate and both windows are applied
     /// after it; inert on [`MEASUREMENT_LANE`].
     lane_fade: LaneFade,
@@ -1377,18 +1352,7 @@ impl Mixer {
         let program_width = ProgramWidth::from_config(config);
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
-        // The lane's position, handed to the ring lanes so each seeds its reattach
-        // latch at a different phase of the retry window (#2538) instead of every
-        // detached lane retrying in the same render period. Counted over ALL
-        // lanes, not ring lanes only — distinct indices are all the phase spread
-        // needs.
-        let lane_count = config.input_renderers.len();
-        for (lane_index, (label, pcm_name)) in config
-            .input_renderers
-            .iter()
-            .zip(&config.input_pcms)
-            .enumerate()
-        {
+        for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
             // Build a per-input resampler on the configured clock-crossing lane
             // when EITHER the input resampler OR USB DIRECT is enabled: both
             // steer this lane to the DAC clock, and direct has no aloop catch-up
@@ -1405,14 +1369,8 @@ impl Mixer {
             // fail-hard "every input required" contract is exempted ONLY here.
             let is_direct =
                 config.usb_direct_enabled && label == &config.input_resampler_lane_label;
-            // Renderer-ingress RING lane; best-effort like the direct lane. DIRECT
-            // wins if a box somehow armed both on one lane, so at most one of
-            // `direct`/`ring` is ever `Some` by construction.
-            let is_ring = !is_direct && config.lane_is_renderer_ring(label);
             let input = if is_direct {
                 open_direct_input(label, pcm_name, config, resampler)
-            } else if is_ring {
-                ring_capture::open_ring_input(label, config, resampler, lane_index, lane_count)
             } else {
                 match open_input(pcm_name, label, config, resampler) {
                     Ok(input) => input,
@@ -1429,9 +1387,6 @@ impl Mixer {
             info!(
                 "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} direct={} source={}",
                 label,
-                // A ring lane's real source is its ring path, not the aloop name
-                // it ignores; `Input::pcm_name` already carries that, so report it
-                // rather than the config entry.
                 input.pcm_name,
                 config.period_frames,
                 config.input_buffer_frames,
@@ -1770,12 +1725,6 @@ impl Mixer {
                 // substream is never touched (`pcm` is None). The tap runs inline
                 // over the converted slice inside this call.
                 read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun)
-            } else if input.ring.is_some() {
-                // Renderer-ingress RING lane: consume exactly one slot from this
-                // lane's SHM ring. The slot IS one render period, and a bounded
-                // ring cannot back up past its own depth the way an aloop capture
-                // ring can, so this arm deliberately runs no catch-up resync.
-                read_ring_and_render(input, period_frames)
             } else if input.resampler.is_some() {
                 // ARMED clock-crossing lane. The resampler OWNS rate
                 // reconciliation: read ALL available frames into it (DLL-steered
@@ -2187,23 +2136,15 @@ impl Input {
         self.direct.is_some()
     }
 
-    /// The lane's renderer-ingress ring observability handles for the STATUS
-    /// `ring{}` block, or `None` when this is not a ring lane.
-    pub fn ring_observability(&self) -> Option<ring_capture::RingLaneObservability> {
-        self.ring_obs.clone()
-    }
-
     /// This lane's transport — the ONE derivation of STATUS's `source` field.
     ///
-    /// Read off the lane-source `Option`s themselves rather than a separate
-    /// stored flag, so "which arm of the read dispatch does this lane take" and
-    /// "what does `/state` say it takes" cannot disagree — `step()` matches on
-    /// the same two `Option`s in the same precedence order.
+    /// Read off the lane-source `Option` itself rather than a separate stored
+    /// flag, so "which arm of the read dispatch does this lane take" and "what
+    /// does `/state` say it takes" cannot disagree — `step()` matches on the
+    /// same `Option`.
     pub fn lane_source(&self) -> LaneSource {
         if self.direct.is_some() {
             LaneSource::Direct
-        } else if self.ring.is_some() {
-            LaneSource::Ring
         } else {
             LaneSource::Lane
         }

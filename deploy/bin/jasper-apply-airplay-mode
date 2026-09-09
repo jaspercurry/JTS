@@ -22,21 +22,12 @@
 #     Ring A/B each prefer live daemon STATUS, then a jasper.ring_assets
 #     parse of the shipped ALSA ring conf, then a hardcoded default — see
 #     ring_a_latency_frames / ring_b_latency_frames below.
-#   - output_device from the renderer-lane map (U3/P6d):
-#     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
-#     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
-#     when the airplay lane is armed, shairport_substream otherwise. A
-#     missing map or missing key falls back to shairport_substream, the
-#     shipped snd-aloop lane, so an unarmed box renders byte-identically.
-#     This script READS the map's already-resolved value; it never parses
-#     the armed set, so the armed→device rule stays stated once, in
-#     jasper/renderer_lanes.py.
+#   - output_device: shairport_substream, AirPlay's private snd-aloop
+#     fan-in lane (deploy/alsa/asoundrc.jasper).
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
-#      the current mode). This is also what makes a lane flip land on the
-#      unit's next start, and why the Tier-3 wedge supervisor's recovery
-#      restart follows the lane map for free.
+#      the current mode).
 #   2. install.sh (so a fresh install lands with the conf rendered).
 #   3. jasper-airplay-mode CLI and the /airplay/ web UI, after they
 #      update the env file and before they try-restart shairport if active.
@@ -71,11 +62,6 @@
 #                                 solo/follower (the common case) => the
 #                                 offset is byte-identical to before.
 #                                 Default: /var/lib/jasper/grouping-airplay.env.
-#   JASPER_RENDERER_LANES_ENV   — the renderer-lane map read for
-#                                 JASPER_SHAIRPORT_DEVICE (see the
-#                                 output_device note above). Absent =>
-#                                 shairport_substream.
-#                                 Default: /var/lib/jasper/renderer_lanes.env.
 #   JASPER_STATUS_PYTHON        — interpreter used for both the daemon
 #                                 STATUS reads and the jasper.ring_assets
 #                                 parse; process environment only, no env
@@ -104,9 +90,6 @@ OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
 # so a non-bonded speaker derives the byte-identical solo offset.
 GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/grouping-airplay.env}"
-# The renderer-lane map (single writer: `jasper-audio-config renderer-lanes`).
-# Read — never written — for the resolved JASPER_SHAIRPORT_DEVICE.
-RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes.env}"
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 # jasper-outputd's compile-time DAC-buffer default, reached when neither env
@@ -658,17 +641,8 @@ derive_audio_backend_latency_offset() {
     '
 }
 
-# U3/P6d: the renderer device comes from the lane map's already-resolved
-# JASPER_SHAIRPORT_DEVICE line (shairport_ring_lane when the airplay lane
-# is armed, shairport_substream otherwise). Empty/missing — a fleet box
-# with no map, or a map written before the airplay row existed — falls
-# back to shairport_substream, the shipped snd-aloop lane. Reading the
-# RESOLVED value (never the armed set) keeps the armed→device rule stated
-# once, in jasper/renderer_lanes.py.
-renderer_device="$(jasper_env_file_get "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
-if [[ -z "$renderer_device" ]]; then
-    renderer_device="shairport_substream"
-fi
+# AirPlay's private snd-aloop fan-in lane (deploy/alsa/asoundrc.jasper).
+renderer_device="shairport_substream"
 
 # Mode and display name, layered lowest-precedence first: inherited
 # environment (install.sh and the CLI can pass one), then airplay_mode.env,

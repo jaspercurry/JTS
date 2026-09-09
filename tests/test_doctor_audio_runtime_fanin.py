@@ -224,8 +224,8 @@ def _patch_unreachable_status(monkeypatch):
 def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
     """Every fan-in STATUS consumer in this module shares ONE read.
 
-    The five checks below used to open ``/run/jasper-fanin/control.sock`` five
-    times per run; the evidence cache is what makes that one (ADR-0233 rule 4).
+    The four checks below used to open ``/run/jasper-fanin/control.sock`` once
+    each per run; the evidence cache is what makes that one (ADR-0233 rule 4).
     """
     opens: list[str] = []
 
@@ -234,9 +234,6 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         return json.loads(_fanin_status_payload().decode("utf-8"))
 
     monkeypatch.setattr(_evidence, "read_status_socket", counting_read)
-    monkeypatch.setattr(
-        "jasper.renderer_lanes.read_armed_labels", lambda *a, **k: ["librespot"]
-    )
     _seed_units()
 
     for check in (
@@ -244,7 +241,6 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         audio_runtime_fanin.check_fanin_host_clock,
         audio_runtime_fanin.check_fanin_tts_drops,
         audio_runtime_ring.check_ring_reader_stall,
-        audio_runtime_ring.check_renderer_ring_lanes,
     ):
         check()
 
