@@ -2390,15 +2390,17 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     through so that mismatch is caught where the calibration is resolved for
     THIS capture, not applied blind to whichever mic actually recorded.
     """
-    from jasper.correction.household_mic import resolve_setup_calibration as resolve
-
-    from .correction_capture import _calibration_root, _household_mic_path
+    from jasper.audio_measurement.calibration import configured_calibration_root
+    from jasper.audio_measurement.household_mic import (
+        household_mic_path,
+        resolve_setup_calibration as resolve,
+    )
 
     return resolve(
         setup if isinstance(setup, Mapping) else None,
         device=device if isinstance(device, Mapping) else None,
-        root=_calibration_root(),
-        path=_household_mic_path(),
+        root=configured_calibration_root(),
+        path=household_mic_path(),
     )
 
 

@@ -825,7 +825,7 @@ def find_stored_calibration_by_content_hash(
 
     The additive counterpart to :func:`find_stored_calibration`: a manual upload
     carries no serial, so only the content hash of the file that produced it can
-    reach it again. Used by ``jasper.correction.household_mic`` to resolve a
+    reach it again. Used by ``jasper.audio_measurement.household_mic`` to resolve a
     remembered upload back to its stored file. Corrupt records are skipped, not
     fatal; returns the most recently fetched match.
     """

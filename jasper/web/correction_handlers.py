@@ -169,10 +169,13 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         mic_calibration = None
         if calibration_id:
-            from jasper.audio_measurement.calibration import load_calibration_record
+            from jasper.audio_measurement.calibration import (
+                configured_calibration_root,
+                load_calibration_record,
+            )
             mic_calibration = load_calibration_record(
                 calibration_id,
-                root=correction_capture._calibration_root(),
+                root=configured_calibration_root(),
             )
 
         mismatch = correction_capture._calibration_device_mismatch(mic_calibration, input_device)
@@ -890,7 +893,10 @@ def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any
 def _handle_calibration_fetch(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import fetch_vendor_calibration
+    from jasper.audio_measurement.calibration import (
+        configured_calibration_root,
+        fetch_vendor_calibration,
+    )
 
     body = correction_capture._read_json_body(handler)
     model = str(body.get("model") or "").strip()
@@ -900,7 +906,7 @@ def _handle_calibration_fetch(
         model_key=model,
         serial=serial,
         orientation=orientation,
-        root=correction_capture._calibration_root(),
+        root=configured_calibration_root(),
     )
     correction_capture._save_household_mic(record, serial=serial)
     return correction_capture._calibration_payload(record)
@@ -911,6 +917,7 @@ def _handle_calibration_upload(
 ) -> dict[str, Any]:
     from jasper.audio_measurement.calibration import (
         DEFAULT_SIGN_CONVENTION,
+        configured_calibration_root,
         store_calibration,
     )
 
@@ -939,7 +946,7 @@ def _handle_calibration_upload(
         source=f"uploaded:{filename}",
         orientation=orientation,
         sign_convention=sign_convention,
-        root=correction_capture._calibration_root(),
+        root=configured_calibration_root(),
     )
     correction_capture._save_household_mic(record)
     return correction_capture._calibration_payload(record)
@@ -1156,7 +1163,10 @@ def _handle_local_capture_setup(
     This narrow setup write makes the selected device/calibration the live
     session authority before any audio upload.
     """
-    from jasper.audio_measurement.calibration import load_calibration_record
+    from jasper.audio_measurement.calibration import (
+        configured_calibration_root,
+        load_calibration_record,
+    )
     from jasper.correction.session import SessionState
 
     sess = correction_capture._get_or_create_session()
@@ -1173,7 +1183,7 @@ def _handle_local_capture_setup(
 
     calibration_id = str(body.get("calibration_id") or "").strip()
     mic_calibration = (
-        load_calibration_record(calibration_id, root=correction_capture._calibration_root())
+        load_calibration_record(calibration_id, root=configured_calibration_root())
         if calibration_id
         else None
     )

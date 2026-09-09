@@ -45,18 +45,7 @@ DBFS_FLOOR = quality.DBFS_FLOOR
 # a reader MUST treat an ABSENT marker as the oldest scale and MUST refuse to
 # compare reports carrying different marker values.
 BAND_SNR_SCALE = "band_power_v3"
-# TRAP — these edges look like the room-correction boundary and are deliberately
-# NOT routed through jasper.audio_measurement.room_boundary. This is
-# capture-quality vocabulary, shared verbatim with the gated instrument's
-# snr_policy.CROSSOVER_SNR_BANDS_HZ; routing the 350 Hz edge would make banded
-# SNR non-comparable across sessions and instruments once the boundary becomes
-# per-room. They stay static. See docs/room-correction-regime-plan.md.
-SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
-    ("sub_bass", 20.0, 80.0),
-    ("bass", 80.0, 160.0),
-    ("upper_bass", 160.0, 350.0),
-    ("transition", 350.0, 1000.0),
-)
+SNR_BANDS_HZ = snr_policy.SNR_BANDS_HZ
 # SNR trust thresholds live on the shared ROOM QualityModel profile; these are
 # module-level aliases so existing references still resolve.
 SNR_OK_DB = _ROOM_QUALITY.snr_ok_db

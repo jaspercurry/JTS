@@ -15,9 +15,10 @@ literal edit":
      SSOT's values, and the documented relation between them holds.
   3. **The #1797 fix.** A ``safe`` session grades, scores, and DISCLOSES over
      its own band, not ``balanced``'s.
-  4. **The deliberate non-mover.** The SNR band tables still carry their static
-     350 Hz edge and still satisfy the cross-instrument pins — routing them is
-     a trap, not an omission.
+  4. **The deliberate non-mover.** The SNR band tables (both owned by
+     ``audio_measurement.snr_policy``) still carry their static 350 Hz edge and
+     still satisfy the cross-instrument pins — routing them is a trap, not an
+     omission.
 
 Requirement 5 arrived with the cutover and is the same invariant one layer out:
 the truth layer imports no front end. `jasper/audio_measurement` importing
@@ -447,20 +448,15 @@ def test_snr_band_tables_keep_their_static_edge():
     across sessions and across instruments. If a future change "completes the
     routing" helpfully, this fails.
     """
-    assert acoustic_quality.SNR_BANDS_HZ == (
+    assert snr_policy.SNR_BANDS_HZ == (
         ("sub_bass", 20.0, 80.0),
         ("bass", 80.0, 160.0),
         ("upper_bass", 160.0, 350.0),
         ("transition", 350.0, 1000.0),
     )
     # The existing cross-instrument pins still hold.
-    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == acoustic_quality.SNR_BANDS_HZ
-
-    text = (REPO_ROOT / "jasper/correction/acoustic_quality.py").read_text()
-    band_block = text.split("SNR_BANDS_HZ", 1)[0]
-    assert "TRAP" in band_block, (
-        "the SNR table's do-not-route rationale must stay next to the table"
-    )
+    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == snr_policy.SNR_BANDS_HZ
+    assert acoustic_quality.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
 
 
 # ---------------------------------------------------------------------------

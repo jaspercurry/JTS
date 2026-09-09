@@ -460,7 +460,7 @@ import { calibrationSelection, clearCalibrationSelection } from "./state.js";
 
   // Household-mic prefill (Wave-2 persistence): the server embeds the
   // household's remembered mic + calibration as a JSON data island
-  // (#household-mic-data) when jasper/correction/household_mic.py has a
+  // (#household-mic-data) when jasper/audio_measurement/household_mic.py has a
   // record whose calibration still resolves on disk. Applied once at page
   // load, before any device/permission flow runs, so the household need not
   // re-enter a serial or re-upload a file it already gave JTS. Deliberately

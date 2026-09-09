@@ -8,12 +8,12 @@ This module owns exactly ONE durable JSON record —
 ``/var/lib/jasper/correction/household_mic.json`` — recording the mic and
 calibration that most recently succeeded. It is written at the two points a
 calibration is ESTABLISHED (``_handle_calibration_fetch`` /
-``_handle_calibration_upload`` in ``jasper/web/correction_setup.py``), and
+``_handle_calibration_upload`` in ``jasper/web/correction_handlers.py``), and
 nowhere else: without it every session made the household re-select a mic
 model and re-supply the calibration (re-type a serial or re-upload a file)
 from scratch. A session that establishes a DIFFERENT mic is never blocked;
 the new success simply replaces the record (see
-``correction.household_mic_replaced`` in ``jasper/web/correction_setup.py``).
+``correction.household_mic_replaced`` in ``jasper/web/correction_capture.py``).
 
 No secrets land in the record: ``serial_hash`` is the same one-way hash the
 calibration record itself carries, and ``serial_display`` is at most the
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -237,6 +238,14 @@ def write_household_mic(
     )
 
 
+def household_mic_path() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(DEFAULT_HOUSEHOLD_MIC_PATH),
+        )
+    )
+
+
 def resolve_household_mic_calibration(
     record: HouseholdMicRecord,
     *,
@@ -253,7 +262,7 @@ def resolve_household_mic_calibration(
     neither resolves, so a stale/rotated calibration on disk degrades to
     "no prefill" instead of breaking the spec builder or the wizard render.
     """
-    from jasper.audio_measurement.calibration import (
+    from jasper.audio_measurement.calibration import (  # lazy: numpy
         DEFAULT_CALIBRATION_DIR,
         find_stored_calibration_by_content_hash,
         load_calibration_record,
@@ -273,6 +282,27 @@ def resolve_household_mic_calibration(
     return find_stored_calibration_by_content_hash(
         file_sha256=record.file_sha256, root=calibration_root,
     )
+
+
+def resolved_household_mic() -> tuple[HouseholdMicRecord, Any] | None:
+    """Read + resolve the household mic record in one fail-soft step.
+
+    ``(HouseholdMicRecord, CalibrationRecord)`` when a household default
+    exists AND its calibration is still resolvable on disk, else ``None``.
+    """
+    from jasper.audio_measurement.calibration import (  # lazy: numpy
+        configured_calibration_root,
+    )
+
+    household = read_household_mic(path=household_mic_path())
+    if household is None:
+        return None
+    resolved = resolve_household_mic_calibration(
+        household, root=configured_calibration_root()
+    )
+    if resolved is None:
+        return None
+    return household, resolved
 
 
 def _label_token(value: str) -> str:
@@ -300,7 +330,7 @@ def _wrong_mic(record: Any, device: Mapping[str, Any] | None) -> str | None:
     that matches nothing (or matches its OWN model), is not a mismatch —
     there is nothing concrete to contradict the remembered pairing with.
     """
-    from jasper.audio_measurement.calibration import (
+    from jasper.audio_measurement.calibration import (  # lazy: numpy
         SUPPORTED_MODELS,
         model_label_aliases,
     )

@@ -75,7 +75,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "barge": ("jasper", "voice"),
     "bluetooth": ("bluetooth", "jasper", "web"),
     "camilla": ("jasper", "voice"),
-    "correction": ("active_speaker", "correction", "jasper", "web"),
+    "correction": ("active_speaker", "audio_measurement", "jasper", "web"),
     "cue": ("cues", "voice"),
     "dsp": ("active_speaker", "jasper"),
     "ha": ("control", "jasper", "tools", "web"),
