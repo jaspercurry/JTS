@@ -1103,6 +1103,10 @@ def _usb_timing(
             status = "warn"
             headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
             detail = "Latency will fall after USB host timing stabilizes."
+        elif active and latency_runtime.phase == "buffer_held":
+            status = "warn"
+            headline = f"Extra buffer in use · {current_ms:.1f} ms input buffer"
+            detail = f"JTS keeps this buffer to prevent audio gaps. {preset.label} remains selected."
         elif active and latency_runtime.phase == "checking":
             status = "idle"
             headline = "Checking USB host timing"
@@ -1832,6 +1836,8 @@ def _receiver_latency(
         mode_label = "clock adjusting"
     elif phase == "buffer_adjusting":
         mode_label = "latency adjusting"
+    elif phase == "buffer_held":
+        mode_label = "extra buffer in use"
     elif phase == "stable":
         label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
         mode_label = f"{label} latency stable"

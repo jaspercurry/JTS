@@ -230,11 +230,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
 | [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | accepted |
-| [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | accepted |
+| [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
 | [0210](0210-polarity-has-two-frames-and-one-conversion-owner.md) | Polarity has two frames, and one conversion owner | accepted |
 | [0212](0212-way-1-reuses-the-existing-layers-it-does-not-fork-them.md) | Way-1 reuses the existing layers; it does not fork them | accepted |
-| [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250 |
+| [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250, 0275 |
 | [0216](0216-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md) | Curve slots are fixed, so a quiet save takes the live-edit path | accepted |
 | [0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md) | A durable save that moves only a trim writes in place | accepted |
 | [0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md) | The relay is deleted; the wired microphone on jts.local is the only capture path | amended by 0255 |
@@ -248,3 +248,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
 | [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
+| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | accepted |

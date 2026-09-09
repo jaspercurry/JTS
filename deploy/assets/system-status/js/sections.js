@@ -298,6 +298,7 @@ function effectiveUsbLatencyLabel(state) {
   if (state && state.state === "fallback") {
     return mode ? usbLatencyLabel(mode) + " · stable fallback" : "Stable fallback";
   }
+  if (state && state.state === "held") return "Extra buffer";
   if (state && state.state === "recovery" && !mode) return "Adjusting";
   return usbLatencyLabel(mode);
 }
