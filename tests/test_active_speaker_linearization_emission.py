@@ -57,7 +57,7 @@ from jasper.active_speaker.runtime_contract import (
 
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology
-from tests.test_bass_extension_profile import _applied_baseline, _profile
+from tests.test_active_speaker_runtime_contract import _sealed_field
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -326,19 +326,11 @@ def test_linearization_multiple_peaks_number_in_fit_order():
 def test_linearization_coexists_with_bass_extension_in_ruled_order():
     """The two addons compose: linearization then bass-extension, both
     between the crossover and the delay/gain/limiter tail."""
-    topology = _active_topology("mono", "active_2_way")
-    applied = _applied_baseline()
-    from dataclasses import replace
-
-    profile = replace(
-        _profile(topology=topology, applied_baseline=applied),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
     preset = _preset()
     text = emit_active_speaker_baseline_config(
         preset, playback_device=ACTIVE_PCM,
         linearization={"woofer": [_peak(900.0, -1.0)]},
-        bass_extension_profile=profile,
+        bass_extension=_sealed_field(),
     )
     names = _pipeline_names(text, channel=0)
     assert names == [

@@ -39,7 +39,8 @@ from jasper.active_speaker.runtime_contract import (
     classify_output_contract,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from tests.test_bass_extension_profile import _applied_baseline, _profile
+from tests.test_active_speaker_runtime_contract import _sealed_field
+from tests.test_bass_extension_profile import _applied_baseline
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -52,18 +53,12 @@ def classify_camilla_graph(*args, **kwargs):
 def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
     topology = _active_2way_sub_topology()
     applied = _applied_baseline()
-    profile = replace(
-        _profile(topology=topology, applied_baseline=applied),
-        bass_owner={
-            "kind": "local_sub",
-            "roles": ["subwoofer"],
-            "channels": [4],
-        },
-    )
+    field = _sealed_field(channels=(4,))
+    field["owner"]["role"] = "subwoofer"
     text = emit_active_speaker_baseline_config(
         _active_2way_sub_preset(),
         playback_device=ACTIVE_PCM,
-        bass_extension_profile=profile,
+        bass_extension=field,
     )
     payload = yaml.safe_load(text)
 
@@ -84,7 +79,7 @@ def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
         evidence_source="desired",
         graph_text=text,
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
     )
     assert proof.allowed is True
     assert proof.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
@@ -100,7 +95,7 @@ def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
         evidence_source="desired",
         graph_text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
         applied_baseline_state=applied,
-        desired_profile=profile,
+        desired_bass_extension=field,
     )
 
     assert tampered.allowed is False

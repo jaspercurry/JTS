@@ -497,7 +497,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         write_camilla_statefile,
     )
     from jasper.atomic_io import atomic_write_text
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
+    from jasper.bass_extension.candidate_field import applied_bass_extension_field
 
     topology = load_output_topology_strict(args.topology)
     applied = load_applied_baseline_profile_state(args.applied_baseline_state)
@@ -544,22 +544,11 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Bass evidence is split exactly as the /sound recompose splits it: only an
-    # ACCEPTED profile is emitted, while the proof is asked against whatever was
-    # evaluated, so a rejected profile cannot be silently emitted OR silently
-    # excused.
-    bass_evaluation = evaluate_bass_extension_profile(
-        topology=topology, applied_baseline_state=applied
-    )
-    bass_emission_profile = (
-        bass_evaluation.profile if bass_evaluation.status == "accepted" else None
-    )
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
         playback_device=device,
         out_path=None,
-        bass_extension_profile=bass_emission_profile,
     )
     if yaml is None or issues:
         print("ERROR: could not re-emit the applied baseline:")
@@ -575,7 +564,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         evidence_source="desired",
         graph_text=yaml,
         applied_baseline_state=applied,
-        desired_profile=bass_evaluation.profile,
+        desired_bass_extension=applied_bass_extension_field(applied),
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         print(

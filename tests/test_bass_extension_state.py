@@ -4,83 +4,88 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import pytest
 
-
-from jasper.bass_extension import profile as profile_mod
-from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
+from jasper.active_speaker import setup_status
+from jasper.bass_extension.candidate_field import bass_extension_summary
 from jasper.cli.doctor import active_speaker as doctor_audio
 from jasper.cli.doctor.active_speaker import check_bass_extension_profile
 
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
-def _doctor_result(monkeypatch, evaluation: BassExtensionEvaluation):
+
+def _doctor_result(monkeypatch, applied):
     import jasper.active_speaker.baseline_profile as baseline_mod
-    import jasper.output_topology as topology_mod
 
     monkeypatch.setattr(
-        profile_mod,
-        "evaluate_bass_extension_profile",
-        lambda **_kwargs: evaluation,
+        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
     )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda: None,
-    )
-    monkeypatch.setattr(topology_mod, "load_output_topology", lambda: None)
     return check_bass_extension_profile()
 
 
-def test_doctor_missing_profile_is_ok(monkeypatch):
+def test_doctor_reads_the_applied_candidates_family(monkeypatch):
+    field = bass_extension_field()
     result = _doctor_result(
-        monkeypatch,
-        BassExtensionEvaluation("missing", (), None, "profile is absent"),
+        monkeypatch, {"recomposition_snapshot": {"bass_extension": field}}
     )
+
+    assert result.status == "ok"
+    assert result.reason == ""
+    natural = field["rungs"][-1]["target"]["fp_hz"]
+    assert f"natural={natural:g}Hz" in result.detail
+
+
+@pytest.mark.parametrize(
+    "applied",
+    [
+        None,
+        {"recomposition_snapshot": {}},
+        {"recomposition_snapshot": {"bass_extension": {"owner": "wrong shape"}}},
+    ],
+)
+def test_doctor_reports_no_family_when_none_is_applied(monkeypatch, applied):
+    result = _doctor_result(monkeypatch, applied)
+
     assert result.status == "ok"
     assert result.reason == doctor_audio.REASON_BASS_EXTENSION_NOT_COMMISSIONED
 
 
-def test_doctor_malformed_profile_is_fail(monkeypatch):
-    result = _doctor_result(
-        monkeypatch,
-        BassExtensionEvaluation("malformed", (), None, "invalid JSON at byte 4"),
+def _setup(field) -> dict:
+    return {"protected_profile": {"bass_extension": field}}
+
+
+def test_the_owning_module_publishes_the_applied_family(monkeypatch, tmp_path):
+    """`/state` carries thirteen keys and this is not one (ADR-0270 rule 1),
+    so the bass tab and the doctor read the family from setup_status."""
+    field = bass_extension_field()
+    monkeypatch.setattr(
+        setup_status, "BASS_EXTENSION_APPLY_INTENT_PATH", tmp_path / "absent.json"
     )
-    assert result.status == "fail"
-    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_MALFORMED
+
+    section = setup_status.bass_extension_state(_setup(field))
+
+    assert section["status"] == "accepted"
+    assert section["runtime_eligible"] is True
+    assert section["apply_recovery_required"] is False
+    assert section["natural_hz"] == field["rungs"][-1]["target"]["fp_hz"]
+    assert section["family"] == bass_extension_summary(field)
 
 
-def test_doctor_stale_profile_is_warn(monkeypatch):
-    result = _doctor_result(
-        monkeypatch,
-        BassExtensionEvaluation(
-            "stale",
-            (
-                BassExtensionRefusal.BASELINE_NOT_APPLIED,
-                BassExtensionRefusal.PROFILE_STALE,
-            ),
-            None,
-            "baseline fingerprint mismatch; algorithm version mismatch",
-        ),
+def test_the_family_is_none_without_an_applied_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        setup_status, "BASS_EXTENSION_APPLY_INTENT_PATH", tmp_path / "absent.json"
     )
-    assert result.status == "warn"
-    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_STALE
+
+    assert setup_status.bass_extension_state(_setup(None)) is None
 
 
-def test_doctor_accepted_profile_is_ok_with_corners(monkeypatch):
-    profile = SimpleNamespace(
-        targets=[SimpleNamespace(fp_hz=31.0), SimpleNamespace(fp_hz=61.2)]
-    )
-    result = _doctor_result(
-        monkeypatch,
-        BassExtensionEvaluation("accepted", (), profile, "profile is accepted"),
-    )
-    assert result.status == "ok"
+def test_an_interrupted_apply_is_reported_without_a_family(monkeypatch, tmp_path):
+    """The recovery banner outlives the profile it was applying."""
+    intent = tmp_path / "apply_intent.json"
+    intent.write_text("{}")
+    monkeypatch.setattr(setup_status, "BASS_EXTENSION_APPLY_INTENT_PATH", intent)
 
+    section = setup_status.bass_extension_state(_setup(None))
 
-def test_doctor_bypassed_profile_is_ok(monkeypatch):
-    result = _doctor_result(
-        monkeypatch,
-        BassExtensionEvaluation("bypassed", (), SimpleNamespace(), "bypassed"),
-    )
-    assert result.status == "ok"
-    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_BYPASSED
+    assert section["commissioned"] is False
+    assert section["apply_recovery_required"] is True

@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
-import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
+import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -28,11 +27,16 @@ import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
+from jasper.active_speaker.graph_safety import (
+    bass_extension_block_valid,
+    view_from_emitted_text,
+)
+from jasper.bass_extension.candidate_field import graph_summary
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 from jasper.sound.profile import SoundProfile
-from tests.test_bass_extension_profile import _profile
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
 # Reuse the commissioning-evidence fixtures from the baseline-profile tests so
 # the leader's camilla#2 arm is exercised against the SAME evidence shape the
@@ -150,6 +154,15 @@ def _fake_apply_dsp_config():
 # --- the fail-closed GATE: build + RE-PROVE both instances --------------------
 
 
+def _applied_with_bass_family(monkeypatch, field):
+    """The applied box a bonded follower/leader compiles its Layer A from."""
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "load_applied_baseline_profile_state",
+        lambda *_a, **_k: {"recomposition_snapshot": {"bass_extension": field}},
+    )
+
+
 def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     """Happy path: precheck builds camilla#2's driver-domain graph AND camilla#1's
     program bake, RE-PROVES BOTH with the real classifier, and returns both
@@ -166,16 +179,9 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
+    field = bass_extension_field(owner={"role": "woofer", "channels": [0]})
+    _applied_with_bass_family(monkeypatch, field)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    sealed = replace(
-        _profile(topology=topology),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "evaluate_bass_extension_profile",
-        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
-    )
 
     bake_path, crossover_path = asyncio.run(
         alc.precheck_active_leader(_cfg("left"), validate=_valid_config)
@@ -200,9 +206,14 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
         for step in crossover_doc["pipeline"]
         if step.get("type") == "Filter" and step.get("channels") == [0]
     )
+    # Bonding must not drop driver protection: the applied box's family rides
+    # into the follower's Layer A, subsonic high-pass and all.
     assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
         "bass_ext_subsonic"
     ) < woofer_chain.index("as_woofer_delay")
+    assert bass_extension_block_valid(
+        view_from_emitted_text(crossover_yaml), graph_summary(field)
+    ).valid is True
 
     # camilla#1 program bake: File sink writing the snapfifo, NO Layer A.
     bake_doc = yaml.safe_load(Path(bake_path).read_text(encoding="utf-8"))

@@ -526,22 +526,12 @@ def _recompose_active_baseline_with_eq(
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
     )
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
+    from jasper.bass_extension.candidate_field import applied_bass_extension_field
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filter_slots
 
     topology = load_output_topology()
     applied_profile = load_applied_baseline_profile_state() or {}
-    bass_evaluation = evaluate_bass_extension_profile(
-        topology=topology,
-        applied_baseline_state=applied_profile,
-    )
-    bass_emission_profile = (
-        bass_evaluation.profile
-        if bass_evaluation.status == "accepted"
-        else None
-    )
-    bass_proof_profile = bass_evaluation.profile
     preference_filters = build_sound_filter_slots(profile)
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     # The L0 emit gates inside emit_active_speaker_baseline_config raise
@@ -568,7 +558,6 @@ def _recompose_active_baseline_with_eq(
             output_trim_db=output_trim_db,
             out_path=None,
             playback_device=live_endpoint,
-            bass_extension_profile=bass_emission_profile,
         )
     except ActiveSpeakerConfigError as exc:
         raise CarrierCannotHostEq(
@@ -590,7 +579,7 @@ def _recompose_active_baseline_with_eq(
         evidence_source="desired",
         graph_text=yaml,
         applied_baseline_state=applied_profile,
-        desired_profile=bass_proof_profile,
+        desired_bass_extension=applied_bass_extension_field(applied_profile),
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         detail = (
@@ -626,6 +615,10 @@ def recompose_active_baseline_for_bass_extension(
     This is the narrow Wave-3 carrier seam. Room PEQs are extracted through the
     existing canonical reader; preference EQ and output trim are rebuilt from
     their own persisted models. The loaded YAML is never spliced.
+
+    ``desired_profile`` is the bass candidate field to emit, or ``None`` for
+    the un-extended graph. Its name is lane A's and retires with
+    ``jasper.bass_extension.apply_bass_extension``, its one caller.
     """
 
     from jasper.active_speaker.baseline_profile import (
@@ -692,12 +685,9 @@ def recompose_active_baseline_for_bass_extension(
     # Same L0-emit-gate conversion as the preference-EQ recompose above, and
     # for the same reason: an ActiveSpeakerConfigError from the emitter is a
     # fail-closed refusal, not a server error, and every other failure in this
-    # function already leaves by the typed door. LATENT TODAY — this seam has
-    # no production caller yet — but converting it now is cheaper than the
-    # incident it becomes the day bass extension is wired, which would be the
-    # /sound/eq/ defect above repeated verbatim. Uses THIS function's own reason code
-    # (its siblings all raise bass_extension_recompose_unavailable), not the
-    # preference-EQ one, so a caller branching on reason_code still learns
+    # function already leaves by the typed door. Uses THIS function's own reason
+    # code (its siblings all raise bass_extension_recompose_unavailable), not
+    # the preference-EQ one, so a caller branching on reason_code still learns
     # which seam refused.
     try:
         yaml, issues = recompose_applied_baseline_yaml(
@@ -708,7 +698,7 @@ def recompose_active_baseline_for_bass_extension(
             output_trim_db=output_trim_db(preference, settings),
             out_path=None,
             playback_device=live_endpoint,
-            bass_extension_profile=desired_profile,
+            bass_extension=desired_profile,
         )
     except ActiveSpeakerConfigError as exc:
         raise CarrierCannotHostEq(
@@ -733,7 +723,7 @@ def recompose_active_baseline_for_bass_extension(
             evidence_source="desired",
             graph_text=yaml,
             applied_baseline_state=applied_profile,
-            desired_profile=desired_profile,
+            desired_bass_extension=desired_profile,
         )
         if proof.allowed:
             return yaml

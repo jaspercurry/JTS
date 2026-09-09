@@ -199,19 +199,14 @@ def build_reduced_yaml(
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the applied graph without its two measured-correction stages.
 
-    The bass profile is evaluated against the UNMUTATED record and passed
-    explicitly: its acceptance is fingerprinted against the profile, so asking
-    after the reduction would drop the stage and add a second difference to
-    an A/B whose value is that there is only one.
+    The bass family is the applied snapshot's own field, which the reduction
+    does not touch: the A/B is worth listening to only while the two graphs
+    differ on exactly one axis.
     """
 
     from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
     from jasper.active_speaker.playback_route import resolve_live_active_endpoint
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
 
-    bass = evaluate_bass_extension_profile(
-        topology=topology, applied_baseline_state=applied_profile
-    )
     room_peqs, preference_filters, trim_db = _household_layers(anchor_path)
     device, _source = resolve_live_active_endpoint(topology)
     return recompose_applied_baseline_yaml(
@@ -222,7 +217,6 @@ def build_reduced_yaml(
         output_trim_db=trim_db,
         out_path=None,
         playback_device=device,
-        bass_extension_profile=(bass.profile if bass.status == "accepted" else None),
         drop_measured_correction=True,
     )
 
@@ -393,6 +387,7 @@ async def start_audition(
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
     )
+    from jasper.bass_extension.candidate_field import applied_bass_extension_field
     from jasper.dsp_apply import dsp_writer_lock
     from jasper.output_topology import load_output_topology
 
@@ -434,6 +429,7 @@ async def start_audition(
             evidence_source="desired",
             graph_text=yaml_text,
             applied_baseline_state=applied,
+            desired_bass_extension=applied_bass_extension_field(applied),
         )
         if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
             raise AuditionRefused(

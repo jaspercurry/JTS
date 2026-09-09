@@ -207,7 +207,7 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused("measurement_filters_invalid", scope)
     text, issues = recompose_applied_baseline_yaml(
         profile.topology, applied_profile=profile.applied_profile or {},
-        playback_device=profile.playback_device, bass_extension_profile=None,
+        playback_device=profile.playback_device, bass_extension=None,
         room_peqs=room_peqs, drop_measured_correction=scope == "base",
         protection_sections_by_role=profile.protection_sections_by_role,
     )
