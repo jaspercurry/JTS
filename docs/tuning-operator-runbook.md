@@ -167,7 +167,12 @@ refuses the request entire — never truncated to its quiet steps — when any s
 reaches this box's commissioning ceiling (`bass_ladder_spl_ceiling`), when no
 reference with a recorded stimulus is banked to predict against
 (`bass_ladder_reference_unbanked`), or when the rung itself does not resolve
-(`bass_ladder_candidate_unbanked`, `bass_ladder_target_unknown`).
+(`bass_ladder_candidate_unbanked`, `bass_ladder_target_unknown`). A rung's step
+sweeps DOWN to the band its own boost is spent in — 20 Hz, the floor every
+enclosure adapter clamps its deepest rung at, or the bass driver's own declared
+excitation floor where that is higher. Every other scope's sweep is unchanged,
+and a step reaching under a driver's declared floor is refused by admission
+before any audio.
 
 `jasper-round-views bass-ladder <round-dir> --target-id <target>` then grades
 those steps from the lowest banked level up and writes
@@ -180,10 +185,12 @@ than one rung step ends the ladder there. A failed document is written too, and
 the prescription door refuses the rung on it exactly as it does on none.
 
 The ladder is graded only where the rung's boost and the step's own stimulus
-meet. The summed sweep a rung plays today starts at the crossover's low bound,
-which on a two-way sits above the corner an extension rung moves, so the view
-refuses (`bass_extension_ladder_incomplete`, naming both bands) rather than
-publishing a verdict about a band nothing excited.
+meet, and only for one candidate at a time. Where they do not meet — a round
+banked before the step swept low, or a bass driver whose declared floor sits
+above the rung — and where a round banked this rung under more than one
+candidate, the view refuses (`bass_extension_ladder_incomplete`, naming the
+two bands or the candidates) rather than publishing a verdict about a band
+nothing excited or a level no single graph proved.
 
 ## Evidence and recovery
 

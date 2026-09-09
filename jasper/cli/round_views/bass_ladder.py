@@ -28,10 +28,15 @@ import numpy as np
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HARMONIC_ORDERS,
     calibration_from_text,
+    pool_readings,
     read_program_sweeps,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPE_BASS_CANDIDATE,
+)
+from jasper.active_speaker.crossover_v2.round_captures import (
+    BoundCapture,
+    bind_captures,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     round_inputs,
@@ -50,12 +55,13 @@ from jasper.bass_extension.ladder_evidence import (
 )
 from jasper.bass_extension.refusals import BassExtensionRefusal
 from jasper.bass_extension.targets import MARGINS
-from jasper.cli._refusal import EXIT_UNREADABLE
+from jasper.cli._refusal import EXIT_UNREADABLE, read_json_source, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
+    _ROUND_TOOL_ERRORS,
     _write,
     answer,
     default_out,
@@ -116,18 +122,6 @@ def _ladder_takes(
     return takes
 
 
-def _programs(artifact_dir: Path) -> dict[str, ExcitationProgram]:
-    """The schedules this round banked beside its rendered stimuli, by id."""
-    banked: dict[str, ExcitationProgram] = {}
-    for path in sorted(artifact_dir.glob("*_program.json")):
-        try:
-            program = ExcitationProgram.from_dict(json.loads(path.read_text()))
-        except (OSError, ValueError, TypeError, KeyError):
-            continue
-        banked.setdefault(program.program_id, program)
-    return banked
-
-
 def _swept_band_hz(program: ExcitationProgram) -> tuple[float, float]:
     """The band this program's sweeps actually excite, from the schedule."""
     swept = [
@@ -141,15 +135,19 @@ def _swept_band_hz(program: ExcitationProgram) -> tuple[float, float]:
     return min(lo for lo, _ in swept), max(hi for _, hi in swept)
 
 
-def _declared_program_id(sidecar: Path) -> str:
-    """The schedule a placed capture declares it was played through."""
+def _schedule_of(bound: BoundCapture) -> ExcitationProgram | None:
+    """The SCHEDULE the bound program WAV was rendered from, or ``None``.
+
+    A rendered WAV carries no segments or sweep metadata, so the composer
+    banks the schedule beside it; a round banked before it did has the bytes
+    and not the reading.
+    """
     try:
-        doc = json.loads(sidecar.read_text())
-    except (OSError, ValueError):
-        return ""
-    stimulus = (doc.get("provenance") or {}).get("stimulus") if isinstance(doc, Mapping) else None
-    declared = stimulus.get("program_id") if isinstance(stimulus, Mapping) else None
-    return declared if isinstance(declared, str) else ""
+        return ExcitationProgram.from_dict(
+            json.loads(bound.program.with_suffix(".json").read_text())
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def _banked_calibration_id(records: Sequence[Mapping[str, Any]]) -> str:
@@ -168,35 +166,28 @@ def _band_metrics(
 ) -> tuple[float | None, float | None, tuple[int, ...], tuple[int, ...]]:
     """``(fundamental_db, thd_ratio, clean_orders, floor_limited_orders)``.
 
-    Pooled across the capture's own sweeps by grid index, the rule
-    ``harmonic_evidence._role_block`` pools by, and reduced over the rung's
-    extension band alone: what the rung does above its own transform is not
-    what the ladder is bounding.
+    The capture's own sweeps are pooled by
+    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.pool_readings`
+    — the same reduction the harmonics artifact publishes — and reduced over
+    the rung's extension band alone: what the rung does above its own
+    transform is not what the ladder is bounding.
     """
-    first = readings[0]
-    if not all(np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings):
+    try:
+        pooled = pool_readings(readings, orders, where="bass ladder step")
+    except ValueError:
         return None, None, (), ()
-    band = (first.freqs_hz >= band_hz[0]) & (first.freqs_hz <= band_hz[1])
+    band = (pooled.freqs_hz >= band_hz[0]) & (pooled.freqs_hz <= band_hz[1])
     if not band.any():
         return None, None, (), ()
-    fundamental = np.median(
-        np.stack([r.fundamental_db for r in readings]), axis=0
-    )[band]
+    fundamental = pooled.fundamental_db[band]
     fundamental = fundamental[np.isfinite(fundamental)]
 
     amplitudes: list[np.ndarray] = []
     clean: list[int] = []
     limited: list[int] = []
     for order in orders:
-        relative = np.median(
-            np.stack([r.relative_db[order] for r in readings]), axis=0
-        )[band]
-        # Majority vote across the capture's sweeps, so one sweep's noise
-        # spike cannot flag a point the others read as clear.
-        on_floor = np.stack(
-            [r.floor_limited(order) for r in readings]
-        ).sum(axis=0)[band] > len(readings) / 2
-        usable = ~on_floor & np.isfinite(relative)
+        relative = pooled.relative_db[order][band]
+        usable = ~pooled.floor_limited[order][band] & np.isfinite(relative)
         if not usable.any():
             limited.append(int(order))
             continue
@@ -216,9 +207,9 @@ def _band_metrics(
 
 def _step(
     record: Mapping[str, Any],
+    bound: BoundCapture | None,
     program: ExcitationProgram | None,
     *,
-    session_dir: Path,
     band_hz: tuple[float, float],
     calibration: Any,
 ) -> LadderStep:
@@ -243,12 +234,10 @@ def _step(
         take_id=take_id, stimulus_dbfs=stimulus_dbfs, level_db=level_db,
         fundamental_db=None, thd_ratio=None, clean_orders=(), incident=incident,
     )
-    wav_path = str(record.get("wav_path") or "")
-    if incident or not wav_path or program is None:
+    if incident or bound is None or program is None:
         return unread
-    wav = session_dir / wav_path
     try:
-        samples, rate = read_wav_mono(wav)
+        samples, rate = read_wav_mono(bound.wav)
     except (OSError, ValueError, EOFError):
         return unread
     if int(rate) != int(program.sample_rate_hz):
@@ -286,11 +275,13 @@ def _cmd_bass_ladder(args: argparse.Namespace) -> int:
         Path(args.bass_fit) if args.bass_fit
         else default_out(inputs, round_dir, BASS_FIT_FILENAME)
     )
+    document = stage(
+        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(fit_path),
+    )
     try:
-        document = json.loads(fit_path.read_bytes())
         fit = document["bass_fit"]
         margin = MARGINS[str(fit["margin"])]
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except (TypeError, KeyError) as exc:
         return refused_by_name(
             BassExtensionRefusal.FIELD_MALFORMED,
             {"bass_fit": str(fit_path), "error": str(exc)},
@@ -331,21 +322,39 @@ def _cmd_bass_ladder(args: argparse.Namespace) -> int:
             "candidate_id": args.candidate_id or None,
             "problem": f"no {GRAPH_SCOPE_BASS_CANDIDATE} take banked this rung",
         })
+    # A ladder measures ONE candidate's rung. Two candidates' takes are two
+    # ladders through two graphs, and pooling them would grade a level neither
+    # proved, so the caller names which one.
+    candidates = sorted({str(record.get("candidate_id") or "") for record in records})
+    if len(candidates) > 1:
+        return refused_by_name(BassExtensionRefusal.LADDER_INCOMPLETE, {
+            "round_dir": str(round_dir), "target_id": target_id,
+            "candidates": candidates,
+            "problem": "this round banked this rung under more than one "
+                       "candidate; name one with --candidate-id",
+        })
 
-    banked = _programs(artifact_dir)
-    played = [
-        banked.get(_declared_program_id(
-            (inputs.session_dir / str(record.get("wav_path") or "")).with_suffix(".json")
-        ))
+    # ONE binder: the rule every reader of a banked round's summed takes uses,
+    # capture to program by content hash (#3504).
+    bound_by_wav = {
+        bound.wav.name: bound for bound in stage(
+            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, bind_captures, inputs.session_dir,
+        )
+    }
+    bound = [
+        bound_by_wav.get(Path(str(record.get("wav_path") or "")).name)
         for record in records
     ]
+    played = [
+        None if capture is None else _schedule_of(capture) for capture in bound
+    ]
     # The band the ladder can grade is where the rung's boost and the ladder's
-    # own stimulus MEET. They need not: the summed sweep a bass rung plays
-    # today starts at the crossover's own low bound (program.VERIFY_F_LO_HZ, or
-    # fc/2), which on a two-way sits well above the corner an extension rung
-    # moves. Nothing below that bound was excited, so nothing below it was
-    # measured, and a "fail" published over an unexcited band would read as a
-    # driver that failed.
+    # own stimulus MEET. A rung's step is composed to reach its own band, but a
+    # driver's declared excitation floor can sit above it, and a round banked
+    # before the ladder swept low carries the shipped summed window instead.
+    # Nothing below the swept edge was excited, so nothing below it was
+    # measured, and a "fail" over an unexcited band would read as a driver that
+    # failed.
     stimulus_band = [
         _swept_band_hz(program) for program in played if program is not None
     ]
@@ -371,14 +380,11 @@ def _cmd_bass_ladder(args: argparse.Namespace) -> int:
         _banked_calibration_id(records),
     )
     steps = [
-        _step(
-            record, program, session_dir=inputs.session_dir,
-            band_hz=band_hz, calibration=calibration,
-        )
-        for record, program in zip(records, played)
+        _step(record, capture, program, band_hz=band_hz, calibration=calibration)
+        for record, capture, program in zip(records, bound, played)
     ]
     evidence = grade_ladder(steps, target_id=target_id, margin=margin, basis={
-        "candidate_fingerprint": str(records[0].get("candidate_id") or ""),
+        "candidate_fingerprint": candidates[0],
         "round_id": artifact_dir.name,
         "bass_fit": str(fit_path),
         "band_hz": list(band_hz),

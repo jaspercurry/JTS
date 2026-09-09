@@ -140,7 +140,12 @@ def bass_ladder_evidence(
 
 
 def _row(step: LadderStep, *, compression_db: float | None) -> dict[str, Any]:
+    """One step's published row. A take's own incident rides it whenever the
+    take carries one, whichever rule ended the ladder — the gap check runs
+    first, and a row that dropped the incident would hide why the step is
+    there at all."""
     return {
+        **({"incident": step.incident} if step.incident else {}),
         "take_id": step.take_id,
         "stimulus_dbfs": step.stimulus_dbfs,
         "level_db": step.level_db,
@@ -205,7 +210,7 @@ def grade_ladder(
                 compression_db = previous.fundamental_db - step.fundamental_db
         row = _row(step, compression_db=compression_db)
         if step.incident:
-            rows.append({**_failed(row, STEP_INCIDENT), "incident": step.incident})
+            rows.append(_failed(row, STEP_INCIDENT))
             break
         if (
             not step.clean_orders

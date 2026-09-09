@@ -690,6 +690,54 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
         assert refusal in admission.refusals
 
 
+@pytest.mark.parametrize("low_edge_hz, allowed", [(100.0, True), (20.0, False)])
+def test_a_lowered_summed_sweep_is_admitted_only_to_the_drivers_own_floor(
+    tmp_path, low_edge_hz, allowed,
+):
+    """The ladder's deeper sweep is ADMITTED, never smuggled.
+
+    A rung is spent below the shipped 150 Hz summed window, so its step sweeps
+    lower. Admission re-resolves every driver's excitation band from the same
+    safety profile the composer read, and a segment reaching under the bass
+    owner's declared floor is refused there — before any audio, which is what
+    makes the floor the protection rather than the composer's politeness.
+    """
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+    from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_floor=100, max_sweep_duration_s=4,
+    )
+    applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
+    graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        applied_profile=applied,
+    ), scope="speaker_tune")
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        session_volume_db=-20.0, fc_hz=2000,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program(low_edge_hz=low_edge_hz)
+    wav = tmp_path / "summed.wav"
+    write_program_wav(wav, program)
+
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph_yaml, topology=topology,
+        safety_profile=profile, role_targets=targets, session_volume_db=-20.0,
+    )
+
+    assert admission.allowed is allowed
+    assert min(
+        segment.band[0] for segment in admission.segments
+        if segment.role == "woofer"
+    ) == pytest.approx(low_edge_hz)
+    if not allowed:
+        assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in admission.refusals
+
+
 def test_a_bass_stage_is_admitted_only_against_the_rung_that_authorized_it(tmp_path):
     """Admission is the independent reader of the SAME authority the graph
     was emitted from — and its default forbids a bass stage outright."""

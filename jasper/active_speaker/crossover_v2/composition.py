@@ -188,6 +188,7 @@ def bind_program_composer(
     before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
     bass_profile_summary: Callable[[Any], Mapping[str, Any]] | None = None,
+    declare_stimulus: Callable[[str], None] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
 
@@ -195,6 +196,9 @@ def bind_program_composer(
     ``before_play`` runs after its live proof, inside the same writer lock.
     ``bass_profile_summary`` answers, per spec, which bass rung that graph is
     allowed to carry; unbound, admission requires no bass stage at all.
+    ``declare_stimulus`` receives the rendered program's own content hash, the
+    one-capture handoff a capture half needs to declare WHAT it recorded
+    (:class:`~..capture_provenance.CaptureProvenanceRecorder`'s pattern).
     """
     from jasper.audio_measurement.program import write_program_wav
 
@@ -230,6 +234,8 @@ def bind_program_composer(
             return store.identify_artifact(wav_rel)
 
         artifact = await asyncio.to_thread(render)
+        if declare_stimulus is not None:
+            declare_stimulus(str(getattr(artifact, "sha256", "") or ""))
         return ProgramForStimulus(program, bind_program_playback_seams(
             cam_factory(), bundle_dir=str(bundle_dir), artifact=artifact,
             config_dir=config_dir, program=program, wav_path=str(wav_path),

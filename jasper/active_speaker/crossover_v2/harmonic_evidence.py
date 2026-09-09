@@ -18,6 +18,7 @@ import statistics
 import tempfile
 import wave
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -773,6 +774,7 @@ def read_program_sweeps(
     from jasper.audio_measurement.program import KIND_SWEEP
     from jasper.audio_measurement.program_analysis import (
         CAPTURE_BOUND_MARGIN_S,
+        DRIFT_ANCHOR_SEGMENT_ID,
         _estimate_drift,
         _global_offset,
         _locate_segments,
@@ -790,14 +792,17 @@ def read_program_sweeps(
 
     wanted = frozenset(kinds) if kinds else frozenset({KIND_SWEEP})
     swept = [seg for seg in program.stimulus_segments() if seg.kind in wanted]
-    # Clock drift is measured between two occurrences of ONE role's sweep, and
-    # the estimator's anchor is the MEASURE program's repeated woofer. A
-    # program that plays each sweep once — the ladder's summed step — offers no
-    # baseline, which is the 0.0 the estimator itself answers there.
-    repeated = len({seg.role for seg in swept}) < len(swept)
+    # ``_estimate_drift`` reads its baseline off ``program.segment("sweep_w")``
+    # and RAISES ``KeyError`` for a program without one — the summed ladder
+    # step has a single ``sweep_verify`` and no per-driver solo. Nothing to
+    # measure drift between there, so the correction is the 0.0 the estimator
+    # itself answers for an unrepeated sweep.
+    drifting = any(
+        seg.segment_id == DRIFT_ANCHOR_SEGMENT_ID for seg in program.segments
+    )
     epsilon = (
         _estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
-        if repeated else 0.0
+        if drifting else 0.0
     )
     return [
         read_segment_distortion(
@@ -843,6 +848,50 @@ def _nullable(value: float, decimals: int = _DB_DECIMALS) -> float | None:
     return round(float(value), decimals) if math.isfinite(value) else None
 
 
+@dataclass(frozen=True)
+class PooledReading:
+    """One capture's own sweeps reduced to one curve per quantity.
+
+    ``floor_limited`` is a MAJORITY vote so one sweep's noise spike cannot
+    flag a point the others read as clear, and every curve is pooled BY GRID
+    INDEX — valid because the sweeps of one capture share a ``SweepMeta``,
+    asserted in :func:`pool_readings` because pooling by index lies silently
+    otherwise.
+    """
+
+    freqs_hz: "np.ndarray"
+    fundamental_db: "np.ndarray"
+    relative_db: Mapping[int, "np.ndarray"]
+    floor_limited: Mapping[int, "np.ndarray"]
+
+
+def pool_readings(readings: Sequence[Any], orders: Sequence[int], *, where: str = "") -> PooledReading:
+    """Pool the sweeps of ONE capture. The single owner of that reduction."""
+    first = readings[0]
+    if not all(np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings):
+        raise ValueError(
+            f"{where or 'readings'}: sweep grids disagree; cannot pool by index"
+        )
+    return PooledReading(
+        freqs_hz=first.freqs_hz,
+        fundamental_db=np.median(
+            np.stack([r.fundamental_db for r in readings]), axis=0
+        ),
+        relative_db={
+            order: np.median(
+                np.stack([r.relative_db[order] for r in readings]), axis=0
+            )
+            for order in orders
+        },
+        floor_limited={
+            order: np.stack(
+                [r.floor_limited(order) for r in readings]
+            ).sum(axis=0) > len(readings) / 2
+            for order in orders
+        },
+    )
+
+
 def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) -> dict:
     """One (capture, role)'s rows, pooled over that role's in-capture sweeps.
 
@@ -858,11 +907,8 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     pooling by index lies silently otherwise.
     """
     first = readings[0]
-    if not all(np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings):
-        raise ValueError(f"role {role}: sweep grids disagree; cannot pool by index")
-
-    fund_pool = np.median(np.stack([r.fundamental_db for r in readings]), axis=0)
-    fund_delta = fund_pool - float(np.median(fund_pool))
+    pooled = pool_readings(readings, orders, where=f"role {role}")
+    fund_delta = pooled.fundamental_db - float(np.median(pooled.fundamental_db))
 
     rows: list[dict[str, Any]] = []
     for probe in PROBE_FREQUENCIES_HZ:
@@ -903,14 +949,11 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     from jasper.audio_measurement.distortion import worst_clear_of_floor
 
     for order in orders:
-        pooled = np.median(
-            np.stack([r.relative_db[order] for r in readings]), axis=0
-        )
-        limited_mask = np.stack(
-            [r.floor_limited(order) for r in readings]
-        ).sum(axis=0) > len(readings) / 2
+        limited_mask = pooled.floor_limited[order]
         floor_fraction[f"h{order}"] = round(float(np.mean(limited_mask)), 3)
-        hz, value = worst_clear_of_floor(first.freqs_hz, pooled, limited_mask)
+        hz, value = worst_clear_of_floor(
+            pooled.freqs_hz, pooled.relative_db[order], limited_mask,
+        )
         worst[f"h{order}"] = (
             None if not math.isfinite(value)
             else {"hz": round(float(hz), 1), "below_fundamental_db": round(value, 1)}

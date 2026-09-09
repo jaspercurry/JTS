@@ -628,18 +628,84 @@ def _assert_bass_ladder_under_ceiling(
                 )
 
 
-def _bind_compose(
-    *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
-    config_dir: str, graph: Any,
+def _bass_sweep_low_edge_hz(box: BoxDeclaration, summary: Mapping[str, Any]) -> float:
+    """The lowest frequency a rung's ladder step may sweep to, and be admitted.
+
+    The shipped summed sweep starts at ``min(VERIFY_F_LO_HZ, fc/2)`` — 150 Hz
+    on a two-way — which is an octave and more ABOVE the corner an extension
+    rung moves, so a ladder played through it excites nothing the rung boosts
+    and proves nothing about it.
+
+    Two bounds, and the LOWER one is a family fact rather than a new threshold:
+    every enclosure adapter clamps its deepest rung at
+    :data:`~jasper.bass_extension.adapters.base.COMMISSION_FLOOR_HZ` (20 Hz,
+    "nothing is ever commissioned below that floor"), so a sweep that starts
+    there covers ``[fp_hz, f0_hz]`` of every rung a family can carry. The bass
+    owner's OWN admitted excitation floor binds it from above: that band comes
+    from ``resolve_driver_excitation_ceilings``, the same call
+    ``readmit_summed_program_from_wav`` re-resolves each segment against, so a
+    driver declaring a higher floor makes the ladder start there. A rung whose
+    band sits below that floor is refused by the ladder view, not swept.
+
+    An owner this door cannot place among its own role bands takes the family
+    floor alone: admission re-reads every driver's band before any audio, so
+    an edge a driver does not admit is refused there rather than played.
+    """
+    from jasper.bass_extension.adapters.base import COMMISSION_FLOOR_HZ
+
+    channels = {
+        channel for channel in summary.get("bass_owner_channels") or ()
+        if isinstance(channel, int)
+    }
+    owner_floors = [
+        float(entry.band.lower_hz) for entry in box.roles_bands
+        if entry.channel in channels
+    ]
+    return max([float(COMMISSION_FLOOR_HZ), *owner_floors])
+
+
+def _program_for_spec(
+    excitation: Any, box: BoxDeclaration,
     bass_summaries: Mapping[tuple[str, str], Mapping[str, Any]],
+    spec: Any, stimulus_dbfs: float | None,
 ) -> Any:
-    from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+    """The excitation ONE take plays: per-driver solos, or the summed sweep.
+
+    Only a rung moves the summed sweep's low edge, and only downward to the
+    band its own boost is spent in; every other scope composes the shipped
+    program byte for byte.
+    """
     from jasper.active_speaker.crossover_v2.measure_spec import (
         GRAPH_SCOPE_BASS_CANDIDATE,
         GRAPH_SCOPE_DRIVERS,
     )
-    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+
+    peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
+    if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
+        return excitation.measure_program({role.role: peak for role in box.roles_bands})
+    backoff = BASE_STIMULUS_PEAK_DBFS - peak
+    if spec.graph_scope != GRAPH_SCOPE_BASS_CANDIDATE:
+        return excitation.verify_program(extra_backoff_db=backoff)
+    return excitation.verify_program(
+        extra_backoff_db=backoff,
+        low_edge_hz=_bass_sweep_low_edge_hz(
+            box, bass_summaries[(spec.candidate_id, spec.bass_target_id)],
+        ),
+    )
+
+
+def _bind_compose(
+    *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
+    config_dir: str, graph: Any,
+    bass_summaries: Mapping[tuple[str, str], Mapping[str, Any]],
+    declare_stimulus: Any = None,
+) -> Any:
+    from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        GRAPH_SCOPE_BASS_CANDIDATE,
+    )
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
     from jasper.active_speaker.program_playback import ProgramPlaybackError
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift, hold_fader_at
     from jasper.bass_extension.candidate_field import (
@@ -653,10 +719,7 @@ def _bind_compose(
     )
 
     def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:
-        peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
-        if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
-            return excitation.measure_program({role.role: peak for role in box.roles_bands})
-        return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
+        return _program_for_spec(excitation, box, bass_summaries, spec, stimulus_dbfs)
 
     def bass_profile_summary(spec: Any) -> Mapping[str, Any]:
         """The authority this take's graph is READMITTED against.
@@ -688,6 +751,7 @@ def _bind_compose(
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
         bass_profile_summary=bass_profile_summary,
+        declare_stimulus=declare_stimulus,
     )
 
 
@@ -824,6 +888,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     config_dir=config_dir,
                     graph=door.graph,
                     bass_summaries=bass_summaries,
+                    declare_stimulus=capture.declare_stimulus,
                 ),
                 capture_stimulus=capture,
             )

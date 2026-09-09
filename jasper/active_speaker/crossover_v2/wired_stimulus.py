@@ -38,13 +38,16 @@ from .program_transaction import StimulusCaptureError
 
 def place_wired_answer(
     bundle_dir: Path, answer: WiredCaptureAnswer, *, phase: str, group: str,
-    program_id: str = "",
+    stimulus_sha256: str = "",
 ) -> WiredCaptureAnswer:
     """Place and register raw bytes once; later analysis uses this exact path.
 
-    ``program_id`` is the content hash of the schedule that played, declared
-    on the sidecar because the phase label is not the program (#3504) and a
-    ladder step's rung differs from its neighbour's only by drive.
+    ``stimulus_sha256`` is the rendered program WAV's own content hash,
+    declared under the ``provenance.stimulus`` key every other capture writer
+    uses, because that is what
+    :func:`~.round_captures.discover_captures` binds a capture to its program
+    by: the phase label is not the program (#3504), and a ladder step's rung
+    differs from its neighbour's only by drive.
     """
     if answer.wav_path:
         return answer
@@ -58,8 +61,9 @@ def place_wired_answer(
         payload={
             "speaker_group_id": group, "phase": phase,
             "measurement_status": "captured",
-            **({"provenance": {"stimulus": {"program_id": program_id, "phase": phase}}}
-               if program_id else {}),
+            **({"provenance": {
+                "stimulus": {"phase": phase, "wav_sha256": stimulus_sha256},
+            }} if stimulus_sha256 else {}),
         },
     )
     if entry is None:
@@ -78,6 +82,14 @@ class WiredStimulusCapture:
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
+    #: The rendered stimulus this capture is OF, handed over per take by the
+    #: composer that rendered it. Empty until one is declared, and a capture
+    #: placed without one declares no stimulus rather than guessing at it.
+    _stimulus_sha256: list[str] = field(default_factory=list)
+
+    def declare_stimulus(self, sha256: str) -> None:
+        """The digest of the program about to play. One capture's handoff."""
+        self._stimulus_sha256[:] = [sha256] if sha256 else []
 
     async def around(self, play: Callable[[], Awaitable[None]], *, program: Any) -> str:
         self._pending.clear()
@@ -136,11 +148,7 @@ class WiredStimulusCapture:
         phase = str(program.phase)
         return place_wired_answer(
             self.bundle_dir, answer, phase=phase, group=phase,
-            # The seam takes whatever schedule the HOST composed, and its own
-            # contract names no id; one that cannot name its schedule declares
-            # none, and a later read calls that step unproven rather than
-            # binding it to a program it only guessed at.
-            program_id=str(getattr(program, "program_id", "") or ""),
+            stimulus_sha256=next(iter(self._stimulus_sha256), ""),
         )
 
     def take_answer(self) -> WiredCaptureAnswer | None:

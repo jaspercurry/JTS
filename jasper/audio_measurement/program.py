@@ -984,11 +984,16 @@ def build_verify_program(
     courtesy_prelude: bool = False,
     roles: Sequence[RoleBand] = (),
     sweep_duration_limits_s: Mapping[str, float] | None = None,
+    low_edge_hz: float | None = None,
 ) -> ExcitationProgram:
     """Compose the VERIFY program (design §5.2): a mono full-band summed
     sweep played through the applied production graph. ``fc_hz`` widens the
     low bound when the crossover is low: ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
     ``fc_hz=None`` is the NO-CROSSOVER mode, requiring ``measurement_band_hz``.
+    ``low_edge_hz`` REPLACES that computed low bound for a caller measuring
+    something the default window does not reach — the bass protection ladder,
+    whose rung is spent an octave and more below ``VERIFY_F_LO_HZ``. The
+    caller states a bound its drivers admit; nothing here widens one for it.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
     docstring); the pilot rides its own band to avoid the
     crossover notch. Scoped measurement callers also re-admit the rendered WAV
@@ -1009,6 +1014,10 @@ def build_verify_program(
                 NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
             )
         f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
+    if low_edge_hz is not None:
+        if not math.isfinite(low_edge_hz) or low_edge_hz <= 0.0:
+            raise ValueError("low_edge_hz must be a positive finite frequency")
+        f1_hz = float(low_edge_hz)
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
         raise ValueError("verify sweep band collapsed")

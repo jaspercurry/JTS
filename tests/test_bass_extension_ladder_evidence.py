@@ -135,6 +135,16 @@ def test_the_first_failing_step_ends_the_ladder(ladder, reason):
     assert evidence["max_level_db"] == pytest.approx(FADER_DB + rows[1]["stimulus_dbfs"])
 
 
+def test_a_takes_incident_rides_its_row_whatever_ended_the_ladder():
+    """The gap check runs first; the incident is still why that step is there."""
+    ladder = steps(dbfs=(-24.0, -21.0, -6.0), incident_at=2)
+
+    rows = graded(ladder)["steps"]
+
+    assert rows[2]["reason"] == STEP_GAP
+    assert rows[2]["incident"] == "unproven_level"
+
+
 def test_a_step_with_no_clean_order_is_unproven_and_proves_nothing_below_it():
     ladder = steps(n=1)
     ladder[0] = LadderStep(

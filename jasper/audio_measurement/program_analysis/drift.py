@@ -33,6 +33,12 @@ from .model import (
 )
 from .signals import _subsample_separation
 
+#: The one literal anchor this estimator keeps: a MEASURE program always
+#: contains a woofer solo, and its first-vs-last occurrence is the drift
+#: baseline. Named so a caller can ASK whether a program carries one rather
+#: than discover it through the ``KeyError`` this module raises without it.
+DRIFT_ANCHOR_SEGMENT_ID = "sweep_w"
+
 
 # A MEASURE sweep segment ID's occurrence suffix (build_measure_program's
 # _occurrence_suffix): bare = first/primary, "_rep" = second, "_repN" = the
@@ -166,7 +172,7 @@ def _estimate_drift(
 
     # Primary gate: the WOOFER's first-vs-LAST located occurrence — the one
     # literal anchor kept, since a MEASURE program always contains "sweep_w".
-    woofer_role = program.segment("sweep_w").role
+    woofer_role = program.segment(DRIFT_ANCHOR_SEGMENT_ID).role
     assert woofer_role is not None, "a MEASURE sweep segment always carries a role"
     woofer_occurrences = occurrences_by_role.get(woofer_role, [])
     w1 = woofer_occurrences[0] if woofer_occurrences else None
@@ -214,7 +220,7 @@ def _estimate_drift(
     repeat_level_delta_db = 0.0
     repeat_level_disagrees = False
     if w1 is not None and w2 is not None:
-        level_seg_w = program.segment("sweep_w")
+        level_seg_w = program.segment(DRIFT_ANCHOR_SEGMENT_ID)
         if level_seg_w.f1_hz is None or level_seg_w.f2_hz is None:
             raise ValueError("woofer sweep segment has no declared band")
         w1_samples = _pilot_trim_fade(

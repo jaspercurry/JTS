@@ -12,6 +12,7 @@ disclosed as floor-limited rather than counted clean.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,10 @@ import pytest
 from jasper.audio_measurement.program import (
     build_verify_program,
     render_program_pcm,
+    write_program_wav,
 )
 from jasper.audio_measurement.sweep import write_sweep_wav
+from jasper.bass_extension.adapters.base import COMMISSION_FLOOR_HZ
 from jasper.bass_extension.candidate_field import EVIDENCE_PASS
 from jasper.bass_extension.ladder_evidence import (
     BASS_LADDER_DIRNAME,
@@ -39,16 +42,22 @@ from tests.test_bass_extension_candidate_field import MARGIN
 from tests.test_crossover_v2_bass_prescription import bass_fit_document
 from tests.test_bass_extension_ladder_evidence import BOOSTED
 
-#: A crossover low enough that the summed sweep reaches the rung's own band —
-#: `build_verify_program` starts the sweep at min(VERIFY_F_LO_HZ, fc/2).
-LOW_FC_HZ = 60.0
+#: This box's crossover: the shipped summed sweep would start at 150 Hz here,
+#: which is why a rung's own step is composed with a low edge instead.
+FC_HZ = 1800.0
 FADER_DB = -20.0
 
 
 def _bank_round(
-    root: Path, steps: list[tuple[float, float]], *, fc_hz: float = LOW_FC_HZ,
+    root: Path, steps: list[tuple[float, float]], *,
+    low_edge_hz: float | None = COMMISSION_FLOOR_HZ,
 ) -> Path:
-    """A banked round whose ladder steps are ``(stimulus_dbfs, square_law)``."""
+    """A banked round whose ladder steps are ``(stimulus_dbfs, square_law)``.
+
+    ``low_edge_hz`` is what ``jasper-measure`` gives a ``bass_candidate``
+    take; ``None`` is the shipped summed window, which reaches nothing a rung
+    boosts.
+    """
     bundle = root / "bundle" / "b0"
     artifacts = bundle / "evidence" / "v1" / "artifacts" / "crossover_v2" / "cap-1"
     (artifacts / "positions").mkdir(parents=True)
@@ -59,11 +68,14 @@ def _bank_round(
 
     for index, (stimulus_dbfs, square_law) in enumerate(steps):
         program = build_verify_program(
-            fc_hz, gain_db=stimulus_dbfs, guard_s=1.0, sweep_s=2.0, tail_s=0.5,
+            FC_HZ, gain_db=stimulus_dbfs, guard_s=1.0, sweep_s=2.0, tail_s=0.5,
+            low_edge_hz=low_edge_hz,
         )
         (artifacts / f"verify_{index:02d}_program.json").write_text(
             json.dumps(program.to_dict())
         )
+        program_wav = artifacts / f"verify_{index:02d}_program.wav"
+        write_program_wav(program_wav, program)
         played = render_program_pcm(program)[:, 0].astype(np.float64)
         capture = played + square_law * played**2
         stem = f"summed_verify_{index:02d}"
@@ -72,11 +84,17 @@ def _bank_round(
             capture.astype(np.float32),
             program.sample_rate_hz,
         )
+        # The binding every reader of a banked round's summed takes uses: the
+        # capture declares the DIGEST of the program its bytes were played
+        # through, never the phase label (#3504).
         (bundle / "summed" / f"{stem}.json").write_text(json.dumps({
             "speaker_group_id": "verify", "phase": "verify",
             "measurement_status": "captured",
             "provenance": {
-                "stimulus": {"program_id": program.program_id, "phase": "verify"},
+                "stimulus": {
+                    "phase": "verify",
+                    "wav_sha256": hashlib.sha256(program_wav.read_bytes()).hexdigest(),
+                },
             },
         }))
         (artifacts / "positions" / f"take_{index:02d}.json").write_text(json.dumps({
@@ -134,9 +152,14 @@ def test_the_ladder_ends_at_the_step_whose_distortion_passes_the_policy(
 def test_a_ladder_whose_stimulus_never_reaches_the_rung_is_refused_not_failed(
     tmp_path, capsys,
 ):
-    """A two-way's summed sweep starts at 150 Hz; the rung boosts below 45."""
+    """The shipped summed window starts at 150 Hz; the rung boosts below 45.
+
+    A round banked through it — or one whose bass owner declares a floor above
+    the rung — measured nothing the rung does, and a verdict over an unexcited
+    band would read as a driver that failed.
+    """
     round_dir = _bank_round(
-        tmp_path / "round-4", [(-9.0, 0.001)], fc_hz=1800.0,
+        tmp_path / "round-4", [(-9.0, 0.001)], low_edge_hz=None,
     )
 
     code, answer = _run(
@@ -146,6 +169,35 @@ def test_a_ladder_whose_stimulus_never_reaches_the_rung_is_refused_not_failed(
     assert code == EXIT_REFUSED
     assert answer["reason"] == BassExtensionRefusal.LADDER_INCOMPLETE
     assert not (round_dir / BASS_LADDER_DIRNAME).exists()
+
+
+def test_two_candidates_rungs_are_two_ladders_and_are_never_pooled(
+    tmp_path, capsys,
+):
+    """Two candidates' takes went through two graphs; one level proves neither."""
+    round_dir = _bank_round(tmp_path / "round-6", [(-12.0, 0.001), (-9.0, 0.001)])
+    positions = next(round_dir.glob("bundle/*/evidence/v1/artifacts/crossover_v2/*/positions"))
+    second = positions / "take_01.json"
+    record = json.loads(second.read_text())
+    second.write_text(json.dumps({**record, "candidate_id": "cand-b"}))
+
+    code, answer = _run(
+        ["bass-ladder", str(round_dir), "--target-id", BOOSTED], capsys
+    )
+
+    assert code == EXIT_REFUSED
+    assert answer["reason"] == BassExtensionRefusal.LADDER_INCOMPLETE
+    assert "cand-a" in answer["detail"] and "cand-b" in answer["detail"]
+
+    # Named, it grades that candidate's ladder alone.
+    code, answer = _run([
+        "bass-ladder", str(round_dir), "--target-id", BOOSTED,
+        "--candidate-id", "cand-a",
+    ], capsys)
+    assert code == EXIT_OK
+    document = json.loads(Path(answer["out"]).read_text())
+    assert document["basis"]["candidate_fingerprint"] == "cand-a"
+    assert [row["take_id"] for row in document["steps"]] == ["take_00"]
 
 
 def test_a_round_banking_no_take_for_this_rung_is_refused(tmp_path, capsys):

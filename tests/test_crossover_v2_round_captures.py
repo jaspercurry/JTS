@@ -21,6 +21,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
+    bind_captures,
     discover_captures,
     doc_pose_key,
 )
@@ -186,3 +187,44 @@ def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
 ) -> None:
     """A kind prefixes the key; a bearing's stays byte-identical (#3503)."""
     assert doc_pose_key(doc) == key
+
+
+def test_a_capture_with_no_pose_still_binds_to_its_own_program(tmp_path: Path) -> None:
+    """The binding half serves a take the POSE reader cannot: a bass ladder step.
+
+    ``place_wired_answer`` declares the played program's digest under the same
+    ``provenance.stimulus`` key the flow's own captures use, and nothing else
+    — no curves, no bearing — so a reader that needs only "which program is
+    this a capture of" gets an answer where ``discover_captures`` refuses.
+    """
+    import hashlib
+    import json
+
+    from jasper.audio_measurement.sweep import write_sweep_wav
+
+    bundle = tmp_path / "bundle-1"
+    summed = bundle / "summed"
+    programs = bundle / "crossover_v2" / "cap-1"
+    summed.mkdir(parents=True)
+    programs.mkdir(parents=True)
+    program = programs / "verify_00_program.wav"
+    write_sweep_wav(program, np.zeros(RATE, dtype=np.float32), RATE)
+    write_sweep_wav(summed / "summed_verify_ab.wav", np.zeros(RATE, dtype=np.float32), RATE)
+    (summed / "summed_verify_ab.json").write_text(json.dumps({
+        "speaker_group_id": "verify", "phase": "verify",
+        "measurement_status": "captured",
+        "provenance": {"stimulus": {
+            "phase": "verify",
+            "wav_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
+        }},
+    }))
+
+    bound, = bind_captures(bundle)
+
+    assert bound.program == program
+    assert bound.wav == summed / "summed_verify_ab.wav"
+    # The pose reader refuses the same round: a capture declaring no radiated
+    # band is not a pose, which is why the binding half is its own verb.
+    with pytest.raises(RoundCapturesRefused) as refused:
+        discover_captures(bundle)
+    assert refused.value.reason == round_captures.REFUSE_RADIATED_BAND_MISSING

@@ -231,11 +231,19 @@ class SessionExcitation:
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
         )
 
-    def verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """The mono summed sweep, bounded by every driven role's cap and duration."""
+    def verify_program(
+        self, *, extra_backoff_db: float = 0.0, low_edge_hz: float | None = None,
+    ) -> ExcitationProgram:
+        """The mono summed sweep, bounded by every driven role's cap and duration.
+
+        ``low_edge_hz`` moves the swept low bound for a caller whose subject
+        sits below the shipped window; the caller owns the argument that its
+        drivers admit that bound.
+        """
         return self._summed_sweep(
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
             extra_backoff_db=extra_backoff_db,
+            low_edge_hz=low_edge_hz,
         )
 
     def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
@@ -247,6 +255,7 @@ class SessionExcitation:
 
     def _summed_sweep(
         self, *, courtesy_prelude: bool, extra_backoff_db: float,
+        low_edge_hz: float | None = None,
     ) -> ExcitationProgram:
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
@@ -263,6 +272,7 @@ class SessionExcitation:
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain),
             courtesy_prelude=courtesy_prelude,
+            low_edge_hz=low_edge_hz,
         )
 
 

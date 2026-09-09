@@ -1575,6 +1575,32 @@ async def test_the_capture_half_records_across_the_play_and_places_the_bytes(
     samples, rate = decode_wav_to_mono(written.read_bytes())
     assert rate == RATE
     assert len(samples) > 0, "the placed capture is the audio that was heard"
+    # Nothing declared the stimulus, so the sidecar claims none rather than
+    # naming a program this capture was only assumed to be of.
+    import json as _json
+
+    assert "provenance" not in _json.loads(
+        written.with_suffix(".json").read_text()
+    )
+
+
+async def test_a_declared_stimulus_reaches_the_sidecar_that_binds_it(tmp_path):
+    """The composer hands over the digest of what it rendered; the capture
+    declares it under the key ``round_captures`` binds a program by."""
+    import json as _json
+
+    half = _capture_half(tmp_path)
+    half.declare_stimulus("f" * 64)
+
+    async def _play() -> None:
+        return None
+
+    relpath = await half.around(_play, program=_StimulusProgram())
+
+    sidecar = _json.loads((tmp_path / relpath).with_suffix(".json").read_text())
+    assert sidecar["provenance"]["stimulus"] == {
+        "phase": "verify", "wav_sha256": "f" * 64,
+    }
 
 
 async def test_a_recorder_that_will_not_roll_refuses_before_any_excitation(

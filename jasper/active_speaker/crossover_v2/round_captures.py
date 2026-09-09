@@ -183,22 +183,38 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     return (min(los), max(his))
 
 
-def discover_captures(
+@dataclass(frozen=True)
+class BoundCapture:
+    """One summed capture and the program its BYTES were played through.
+
+    The binding half alone: no band, no deconvolution. Every reader of a
+    banked round's summed takes comes through :func:`bind_captures` for this,
+    so "which program is this a capture of" has one answer and one refusal.
+    """
+
+    sidecar: Path
+    doc: Mapping[str, Any]
+    wav: Path
+    program: Path
+    program_sha256: str
+
+
+def bind_captures(
     round_dir: Path,
     *,
     select: Callable[[Mapping[str, Any]], bool] | None = None,
-) -> tuple[PoseCapture, ...]:
+) -> tuple[BoundCapture, ...]:
     """Every summed capture under ``round_dir``, bound to its own program.
 
     ``round_dir`` is a banked round directory (the one holding ``bundle/``) or
     the bundle itself. Raises :class:`RoundCapturesRefused` naming the missing
     input; how MANY captures a reader needs is the reader's own bar.
 
-    ``select`` filters the parsed sidecar doc BEFORE the WAV is decoded and
-    deconvolved. The program binding is checked for every sidecar either way,
-    because a round whose captures cannot be bound to their bytes is a finding
-    about the round. With a filter, an empty result is an ordinary answer
-    rather than the no-captures refusal.
+    ``select`` filters the parsed sidecar doc BEFORE anything is decoded. The
+    program binding is checked for every sidecar either way, because a round
+    whose captures cannot be bound to their bytes is a finding about the
+    round. With a filter, an empty result is an ordinary answer rather than
+    the no-captures refusal.
     """
     round_dir = Path(round_dir)
     sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
@@ -216,9 +232,7 @@ def discover_captures(
             {"round_dir": str(round_dir), "looked_for": "**/*program*.wav"},
         )
 
-    captures: list[PoseCapture] = []
-    # Decoded once per unique program, not once per capture.
-    program_audio: dict[str, tuple[np.ndarray, int]] = {}
+    bound: list[BoundCapture] = []
     for sidecar in sidecars:
         try:
             doc = json.loads(sidecar.read_text())
@@ -252,6 +266,27 @@ def discover_captures(
             )
         if select is not None and not select(doc):
             continue
+        bound.append(BoundCapture(sidecar, doc, wav, program, str(sha)))
+    return tuple(bound)
+
+
+def discover_captures(
+    round_dir: Path,
+    *,
+    select: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> tuple[PoseCapture, ...]:
+    """Every bound summed capture, deconvolved into an impulse response.
+
+    :func:`bind_captures` plus the two things only a pose reader needs: the
+    band the capture's DUT radiates, and the IR itself.
+    """
+    round_dir = Path(round_dir)
+    captures: list[PoseCapture] = []
+    # Decoded once per unique program, not once per capture.
+    program_audio: dict[str, tuple[np.ndarray, int]] = {}
+    for capture in bind_captures(round_dir, select=select):
+        sidecar, doc = capture.sidecar, capture.doc
+        wav, program, sha = capture.wav, capture.program, capture.program_sha256
         band = radiated_band_of(doc)
         if band is None:
             raise RoundCapturesRefused(

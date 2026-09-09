@@ -360,6 +360,101 @@ def test_a_bass_rung_is_refused_whole_before_any_audio(
     assert exc.value.reason == reason
 
 
+def _excitation(box):
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+
+    return SessionExcitation(
+        roles=box.roles_bands, caps_dbfs=box.caps_dbfs,
+        session_volume_db=box.session_volume_db, fc_hz=box.fc_hz,
+        sweep_duration_limits_s=box.sweep_duration_limits_s,
+    )
+
+
+def _with_bass_owner_band(lower_hz: float):
+    """The same box, its bass owner declaring a different excitation floor."""
+    from dataclasses import replace
+
+    from jasper.audio_measurement.program import FrequencyBand, RoleBand
+
+    box = _declaration()
+    owner, *rest = box.roles_bands
+    return replace(box, roles_bands=(
+        RoleBand(owner.role, owner.channel, FrequencyBand(lower_hz, owner.band.upper_hz)),
+        *rest,
+    ))
+
+
+def _summed_sweep(program):
+    from jasper.audio_measurement.program import KIND_SUMMED_SWEEP
+
+    return next(
+        segment for segment in program.stimulus_segments()
+        if segment.kind == KIND_SUMMED_SWEEP
+    )
+
+
+@pytest.mark.parametrize("owner_floor_hz, expected_hz", [
+    # The family generator clamps every adapter's deepest rung at 20 Hz, so a
+    # driver admitting more than the family can ask for sweeps to that floor.
+    (15.0, 20.0),
+    # A driver's own declared floor binds it from above: the ladder starts
+    # where that driver may be excited, not where the rung would like it to.
+    (25.0, 25.0),
+    (150.0, 150.0),
+])
+def test_a_rung_sweeps_to_the_deepest_edge_its_own_driver_admits(
+    owner_floor_hz, expected_hz,
+):
+    box = _with_bass_owner_band(owner_floor_hz)
+
+    assert measure._bass_sweep_low_edge_hz(
+        box, {"bass_owner_channels": [0]},
+    ) == pytest.approx(expected_hz)
+
+
+def test_an_unplaceable_bass_owner_falls_back_to_the_family_floor():
+    """Admission re-reads every driver's band before audio, so an edge no
+    driver admits is refused there rather than played."""
+    assert measure._bass_sweep_low_edge_hz(
+        _declaration(), {"bass_owner_channels": [7]},
+    ) == pytest.approx(20.0)
+
+
+def test_only_a_rung_moves_the_summed_sweeps_low_edge():
+    """The ladder reaches the band its boost is spent in; nothing else moves.
+
+    The shipped summed sweep starts at ``min(VERIFY_F_LO_HZ, fc/2)`` -- 150 Hz
+    at this box's 1800 Hz corner -- which is above every rung this family can
+    carry, so a ladder played through it would prove nothing.
+    """
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+
+    box = _with_bass_owner_band(25.0)
+    excitation = _excitation(box)
+    summaries = {("fp-a", "t31.86"): {"bass_owner_channels": [0]}}
+    rung = measure._program_for_spec(
+        excitation, box, summaries, _bass_specs(-12.0)[0], -12.0,
+    )
+    room = measure._program_for_spec(
+        excitation, box, summaries,
+        MeasureSpec(
+            kind=MEASURE_KIND_CANDIDATE, graph_scope="room_candidate",
+            candidate_id="fp-a",
+        ),
+        -12.0,
+    )
+
+    assert _summed_sweep(rung).f1_hz == pytest.approx(25.0)
+    # Byte for byte the program every other summed scope always composed.
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+
+    assert room.program_id == excitation.verify_program(
+        extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - (-12.0),
+    ).program_id
+    assert _summed_sweep(room).f1_hz == pytest.approx(150.0)
+    assert rung.program_id != room.program_id
+
+
 def test_a_ladder_under_the_stop_and_every_other_scope_pass_untouched(monkeypatch):
     from jasper.active_speaker import commission_wiring, seat_level_reference
 
@@ -444,7 +539,11 @@ class _Capture:
 
     def __init__(self) -> None:
         self.arounds = 0
+        self.stimuli: list[str] = []
         self._pending: list[_Answer] = []
+
+    def declare_stimulus(self, sha256: str) -> None:
+        self.stimuli.append(sha256)
 
     async def around(self, play, *, program) -> str:
         self._pending.clear()

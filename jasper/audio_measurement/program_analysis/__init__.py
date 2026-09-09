@@ -116,7 +116,12 @@ from .locate import (
     _locate_segments,
     _stimulus_shape,
 )
-from .drift import _estimate_drift, _locate_discontinuity, _sweep_occurrence_index
+from .drift import (
+    DRIFT_ANCHOR_SEGMENT_ID,
+    _estimate_drift,
+    _locate_discontinuity,
+    _sweep_occurrence_index,
+)
 from .verify_integrity import _verify_capture_integrity
 from .response import (
     _aligned_branch_tf,
@@ -227,6 +232,7 @@ __all__ = [
     "driver_snr_verdict",
     "DriverResponse",
     "_earliest_strong_peak",
+    "DRIFT_ANCHOR_SEGMENT_ID",
     "_estimate_drift",
     "GAIN_BOUND_CAPTURE_FLOOR",
     "GAIN_BOUND_DEGENERATE_AMBIENT",
