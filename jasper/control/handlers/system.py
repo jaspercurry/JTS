@@ -182,11 +182,9 @@ class SystemRoutes(ControlHandlerMixin):
         ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
 
         def _read_airplay_health() -> Any:
-            if self._audio_health_sampler is not None:
-                return self._audio_health_sampler.airplay_snapshot()
-            if self._airplay_health_sampler is None:
+            if self._audio_health_sampler is None:
                 return None
-            return self._airplay_health_sampler.snapshot()
+            return self._audio_health_sampler.airplay_snapshot()
 
         def _read_outputd_status() -> Any:
             # The sampler's cached observation when there is one, so this
@@ -196,10 +194,7 @@ class SystemRoutes(ControlHandlerMixin):
                 return asyncio.run(state_aggregate._outputd_status())
             return state_aggregate._outputd_section(cached())
 
-        airplay_health = _safe(
-            "airplay health", _read_airplay_health,
-            {"status": "unknown", "reason": "AirPlay health sampler failed"},
-        )
+        airplay_health = _safe("airplay health", _read_airplay_health)
         outputd_status = _safe("outputd status", _read_outputd_status)
         audio_health = _safe(
             "audio health",
@@ -217,7 +212,6 @@ class SystemRoutes(ControlHandlerMixin):
             "metrics": (
                 self._sampler.snapshot() if self._sampler is not None else None
             ),
-            "airplay_health": airplay_health,
             "audio_health": audio_health,
             "active_speaker_output_safety": (
                 state_aggregate.active_speaker_output_safety_snapshot(

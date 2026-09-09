@@ -600,16 +600,15 @@ class _StormTrajectory:
 
 
 class AirPlayHealthSampler:
-    """Background sampler for recent AirPlay health.
+    """Collector for recent AirPlay health.
 
     Tests inject probe functions and call _tick() directly. Production
-    starts the daemon thread via start().
+    drives it via sample_once(), composed into AudioHealthSampler's loop.
     """
 
     def __init__(
         self,
         *,
-        sample_interval_sec: float = SAMPLE_INTERVAL_SEC,
         journal_interval_sec: float = JOURNAL_INTERVAL_SEC,
         mpris_interval_sec: float = MPRIS_INTERVAL_SEC,
         camilla_interval_sec: float = CAMILLA_INTERVAL_SEC,
@@ -639,7 +638,6 @@ class AirPlayHealthSampler:
         context_probe: Callable[[], dict[str, Any]] | None = None,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
-        self._sample_interval = sample_interval_sec
         self._journal_interval = journal_interval_sec
         self._mpris_interval = mpris_interval_sec
         self._camilla_interval = camilla_interval_sec
@@ -709,25 +707,8 @@ class AirPlayHealthSampler:
         self._maintenance_suppressed = False
         self._maintenance_suppressed_until: float | None = None
 
-        self._stopped = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="jasper-airplay-health-sampler",
-            daemon=True,
-        )
-
-    def start(self) -> None:
-        if not self._thread.is_alive():
-            self._thread.start()
-
-    def stop(self) -> None:
-        """For tests; production runs the daemon thread to process exit."""
-        self._stopped = True
-
     def sample_once(self) -> None:
-        """Take one sample without starting this collector's own thread.
-
-        The speaker-wide audio-health sampler composes this AirPlay-specific
+        """The speaker-wide audio-health sampler composes this AirPlay-specific
         collector and calls it from the one existing monitoring loop.
         """
         self._tick()
@@ -738,10 +719,6 @@ class AirPlayHealthSampler:
             summary_30m = self._summary_locked(30 * 60.0)
             status, reason = self._status_locked(summary_5m, summary_30m)
             return {
-                "sample_interval_sec": self._sample_interval,
-                "journal_interval_sec": self._journal_interval,
-                "bucket_seconds": self._bucket_seconds,
-                "history_points": self._history_points,
                 "last_sample_at": self._last_sample_at,
                 "maintenance_suppressed": self._maintenance_suppressed,
                 "maintenance_suppressed_until": self._maintenance_suppressed_until,
@@ -771,20 +748,7 @@ class AirPlayHealthSampler:
                     "onset": copy.deepcopy(self._storm_onset),
                 },
                 "events": [dict(event) for event in self._events],
-                "history": self._history_locked(),
             }
-
-    def _run(self) -> None:
-        while not self._stopped:
-            sample_start = time.monotonic()
-            try:
-                self._tick()
-            except Exception:  # noqa: BLE001
-                logger.exception("airplay health sampler tick failed")
-            elapsed = time.monotonic() - sample_start
-            # Floor bounds the loop rate when a tick overruns the interval,
-            # so a slow tick under load can't collapse it to a tight spin.
-            time.sleep(max(1.0, self._sample_interval - elapsed))
 
     def _tick(self) -> None:
         now = self._time()
@@ -1716,13 +1680,6 @@ class AirPlayHealthSampler:
         ):
             return "watch", "recent non-fatal audio-path warning"
         return "ok", "AirPlay path clean"
-
-    def _history_locked(self) -> dict[str, list[Any]]:
-        keys = list(_empty_bucket(0.0).keys())
-        return {
-            key: [bucket.get(key, 0) for bucket in self._buckets]
-            for key in keys
-        }
 
     @staticmethod
     def _read_fanin_status(
