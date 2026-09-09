@@ -318,6 +318,48 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 14:55Z: Row 3.1 part 1 opened as PR #4643 (`+3013/−140`, 22 files,
+  CI green) and reviewed: **REQUEST CHANGES**, fix agent dispatched. Two of the
+  four must-fixes change what we thought was true:
+  - **The bench as built can never produce an accepted bundle, so wave 4.1 was
+    unreachable.** `describe_stimulus_program` renders the protocol's sustain
+    hold as one sweep segment, so admission judges a 30/60/90 s hold against a
+    per-*sweep* ceiling of 4–12 s. Reproduced against the repo's own fixture:
+    1 s and 6 s admit, 12/30/90 s refuse `program_segment_outside_limits`, and
+    `_classify_candidate` requires the sustain verdicts, so no campaign reaches
+    `accepted`. Being fixed by describing the hold as a hold — no cap raised,
+    no cap bypassed — plus a preflight, because the refusal currently arrives
+    after the fader is raised and the recorder armed. The same finding catches
+    the sweep rounding 4.0 → 4.013 s past a declared 4.0 (issue #2921's "must
+    fit the SAME number").
+  - **The hand-composed play seam was the wrong answer and is being reverted to
+    the engine's binder.** The branch's stated reason — that
+    `confirm_graph_is_live` does byte-equality against a submitted YAML — is
+    false: it fingerprints a *normalized read-back*, as its own docstring says.
+    The only real obstacle was that the bench fed it the pre-patch text while
+    `ActivationReadback.active_config_raw`, the post-patch read-back the runner
+    already banks, is exactly what the binder wants. Consuming it costs one
+    optional `lock_source` kwarg and the existing `before_play` hook, and it
+    closes a gap the hand-composition opened: the binder proves liveness inside
+    `play_wav`, under the writer lock, on **every** play, where the bench proved
+    once per activation and then played N rungs with the lock released between
+    them while `measurement_window` deliberately does not pause CamillaDSP.
+    One seam-composer, not two.
+  Also must-fix: the onset correlation defeats `correlation`'s own memory
+  backstop (~200 MB peak on a 90 s hold, on a 1 GB Pi, right after a
+  stress-level hold — the reference was trimmed to 2 s, the search window was
+  not), and an unproven THD banked as `thd_max_ratio: 0.0` against the frozen
+  protocol's "must not be filled from a default".
+  Judged sound and left alone: both orderings the author flagged for the
+  adversarial tier. The give-back releasing the duck first occupies
+  `graph.restore`'s slot in `measurement_door`'s own order, runs with the graph
+  already restored and nothing playing, and is the only order that cannot
+  strand a duck on a released claim. Raising to level before re-admission is
+  *required* by `play_program.assert_ready()`, and admission judges the
+  stimulus, not the level. No path can play louder than the engine allows.
+  The five PROMOTEs are honest (bodies unchanged, second consumers real), and
+  the non-negotiables are untouched by grep over the whole branch.
+
 - 2026-09-09 14:40Z: Row 3.2 opened as PR #4641 (`+1028/−40`, 15 files, CI
   green) and reviewed: **REQUEST CHANGES**, fix agent dispatched. The review
   earned its keep by testing rather than reading — it built 72 synthetic
