@@ -93,6 +93,7 @@ _UNCODIFIED = {
     "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION",
+    "JASPER_ASOUND_RENDER_LIB",
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
     "JASPER_AUDIO_VALIDATION_DIR",
     "JASPER_BUILD_MANIFEST",
@@ -104,6 +105,8 @@ _UNCODIFIED = {
     "JASPER_MIC_MUTE_STATE_PATH",
     "JASPER_MUX_MODE_STATE_PATH",
     "JASPER_PEERING_UDS",
+    "JASPER_RENDER_ASOUND_CONF",
+    "JASPER_RING_CONF_D",
     "JASPER_SOUNDS_DIR",
     "JASPER_SOUND_SETTINGS_PATH",
     "JASPER_SYSTEM_ENV_FILE",
@@ -134,6 +137,10 @@ _UNCODIFIED = {
     # operator config: a registry written under an override lands outside the
     # setgid `jasper-intsecrets` dir and so outside the compartment's guarantees.
     "JASPER_SPOTIFY_ACCOUNTS_PATH",
+    # Generated outputd.env fields owned by jasper.audio_hardware.reconcile,
+    # whose Python writer is outside _SURFACES; never operator settings.
+    "JASPER_OUTPUTD_ACTIVE_CHANNELS",
+    "JASPER_OUTPUTD_DAC_FORMAT",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",

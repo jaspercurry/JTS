@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
@@ -18,16 +19,13 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
-    DEFAULT_CAMILLA2_STATEFILE_PATH,
-    DEFAULT_CAMILLA_STATEFILE_PATH,
     OUTPUTD_LATENCY_KEYS,
+    RuntimeEnvAction,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
     outputd_env_buffer_pair_error,
     output_endpoint_devices_from_statefiles,
     outputd_latency_floor_actions,
-    route_owned_env_actions,
-    resolve_audio_route_profile,
 )
 from jasper.transport_coherence import transport_coherence_report
 from jasper.camilla_config_contract import (
@@ -54,6 +52,11 @@ from jasper.fanin_coupling import (
     resolve_ring_wire,
 )
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
+
+# lazy: import cost — jasper.output_topology is 2k lines this CLI reaches only
+# through the fail-safe loader below, or is handed already parsed.
+if TYPE_CHECKING:
+    from jasper.output_topology import OutputTopology
 
 # Both transports of the ONE active lane: the snd-aloop active PCM and the
 # ACTIVE RING. A graph naming either is an active-lane graph and must pass the
@@ -115,40 +118,47 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0 if not plan.errors else 1
 
 
-def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    outputd = read_env_file_state(args.outputd_env)
-    overrides = load_runtime_overrides(
-        args.overrides,
+def outputd_floor_plan(
+    *,
+    profile_id: str,
+    base_env: str,
+    outputd_env: str,
+    overrides: str | None = None,
+) -> tuple[dict[str, str], tuple[RuntimeEnvAction, ...]]:
+    """``(latency-key summary, outputd.env actions)`` for one DAC's declared floor.
+
+    Precedence (operator env > profile floor > packaged default) stays in this
+    one policy layer instead of being restated by each caller.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
+    overrides_path = runtime_overrides_path() if overrides is None else overrides
+    store = load_runtime_overrides(
+        overrides_path,
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
     plan = build_audio_runtime_plan(
         base_env=base.values,
         outputd_env=outputd.values,
-        overrides=overrides.values(),
-        profile_id=args.profile_id,
+        overrides=store.values(),
+        profile_id=profile_id,
         route_mode="solo",
         base_env_label=base.path,
         outputd_env_label=outputd.path,
-        override_label=args.overrides,
-        plan_warnings=overrides.warnings,
+        override_label=overrides_path,
+        plan_warnings=store.warnings,
     )
-    for key in OUTPUTD_LATENCY_KEYS:
-        print(f"summary {key} {plan.setting(key).value}")
-    for action in outputd_latency_floor_actions(
-        profile_id=args.profile_id,
+    summary = {key: str(plan.setting(key).value) for key in OUTPUTD_LATENCY_KEYS}
+    actions = outputd_latency_floor_actions(
+        profile_id=profile_id,
         base_env=base.values,
         outputd_env=outputd.values,
-        overrides=overrides.values(),
-    ):
-        if action.action == "set":
-            print(f"set {action.key} {action.value}")
-        else:
-            print(f"unset {action.key}")
-    return 0
+        overrides=store.values(),
+    )
+    return summary, actions
 
 
-def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
+def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
     An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
@@ -168,7 +178,13 @@ def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
         return None, "topology_unreadable"
 
 
-def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
+def ring_conf_wire_report(
+    *,
+    profile_id: str,
+    conf_d: str = "",
+    output_topology: str | None = None,
+    topology: OutputTopology | None = None,
+) -> dict[str, str]:
     """Render the shm-ring conf.d wire from a DAC's DECLARED floor + the topology.
 
     The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
@@ -200,44 +216,47 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     format; this command only joins them, which is why it re-reads the floor
     rather than taking a period on the command line.
 
-    Emits ``key value`` lines for the shell caller (the ``outputd-floor-actions``
-    idiom) and returns non-zero with a reason on stderr when the conf.d cannot
-    be rendered.
+    ``topology`` is an already-parsed topology, so a caller holding one does
+    not pay a second read; ``None`` reads ``output_topology`` here.
+
+    Returns the resolved ``{key: value}`` report; raises ``OSError`` /
+    ``ValueError`` when the conf.d itself cannot be rendered.
     """
-    conf_d = args.conf_d or RING_CONF_D
-    floor = latency_floor_for(args.profile_id) if args.profile_id else None
+    resolved_conf_d = conf_d or RING_CONF_D
+    floor = latency_floor_for(profile_id) if profile_id else None
     if floor is None:
-        print("result skipped")
-        print("reason no_declared_floor")
-        print(f"conf {conf_d}")
-        return 0
+        return {
+            "result": "skipped",
+            "reason": "no_declared_floor",
+            "conf": str(resolved_conf_d),
+        }
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
-        print("result skipped")
-        print(f"reason ring_slot_fixed_{RING_SLOT_FRAMES}")
-        print(f"period_frames {floor.outputd_period_frames}")
-        print(f"conf {conf_d}")
-        return 0
-    topology, topology_reason = _load_topology_for_ring_wire(args.output_topology)
+        return {
+            "result": "skipped",
+            "reason": f"ring_slot_fixed_{RING_SLOT_FRAMES}",
+            "period_frames": str(floor.outputd_period_frames),
+            "conf": str(resolved_conf_d),
+        }
+    topology_reason = "loaded"
+    if topology is None:
+        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
     # The floor gate above has already established that this box's declared
     # period is RING_SLOT_FRAMES, and the renderer refuses any other; the wire
     # carries the same axis, so it needs no second comparison here.
-    wire = resolve_ring_wire(topology)
-    try:
-        outcome = render_ring_conf_wire(wire, conf_d=conf_d)
-    except (OSError, ValueError) as exc:
-        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    print(f"result {'rendered' if outcome.changed else 'unchanged'}")
-    print(f"period_frames {outcome.period_frames}")
+    outcome = render_ring_conf_wire(resolve_ring_wire(topology), conf_d=resolved_conf_d)
+    report = {
+        "result": "rendered" if outcome.changed else "unchanged",
+        "period_frames": str(outcome.period_frames),
+    }
     if outcome.previous_period_frames is not None:
-        print(f"previous_period_frames {outcome.previous_period_frames}")
-    print(f"sample_format {outcome.sample_format}")
-    print(f"ring_a_channels {outcome.ring_a_channels}")
-    print(f"ring_b_channels {outcome.ring_b_channels}")
-    print(f"ring_active_channels {outcome.ring_active_channels}")
-    print(f"topology {topology_reason}")
-    print(f"conf {outcome.conf_d}")
-    return 0
+        report["previous_period_frames"] = str(outcome.previous_period_frames)
+    report["sample_format"] = str(outcome.sample_format)
+    report["ring_a_channels"] = str(outcome.ring_a_channels)
+    report["ring_b_channels"] = str(outcome.ring_b_channels)
+    report["ring_active_channels"] = str(outcome.ring_active_channels)
+    report["topology"] = topology_reason
+    report["conf"] = str(outcome.conf_d)
+    return report
 
 
 def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
@@ -422,9 +441,28 @@ def _renderer_unit_user(unit: str) -> str | None:
     return None
 
 
-def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    outputd = read_env_file_state(args.outputd_env)
+def validate_outputd_env(
+    *,
+    base_env: str,
+    outputd_env: str,
+    fanin_env: str,
+    camilla_statefile: str,
+    camilla2_statefile: str,
+    output_topology: str | None = None,
+    topology: OutputTopology | None = None,
+    outputd_label: str = "",
+    overrides: str | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Judge a candidate outputd.env: ``(ok, report lines)``.
+
+    The lines are what the CLI prints and what the audio-hardware reconciler
+    logs; an accepted candidate may still report ``ok note=...`` for a
+    coherent-but-transient state. ``topology`` is an already-parsed topology,
+    so a caller holding one does not pay a second read; ``None`` reads
+    ``output_topology`` in the decision below.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
     # Labels and the override store, not just values: this refusal is what the
     # audio-hardware reconciler logs as `outputd_env_invalid detail=...`, and
     # the operator reading it has to know WHICH layer holds the losing line.
@@ -439,30 +477,31 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     # — the wrong-attribution failure this provenance exists to prevent — so the
     # reconciler passes the REAL destination as --outputd-label and that is what
     # the message names.
-    overrides = load_runtime_overrides(
-        args.overrides,
+    overrides_path = (
+        runtime_overrides_path() if overrides is None else overrides
+    )
+    store = load_runtime_overrides(
+        overrides_path,
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
     # A malformed or unreadable store degrades attribution — the refusal would
     # silently stop naming an origin it cannot parse. Say so rather than let the
     # message get quietly less useful.
-    for warning in overrides.warnings:
-        print(warning)
+    lines = list(store.warnings)
     detail = outputd_env_buffer_pair_error(
         base_env=base.values,
         outputd_env=outputd.values,
         base_label=base.path,
-        outputd_label=args.outputd_label or outputd.path,
-        override_entries={entry.key: entry for entry in overrides.entries},
-        override_label=args.overrides,
+        outputd_label=outputd_label or outputd.path,
+        override_entries={entry.key: entry for entry in store.entries},
+        override_label=overrides_path,
     )
     if detail is not None:
-        print(detail)
-        return 1
-    fanin = read_env_file_state(args.fanin_env)
+        return False, (*lines, detail)
+    fanin = read_env_file_state(fanin_env)
     devices = output_endpoint_devices_from_statefiles(
-        args.camilla_statefile,
-        args.camilla2_statefile,
+        camilla_statefile,
+        camilla2_statefile,
     )
     # A graph that targets the active lane but fails the hardware/topology
     # safety proof is intentionally demoted to the passive fail-closed route by
@@ -484,9 +523,10 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         decision = (
             outputd_active_lane_decision(
                 active_cap,
-                statefile_path=args.camilla_statefile,
-                crossover_statefile_path=args.camilla2_statefile,
-                topology_path=args.output_topology,
+                statefile_path=camilla_statefile,
+                crossover_statefile_path=camilla2_statefile,
+                topology=topology,
+                topology_path=output_topology,
             )
             if active_cap is not None
             else None
@@ -500,19 +540,16 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         camilla_devices=devices,
     )
     if report.errors:
-        print("; ".join(report.errors))
-        return 1
+        return False, (*lines, "; ".join(report.errors))
     # A note is a coherent-but-transient state (today: the ACTIVE-ring arm
-    # waypoint), so this EXITS 0 — the reconciler must be allowed to derive the
-    # marker that is the ladder's own next step. Printed on the ok path so the
-    # caller's captured stdout carries it: `jasper-audio-hardware-reconcile`
-    # logs it as event=audio_hardware_reconcile.outputd_env_note, which is the
-    # journal line an operator standing mid-ladder actually reads.
+    # waypoint), so this ACCEPTS — the reconciler must be allowed to derive the
+    # marker that is the ladder's own next step. Reported on the ok path so the
+    # caller carries it: `jasper-audio-hardware-reconcile` logs it as
+    # event=audio_hardware_reconcile.outputd_env_note, which is the journal line
+    # an operator standing mid-ladder actually reads.
     if report.notes:
-        print("ok note=" + "; ".join(report.notes))
-        return 0
-    print("ok")
-    return 0
+        return True, (*lines, "ok note=" + "; ".join(report.notes))
+    return True, (*lines, "ok")
 
 
 def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
@@ -524,18 +561,6 @@ def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
         )
         return 1
     print(capture_device)
-    return 0
-
-
-def _cmd_route_actions(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    route = resolve_audio_route_profile(base.values)
-    print(f"summary route {route.route_id}")
-    for action in route_owned_env_actions(route):
-        if action.action == "set":
-            print(f"fanin set {action.key} {action.value}")
-        else:
-            print(f"fanin unset {action.key}")
     return 0
 
 
@@ -591,46 +616,6 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--output-hardware-state", default=None)
     explain.set_defaults(func=_cmd_explain)
 
-    outputd_floor = sub.add_parser(
-        "outputd-floor-actions",
-        help=(
-            "emit shell-readable outputd.env set/unset actions for the active "
-            "DAC latency floor"
-        ),
-    )
-    outputd_floor.add_argument("--profile-id", default="")
-    outputd_floor.add_argument("--base-env", default=BASE_ENV_PATH)
-    outputd_floor.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
-    outputd_floor.add_argument(
-        "--overrides",
-        default=runtime_overrides_path(),
-    )
-    outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
-
-    render_ring_conf = sub.add_parser(
-        "render-ring-conf-wire",
-        help=(
-            "render the shm-ring conf.d wire (slot period, format, per-ring "
-            "channels) from the DAC profile's declared latency floor and the "
-            "saved output topology (no declared floor leaves it untouched)"
-        ),
-    )
-    render_ring_conf.add_argument("--profile-id", default="")
-    render_ring_conf.add_argument(
-        "--conf-d",
-        default="",
-        help="override the ring conf.d path (default: the ring_assets SSOT)",
-    )
-    render_ring_conf.add_argument(
-        "--output-topology",
-        default=None,
-        help=(
-            "saved output topology the Ring B channel count is resolved "
-            "from (default: JASPER_OUTPUT_TOPOLOGY_PATH, else the SSOT)"
-        ),
-    )
-    render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
-
     renderer_lanes = sub.add_parser(
         "renderer-lanes",
         help=(
@@ -672,43 +657,12 @@ def build_parser() -> argparse.ArgumentParser:
     renderer_lanes.add_argument("--period-frames", type=int, default=None)
     renderer_lanes.set_defaults(func=_cmd_renderer_lanes)
 
-    validate_outputd = sub.add_parser(
-        "validate-outputd-env",
-        help="validate reconciler-owned outputd.env before installing it",
-    )
-    validate_outputd.add_argument("--base-env", default=BASE_ENV_PATH)
-    validate_outputd.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
-    validate_outputd.add_argument("--fanin-env", default=FANIN_ENV_PATH)
-    # The path to NAME in refusals when it differs from the path to READ. The
-    # reconciler validates a staged candidate under a temp name that is deleted
-    # on exit; unset means the two are the same file.
-    validate_outputd.add_argument("--outputd-label", default="")
-    # Same default as outputd-floor-actions: the store is read whether or not a
-    # caller names it, because the floor pass writes store values into
-    # outputd.env and this refusal has to be able to say so.
-    validate_outputd.add_argument("--overrides", default=runtime_overrides_path())
-    validate_outputd.add_argument(
-        "--camilla-statefile", default=DEFAULT_CAMILLA_STATEFILE_PATH
-    )
-    validate_outputd.add_argument(
-        "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
-    )
-    validate_outputd.add_argument("--output-topology", default=None)
-    validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
-
     capture_device = sub.add_parser(
         "outputd-capture-device",
         help="resolve outputd's paired capture PCM for a CamillaDSP playback PCM",
     )
     capture_device.add_argument("--playback-device", required=True)
     capture_device.set_defaults(func=_cmd_outputd_capture_device)
-
-    route_actions = sub.add_parser(
-        "route-actions",
-        help="emit shell-readable fanin env actions for the audio route",
-    )
-    route_actions.add_argument("--base-env", default=BASE_ENV_PATH)
-    route_actions.set_defaults(func=_cmd_route_actions)
 
     overrides_list = sub.add_parser(
         "overrides-list",

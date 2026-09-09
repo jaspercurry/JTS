@@ -24,15 +24,17 @@ def fake_systemctl(
     probe = (
         ""
         if witness is None
-        else f'if [[ -e "${witness}" ]]; then p=1; else p=0; fi\n'
+        else f'if [ -e "${witness}" ]; then p=1; else p=0; fi\n'
     )
     record = (
         "printf '%s\\n' \"$*\""
         if witness is None
         else "printf 'present=%s %s\\n' \"$p\" \"$*\""
     )
+    # /bin/sh, and no `env` hop: an in-process reconcile pass spawns this a
+    # dozen times, so the interpreter choice is most of a test's wall time.
     executable.write_text(
-        "#!/usr/bin/env bash\n"
+        "#!/bin/sh\n"
         f"{probe}"
         f'{record} >> "$JASPER_SYSTEMCTL_LOG"\n'
         "exit 0\n",

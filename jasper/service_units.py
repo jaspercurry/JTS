@@ -86,6 +86,13 @@ SHOW_PROPERTIES = (
     "ControlGroup",
 )
 
+# Bound on ONE `systemctl` invocation a reconciler makes to CHANGE unit state
+# (enable/start/stop/restart/reset-failed). Reconcilers run from udev and from
+# install, where an unresponsive manager would otherwise hang the pass
+# indefinitely; their own pass ceilings are multiples of this. The read-only
+# `show` probes above take a much shorter timeout of their own.
+SYSTEMCTL_TIMEOUT_SEC = 10.0
+
 
 def unit_failed(record: Mapping[str, Any] | None) -> bool:
     """Whether a ``read_unit_states`` record says the unit is not doing its job.

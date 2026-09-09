@@ -322,7 +322,7 @@ def test_a_passive_composite_still_resolves_no_ring_at_all():
 def test_composite_floor_period_equals_ring_slot_with_its_reason():
     """The period pin, WITH the reason, so it fails if either number moves.
 
-    The equality is what clears ``_cmd_render_ring_conf_wire``'s
+    The equality is what clears ``ring_conf_wire_report``'s
     ``ring_slot_fixed_128`` refusal without needing issue #2147. Asserting only
     ``== 128`` would survive ``RING_SLOT_FRAMES`` moving to 64 while the floor
     stayed 128 — which is exactly the drift that would make the render refuse
@@ -363,20 +363,16 @@ def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path, capsys)
     """The floor's real payoff, pinned at the command that consumes it: an
     absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
     resolved, so the ACTIVE block would keep the ioplug default forever."""
-    from jasper.cli import audio_config
+    from jasper.cli.audio_config import ring_conf_wire_report
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")
     before = conf.read_text(encoding="utf-8")
 
-    rc = audio_config.main(
-        ["render-ring-conf-wire", "--profile-id", "", "--conf-d", str(conf)]
-    )
+    report = ring_conf_wire_report(profile_id="", conf_d=str(conf))
 
-    assert rc == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert "result skipped" in lines
-    assert "reason no_declared_floor" in lines
+    assert report["result"] == "skipped"
+    assert report["reason"] == "no_declared_floor"
     assert conf.read_text(encoding="utf-8") == before
 
 
@@ -524,60 +520,10 @@ def test_the_wide_wire_rule_is_wired_into_the_active_arm(monkeypatch, tmp_path):
     assert "WIDE wire" in detail, detail
 
 
-# --- 1f: the reconciler / emitter walk --------------------------------------
-
-
-def test_the_reconciler_stages_the_composite_active_lane_pair():
-    """``apply_observed_composite_policy`` used to DISCARD the endpoint device
-    ``active_graph_status`` returns, so no composite could ever be staged no
-    matter what the Python preflights admitted."""
-    script = (REPO_ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text(
-        encoding="utf-8"
-    )
-    assert 'DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE="${graph_status#* }"' in script
-    assert (
-        'set_outputd_active_lane_pair "1" "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE"'
-        in script
-    )
-
-
-def test_the_ring_conf_journal_carries_the_active_width():
-    """The whitelist arm that stops 1d's headline output being dropped silently.
-
-    ``render_ring_conf_if_needed`` parses the renderer's ``key value`` lines
-    through a ``case`` whose unmatched arm drops the key with NO diagnostic — so
-    a key the renderer prints and this whitelist lacks is invisible rather than
-    wrong, which is the shape that hid ``ring_active_channels`` in the first
-    place. Pinning the ARM (not only the rendered log line) is that same
-    silent-drop lesson applied to the fix for it: the three literal log-line
-    pins in ``test_audio_hardware_reconcile.py`` would all still pass if the arm
-    were re-added under a misspelled key and the value came from somewhere else.
-    """
-    script = (REPO_ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text(
-        encoding="utf-8"
-    )
-    assert 'ring_active_channels) channels_active="$value" ;;' in script, (
-        "the renderer prints ring_active_channels; without this whitelist arm "
-        "the case drops it silently"
-    )
-    assert "ring_active_channels=${channels_active:-none}" in script, (
-        "the parsed value must reach the journal line, or the arm is inert"
-    )
-
-
-def test_an_aloop_composite_still_clears_the_pair():
-    """SCOPED TO THE OBSERVED-BROKEN PATH. A composite whose accepted graph does
-    NOT name the ring device keeps the unconditional clear it has today."""
-    script = (REPO_ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text(
-        encoding="utf-8"
-    )
-    marker = (
-        'if [[ "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE" == '
-        '"$RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE" ]]; then'
-    )
-    assert marker in script
-    head, _, tail = script.partition(marker)
-    assert 'set_outputd_active_lane_pair "" ""' in tail.split("fi", 1)[0]
+# --- 1f: the emitter walk ---------------------------------------------------
+#
+# The reconciler's own half is pinned behaviourally in
+# tests/test_audio_hardware_reconcile.py, over a real composite pass.
 
 
 def test_outputd_admits_a_composite_active_ring_endpoint():
