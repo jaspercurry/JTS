@@ -3707,8 +3707,12 @@ mod tests {
     // ALSA handle at all, so the ring publish + reader roundtrip is the whole
     // contract — there is nothing else for a test to stub out.
 
-    use jasper_ring::{RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
+    use jasper_ring::{RingReader, SlotRead, TestRingWriter, SAMPLE_FORMAT_S16LE};
+    use jasper_tts_protocol::loudness::{gain_db_to_linear, AssistantLoudnessConfig};
+    use jasper_tts_protocol::{QueuedTtsCommand, TtsCommand};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
+
+    use crate::tts::{tts_channels, QueuedFlush};
 
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
@@ -3816,6 +3820,180 @@ mod tests {
         assert_eq!(ring.counters.drop_no_reader.load(Ordering::Relaxed), 0);
         assert!(!ring.counters.stall_active.load(Ordering::Relaxed));
         cleanup_ring(&path);
+    }
+
+    /// A `TtsMixer` with an ACTIVE program duck and one queued TTS period.
+    /// Returns it with its senders, which the caller must keep alive for the
+    /// mixer's whole life.
+    fn ducking_tts_mixer(
+        payload: &[i16],
+        program_duck_db: f32,
+    ) -> (
+        TtsMixer,
+        SyncSender<QueuedTtsCommand>,
+        SyncSender<QueuedFlush>,
+    ) {
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+        });
+        for command in [
+            TtsCommand::ProgramDuckOn,
+            TtsCommand::Audio(payload.to_vec()),
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+        (mixer, tx, flush_tx)
+    }
+
+    /// Q2 (duck ORDER): `step()` ducks the renderer/program lanes and mixes the
+    /// TTS period on top of the ducked sum, so a voice turn is never attenuated
+    /// by its own duck. Driven through `step()` and read back off the ring, so
+    /// swapping the two stages inside `step()` fails HERE rather than nowhere.
+    #[test]
+    fn step_ducks_the_program_lanes_but_not_the_tts_period() {
+        const PROGRAM: i16 = 10_000;
+        const PROGRAM_DUCK_DB: f32 = -25.0;
+        // 96 of the period's 128 frames, so the tail carries the ducked program
+        // with no TTS over it.
+        const TTS_FRAMES: usize = 96;
+
+        let period_frames = RING_SLOT_FRAMES;
+        let period_samples = (period_frames as usize) * (CHANNELS as usize);
+        let lane_geometry = Geometry {
+            rate: 48_000,
+            channels: CHANNELS,
+            sample_format: SAMPLE_FORMAT_S16LE,
+            period_frames,
+            n_slots: 4,
+        };
+
+        // One program lane, on MEASUREMENT_LANE so its wake/selection fades are
+        // inert: the duck is then the ONLY gain between the published slot and
+        // the sum, which is what this test is reading.
+        let lane_path = std::env::temp_dir()
+            .join(format!(
+                "jts-fanin-duckorder-{}-{}",
+                std::process::id(),
+                RING_MIXER_TEST_SEQ.fetch_add(1, Ordering::Relaxed)
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&lane_path);
+        let input = ring_capture::test_ring_lane(MEASUREMENT_LANE, &lane_path, lane_geometry);
+        let mut lane_writer = TestRingWriter::create_or_attach(&lane_path, lane_geometry).unwrap();
+        assert!(lane_writer.try_publish_slot(&vec![PROGRAM; period_samples]));
+
+        let (output, out_path) = tmp_ring_output(8, "duck_order");
+        let mut reader = RingReader::create_or_attach(&out_path, ring_geometry(8)).unwrap();
+        let mut slot = vec![0i16; period_samples];
+        // Prime the reader heartbeat so the writer takes the publish path.
+        assert_eq!(reader.try_consume_slot(&mut slot), SlotRead::Empty);
+
+        // A loud TTS period: it must ride above anything a duck applied AFTER
+        // the TTS mix could produce (asserted on the reference below).
+        let payload = vec![30_000i16; TTS_FRAMES * (CHANNELS as usize)];
+        let (tts, _tx, _flush_tx) = ducking_tts_mixer(&payload, PROGRAM_DUCK_DB);
+        let duck_gain = gain_db_to_linear(PROGRAM_DUCK_DB);
+
+        let (tap_sender, tap_receiver) =
+            std::sync::mpsc::sync_channel::<TapEvent>(EVENT_CHANNEL_CAPACITY);
+        let counters = RingCounters::new();
+        let ring_observability = RingObservability {
+            path: out_path.clone(),
+            slots: 8,
+            wire_format: RingWireFormat::S16Le.as_str(),
+            channels: CHANNELS,
+            occupancy: Arc::clone(&counters.occupancy),
+            published: Arc::clone(&counters.published),
+            full_waits: Arc::clone(&counters.full_waits),
+            stuck_reader_drops: Arc::clone(&counters.stuck_reader_drops),
+            drop_no_reader: Arc::clone(&counters.drop_no_reader),
+            stall_active: Arc::clone(&counters.stall_active),
+            last_stall_ms: Arc::clone(&counters.last_stall_ms),
+            clockless_paces: Arc::clone(&counters.clockless_paces),
+        };
+        let mut mixer = Mixer {
+            inputs: vec![input],
+            output,
+            program_width: ProgramWidth::Narrow,
+            sum_buf: vec![0i64; period_samples],
+            output_buf: vec![0i16; period_samples],
+            ring_wide_payload: Vec::new(),
+            content_meter_buf: vec![0i16; period_samples],
+            frames_written: Arc::new(AtomicU64::new(0)),
+            selected_input_index: Arc::new(AtomicI32::new(-2)),
+            period_frames,
+            tts: Some(tts),
+            // A SETTLED duck — the steady state of a voice turn, where the
+            // per-period target and the persisted gain already agree.
+            program_duck_current: duck_gain,
+            program_duck_attack_step: duck_step_per_frame(20, 48_000),
+            program_duck_release_step: duck_step_per_frame(200, 48_000),
+            ring_observability,
+            auto_trim_enabled: false,
+            auto_trim_delay_frames: 0,
+            auto_trim_lane_state: vec![AutoTrimLaneState::default(); 1],
+            direct_tap: DirectTapHook::new(
+                Arc::new(TapState::default()),
+                Arc::new(Mutex::new(TapConfig::default())),
+                tap_sender,
+            ),
+            direct_tap_receiver: Some(tap_receiver),
+            host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
+            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
+        };
+
+        // The UNATTENUATED TTS period: the same fixture, the same commands and
+        // the same pre-duck content period, mixed into a ZERO sum. It is what
+        // `tts.mix_period` contributes with no duck in front of it — nothing
+        // about where `step()` applies the duck is modelled here.
+        let (mut reference, _ref_tx, _ref_flush_tx) = ducking_tts_mixer(&payload, PROGRAM_DUCK_DB);
+        let mut tts_only = vec![0i64; period_samples];
+        assert!(reference.prepare_period());
+        reference.observe_content_period(&vec![PROGRAM; period_samples]);
+        reference.mix_period(&mut tts_only, ProgramWidth::Narrow);
+        let ducked = ((PROGRAM as f32) * duck_gain).round() as i64;
+        assert!(
+            tts_only
+                .iter()
+                .any(|&t| t > ((i16::MAX as f32) * duck_gain) as i64),
+            "fixture: the TTS period must ride above a ducked full-scale sample, or a \
+             duck applied after the TTS mix would be indistinguishable from one applied \
+             before it"
+        );
+
+        mixer.step().unwrap();
+
+        assert_eq!(reader.try_consume_slot(&mut slot), SlotRead::Filled);
+        let mut expected = vec![0i16; period_samples];
+        saturate_to_i16(
+            &tts_only.iter().map(|t| ducked + t).collect::<Vec<i64>>(),
+            &mut expected,
+            ProgramWidth::Narrow,
+        );
+        assert_eq!(
+            slot, expected,
+            "the ring must carry the ducked program plus the UNATTENUATED TTS period"
+        );
+        assert!(
+            slot[TTS_FRAMES * (CHANNELS as usize)..]
+                .iter()
+                .all(|&s| s as i64 == ducked),
+            "past the TTS period the program lane stands alone, ducked"
+        );
+
+        let _ = std::fs::remove_file(&lane_path);
+        let _ = std::fs::remove_file(format!("{lane_path}.open.lock"));
+        cleanup_ring(&out_path);
     }
 
     // --- Ring A wide (S32LE) wire. The wide path keys on the ring's own
