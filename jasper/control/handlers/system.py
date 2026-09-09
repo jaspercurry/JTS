@@ -468,7 +468,8 @@ class SystemRoutes(ControlHandlerMixin):
     def _post_system_action(self) -> None:
         # Broker refusal answers 502 with a `code`; broker ok answers 202 —
         # the job is enqueued, and /state observes what actually came back.
-        # reboot/poweroff answer 202 too, without a broker verb.
+        # reboot/poweroff answer 202 too: the broker spawns them detached, so
+        # there is never a verdict to wait for.
         #
         # Risk model: LAN-local + browser-origin guard
         # (consistent with the wizards). Anyone already on the
@@ -531,12 +532,15 @@ class SystemRoutes(ControlHandlerMixin):
             client=self.address_string(),
         )
         if action in ("reboot", "poweroff"):
-            try:
-                subprocess.Popen(["systemctl", action])
-            except (OSError, subprocess.SubprocessError) as e:
-                self._send_json(
-                    {"error": f"systemctl invocation failed: {e}"},
-                    status=502,
+            result = _server.restart_broker.manage_units(
+                verb=action, reason=action,
+            )
+            if not result.get("ok"):
+                self._send_refused(
+                    error=f"The {action} could not be scheduled.",
+                    code="system_restart_failed",
+                    action=action,
+                    failed_verb=action,
                 )
                 return
         # Start-after-stop semantics for core services, as one batch: every

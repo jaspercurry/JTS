@@ -1256,7 +1256,12 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
         costs = [s.close_session(sid, 1000, 1000) for s, sid in zip((first, second), ids)]
         expected = 1 + sum(costs)
         for s in (first, second):
-            await _wait_usage(lambda: abs(s.spend_last_24h_usd() - expected) < 1e-9)
+            # Spend is unchanged by the retire (the memory row leaves as the
+            # durable one enters), so only an empty ledger orders the count.
+            await _wait_usage(
+                lambda: not s._pending
+                and abs(s.spend_last_24h_usd() - expected) < 1e-9,
+            )
             assert s.spend_month_to_date_usd() == pytest.approx(expected)
             assert s.session_count_today_utc() == 1002
             assert s._conn.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
