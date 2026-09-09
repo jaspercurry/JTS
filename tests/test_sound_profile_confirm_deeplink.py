@@ -112,7 +112,7 @@ def test_the_deeplink_opens_the_owning_step_before_scrolling():
     source = _source()
     fn = source[source.index("function applySafetyLimitsDeepLink("):]
     fn = fn[: fn.index("\n  function renderDriverResearchCard(")]
-    assert "outputStepOverride = 'research';" in fn
+    assert "outputPage.stepOverride = 'research';" in fn
     assert "render();" in fn
     assert "scrollIntoView" in fn
     # No-ops when there is nothing to review: a stale bookmark must not yank an

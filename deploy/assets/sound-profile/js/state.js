@@ -68,6 +68,30 @@ function resetEqEditor() {
   eqEditor.nameDraft = '';
 }
 
+// The output page's record (/sound/output/) plus the two settings the EQ page
+// shares with it.
+var outputPage = {
+  // volume_floor_db is absent until /state carries it: savedVolumeFloorDb()
+  // then falls back to volumeFloorDefault() (backend-owned) rather than this
+  // module keeping a second copy of the default.
+  soundSettings: {headroom_trim_db: 0, match_loudness: false},
+  blocked: false,          // ./settings: the graph refused to carry EQ
+  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
+  // when it can host EQ (or nothing probed it). Page state, not a status line.
+  eqCarrierBlock: null,
+  i2sHat: null,
+  volumeFloorDraftDb: null,
+  stepOverride: '',
+  templateDraftAxes: {layout: '', speakerMode: ''}
+};
+
+// Drops the layout wizard's in-flight axis pick when a saved topology
+// supersedes it. `stepOverride` deliberately survives: which step is open is
+// not part of that draft, and only the re-pin path clears it.
+function resetOutputPage() {
+  outputPage.templateDraftAxes = {layout: '', speakerMode: ''};
+}
+
 function el(id) { return document.getElementById(id); }
 // The crossover filters and slopes this page may OFFER, served on the island
 // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
@@ -134,7 +158,9 @@ export {
   el,
   eqEditor,
   followerMode,
+  outputPage,
   outputTopology,
   pageMode,
   resetEqEditor,
+  resetOutputPage,
 };

@@ -138,9 +138,11 @@ import {
   el,
   eqEditor,
   followerMode,
+  outputPage,
   outputTopology,
   pageMode,
-  resetEqEditor
+  resetEqEditor,
+  resetOutputPage
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCommissionRoles,
@@ -200,17 +202,6 @@ import {
   var allCollapsed = false;
 
   var applied = FLAT();        // persisted profile
-  var soundSettings = {
-    headroom_trim_db: 0,
-    match_loudness: false,
-    volume_floor_db: volumeFloorDefault()
-  };  // global output settings
-  var soundSettingsBlocked = false;  // ./settings: the graph refused to carry EQ
-  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
-  // when it can host EQ (or nothing probed it). Page state, not a status line.
-  var eqCarrierBlock = null;
-  var i2sHat = null;
-  var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
   var dspWriteEpoch = 'none';
   var applying = false;
@@ -243,7 +234,6 @@ import {
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
-  var outputStepOverride = '';
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
@@ -252,7 +242,6 @@ import {
   // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
   var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
   var driverAdvancedOpen = false;
-  var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   var ZERO_DETENT_DB = 0.1;
   var volumeFloorTone = {
     active: false,
@@ -524,9 +513,9 @@ import {
     // not showing, and the plot would sit empty, so both go with it.
     ['eq-tabs', 'now-playing'].forEach(function(id) {
       var node = el(id);
-      if (node) node.hidden = !!eqCarrierBlock;
+      if (node) node.hidden = !!outputPage.eqCarrierBlock;
     });
-    if (eqCarrierBlock) {
+    if (outputPage.eqCarrierBlock) {
       renderEqCarrierBlocked();
       status(statusText, statusErr);
       return;
@@ -560,7 +549,7 @@ import {
   }
 
   function renderI2sHatSetting() {
-    var hat = i2sHat;
+    var hat = outputPage.i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
     var profiles = hat.profiles || [];
     var selectedId = hat.desired_profile_id || '';
@@ -604,7 +593,7 @@ import {
   // so a refusal mid-session becomes the page's state too. Recorded whatever
   // the request's sequence: it describes the loaded graph, not this request.
   function noteCarrierRefusal(payload) {
-    eqCarrierBlock = {
+    outputPage.eqCarrierBlock = {
       status: 'blocked',
       reason_code: payload.reason_code || '',
       message: payload.message || EQ_BLOCKED_MESSAGE
@@ -617,7 +606,7 @@ import {
   function renderEqCarrierBlocked() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="info-card" role="status">' +
-        '<p>' + escapeHtml(eqCarrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
+        '<p>' + escapeHtml(outputPage.eqCarrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
         '<div class="form-actions">' +
           '<a class="btn btn--primary" href="/sound/speaker/">Open Speaker setup</a>' +
         '</div>' +
@@ -706,7 +695,7 @@ import {
   }
   function savedVolumeFloorDb() {
     var bounds = volumeFloorLimits();
-    var floor = Number(soundSettings.volume_floor_db);
+    var floor = Number(outputPage.soundSettings.volume_floor_db);
     if (!isFinite(floor)) floor = volumeFloorDefault();
     return clamp(floor, bounds.min, bounds.max);
   }
@@ -717,8 +706,8 @@ import {
     return clamp(floor, bounds.min, bounds.max);
   }
   function volumeFloorValue() {
-    return volumeFloorDraftDb === null || volumeFloorDraftDb === undefined ?
-      savedVolumeFloorDb() : coerceVolumeFloorDb(volumeFloorDraftDb);
+    return outputPage.volumeFloorDraftDb === null || outputPage.volumeFloorDraftDb === undefined ?
+      savedVolumeFloorDb() : coerceVolumeFloorDb(outputPage.volumeFloorDraftDb);
   }
   function volumeFloorDirty(v) {
     return Math.abs(coerceVolumeFloorDb(v) - savedVolumeFloorDb()) >= 0.05;
@@ -737,11 +726,11 @@ import {
     }
   }
   function setVolumeFloorDraft(v) {
-    volumeFloorDraftDb = coerceVolumeFloorDb(v);
-    syncVolumeFloorControls(volumeFloorDraftDb);
+    outputPage.volumeFloorDraftDb = coerceVolumeFloorDb(v);
+    syncVolumeFloorControls(outputPage.volumeFloorDraftDb);
   }
   function renderMatchLoudnessSetting() {
-    var ml = soundSettings.match_loudness ? ' checked' : '';
+    var ml = outputPage.soundSettings.match_loudness ? ' checked' : '';
     return '<div class="setting-row">' +
         '<div class="setting-row__text">' +
           '<p class="setting-row__title">Match loudness</p>' +
@@ -752,7 +741,7 @@ import {
       '</div>';
   }
   function renderSetupSoundSettings() {
-    var trim = Number(soundSettings.headroom_trim_db) || 0;
+    var trim = Number(outputPage.soundSettings.headroom_trim_db) || 0;
     var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
     var floorBounds = volumeFloorLimits();
     var floorMin = floorBounds.min;
@@ -766,7 +755,7 @@ import {
     var saveLabel = volumeFloorSaving ? 'Saving' :
       (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
-      (soundSettingsBlocked ? '<div class="info-card" role="status"><p>' +
+      (outputPage.blocked ? '<div class="info-card" role="status"><p>' +
         EQ_BLOCKED_CARD_MESSAGE + '</p></div>' : '') +
       renderMatchLoudnessSetting() +
       '<details class="advanced"' + (advancedOpen ? ' open' : '') + '>' +
@@ -1431,15 +1420,15 @@ import {
     return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));
   }
   function outputStepIsOpen(step, topology) {
-    return (outputStepOverride || defaultOutputStep()) === step;
+    return (outputPage.stepOverride || defaultOutputStep()) === step;
   }
   function outputStepCanOpen(step, topology) {
     if (outputStepState(step, topology) !== 'todo') return true;
     // Dirty output remaps are saved from the map card itself.
-    return step === 'map' && outputTopology.dirty && outputStepOverride === 'map';
+    return step === 'map' && outputTopology.dirty && outputPage.stepOverride === 'map';
   }
   function openOutputStep(step) {
-    outputStepOverride = step;
+    outputPage.stepOverride = step;
     render();
   }
   function outputStepHint(step, fallback) {
@@ -1524,8 +1513,8 @@ import {
     });
     if (!mainGroups.length) {
       return {
-        layout: outputTemplateDraftAxes.layout || '',
-        speakerMode: outputTemplateDraftAxes.speakerMode || ''
+        layout: outputPage.templateDraftAxes.layout || '',
+        speakerMode: outputPage.templateDraftAxes.speakerMode || ''
       };
     }
     var kinds = mainGroups.map(function(group) { return group.kind; });
@@ -1831,7 +1820,7 @@ import {
   function applySafetyLimitsDeepLink() {
     if (window.location.hash !== '#' + CONFIRM_SAFETY_ANCHOR_ID) return;
     if (!driverSafetyReviewState(currentOutputTopology()).needsReview) return;
-    outputStepOverride = 'research';
+    outputPage.stepOverride = 'research';
     render();
     var node = document.getElementById(CONFIRM_SAFETY_ANCHOR_ID);
     if (node && typeof node.scrollIntoView === 'function') {
@@ -3112,8 +3101,8 @@ import {
   // Global sound settings. Optimistic: the controls already show the user's
   // input, so on success we just ingest; on failure we revert and re-render.
   async function saveSettings(patch) {
-    var prev = soundSettings;
-    soundSettings = Object.assign({}, soundSettings, patch);
+    var prev = outputPage.soundSettings;
+    outputPage.soundSettings = Object.assign({}, outputPage.soundSettings, patch);
     try {
       var payload = await postJSON('./settings', patch);
       // The setting is saved either way; a blocked body says the loaded graph
@@ -3122,15 +3111,15 @@ import {
       // warnings a save can ALSO raise (a blocked body never carries
       // `warning` — same server branch — so in practice that is volume_warning).
       var blocked = payload.status === 'blocked';
-      var blockChanged = blocked !== soundSettingsBlocked;
-      soundSettingsBlocked = blocked;
+      var blockChanged = blocked !== outputPage.blocked;
+      outputPage.blocked = blocked;
       ingestState(payload);
       if (blockChanged) render();
       if (payload.warning) status(payload.warning, true);
       else if (payload.volume_warning) status(payload.volume_warning, true);
       return true;
     } catch (e) {
-      soundSettings = prev;
+      outputPage.soundSettings = prev;
       status('Could not save sound settings: ' + e.message, true);
       render();
       return false;
@@ -3145,7 +3134,7 @@ import {
         body: JSON.stringify({profile_id: profileId || null})
       });
       var payload = await resp.json();
-      if ('desired_profile_id' in payload) i2sHat = payload;
+      if ('desired_profile_id' in payload) outputPage.i2sHat = payload;
       if (!resp.ok && 'desired_profile_id' in payload)
         return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
@@ -3236,7 +3225,7 @@ import {
     var saved = await saveSettings({volume_floor_db: floor});
     volumeFloorSaving = false;
     if (saved) {
-      volumeFloorDraftDb = null;
+      outputPage.volumeFloorDraftDb = null;
       syncVolumeFloorControls(savedVolumeFloorDb());
       if (volumeFloorTone.active) {
         volumeFloorTone.savedNotice = true;
@@ -3275,11 +3264,11 @@ import {
     if (payload.curves) { eqEditor.curvesById = {}; payload.curves.forEach(function(c) { eqEditor.curvesById[c.id] = c; }); }
     if (payload.profile_library) eqEditor.library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-    if (payload.sound_settings) soundSettings = payload.sound_settings;
+    if (payload.sound_settings) outputPage.soundSettings = payload.sound_settings;
     // Every /state and every successful apply carries the field, so a fixed
     // layout drops the block at the next render instead of needing a reload.
     var carrier = payload.eq_carrier;
-    if (carrier) eqCarrierBlock = carrier.status === 'blocked' ? carrier : null;
+    if (carrier) outputPage.eqCarrierBlock = carrier.status === 'blocked' ? carrier : null;
     applied = normalizeProfile(payload.profile || {});
   }
 
@@ -3621,7 +3610,7 @@ import {
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-style')) {
       var saveDriverStyle = ev.target.hasAttribute('data-save-driver-style');
-      if (saveDriverStyle) outputStepOverride = 'research';
+      if (saveDriverStyle) outputPage.stepOverride = 'research';
       setOutputChannelDriverStyle(
         ev.target.getAttribute('data-group-id') || '',
         ev.target.getAttribute('data-role') || '',
@@ -3651,16 +3640,16 @@ import {
     }
     if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
         ev.target.open) {
-      var step = ev.target.getAttribute('data-output-step') || outputStepOverride;
+      var step = ev.target.getAttribute('data-output-step') || outputPage.stepOverride;
       var topology = currentOutputTopology();
       if (!outputStepCanOpen(step, topology)) {
         ev.target.open = false;
-        outputStepOverride = defaultOutputStep();
+        outputPage.stepOverride = defaultOutputStep();
         status('Finish the current card before opening ' + outputStepTitle(step) + '.', true);
         render();
         return;
       }
-      outputStepOverride = step;
+      outputPage.stepOverride = step;
       el('view-body').querySelectorAll('.output-step[open]').forEach(function(stepEl) {
         if (stepEl !== ev.target) stepEl.open = false;
       });
@@ -3790,7 +3779,7 @@ import {
     outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
     outputTopology.hardwareMismatch = payload && payload.hardware_mismatch || null;
     outputTopology.hardwareRepin = payload && payload.hardware_repin || null;
-    i2sHat = payload && payload.i2s_hat || i2sHat;
+    outputPage.i2sHat = payload && payload.i2s_hat || outputPage.i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
@@ -3800,7 +3789,7 @@ import {
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
-    if (outputGroups(topology).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    if (outputGroups(topology).length) resetOutputPage();
   }
   // The Output page renders the HAT picker and the sound settings, nothing
   // else, so it reads the topology payload for `i2s_hat` alone and skips the
@@ -4008,7 +3997,7 @@ import {
       result.payload.status === 'confirmed');
     if (outcome === 'heard_correct_driver' && confirmed) {
       if (driverTargetProofComplete()) {
-        outputStepOverride = 'safety';
+        outputPage.stepOverride = 'safety';
         status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
       } else {
         status('Driver confirmation saved. Continue with the next output.');
@@ -4027,12 +4016,12 @@ import {
       stopCommissionAutoRamp('Stopped. Check the channel assignments before testing again.');
       await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
     }
-    outputStepOverride = 'map';
+    outputPage.stepOverride = 'map';
     status('Check the DAC channel assignments, save, then confirm the wiring again.');
     render();
   }
   function backToCrossoverConfiguration() {
-    outputStepOverride = 'research';
+    outputPage.stepOverride = 'research';
     status('Review the crossover settings, then return to validation.');
     render();
   }
@@ -4155,7 +4144,7 @@ import {
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
-    if (outputGroups(next).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    if (outputGroups(next).length) resetOutputPage();
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
@@ -4239,7 +4228,7 @@ import {
     }
     applyChannel(targetChannel, selected);
     if (swapPeer) applyChannel(swapPeer, previousSelected);
-    outputStepOverride = 'map';
+    outputPage.stepOverride = 'map';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
@@ -4415,7 +4404,7 @@ import {
       status('Choose a supported speaker layout template.', true);
       return;
     }
-    outputTemplateDraftAxes = {layout: '', speakerMode: ''};
+    resetOutputPage();
     if (count < template.minOutputs) {
       status(template.name + ' needs at least ' + template.minOutputs +
         ' physical output' + (template.minOutputs === 1 ? '.' : 's.'), true);
@@ -4457,7 +4446,7 @@ import {
     var axes = outputTemplateAxesForTopology(topology);
     var layout = axis === 'layout' ? value : axes.layout;
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
-    outputTemplateDraftAxes = {layout: layout || '', speakerMode: speakerMode || ''};
+    outputPage.templateDraftAxes = {layout: layout || '', speakerMode: speakerMode || ''};
     if (!layout || !speakerMode) {
       status(layout ? 'Choose passive, active 2-way, or active 3-way to continue.' :
         'Choose mono or stereo to continue.');
@@ -4716,7 +4705,7 @@ import {
   async function saveDriverResearchDraft(options) {
     options = options || {};
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
-      outputStepOverride = options.nextStep;
+      outputPage.stepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
         'Working setup is already current. Preview crossover before confirming outputs.' :
         'Save driver names and crossover points before confirming outputs.');
@@ -4818,7 +4807,7 @@ import {
       }
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
-      if (options.nextStep) outputStepOverride = options.nextStep;
+      if (options.nextStep) outputPage.stepOverride = options.nextStep;
       if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
@@ -4869,7 +4858,7 @@ import {
       if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
       ingestCrossoverPreview(payload);
       await refreshCommissioningView();
-      outputStepOverride = 'map';
+      outputPage.stepOverride = 'map';
       status('Crossover preview ready. No sound was played. Confirm the outputs next.');
       render();
       return true;
@@ -4885,7 +4874,7 @@ import {
     var topology = currentOutputTopology();
     if (step === 'layout') {
       if (!topology || !outputGroups(topology).length) {
-        outputStepOverride = 'layout';
+        outputPage.stepOverride = 'layout';
         status('Choose a speaker layout before continuing.', true);
         render();
         return;
@@ -4912,7 +4901,7 @@ import {
     }
     if (step === 'map') {
       if (outputTopology.dirty) {
-        outputStepOverride = 'map';
+        outputPage.stepOverride = 'map';
         status('Save the speaker layout before confirming outputs.', true);
         render();
         return;
@@ -4920,7 +4909,7 @@ import {
       if (!driverTargetProofComplete()) {
         var report = outputIdentityReport();
         var assigned = Number(report && report.assigned_channel_count || 0);
-        outputStepOverride = 'map';
+        outputPage.stepOverride = 'map';
         status(assigned > 0 ?
           'Play and confirm every assigned driver before continuing.' :
           'Save a speaker layout with assigned outputs before continuing.', true);
@@ -4939,13 +4928,13 @@ import {
         status('Combined speaker check is saved. Save and apply the active profile.');
         return;
       }
-      outputStepOverride = 'safety';
+      outputPage.stepOverride = 'safety';
       status('Run the combined speaker test and save what you heard before applying.');
       render();
       return;
     }
     if (step === 'profile') {
-      outputStepOverride = 'profile';
+      outputPage.stepOverride = 'profile';
       status(baselineProfileApplied() ?
         'The active speaker profile is applied.' :
         'Finish the combined crossover check, then save and apply the active profile.');
@@ -4982,7 +4971,7 @@ import {
       ingestOutputTopology(payload);
       // The refusal card names the carrier this save just replaced, so a fixed
       // layout drops it at the render below instead of outliving its cause.
-      soundSettingsBlocked = false;
+      outputPage.blocked = false;
       try {
         await fetchDesignDraft();
       } catch (draftError) {
@@ -5005,7 +4994,7 @@ import {
         crossoverPreview.error = previewError.message;
       }
       await refreshCommissioningView();
-      if (options.nextStep) outputStepOverride = options.nextStep;
+      if (options.nextStep) outputPage.stepOverride = options.nextStep;
       var saveStatus = payload && payload.save || {};
       var needsAttention = saveStatus.status === 'needs_attention';
       status(
@@ -5062,7 +5051,7 @@ import {
         commissionBusy: '',
         commissionError: ''
       });
-      outputStepOverride = 'layout';
+      outputPage.stepOverride = 'layout';
       var resetStatus = payload && payload.reset || {};
       if (resetStatus.status === 'needs_attention') {
         outputTopology.error = resetStatus.message || 'Speaker setup was reset, but JTS requires attention before continuing.';
@@ -5126,7 +5115,7 @@ import {
       await refreshCommissioningView();
       // Let the backend's own current step win: identity is now unverified for
       // the replaced lanes, so the derived default lands on the right rung.
-      outputStepOverride = '';
+      outputPage.stepOverride = '';
       var repinStatus = payload && payload.repin || {};
       if (repinStatus.status === 'needs_attention') {
         outputTopology.error = repinStatus.message ||
@@ -5490,7 +5479,7 @@ import {
         patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile});
       }
       if (summedValidationComplete()) {
-        outputStepOverride = 'profile';
+        outputPage.stepOverride = 'profile';
         status('Combined crossover check saved. Save and apply the active profile when ready.');
       } else {
         var latestValidations = payload && payload.summary &&

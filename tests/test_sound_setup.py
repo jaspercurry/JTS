@@ -1568,7 +1568,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Main speakers" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
-    assert "var outputTemplateDraftAxes = {layout: '', speakerMode: ''};" in js
+    assert "templateDraftAxes: {layout: '', speakerMode: ''}" in js
     assert "function outputTemplateChoiceDisabled(count, axis, value, axes)" in js
     assert "function outputTemplateUnavailableReason(template, topology, hasSubwoofer)" in js
     assert "This install can test and apply up to " in js
