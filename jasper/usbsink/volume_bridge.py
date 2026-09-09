@@ -16,9 +16,8 @@ inverting macOS's observed square-root step transfer (see
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a remote twist that triggered an outbound write to the
-gadget mixer (we don't actually do this — see
-docs/historical/usbsink-implementation-appendix.md §3.2 "Why no outbound
-write back to the host") wouldn't bounce back as a phantom user-side change.
+gadget mixer (we don't actually do this — see ADR-0107's 2026-09-08
+addendum) wouldn't bounce back as a phantom user-side change.
 
 Reads are event-driven: `alsaaudio.Mixer.polldescriptors()` hands over
 the control FDs and `asyncio.add_reader` wakes the loop, so nothing runs

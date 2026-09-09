@@ -18,10 +18,9 @@ Repo evidence is from the current worktree on 2026-06-18, including:
 - `tests/test_aec_reconcile.py`
 - `tests/test_outputd_wiring.py`
 - `rust/jasper-outputd/src/main.rs`
-- `docs/HANDOFF-xvf3800.md`
-- `docs/HANDOFF-aec.md`
-- `docs/CHIP-AEC-EXPERIMENT.md`
-- `docs/HANDOFF-speaker-output-reference.md`
+- `docs/HANDOFF-xvf3800.md`, `docs/HANDOFF-aec.md`,
+  `docs/HANDOFF-speaker-output-reference.md`, `docs/CHIP-AEC-EXPERIMENT.md`
+  (all deleted; see git history — ADR-0199)
 
 Live evidence is from `jts.local` / `192.168.1.74` between about
 15:13 and 15:17 America/New_York on 2026-06-18. The live runtime reports

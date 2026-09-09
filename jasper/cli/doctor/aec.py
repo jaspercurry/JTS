@@ -1106,7 +1106,7 @@ def _assess_aec_bridge_output(
         # silent-threshold = ref path silent in this window.
         # The threshold carries over to chip AEC because `mic` is the raw
         # mic-0 channel there, measured at ~1.2-1.8x the cancelled beams
-        # (docs/AEC-DIAG-06-xvf-format-level-profile.md:252).
+        # (docs/historical/AEC-DIAG-06-xvf-format-level-profile.md).
         if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
         # "Healthy AEC work" = music-loud mic + meaningful attenuation.

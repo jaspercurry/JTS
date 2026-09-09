@@ -1056,7 +1056,7 @@ class VolumeCoordinator:
                 # USBSINK is camilla-master like AirPlay; we don't write
                 # back to the gadget's mixer (the host's slider is
                 # observed-only — see observe_source_volume above and
-                # historical/usbsink-implementation-appendix.md §3.2).
+                # ADR-0107's 2026-09-08 addendum).
                 await self._set_camilla(level)
         finally:
             if persist:

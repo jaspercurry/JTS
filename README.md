@@ -70,17 +70,19 @@ Audio path — the canonical reference is
 Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
         │                                          │
         ▼                                          ▼
-  shairport-sync (AirPlay 2)              jasper-usbsink
-  librespot (Spotify Connect)             (UAC2 gadget)
-  bluealsa-aplay (BT A2DP)
+  shairport-sync (AirPlay 2)              UAC2 gadget card hw:UAC2Gadget
+  librespot (Spotify Connect)             (jasper-usbsink.service is a
+  bluealsa-aplay (BT A2DP)                 process-free readiness marker)
         │                                          │
-        │ private snd-aloop lanes: hw:Loopback,0,0..4
-        ▼                                          ▼
-  hw:Loopback,1,0..4  ──►  jasper-fanin ◄── /run/jasper-fanin/tts.sock
-                              │ sums active renderer/test lanes + TTS
+        │ private snd-aloop lanes                  │ fan-in direct capture,
+        │ hw:Loopback,0,N → hw:Loopback,1,N        │ where the reconciler armed
+        ▼                                          ▼ it (no aloop hop)
+  hw:Loopback,1,N  ──►  jasper-fanin ◄── /run/jasper-fanin/tts.sock
+                              │ sums the selected renderer lane,
+                              │ the correction/test lane and TTS
                               │ applies program duck before TTS mix
                               ▼
-                       Ring A (program.ring)
+                       Ring A (program.ring, S32_LE)
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)

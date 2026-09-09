@@ -6,7 +6,7 @@ Constraint: diagnostic only. No production routing change.
 
 ## Summary
 
-[`scripts/aec-probe-timing.py`](../scripts/aec-probe-timing.py) injects a
+[`scripts/aec-probe-timing.py`](../../scripts/aec-probe-timing.py) injects a
 controlled chirp through `correction_substream`, captures one selected
 reference tap and one selected XVF3800 capture channel, then writes:
 
@@ -18,7 +18,7 @@ reference tap and one selected XVF3800 capture channel, then writes:
   analysis WAVs plus the played 48 kHz stereo stimulus.
 
 The probe is intentionally separate from
-[`scripts/aec-probe-latency.sh`](../scripts/aec-probe-latency.sh). The
+[`scripts/aec-probe-latency.sh`](../../scripts/aec-probe-latency.sh). The
 older script has probe-history baggage: before PR 801 it measured
 `pcm.jasper_capture`, which is a pre-DSP fan-in/Camilla input tap, not
 production outputd timing. The new script forces the caller to name the
