@@ -370,6 +370,21 @@ _ACTIVE_STAGED_CONFIG = (
 )
 
 
+def _round_tripped_active_config():
+    """An active-speaker graph as CamillaDSP hands it back: the YAML round-trip
+    drops every comment, so the `# Source:` marker is gone and only the split
+    mixer is left to prove the graph is JTS-generated."""
+
+    import yaml
+
+    return yaml.safe_dump(
+        yaml.safe_load(
+            _ACTIVE_STAGED_CONFIG
+            + "mixers:\n  split_active_2way:\n    channels: { in: 2, out: 4 }\n"
+        )
+    )
+
+
 def _hand_written_config_on_the_jts_ring():
     """An operator config with no JTS provenance that plays out of the ring
     JTS itself uses — naming the device is not provenance."""
@@ -409,6 +424,10 @@ def _hand_written_config_on_the_jts_ring():
             "ok", correction.REASON_CURRENT_CONFIG_ROOM_CORRECTION,
         ),
         (
+            "configs/active_speaker_startup.yml", _round_tripped_active_config(),
+            "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
+        ),
+        (
             "configs/operator.yml", _hand_written_config_on_the_jts_ring(),
             "warn", correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
         ),
@@ -416,7 +435,7 @@ def _hand_written_config_on_the_jts_ring():
     ids=[
         "missing-config", "unclassified", "jts-sound",
         "active-speaker-staged", "generated-correction",
-        "hand-written-on-the-jts-ring",
+        "round-tripped-active-graph", "hand-written-on-the-jts-ring",
     ],
 )
 def test_check_correction_current_config_verdicts(
