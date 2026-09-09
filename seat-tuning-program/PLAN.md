@@ -313,6 +313,15 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 09:45Z: Rows 1.5 and 1.6 opened as PRs #4604 (mic calibration
+  door, +615/−710: `jasper-mic-calibration models|fetch|upload|show`,
+  `save_household_mic` in the leaf, five orphaned routes and
+  `calibration.preview_curve` deleted) and #4603 (doctor provenance, net −5).
+  #4603's first CI run failed only on the wall-clock AirPlay fade test
+  (`test_airplay_volume_hook.py`), untouched by the PR and green on its base;
+  stood down with one comment and one re-run. #4604 under Opus review.
+  Tension to record later: ADR-0259 §4 said the calibration and healthz
+  routes stay; #4602 left them unreachable and #4604 deletes them.
 - 2026-09-09 09:20Z: Row 1.2 LANDED: PR #4602 squash-merged at `c36dd0cea` after
   a Sonnet claim check (10/10 pass) and an Opus design review (approve with
   fixes). `jasper/correction/` is gone. The review's one real gap — no box can
