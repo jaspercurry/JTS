@@ -198,7 +198,7 @@ class _BridgeStats:
         `level_db` is AEC3 attenuation, None under chip AEC.
         """
 
-        window = {
+        window: dict[str, object] = {
             "ref": round(ref),
             "mic": round(mic),
             "level_db": level_db,
