@@ -1230,7 +1230,6 @@ def _make_handler(
     camilla_port: int,
     voice_socket_path: str,
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
@@ -1355,7 +1354,6 @@ def _make_handler(
         MeasurementRoutes,
         SystemRoutes,
     ):
-        _airplay_health_sampler = airplay_health_sampler
         _adjust_op = staticmethod(handler_adjust_op)
         _audio_health_sampler = audio_health_sampler
         _camilla_host = camilla_host
@@ -1928,7 +1926,6 @@ def build_server(
     camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
     return ControlHTTPServer(
@@ -1938,7 +1935,6 @@ def build_server(
             camilla_port,
             voice_socket_path,
             sampler,
-            airplay_health_sampler,
             audio_health_sampler,
         ),
     )

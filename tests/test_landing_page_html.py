@@ -215,7 +215,7 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     assert "active_speaker_output_safety" in script
     assert "typeof safety.safety_muted === 'boolean'" in script
     assert "typeof safety.volume_allowed === 'boolean'" in script
-    assert "camilla.config_path" in script
+    assert "airplay_health" not in script
     assert "active_speaker_staged_startup\\.yml" in script
     assert "var safetyMuted = false" in script
     assert "if (safetyMuted) return;" in script

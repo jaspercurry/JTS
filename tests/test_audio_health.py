@@ -4204,7 +4204,6 @@ def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> 
         ) as response:
             payload = json.loads(response.read())
         assert payload["audio_health"] == normalized
-        assert payload["airplay_health"] == legacy
         assert len(reads) == 1
         assert payload["outputd"]["watchdog"] == outputd["watchdog"]
     finally:

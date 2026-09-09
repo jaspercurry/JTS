@@ -2487,7 +2487,6 @@ class AudioHealthSampler:
         self._route_interval = route_interval_sec
         self._time = time_fn
         self._airplay = airplay_sampler or AirPlayHealthSampler(
-            sample_interval_sec=sample_interval_sec,
             camilla_host=camilla_host,
             camilla_port=camilla_port,
             time_fn=time_fn,

@@ -969,7 +969,6 @@ def _system_snapshot_payload() -> dict:
         def __init__(self) -> None:
             self._sampler = None
             self._audio_health_sampler = None
-            self._airplay_health_sampler = None
             self._ha_status_cache = type(
                 "_HaCache", (), {"snapshot": staticmethod(dict)},
             )

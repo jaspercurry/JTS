@@ -77,11 +77,7 @@ function initVolume() {
     var audio = (data && data.audio) || {};
     var sound = audio.sound || {};
     var runtime = sound.runtime || {};
-    var airplay = (data && data.airplay_health) || {};
-    var airplayCurrent = airplay.current || {};
-    var camilla = airplayCurrent.camilla || {};
     var activePath = String(
-      camilla.config_path ||
       audio.camilla_active_config_path ||
       sound.active_config_path ||
       runtime.active_config_path ||
