@@ -132,10 +132,11 @@ class NullRunInterrupted(RuntimeError):
 class NullDoorRefused(RuntimeError):
     """One coordinate cannot be measured; the row says why."""
 
-    def __init__(self, reason: str, detail: str) -> None:
+    def __init__(self, reason: str, detail: str, diagnostics: Mapping[str, Any] | None = None) -> None:
         super().__init__(detail)
         self.reason = reason
         self.detail = detail
+        self.diagnostics = dict(diagnostics or {})
 
 
 
@@ -230,6 +231,7 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
     )
     from jasper.active_speaker.crossover_v2.position_cycle import (
         read_pose_curve_pair,
+        take_phase_composition,
     )
 
     found = read_pose_curve_pair(
@@ -240,6 +242,8 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
     )
     if found is None:
         return (0.0,)
+    if take_phase_composition(Path(args.bundle_dir), found[2]) == "complete_tune_measured":
+        raise NullDoorRefused("null_confirm_graph_mismatch", "The selected curves include a complete tune. Use full candidate variants in tournament to confirm residual delay changes; jasper-null measures neutral branches.")
     try:
         landscape = compute_landscape(
             found[0], found[1], spec=spec, inverted_role=args.inverted_role,
@@ -456,34 +460,28 @@ def _depth(
     ``crossover_null_depth_db`` subtracts. A shoulder outside that overlap
     would be read where only one driver played.
     """
-    from jasper.active_speaker.driver_acoustics import summed_capture_curve
-    from jasper.audio_measurement.analysis import crossover_null_depth_db, shoulder_span
+    from jasper.active_speaker.driver_acoustics import SummedCaptureUnusable, summed_capture_curve
+    from jasper.audio_measurement.analysis import crossover_null_depth_db
 
-    curve = summed_capture_curve(
-        captured_wav,
-        _sweep_meta(program.stimulus_segments()[0]),
-        crossover_fc_hz=fc_hz,
-        capture_geometry=CAPTURE_GEOMETRY,
-        # NO ambient window, and that is a deletion rather than a smaller
-        # number: any `ambient_duration_s` selects the signal-located branch,
-        # whose guard needs controlled quiet reaching back PAST the whole sweep,
-        # and this door records no such quiet.
-    )
-    if curve is None:
+    try:
+        curve = summed_capture_curve(
+            captured_wav, _sweep_meta(program.stimulus_segments()[0]),
+            crossover_fc_hz=fc_hz, capture_geometry=CAPTURE_GEOMETRY,
+            raise_on_unusable=True, overlap_hz=plan.overlap_hz,
+        )
+    except SummedCaptureUnusable as exc:
+        gate = exc.diagnostics.get("gating") or {}
         raise NullDoorRefused(
             REFUSE_UNUSABLE_CAPTURE,
-            f"the capture cannot decide a null at fc={fc_hz:g} Hz: it failed "
-            "quality gating, or the room's low-frequency validity floor sits "
-            f"above the lower shoulder {fc_hz / 2.0:g} Hz",
-        )
-    # The REAL analysis grid, not a stand-in: `shoulder_span` counts the bins
-    # either side of Fc to decide whether a shoulder can be placed at all.
-    grid = curve.freqs
-    span = shoulder_span(
-        grid[(grid >= plan.overlap_hz[0]) & (grid <= plan.overlap_hz[1])],
-        crossover_fc_hz=fc_hz,
-        overlap_hz=plan.overlap_hz,
-    )
+            f"{exc}: gate {gate.get('window_ms')} ms, floor "
+            f"{gate.get('f_valid_floor_hz')} Hz; lower shoulder needs {exc.diagnostics['required_lower_shoulder_hz']:g} Hz. "
+            "Inspect the saved impulse and window overlay. A longer window includes more room; "
+            "if no useful span clears the first reflection, change mic geometry before another null take. "
+            "For a capture quality failure, correct the recorded quality codes first.",
+            exc.diagnostics,
+        ) from exc
+    assert curve is not None
+    span = curve.shoulders
     if not span.usable:
         raise NullDoorRefused(
             REFUSE_NO_SHOULDERS,
@@ -573,6 +571,7 @@ def _row(
         row["status"] = "refused"
         row["reason"] = refusal.reason
         row["detail"] = refusal.detail
+        row["diagnostics"] = refusal.diagnostics
         row["depth_db"] = None
         row["shoulders_used"] = None
         row["clamped_lo"] = None
@@ -963,6 +962,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_env_canonical_target_provider()
     try:
         return asyncio.run(_run(args))
+    except NullDoorRefused as exc:
+        return failed(EXIT_REFUSED, exc.reason, {"detail": exc.detail, "diagnostics": exc.diagnostics})
     except NullRunInterrupted as exc:
         # k rows are on disk and named, so the operator gets both halves: why
         # the run stopped, and which coordinates it did bank.

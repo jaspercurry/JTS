@@ -276,6 +276,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     ],
     "spec-sweep": _NO_CLOUD_GROUP,
     "gate-sweep": _NO_CAPTURES,
+    "windows": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,

@@ -134,6 +134,77 @@ its parents' measurement claims. The basic
 profile has its own explicit `jasper-basic-profile review|apply` door; replacing
 a saved tune is not necessary just to make a temporary baseline measurement.
 
+## Optional visual and window diagnostics
+
+Use this step when a curve shape could change the next experiment. The LLM
+must render **and open/view the image** before interpreting it. Writing a plot
+or reading its numbers alone does not complete visual inspection.
+
+```
+jasper-round-views frequency <before-take.json> <after-take.json> --image /tmp/before-after.png
+jasper-round-views windows <round-dir> --capture-id <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
+```
+
+Image rendering runs on the laptop with the optional `plots` install extra.
+Both commands also save the shared frequency-view JSON. `--series a:<id>
+b:<id>` selects exact curves from that JSON. Keep candidate, played graph,
+take, pose, reference, window, smoothing, and valid coverage visible. An absent
+field is unknown. The zero line is the stated flat display reference; it is
+not an absolute SPL target. Shared references retain branch level differences.
+
+After viewing, describe the peaks, dips, broad tilt, crossover shape, and pose
+differences that are visible. Then state possible causes as hypotheses, with
+the evidence that could separate them. End with one useful next experiment,
+or explain why the measured result is enough. Do not prescribe EQ from a dip
+alone or treat a score as proof of the cause.
+
+`windows` reads one exact WAV/program binding and shows its impulse beside
+alternative windows. The existing gate-sweep calculation owns its grid,
+smoothing, taper, and common reference. It does not replace the saved verdict.
+Raw impulse diagnostics have no microphone correction; preprocessing states
+clock correction and timing coordinates. Longer windows admit more room.
+Window resolution alone does not prove a reflection-free result.
+
+For pose statistics, use `gate-sweep --candidate <fp> --graph <played-fp>`.
+Mixed candidate/graph records are refused, even at the same pose. Use exact
+take window overlays when only one recording should answer the question.
+
+## Optional complete-tune branch check
+
+Use one saved candidate when the crossover sum needs a closer look:
+
+```
+jasper-angle-capture plan --program branches --size express --candidates <fp>
+jasper-angle-capture stage --program branches --size express --candidates <fp>
+```
+
+Open the usual browser session and give the human its placement/start action.
+At the selected pose, one recording contains woofer, tweeter, two clock-check
+repeats, then both. All five sweeps use the same stimulus level and volume.
+Each branch retains the candidate's crossover, correction, trim, delay,
+polarity, and protection. This is a diagnostic; it does not fit or adopt a tune.
+The existing `--regime both` remains the neutral per-driver/summed pair.
+
+The retained take carries all three complex curves, raw impulses, exact
+candidate/graph/WAV/program identities, and clock/gate facts. View it with
+`frequency <take.json> --image /tmp/branches.png`. Use `windows` on that exact
+take with `--role woofer`, `tweeter`, or `summed` to inspect window sensitivity.
+Do not align each impulse to its own peak before comparing driver phase.
+
+`delay-landscape <bundle-dir> --phase lateral --take-path <indexed-take-path>
+--fc-hz <corner>` reuses the existing complex-sum/null calculation. With these
+curves, its signed delay is a **residual addition to the measured tune**;
+the tune's physical and DSP delay is already present. A positive residual
+delays the tweeter relative to the woofer. Add it to the saved signed alignment
+when authoring a full candidate variant. Confirm variants with `tournament`.
+`jasper-null` plays neutral branches and cannot confirm those full-tune changes.
+
+A null needs valid coverage on both sides of the crossover. A short gate can
+remove a required shoulder and yield no depth. Inspect the saved gate/floor
+and impulse, try an explicit alternative window as a disclosed room-inclusive
+diagnostic, or move the mic to delay the first reflection. If the available
+span still cannot answer, retain that limitation and use measured full sums.
+
 ## Room
 
 The room is measured on the seat cube, through the applied tune, ungated
@@ -218,7 +289,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|windows\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |

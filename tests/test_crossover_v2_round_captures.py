@@ -228,3 +228,22 @@ def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
 ) -> None:
     """A kind prefixes the key; a bearing's stays byte-identical (#3503)."""
     assert doc_pose_key(doc) == key
+
+
+def test_window_view_keeps_one_capture_reference_and_exact_window_math(tmp_path):
+    from jasper.active_speaker.crossover_v2 import gate_sweep
+    from jasper.active_speaker.crossover_v2.window_view import window_view
+    root = _write_round(tmp_path)
+    cap = select_capture(root, capture_id="cloud_verify_00")
+    result = window_view(root, capture_id=cap.capture_id, rungs_ms=(2, 7))
+    run, = result["runs"]
+    assert run["metadata"]["direct_peak_sample"] == cap.peak_idx
+    assert run["metadata"]["stimulus_wav_sha256"] == cap.program_sha256
+    expected, = gate_sweep._read_curves((cap,), gate_sweep.analysis_grid(), (2, 7))
+    assert len({r["reference_db"] for r in run["series"]}) == 1
+    for curve in run["series"]:
+        np.testing.assert_allclose(np.array(curve["magnitude_db"]) - curve["reference_db"], expected.curves[curve["window_ms"]])
+        assert curve["capture_id"] == cap.capture_id
+        assert curve["validity_floor_hz"] == 1000 / curve["window_ms"]
+    with pytest.raises(RoundCapturesRefused):
+        window_view(root, capture_id=cap.capture_id, rungs_ms=(2, 7), role="woofer")

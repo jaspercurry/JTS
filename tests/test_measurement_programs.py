@@ -68,6 +68,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
     assert choices == (
         ("baseline", "express"),
         ("baseline", "full"),
+        ("branches", "express"),
         ("close", "spot"),
         ("seat", "cube"),
         ("seat", "express"),
