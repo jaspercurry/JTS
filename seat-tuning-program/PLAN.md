@@ -218,6 +218,7 @@ disjoint files.
 | Row | Concern | Tag | Proof | Gate |
 |---|---|---|---|---|
 | 3.1 | Bind the bench: `PlayAndCapture` and `TargetPlan` against the engine's play path and the wired recorder; `jasper-bass-extension-bench --live` stops failing closed. | R | fixture run; live path reaches the recorder | **NN** |
+| 3.2b | **Added 2026-09-09, gates 3.3.** The adapters do not honour their own margin policy: `sealed.generate_family` ignores `subsonic_corner_ratio`/`subsonic_order` (ships 15 Hz 2nd-order where `conservative` declares 21.8 Hz 4th-order — at 10 Hz that is −1.8 dB against the policy's −21 dB, on a rung carrying +6 dB of infrasonic boost with no excursion model), and `generate_ported_family` ignores `boost_cap_db`. `_assert_bass_extension_safe` proves only the `LT → subsonic → limiter` ORDER, never the subsonic's values, so these numbers reach the DAC unchecked the moment 3.3's emission lands. Own PR, before 3.3. | C | **NN** |
 | 3.2 | `bass-fit` view: fit the seat-cube median below the ceiling to an extended-corner target family (one corner per rung); the declared plant (adapters as parameter models; `fit_plant` on the median for the effective corner) supplies excursion-versus-boost. Publishes per rung: filters, boost, headroom cost, excursion margin. | V | fixture median → family JSON | code-review |
 | 3.3 | Layer-2 scheduled candidate kind: the family keyed by listening level for the bass owner, emitted as named biquads per rung; a rung is admissible only with its protection evidence (3.4). Absorbs `profile.py`. | C | door refuses an unverified rung; emitter round-trip | code-review high |
 | 3.4 | Protection ladder as a code-owned program: stepped-level sweeps at the seat, distortion-versus-level per rung, the sustain test, evidence banked per rung. A failing rung is inadmissible at that level. | P | fixture ladder; refusal codes | **NN** |
@@ -316,6 +317,38 @@ cardioid channel's design · a database or memory service · new `JASPER_*`
 knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
+
+- 2026-09-09 14:40Z: Row 3.2 opened as PR #4641 (`+1028/−40`, 15 files, CI
+  green) and reviewed: **REQUEST CHANGES**, fix agent dispatched. The review
+  earned its keep by testing rather than reading — it built 72 synthetic
+  in-room medians and found that repointing the ported adapter's
+  `required_captures` at the new seat-median role admits `vented` cabinets into
+  a fit that cannot run in-room: `fit_ported_plant` locates `fb` as a ≥4 dB
+  local minimum, which in a seat median is a room mode, not the port null. 31
+  of 72 were admitted; the worst published `fb_hz` 70.1 Hz off a 95 Hz room
+  dip, an effective corner of 137 Hz against a real 38 Hz corner, and a deepest
+  rung demanding 9.03 dB of boost under a policy capped at 6.0. The fix is one
+  line: leave `required_captures` at `WOOFER_NEARFIELD` so `vented` refuses
+  like `passive_radiator` already does. Also must-fix: a docstring pointing at
+  the deleted `ladder.py`, and a published `model_db` carrying the subsonic
+  high-pass the measurement does not have (1.194 dB off at 20 Hz against a
+  published `fit_rms_db` of 0.192 — the fit-quality curve misstating fit
+  quality exactly where the row reasons).
+  Two premises of the brief's row 3.2 are false at HEAD and are now recorded
+  as such: the design draft's cabinet block **cannot carry a declared f0/Q**
+  (`driver_safety._normalise_cabinet` rejects every key outside its five), so
+  the datasheet pair is an operator flag used only when the fit refuses and
+  only for sealed; and **no excursion margin is computable anywhere** — there
+  is no Xmax, no Sd and no displacement model in the tree, so the brief's
+  per-rung excursion margin cannot be published. The review confirmed nothing
+  downstream depends on it (3.3's schema has no excursion field; 3.4's ladder
+  is the empirical bound) and that the substitute, the transform's own boost,
+  is named for what it is. **This weakens ADR-0260's protection basis in one
+  leg:** "declared plant facts" cannot bound excursion today, so the in-room
+  ladder and the limiter evidence carry it alone. Recorded for the owner.
+  New row **3.2b** (above) carries the margin-policy divergence the review
+  found: it must land before 3.3's emission, because the subsonic's values are
+  never proved by the graph check that proves its position.
 
 - 2026-09-09 14:30Z: Wave-4 brief written (`briefs/wave-4-bass-runtime.md`),
   fact-checked against main `a1994ef69` by a Sonnet pass first. It found the
