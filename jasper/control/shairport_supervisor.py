@@ -38,6 +38,7 @@ from typing import Any
 from jasper.log_event import log_event
 from jasper.source_state import airplay_playbackstatus_observed
 
+from . import restart_broker
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -224,6 +225,18 @@ class ShairportSupervisor:
                 level=logging.WARNING,
             )
             return
+        try:
+            restarted = await self.restart_shairport()
+        except Exception:  # noqa: BLE001
+            restarted = False
+            log_event(
+                logger,
+                "shairport.restart_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
+        if not restarted:
+            return  # broker refused/failed: treat as if no attempt was made
         self._last_restart_monotonic = mono
         self.last_restart_at = time.time()
         self.restart_count += 1
@@ -235,15 +248,6 @@ class ShairportSupervisor:
             count=self.restart_count,
             level=logging.ERROR,
         )
-        try:
-            await self.restart_shairport()
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "shairport.restart_failed",
-                level=logging.ERROR,
-                exc_info=True,
-            )
 
     # ---- overridable IO ----
 
@@ -408,29 +412,32 @@ class ShairportSupervisor:
         _returncode, state = result
         return state in {"disabled", "masked", "masked-runtime"}
 
-    async def restart_shairport(self) -> None:
-        """`reset-failed` clears StartLimitBurst parking; `--no-block restart`
-        returns as soon as the recovery job is enqueued.
+    async def restart_shairport(self) -> bool:
+        """Restart via the broker's `reset_then_manage`: `reset-failed`
+        clears StartLimitBurst parking, then `--no-block restart` queues
+        the recovery job. `restart`, not active-only `try-restart`: a fully
+        dead desired-On receiver must be started. A concurrent source
+        Off/role park still wins at the final systemd start boundary via the
+        source-intent/effective-role marker gate.
 
-        A fully dead desired-On receiver must be started, so active-only
-        ``try-restart`` is insufficient. A concurrent source Off/role park still
-        wins at the final systemd start boundary because both AirPlay units carry
-        the canonical source-intent/effective-role marker gate.
+        Returns False, never raises, on a broker refusal or nonzero
+        systemctl result — the caller must not count that as a restart.
         """
-        reset = await asyncio.create_subprocess_exec(
-            "systemctl", "reset-failed",
+        result = await asyncio.to_thread(
+            restart_broker.reset_then_manage,
             "shairport-sync.service", "nqptp.service",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            reason="shairport_supervisor",
         )
-        await asyncio.wait_for(reset.wait(), timeout=5.0)
-        restart = await asyncio.create_subprocess_exec(
-            "systemctl", "--no-block", "restart",
-            "shairport-sync.service", "nqptp.service",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(restart.wait(), timeout=5.0)
+        if not result.get("ok"):
+            log_event(
+                logger,
+                "shairport_supervisor.restart_failed",
+                rc=result.get("rc"),
+                error=str(result.get("error") or result.get("stderr") or "-"),
+                level=logging.ERROR,
+            )
+            return False
+        return True
 
     # ---- accessors ----
 

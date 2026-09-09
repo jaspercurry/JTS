@@ -29,6 +29,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests._log_events import event_fields
+
 from jasper.busctl import BusctlResult
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
@@ -83,8 +85,9 @@ class _FakeSupervisor(ShairportSupervisor):
             raise result
         return result
 
-    async def restart_shairport(self) -> None:
+    async def restart_shairport(self) -> bool:
         self.restart_calls += 1
+        return True
 
     def _now(self) -> float:
         return self.now
@@ -247,8 +250,9 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
         async def is_shairport_unit_disabled(self) -> bool:
             return False  # crashed, not household-disabled
 
-        async def restart_shairport(self) -> None:
+        async def restart_shairport(self) -> bool:
             self.restart_calls += 1
+            return True
 
     sup = _DeadUnitSupervisor()
     for _ in range(3):
@@ -290,8 +294,9 @@ async def test_disabled_unit_is_never_restarted(monkeypatch):
         async def is_shairport_unit_disabled(self) -> bool:
             return True
 
-        async def restart_shairport(self) -> None:
+        async def restart_shairport(self) -> bool:
             self.restart_calls += 1
+            return True
 
     sup = _DisabledUnitSupervisor()
     for _ in range(6):  # two full thresholds' worth of failing ticks
@@ -569,69 +574,65 @@ async def test_default_is_session_active_fails_safe_on_non_zero_exit(
     assert await sup.is_session_active() is True
 
 
-async def test_default_restart_invokes_systemctl_with_both_units(monkeypatch):
-    """Pin the exact systemctl argv lists so a typo in unit names or
-    a missing recovery/--no-block flag surfaces in CI rather than the first
-    time the wedge happens in the wild."""
-    invocations: list[tuple] = []
+async def test_default_restart_uses_broker_reset_then_manage(monkeypatch):
+    """`restart_shairport` must route through the audited broker door, not a
+    direct systemctl call, with the two AirPlay units and the reset-first
+    semantics `reset_then_manage` owns."""
+    calls: list[tuple] = []
 
-    class _FakeProc:
-        returncode = 0
+    def fake_reset_then_manage(*units, **kwargs):
+        calls.append((units, kwargs))
+        return {"ok": True}
 
-        async def wait(self):
-            return 0
-
-    async def fake_exec(*args, **kwargs):
-        invocations.append(args)
-        return _FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.restart_broker.reset_then_manage",
+        fake_reset_then_manage,
+    )
     sup = ShairportSupervisor()
-    await sup.restart_shairport()
-    assert invocations == [
+    assert await sup.restart_shairport() is True
+    assert calls == [
         (
-            "systemctl", "reset-failed",
-            "shairport-sync.service", "nqptp.service",
-        ),
-        (
-            "systemctl", "--no-block", "restart",
-            "shairport-sync.service", "nqptp.service",
+            ("shairport-sync.service", "nqptp.service"),
+            {"reason": "shairport_supervisor"},
         ),
     ]
 
 
-async def test_default_restart_can_recover_a_fully_inactive_desired_on_receiver(
-    monkeypatch,
-):
-    """The dead-unit bypass needs restart, not active-only try-restart."""
-    units_active = True
-    invocations = []
+async def test_broker_refusal_does_not_count_as_restart(caplog, monkeypatch):
+    """A polkit denial or a nonzero systemctl exit from the broker must not
+    be credited as a restart: the count stays put and the failure is logged
+    with the broker's own result fields, so the next tick can retry as if
+    this attempt never happened."""
+    def fake_reset_then_manage(*units, **kwargs):  # noqa: ARG001
+        return {"ok": False, "rc": 1, "stderr": "denied"}
 
-    class _FakeProc:
-        def __init__(self, *, stop_before_return=False):
-            self.stop_before_return = stop_before_return
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.restart_broker.reset_then_manage",
+        fake_reset_then_manage,
+    )
 
-        async def wait(self):
-            nonlocal units_active
-            if self.stop_before_return:
-                units_active = False
-            return 0
+    class _WedgedSupervisor(ShairportSupervisor):
+        async def probe(self) -> bool:
+            return False
 
-    async def fake_exec(*args, **kwargs):
-        nonlocal units_active
-        invocations.append(args)
-        if args[1] == "reset-failed":
-            return _FakeProc(stop_before_return=True)
-        if args[2] == "restart":
-            units_active = True
-        return _FakeProc()
+        async def is_shairport_unit_disabled(self) -> bool:
+            return False
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        async def is_session_active(self) -> bool:
+            return False
 
-    await ShairportSupervisor().restart_shairport()
+    sup = _WedgedSupervisor(
+        interval_sec=0.0, jitter_sec=0.0, cold_start_sec=0.0,
+        failure_threshold=1,
+    )
+    with caplog.at_level(
+        logging.ERROR, logger="jasper.control.shairport_supervisor",
+    ):
+        await sup._tick()
 
-    assert invocations[-1][2] == "restart"
-    assert units_active is True
+    assert sup.restart_count == 0
+    fields = event_fields(caplog, "shairport_supervisor.restart_failed")
+    assert fields["rc"] == "1"
 
 
 def test_refused_follower_solo_fallback_keeps_airplay_supervision(monkeypatch):
