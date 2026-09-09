@@ -21,8 +21,7 @@ import pytest
 
 from jasper import ring_assets
 from jasper.ring_assets import RING_LIVENESS_TIMEOUT_NS, ring_stall_verdict
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests.ring_abi import ring_abi
 
 NOW = 100_000_000_000  # an arbitrary CLOCK_MONOTONIC "now", 100 s
 FRESH = NOW - 5_000_000  # 5 ms behind — comfortably live
@@ -60,22 +59,17 @@ def _ring_file(
 # --- the threshold is not ours to choose ------------------------------------
 
 
-def test_the_liveness_window_is_the_ioplugs_own_number():
+def test_the_liveness_window_is_the_rings_own_number():
     """SINGLE SOURCE OF TRUTH, across a language boundary.
 
     The observer must apply the SAME staleness window the C ioplug's
     ``reader_is_live`` applies when it decides to demote a reader and free-run.
     An observer with its own threshold would eventually disagree with the writer
     about who is alive — reporting a stall the writer is not acting on, or
-    staying silent through one it is.
+    staying silent through one it is. Both ends take it from the generated ring
+    ABI, which the C test pins its own ``#define`` against.
     """
-    header = (REPO_ROOT / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text(
-        encoding="utf-8"
-    )
-    assert "#define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS 2000000000ull" in header, (
-        "the C liveness window moved; re-derive RING_LIVENESS_TIMEOUT_NS"
-    )
-    assert RING_LIVENESS_TIMEOUT_NS == 2_000_000_000
+    assert RING_LIVENESS_TIMEOUT_NS == ring_abi()["writer_liveness_timeout_ns"]
 
 
 # --- the conjunction ---------------------------------------------------------

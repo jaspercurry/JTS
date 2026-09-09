@@ -251,8 +251,6 @@ typedef struct {
     int timer_fd;
 } jts_ring_pcm_t;
 
-static const unsigned int JTS_RING_RATE = 48000;
-
 // ---- helpers ----
 
 // Bytes per interleaved frame for this PCM's declared wire — the ONE place the
@@ -265,7 +263,7 @@ static size_t frame_bytes(const jts_ring_pcm_t *p) {
 // The ring geometry this PCM opens: the conf-declared wire at the pinned rate.
 static jts_ring_geometry_t pcm_geometry(const jts_ring_pcm_t *p) {
     jts_ring_geometry_t g = {
-        .rate = JTS_RING_RATE,
+        .rate = JTS_RING_RATE_HZ,
         .channels = p->channels,
         .sample_format = p->sample_format,
         .period_frames = p->period_frames,
@@ -277,14 +275,14 @@ static jts_ring_geometry_t pcm_geometry(const jts_ring_pcm_t *p) {
 // The bounded nap both directions use (the playback drain wait, the capture
 // starvation backstop). The timerfd interval is NOT this — see arm_timer.
 static uint64_t tick_ns_for(uint32_t period_frames) {
-    return jts_ring_tick_ns(period_frames, JTS_RING_RATE);
+    return jts_ring_tick_ns(period_frames, JTS_RING_RATE_HZ);
 }
 
 static void arm_timer(jts_ring_pcm_t *p) {
     if (p->timer_fd < 0) return;
     uint64_t tick_ns = jts_ring_timer_cadence_ns(
         p->pace_nominal, p->io.stream == SND_PCM_STREAM_PLAYBACK, p->period_frames,
-        JTS_RING_RATE);
+        JTS_RING_RATE_HZ);
     // tv_nsec must be < 1e9, and a whole period reaches that at or above 48000
     // frames (the conf.d accepts up to 65536); the ungoverned tick is <= 2 ms, so
     // the split is a no-op there.
@@ -480,7 +478,7 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
         .reader_live = reader_live,
         .pace_nominal = p->pace_nominal,
         .now_ns = now_ns,
-        .rate = JTS_RING_RATE,
+        .rate = JTS_RING_RATE_HZ,
     };
     uint64_t reported = jts_ring_pointer_report(&p->ptr_state, &in);
     pace_log_edges(p, now_ns);
@@ -722,7 +720,7 @@ static void capture_service_tick(jts_ring_pcm_t *p) {
     if (!writer_live && real_empty &&
         p->pending_silence_frames < (uint64_t)p->period_frames) {
         uint64_t now = jts_ring_monotonic_ns();
-        uint64_t period_ns = jts_ring_period_ns(p->period_frames, JTS_RING_RATE);
+        uint64_t period_ns = jts_ring_period_ns(p->period_frames, JTS_RING_RATE_HZ);
         // First silence period after real data (last_silence_ns == 0) arms
         // immediately so the gate opens without a period of dead air; each
         // subsequent one waits a full period of realtime.
@@ -1089,8 +1087,8 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
                                          p->channels);
     if (rc < 0) return rc;
 
-    rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_RATE, JTS_RING_RATE,
-                                         JTS_RING_RATE);
+    rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_RATE, JTS_RING_RATE_HZ,
+                                         JTS_RING_RATE_HZ);
     if (rc < 0) return rc;
 
     // Period = exactly one slot (period_frames). Buffer = n_slots periods.
