@@ -77,13 +77,13 @@ GROUPING_RING_CHANNELS = 2
 #: (``JTS_RING_MAX_SLOTS``), which is a constraint the design took knowingly:
 #: depth is not tunable upward from a conf.d edit, and the only other depth axis
 #: is the period, which is also what bounds how coarse the writer's delay signal
-#: can get. What the depth buys and what the ceiling costs: the design's §3.2.
+#: can get. See ADR-0261.
 GROUPING_RING_PERIOD_FRAMES = RING_CAMILLA_CHUNKSIZE
 GROUPING_RING_SLOTS = 16
 
 #: The exclusive ``flock`` a C ioplug WRITER holds for the life of its mapping,
 #: which is what makes a second writer's open fail loudly with ``-EBUSY``.
 #: DERIVED by calling the ring platform's own constructor rather than spelled
-#: again here — one suffix rule, one owner, already pinned against the C header
-#: by ``tests/test_ring_slot_ceiling_pin.py``.
+#: again here — one suffix rule, one owner, already pinned against the generated
+#: ring ABI by ``tests/test_ring_assets.py``.
 GROUPING_RING_WRITER_LOCK = ring_writer_lock_path(GROUPING_RING_FILE)

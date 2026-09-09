@@ -391,10 +391,11 @@ async def _park_and_commit_topology(
             raise RuntimeError(
                 parked.error or "could not safely park audio before changing topology"
             )
-        # A durable atomic write can raise while syncing the parent directory
-        # after the new topology has already replaced the old file. The
-        # publication outcome is then unknown, so the only safe response is to
-        # keep the proved all-muted graph and propagate the commit error.
+        # A durable atomic write still raises on a pre-publish content-fsync
+        # failure (nothing published, safe to propagate and stay parked). A
+        # post-publish directory-fsync failure is fail-soft in atomic_io: the
+        # new topology is already on disk, so it is not reported as a commit
+        # failure here.
         committed = commit()
         convergence = await _converge_committed_topology(
             committed,

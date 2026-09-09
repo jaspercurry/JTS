@@ -41,7 +41,7 @@
 //! |---|---|---|---|
 //! | 0  | magic | u32 | [`MAGIC`] `0x4A52494E` ("JRIN" LE). Written LAST during init, Release. Attach validity gate. |
 //! | 4  | version | u32 | [`VERSION`] = 1 |
-//! | 8  | rate | u32 | 48000 |
+//! | 8  | rate | u32 | [`RATE_HZ`] = 48000 |
 //! | 12 | channels | u32 | 2..=8 ([`MAX_RING_CHANNELS`]) |
 //! | 16 | sample_format | u32 | 1 = S16LE ([`SAMPLE_FORMAT_S16LE`]), 2 = S32LE ([`SAMPLE_FORMAT_S32LE`]) |
 //! | 20 | period_frames | u32 | frames per slot |
@@ -177,8 +177,9 @@ pub mod layout;
 pub mod writer;
 
 pub use layout::{
-    Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES, MIN_N_SLOTS,
-    RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE, VERSION,
+    layout_json, Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES,
+    MIN_N_SLOTS, RATE_HZ, RING_SLOTS, RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE,
+    VERSION,
 };
 pub use writer::{
     PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,
@@ -219,8 +220,6 @@ pub struct RingMetrics {
     pub epoch_resets: u64,
     /// Defensive resyncs when `write_seq - read_seq > n_slots` (should be 0).
     pub reader_resyncs: u64,
-    /// Resyncs performed at attach time (`read_seq = write_seq`).
-    pub attach_resyncs: u64,
     /// Last-observed writer pid (0 = detached).
     pub writer_pid: u64,
     /// Age of the writer heartbeat in ms at the last read (u64::MAX = never).
@@ -263,6 +262,12 @@ pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 const MAGIC_WAIT_TIMEOUT_MS: u64 = 100;
 const MAGIC_WAIT_STEP_US: u64 = 200;
 const OPEN_LOCK_SUFFIX: &str = ".open.lock";
+/// Adjacent lock file whose EXCLUSIVE flock a C writer holds for the life of
+/// its mapping. A Rust `RingWriter` does not take it (fan-in owns Ring A by
+/// construction), so nothing in this crate opens the path — but the C ioplug
+/// and `jasper.ring_assets` both spell it, so the declaration lives here with
+/// the rest of the ring ABI and reaches them through [`layout::layout_json`].
+pub const WRITER_LOCK_SUFFIX: &str = ".writer.lock";
 const OPEN_LOCK_MODE: u32 = 0o660;
 const OPEN_LOCK_WAIT_TIMEOUT_MS: u64 = 500;
 const OPEN_LOCK_WAIT_STEP_US: u64 = 1_000;
@@ -660,8 +665,8 @@ impl RingReader {
     /// `expected`. `O_EXCL` create races are resolved by attaching instead.
     ///
     /// On attach the reader resyncs `read_seq = write_seq` (drops the <=
-    /// `n_slots` stale slots accumulated while the reader was down; counted
-    /// `attach_resyncs`) and stamps `reader_pid`.
+    /// `n_slots` stale slots accumulated while the reader was down) and stamps
+    /// `reader_pid`.
     ///
     /// Refuses with `EBUSY` — and stamps nothing — when a live FOREIGN reader
     /// already owns the ring: it is SPSC and tolerates exactly one reader.
@@ -698,10 +703,8 @@ impl RingReader {
         map.header_atomic(layout::OFF_READER_HEARTBEAT_NS)
             .store(monotonic_ns(), Ordering::Relaxed);
 
-        let attach_resyncs = if write_seq > 0 { 1 } else { 0 };
         let metrics = RingMetrics {
             attached: true,
-            attach_resyncs,
             n_slots: expected.n_slots,
             slot_frames: expected.period_frames,
             ..RingMetrics::default()
@@ -1500,7 +1503,7 @@ mod tests {
 
     fn proto_geometry() -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,
@@ -1677,7 +1680,6 @@ mod tests {
         // Now the reader attaches; it must resync to the tip (drop the stale
         // slot) rather than replay it.
         let mut reader = RingReader::create_or_attach(&path, g).unwrap();
-        assert_eq!(reader.metrics().attach_resyncs, 1);
         let mut out = vec![0i16; n];
         assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Empty);
         cleanup(&path);
@@ -1757,7 +1759,7 @@ mod tests {
 
     fn wide_geometry(sample_format: u32, channels: u32) -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels,
             sample_format,
             period_frames: 128,

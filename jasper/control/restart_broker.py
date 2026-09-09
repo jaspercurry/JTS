@@ -8,13 +8,15 @@ The JTS service daemons (jasper-web's wizards, jasper-mux's librespot
 recovery, the wiim-remote adapter, and the rest) run as dedicated non-root
 service users, so they cannot ``systemctl`` anything themselves. jasper-control
 hosts this local UNIX-socket broker and performs a tightly-scoped unit action
-on their behalf.
+on their behalf. It also owns the box's reboot/poweroff, which no client may
+borrow — see :data:`POWER_VERBS`.
 
 Why this is safe to centralise:
 
 - **Peer-credential auth (SO_PEERCRED).** The connecting process's uid is read
   from the kernel — unforgeable, no token to steal. Only the known JTS service
-  users (and root) may call. The socket also lives at 0660 under
+  users (and root) may call, and the power verbs narrow that further to root
+  and the broker's own uid. The socket also lives at 0660 under
   jasper-control's ``RuntimeDirectory``, so filesystem perms are a second gate.
 - **Closed verb vocabulary.** The broker NEVER runs an arbitrary ``systemctl`` verb or
   argument — :data:`ALLOWED_VERBS` maps each verb to a fixed argv prefix. A compromised
@@ -60,6 +62,9 @@ broker is unreachable **and** the caller is root (``os.geteuid() == 0``), falls
 back to a direct ``systemctl`` — logged LOUDLY (``event=restart_broker.
 fallback_direct``) so a silently-broken broker path stays visible. A non-root
 client has no fallback: ``geteuid() != 0``, so the broker is its only path.
+The exception is :data:`POWER_VERBS`, which only jasper-control itself issues:
+they keep the direct path so a failed broker bind (non-fatal by design) cannot
+cost the household its reboot button.
 
 Wire format mirrors the other JTS control sockets (voice/mux/peering): a single
 newline-delimited JSON request, a single newline-delimited JSON response.
@@ -220,8 +225,14 @@ _VERB_ARGV: dict[str, tuple[list[str], bool]] = {
     "enable-now": (["enable", "--now"], True),
     "disable-now": (["disable", "--now"], True),
     "reset-failed": (["reset-failed"], False),
+    "reboot": (["reboot"], False),
+    "poweroff": (["poweroff"], False),
 }
 ALLOWED_VERBS = frozenset(_VERB_ARGV)
+
+# The unit-less verbs: logind actions, not unit actions (polkit grants them as
+# org.freedesktop.login1.*). Every other verb must name an allowlisted unit.
+POWER_VERBS = frozenset({"reboot", "poweroff"})
 
 # Per-request systemctl exec timeout: the client passes how long it's willing
 # to wait, the broker runs systemctl with that bound (clamped), and the client
@@ -315,6 +326,19 @@ def _build_argv(verb: str, units: list[str], *, no_block: bool) -> list[str]:
     return argv
 
 
+def _spawn_detached(argv: list[str]) -> None:
+    """Fire a systemctl call the broker must not wait on — the transition it
+    starts can kill the broker before it has answered."""
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
 def _run_systemctl_request(
     verb: str,
     units: list[str],
@@ -322,15 +346,20 @@ def _run_systemctl_request(
     no_block: bool,
     exec_timeout: float,
 ) -> tuple[int | None, str, bool]:
-    """Execute a validated request and return ``(rc, stderr, self_deferred)``.
-    ``rc=None`` means the control self-restart was queued but cannot be
-    confirmed without risking the broker dying before it replies.
+    """Execute a validated request and return ``(rc, stderr, deferred)``.
+    ``rc=None`` means the action was queued detached — a control self-restart,
+    or a power verb — and cannot be confirmed without risking the broker dying
+    before it replies.
 
     Restarting jasper-control from inside jasper-control is special: a single
     ``systemctl restart voice control mux`` can kill the broker before systemd
     has queued the later units. Queue non-self units first, then fire the
     control restart as a detached no-block command so the broker can answer.
     """
+    if verb in POWER_VERBS:
+        _spawn_detached(_build_argv(verb, units, no_block=False))
+        return None, "", True
+
     if verb == "restart" and _SELF_UNIT in units:
         non_self_units = [u for u in units if u != _SELF_UNIT]
         if non_self_units:
@@ -345,14 +374,7 @@ def _run_systemctl_request(
             if first.returncode != 0:
                 return first.returncode, (first.stderr or "").strip(), False
 
-        subprocess.Popen(
-            _build_argv(verb, [_SELF_UNIT], no_block=True),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
+        _spawn_detached(_build_argv(verb, [_SELF_UNIT], no_block=True))
         return None, "", True
 
     proc = subprocess.run(
@@ -380,6 +402,22 @@ def _allowed_uids() -> set[int]:
         except KeyError:
             continue
     return uids
+
+
+def _power_verb_uids() -> tuple[int, ...]:
+    """Uids that may ask for a POWER_VERB: root and the ``jasper-control``
+    service account. polkit grants org.freedesktop.login1.reboot/power-off to
+    the jasper-control user alone (deploy/polkit/49-jasper-control.rules), so
+    neither the broker's other peers nor manage_units' dead-broker fallback
+    may borrow it. Resolved by name (not the caller's own euid) so this set
+    means the same thing whether it checks a connecting peer's credentials or
+    the current process's own identity."""
+    uids = [0]
+    try:
+        uids.append(pwd.getpwnam("jasper-control").pw_uid)
+    except KeyError:
+        pass
+    return tuple(uids)
 
 
 # SO_PEERCRED is Linux-only (the broker runs on the Pi). Resolve it once;
@@ -446,7 +484,19 @@ class _BrokerHandler(StreamRequestHandler):
             return
 
         raw_units = req.get("units")
-        if (
+        if verb in POWER_VERBS:
+            if uid not in _power_verb_uids():
+                log_event(
+                    logger, "restart_broker.denied", reason="power_verb_peer_uid",
+                    verb=verb, peer_uid=uid, peer_pid=pid, level=logging.WARNING,
+                )
+                self._reply({"ok": False, "error": f"{verb} not permitted for peer"})
+                return
+            if raw_units:
+                self._reply({"ok": False, "error": f"{verb} takes no units"})
+                return
+            raw_units = []
+        elif (
             not isinstance(raw_units, list)
             or not raw_units
             or not all(isinstance(u, str) for u in raw_units)
@@ -456,6 +506,7 @@ class _BrokerHandler(StreamRequestHandler):
             )
             return
         units = [_normalize_unit(u) for u in raw_units]
+        units_label = ",".join(units) or "-"
         bad = [u for u in units if not _unit_allowed_for_verb(u, verb)]
         if bad:
             log_event(
@@ -478,31 +529,36 @@ class _BrokerHandler(StreamRequestHandler):
         )
         log_event(
             logger, "restart_broker.request", verb=verb,
-            units=",".join(units), reason=reason or "-",
+            units=units_label, reason=reason or "-",
             peer_uid=uid, peer_pid=pid, no_block=no_block,
             exec_timeout=exec_timeout,
         )
         try:
-            rc, err, self_deferred = _run_systemctl_request(
+            rc, err, deferred = _run_systemctl_request(
                 verb, units, no_block=no_block, exec_timeout=exec_timeout,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             log_event(
                 logger, "restart_broker.exec_failed", verb=verb,
-                units=",".join(units), error=str(exc), level=logging.WARNING,
+                units=units_label, error=str(exc), level=logging.WARNING,
             )
             self._reply({"ok": False, "error": f"systemctl invocation failed: {exc}"})
             return
-        if self_deferred:
+        if deferred:
             log_event(
-                logger, "restart_broker.self_restart_deferred",
-                verb=verb, units=_SELF_UNIT, result="queued_unconfirmed",
+                logger, "restart_broker.deferred", verb=verb,
+                units=units_label, result="queued_unconfirmed",
             )
-        queued_unconfirmed = self_deferred and rc is None
+        queued_unconfirmed = deferred and rc is None
+        # A power verb is also `deferred` (spawned detached, unconfirmable)
+        # but it never restarts jasper-control itself — reserve the
+        # `self_deferred` field for the actual self-unit-restart case so it
+        # is not a misnomer for reboot/poweroff replies.
+        self_deferred = deferred and verb not in POWER_VERBS
         if rc is not None and rc != 0:
             log_event(
                 logger, "restart_broker.exec_nonzero", verb=verb,
-                units=",".join(units), rc=rc, detail=err[:200],
+                units=units_label, rc=rc, detail=err[:200],
                 level=logging.WARNING,
             )
         self._reply({
@@ -671,8 +727,13 @@ def _direct_systemctl(
     shape so callers can't tell which path executed."""
     if verb not in ALLOWED_VERBS:
         return {"ok": False, "error": f"unknown verb {verb!r}"}
+    if verb in POWER_VERBS and units:
+        return {"ok": False, "error": f"{verb} takes no units"}
     argv = _build_argv(verb, [_normalize_unit(u) for u in units], no_block=no_block)
     try:
+        if verb in POWER_VERBS:
+            _spawn_detached(argv)
+            return {"ok": True, "action": verb, "units": [], "rc": None, "stderr": ""}
         proc = subprocess.run(
             argv, check=False, timeout=timeout,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
@@ -698,19 +759,27 @@ def manage_units(
     """Route a privileged unit action through the broker, best-effort.
 
     Never raises — returns a result dict with ``ok``. When the broker is
-    unreachable AND this process is still root, falls back to a direct
-    ``systemctl`` (logged loudly). Once the caller is a non-root service user
-    the fallback cannot fire, so the broker is the only path.
+    unreachable, falls back to a direct ``systemctl`` (logged loudly) if this
+    process is still root or the verb is a power verb. A non-root client has
+    no unit-verb fallback, so for those the broker is the only path.
     """
-    if not units:
+    if not units and verb not in POWER_VERBS:
         return {"ok": True, "action": verb, "units": []}
-    label = ",".join(units)
+    label = ",".join(units) or "-"
     try:
         resp = request_restart(
             *units, verb=verb, reason=reason, no_block=no_block, timeout=timeout,
         )
     except BrokerUnavailable as exc:
-        if os.geteuid() == 0:
+        # A power verb keeps the direct path for the non-root jasper-control
+        # specifically: the broker's bind failure is deliberately non-fatal
+        # (jasper.control.server), and polkit grants login1 reboot/power-off
+        # to jasper-control itself, the only caller that issues one. Any
+        # OTHER non-root caller gets no fallback here either — mirrors the
+        # broker's own peer-uid check for POWER_VERBS.
+        if os.geteuid() == 0 or (
+            verb in POWER_VERBS and os.geteuid() in _power_verb_uids()
+        ):
             log_event(
                 logger, "restart_broker.fallback_direct", verb=verb,
                 units=label, error=str(exc), level=logging.WARNING,

@@ -20,7 +20,7 @@ import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, DEFAULT, AsyncMock
 
 import pytest
 
@@ -103,17 +103,26 @@ class _FakeVolumeCoordinator:
 
 
 @pytest.fixture
-def mux(tmp_path):
+def mux(tmp_path, monkeypatch):
     # State file paths are per-test (tmp_path) so we don't accidentally
     # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
     # test forgets to stub the probes.
+    monkeypatch.setattr(mux_module, "fanin_command", AsyncMock(return_value={}))
     m = Mux(
         librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
-    m._fanin_select = AsyncMock(return_value={})
-    m._fanin_none = AsyncMock(return_value={})
+    return _wrap_fanin_gate(m)
+
+
+def _wrap_fanin_gate(m):
+    """Observe the gate commands without replacing them: the NONE latch and
+    the failure episode live in the real methods. Inject a fan-in fault at
+    ``mux_module.fanin_command``, never by making these raise."""
+    m._fanin_select = AsyncMock(wraps=m._fanin_select)
+    m._fanin_select_label = AsyncMock(wraps=m._fanin_select_label)
+    m._fanin_none = AsyncMock(wraps=m._fanin_none)
     return m
 
 
@@ -973,19 +982,22 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
 # ----------------------------------------------------------------------
 
 
-def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
-    # Combo tests exercise the real fan-in liveness method rather than the
-    # per-test fixture's simple USB boolean stub.
+def _make_combo_box(mux: Mux, monkeypatch, streaming_seq):
+    """Drive the real fan-in liveness method with one per-tick STATUS.
+
+    Each element is fan-in's ``direct.streaming`` edge for that tick; ``None``
+    is a STATUS miss (no snapshot at all). The last element repeats.
+    """
     monkeypatch.setattr(
         mux,
         "_usbsink_playing",
         Mux._usbsink_playing.__get__(mux, Mux),
     )
-    frames = list(frames_seq)
+    streaming = list(streaming_seq)
     idx = {"i": 0}
 
     async def _fanin():
-        value = frames[min(idx["i"], len(frames) - 1)]
+        value = streaming[min(idx["i"], len(streaming) - 1)]
         idx["i"] += 1
         if value is None:
             return None
@@ -995,10 +1007,7 @@ def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
                 {
                     "label": "usbsink",
                     "source": "direct",
-                    # The captured broken shape: direct lane-level frames_read
-                    # can stay frozen while resampler.input_frames advances.
-                    "frames_read": 0,
-                    "resampler": {"input_frames": value},
+                    "direct": {"streaming": value},
                 },
             ],
         }
@@ -1013,7 +1022,7 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, True])
 
     await mux._tick()
     assert mux._winner is None
@@ -1025,46 +1034,16 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     assert payload["active_source"] == "usbsink"
     assert payload["winner"] == "usbsink"
     assert payload["sources"]["usbsink"]["playing"] is True
-    assert payload["usbsink"]["combo"] is True
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
-
-
-async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
-    mux, patched_probes, monkeypatch,
-):
-    _stub_pauses(mux)
-    _stub_usbsink_preempt(mux)
-    _stub_probes(patched_probes, usbsink=False)
-    monkeypatch.setattr(
-        mux,
-        "_usbsink_playing",
-        Mux._usbsink_playing.__get__(mux, Mux),
-    )
-
-    async def fanin_status():
-        return {
-            "inputs": [{
-                "label": "usbsink",
-                "source": "direct",
-                "resampler": {"input_frames": 48_000},
-                "direct": {"streaming": True},
-            }],
-        }
-
-    mux._fanin_status_best_effort = fanin_status
-    await mux._tick()
-
-    assert mux._winner is Source.USBSINK
-    assert mux._state.playing[Source.USBSINK] is True
 
 
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 0, 0, 0])
+    _make_combo_box(mux, monkeypatch, [False])
 
     for _ in range(4):
         await mux._tick()
@@ -1078,7 +1057,7 @@ async def test_combo_usb_preempted_by_newly_started_source(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()
@@ -1096,7 +1075,7 @@ async def test_combo_usb_survives_single_fanin_status_miss(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, None, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, None, True])
 
     await mux._tick()
     await mux._tick()
@@ -1121,7 +1100,7 @@ async def test_usb_streaming_preempts_active_airplay(
     _stub_usbsink_preempt(mux)
     # AirPlay is established; a later USB frame-flow edge must take the speaker.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     assert mux._winner is Source.AIRPLAY
@@ -1260,8 +1239,8 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
     monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
     m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
 
-    await m._fanin_select_label("correction")
-    await m._fanin_none()
+    await m._fanin_select_label("correction", reason="test")
+    await m._fanin_none(reason="test")
     await m._fanin_lane_mute("usbsink", True)
 
     assert [call.kwargs["socket_path"] for call in command.await_args_list] == [
@@ -1269,87 +1248,6 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
         "/tmp/override.sock",
         "/tmp/override.sock",
     ]
-
-
-# ----------------------------------------------------------------------
-# Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
-# the fan-in lane MUTE so mux still tracks state but never asks fan-in
-# to silence — degrades to Bluetooth-style "brief mixing on preempt"
-# behaviour without requiring a redeploy.
-# ----------------------------------------------------------------------
-
-
-async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """With the escape hatch set, _usbsink_set_preempt updates the
-    tracked flag but does NOT MUTE the fan-in lane. Exercises the
-    method directly — bypasses _pause which the other tests stub."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-    await m._usbsink_set_preempt(True, reason="test_escape_hatch")
-
-    # State updated optimistically — mux's view of the world matches
-    # what it would have been if the mute had succeeded.
-    assert m._usbsink_preempted is True
-    # But no fan-in mute happened.
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch covers both directions — silence AND unsilence
-    skip the mute. Otherwise an operator enabling the escape hatch
-    mid-flight (with USB already silenced) would never get unsilenced."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    m._usbsink_preempted = True  # Pretend we were preempted before
-
-    await m._usbsink_set_preempt(False, reason="test_release")
-
-    assert m._usbsink_preempted is False
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_disabled_value_must_be_literal(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch is a string-match on the literal "disabled".
-    Other truthy strings (1, true, off, yes) do NOT activate it,
-    matching the sibling escape hatches' contract — avoids accidental
-    activation when an operator sets the var to a generic truthy value
-    expecting an enable. Mirrors the explicit `"disabled"` contract
-    in jasper.source_state._airplay_metadata_gate_disabled."""
-    for val in ("1", "true", "off", "yes", "enabled", ""):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val}")
-
-        assert fanin_mute.await_count == 1, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should NOT trigger the "
-            "escape hatch; only the literal 'disabled' (case-insensitive)."
-        )
-
-
-async def test_usbsink_set_preempt_disabled_case_insensitive(
-    monkeypatch, tmp_path,
-):
-    """Operators may set the value as "Disabled" or "DISABLED" by
-    convention; the gate is case-insensitive per the sibling
-    escape hatches."""
-    for val in ("disabled", "DISABLED", "Disabled", "  disabled  "):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val!r}")
-
-        assert fanin_mute.await_count == 0, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
-            "escape hatch (case-insensitive, whitespace-stripped)."
-        )
 
 
 # ----------------------------------------------------------------------
@@ -1375,16 +1273,6 @@ async def test_release_unmutes_fanin_lane(tmp_path):
     assert m._usbsink_preempted is False
 
 
-async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
-    """JASPER_USBSINK_PREEMPT=disabled degrades to graceful mix: mux tracks
-    state but issues no mute."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    await m._usbsink_set_preempt(True, reason="preempted_by_winner")
-    assert m._usbsink_preempted is True  # tracked optimistically
-    fanin_mute.assert_not_awaited()
-
-
 async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     """A failed fan-in mute degrades gracefully: WARN, graceful mixing, tracked
     flag NOT advanced so the next tick re-attempts (1 Hz, no retry storm, no
@@ -1394,7 +1282,7 @@ async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     assert m._usbsink_preempted is False  # not advanced → will retry
-    assert "fanin lane mute failed" in caplog.text
+    assert "event=usbsink.preempt_failed" in caplog.records[-1].message
     # State guard did NOT latch, so a subsequent tick tries again and succeeds.
     fanin_mute.side_effect = None
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
@@ -1410,23 +1298,11 @@ async def test_reassert_mute_reissues_while_preempted(tmp_path):
     fanin_mute.assert_awaited_once_with("usbsink", True)
 
 
-async def test_reassert_mute_noops_when_not_preempted_or_escaped(
-    monkeypatch, tmp_path,
-):
-    """Reassertion is a no-op when USB isn't preempted and under the escape
-    hatch."""
-    # Not preempted.
+async def test_reassert_mute_noops_when_not_preempted(tmp_path):
     m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = False
     await m._reassert_usbsink_preempt_mute()
     fanin_mute.assert_not_awaited()
-
-    # Escape hatch active.
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m2, fanin_mute2 = _make_mux_mute_stubbed(tmp_path)
-    m2._usbsink_preempted = True
-    await m2._reassert_usbsink_preempt_mute()
-    fanin_mute2.assert_not_awaited()
 
 
 async def test_tick_preempt_reaches_fanin_mute(
@@ -1438,7 +1314,7 @@ async def test_tick_preempt_reaches_fanin_mute(
     fanin_mute = AsyncMock(return_value={})
     mux._fanin_lane_mute = fanin_mute
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()  # baseline frames
     await mux._tick()  # USB advances → wins
@@ -1461,7 +1337,7 @@ async def test_tick_muted_host_stays_playing_for_liveness(
     mux._fanin_lane_mute = AsyncMock(return_value={})
     _stub_probes(patched_probes, usbsink=False, airplay=False)
     # Frames keep advancing across every tick — a streaming (even if muted) host.
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()
@@ -1491,11 +1367,10 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
         usbsink=False,
     )
     _stub_pauses(mux)
-    mux._fanin_select = AsyncMock(return_value={})
 
     status = await mux.select_source(Source.AIRPLAY)
 
-    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY, reason=ANY)
     mux._pause.assert_not_awaited()
     assert mux._manual_source is Source.AIRPLAY
     assert mux._winner is Source.AIRPLAY
@@ -1512,7 +1387,6 @@ async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
 ):
     mux._manual_source = Source.AIRPLAY
     mux._winner = Source.AIRPLAY
-    mux._fanin_select_label = AsyncMock(return_value={})
     _stub_probes(patched_probes, airplay=False)
 
     status = await mux.select_test_fanin_label(
@@ -1525,7 +1399,7 @@ async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
     assert status["test_source"] == "correction"
     assert status["test_owner"] == "correction-measurement"
     assert status["active_source"] == "correction"
-    mux._fanin_select_label.assert_awaited_with("correction")
+    mux._fanin_select_label.assert_awaited_with("correction", reason=ANY)
     assert mux._manual_source is Source.AIRPLAY
 
 
@@ -1534,12 +1408,10 @@ async def test_test_fanin_release_restores_manual_source(mux):
     mux._winner = Source.AIRPLAY
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
-    mux._fanin_select = AsyncMock(return_value={})
-    mux._fanin_none = AsyncMock(return_value={})
 
     status = await mux.release_test_fanin_label("correction-measurement")
 
-    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY, reason=ANY)
     mux._fanin_none.assert_not_awaited()
     assert status["test_source"] is None
     assert status["test_owner"] is None
@@ -1547,48 +1419,34 @@ async def test_test_fanin_release_restores_manual_source(mux):
     assert status["active_source"] == "airplay"
 
 
-async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
-    mux._fanin_select_label = AsyncMock(return_value={})
-
-    first = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    retry = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    busy = await mux.select_test_fanin_label(
-        "correction", "active-speaker-commissioning",
-    )
-    wrong_release = await mux.release_test_fanin_label(
-        "active-speaker-commissioning",
-    )
-
-    assert first["test_owner"] == "correction-measurement"
-    assert retry["test_owner"] == "correction-measurement"
-    assert "owned by" in busy["error"]
-    assert "owned by" in wrong_release["error"]
-    assert mux._test_fanin_owner == "correction-measurement"
-    assert mux._fanin_select_label.await_count == 2
-
-
 def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
     assert "doctor-aec-probe" in mux_module.FANIN_TEST_OWNERS
     assert "doctor-aec-probe" != "correction-measurement"
 
 
-async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
-    mux._fanin_select_label = AsyncMock(return_value={})
+@pytest.mark.parametrize(
+    ("holder", "other"),
+    [
+        ("correction-measurement", "active-speaker-commissioning"),
+        ("doctor-aec-probe", "correction-measurement"),
+    ],
+)
+async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(
+    mux, holder, other,
+):
+    """The lease is per-owner: the holder may renew, anyone else is refused
+    both the gate and the release, and no foreign call reaches fan-in."""
+    first = await mux.select_test_fanin_label("correction", holder)
+    retry = await mux.select_test_fanin_label("correction", holder)
+    busy = await mux.select_test_fanin_label("correction", other)
+    wrong_release = await mux.release_test_fanin_label(other)
 
-    held = await mux.select_test_fanin_label("correction", "doctor-aec-probe")
-    busy = await mux.select_test_fanin_label(
-        "correction", "correction-measurement"
-    )
-    wrong_release = await mux.release_test_fanin_label("correction-measurement")
-
-    assert held["test_owner"] == "doctor-aec-probe"
-    assert "doctor-aec-probe" in busy["error"]
-    assert "doctor-aec-probe" in wrong_release["error"]
-    assert mux._test_fanin_owner == "doctor-aec-probe"
+    assert first["test_owner"] == holder
+    assert retry["test_owner"] == holder
+    assert holder in busy["error"]
+    assert holder in wrong_release["error"]
+    assert mux._test_fanin_owner == holder
+    assert mux._fanin_select_label.await_count == 2
 
 
 async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
@@ -1596,7 +1454,6 @@ async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
 ):
     """USB/direct and ordinary program starts cannot displace the held lane."""
 
-    mux._fanin_select_label = AsyncMock(return_value={})
     _stub_probes(
         patched_probes,
         spotify=True,
@@ -1611,37 +1468,27 @@ async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     status = mux._status_payload()
     assert status["active_source"] == "correction"
     assert status["test_owner"] == "doctor-aec-probe"
-    mux._fanin_select_label.assert_awaited_with("correction")
+    mux._fanin_select_label.assert_awaited_with("correction", reason=ANY)
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_manual_select_is_rejected_without_mutation_during_test_gate(
-    mux, patched_probes,
+@pytest.mark.parametrize("action", ["manual", "auto"])
+async def test_source_selection_is_rejected_before_probe_during_test_gate(
+    mux, patched_probes, action,
 ):
+    """A held test lease refuses both selection paths before any mutation:
+    no fan-in call, no coordinator event, no source probe."""
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 100.0
 
-    result = await mux.select_source(Source.AIRPLAY)
+    if action == "manual":
+        result = await mux.select_source(Source.AIRPLAY)
+    else:
+        result = await mux.auto_select()
 
     assert "correction-measurement" in result["error"]
     mux._fanin_select.assert_not_awaited()
-    assert mux._volume_coordinator.events == []
-    for probe in vars(patched_probes).values():
-        probe.assert_not_awaited()
-    assert mux._test_fanin_owner == "correction-measurement"
-
-
-async def test_auto_select_is_rejected_before_probe_during_test_gate(
-    mux, patched_probes,
-):
-    mux._test_fanin_label = "correction"
-    mux._test_fanin_owner = "correction-measurement"
-    mux._test_fanin_expires_at = 100.0
-
-    result = await mux.auto_select()
-
-    assert "correction-measurement" in result["error"]
     mux._fanin_none.assert_not_awaited()
     assert mux._volume_coordinator.events == []
     for probe in vars(patched_probes).values():
@@ -1650,7 +1497,6 @@ async def test_auto_select_is_rejected_before_probe_during_test_gate(
 
 
 async def test_test_gate_renewal_extends_lease(monkeypatch, mux):
-    mux._fanin_select_label = AsyncMock(return_value={})
     now = [10.0]
     monkeypatch.setattr(mux_module.time, "monotonic", lambda: now[0])
 
@@ -1668,8 +1514,7 @@ async def test_test_gate_renewal_extends_lease(monkeypatch, mux):
 
 
 async def test_test_gate_response_loss_rolls_back_or_retains_owner(mux):
-    mux._fanin_select_label = AsyncMock(side_effect=RuntimeError("response lost"))
-    mux._fanin_none = AsyncMock(side_effect=RuntimeError("rollback unavailable"))
+    mux_module.fanin_command.side_effect = RuntimeError("response lost")
 
     failed = await mux.select_test_fanin_label(
         "correction", "correction-measurement",
@@ -1685,7 +1530,7 @@ async def test_test_gate_release_failure_retains_owner_then_retry_clears(mux):
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 100.0
-    mux._fanin_none = AsyncMock(side_effect=[RuntimeError("fanin down"), {}])
+    mux_module.fanin_command.side_effect = [RuntimeError("fanin down"), {}]
 
     failed = await mux.release_test_fanin_label("correction-measurement")
     assert "fanin down" in failed["error"]
@@ -1700,8 +1545,6 @@ async def test_test_gate_release_failure_retains_owner_then_retry_clears(mux):
 async def test_owner_scoped_release_without_memory_reasserts_normal_gate(mux):
     """Recover SELECT-landed/response-lost even before ownership published."""
 
-    mux._fanin_none = AsyncMock(return_value={})
-
     released = await mux.release_test_fanin_label("correction-measurement")
 
     assert "error" not in released
@@ -1715,13 +1558,19 @@ async def test_expired_test_gate_self_clears_through_strict_restore(
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 0.0
-    mux._fanin_none = AsyncMock(return_value={})
 
     await mux._tick()
 
     assert mux._test_fanin_owner is None
     assert mux._test_fanin_label is None
     assert mux._fanin_none.await_count >= 1
+
+
+async def _fanin_command_none_fails(command, **_):
+    """Fan-in refuses the idle gate but still accepts SELECT."""
+    if command == "NONE":
+        raise RuntimeError("fanin down")
+    return {}
 
 
 async def test_expired_test_gate_restore_failure_stays_owned_for_retry(
@@ -1731,14 +1580,13 @@ async def test_expired_test_gate_restore_failure_stays_owned_for_retry(
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 0.0
-    mux._fanin_none = AsyncMock(side_effect=RuntimeError("fanin down"))
-    mux._fanin_select_label = AsyncMock(return_value={})
+    mux_module.fanin_command.side_effect = _fanin_command_none_fails
 
     await mux._tick()
 
     assert mux._test_fanin_owner == "correction-measurement"
     assert mux._test_fanin_label == "correction"
-    mux._fanin_select_label.assert_awaited_with("correction")
+    mux._fanin_select_label.assert_awaited_with("correction", reason=ANY)
 
 
 async def test_select_source_prepares_volume_before_fanin_gate(
@@ -1747,11 +1595,11 @@ async def test_select_source_prepares_volume_before_fanin_gate(
     _stub_probes(patched_probes, spotify=True, airplay=True)
     coord = mux._volume_coordinator
 
-    async def select_with_order(source):
+    async def select_with_order(source, **_):
         coord.events.append(f"select:{source.value}")
-        return {}
+        return DEFAULT
 
-    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+    mux._fanin_select.side_effect = select_with_order
 
     await mux.select_source(Source.AIRPLAY)
 
@@ -1787,7 +1635,7 @@ async def test_fanin_select_abort_republishes_final_volume_context(
 ):
     _stub_probes(patched_probes, spotify=True, airplay=True)
     coord = mux._volume_coordinator
-    mux._fanin_select = AsyncMock(side_effect=RuntimeError("fanin down"))
+    mux_module.fanin_command.side_effect = RuntimeError("fanin down")
 
     await mux.select_source(Source.AIRPLAY)
 
@@ -1909,7 +1757,7 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
         volume_coordinator=coordinator,
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
-    real_mux._fanin_select = AsyncMock(return_value={})
+    _wrap_fanin_gate(real_mux)
     _stub_probes(patched_probes, airplay=True)
 
     status = await asyncio.wait_for(
@@ -2010,11 +1858,11 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
     coord = mux._volume_coordinator
     coord.events.clear()
 
-    async def select_with_order(source):
+    async def select_with_order(source, **_):
         coord.events.append(f"select:{source.value}")
-        return {}
+        return DEFAULT
 
-    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+    mux._fanin_select.side_effect = select_with_order
     _stub_probes(patched_probes, spotify=True, airplay=True)
 
     await mux._tick()
@@ -2041,14 +1889,14 @@ async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
     coord = mux._volume_coordinator
     coord.events.clear()
 
-    async def select_with_order(source):
+    async def select_with_order(source, **_):
         coord.events.append(f"select:{source.value}")
-        return {}
+        return DEFAULT
 
     async def drop_with_order():
         coord.events.append("drop:airplay")
 
-    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+    mux._fanin_select.side_effect = select_with_order
     mux._airplay_drop_session_for_preempt = drop_with_order
     _stub_probes(patched_probes, airplay=True, usbsink=True)
 
@@ -2079,6 +1927,60 @@ async def test_winner_stopping_holds_fanin_none(
 
     mux._fanin_none.assert_awaited()
     assert mux._winner is None
+
+
+@pytest.mark.parametrize(
+    "side_effect, awaits, consecutive_failures",
+    [
+        (None, 1, None),
+        ([RuntimeError("fanin down"), RuntimeError("fanin down"), DEFAULT],
+         3, "2"),
+    ],
+    ids=["lands_first_try", "retried_through_outage"],
+)
+async def test_idle_fanin_none_is_asserted_until_it_lands(
+    mux, patched_probes, caplog, side_effect, awaits, consecutive_failures,
+):
+    """Idle is an edge, not a 1 Hz heartbeat: NONE repeats only while it
+    fails, and the failure episode is reported on its two edges."""
+    _stub_probes(patched_probes)
+    mux_module.fanin_command.side_effect = side_effect
+
+    with caplog.at_level(logging.INFO, logger=mux_module.__name__):
+        for _ in range(3):
+            await mux._tick()
+
+    assert mux._fanin_none.await_count == awaits
+    failed = event_field_maps(caplog, "mux.fanin_gate_failed")
+    recovered = event_field_maps(caplog, "mux.fanin_gate_recovered")
+    if consecutive_failures is None:
+        assert (failed, recovered) == ([], [])
+    else:
+        assert [fields["reason"] for fields in failed] == ["auto_idle"]
+        assert [fields["consecutive_failures"] for fields in recovered] == [
+            consecutive_failures,
+        ]
+
+
+async def test_landed_strict_gate_closes_the_best_effort_failure_episode(
+    mux, patched_probes, caplog,
+):
+    """One episode across both paths: the strict SELECT of a manual pin
+    closes the episode the idle NONE opened, under its own reason."""
+    _stub_probes(patched_probes)
+
+    with caplog.at_level(logging.INFO, logger=mux_module.__name__):
+        mux_module.fanin_command.side_effect = RuntimeError("fanin down")
+        await mux._tick()
+        mux_module.fanin_command.side_effect = None
+        _stub_probes(patched_probes, airplay=True)
+        await mux.select_source(Source.AIRPLAY)
+
+    recovered = event_field_maps(caplog, "mux.fanin_gate_recovered")
+    assert [
+        (fields["reason"], fields["consecutive_failures"])
+        for fields in recovered
+    ] == [("manual", "1")]
 
 
 async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
@@ -2198,7 +2100,6 @@ async def test_manual_tick_keeps_selected_source_when_other_source_starts(
 ):
     mux._manual_source = Source.AIRPLAY
     mux._winner = Source.AIRPLAY
-    mux._fanin_select = AsyncMock(return_value={})
     _stub_pauses(mux)
 
     _stub_probes(patched_probes, airplay=True, usbsink=False)
@@ -2210,7 +2111,7 @@ async def test_manual_tick_keeps_selected_source_when_other_source_starts(
 
     mux._pause.assert_not_awaited()
     assert mux._fanin_select.await_count == 2
-    mux._fanin_select.assert_awaited_with(Source.AIRPLAY)
+    mux._fanin_select.assert_awaited_with(Source.AIRPLAY, reason=ANY)
     assert mux._winner is Source.AIRPLAY
     assert (
         mux._state.started_seq[Source.USBSINK]
@@ -2223,12 +2124,11 @@ async def test_auto_select_clears_manual_source_and_releases_fanin_gate(
 ):
     mux._manual_source = Source.SPOTIFY
     mux._winner = Source.SPOTIFY
-    mux._fanin_select = AsyncMock(return_value={})
     _stub_probes(patched_probes, spotify=False, airplay=True)
 
     status = await mux.auto_select()
 
-    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY, reason=ANY)
     assert mux._manual_source is None
     assert status["mode"] == "auto"
     assert status["selected_source"] is None
@@ -2239,14 +2139,13 @@ async def test_auto_select_preempts_other_active_sources_before_auto_gate(
     mux, patched_probes,
 ):
     mux._manual_source = Source.AIRPLAY
-    mux._fanin_select = AsyncMock(return_value={})
     _stub_pauses(mux)
     _stub_probes(patched_probes, spotify=True, airplay=True)
 
     status = await mux.auto_select()
 
     mux._pause.assert_awaited_once_with(Source.SPOTIFY)
-    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY, reason=ANY)
     assert mux._manual_source is None
     assert mux._winner is Source.AIRPLAY
     assert status["mode"] == "auto"
@@ -2284,9 +2183,7 @@ def _fresh_mux_after_restart(tmp_path):
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
-    m._fanin_select = AsyncMock(return_value={})
-    m._fanin_none = AsyncMock(return_value={})
-    return m
+    return _wrap_fanin_gate(m)
 
 
 async def test_select_source_persists_manual_pin_to_disk(

@@ -15,9 +15,9 @@ from typing import Any
 from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
+from ...volume_curve import db_to_percent
 from .. import measurement_hold
 from .. import server as _server
-from .. import volume_ops
 from ._base import ControlHandlerMixin, logger
 
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
@@ -70,7 +70,7 @@ class VolumeRoutes(ControlHandlerMixin):
         if self._maybe_forward_pair_action_to_leader():
             return
         try:
-            state = asyncio.run(self._get_op())
+            state = self._get_op()
         except Exception as e:  # noqa: BLE001
             logger.exception("get volume failed")
             self._send_json({"error": str(e)}, status=502)
@@ -175,7 +175,7 @@ class VolumeRoutes(ControlHandlerMixin):
                 return
         elif "db" in body:
             try:
-                target_pct = volume_ops._db_to_percent(float(body["db"]))
+                target_pct = db_to_percent(float(body["db"]))
             except (TypeError, ValueError):
                 self._send_json(
                     {"error": "db must be a number"},
@@ -242,7 +242,7 @@ class VolumeRoutes(ControlHandlerMixin):
                 level=logging.INFO if first_decline else logging.DEBUG,
             )
             try:
-                state = asyncio.run(self._get_op())
+                state = self._get_op()
             except Exception as e:  # noqa: BLE001
                 # Same shape as _get_volume's guard: this reads the persisted
                 # projection, and a read failure is a 502, not a silent 200

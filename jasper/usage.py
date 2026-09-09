@@ -34,6 +34,9 @@ DEFAULT_DAILY_SPEND_CAP_USD = 1.0
 DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
 DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
+# Sessions older than this are pruned on each writable store open. Units: days.
+USAGE_RETENTION_DAYS = 365
+
 
 def tuning_usage_db_path(usage_db_path: str) -> str:
     """The tuning-spend ledger beside the voice ledger; every surface reads it, none writes it."""
@@ -339,6 +342,14 @@ _CONNECTION_INTERVALS_TABLE_DDL = f"""
     )
 """
 
+_SESSIONS_STARTED_AT_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at)"
+)
+_CONNECTION_INTERVALS_OPENED_AT_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_connection_intervals_opened_at "
+    "ON connection_intervals(opened_at)"
+)
+
 
 _USAGE_COLUMNS = {
     "sessions": "id, started_at, ended_at, input_tokens, output_tokens, cost_usd, provider",
@@ -394,7 +405,10 @@ class UsageStore:
             if not read_only:
                 self._conn.execute(_SESSIONS_TABLE_DDL)
                 self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
+                self._conn.execute(_SESSIONS_STARTED_AT_INDEX_DDL)
+                self._conn.execute(_CONNECTION_INTERVALS_OPENED_AT_INDEX_DDL)
                 self._ensure_connection_interval_kind_column()
+                self._prune_expired_rows()
             self._connection_intervals_have_kind = (
                 self._connection_interval_kind_column_exists()
             )
@@ -592,6 +606,17 @@ class UsageStore:
             f"ADD COLUMN kind TEXT NOT NULL DEFAULT '{_LEGACY_CONNECTION_UPTIME_KIND}'"
         )
 
+    def _prune_expired_rows(self) -> None:
+        """Drop sessions and connection_intervals past USAGE_RETENTION_DAYS.
+        Runs once per writable store open."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=USAGE_RETENTION_DAYS)
+        ).isoformat()
+        self._conn.execute("DELETE FROM sessions WHERE started_at < ?", (cutoff,))
+        self._conn.execute(
+            "DELETE FROM connection_intervals WHERE opened_at < ?", (cutoff,),
+        )
+
     # ------------------------------------------------------------------
     # Billable realtime-activity intervals (time-billed providers, e.g. Grok)
     # ------------------------------------------------------------------
@@ -669,9 +694,8 @@ class UsageStore:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
         cur = self._conn.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
-            "WHERE strftime('%s', started_at) >= ?",
-            (str(int(cutoff.timestamp())),),
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions WHERE started_at >= ?",
+            (cutoff.replace(microsecond=0).isoformat(),),
         )
         row = cur.fetchone()
         token_cost = float(row[0] if row else 0.0)

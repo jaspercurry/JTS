@@ -7,6 +7,7 @@ record predicates (ADR-0233 rule 1 — one parser, one roster)."""
 from __future__ import annotations
 
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -82,3 +83,29 @@ def test_read_unit_states_is_none_when_the_subprocess_itself_fails(monkeypatch):
     monkeypatch.setattr(service_units.subprocess, "run", fail)
 
     assert service_units.read_unit_states(("a.service",)) is None
+
+
+@pytest.mark.parametrize(
+    ("record", "is_none"),
+    [
+        (None, True),
+        ({}, True),
+        ({"active_enter_timestamp_monotonic": None}, True),
+        ({"active_enter_timestamp_monotonic": 0}, True),
+        ({"active_enter_timestamp_monotonic": -1}, True),
+    ],
+    ids=["absent", "empty", "unset", "zero", "negative"],
+)
+def test_unit_uptime_sec_is_none_without_a_usable_timestamp(record, is_none):
+    assert (service_units.unit_uptime_sec(record) is None) is is_none
+
+
+def test_unit_uptime_sec_reads_the_monotonic_clock_shared_with_systemd():
+    now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    started_us = int(now_us - 90.0 * 1e6)
+
+    uptime = service_units.unit_uptime_sec(
+        {"active_enter_timestamp_monotonic": started_us}
+    )
+
+    assert uptime == pytest.approx(90.0, abs=1.0)

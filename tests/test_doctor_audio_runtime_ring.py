@@ -36,6 +36,7 @@ from ._doctor_audio_runtime_fixtures import (
     _seed_units,
 )
 from .doctor_test_support import record_active_dac
+from .ring_abi import ring_abi
 from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 from .test_ring_stall_alarm import _ring_file
 
@@ -505,6 +506,11 @@ def _stage_ring_geometry(
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_A_PROGRAM_FILE", str(program))
+    # The check's own read is the evidence-memoized `fanin_env()`, sourced from
+    # `env_load.FANIN_ENV_PATH`; `ring_readiness.FANIN_ENV_PATH` still needs
+    # patching too since `resolve_effective_fanin_ring_slots` reports it as
+    # the resolution's `source` label.
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
         "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
@@ -1253,6 +1259,19 @@ def test_writer_lock_guard_ignores_a_contender_that_gave_up(monkeypatch, tmp_pat
     assert result.status == "ok"
 
 
+def test_writer_lock_confirm_delay_outlasts_the_ring_open_budget():
+    """The confirm sample must land AFTER a legitimate contender has given up.
+
+    `acquire_writer_lock` opens the lock file and only then spins on flock until
+    the ring ABI's `open_lock_wait_timeout_ms` expires, so a healthy box has two
+    fd holders for up to that long. A confirm delay that did not OUTLAST the
+    budget would report an ordinary create-or-attach race as the defect.
+    """
+    budget_sec = ring_abi()["open_lock_wait_timeout_ms"] / 1000.0
+
+    assert audio_runtime_ring._WRITER_LOCK_CONFIRM_DELAY_SEC > budget_sec
+
+
 def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path):
     """One writer whose lock file was unlinked out from under it: exclusivity
     is ALREADY void (the next opener creates a fresh inode and is not
@@ -1483,7 +1502,6 @@ def _arrange(
     playback_device: str | None,
     crossover_playback_device: str | None = None,
     primary_config_missing: bool = False,
-    grouped_park: bool = False,
     marker_armed: bool = False,
     env_lines: str = "",
 ) -> None:
@@ -1521,9 +1539,6 @@ def _arrange(
     )
     monkeypatch.setattr(
         "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
-    )
-    monkeypatch.setattr(
-        audio_runtime_ring, "_grouped_dac_content_lane_parked", lambda: grouped_park
     )
     _point_entry_lock_at(monkeypatch, tmp_path)
     primary = _write_pair(tmp_path, "primary", playback_device)
@@ -1575,35 +1590,6 @@ def test_a_bridge_waiting_on_a_ring_nobody_writes_fails_too(
 
     assert result.status == "fail", result
     assert result.reason == audio_runtime_ring.REASON_SPLIT_RING_UNFED
-
-
-def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
-    monkeypatch, tmp_path
-) -> None:
-    """THE FALSE FAIL this carve-out exists to prevent.
-
-    A bonded passive follower loads the stereo ring by design while its
-    grouping env pins CONTENT_BRIDGE=direct, and it PLAYS — through the
-    dac_content lane. The generalized predicate reads that pair as a split, and
-    the arm it would prescribe is one `coupling_supported_for_route` refuses for
-    exactly this box. `check_ring_transport_park` owns the shape by name, so
-    this check stands down on it.
-
-    Its CONTROL is the parametrized fail above: the identical
-    (direct bridge, stereo ring) pair with no park FAILs, so what is carved out
-    here is the park and not the stereo ring itself.
-    """
-    _arrange(
-        monkeypatch,
-        tmp_path,
-        bridge=DIRECT_BRIDGE,
-        playback_device=RING_PLAYBACK_DEVICE,
-        grouped_park=True,
-    )
-
-    result = audio_runtime_ring.check_content_transport_coherence()
-    assert result.status == "skipped"
-    assert result.reason == audio_runtime_ring.REASON_SPLIT_GROUPED_DAC_CONTENT_LANE
 
 
 def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
@@ -1937,31 +1923,6 @@ def test_a_crossed_pair_with_nobody_reconciling_is_the_silence_fail(
 
     assert result.status == "fail", result
     assert result.speaker_silent is True
-
-
-def test_the_legacy_fifo_park_does_not_gate_the_ring_path_rung(
-    monkeypatch, tmp_path
-) -> None:
-    """THE OVER-GATE this partition removes.
-
-    `PARK_GROUPED_DAC_CONTENT_LANE` is keyed on
-    `JASPER_OUTPUTD_DAC_CONTENT_FIFO` alone, so a parked box can still carry a
-    ring bridge whose path lags its marker — and outputd refuses THAT pair at
-    startup whatever the lane is doing. The park stands the split rungs down
-    (asserted by the bonded-follower test above); it must not swallow this one.
-    """
-    _arrange_projection(
-        monkeypatch,
-        tmp_path,
-        marker="1",
-        carried="/dev/shm/jts-ring/content.ring",
-        grouped_park=True,
-    )
-
-    result = audio_runtime_ring.check_content_transport_coherence()
-
-    assert result.status == "fail", result
-    assert result.reason == audio_runtime_ring.REASON_RING_PATH_LAGS_MARKER
 
 
 def _silent_split_transport(monkeypatch, tmp_path):

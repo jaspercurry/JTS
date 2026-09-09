@@ -172,17 +172,27 @@ def test_post_publication_fsync_failure_does_not_restore_old_graph(
         save_output_topology(new_topology, topology_path)
         return new_topology
 
+    materialised: list[str] = []
     monkeypatch.setattr(os, "fsync", fail_directory_fsync)
-    with pytest.raises(OSError, match="simulated directory fsync failure"):
-        runtime_convergence.park_and_commit_topology(
-            old_topology,
-            commit,
-            controller_factory=lambda: controller,
-        )
+    monkeypatch.setattr(
+        runtime_convergence,
+        "materialise_safe_graph_decision",
+        lambda decision, *, topology: materialised.append(
+            str(decision.selected_config_path)
+        ),
+    )
 
+    result = runtime_convergence.park_and_commit_topology(
+        old_topology,
+        commit,
+        controller_factory=lambda: controller,
+    )
+
+    parked_path = str(result.convergence.decision.selected_config_path)
+    assert result.convergence.ok is True
     assert load_output_topology(topology_path) == new_topology
-    assert controller.path_sets == []
-    assert len(controller.raw_sets) == 1
+    assert materialised == [parked_path]
+    assert controller.path_sets == [parked_path]
 
 
 def test_graph_writer_cannot_enter_between_park_and_commit(

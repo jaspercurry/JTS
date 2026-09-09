@@ -20,6 +20,7 @@ These tests are a defensive moat around regressions like:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tests.reconcile_fixtures import fake_systemctl
@@ -37,10 +38,6 @@ UNIT_PATH = (
 RECOVER_UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla-recover.service"
-)
-RECOVER_SCRIPT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "bin" / "jasper-camilla-recover"
 )
 INSTALL_SH = (
     Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
@@ -170,20 +167,10 @@ def test_recovery_unit_points_at_installed_helper():
     assert _assignments_for(body, "ExecStart") == (
         "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
-    # Both deadlines are load-bearing: the body must be able to finish its
-    # own restore ladder, and the EXIT trap that reruns it on a kill needs
-    # the ladder's share as its own budget.
-    assert _value_for(body, "TimeoutStartSec") == "600"
-    assert _value_for(body, "TimeoutStopSec") == "400"
-
-
-def test_recovery_helper_is_bounded_and_forensic():
-    body = RECOVER_SCRIPT_PATH.read_text()
-    assert "event=camilla.recover." in body
-    assert "capture_dev_snd_holders" in body
-    assert "capture_asound_status" in body
-    assert "JASPER_CAMILLA_RECOVER_COOLDOWN_SEC" in body
-    assert "systemctl reboot" not in body
+    # The deadline must cover the handler's own pass: bounded captures, one
+    # blocking camilla start behind every unit it pulls in, the liveness wait.
+    assert _value_for(body, "TimeoutStartSec") == "180"
+    assert _value_for(body, "TimeoutStopSec") == "5"
 
 
 def test_install_sh_installs_recovery_unit_and_helper():
@@ -212,22 +199,28 @@ def test_install_sh_creates_camilladsp_state_dirs():
     assert "install -d -m 2775 -g jasper /var/lib/camilladsp/configs" in body
 
 
-def test_install_sh_removes_legacy_v1_yml_from_upgraded_boxes():
+def test_install_removes_legacy_v1_yml_from_upgraded_boxes():
     """install.sh no longer *seeds* v1.yml (issue #2240), but a box
     upgraded from an older build still has one on disk from a prior
-    install unless install_camilladsp actively removes it. A stray
-    v1.yml is not inert: camillagui's config picker scans
-    /etc/camilladsp/*.yml and can still select it, and the install-time
-    statefile guard treats it as a flat-allowed graph — so a leftover
-    copy can point the statefile at a config that writes to the
-    now-removed pcm.jasper_out dmix."""
-    body = INSTALL_SH.read_text()
-    assert 'rm -f "${CAMILLA_CONF}/v1.yml"' in body
-    # Must live in install_camilladsp, not some other function.
-    func_start = body.index("install_camilladsp()")
-    func_end = body.index("\n}\n", func_start)
-    func_body = body[func_start:func_end]
-    assert 'rm -f "${CAMILLA_CONF}/v1.yml"' in func_body
+    install unless the deploy actively removes it. A stray v1.yml is not
+    inert: camillagui's config picker scans /etc/camilladsp/*.yml and can
+    still select it, and the install-time statefile guard treats it as a
+    flat-allowed graph — so a leftover copy can point the statefile at a
+    config that writes to the now-removed pcm.jasper_out dmix.
+
+    The removal is a row of the retirement table, not an inline rm.
+    """
+    retirements = (
+        Path(__file__).resolve().parent.parent
+        / "deploy"
+        / "lib"
+        / "install"
+        / "retirements.sh"
+    ).read_text()
+    rows = re.findall(r'^\s*"file\|([^"]*)"', retirements, re.MULTILINE)
+    targets = {target for row in rows for target in row.split("|", 1)[0].split()}
+    assert "${CAMILLA_CONF}/v1.yml" in targets, targets
+    assert "v1.yml" not in INSTALL_SH.read_text()
 
 
 def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons():

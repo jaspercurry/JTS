@@ -9,20 +9,11 @@ import os
 import re
 import shutil
 import socket
-from pathlib import Path
 from ...audio_hardware.dac import (
     MixerControl,
     by_id as _dac_profile_for,
 )
-from ...active_speaker.environment import camilla_statefile_path
-from ...camilla import CamillaController, CamillaUnavailable
-from ...camilla_config_contract import (
-    DEFAULT_VOLUME_LIMIT_DB,
-    parse_camilla_devices_config,
-)
-from ...camilla_latency import resolve_camilla_chunksize
 from ...config import Config
-from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ... import ring_assets
 from ...mics import xvf3800
 from ...output_hardware import (
@@ -39,14 +30,8 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_TOPOLOGY_UNREADABLE,
     CheckResult,
-    _group_writable_dir,
     _parked_follower_result,
     _run,
-)
-from .correction import (
-    REASON_CAMILLA_CONFIG_MISSING,
-    REASON_CAMILLA_CONFIG_UNREADABLE,
-    REASON_CAMILLA_STATEFILE_UNREADABLE,
 )
 
 # Closed vocabulary for this module's `CheckResult.reason`: one snake_case
@@ -73,9 +58,6 @@ REASON_MIC_HELD_BY_VOICE = "mic_held_by_voice"
 
 REASON_LOOPBACK_MISSING = "loopback_missing"
 
-REASON_CAMILLA_UNREACHABLE = "camilla_unreachable"
-REASON_CAMILLA_VOLUME_ABOVE_CEILING = "camilla_volume_above_ceiling"
-
 REASON_TTS_OUTPUTD_UNREACHABLE = "tts_outputd_unreachable"
 
 REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE = "output_hardware_state_unavailable"
@@ -86,10 +68,6 @@ REASON_OUTPUT_HARDWARE_DEGRADED = "output_hardware_degraded"
 REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE = "output_hardware_stray_apple_dongle"
 
 REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
-
-REASON_CAMILLA_CONFIG_DIR_MISSING = "camilla_config_dir_missing"
-REASON_CAMILLA_CONFIG_DIR_UNREADABLE = "camilla_config_dir_unreadable"
-REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE = "camilla_config_dir_not_writable"
 
 REASON_DAC_SYNC_NOT_APPLICABLE = "dac_sync_not_applicable"
 REASON_DAC_SYNC_NO_PLAYBACK_CARDS = "dac_sync_no_playback_cards"
@@ -105,15 +83,6 @@ REASON_APPLE_DONGLE_CARDS_MISSING = "apple_dongle_cards_missing"
 
 REASON_DAC_MIXER_PINS_NOT_APPLICABLE = "dac_mixer_pins_not_applicable"
 REASON_DAC_MIXER_PINS_NOT_HELD = "dac_mixer_pins_not_held"
-
-REASON_VOLUME_LIMIT_INVALID = "volume_limit_invalid"
-REASON_VOLUME_LIMIT_ABSENT = "volume_limit_absent"
-REASON_VOLUME_LIMIT_ABOVE_CEILING = "volume_limit_above_ceiling"
-
-REASON_RING_CHUNK_NOT_APPLICABLE = "ring_chunk_not_applicable"
-REASON_RING_CHUNK_CLAMPED = "ring_chunk_clamped"
-REASON_RING_TARGET_LEVEL_ABOVE_CEILING = "ring_target_level_above_ceiling"
-REASON_RING_CHUNK_ABOVE_CAPACITY = "ring_chunk_above_capacity"
 
 
 _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
@@ -333,48 +302,6 @@ def check_loopback() -> CheckResult:
         reason=REASON_LOOPBACK_MISSING,
     )
 
-
-@doctor_check(label="CamillaDSP websocket", needs_cfg=True, is_async=True)
-async def check_camilla_websocket(cfg: Config) -> CheckResult:
-    controller: CamillaController | None = None
-    try:
-        controller = CamillaController(cfg.camilla_host, cfg.camilla_port)
-        vol = await controller.get_volume_db()
-        if vol is None:
-            raise CamillaUnavailable("main volume unavailable")
-        try:
-            clipped = await controller.get_clipped_samples()
-            clipped_msg = f" clipped_samples={clipped}"
-        except (
-            CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError,
-        ):
-            clipped_msg = " clipped_samples=?"
-        if float(vol) > DEFAULT_VOLUME_LIMIT_DB + 0.1:
-            return CheckResult(
-                "CamillaDSP websocket", "fail",
-                f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB "
-                f"above {DEFAULT_VOLUME_LIMIT_DB:.1f} dB safety ceiling."
-                f"{clipped_msg}",
-                reason=REASON_CAMILLA_VOLUME_ABOVE_CEILING,
-            )
-        return CheckResult(
-            "CamillaDSP websocket", "ok",
-            f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB"
-            f"{clipped_msg}",
-        )
-    except (
-        CamillaUnavailable, ImportError, OSError, RuntimeError,
-        TimeoutError, ValueError,
-    ) as e:
-        return CheckResult(
-            "CamillaDSP websocket", "fail",
-            f"can't reach {cfg.camilla_host}:{cfg.camilla_port}: {e}. "
-            f"Check `systemctl status jasper-camilla`.",
-            reason=REASON_CAMILLA_UNREACHABLE,
-        )
-    finally:
-        if controller is not None:
-            await controller.close()
 
 def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active."""
@@ -714,57 +641,6 @@ def _apple_dongle_cards_from_state(
     ]
 
 
-CAMILLA_CONFIGS_DIR = Path("/var/lib/camilladsp/configs")
-
-
-def _camilla_configs_writable_result(
-    path: Path, *, expected_group: str = "jasper"
-) -> CheckResult:
-    """CheckResult for the CamillaDSP config dir's group-write posture.
-
-    ``jasper-web`` runs non-root and writes staged/commissioning and
-    room-correction configs into this dir atomically (temp file in-dir +
-    rename), which needs directory group-write. install.sh's intended posture
-    is ``root:jasper 2775``; anything narrower fails staging with
-    ``PermissionError`` at the wizard instead of here."""
-
-    label = "CamillaDSP config dir writable"
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        return CheckResult(
-            label, "warn", f"{path} missing — re-run install.sh",
-            reason=REASON_CAMILLA_CONFIG_DIR_MISSING,
-        )
-    except OSError as exc:
-        return CheckResult(
-            label, "warn", f"{path}: {exc}",
-            reason=REASON_CAMILLA_CONFIG_DIR_UNREADABLE,
-        )
-
-    writable, group_name = _group_writable_dir(st, expected_group=expected_group)
-    mode = st.st_mode & 0o7777
-    detail = f"{path} mode={mode:04o} group={group_name}"
-    if not writable:
-        return CheckResult(
-            label,
-            "fail",
-            f"{detail} — non-root jasper-web cannot write staged/correction "
-            f"configs; fix with `sudo install -d -m 2775 -g {expected_group} "
-            f"{path}` and redeploy (active-speaker staging fails with "
-            "PermissionError otherwise)",
-            reason=REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE,
-        )
-    return CheckResult(label, "ok", detail)
-
-
-@doctor_check()
-def check_camilla_configs_writable() -> CheckResult:
-    """Guard the CamillaDSP config dir's group-write posture for jasper-web."""
-
-    return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
-
-
 @doctor_check()
 def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
@@ -1010,160 +886,3 @@ def check_dac_mixer_pins() -> CheckResult:
         "DAC mixer pins", "ok",
         f"{len(pins)} declared mixer pins held on {dac_id}",
     )
-
-
-def _devices_volume_limit_from_text(text: str) -> float | None:
-    """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
-    null. Uses the depth-aware shared devices parser so a nested capture or
-    playback field cannot masquerade as the global fader ceiling."""
-    value = parse_camilla_devices_config(text).get("volume_limit")
-    if value is None:
-        return None
-    return float(value)
-
-@doctor_check()
-def check_camilla_volume_limit() -> CheckResult:
-    """Verify the active Camilla config has JTS's non-positive fader cap."""
-    config_path = evidence.camilla_config_path()
-    if config_path is None:
-        return CheckResult(
-            "CamillaDSP volume_limit", "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
-            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
-        )
-    path = Path(config_path)
-    if not path.exists():
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"statefile points at missing config {config_path}",
-            reason=REASON_CAMILLA_CONFIG_MISSING,
-        )
-    text = evidence.camilla_config_text()
-    if text is None:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"could not read {config_path}",
-            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
-        )
-    try:
-        limit = _devices_volume_limit_from_text(text)
-    except ValueError as e:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"invalid devices.volume_limit in {config_path}: {e}",
-            reason=REASON_VOLUME_LIMIT_INVALID,
-        )
-    if limit is None:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"{config_path} omits devices.volume_limit; CamillaDSP "
-            "defaults to +50 dB",
-            reason=REASON_VOLUME_LIMIT_ABSENT,
-        )
-    if limit > DEFAULT_VOLUME_LIMIT_DB:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"{config_path} sets devices.volume_limit={limit:.1f} dB "
-            f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
-            reason=REASON_VOLUME_LIMIT_ABOVE_CEILING,
-        )
-    return CheckResult(
-        "CamillaDSP volume_limit", "ok",
-        f"{config_path} devices.volume_limit={limit:.1f} dB",
-    )
-
-@doctor_check()
-def check_camilla_ring_chunk_fits() -> CheckResult:
-    """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
-
-    CamillaDSP sets ``avail_min`` to its chunksize and ALSA refuses an
-    ``avail_min`` above the device's buffer, so a ring config with a chunk over
-    the ring's capacity does not degrade: CamillaDSP exits at open, systemd
-    restart-loops it, and the speaker emits nothing. The emitters clamp the
-    resolved chunk (``resolve_camilla_latency_for_devices``), so this covers the
-    one case the clamp cannot reach — a config written by an OLDER build and
-    still on disk.
-
-    Removal condition: delete this check once no supported upgrade path can
-    still carry a pre-clamp config onto a box.
-    """
-    label = "camilla ring chunk"
-    config_path = evidence.camilla_config_path()
-    if config_path is None:
-        return CheckResult(
-            label, "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
-            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
-        )
-    path = Path(config_path)
-    if not path.exists():
-        return CheckResult(
-            label, "fail", f"statefile points at missing config {config_path}",
-            reason=REASON_CAMILLA_CONFIG_MISSING,
-        )
-    try:
-        devices = parse_camilla_devices_config(path.read_text())
-    except (OSError, ValueError) as e:
-        return CheckResult(
-            label, "fail", f"could not read {config_path}: {e}",
-            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
-        )
-
-    ring_ends = [
-        name
-        for name in (devices.get("capture_device"), devices.get("playback_device"))
-        if name in RING_PCM_DEVICES
-    ]
-    chunksize = devices.get("chunksize")
-    if not ring_ends or chunksize is None:
-        return CheckResult(
-            label, "skipped",
-            f"{config_path} names no ring end (chunksize={chunksize})",
-            reason=REASON_RING_CHUNK_NOT_APPLICABLE,
-        )
-    # CamillaDSP's own ceiling on the pair: target_level <= chunksize *
-    # (queuelimit + 4), measured against CamillaDSP 4.1.3 and exact across
-    # chunk 128/256/512 and queuelimit 1/2/4. Checked separately because a
-    # config can carry a chunk that fits the ring and STILL be refused here.
-    queuelimit = devices.get("queuelimit")
-    target_level = devices.get("target_level")
-    if queuelimit is not None and target_level is not None:
-        ceiling = int(chunksize) * (int(queuelimit) + 4)
-        if int(target_level) > ceiling:
-            return CheckResult(
-                label, "fail",
-                f"{config_path} sets devices.target_level={target_level} with "
-                f"chunksize={chunksize} and queuelimit={queuelimit}; CamillaDSP "
-                f"refuses a target above {ceiling} and will restart-loop. "
-                "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
-                speaker_silent=True,
-                reason=REASON_RING_TARGET_LEVEL_ABOVE_CEILING,
-            )
-
-    capacity = ring_capacity_frames()
-    if int(chunksize) > capacity:
-        return CheckResult(
-            label, "fail",
-            f"{config_path} sets devices.chunksize={chunksize} on "
-            f"{'/'.join(ring_ends)}, above the ring's {capacity}-frame capacity. "
-            "CamillaDSP cannot open the ring with it and will restart-loop. "
-            "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
-            speaker_silent=True,
-            reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
-        )
-    # Say so when the clamp is what put this number here; otherwise the box runs
-    # a chunk its own DacProfile does not declare with no on-box explanation.
-    # Asked of the SAME resolver the emitters fall back to, never of a second
-    # derivation of "which DAC is active".
-    fits = (
-        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
-        f"({'/'.join(ring_ends)})"
-    )
-    unclamped = resolve_camilla_chunksize()
-    if unclamped > capacity:
-        return CheckResult(
-            label, "ok",
-            f"{fits}, clamped from the {unclamped} this box resolves to",
-            reason=REASON_RING_CHUNK_CLAMPED,
-        )
-    return CheckResult(label, "ok", fits)

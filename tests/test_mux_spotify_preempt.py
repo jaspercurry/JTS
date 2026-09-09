@@ -11,9 +11,6 @@ fan-in cutover: an un-pauseable librespot owns its private fan-in lane, stays
 alive, and is summed with the new winner until it releases that lane.
 The user's contract ("we cannot have both played at the same time")
 requires us to force a release.
-
-Off-switch: JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts to
-"Web API only, mix-on-failure" behaviour (pre-2026-05-22 contract).
 """
 from __future__ import annotations
 
@@ -112,21 +109,6 @@ async def test_spotify_recovery_cannot_resurrect_concurrently_stopped_source(mux
 
     assert calls[0][1]["verb"] == "try-restart"
     assert unit_active is False
-
-
-# ----------------------------------------------------------------------
-# Off-switch disables escalation
-# ----------------------------------------------------------------------
-
-async def test_pause_spotify_off_switch_disables_escalation(mux, monkeypatch):
-    """JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts to Tier-1-only.
-    With Web API failed and escalation off, the broker must not be asked."""
-    monkeypatch.setenv("JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "disabled")
-    _stub_web_api_result(mux, ok=False)
-    fake, captured = _mock_broker()
-    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
-        await mux._pause(Source.SPOTIFY)
-    assert captured["calls"] == []
 
 
 # ----------------------------------------------------------------------

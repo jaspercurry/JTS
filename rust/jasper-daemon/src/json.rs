@@ -16,6 +16,20 @@ pub fn json_string(value: &str) -> String {
     serde_json::to_string(value).expect("serializing a string to JSON cannot fail")
 }
 
+/// Stamp of an event that has not happened yet, for the `*_age_ms` recency
+/// fields beside cumulative counters: no millisecond count reaches it.
+pub const NEVER_MS: u64 = u64::MAX;
+
+/// Milliseconds since `event_ms`, `None` (STATUS `null`) while the event has
+/// never fired.
+pub fn event_age_ms(now_ms: u64, event_ms: u64) -> Option<u64> {
+    if event_ms == NEVER_MS {
+        None
+    } else {
+        Some(now_ms.saturating_sub(event_ms))
+    }
+}
+
 pub fn push_key(buf: &mut String, key: &str) {
     buf.push('"');
     buf.push_str(key);

@@ -70,6 +70,16 @@ def test_core_modules_are_exactly_the_modules_holding_core_checks():
     assert CORE_MODULES == {c.module for c in core}
 
 
+def test_the_live_hearing_ceiling_check_runs_on_every_deploy():
+    """Non-negotiable #1's live half is only proved where `--core` runs: the
+    deploy gate. `CORE_MODULES` already holds `audio_runtime_camilla` for
+    another check, so dropping this one's `core=True` would leave the whole
+    suite green while the deploy stopped reading the running graph back."""
+    core_names = {c.func.__name__ for c in registered_checks(core_only=True)}
+    assert "check_camilla_live_volume_limit" in core_names
+    assert "check_camilla_volume_limit" in core_names
+
+
 def test_only_restricts_the_import_and_the_result(monkeypatch):
     """`--only` exists to skip the work, not just narrow the display: the
     import loop itself must not touch a module outside the requested one."""

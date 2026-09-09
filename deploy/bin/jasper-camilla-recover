@@ -4,82 +4,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Recovery handler for jasper-camilla.service start-limit exhaustion.
-#
-# CamillaDSP is the core DSP graph owner. It should restart on ordinary
-# exits, but the 2026-06-25 JTS5 incident showed that a deploy-time ALSA
-# ownership race can make camilladsp exit cleanly with "Device or resource
-# busy" until StartLimitBurst is exhausted. A raw StartLimitAction=reboot
-# recovers by power-cycling the Pi, but it destroys the most useful forensic
-# evidence: which process owned /dev/snd at the moment the graph wedged.
-#
-# This oneshot is triggered by OnFailure= after the burst is exhausted. It
-# captures ALSA holder state, parks likely audio owners, tries one controlled
-# Camilla/outputd restart, and parks the core graph on a written record if it
-# still will not converge (ADR-0175). It never reboots the host; keeping SSH
-# and /system/ reachable is more useful than a blind reboot loop for this
-# failure class.
+# Recovery handler for jasper-camilla.service start-limit exhaustion, run from
+# its OnFailure=. Captures the ALSA ownership evidence a reboot would destroy,
+# makes ONE bounded restart attempt, and parks the graph on a written record if
+# that attempt does not hold (ADR-0175).
 
 set -uo pipefail
 
 REASON="manual"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
-STATE_DIR="${JASPER_CAMILLA_RECOVER_STATE_DIR:-/var/lib/jasper}"
 RUN_DIR="${JASPER_CAMILLA_RECOVER_RUN_DIR:-/run}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 DEV_SND_ROOT="${JASPER_DEV_SND_ROOT:-/dev/snd}"
-COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
-# How long to wait after `start jasper-camilla.service` before trusting it
-# (#3096). jasper-camilla.service is Restart=always/RestartSec=2, so a doomed
-# instance has replaced itself within ~2.5s of dying; 3s gives that one full
-# cycle a margin without eating much of this handler's TimeoutStartSec.
+# jasper-camilla.service is Restart=always/RestartSec=2, so a doomed instance
+# has replaced itself within ~2.5 s of dying; 3 s gives that cycle a margin.
 LIVENESS_WAIT_SEC="${JASPER_CAMILLA_RECOVER_LIVENESS_WAIT_SEC:-3}"
-STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
-LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
-# The park record lives in /run, not STATE_DIR: the park is terminal for the
-# BOOT, and a reboot must re-arm the graph by wiping it. Same shape and field
-# vocabulary as jasper-outputd's content-lane park record (ADR-0141), read by
-# jasper/control/camilla_recover_state.py.
+# The park is terminal for the BOOT, so the record lives in /run: a reboot
+# re-arms the graph by wiping it. Path and field vocabulary are the reader's
+# contract (jasper/control/camilla_recover_state.py, ADR-0141).
 PARK_STATE="${JASPER_CAMILLA_RECOVER_PARK_STATE:-${RUN_DIR%/}/jasper-camilla-recover.state}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARK_UNITS_LIB="${JASPER_CORE_GRAPH_PARK_UNITS_LIB:-}"
-
-# Source the canonical core-graph rosters (the park list, the clients this
-# handler restarts, and who owns the rest). Sibling-first
-# (the repo checkout's deploy/lib/ when this script runs from deploy/bin/,
-# e.g. tests), then the installed copy under /usr/local/lib/jasper/ for the
-# deployed /usr/local/sbin script which has no ../lib sibling — mirroring
-# jasper-aec-reconcile's load_env_file_lib. There is deliberately NO inline
-# fallback: a missing fragment means a broken install, and re-inlining a
-# roster here is exactly the duplication this consolidation removes. Fail
-# loud (exit 66) instead — the OnFailure= handler still surfaces it.
-load_core_graph_park_units() {
-    if [[ -z "$PARK_UNITS_LIB" ]]; then
-        if [[ -r "${SCRIPT_DIR}/../lib/jasper-core-graph-park-units.sh" ]]; then
-            PARK_UNITS_LIB="${SCRIPT_DIR}/../lib/jasper-core-graph-park-units.sh"
-        else
-            PARK_UNITS_LIB="/usr/local/lib/jasper/jasper-core-graph-park-units.sh"
-        fi
-    fi
-    if [[ ! -r "$PARK_UNITS_LIB" ]]; then
-        echo "jasper-camilla-recover: missing core-graph park-list library: ${PARK_UNITS_LIB}" >&2
-        exit 66
-    fi
-    # shellcheck source=deploy/lib/jasper-core-graph-park-units.sh
-    source "$PARK_UNITS_LIB"
-}
-load_core_graph_park_units
 
 usage() {
     cat <<'EOF'
 Usage: jasper-camilla-recover [--reason TEXT]
 
-Capture ALSA ownership evidence and perform one bounded recovery attempt after
+Capture ALSA ownership evidence and make one bounded restart attempt after
 jasper-camilla.service exhausts its restart burst. Emits structured
-event=camilla.recover.* lines on stderr. Always exits 0 so the recovery
-handler itself never starts a systemd failure cascade — except a missing
-core-graph park-list library (a broken install), which fails loud with
-exit 66 before the recovery logic runs.
+event=camilla.recover.* lines on stderr and always exits 0, so the recovery
+handler itself never starts a systemd failure cascade.
 EOF
 }
 
@@ -119,12 +71,11 @@ emit() {
     printf '\n' >&2
 }
 
-# Seconds one evidence capture may run. Evidence must never be able to spend
-# the restore's budget: on the 2026-09-02 jts4 OOM incident a single
-# `systemctl status` capture ran 19s of this handler's then-45s TimeoutStartSec and
-# the SIGTERM landed before the core graph was restored. Bash-native rather
-# than coreutils `timeout`, which deploy/lib/jasper-camilla-guard-common.sh
-# already treats as optional on this host.
+# Seconds one evidence capture may run. Evidence must never spend the restart
+# attempt's budget: a single `systemctl status` capture has been observed
+# taking 19 s of this handler's deadline. Bash-native rather than coreutils
+# `timeout`, which deploy/lib/jasper-camilla-guard-common.sh already treats as
+# optional here.
 CAPTURE_TIMEOUT_SEC=5
 
 run_bounded() {
@@ -222,69 +173,21 @@ unit_action() {
     return 0
 }
 
-start_if_enabled() {
-    local unit="$1"
-    "$SYSTEMCTL" is-enabled --quiet "$unit" >/dev/null 2>&1
-    local enabled_status=$?
-    if [[ "$enabled_status" -ne 0 ]]; then
-        emit unit_action action "start-skipped" unit "$unit" status "$enabled_status" reason "disabled_or_absent"
-        return 0
-    fi
-    "$SYSTEMCTL" start "$unit" >/dev/null 2>&1
-    local status=$?
-    emit unit_action action "start" unit "$unit" status "$status"
-    return 0
-}
-
-now_epoch() {
-    date +%s
-}
-
-cooldown_active() {
-    local now="$1"
-    [[ "$COOLDOWN_SEC" =~ ^[0-9]+$ ]] || COOLDOWN_SEC=300
-    [[ -r "$STATE_FILE" ]] || return 1
-    local last
-    last="$(<"$STATE_FILE")"
-    [[ "$last" =~ ^[0-9]+$ ]] || return 1
-    (( now - last < COOLDOWN_SEC ))
-}
-
-write_attempt_stamp() {
-    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-    printf '%s\n' "$1" >"$STATE_FILE" 2>/dev/null || true
-}
-
 # The remediation sentence, written to the record AND the journal line so
-# neither surface sends an operator to the other to learn what to do. Two legs,
-# two sentences: the remedy has to name the daemon that actually failed
-# (ADR-0141's lane-specific rule), and one generic sentence would send an
-# outputd failure hunting CamillaDSP's config.
-PARK_ACTION_CAMILLA="free whatever owns the DAC or fix why CamillaDSP will not load (the capture_line/asound_status_line evidence in this journal names the holder), then: systemctl start jasper-camilla.service"
-PARK_ACTION_OUTPUTD="jasper-outputd could not take the DAC back; its own open error is in journalctl -u jasper-outputd (a remaining holder, or a content-lane width mismatch). Fix that, then: systemctl start jasper-camilla.service"
+# neither surface sends an operator to the other to learn what to do.
+PARK_ACTION="free whatever holds CamillaDSP's ring endpoints or fix why it will not load (the capture_line/asound_status_line evidence in this journal names the holder), then: systemctl start jasper-camilla.service"
 PARK_RE_ARM="nothing re-arms the core graph on its own: an operator 'systemctl start jasper-camilla.service', a deploy, or a reboot (the record lives in /run, so the park is per-boot)"
 
-park_action() {
-    if [[ "$1" == "outputd_restart_failed" ]]; then
-        printf '%s' "$PARK_ACTION_OUTPUTD"
-    else
-        printf '%s' "$PARK_ACTION_CAMILLA"
-    fi
-}
-
 write_park_record() {
-    local reason="$1"
-    local detail="$2"
-    local action="$3"
     local tmp
     mkdir -p "$(dirname "$PARK_STATE")" 2>/dev/null || true
     # tempfile+rename so a reader never sees a truncated record.
     tmp="${PARK_STATE}.tmp.$$"
     {
         printf 'parked_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'reason=%s\n' "$reason"
-        printf 'detail=%s\n' "$detail"
-        printf 'action=%s\n' "$action"
+        printf 'reason=%s\n' "$1"
+        printf 'detail=%s\n' "$2"
+        printf 'action=%s\n' "$PARK_ACTION"
         printf 're_arm=%s\n' "$PARK_RE_ARM"
     } >"$tmp" 2>/dev/null || true
     mv -f "$tmp" "$PARK_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
@@ -293,164 +196,75 @@ write_park_record() {
 # The floor for a pass that cannot converge the graph (ADR-0175). reset-failed
 # clears the exhausted burst and stop cancels Restart=always, so the unit
 # cannot reach `failed` on its own and this handler's OnFailure= trigger is
-# disarmed — without that it re-armed camilla every pass and stopped all
-# JASPER_CORE_GRAPH_PARK_UNITS again each cooldown (#2564).
+# disarmed.
 #
 # ORDER: the record is written after the stop is ENQUEUED. Because
 # jasper-camilla.service retires the record from its own ExecStartPost, the two
-# orders trade different interleavings, and neither is airtight. Writing first
-# lets a pending auto-restart delete the record of a park that still stands — a
-# silent park, disclosed only by the pre-existing path.camilla_stopped row.
+# orders trade different interleavings. Writing first lets a pending
+# auto-restart delete the record of a park that still stands — a silent park.
 # Writing second lets an external start that beats the stop job leave a record
 # saying parked while CamillaDSP runs — a visible, wrong doctor row that the
-# next start retires. The second is the recoverable half, so it is the one
-# taken.
+# next start retires. The second is the recoverable half.
 park_core_graph() {
     local reason="$1"
     local detail="$2"
-    local action
     local stop_status
-    action="$(park_action "$reason")"
     unit_action reset-failed jasper-camilla.service
-    # --no-block, matching park_content_lane: the stop job lands in PID 1 and
-    # this handler moves straight on to the record. A blocking stop of a daemon
-    # wedged on a busy ALSA device can run to TimeoutStopSec (90s default, none
-    # declared on the unit) inside a handler that is itself deadlined —
-    # and a SIGTERM before the record write would stop CamillaDSP with nothing
-    # recording why.
+    # --no-block: a blocking stop of a daemon wedged on a busy ALSA device can
+    # run to TimeoutStopSec (90 s default, none declared on the unit) inside a
+    # handler that is itself deadlined, and a SIGTERM before the record write
+    # would stop CamillaDSP with nothing recording why.
     "$SYSTEMCTL" --no-block stop jasper-camilla.service >/dev/null 2>&1
     stop_status=$?
     emit unit_action action "stop" unit "jasper-camilla.service" \
         status "$stop_status" mode "no_block"
-    write_park_record "$reason" "$detail" "$action"
+    write_park_record "$reason" "$detail"
     emit park reason "$reason" detail "$detail" state "$PARK_STATE" \
-        action "$action" re_arm "$PARK_RE_ARM"
+        action "$PARK_ACTION" re_arm "$PARK_RE_ARM"
 }
 
-# The one restore ladder, run from the happy path AND from the EXIT trap.
-#
-# WHY ONE FUNCTION: this handler stops eleven units before it restores
-# anything, and a systemd SIGTERM at TimeoutStartSec used to land in that
-# window (2026-09-02 jts4) leaving outputd, camilla, mux and every renderer
-# cleanly stopped — which disarms their own Restart= and is exactly the state
-# OnFailure= cannot re-trigger. RESTORE_OWED is armed immediately before the
-# stop loop and cleared only when this ladder finishes, so: the happy path
-# runs it once, the trap runs it when the body never reached it, and a trap
-# after a completed pass is a no-op. Every step is idempotent, so a trap that
-# lands mid-ladder re-runs it from the top.
-RESTORE_OWED=0
-STAGE="init"
-
-restore_core_graph() {
-    (( RESTORE_OWED )) || return 0
-    STAGE="restore"
-
+restart_camilla_once() {
     unit_action reset-failed jasper-camilla.service
-    unit_action reset-failed jasper-outputd.service
-    unit_action restart jasper-fanin.service
-
     "$SYSTEMCTL" start jasper-camilla.service >/dev/null 2>&1
-    local camilla_status=$?
-    emit unit_action action "start" unit "jasper-camilla.service" status "$camilla_status"
+    local status=$?
+    emit unit_action action "start" unit "jasper-camilla.service" status "$status"
 
-    local camilla_park_detail="jasper-camilla.service would not start after the core-graph park and one bounded restart attempt"
-    if [[ "$camilla_status" -eq 0 ]]; then
+    local detail="jasper-camilla.service would not start after one bounded restart attempt"
+    if [[ "$status" -eq 0 ]]; then
         # `systemctl start` on a Type=simple unit returns 0 the instant the
         # process forks, so a CamillaDSP that starts and then exits on a busy
-        # ALSA device still reads as success above (#3096). A bare `is-active`
-        # cannot tell a live process from a fresh corpse -- RestartSec=2 means a
-        # doomed instance reads "active" again ~2.5s after each death. NRestarts
-        # was reset by the reset-failed a few lines up, so a rise after a short
-        # wait means the instance just started already died and was replaced by
-        # systemd's own restart: the honest discriminator.
+        # ALSA device still reads as success above. A bare `is-active` cannot
+        # tell a live process from a fresh corpse -- RestartSec=2 means a
+        # doomed instance reads "active" again ~2.5 s after each death.
+        # NRestarts was reset by the reset-failed above, so a rise after the
+        # wait means systemd already replaced the instance this pass started.
         sleep "$LIVENESS_WAIT_SEC"
         local nrestarts
         nrestarts="$("$SYSTEMCTL" show -p NRestarts --value jasper-camilla.service 2>/dev/null)"
         if [[ "$nrestarts" =~ ^[0-9]+$ ]] && (( nrestarts > 0 )); then
             emit liveness_check unit "jasper-camilla.service" nrestarts "$nrestarts" verdict "died_after_start"
-            camilla_status=1
-            camilla_park_detail="jasper-camilla.service started but exited again (NRestarts=${nrestarts}) within ${LIVENESS_WAIT_SEC}s of the core-graph park and one bounded restart attempt"
+            status=1
+            detail="jasper-camilla.service started but exited again (NRestarts=${nrestarts}) within ${LIVENESS_WAIT_SEC}s of one bounded restart attempt"
         fi
-        # Non-numeric/empty nrestarts means the probe was inconclusive (unexpected
-        # systemctl output) -- err toward declaring recovery rather than parking a
-        # graph that might be fine (#3096's stated asymmetry); camilla_status
-        # stays 0.
+        # A non-numeric/empty NRestarts means the probe was inconclusive; err
+        # toward declaring recovery rather than parking a graph that might be
+        # fine (a wrongly parked box is deaf until a human acts).
     fi
 
-    if [[ "$camilla_status" -ne 0 ]]; then
-        park_core_graph camilla_start_failed "$camilla_park_detail"
+    if [[ "$status" -ne 0 ]]; then
+        park_core_graph camilla_start_failed "$detail"
     else
-        "$SYSTEMCTL" restart jasper-outputd.service >/dev/null 2>&1
-        local outputd_status=$?
-        emit unit_action action "restart" unit "jasper-outputd.service" status "$outputd_status"
-        if [[ "$outputd_status" -ne 0 ]]; then
-            # CamillaDSP came back but the final output owner did not, so nothing
-            # reaches the DAC either way. Park the graph rather than leaving Camilla
-            # armed to flap into another OnFailure= pass.
-            park_core_graph outputd_restart_failed \
-                "jasper-outputd.service would not restart after CamillaDSP came back"
-        else
-            local unit
-            for unit in "${JASPER_CORE_GRAPH_RESTORE_UNITS[@]}"; do
-                start_if_enabled "$unit"
-            done
-            # The park units NOT started above come back through the owners
-            # JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS pairs them with, kicked
-            # once each. --no-block, matching park_core_graph: both are
-            # Type=oneshot with TimeoutStartSec=120 and 6414, and they run
-            # after the core graph is already back, so a blocking start would
-            # put this handler's whole budget behind them.
-            local owner kicked=""
-            local reconcile_status
-            for owner in "${JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS[@]}"; do
-                owner="${owner#*=}"
-                case " ${kicked} " in *" ${owner} "*) continue ;; esac
-                kicked+=" ${owner}"
-                "$SYSTEMCTL" --no-block start "$owner" >/dev/null 2>&1
-                reconcile_status=$?
-                emit unit_action action "start" unit "$owner" \
-                    status "$reconcile_status" mode "no_block"
-            done
-            emit recovered action "core_graph_restarted"
-        fi
-    fi
-
-    RESTORE_OWED=0
-}
-
-# systemd's SIGTERM at TimeoutStartSec does not skip this: bash runs its EXIT
-# trap on a fatal signal, and the cgroup kill sweep never re-signals a PID it
-# already hit, so the trap runs to the SIGKILL at TimeoutStopSec (declared on
-# the unit, not left to the manager default, precisely because this ladder now
-# depends on it). The sweep does re-read cgroup.procs until a pass finds no new
-# PIDs, so the first `systemctl` the trap forks can still lose that race.
-on_exit() {
-    # Released BEFORE the ladder, which is meant to still be running when the
-    # SIGKILL lands: a lock outliving the handler would suppress every later
-    # OnFailure= pass for the rest of the boot. Re-entry stays gated on the
-    # attempt stamp, written before anything is stopped.
-    rmdir "$LOCK_DIR" 2>/dev/null || true
-    if (( RESTORE_OWED )); then
-        emit aborted stage "$STAGE"
-        restore_core_graph
+        emit recovered action "camilla_restarted"
     fi
 }
 
-mkdir -p "$RUN_DIR" 2>/dev/null || true
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    emit suppressed reason "already_running" trigger "$REASON"
-    exit 0
-fi
-trap on_exit EXIT
-
-NOW="$(now_epoch 2>/dev/null || echo 0)"
 emit start reason "$REASON" service_result "${SERVICE_RESULT:-unknown}" exit_status "${EXIT_STATUS:-unknown}" invocation_id "${INVOCATION_ID:-unknown}"
 
 # A standing park is checked BEFORE the captures: re-entry has to be a cheap
 # no-op, and the run that wrote the record already captured the evidence that
 # diagnosed it. The record is present only while the park stands —
-# jasper-camilla.service's ExecStartPost retires it the moment CamillaDSP is
-# started again — so re-entry is gated on the cause, not on a clock.
+# jasper-camilla.service's ExecStartPost retires it — so re-entry is gated on
+# the cause, not on a clock.
 if [[ -s "$PARK_STATE" ]]; then
     emit suppressed reason "parked" state "$PARK_STATE"
     exit 0
@@ -458,24 +272,7 @@ fi
 
 capture_dev_snd_holders
 capture_asound_status
-run_capture service_state "$SYSTEMCTL" --no-pager --plain --full status \
-    jasper-camilla.service jasper-outputd.service jasper-fanin.service \
-    jasper-aec-bridge.service jasper-voice.service shairport-sync.service \
-    librespot.service bluealsa-aplay.service jasper-mux.service
+run_capture service_state "$SYSTEMCTL" --no-pager --plain --full status jasper-camilla.service
 
-if cooldown_active "$NOW"; then
-    emit suppressed reason "cooldown" cooldown_sec "$COOLDOWN_SEC" action "no_unit_action_this_pass"
-    exit 0
-fi
-write_attempt_stamp "$NOW"
-
-# Arming RESTORE_OWED here, not after the loop, is the whole point: from this
-# line on, an exit that does not restore leaves the speaker deaf.
-RESTORE_OWED=1
-STAGE="park_units_stop"
-for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
-    unit_action stop "$unit"
-done
-
-restore_core_graph
+restart_camilla_once
 exit 0

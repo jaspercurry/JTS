@@ -26,12 +26,15 @@ from jasper import ring_assets
 from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
+from .transport_camilla_fixtures import (
+    RETIRED_ALOOP_CAPTURE_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
+)
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CAPTURE_DEVICE,
-    RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker.playback import FORBIDDEN_TEST_PCM_TOKENS
@@ -58,6 +61,7 @@ from jasper.fanin_coupling import (
     ring_active_endpoint_armed,
     resolve_ring_wire,
 )
+
 
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
@@ -2628,15 +2632,9 @@ def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
     # CONTROL 3 — the retired snd-aloop PLAYBACK with a correct Ring A capture.
     # Only the playback half of that pair is retired: fan-in serves Ring A on
     # every box (ADR-0100), so the capture half must not also be reported.
-    from jasper.camilla_config_contract import (
-        DEFAULT_OUTPUTD_CAPTURE_DEVICE,
-        RETIRED_ALOOP_PLAYBACK_DEVICE,
-    )
-
     retired = _coherence_errors(
         capture=RING_CAPTURE_DEVICE,
         playback=RETIRED_ALOOP_PLAYBACK_DEVICE,
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
     )
     assert not any("Camilla capture" in err for err in retired), retired
     assert any(RETIRED_ALOOP_PLAYBACK_DEVICE in err for err in retired), retired

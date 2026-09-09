@@ -9,12 +9,14 @@
 // (deploy/systemd/jasper-control.service), every privileged systemctl /
 // reboot / poweroff it runs is mediated by polkit instead of being a uid-0
 // bypass. jasper-control performs these from the in-process restart broker
-// (jasper/control/restart_broker.py) AND directly from its supervisors /
-// endpoints (system_supervisor reboot, shairport_supervisor restart,
-// grouping/aec reconciler kicks, the /system restart/reboot/poweroff buttons).
-// Without this rule the implicit default for all of these is auth_admin /
-// auth_admin_keep, which DENIES a headless daemon (no agent to authenticate),
-// silently breaking the Tier-3/Tier-5 recovery paths. Verified on hardware
+// (jasper/control/restart_broker.py — reboot/poweroff, the /system buttons,
+// system_supervisor's recovery reboot, and shairport_supervisor's wedge
+// restart all route through it, falling back to a direct spawn only when
+// the broker itself is unreachable) AND directly from its other supervisors
+// (grouping/aec reconciler kicks). Without this rule the implicit default for all of these
+// is auth_admin / auth_admin_keep, which DENIES a headless daemon (no agent
+// to authenticate), silently breaking the Tier-3/Tier-5 recovery paths.
+// Verified on hardware
 // (Pi 5, polkit 126, Trixie).
 //
 // IMPORTANT — match on subject.user ONLY. A sessionless system daemon has

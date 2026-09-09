@@ -405,25 +405,18 @@ def test_commissioned_baseline_requires_measurement_evidence():
     assert SpeakerBaselineProfile.from_mapping(baseline.to_dict()) == baseline
 
 
-def test_active_startup_config_requires_explicit_active_playback_device():
+@pytest.mark.parametrize(
+    "playback_device",
+    ["jasper_out", "plug:jasper_out", "jts_ring_playback", "plug:jts_ring_playback"],
+)
+def test_active_startup_config_rejects_full_range_playback_devices(playback_device):
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
     with pytest.raises(ActiveSpeakerConfigError, match="explicit active playback"):
         emit_active_speaker_startup_config(
             preset,
-            playback_device="outputd_content_playback",
+            playback_device=playback_device,
         )
-
-
-def test_active_startup_config_rejects_outputd_playback_aliases():
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
-
-    for playback_device in ("plug:outputd_content_playback", "plug:jasper_out"):
-        with pytest.raises(ActiveSpeakerConfigError, match="existing .* lane"):
-            emit_active_speaker_startup_config(
-                preset,
-                playback_device=playback_device,
-            )
 
 
 def test_two_way_active_startup_config_is_muted_and_protected():

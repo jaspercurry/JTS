@@ -5,6 +5,7 @@
 import { h, svg } from '/assets/shared/js/dom.js';
 import { getJSON } from '/assets/shared/js/http.js';
 import { cssColor, drawFrequencyChart } from './crossover/frequency-chart.js';
+import { frequencyWindow } from './measurement-frequency-window.js';
 
 const els = {
   runA: document.getElementById('measurement-run-a'),
@@ -27,6 +28,7 @@ const POSITION_DASHES = [
 let currentView = null;
 let visibleSeries = new Set();
 let resizeTimer = null;
+const selectedRange = frequencyWindow(document.getElementById('measurement-frequency-window'), draw);
 
 function seriesKey(run, series) {
   return `${run.slot}:${series.id}`;
@@ -100,23 +102,22 @@ function addInterval(intervals, raw) {
   if (clippedHi >= clippedLo) intervals.push([clippedLo, clippedHi]);
 }
 
-function chartExclusions() {
+function seriesExclusions(run, series) {
   const intervals = [];
-  for (const run of currentView.runs) {
-    const metadata = run.metadata || {};
-    const trustedFloor = Number(metadata.trusted_floor_hz);
-    if (Number.isFinite(trustedFloor) && trustedFloor > 20) {
-      addInterval(intervals, [20, trustedFloor]);
+  const metadata = run.metadata || {};
+  const floor = Math.max(Number(metadata.trusted_floor_hz) || 20, Number(series.validity_floor_hz) || 20);
+  if (floor > 20) addInterval(intervals, [20, floor]);
+  for (const band of metadata.excluded_bands_hz || []) addInterval(intervals, band);
+  for (const band of series.excluded_intervals_hz || []) addInterval(intervals, band);
+  return intervals.map(([lo, hi]) => ({ f_lo_hz: lo, f_hi_hz: hi }));
+}
+
+function chartExclusions(chartSeries) {
+  const intervals = [];
+  for (const series of chartSeries) {
+    if (series.draw) {
+      for (const band of series.excludedIntervals) addInterval(intervals, band);
     }
-    for (const band of metadata.excluded_bands_hz || []) addInterval(intervals, band);
-    run.series.forEach((series) => {
-      if (!visibleSeries.has(seriesKey(run, series))) return;
-      const validityFloor = Number(series.validity_floor_hz);
-      if (Number.isFinite(validityFloor) && validityFloor > 20) {
-        addInterval(intervals, [20, validityFloor]);
-      }
-      for (const band of series.excluded_intervals_hz || []) addInterval(intervals, band);
-    });
   }
   intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
   const merged = [];
@@ -131,11 +132,7 @@ function chartExclusions() {
 function draw() {
   if (!currentView) return;
   const chartSeries = [];
-  const floors = [];
   for (const run of currentView.runs) {
-    const storedFloor = run.metadata && run.metadata.trusted_floor_hz;
-    const floor = Number(storedFloor);
-    if (storedFloor != null && Number.isFinite(floor)) floors.push(floor);
     run.series.forEach((series, index) => {
       chartSeries.push({
         curve: series,
@@ -145,16 +142,17 @@ function draw() {
         alpha: series.kind === 'average' ? 1 : 0.55,
         dash: seriesDash(series, index, run.series),
         draw: visibleSeries.has(seriesKey(run, series)),
+        excludedIntervals: seriesExclusions(run, series),
       });
     });
   }
   const visibleCount = chartSeries.filter((series) => series.draw).length;
-  const exclusions = chartExclusions();
+  const exclusions = chartExclusions(chartSeries);
   const drew = drawFrequencyChart(els.canvas, {
     series: chartSeries,
-    frequencyRangeHz: [20, 20000],
-    domainRangeHz: [floors.length ? Math.min(...floors) : 20, 20000],
-    minSpanDb: 30,
+    frequencyRangeHz: selectedRange(),
+    minSpanDb: 10,
+    padDb: 1,
     excludedIntervals: exclusions,
     theme: {
       grid: cssColor(els.canvas, '--border-strong', '#ccc'),
@@ -163,7 +161,7 @@ function draw() {
     },
   });
   els.status.textContent = !drew
-    ? 'No plottable response curves are stored for this selection.'
+    ? 'No visible response data in this frequency range. Select a curve or widen the range.'
     : `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
       exclusions.length ? ' · shaded areas are untrusted' : ''
     }`;
