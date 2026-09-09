@@ -1059,7 +1059,7 @@ def crossover_controller() -> CamillaController:
     Constructed in production by the live pair-balance-trim path
     (:func:`jasper.multiroom.runtime_balance._active_endpoint_camilla`, when
     ``cfg.role == "leader"``), reached from ``apply_local_trim`` /
-    ``apply_live_grouping_trim`` in ``jasper/control/server.py``.
+    ``apply_live_grouping_trim`` in ``jasper/control/handlers/grouping.py``.
     ``jasper-camilla-crossover.service`` itself is not boot-enabled — the
     multiroom reconciler arms/tears it down per-reconcile
     (``_systemctl_crossover_unit`` in ``jasper/multiroom/reconcile.py``) as an

@@ -741,6 +741,29 @@ class MeasuredCrossoverCandidate:
         return candidate
 
 
+def room_peqs_from_correction(
+    room_correction: Mapping[str, Any],
+    preset: ActiveSpeakerPreset,
+) -> tuple[PeqFilter, ...]:
+    """Decode an accepted room correction into the emitter's mono PEQ list."""
+
+    if not room_correction:
+        return ()
+    correction = _validated_room_correction(
+        room_correction,
+        layout_sides=SIDES_BY_LAYOUT[preset.channel_map.layout],
+    )
+    side = SIDES_BY_LAYOUT[preset.channel_map.layout][0]
+    return tuple(
+        PeqFilter(
+            freq=float(entry["freq"]),
+            q=float(entry["q"]),
+            gain=float(entry["gain"]),
+        )
+        for entry in correction["sides"][side]
+    )
+
+
 def candidate_room_peqs(
     candidate: MeasuredCrossoverCandidate,
 ) -> tuple[PeqFilter, ...]:
@@ -750,17 +773,16 @@ def candidate_room_peqs(
     refuses a room set on a multi-sided layout at all (ADR-0258).
     """
 
-    if not candidate.room_correction:
-        return ()
-    side = SIDES_BY_LAYOUT[candidate.source_preset.channel_map.layout][0]
-    return tuple(
-        PeqFilter(
-            freq=float(entry["freq"]),
-            q=float(entry["q"]),
-            gain=float(entry["gain"]),
-        )
-        for entry in candidate.room_correction["sides"][side]
+    return room_peqs_from_correction(
+        candidate.room_correction,
+        candidate.source_preset,
     )
+
+
+def candidate_trial_scope(candidate: MeasuredCrossoverCandidate) -> str:
+    """The measurement scope that captures the candidate's complete graph."""
+
+    return "room_candidate" if candidate.room_correction else "candidate"
 
 
 def effective_preset(candidate: MeasuredCrossoverCandidate) -> ActiveSpeakerPreset:

@@ -33,6 +33,26 @@ def _seed_unit_states(**by_unit):
     _evidence.evidence.seed("units", states)
 
 
+@pytest.mark.parametrize(
+    "fact,status,reason",
+    [
+        (None, "skipped", "airplay_cleanup_unavailable"),
+        ({"status": "unobserved", "reason": "not_attempted"}, "skipped", "not_attempted"),
+        ({"status": "unobserved", "reason": "cleanup_pending"}, "skipped", "cleanup_pending"),
+        ({"status": "ok", "reason": "drop_acknowledged"}, "ok", "drop_acknowledged"),
+        ({"status": "ok", "reason": "receiver_absent"}, "ok", "receiver_absent"),
+        ({"status": "degraded", "reason": "stop_unconfirmed"}, "warn", "stop_unconfirmed"),
+        ({"status": "degraded", "reason": "cleanup_failed"}, "warn", "cleanup_failed"),
+    ],
+)
+def test_airplay_cleanup_projects_mux_outcome(fact, status, reason):
+    _evidence.evidence.seed("control_state", _evidence.StatusRead({
+        "source_selection": {"airplay_session_cleanup": fact},
+    }))
+    result = renderers.check_airplay_session_cleanup()
+    assert (result.status, result.reason) == (status, reason)
+
+
 def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
     """Read a synthetic shairport-sync.conf instead of the host file."""
     target = tmp_path / "shairport-sync.conf"

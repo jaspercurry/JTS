@@ -37,6 +37,7 @@ from jasper.fanin_coupling import (
     resolve_ring_path,
     ring_active_endpoint_armed,
 )
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 
 
 def transport_topology_for_coupling(
@@ -213,6 +214,7 @@ def transport_coherence_report(
     outputd_env: Mapping[str, str] | None = None,
     camilla_devices: Mapping[str, Any] | None = None,
     read_saved_topology: Callable[[], Any] | None = None,
+    allow_grouping_capture: bool = False,
 ) -> TransportCoherenceReport:
     """Return contradictions across the complete Camilla/outputd transport.
 
@@ -220,6 +222,9 @@ def transport_coherence_report(
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
     contradiction is.
+
+    ``allow_grouping_capture`` admits the paired crossover's Snapcast input.
+    Other capture devices must still match the fan-in program ring.
 
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
@@ -315,22 +320,16 @@ def transport_coherence_report(
                 f"Camilla playback={playback_device!r}"
             )
     elif normalized in RING_TRANSPORT_SHAPES or normalized == TRANSPORT_DAC_CONTENT_RING:
-        # RING A, COMMON TO EVERY SHAPE THAT HAS ONE. Since ADR-0100 the fan-in
-        # hop is the same ring on the two central-ring shapes and on a bonded
-        # member, so its comparison is hoisted out of them: a graph still
-        # sourcing the snd-aloop tap reads a device nobody is writing, which is
-        # digital silence with every env and every daemon reading clean, and
-        # invisible on the channels axis because Ring A and the tap are both
-        # stereo.
-        expected_capture = str(
-            topology.fanin_to_camilla.get("camilla_capture_device") or ""
-        )
-        if capture_device and capture_device != expected_capture:
-            errors.append(
-                f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
-                f"expected {expected_capture!r}"
+        if not (allow_grouping_capture and capture_device == GROUPING_RING_PCM):
+            expected_capture = str(
+                topology.fanin_to_camilla.get("camilla_capture_device") or ""
             )
-        _compare_lane_channels(topology.fanin_to_camilla, "capture")
+            if capture_device and capture_device != expected_capture:
+                errors.append(
+                    f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
+                    f"expected {expected_capture!r}"
+                )
+            _compare_lane_channels(topology.fanin_to_camilla, "capture")
 
         # A DUMB BONDED MEMBER (:data:`TRANSPORT_DAC_CONTENT_RING`) contributes
         # only the Ring A pair above. CamillaDSP does not drive its post-DSP hop

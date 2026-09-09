@@ -26,12 +26,18 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from jasper.camilla_config_contract import devices_playback_is_pipe
 from jasper.env_file import env_value, read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     OUTPUTD_DEFAULT_CONTENT_FORMAT,
+)
+from jasper.multiroom.grouping_ring import (
+    GROUPING_RING_CHANNELS,
+    GROUPING_RING_FORMAT,
+    GROUPING_RING_PCM,
 )
 
 
@@ -130,11 +136,9 @@ class RingWireDeclaration:
 
 @dataclass(frozen=True)
 class LoadedCamillaGraph:
-    """ONE snapshot of the CamillaDSP graph the durable statefile points at.
+    """One snapshot of a selected CamillaDSP graph.
 
-    A snapshot object rather than three field reads: the width gate compares a
-    lane's device, format and channels together, and one file read per field
-    gives three answers that need not come from one revision of it. ``devices``
+    The width gate compares device, format and channels from one revision. ``devices``
     is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
     subset over that single read.
 
@@ -159,23 +163,11 @@ class LoadedCamillaGraph:
 
 
 def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGraph:
-    """Read the loaded CamillaDSP graph once, for the callers that compare it.
+    """Read one graph, defaulting to the primary durable statefile.
 
-    Statefile -> ``config_path`` -> the config's ``devices:`` subset, through the
-    same public reader (``read_camilla_statefile_config_path``) every other
-    surface uses, so this adds no copy of the statefile scan and honours
-    ``JASPER_CAMILLA_STATEFILE``.
-
-    ``config_path`` OVERRIDES the statefile read, and exists because the
-    statefile is the WEAKER of two available answers to "which graph is loaded".
-    It is a durable pointer with several writers (``write_camilla_statefile``
-    from ``baseline-reemit`` and ``runtime-safe-graph``, the pipe guard), so it
-    can move while the running daemon still holds the previous graph. A caller
-    that already has the DAEMON's own answer — ``reconcile_current_dsp``'s
-    payload carries ``current_config_path``, taken from
-    ``cam.get_config_file_path`` over CamillaDSP's websocket — passes it here so
-    the read is about the graph the daemon actually has. Omitted, the statefile
-    stays the answer, which is what every existing caller wants.
+    Pass the daemon's reported path when available: the durable pointer can
+    move while CamillaDSP still holds the previous graph. An explicit path
+    also lets a two-stage leader inspect its crossover independently.
     """
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
     from jasper.camilla_config_contract import parse_camilla_devices_config
@@ -998,42 +990,49 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
 def graph_at_active_ring_endpoint(
     graph: LoadedCamillaGraph,
 ) -> tuple[bool, str]:
-    """Is THIS graph already at the ACTIVE ring endpoint, at this box's wire?
-
-    Two axes, and deliberately only two: the ENDPOINT pair (capture is Ring A
-    and playback is the ACTIVE ring — both lanes, because a graph that plays
-    the ring while capturing the snd-aloop tap captures a device nobody writes,
-    the #2364 digital-silence trap) and the WIRE (every ring lane states the
-    box's resolved format AND channel width, via :func:`graph_wire_declarations`
-    and :func:`_wire_channels_for_ring`).
-
-    TWO CALLERS, ONE OWNER, and the split is the point.
-    :func:`ring_endpoint_anchor_converged` asks this between its anchor-identity
-    axis and its all-muted axis — it wants "the ANCHOR is already where the arm
-    wanted to put it". :mod:`jasper.fanin.converge`'s early convergence check
-    asks it alone, because its question is narrower: "has the transport move
-    already happened to whatever graph is loaded". Those differ on exactly the
-    class the convergence design admits as its first arm — a COMMISSIONED box
-    rides an applied baseline, not the staged anchor, so anchor identity is
-    false there forever and all-muted is false by design (a commissioned graph
-    plays). Asking the anchor predicate whole there would report NOT-converged
-    on every pass and re-emit the graph at every boot, deploy and hotplug,
-    which is the opposite of the idempotence that check's own budget rests on.
-
-    Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a
-    lane that declares no format or no channel count.
-    """
+    """Prove the loaded route's input and ACTIVE output, including both leader stages."""
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
     )
 
+    graphs = [graph]
+    capture_device = RING_CAPTURE_DEVICE
+    if graph.devices.get("playback_type") == "File":
+        from jasper.active_speaker.environment import read_camilla_statefile_config_path  # lazy: cycle through playback_route
+        from jasper.multiroom.active_leader_config import crossover_statefile_path  # lazy: cycle through runtime_contract
+        from jasper.multiroom.reconcile import SNAPFIFO  # lazy: cycle through coupling_reconcile
+
+        if (
+            graph.devices.get("capture_device") != RING_CAPTURE_DEVICE
+            or not devices_playback_is_pipe(graph.devices, SNAPFIFO)
+        ):
+            return False, "the primary graph does not connect Ring A to the grouping pipe"
+        path = read_camilla_statefile_config_path(crossover_statefile_path())
+        if not path:
+            return False, "the grouping crossover statefile has no config path"
+        graph = read_loaded_camilla_graph(path)
+        if graph.note:
+            return False, graph.note
+        graphs.append(graph)
+
     capture = graph.devices.get("capture_device")
     playback = graph.devices.get("playback_device")
-    if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
+    if len(graphs) > 1 or capture == GROUPING_RING_PCM:
+        capture_device = GROUPING_RING_PCM
+        # Snapcast carries 16-bit stereo, independently of the output ring wire.
+        for stage, lane in [(graph, "capture")] + (
+            [(graphs[0], "playback")] if len(graphs) > 1 else []
+        ):
+            if (
+                stage.devices.get(f"{lane}_format") != GROUPING_RING_FORMAT
+                or stage.devices.get(f"{lane}_channels") != GROUPING_RING_CHANNELS
+            ):
+                return False, f"{stage.path} {lane} does not match the grouping ring wire"
+    if capture != capture_device or playback != RING_ACTIVE_PLAYBACK_DEVICE:
         return False, (
             f"the loaded graph captures {capture!r} and plays {playback!r}, "
-            f"not the ring endpoint pair (capture {RING_CAPTURE_DEVICE!r} -> "
+            f"not the ring endpoint pair (capture {capture_device!r} -> "
             f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
         )
 
@@ -1041,7 +1040,7 @@ def graph_at_active_ring_endpoint(
     if wire is None:
         return False, wire_problem
     problems: list[str] = []
-    for decl in graph_wire_declarations(graph):
+    for decl in (decl for stage in graphs for decl in graph_wire_declarations(stage)):
         if decl.sample_format != wire.sample_format:
             problems.append(
                 f"{decl.end} declares format {decl.sample_format}, expected "

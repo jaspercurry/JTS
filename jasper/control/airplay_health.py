@@ -36,6 +36,7 @@ from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control.system_metrics import read_thermal_zone_temp_c
+from jasper.fanin.status import fanin_inputs_by_label
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
@@ -855,18 +856,8 @@ class AirPlayHealthSampler:
                 self._current_fanin = None
             return
 
-        inputs = status.get("inputs")
-        if not isinstance(inputs, list):
-            inputs = []
-        inputs_by_label = {
-            entry.get("label"): entry
-            for entry in inputs
-            if isinstance(entry, dict) and isinstance(entry.get("label"), str)
-        }
-        airplay = next(
-            (inp for inp in inputs if inp.get("label") == "airplay"),
-            None,
-        )
+        inputs_by_label = fanin_inputs_by_label(status)
+        airplay = inputs_by_label.get("airplay")
         output = status.get("output") if isinstance(status.get("output"), dict) else {}
         watchdog = (
             status.get("watchdog")

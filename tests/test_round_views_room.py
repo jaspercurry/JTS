@@ -14,6 +14,11 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import room_views
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
+from jasper.active_speaker.crossover_v2.room_selection import REFUSE_ROOM_SELECTION
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
@@ -23,6 +28,7 @@ from jasper.audio_measurement.room_boundary import (
 )
 from jasper.cli import round_views
 from jasper.cli.round_views import room
+from jasper.cli.round_views.bass_fit import _median as bass_median
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
 
 #: Away from every feature below, where the ladder alone sets the numbers.
@@ -56,7 +62,7 @@ def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, caps
     doc = json.loads((round_dir / "room_median.json").read_text())
     assert set(doc) == {
         "freqs_hz", "median_db", "spread_db", "n_positions", "positions",
-        "ceiling_hz", "ceiling_source", "window",
+        "ceiling_hz", "ceiling_source", "window", "coverage_hz", "evidence",
     }
     freqs = np.asarray(doc["freqs_hz"])
     assert freqs[0] >= room_views.ROOM_FLOOR_HZ and freqs[-1] <= doc["ceiling_hz"]
@@ -83,6 +89,76 @@ def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, caps
     assert (by_kind["dip"]["n_present"], by_kind["dip"]["presence_fraction"]) == (7, 1.0)
     assert by_kind["peak"]["n_present"] == 3
     assert by_kind["peak"]["presence_fraction"] == pytest.approx(3 / 7)
+
+
+@pytest.mark.parametrize("changed", [
+    {"candidate_id": "second"},
+    {"graph_fingerprint": "other-applied"},
+    {"provenance": {"graph": {"fingerprint": "other-played"}}},
+    {"graph_scope": "room"},
+    {"side": "right"},
+    {"capture_setup": {"calibration": {"calibration_id": "other-mic"}}},
+    {"capture_calibration": {"applied": True, "calibration_id": "same-mic", "curve_fingerprint": "changed-curve"}},
+    {"capture_device": {"card": "other-card"}},
+    {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
+    {"level_db": -35.0},
+    {"stimulus_dbfs": -20.0},
+])
+def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, capsys, changed):
+    round_dir = bank_seat_round(tmp_path)
+    root = round_inputs(round_dir).session_dir
+    captures = []
+    for row, original in list(measurement_documents(root)):
+        if original.get("pose_kind") != "seat":
+            continue
+        path = take_artifact_path(root, row.path)
+        original.update(candidate_id="first", graph_scope="speaker_tune")
+        original["curves"][0]["band_hz"] = [50.0, 200.0]
+        path.write_text(json.dumps(original))
+        second = json.loads(json.dumps(original))
+        second.update(changed)
+        second["pose_id"] += "_second"
+        second["take_id"] += "_second"
+        second["curves"][0]["magnitude_db"] = [-20.0] * len(SEAT_GRID_HZ)
+        path.with_stem(path.stem + "_second").write_text(json.dumps(second))
+        captures.append((original, second))
+    original, second = captures[0]
+    repeat = dict(original, pose_id="another_stop", take_id="repeated_pose", attempt=10)
+    path.with_stem("repeated_pose").write_text(json.dumps(repeat))
+    invalid = dict(repeat, take_id="bad_repeat", attempt=11, curves=[])
+    path.with_stem("bad_repeat").write_text(json.dumps(invalid))
+
+    assert round_views.main(["room-median", str(round_dir)]) == round_views.EXIT_REFUSED
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["reason"] == REFUSE_ROOM_SELECTION
+    assert not (round_dir / "room_median.json").exists()
+
+    for record, level in [(original, -30.0), (second, -20.0)]:
+        out = tmp_path / (record["take_id"] + ".json")
+        answer = _run(capsys, [
+            "room-median", str(round_dir), "--capture-id", record["take_id"], "--out", str(out),
+        ])
+        doc = json.loads(out.read_text())
+        assert answer["n_positions"] == doc["n_positions"] == 7
+        assert len({p["pose_key"] for p in doc["positions"]}) == 7
+        assert doc["coverage_hz"] == [50.0, 200.0]
+        assert min(doc["freqs_hz"]) >= 50.0 and max(doc["freqs_hz"]) <= 200.0
+        assert np.allclose(doc["median_db"], level)
+        median = read_room_median(doc)
+        assert median.band_hz == (50.0, 200.0)
+        assert bass_median(out)[0].evidence == median.evidence == doc["evidence"]
+        persistence = _run(capsys, [
+            "room-persistence", str(round_dir), "--capture-id", record["take_id"],
+        ])
+        assert persistence["n_positions"] == 7
+        assert persistence["evidence"] == doc["evidence"]
+        grade = _run(capsys, ["room-grade", str(round_dir), "--room-median", str(out)])
+        assert grade["evidence"] == doc["evidence"]
+        assert grade["graph_scopes"] == [record["graph_scope"]]
+        if record is original:
+            assert "repeated_pose" in doc["evidence"]["take_ids"]
+            assert original["take_id"] in doc["evidence"]["superseded_take_ids"]
+            assert [r["take_id"] for r in doc["evidence"]["omitted_takes"]] == ["bad_repeat"]
 
 
 def test_the_answers_summarize_without_the_curves(tmp_path: Path, capsys) -> None:

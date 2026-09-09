@@ -884,6 +884,12 @@ class _OutputdStreamAdapter:
         with self._bounded_lock():
             self._sendall_locked(f"GAIN {db:.3f}\n".encode("ascii"))
 
+    def program_duck(self, on: bool) -> None:
+        # Depth is fan-in's: it owns the attenuation this verb switches on.
+        verb = b"PROGRAM_DUCK_ON\n" if on else b"PROGRAM_DUCK_OFF\n"
+        with self._bounded_lock():
+            self._sendall_locked(verb)
+
     def prepare_assistant(
         self,
         *,
@@ -1371,6 +1377,38 @@ class TtsPlayout:
                 stream.set_gain_db(self.gain_db)
             except OSError as e:
                 logger.warning("fan-in TTS IPC gain update failed: %s", e)
+
+    async def program_duck(self, on: bool) -> bool:
+        """Switch fan-in's program duck on/off over this playout's connection.
+
+        Fan-in owns the duck depth; this only asks for the state. Goes through
+        the same reconnect path as every other command, so the first turn
+        after a fan-in restart ducks rather than playing over undimmed music.
+        Returns False when there is no live connection to ask on or the ask
+        failed, so the caller can own its own restore.
+        """
+        # A silent duck failure means music does not step back under the
+        # assistant, so every path out of here says why.
+        def failed(reason: str, **fields: str) -> bool:
+            log_event(
+                logger,
+                "voice.duck_failed",
+                on=str(bool(on)).lower(),
+                reason=reason,
+                level=logging.WARNING,
+                **fields,
+            )
+            return False
+
+        stream = await self._current_outputd_stream()
+        duck = getattr(stream, "program_duck", None)
+        if duck is None:
+            return failed("no_connection")
+        try:
+            await asyncio.to_thread(duck, on)
+        except OSError as e:
+            return failed("send", detail=str(e))
+        return True
 
     async def prepare_assistant_context(
         self,

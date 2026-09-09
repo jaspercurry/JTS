@@ -198,7 +198,8 @@ _MONITOR_ERRORS = (
 
 # The shared-path units whose restart interrupts every source, and the incident
 # key stem each one reports under (the stems `_likely_area` already classifies).
-_RESTART_WATCH_UNITS = {
+# Public: `jasper.control.heal_supervisor` stands down when one is not active.
+RESTART_WATCH_UNITS = {
     "jasper-fanin.service": "path.fanin",
     CAMILLA_UNIT_FULL: "path.camilla",
     "jasper-outputd.service": "path.outputd",
@@ -357,6 +358,7 @@ def _transport_state(
     report = transport_coherence_report(
         outputd_env=dict(outputd_env),
         camilla_devices=camilla_devices,
+        allow_grouping_capture=True,
     )
     gap = active_lane_capability_gap(topology)
     return {
@@ -1875,7 +1877,7 @@ def _reliability(
         ))
     restarts = sum(
         _as_int(_mapping(_mapping(service_states).get(unit)).get("n_restarts"))
-        for unit in _RESTART_WATCH_UNITS
+        for unit in RESTART_WATCH_UNITS
     )
     if restarts:
         details.append(_detail("Sound restarts since startup", str(restarts)))
@@ -3020,10 +3022,10 @@ class AudioHealthSampler:
             unit: _nonnegative_counter(
                 _mapping(self._service_states.get(unit)).get("n_restarts"),
             )
-            for unit in _RESTART_WATCH_UNITS
+            for unit in RESTART_WATCH_UNITS
         }
         if self._previous_service_restarts is not None:
-            for unit, stem in _RESTART_WATCH_UNITS.items():
+            for unit, stem in RESTART_WATCH_UNITS.items():
                 previous_restarts = self._previous_service_restarts.get(unit)
                 current_restarts = restarts[unit]
                 if previous_restarts is None or current_restarts is None:

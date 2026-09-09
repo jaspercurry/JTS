@@ -739,6 +739,7 @@ def validate_outputd_env(
     report = transport_coherence_report(
         outputd_env=merged_outputd,
         camilla_devices=devices,
+        allow_grouping_capture=True,
     )
     if report.errors:
         return False, (*lines, "; ".join(report.errors))

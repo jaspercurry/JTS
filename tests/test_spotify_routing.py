@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jasper.spotify_routing import (
     _find_librespot_id,
     _match_track,
@@ -216,18 +218,38 @@ async def test_resolve_no_librespot_visible_returns_none_id():
     assert r.stop_renderers == []
 
 
-async def test_stop_renderers_pauses_bluetooth_with_avrcp(monkeypatch):
-    calls: list[str] = []
+@pytest.mark.parametrize(
+    ("names", "avrcp", "mux"),
+    [
+        # AirPlay is stopped through mux's own preemption, never a
+        # second MPRIS Pause of our own.
+        (["airplay"], [], ["PREEMPT airplay"]),
+        (["bluetooth"], ["Pause"], []),
+        (["airplay", "bluetooth"], ["Pause"], ["PREEMPT airplay"]),
+    ],
+)
+async def test_stop_renderers_dispatches_per_source(
+    monkeypatch, names, avrcp, mux,
+):
+    avrcp_calls: list[str] = []
+    mux_calls: list[str] = []
 
     async def fake_avrcp(method: str) -> None:
-        calls.append(method)
+        avrcp_calls.append(method)
 
-    class _Renderer:
-        async def pause_airplay(self) -> None:
-            raise AssertionError("airplay should not be touched")
+    async def fake_mux(cmd: str, **kwargs):
+        mux_calls.append(cmd)
+        return {"preempted": "airplay"}
 
     monkeypatch.setattr("jasper.spotify_routing.bluetooth_avrcp_call", fake_avrcp)
+    monkeypatch.setattr("jasper.spotify_routing.mux_socket_command", fake_mux)
+    monkeypatch.setattr("jasper.spotify_routing.asyncio.sleep", _no_sleep)
 
-    await stop_renderers(_Renderer(), ["bluetooth"])
+    await stop_renderers(names)
 
-    assert calls == ["Pause"]
+    assert avrcp_calls == avrcp
+    assert mux_calls == mux
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
