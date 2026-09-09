@@ -9,9 +9,7 @@ campaign in
 ``docs/bass-extension-waves/limiter-evidence-protocol.md`` and writes the
 replayable evidence bundle a later Wave 4 revision consumes. It is bench-only,
 operator-supervised, and fail-closed. It never wires the pure evidence producer
-into any production path, never persists a profile, and calls no
-``apply_bass_extension`` / ``bypass_bass_extension`` /
-``recover_pending_bass_extension_apply`` writer.
+into any production path, never persists a profile, and calls no profile writer.
 
 Module map:
 

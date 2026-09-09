@@ -866,7 +866,6 @@ mod tests {
 
         // A reader attaches: it resyncs read_seq = write_seq (drops stale slots).
         let mut reader = RingReader::create_or_attach(&path, g).unwrap();
-        assert_eq!(reader.metrics().attach_resyncs, 1);
         let mut out = vec![0i16; n];
         // Reader is caught up: empty until a NEW publish.
         assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Empty);

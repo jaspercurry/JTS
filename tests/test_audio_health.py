@@ -761,7 +761,7 @@ def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> Non
     detail = health["signal_path"]["detail"]
     assert health["signal_path"]["code"] == "transport_parked"
     assert "InnoMaker HiFi AMP Pro" in detail
-    assert "/sound/setup/" in detail
+    assert "/sound/speaker/" in detail
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. The
     # consequence has to travel with the advice.
@@ -927,7 +927,7 @@ def test_undeclared_ready_hardware_surfaces_a_setup_hint() -> None:
     assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
     detail = health["overall"]["detail"]
     assert "Dual Apple USB-C DAC 4-channel pair" in detail
-    assert "/sound/setup/" in detail
+    assert "/sound/speaker/" in detail
 
 
 def test_setup_hint_fires_when_no_topology_was_ever_saved(monkeypatch, tmp_path) -> None:
@@ -1080,7 +1080,7 @@ def test_missing_output_topology_leaves_the_generic_message() -> None:
 def test_unready_output_hardware_record_has_no_setup_hint() -> None:
     """A degraded/ambiguous detection blocked from adoption must not tell the
     household hardware is ready when it is not — this reuses the exact gate
-    ``/sound/setup/``'s "Use detected hardware" button already applies.
+    ``/sound/speaker/``'s "Use detected hardware" button already applies.
     """
     blocked = _output_hardware(
         status="partial",
@@ -1640,10 +1640,10 @@ def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
 def test_a_park_outranks_the_deafness_it_causes() -> None:
     """A parked lane IS a lane with no producer, so it reads deaf by design.
 
-    `grouped_dac_content_lane` parks a box whose armed round-trip lane "has no
-    producer" — outputd zero-fills it forever. Letting `output_deaf` stand
-    would replace a structural verdict carrying its own rebuild issue with
-    "Try Restart audio", which cannot clear it.
+    `dac_content_marker_beside_bridge` parks a box outputd refuses to start,
+    so it zero-fills forever. Letting `output_deaf` stand would replace a
+    structural verdict carrying its own rebuild issue with "Try Restart
+    audio", which cannot clear it.
     """
     for park in _live_parks():
         health = compose_audio_health(
@@ -4395,7 +4395,6 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
     # sentence — which is exactly where a unit name is allowed to live.
     assert {row["key"] for row in rows} == {
         "monitor.mux_status_unavailable",
-        "path.transport_park.grouped_dac_content_lane",
         "path.transport_park.mono_full_range",
         "path.transport_park.passive_stereo_composite",
         "path.transport_park.roleful_active_endpoint_unconverged",

@@ -149,7 +149,7 @@ is the authoritative route list; it covers the assistant
 (`/assistant/voice/`, `/assistant/wake/`, `/assistant/tools/`,
 `/assistant/chat/`, `/assistant/transit/`, `/assistant/weather/`,
 `/assistant/google/`, `/assistant/ha/`), sound (`/sound/eq/`,
-`/sound/setup/`, `/sound/pair/`, `/sound/room/`,
+`/sound/speaker/`, `/sound/output/`, `/sound/pair/`,
 `/sound/speaker/crossover/`, `/sound/bass/`), sources (`/sources/`,
 `/spotify/`, `/bluetooth/`, `/airplay/`) and the system pages
 (`/system/`, `/wifi/`, `/speaker/`).
@@ -166,7 +166,7 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   output_topology.py Output topology / DAC selection
   voice/             Provider-agnostic LiveConnection + per-provider adapters
   tools/             LLM tool packs and the tool registry
-  web/               Setup wizards (shared primitives in web/_common.py)
+  web/               Setup wizards (primitives in web/_common.py, shell in web/chrome.py)
   control/           jasper-control: /state, management + automation HTTP API
   cli/               jasper-doctor, jasper-aec-*, measurement CLIs
   platform/          Control client, UDS + status-socket clients, systemd activation
@@ -175,7 +175,6 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   active_speaker/ audio_measurement/ correction/ attribution/
                      The speaker tuning + measurement program
   mics/ xvf/ audio_hardware/  Mic families, XVF3800 control, DAC registry
-  calibration_agent/ Runtime tuning-knowledge corpus + bundle intake
 rust/              jasper-fanin (mixer), jasper-outputd (final output owner),
                      jasper-ring, jasper-resampler, jasper-clock and crates
 c/                 jts-ring-ioplug: ALSA shared-memory ring plugin

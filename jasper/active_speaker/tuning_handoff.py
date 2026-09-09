@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
-    SOUND_SETUP_PAGE_PATH,
+    SPEAKER_SETUP_PAGE_PATH,
     read_identity,
     speaker_url,
 )
@@ -53,7 +53,7 @@ def build_tuning_handoff_binding(design_draft: Mapping[str, Any]) -> dict[str, A
     return {
         "speaker_name": identity.name,
         "hostname": identity.hostname,
-        "declaration_url": speaker_url(SOUND_SETUP_PAGE_PATH),
+        "declaration_url": speaker_url(SPEAKER_SETUP_PAGE_PATH),
         "crossover_url": speaker_url(CROSSOVER_PAGE_PATH),
         "design_draft_revision": revision if isinstance(revision, int) else 0,
     }
@@ -116,7 +116,7 @@ def build_tuning_handoff(
     baseline_profile: Mapping[str, Any],
     design_draft: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """``{prompt, binding}`` for the /sound/setup/ handoff card.
+    """``{prompt, binding}`` for the /sound/speaker/ handoff card.
 
     Readiness is ``applied_profile_stands``, read from the same baseline-profile
     payload the page renders its active-profile card from (ADR-0195): a second

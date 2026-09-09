@@ -164,7 +164,7 @@ pub struct TtsMetrics {
     /// The shared assistant-loudness snapshot for STATUS. `OutputCore`
     /// (audio loop) publishes into it each period via `try_lock`; the state
     /// server reads it. Mutex over a small Copy-ish struct, matching the
-    /// `sro_estimator` / `dac_clock` state pattern — the audio loop never
+    /// `sro_estimator` state pattern — the audio loop never
     /// blocks on it.
     loudness: Arc<Mutex<TtsLoudnessSnapshot>>,
 }
@@ -721,11 +721,11 @@ mod tests {
         assert!(bridge.open_segment.is_some());
     }
 
-    /// The volume context is now a first-class INPUT to outputd's gain, not a
-    /// dropped command. With MixStage::PostDsp the engine zeroes Camilla's
-    /// downstream_db, so a first-use reply targets the envelope directly:
-    /// source_lufs -25, envelope -41 → gain -16 dB (the -30 downstream is
-    /// ignored, which is exactly the double-compensation this fix prevents).
+    /// The volume context is a first-class INPUT to outputd's gain. With
+    /// MixStage::PostDsp the engine zeroes Camilla's downstream_db, so a
+    /// first-use reply targets the envelope directly: source_lufs -25,
+    /// envelope -41 → gain -16 dB (the -30 downstream is ignored, avoiding
+    /// double-compensation).
     fn post_dsp_bridge_inputs(
         tx: &SyncSender<QueuedTtsCommand>,
         source_lufs: f32,
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn post_dsp_gain_differs_from_pre_dsp_for_same_volume_context() {
-        use crate::loudness::{
+        use jasper_tts_protocol::loudness::{
             AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, AssistantProfile,
             MixStage,
         };

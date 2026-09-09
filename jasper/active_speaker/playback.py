@@ -41,10 +41,7 @@ from jasper.audio_lab import (
     AUDIO_LAB_TEST_PCM_ENV,
     AUDIO_LAB_TONE_BACKEND_ENV,
 )
-from jasper.camilla_config_contract import (
-    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-    RETIRED_ALOOP_PLAYBACK_DEVICE,
-)
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 
 from .camilla_yaml import _forbidden_playback_token
 from .driver_protection import (
@@ -122,13 +119,11 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 #     voids exclusivity SILENTLY, with no log line between two live writers.
 # A hearing-safety fence should not rest on a guard with those three holes.
 FORBIDDEN_TEST_PCM_TOKENS = (
-    # The RETIRED snd-aloop playback lane by its own name: `DEFAULT_PLAYBACK_DEVICE`
-    # is Ring B now (ADR-0100) and is already covered by its literal below, so
-    # naming the constant here would both duplicate that entry and stop
-    # forbidding the aloop lane by name.
-    RETIRED_ALOOP_PLAYBACK_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",
+    # The retired snd-aloop stereo lane by its own name: an old asound.conf can
+    # still resolve these on a box that has not reconciled since the retirement.
+    "outputd_content_playback",
     "outputd_content_capture",
     "outputd_active_content_capture",
     "outputd_dac",

@@ -415,8 +415,8 @@ _ON_EVERY_PROFILE = (
     "avahi_control",
     "peering_template",
     "state_modes",
+    "retired",
     "systemd_units",
-    "retired_topology_state",
     "wifi_guardian",
     "memory_resilience",
     "cgroup_memory",
@@ -445,6 +445,10 @@ _REQUIRED_ORDER = (
     # the reconcilers, which read /var/lib/jasper as group `jasper`.
     ("service_users", "state_modes"),
     ("state_modes", "systemd_units"),
+    # `systemctl disable --now` is never part of a unit-staging transaction, and
+    # the retired /sources/ socket holds the port the jasper-web bundle enable
+    # is about to claim.
+    ("retired", "systemd_units"),
     # Above service_users each compartment re-assert is a silent no-op (its
     # opening `getent group ... || return 0`); above the tier's python step
     # the ownership half still runs but there is no seeded jasper.env to
@@ -654,7 +658,7 @@ def test_deploy_script_accepts_full_and_streambox_only():
     assert "full|streambox|endpoint)" not in text
     # The bespoke endpoint verification path is gone.
     assert 'REMOTE_INSTALL_PROFILE" == "endpoint"' not in text
-    assert "http://127.0.0.1/sound/setup/" in text
+    assert "http://127.0.0.1/sound/speaker/" in text
     assert "http://127.0.0.1/sound/ || echo 000" not in text
 
 

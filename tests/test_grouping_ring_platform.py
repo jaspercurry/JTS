@@ -566,8 +566,6 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     ``test_install_ring_platform_sequencing``, deliberately: that one reads
     ``install_jts_ring_platform``'s body, this one scans the whole file, so an
     ``rm -f`` added anywhere in ``ring-platform.sh`` is caught too.
-
-    Grouping-ring design §3.4.
     """
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
     from jasper.ring_assets import (

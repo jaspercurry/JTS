@@ -188,5 +188,8 @@ export function buildFunction(sources, {
     })
     .join("\n");
   const Ctor = isAsync ? Object.getPrototypeOf(async function () {}).constructor : Function;
-  return new Ctor(...params, body + returnClause(returns));
+  // Browser page code runs strict (it is loaded as a module); a constructed
+  // Function is sloppy by default, where a bare `x = 1` silently becomes a
+  // global instead of throwing. Strict keeps the harness honest about that.
+  return new Ctor(...params, '"use strict";\n' + body + returnClause(returns));
 }

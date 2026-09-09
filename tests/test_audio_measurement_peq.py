@@ -17,7 +17,11 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import peq
-from jasper.correction import target
+
+
+def _flat_target(freqs: np.ndarray) -> np.ndarray:
+    """0 dB at every frequency — the reference the designer fits against."""
+    return np.zeros_like(freqs)
 
 
 def _log_freqs(n: int = 480) -> np.ndarray:
@@ -56,7 +60,7 @@ def _rbj_peaking_db(
 def test_flat_response_yields_no_peqs():
     freqs = _log_freqs()
     measured = np.zeros_like(freqs)
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     peqs = peq.design_peq(measured, target_db, freqs)
     assert peqs == []
 
@@ -65,7 +69,7 @@ def test_single_peak_identified():
     """Synthetic response with a single +6 dB bell at 80 Hz, Q=4.
     The designer should pick a filter near 80 Hz, negative gain."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=80.0, q=4.0, gain_db=6.0)
     peqs = peq.design_peq(measured, target_db, freqs)
     assert len(peqs) >= 1
@@ -83,7 +87,7 @@ def test_cuts_only_skips_dips():
     """A response with a -6 dB dip and no peaks should yield zero
     PEQs when cuts_only=True (default)."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = -_bell(freqs, fc=120.0, q=3.0, gain_db=6.0)  # dip
     peqs = peq.design_peq(measured, target_db, freqs)
     assert peqs == []
@@ -96,7 +100,7 @@ def test_cuts_and_boosts_handles_dip():
     the dip — that's expected greedy behavior; refining 'don't
     redundantly stack' is Phase 2."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = -_bell(freqs, fc=120.0, q=3.0, gain_db=6.0)  # dip
     peqs = peq.design_peq(
         measured, target_db, freqs,
@@ -115,7 +119,7 @@ def test_cuts_and_boosts_handles_dip():
 def test_max_filters_cap_respected():
     """Multiple peaks shouldn't blow past max_filters."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = (
         _bell(freqs, fc=40.0, q=4, gain_db=6) +
         _bell(freqs, fc=80.0, q=4, gain_db=5) +
@@ -136,7 +140,7 @@ def test_band_limited_to_modal_range():
     correct above ~Schroeder by default — that's the whole 20-350 Hz
     rule from Toole."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     # +6 dB peak at 1500 Hz — above the default f_high=350.
     measured = _bell(freqs, fc=1500.0, q=4.0, gain_db=6.0)
     peqs = peq.design_peq(measured, target_db, freqs)
@@ -149,7 +153,7 @@ def test_max_cut_db_clamps():
     by default). Bigger cuts than that are a sign the room needs
     acoustic treatment, not EQ."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=100.0, q=4.0, gain_db=30.0)
     peqs = peq.design_peq(measured, target_db, freqs)
     assert len(peqs) >= 1
@@ -161,7 +165,7 @@ def test_q_clamped_to_range():
     """Q outside [q_min, q_max] should be clamped. A very narrow
     peak (Q=20) should land at q_max=8.0."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=100.0, q=20.0, gain_db=6.0)
     peqs = peq.design_peq(
         measured, target_db, freqs, q_min=1.0, q_max=8.0,
@@ -186,7 +190,7 @@ def test_max_cut_db_array_of_uniform_scalar_is_byte_identical_to_scalar():
     proves the new array machinery doesn't perturb the pre-existing scalar
     code path at all."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = (
         _bell(freqs, fc=40.0, q=4, gain_db=14)
         + _bell(freqs, fc=90.0, q=3, gain_db=9)
@@ -213,7 +217,7 @@ def test_max_cut_db_array_applies_a_local_cap_not_a_shared_one():
     the first peak's cut should land near its natural (uncapped) depth,
     the second must clamp to its own local ceiling."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = (
         _bell(freqs, fc=60.0, q=4.0, gain_db=8.0)
         + _bell(freqs, fc=250.0, q=4.0, gain_db=8.0)
@@ -237,7 +241,7 @@ def test_max_cut_db_array_interpolated_between_breakpoints():
     grid) still applies the correctly-interpolated value at a peak that
     doesn't land exactly on one of the cap array's own samples."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=100.0, q=4.0, gain_db=20.0)
     # A cap that is -1 dB at 20 Hz and -20 dB at 20 kHz, linear in this
     # array's own (non-design) domain -- interpolated onto `freqs` at
@@ -255,11 +259,75 @@ def test_max_cut_db_array_interpolated_between_breakpoints():
 
 def test_max_cut_db_array_shape_mismatch_raises():
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=100.0, q=4.0, gain_db=6.0)
     with pytest.raises(ValueError, match="max_cut_db"):
         peq.design_peq(
             measured, target_db, freqs, max_cut_db=np.array([-10.0, -10.0]),
+        )
+
+
+# ---------- max_boost_db per-bin array ------------------------------------
+#
+# The room layer's boost ceiling tapers to zero below the correction ceiling
+# (jasper.audio_measurement.room_limits.boost_cap_db), so the boost bound is
+# per-bin for the same reason max_cut_db is.
+
+
+def test_max_boost_db_array_of_uniform_scalar_is_byte_identical_to_scalar():
+    """A uniform per-bin boost ceiling must produce EXACTLY the scalar
+    result, so the array machinery cannot perturb the scalar path."""
+    freqs = _log_freqs()
+    target_db = _flat_target(freqs)
+    measured = -(
+        _bell(freqs, fc=45.0, q=4.0, gain_db=10.0)
+        + _bell(freqs, fc=120.0, q=3.0, gain_db=9.0)
+    )
+    scalar_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=6.0,
+    )
+    array_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=np.full_like(freqs, 6.0),
+    )
+    assert len(scalar_result) == len(array_result)
+    assert len(scalar_result) >= 1
+    for a, b in zip(scalar_result, array_result):
+        assert a.freq == b.freq
+        assert a.q == b.q
+        assert a.gain == b.gain
+
+
+def test_max_boost_db_array_applies_a_local_cap_not_a_shared_one():
+    """Two equal dips, but the per-bin ceiling is tight only around the
+    second: the first fills to its natural depth, the second clamps."""
+    freqs = _log_freqs()
+    target_db = _flat_target(freqs)
+    measured = -(
+        _bell(freqs, fc=60.0, q=4.0, gain_db=5.0)
+        + _bell(freqs, fc=250.0, q=4.0, gain_db=5.0)
+    )
+    cap = np.full_like(freqs, 6.0)
+    cap[np.abs(np.log2(freqs / 250.0)) < 0.3] = 2.0
+    peqs = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=cap,
+    )
+    near_60 = [p for p in peqs if abs(np.log2(p.freq / 60.0)) < 0.2]
+    near_250 = [p for p in peqs if abs(np.log2(p.freq / 250.0)) < 0.2]
+    assert near_60 and near_250
+    assert near_60[0].gain > 3.0  # not locally capped — free to fill the dip
+    assert all(p.gain <= 2.0 + 1e-6 for p in near_250)
+
+
+def test_max_boost_db_array_shape_mismatch_raises():
+    freqs = _log_freqs()
+    target_db = _flat_target(freqs)
+    measured = _bell(freqs, fc=100.0, q=4.0, gain_db=6.0)
+    with pytest.raises(ValueError, match="max_boost_db"):
+        peq.design_peq(
+            measured, target_db, freqs, max_boost_db=np.array([3.0, 3.0]),
         )
 
 
@@ -275,7 +343,7 @@ def test_predicted_response_negates_measured_peak_approximately():
     designer, applying its predicted response back should mostly
     cancel the peak (residual within ~2 dB at the peak)."""
     freqs = _log_freqs()
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = _bell(freqs, fc=80.0, q=4.0, gain_db=6.0)
     peqs = peq.design_peq(measured, target_db, freqs)
     pred_shift = peq.predicted_response(peqs, freqs)
@@ -312,7 +380,7 @@ def test_design_peq_flattens_a_true_rbj_room():
     flattens in-band."""
     freqs = _log_freqs()
     fs = 48000.0
-    target_db = target.flat_target(freqs)
+    target_db = _flat_target(freqs)
     measured = (
         _rbj_peaking_db(freqs, 63.0, 4.0, 6.0, fs)
         + _rbj_peaking_db(freqs, 160.0, 5.0, 5.0, fs)
@@ -331,7 +399,7 @@ def test_design_peq_flattens_a_true_rbj_room():
 def test_total_max_boost_zero_when_cuts_only():
     freqs = _log_freqs()
     measured = _bell(freqs, fc=80, q=4, gain_db=6) - _bell(freqs, fc=200, q=4, gain_db=4)
-    peqs = peq.design_peq(measured, target.flat_target(freqs), freqs)
+    peqs = peq.design_peq(measured, _flat_target(freqs), freqs)
     assert peq.total_max_boost_db(peqs) == 0.0
 
 

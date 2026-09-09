@@ -25,7 +25,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from unittest.mock import AsyncMock
 
+import pytest
+
+from jasper.busctl import BusctlResult
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
     _OPTIONS_REQUEST,
@@ -216,12 +220,12 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
     """If shairport is fully dead, MPRIS is unknown because there is no
     live process/session to protect. The supervisor must count through
     to restart instead of fail-safing to "active" forever."""
-    async def unknown_mpris(*args, **kwargs):
+    async def unknown_probe(*args, **kwargs):
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.mpris.shairport_playing",
-        unknown_mpris,
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
+        unknown_probe,
     )
 
     class _DeadUnitSupervisor(ShairportSupervisor):
@@ -259,12 +263,12 @@ async def test_disabled_unit_is_never_restarted(monkeypatch):
     unknown and the unit is inactive — byte-for-byte the dead-unit
     bypass shape above — but the stop is deliberate, so the supervisor
     must idle instead of reviving a source the household turned off."""
-    async def unknown_mpris(*args, **kwargs):
+    async def unknown_probe(*args, **kwargs):
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.mpris.shairport_playing",
-        unknown_mpris,
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
+        unknown_probe,
     )
 
     class _DisabledUnitSupervisor(ShairportSupervisor):
@@ -705,3 +709,34 @@ async def test_bonded_follower_parks_the_probe():
     await sup._tick()
     assert sup.last_probe_ok is True
     assert sup.snapshot()["parked_by_role"] is False
+
+
+_NAME_ABSENT_STDERR = (
+    b"Call failed: The name org.mpris.MediaPlayer2.ShairportSync was not "
+    b"provided by any .service files\n"
+)
+
+
+@pytest.mark.parametrize(
+    "busctl,unit_active,expected",
+    [
+        (BusctlResult(0, b'v s "Playing"\n', b""), None, True),
+        (BusctlResult(0, b'v s "Paused"\n', b""), None, False),
+        # No MPRIS bus name is a definite not-Playing: the gate does not
+        # suppress the restart and does not consult systemd.
+        (BusctlResult(1, b"", _NAME_ABSENT_STDERR), None, False),
+        # Unknown probe fails safe to "active" while the unit is alive.
+        (None, True, True),
+    ],
+)
+async def test_session_gate_maps_probe_to_active(
+    monkeypatch, busctl, unit_active, expected,
+):
+    sup = ShairportSupervisor()
+    monkeypatch.setattr(
+        "jasper.source_state.run_busctl", AsyncMock(return_value=busctl),
+    )
+    monkeypatch.setattr(
+        sup, "is_shairport_unit_active", AsyncMock(return_value=unit_active),
+    )
+    assert await sup.is_session_active() is expected

@@ -76,7 +76,6 @@ def _fanin_status_payload(
     output = {
         "transport": transport,
         "frames_written": 1234,
-        "xrun_count": 0,
     }
     if ring is not None:
         output["ring"] = dict(ring)
@@ -235,6 +234,11 @@ def _outputd_status_payload(
             "delay_delta_baseline_frames": 0,
             "delay_delta_error_frames": 0,
             "max_delay_delta_frames": 2,
+            "dac_a_xruns": 0,
+            "dac_b_xruns": 0,
+            "group_recoveries": 0,
+            "delay_baseline_relatches": 0,
+            "reprime_alignment_failures": 0,
         }
     if content_source == "shm_ring":
         content_ring = content["ring"]

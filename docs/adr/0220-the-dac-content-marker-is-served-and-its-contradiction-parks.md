@@ -1,7 +1,10 @@
 # ADR-0220: The dac-content marker is served, and its contradiction parks
 
 Date: 2026-09-02
-Status: Accepted
+Status: Accepted. Amended by
+  [ADR-0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md):
+  the "retire after a bonded pair plays on metal" condition is superseded;
+  the rest of this record stands.
 Refs: #3656, #3118
 
 ## Context

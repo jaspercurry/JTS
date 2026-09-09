@@ -119,12 +119,12 @@ def test_status_banner_severity_and_escaping():
 
 # ---- handler routing + CSRF -------------------------------------------------
 #
-# The Handler's do_GET/do_POST call its OWN _send_json / _read_json methods
-# (defined inside _make_handler), so a detached stand-in object can't drive
-# them — we need a real Handler instance. We build one with object.__new__ to
-# skip BaseHTTPRequestHandler.__init__ (which would parse a socket), then graft
-# the request I/O on and override the response sinks so the base class's
-# log_request / requestline machinery never fires.
+# The Handler's do_GET/do_POST call its OWN _read_json method (declared on
+# the module-level _Handler class), so a detached stand-in object can't
+# drive them — we need a real Handler instance. We build one with
+# object.__new__ to skip BaseHTTPRequestHandler.__init__ (which would parse
+# a socket), then graft the request I/O on and override the response sinks
+# so the base class's log_request / requestline machinery never fires.
 
 
 def _make_inst(path: str, body: bytes = b"", cookies: str = "",

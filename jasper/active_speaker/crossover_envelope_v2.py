@@ -1482,11 +1482,12 @@ def _ripple_reservation_lines(status: Mapping[str, Any]) -> list[str]:
     ]
 
 
-#: One plain sentence, "not a lecture" register, pointing at the concrete
-#: surface for registering a mic.
+#: One plain sentence, "not a lecture" register. It names no surface: no
+#: browser page registers a microphone today, so a pointer here would be a
+#: dead link. Give it one when the toolbox lands its mic view.
 MIC_CALIBRATION_RESERVATION_COPY = (
     "This measurement used no calibrated microphone, so the result may be "
-    "less accurate than usual. Register one under Microphone on /sound/room/."
+    "less accurate than usual."
 )
 
 
@@ -2297,7 +2298,7 @@ def _failure_envelope(
             verdict=message,
             nudges=[{"code": code, "severity": "warn", "text": message}],
             next_action=dict(spec.next_action) if spec.next_action else {
-                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/setup/",
+                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/",
             },
             status=status,
         )
@@ -2360,14 +2361,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "screen": "not_applicable",
             "active": False,
             "steps": [],
-            "verdict_text": (
-                "This speaker has no active crossover. Continue with room correction."
-            ),
+            "verdict_text": "This speaker has no active crossover.",
             "nudges": [],
             "capture": _mapping(status.get("capture")) or None,
-            "next_action": {
-                "id": "room", "label": "Correct the room", "href": "/sound/room/",
-            },
+            "next_action": None,
             "alternate_actions": [],
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
@@ -2410,7 +2407,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "Finish the protected speaker setup first. This proves the output "
                 "map and tweeter protection before the microphone check can play."
             ),
-            next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/setup/"},
+            next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/speaker/"},
             status=status,
         )
 
@@ -2718,13 +2715,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
             done_verdict = f"{done_verdict} {attempt_sentence}"
-        alternate_actions = [
-            {
-                "id": "room",
-                "label": "Continue to Room correction",
-                "href": "/sound/room/",
-            },
-        ]
+        alternate_actions = []
         if _round_can_continue(v2):
             alternate_actions.append({
                 "id": "round_remeasure",
@@ -2742,12 +2733,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # Last: the way back is a safety net, not the recommended step.
         alternate_actions.extend(_way_back_action(status))
         # HEAD promoted to primary, inheriting the recommendedness order
-        # above. Never empty — the room action seeds it.
-        next_action, *alternate_actions = alternate_actions
+        # above. A finished tune with nothing left to try mints no primary;
+        # the row renderer takes ``None`` for that.
+        done_action = alternate_actions.pop(0) if alternate_actions else None
         env = _envelope(
             screen="done", active_step="verify",
             verdict=done_verdict,
-            next_action=next_action,
+            next_action=done_action,
             alternate_actions=alternate_actions,
             # The badge may not claim more than the evidence. The ripple
             # reservation (#2087) is appended at the CALL SITE — owed

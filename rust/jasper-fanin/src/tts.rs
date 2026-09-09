@@ -23,13 +23,13 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use log::{info, warn};
 
-use crate::loudness::{
+use crate::mixer::CHANNELS;
+use crate::playout::{PlayoutEvent, PlayoutLedger};
+use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
     AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, HeldLoudnessReference,
     ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
-use crate::mixer::CHANNELS;
-use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{
     command_name, is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand,
     TtsAudioSamples, TtsCommand, TtsServerCounters, TtsWireWidth, VolumeContext,
@@ -2977,9 +2977,9 @@ mod tests {
 
         let gain = gain_db_to_linear(-17.0);
         let widen_then_gain = apply_gain(jasper_resampler::widen_i16_to_i32(10_000), gain) as i64;
-        let gain_then_widen =
-            jasper_resampler::widen_i16_to_i32(crate::loudness::apply_gain_i16(10_000, gain))
-                as i64;
+        let gain_then_widen = jasper_resampler::widen_i16_to_i32(
+            jasper_tts_protocol::loudness::apply_gain_i16(10_000, gain),
+        ) as i64;
         assert_eq!(sum[0], widen_then_gain, "the sum must gain at spine width");
         assert_ne!(
             widen_then_gain, gain_then_widen,
@@ -3031,7 +3031,7 @@ mod tests {
             0,
             "a quarter step is not on the S16 grid",
         );
-        assert_eq!(crate::loudness::apply_gain_i16(0, gain), 0);
+        assert_eq!(jasper_tts_protocol::loudness::apply_gain_i16(0, gain), 0);
         drop(flush_tx);
     }
 

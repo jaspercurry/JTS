@@ -44,11 +44,9 @@ const EXPRESS_NO_AFTER_CURVE_TEXT =
 
 // The last chart draw ATTEMPTED (not necessarily successfully rendered —
 // review N-2), so a window resize can redraw without waiting for the next
-// poll (mirrors the room page's scheduleChartRedraw pattern,
-// deploy/assets/correction/js/main.js). `drawCloudChart` can return `false`
-// on the very first render after the section is unhidden, if the browser
-// has not yet laid out the canvas (0-size `getBoundingClientRect()`); unlike
-// the room page's drawChart() caller, nothing here inspects that return
+// poll. `drawCloudChart` can return `false` on the very first render after
+// the section is unhidden, if the browser has not yet laid out the canvas
+// (0-size `getBoundingClientRect()`); nothing here inspects that return
 // value to retry synchronously — the next poll (≤1.5 s later) calls
 // renderCloud() again with the same or newer payload and draws normally.
 // This is a real, working self-heal, not the same mechanism as the room

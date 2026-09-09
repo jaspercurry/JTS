@@ -205,7 +205,7 @@ def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
 def _detect_build_sha() -> str | None:
     """Best-effort ``JASPER_GIT_SHA`` from the install-time build manifest.
 
-    Mirrors the reader in ``jasper/web/_common.py``'s ``_asset_version()``,
+    Mirrors the reader in ``jasper/web/chrome.py``'s ``_asset_version()``,
     except an absent/unknown/dev value returns ``None`` here (this is a
     forensic field on a bundle, not a cache-busting token that needs SOME
     value).

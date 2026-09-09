@@ -127,8 +127,10 @@ Group=jasper
 # lets the wizards write/read HA + Spotify credentials and token caches.
 # `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
-# `jts-ring` grants write access to /dev/shm/jts-ring only; nothing this
-# unit spawns opens a ring.
+# `jts-ring` is a READ grant: the /rooms/ wizards (jasper/web/rooms_setup.py,
+# pair_flow.py) import jasper.multiroom.state, whose ring_flow_state opens
+# /dev/shm/jts-ring/grouping.ring (0660, group jts-ring) O_RDONLY for its
+# header. This unit writes no ring.
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
@@ -169,7 +171,7 @@ ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecret
 # /run cannot succeed here; RuntimeDirectory= both creates the directory as
 # jasper-web:jasper (the unit's User:Group) and excludes it from
 # ProtectSystem=. Mode 0755 keeps the root reconciler's read of the marker
-# working; jasper-correction-web (through /sound/room/'s driver-capture arms)
+# working; jasper-correction-web (through its driver-capture arms)
 # declares this same RuntimeDirectory= with the same user and mode since its
 # own de-root, and jasper-web-streambox.service (this same process, installed
 # as jasper-web.service on a streambox) stays root under ProtectSystem=full

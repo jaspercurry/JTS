@@ -41,6 +41,7 @@ __all__ = [
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
     "CapabilityStub",
     "MeasureSpec",
+    "CANDIDATE_SCOPES",
     "GRAPH_SCOPES",
     "GRAPH_SCOPE_DRIVERS",
     "inverted_roles_for",
@@ -121,7 +122,10 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
-GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate")
+GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate")
+#: The scopes whose graph is compiled FROM one named candidate, and which
+#: therefore cannot be selected without naming it.
+CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate"})
 
 
 @dataclass(frozen=True)
@@ -181,8 +185,8 @@ class MeasureSpec:
     def __post_init__(self) -> None:
         if self.graph_scope not in GRAPH_SCOPES:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
-        if self.graph_scope == "candidate" and not self.candidate_id.strip():
-            raise ValueError("candidate graph_scope requires candidate_id")
+        if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
+            raise ValueError(f"{self.graph_scope} graph_scope requires candidate_id")
         if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
             self.polarity != POLARITY_NORMAL or self.inverted_role
             or self.delayed_role or self.delay_us or self.level_matched

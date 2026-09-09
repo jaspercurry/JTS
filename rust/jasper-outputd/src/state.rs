@@ -20,14 +20,12 @@ use anyhow::{Context, Result};
 use crate::aec_clock::SroEstimator;
 use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
-use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
 use crate::tts::TtsMetrics;
 use crate::types::SampleFormat;
-use jasper_clock::DllSnapshot;
 use jasper_daemon::json::{
-    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64, push_kv_i64_opt,
-    push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt,
+    event_age_ms, json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_i64,
+    push_kv_i64_opt, push_kv_str, push_kv_str_opt, push_kv_u64, push_kv_u64_opt, NEVER_MS,
 };
 use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 use jasper_daemon::DaemonHooks;
@@ -42,7 +40,6 @@ const COMMAND_LIMITS: CommandLimits = CommandLimits {
     max_command_bytes: 256,
     read_timeout: Duration::from_secs(2),
 };
-const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
 const DAC_CONTENT_TRIM_DB_MIN_TENTHS: i32 = -240;
 const DAC_CONTENT_TRIM_DB_MAX_TENTHS: i32 = 0;
@@ -147,6 +144,11 @@ pub struct OutputdState {
     started_at: Instant,
     backend: String,
     sink_mode: String,
+    /// The scheduler policy the KERNEL gave this process, latched once at
+    /// startup (`main::sched_policy_name`). The unit asks for
+    /// `CPUSchedulingPolicy=fifo`; a daemon that silently landed on `other`
+    /// has a jitter budget nobody is holding it to.
+    sched_policy: OnceLock<String>,
     /// The DECLARED wire of the post-DSP content hop — the RING's wire, which
     /// `ShmRingSource` builds its geometry from (`Config::content_format`). The
     /// reconciler (`jasper-audio-hardware-reconcile`) emits `S32_LE` by
@@ -195,7 +197,6 @@ pub struct OutputdState {
     dual_delay_baseline_relatches: AtomicU64,
     dual_reprime_alignment_failures: AtomicU64,
     chip_ref_pcm: Option<String>,
-    chip_ref_diagnostic_tee_path: Option<String>,
     reference_udp_target: Option<String>,
     reference_udp_active: AtomicBool,
     reference_udp_error_count: AtomicU64,
@@ -210,13 +211,11 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
-    // The resolved outputd content source: `direct`, `shm_ring`, or
-    // `dac_content_ring` (an armed round-trip marker, whose return lane is the
-    // whole source — no central hop attaches beside it). Published as a plain
-    // mode string; the ring's own health lives in the `shm_ring` block below and
-    // the return lane's in `dac_content`. (The rate-matched bridge that once
-    // published fill/ppm/lock counters here was deleted — see
-    // `config::REMOVED_RATE_MATCH_BRIDGE_SPELLINGS`.)
+    // The resolved outputd content source: `shm_ring`, or `dac_content_ring`
+    // (an armed round-trip marker, whose return lane is the whole source — no
+    // central hop attaches beside it). Published as a plain mode string; the
+    // ring's own health lives in the `shm_ring` block below and the return
+    // lane's in `dac_content`.
     content_bridge_mode: String,
     // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
     // `shm_ring_path` is Some iff JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; the
@@ -257,23 +256,16 @@ pub struct OutputdState {
     shm_ring_empty_reads: AtomicU64,
     shm_ring_epoch_resets: AtomicU64,
     shm_ring_reader_resyncs: AtomicU64,
-    shm_ring_attach_resyncs: AtomicU64,
     shm_ring_writer_pid: AtomicU64,
     shm_ring_writer_heartbeat_age_ms: AtomicU64,
     shm_ring_writer_alive: AtomicBool,
-    /// The armed round-trip lane's path, whichever transport carries it, and
-    /// which transport that is. `None` = solo.
-    dac_content_lane: Option<(&'static str, String)>,
+    /// The armed round-trip lane's ring path. `None` = solo.
+    dac_content_lane: Option<String>,
     dac_content_channel: String,
     dac_content_trim_db_tenths: AtomicI32,
     dac_content_trim_gain_bits: AtomicU32,
     dac_content_serving_fifo: AtomicBool,
     dac_content_fifo_periods: AtomicU64,
-    dac_content_starved_periods: AtomicU64,
-    dac_content_staged_periods: AtomicU64,
-    dac_content_overflow_dropped_periods: AtomicU64,
-    dac_content_open_failures: AtomicU64,
-    dac_content_read_failures: AtomicU64,
     chip_ref_sample_rate: AtomicU64,
     chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
@@ -298,9 +290,6 @@ pub struct OutputdState {
     chip_ref_last_write_ms: AtomicU64,
     chip_ref_last_enqueued_reference_sequence: AtomicU64,
     chip_ref_last_written_reference_sequence: AtomicU64,
-    chip_ref_tee_active: AtomicBool,
-    chip_ref_tee_open_error_count: AtomicU64,
-    chip_ref_tee_write_error_count: AtomicU64,
     // The writer's own recent per-write observations (see
     // `CHIP_REF_RECENT_WRITES`). Mutex on the same grounds as `sro_estimator`
     // below: a small fixed struct with one writer (the chip-ref writer thread)
@@ -332,13 +321,6 @@ pub struct OutputdState {
     // Decimates the ~50 Hz `mark_chip_ref_write` ticks down to ~1 Hz (the rate
     // the estimator's slope window is tuned for).
     sro_last_fed_chip_ref_frames: AtomicU64,
-    // Observe-only DAC playout-clock drift observer (Inc 2). A
-    // jasper-clock DLL fed the wall-clock-vs-DAC-playout frame error from
-    // `mark_dac_delay` (where the DAC delay is already sampled). It NEVER warps
-    // audio — it surfaces `dac_clock_ppm` + lock/verdict on /state.
-    // Mutex for the same reason as `sro_estimator`: a small struct, single
-    // writer (the playback loop) + single reader (the state server).
-    dac_clock: Mutex<DacClockObserver>,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     // The live content source's CURRENT run of zero-filled periods and the
@@ -359,7 +341,7 @@ pub struct OutputdState {
     reference_sequence: AtomicU64,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
-    // Bonded-member TTS lane (PR-2). Set once at startup when the
+    // Bonded-member TTS lane. Set once at startup when the
     // socket env is configured; the state server may briefly read
     // enabled:false before run_alsa sets it — harmless.
     tts: OnceLock<(String, TtsMetrics)>,
@@ -395,11 +377,22 @@ fn trim_gain_bits(trim_db_tenths: i32) -> u32 {
 }
 
 impl OutputdState {
+    /// Latch the kernel-reported scheduling policy. Once per process, from
+    /// `main` at startup; later calls are ignored.
+    pub fn latch_sched_policy(&self, policy: String) {
+        let _ = self.sched_policy.set(policy);
+    }
+
+    pub fn sched_policy(&self) -> &str {
+        self.sched_policy.get().map_or("unknown", String::as_str)
+    }
+
     pub fn new(config: &Config) -> Self {
         Self {
             started_at: Instant::now(),
             backend: config.backend.as_str().to_string(),
             sink_mode: config.sink_mode.as_str().to_string(),
+            sched_policy: OnceLock::new(),
             declared_content_format: config.content_format.as_str().to_string(),
             declared_content_channels: u64::from(config.content_channels),
             dac_pcm: config.dac_pcm.clone(),
@@ -418,7 +411,6 @@ impl OutputdState {
             dual_delay_baseline_relatches: AtomicU64::new(0),
             dual_reprime_alignment_failures: AtomicU64::new(0),
             chip_ref_pcm: config.chip_ref_pcm.clone(),
-            chip_ref_diagnostic_tee_path: config.chip_ref_tee_path.clone(),
             reference_udp_target: config.reference_udp_target.clone(),
             reference_udp_active: AtomicBool::new(false),
             reference_udp_error_count: AtomicU64::new(0),
@@ -457,15 +449,10 @@ impl OutputdState {
             shm_ring_empty_reads: AtomicU64::new(0),
             shm_ring_epoch_resets: AtomicU64::new(0),
             shm_ring_reader_resyncs: AtomicU64::new(0),
-            shm_ring_attach_resyncs: AtomicU64::new(0),
             shm_ring_writer_pid: AtomicU64::new(0),
             shm_ring_writer_heartbeat_age_ms: AtomicU64::new(0),
             shm_ring_writer_alive: AtomicBool::new(false),
-            dac_content_lane: config
-                .dac_content_ring
-                .clone()
-                .map(|path| ("ring", path))
-                .or_else(|| config.dac_content_fifo.clone().map(|path| ("fifo", path))),
+            dac_content_lane: config.dac_content_ring.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_trim_db_tenths: AtomicI32::new(trim_db_tenths(config.dac_content_trim_db)),
             dac_content_trim_gain_bits: AtomicU32::new(trim_gain_bits(trim_db_tenths(
@@ -473,11 +460,6 @@ impl OutputdState {
             ))),
             dac_content_serving_fifo: AtomicBool::new(false),
             dac_content_fifo_periods: AtomicU64::new(0),
-            dac_content_starved_periods: AtomicU64::new(0),
-            dac_content_staged_periods: AtomicU64::new(0),
-            dac_content_overflow_dropped_periods: AtomicU64::new(0),
-            dac_content_open_failures: AtomicU64::new(0),
-            dac_content_read_failures: AtomicU64::new(0),
             chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
             chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
@@ -502,17 +484,10 @@ impl OutputdState {
             chip_ref_last_write_ms: AtomicU64::new(NEVER_MS),
             chip_ref_last_enqueued_reference_sequence: AtomicU64::new(OPTIONAL_U64_NONE),
             chip_ref_last_written_reference_sequence: AtomicU64::new(OPTIONAL_U64_NONE),
-            chip_ref_tee_active: AtomicBool::new(false),
-            chip_ref_tee_open_error_count: AtomicU64::new(0),
-            chip_ref_tee_write_error_count: AtomicU64::new(0),
             chip_ref_writes: Mutex::new(ChipRefWriteRing::new()),
             chip_ref_observe: config.chip_ref_observe,
             sro_estimator: Mutex::new(SroEstimator::new()),
             sro_last_fed_chip_ref_frames: AtomicU64::new(0),
-            dac_clock: Mutex::new(DacClockObserver::new(
-                config.sample_rate,
-                config.period_frames,
-            )),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_consecutive_empty_periods: AtomicU64::new(0),
@@ -661,18 +636,6 @@ impl OutputdState {
             .store(delay_frames, Ordering::Relaxed);
         self.dac_snd_pcm_delay_sample_ms
             .store(uptime_ms, Ordering::Relaxed);
-        // Observe-only (Inc 2): tick the DAC playout-clock drift observer
-        // with the freshly-sampled DAC delay paired with the cumulative frames
-        // written and the monotonic uptime. The estimator self-decimates to
-        // ~1 Hz, so calling it every period is cheap and harmless. It NEVER
-        // touches the audio path. `try_lock` so a /state reader (the only other
-        // contender) can never make the playback loop wait; a skipped tick just
-        // drops one ~1 Hz sample.
-        let dac_written = self.dac_frames_written.load(Ordering::Relaxed);
-        let elapsed_seconds = uptime_ms as f64 / 1000.0;
-        if let Ok(mut clock) = self.dac_clock.try_lock() {
-            clock.observe(dac_written, delay_frames, elapsed_seconds);
-        }
     }
 
     pub fn mark_chip_ref_queue_admitted(&self, frames: u64) {
@@ -849,37 +812,11 @@ impl OutputdState {
         }
     }
 
-    pub fn mark_chip_ref_tee_opened(&self) {
-        self.chip_ref_tee_active.store(true, Ordering::Relaxed);
-    }
-
-    pub fn mark_chip_ref_tee_open_error(&self) {
-        self.chip_ref_tee_active.store(false, Ordering::Relaxed);
-        self.chip_ref_tee_open_error_count
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn mark_chip_ref_tee_write_error(&self) {
-        self.chip_ref_tee_active.store(false, Ordering::Relaxed);
-        self.chip_ref_tee_write_error_count
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn mark_dac_content(&self, metrics: DacContentMetrics) {
         self.dac_content_serving_fifo
             .store(metrics.serving_fifo, Ordering::Relaxed);
         self.dac_content_fifo_periods
             .store(metrics.fifo_periods, Ordering::Relaxed);
-        self.dac_content_starved_periods
-            .store(metrics.starved_periods, Ordering::Relaxed);
-        self.dac_content_staged_periods
-            .store(metrics.staged_periods, Ordering::Relaxed);
-        self.dac_content_overflow_dropped_periods
-            .store(metrics.overflow_dropped_periods, Ordering::Relaxed);
-        self.dac_content_open_failures
-            .store(metrics.open_failures, Ordering::Relaxed);
-        self.dac_content_read_failures
-            .store(metrics.read_failures, Ordering::Relaxed);
     }
 
     /// PROTOTYPE (latency/ring-proto-shm): publish the SHM ring reader's
@@ -900,8 +837,6 @@ impl OutputdState {
             .store(metrics.epoch_resets, Ordering::Relaxed);
         self.shm_ring_reader_resyncs
             .store(metrics.reader_resyncs, Ordering::Relaxed);
-        self.shm_ring_attach_resyncs
-            .store(metrics.attach_resyncs, Ordering::Relaxed);
         self.shm_ring_writer_pid
             .store(metrics.writer_pid, Ordering::Relaxed);
         self.shm_ring_writer_heartbeat_age_ms
@@ -947,6 +882,8 @@ impl OutputdState {
         push_kv_str(&mut buf, "backend", &self.backend);
         buf.push(',');
         push_kv_str(&mut buf, "sink_mode", &self.sink_mode);
+        buf.push(',');
+        push_kv_str(&mut buf, "sched_policy", self.sched_policy());
         buf.push(',');
 
         buf.push_str(r#""content":{"#);
@@ -1140,12 +1077,6 @@ impl OutputdState {
                     self.shm_ring_reader_resyncs.load(Ordering::Relaxed),
                 );
                 buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "attach_resyncs",
-                    self.shm_ring_attach_resyncs.load(Ordering::Relaxed),
-                );
-                buf.push(',');
                 push_kv_bool(
                     &mut buf,
                     "writer_alive",
@@ -1179,21 +1110,18 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Multi-room round-trip lane (Increment 3) — DAEMON-TRUTH health
+        // Multi-room round-trip lane — DAEMON-TRUTH health
         // for /state + jasper-doctor (never a Python mirror of env
         // intent). enabled:false with no further fields when the lane is
         // not configured (solo — zero cost, zero noise).
         buf.push_str(r#""dac_content":{"#);
         match self.dac_content_lane.as_ref() {
-            Some((transport, path)) => {
+            Some(path) => {
                 push_kv_bool(&mut buf, "enabled", true);
                 buf.push(',');
-                push_kv_str(&mut buf, "transport", transport);
+                push_kv_str(&mut buf, "transport", "ring");
                 buf.push(',');
-                // The path under the key its transport owns. A FIFO box's block
-                // is unchanged; a ring box says `ring` rather than lying with
-                // `fifo`.
-                push_kv_str(&mut buf, transport, path);
+                push_kv_str(&mut buf, "ring", path);
                 buf.push(',');
                 push_kv_str(&mut buf, "channel", &self.dac_content_channel);
                 buf.push(',');
@@ -1210,37 +1138,6 @@ impl OutputdState {
                     "fifo_periods",
                     self.dac_content_fifo_periods.load(Ordering::Relaxed),
                 );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "starved_periods",
-                    self.dac_content_starved_periods.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "staged_periods",
-                    self.dac_content_staged_periods.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "overflow_dropped_periods",
-                    self.dac_content_overflow_dropped_periods
-                        .load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "open_failures",
-                    self.dac_content_open_failures.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "read_failures",
-                    self.dac_content_read_failures.load(Ordering::Relaxed),
-                );
             }
             None => {
                 push_kv_bool(&mut buf, "enabled", false);
@@ -1249,7 +1146,7 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        // Bonded-member TTS lane (PR-2) — daemon truth for /state +
+        // Bonded-member TTS lane — daemon truth for /state +
         // doctor. enabled:false when the lane is off (solo: fanin owns
         // TTS) — zero noise, mirroring dac_content.
         buf.push_str(r#""tts":{"#);
@@ -1583,8 +1480,8 @@ impl OutputdState {
         push_kv_bool(&mut buf, "desired", chip_ref_desired);
         buf.push(',');
         // Compatibility: existing AEC policy consumers read `enabled` as the
-        // live writer verdict. It now tells runtime truth instead of merely
-        // echoing that a PCM name was configured.
+        // live writer verdict — runtime truth, not merely that a PCM name was
+        // configured.
         push_kv_bool(&mut buf, "enabled", chip_ref_active);
         buf.push(',');
         push_kv_bool(&mut buf, "active", chip_ref_active);
@@ -1703,30 +1600,6 @@ impl OutputdState {
         buf.push(',');
         push_kv_u64_opt(&mut buf, "reference_sequence_lag", chip_ref_sequence_lag);
         buf.push(',');
-        push_kv_str_opt(
-            &mut buf,
-            "diagnostic_tee_path",
-            self.chip_ref_diagnostic_tee_path.as_deref(),
-        );
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "diagnostic_tee_active",
-            self.chip_ref_tee_active.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "diagnostic_tee_open_error_count",
-            self.chip_ref_tee_open_error_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "diagnostic_tee_write_error_count",
-            self.chip_ref_tee_write_error_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
         push_kv_u64(
             &mut buf,
             "recent_writes_capacity",
@@ -1808,26 +1681,6 @@ impl OutputdState {
         };
         let sro_status = sro_status.as_str();
         let verdict = verdict.as_str();
-        // Observe-only DAC playout-clock drift (Inc 2). `try_lock` so a
-        // /state read never blocks the playback loop's tick; on contention or a
-        // (never-expected) poisoned lock, report a not-yet-locked idle snapshot
-        // rather than waiting or panicking. We read BOTH the AEC-specific
-        // snapshot (the named ppm + verdict) and the raw shared-DLL snapshot
-        // (the Inc-4 rate_diff) under one lock acquisition.
-        let (dac_clock, dac_clock_rate_diff) = match self.dac_clock.try_lock() {
-            Ok(clock) => (clock.snapshot(), clock.dll_snapshot()),
-            Err(_) => (
-                crate::dac_clock::DacClockSnapshot {
-                    locked: false,
-                    sro_ppm: 0.0,
-                    error_mean: 0.0,
-                    error_var: 0.0,
-                    updates: 0,
-                    resync_count: 0,
-                },
-                DllSnapshot::idle(),
-            ),
-        };
         let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
         let playback_queue_ms = frames_to_ms_opt(
             Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
@@ -1850,27 +1703,6 @@ impl OutputdState {
         // drift on the DAC playout clock vs nominal (not chip-AEC). Pure
         // self-description; no audio path reads it.
         push_kv_bool(&mut buf, "observe", self.chip_ref_observe);
-        buf.push(',');
-        // Observe-only DAC playout-clock drift (Inc 2): the shared
-        // jasper-clock DLL locked onto the :9891-reference-vs-DAC-playout error,
-        // surfaced as ppm + lock + verdict (the doctor-readable field). This
-        // NEVER warps audio — it is the measure-before-fix signal for software
-        // AEC, distinct from the chip-AEC `chip_ref_sro_ppm` above.
-        buf.push_str(r#""dac_clock":{"#);
-        // AEC-specific surface: the named ppm + the doctor-readable verdict.
-        push_kv_f64(&mut buf, "dac_clock_ppm", dac_clock.sro_ppm, 3);
-        buf.push(',');
-        push_kv_bool(&mut buf, "locked", dac_clock.locked);
-        buf.push(',');
-        push_kv_str(&mut buf, "verdict", dac_clock.verdict());
-        buf.push(',');
-        // Shared rate_diff (Inc 4): the loop's full state in the one consistent
-        // shape — error stats, bandwidth, DLL lock/resync counters — so this DLL
-        // site reads identically to the content-bridge controller's. The named
-        // ppm above and `rate_diff.ppm` are the same value (the AEC surface
-        // keeps the named field for the doctor; the shape stays DRY).
-        push_dll_rate_diff(&mut buf, "rate_diff", &dac_clock_rate_diff);
-        buf.push('}');
         buf.push(',');
         buf.push_str(r#""latency":{"#);
         push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
@@ -1954,36 +1786,6 @@ impl StateServer {
     }
 }
 
-/// The ONE shared `clock.rate_diff` telemetry writer (Inc 4). Every DLL
-/// instance in outputd publishes its loop state through this single shape, so
-/// `/state` / doctor read every clock-domain boundary identically (mirrors
-/// PipeWire's `clock.rate_diff`). Emits a nested object under `key`:
-/// `{ppm, error_mean, error_var, bandwidth, locked, updates, lock_count,
-/// unlock_count, resync_count}`.
-fn push_dll_rate_diff(buf: &mut String, key: &str, snap: &DllSnapshot) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":{"#);
-    push_kv_f64(buf, "ppm", snap.ratio_ppm, 3);
-    buf.push(',');
-    push_kv_f64(buf, "error_mean", snap.error_mean, 4);
-    buf.push(',');
-    push_kv_f64(buf, "error_var", snap.error_var, 4);
-    buf.push(',');
-    push_kv_f64(buf, "bandwidth", snap.bandwidth, 4);
-    buf.push(',');
-    push_kv_bool(buf, "locked", snap.locked);
-    buf.push(',');
-    push_kv_u64(buf, "updates", snap.updates);
-    buf.push(',');
-    push_kv_u64(buf, "lock_count", snap.lock_count);
-    buf.push(',');
-    push_kv_u64(buf, "unlock_count", snap.unlock_count);
-    buf.push(',');
-    push_kv_u64(buf, "resync_count", snap.resync_count);
-    buf.push('}');
-}
-
 const PACKED_I64_NONE: i64 = i64::MIN;
 
 fn pack_optional_i64(value: Option<i64>) -> i64 {
@@ -2019,14 +1821,6 @@ fn subtract_saturating(value: &AtomicU64, delta: u64) {
     });
 }
 
-fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
-    if event_ms == NEVER_MS {
-        None
-    } else {
-        Some(uptime_ms.saturating_sub(event_ms))
-    }
-}
-
 fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
     if count == 0 || uptime_ms == 0 {
         return 0.0;
@@ -2053,7 +1847,9 @@ mod tests {
             sample_rate: 48_000,
             period_frames: 1024,
             dac_buffer_frames: 3072,
-            content_bridge_mode: ContentBridgeMode::Direct,
+            // The one transport, deliberately left UNATTACHED: `shm_ring:
+            // None` is what makes the default-off blocks below reachable.
+            content_bridge_mode: ContentBridgeMode::ShmRing,
             shm_ring: None,
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
@@ -2063,15 +1859,12 @@ mod tests {
             chip_ref_tee_path: None,
             reference_udp_target: None,
             control_socket_path: None,
-            dac_content_fifo: None,
             dac_content_ring: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
-            assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
-                .to_string(),
             active_lane: false,
             // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
             // runs. `dual_test_config` below overrides ring_active_endpoint rather
@@ -2085,8 +1878,6 @@ mod tests {
         Config {
             sink_mode: SinkMode::Composite,
             // The armed composite shape: the ring endpoint, and NO content PCM.
-            // A composite on the direct bridge refuses at parse, so a composite
-            // that is running at all is a ring composite.
             ring_active_endpoint: true,
             content_channels: 4,
             dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
@@ -2146,7 +1937,7 @@ mod tests {
     #[test]
     fn state_server_wire_contract_returns_valid_json_for_status_trim_and_errors() {
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             ..test_config()
         };
@@ -2203,12 +1994,11 @@ mod tests {
         for needle in [
             r#""backend":"alsa""#,
             // The content lane's own declared/negotiated hop sits right after
-            // its pcm, mirroring `dac`. Updated deliberately when
-            // `content.format` was added: the block's prefix is the contract
+            // its pcm, mirroring `dac`. The block's prefix is the contract
             // consumers read, so a new field belongs IN this needle, not around
             // it.
             r#""content":{"source":"alsa","format":"S16_LE""#,
-            r#""content_bridge":{"mode":"direct""#,
+            r#""content_bridge":{"mode":"shm_ring""#,
             r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
             r#""period_frames":1024"#,
@@ -2238,18 +2028,13 @@ mod tests {
             r#""last_enqueued_reference_sequence":null"#,
             r#""last_written_reference_sequence":null"#,
             r#""reference_sequence_lag":null"#,
-            r#""diagnostic_tee_path":null"#,
-            r#""diagnostic_tee_active":false"#,
-            r#""diagnostic_tee_open_error_count":0"#,
-            r#""diagnostic_tee_write_error_count":0"#,
             r#""udp_target":null"#,
             r#""watchdog""#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // PR-2 (Increment 5) UN-RETIRED the outputd TTS lane that 9102e13
-        // removed — this assertion used to pin its absence; it now pins
-        // the solo shape: present but disabled (fanin owns solo TTS).
+        // Solo shape: the tts block is present but disabled (fanin owns
+        // solo TTS).
         assert!(
             j.contains(r#""tts":{"enabled":false}"#),
             "solo tts block must be present-but-disabled in {j}"
@@ -2302,6 +2087,23 @@ mod tests {
         let mut names = std::collections::BTreeSet::new();
         walk(&parse_snapshot_json(&state.snapshot_json()), &mut names);
         names
+    }
+
+    #[test]
+    fn sched_policy_is_unknown_until_main_latches_the_kernels_answer() {
+        let state = OutputdState::new(&test_config());
+        assert!(
+            state
+                .snapshot_json()
+                .contains(r#""sched_policy":"unknown""#),
+            "an unlatched daemon must not claim a policy"
+        );
+        state.latch_sched_policy("fifo".to_string());
+        state.latch_sched_policy("other".to_string());
+        assert!(
+            state.snapshot_json().contains(r#""sched_policy":"fifo""#),
+            "the first latch is the process's answer"
+        );
     }
 
     #[test]
@@ -2385,10 +2187,6 @@ mod tests {
             "snd_pcm_delay_frames",
             "snd_pcm_delay_ms",
             "snd_pcm_delay_sample_age_ms",
-            "diagnostic_tee_path",
-            "diagnostic_tee_active",
-            "diagnostic_tee_open_error_count",
-            "diagnostic_tee_write_error_count",
             "aec_clock",
             "chip_ref_sro_ppm",
             "sro_estimator_status",
@@ -2597,13 +2395,11 @@ mod tests {
 
     #[test]
     fn a_composite_reports_the_width_its_children_negotiated_not_a_constant() {
-        // STATUS honesty for the composite transport. Until PR-5,
-        // `RuntimeAlsaSink::dac_format` returned a hardcoded `S16Le` for this
-        // sink, so a composite that negotiated anything else reported S16_LE —
-        // to `/state`, to the doctor, and to the chip-AEC alignment identity,
-        // which certifies against `dac.format`. Both halves are asserted here:
-        // the DECLARED echo before the sink opens, and the NEGOTIATED value
-        // after, on the same composite config.
+        // STATUS honesty for the composite transport: `dac.format` must report
+        // what the children actually negotiated, not a constant — the doctor
+        // and the chip-AEC alignment identity both certify against it. Both
+        // halves are asserted here: the DECLARED echo before the sink opens,
+        // and the NEGOTIATED value after, on the same composite config.
         let state = OutputdState::new(&Config {
             declared_dac_format: SampleFormat::S32Le,
             ..dual_test_config()
@@ -2697,36 +2493,26 @@ mod tests {
 
         // Member (lane configured): full daemon-truth health block.
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             dac_content_trim_db: -3.5,
+            content_bridge_mode: ContentBridgeMode::DacContentRing,
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
         state.mark_dac_content(DacContentMetrics {
             serving_fifo: true,
             fifo_periods: 100,
-            starved_periods: 7,
-            staged_periods: 3,
-            overflow_dropped_periods: 1,
-            open_failures: 4,
-            read_failures: 5,
         });
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
         for needle in [
             r#""dac_content":{"enabled":true"#,
-            r#""transport":"fifo""#,
+            r#""transport":"ring""#,
             r#""trim_db":-3.5"#,
-            r#""fifo":"/run/jasper-grouping/member-content.fifo""#,
             r#""channel":"left""#,
             r#""serving_fifo":true"#,
             r#""fifo_periods":100"#,
-            r#""starved_periods":7"#,
-            r#""staged_periods":3"#,
-            r#""overflow_dropped_periods":1"#,
-            r#""open_failures":4"#,
-            r#""read_failures":5"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
@@ -2752,11 +2538,6 @@ mod tests {
         state.mark_dac_content(DacContentMetrics {
             serving_fifo: true,
             fifo_periods: 11,
-            starved_periods: 2,
-            staged_periods: 0,
-            overflow_dropped_periods: 0,
-            open_failures: 0,
-            read_failures: 0,
         });
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
@@ -2766,7 +2547,6 @@ mod tests {
             r#""ring":"/dev/shm/jts-ring/dac-content.ring""#,
             r#""channel":"right""#,
             r#""serving_fifo":true"#,
-            r#""starved_periods":2"#,
             // The content source, named — and the central hop reported OFF, so
             // the two blocks cannot both read as this box's upstream.
             r#""content_bridge":{"mode":"dac_content_ring"}"#,
@@ -2774,11 +2554,6 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // A ring box must NOT claim a FIFO path it does not have.
-        assert!(
-            !j.contains(r#""fifo":"#),
-            "ring block spelled a fifo key: {j}"
-        );
     }
 
     #[test]
@@ -2823,7 +2598,6 @@ mod tests {
             empty_reads: 0,
             epoch_resets: 0,
             reader_resyncs: 0,
-            attach_resyncs: 1,
             writer_pid: 0,
             writer_heartbeat_age_ms: u64::MAX,
             writer_alive: false,
@@ -2851,7 +2625,6 @@ mod tests {
             r#""slot_frames":1024"#,
             r#""occupancy":0"#,
             r#""startup_empty_reads":4"#,
-            r#""attach_resyncs":1"#,
             r#""writer_alive":false"#,
             // The u64::MAX "never heartbeated" sentinel serializes as
             // JSON null, not 18446744073709551615 (which exceeds JS safe-integer
@@ -2874,7 +2647,6 @@ mod tests {
             empty_reads: 3,
             epoch_resets: 1,
             reader_resyncs: 0,
-            attach_resyncs: 1,
             writer_pid: 4242,
             writer_heartbeat_age_ms: 12,
             writer_alive: true,
@@ -2942,7 +2714,7 @@ mod tests {
     #[test]
     fn dac_content_trim_can_update_live_without_restarting_outputd() {
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Right,
             dac_content_trim_db: 0.0,
             ..test_config()
@@ -2966,7 +2738,7 @@ mod tests {
         assert!(state.set_dac_content_trim_db(-1.0).is_err());
 
         let cfg = Config {
-            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
             ..test_config()
         };
@@ -3099,7 +2871,6 @@ mod tests {
     fn snapshot_json_reports_dac_delay_and_chip_ref_writer_counters() {
         let cfg = Config {
             chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
-            chip_ref_tee_path: Some("/tmp/outputd-chip-ref.s16le".to_string()),
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -3122,10 +2893,6 @@ mod tests {
         state.mark_chip_ref_dropped_full();
         state.mark_chip_ref_dropped_disconnected();
         state.mark_chip_ref_dropped_unavailable();
-        state.mark_chip_ref_tee_open_error();
-        state.mark_chip_ref_tee_opened();
-        state.mark_chip_ref_tee_write_error();
-
         let j = state.snapshot_json();
         for needle in [
             r#""snd_pcm_delay_frames":240"#,
@@ -3147,10 +2914,6 @@ mod tests {
             r#""last_enqueued_reference_sequence":10"#,
             r#""last_written_reference_sequence":10"#,
             r#""reference_sequence_lag":2"#,
-            r#""diagnostic_tee_path":"/tmp/outputd-chip-ref.s16le""#,
-            r#""diagnostic_tee_active":false"#,
-            r#""diagnostic_tee_open_error_count":1"#,
-            r#""diagnostic_tee_write_error_count":1"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
@@ -3341,15 +3104,6 @@ mod tests {
             r#""verdict":"fallback""#,
             // Observe mode is off in test_config (default).
             r#""observe":false"#,
-            // Inc 2: observe-only DAC playout-clock drift — fresh, not yet
-            // locked, ppm 0, acquiring verdict.
-            r#""dac_clock":{"dac_clock_ppm":0.000"#,
-            r#""locked":false"#,
-            // Inc 4: the shared rate_diff shape, idle placeholder values.
-            r#""rate_diff":{"ppm":0.000"#,
-            r#""bandwidth":0.1280"#,
-            r#""updates":0"#,
-            r#""resync_count":0"#,
             r#""latency":{"dac_presentation_ms":null"#,
             // test_config dac_buffer_frames=3072 / 48000 → 64 ms.
             r#""playback_queue_ms":64.000"#,
@@ -3357,84 +3111,6 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        // The dac_clock block's verdict is "acquiring" before lock; it
-        // sits between observe and latency.
-        assert!(
-            j.contains(r#""dac_clock":{"#) && j.contains(r#""verdict":"acquiring""#),
-            "dac_clock block must be present with an acquiring verdict: {j}"
-        );
-    }
-
-    #[test]
-    fn every_dll_site_publishes_the_same_rate_diff_shape() {
-        // Inc 4: every DLL instance publishes its loop state through the single
-        // shared `rate_diff` writer, so /state and the doctor read every
-        // clock-domain boundary identically. One site exists — the DAC-clock
-        // observer. The count assertion is what keeps a future DLL site
-        // from publishing a hand-rolled block instead of reusing
-        // `push_dll_rate_diff`.
-        let state = OutputdState::new(&test_config());
-        let j = state.snapshot_json();
-        assert_eq!(
-            j.matches(r#""rate_diff":{"ppm":"#).count(),
-            1,
-            "exactly one rate_diff block (one per DLL site) in {j}"
-        );
-        // The full field set, in order — the shape every site must publish.
-        // Keys, not values: the values are whatever the DLL happens to hold at
-        // construction (`DllSnapshot::idle()` seeds `bandwidth` to `BW_MAX`, not
-        // zero), and pinning them here would assert the loop's tuning rather
-        // than the wire shape this test is about.
-        let start = j
-            .find(r#""rate_diff":{"#)
-            .expect("a rate_diff block must be present");
-        let block = &j[start..];
-        // Bounding matters: `"locked"` is also emitted by the enclosing
-        // `dac_clock` block, so an unbounded scan could match outside rate_diff.
-        let end = block.find('}').expect("rate_diff block must close");
-        let block = &block[..end];
-        let mut cursor = 0usize;
-        for key in [
-            "ppm",
-            "error_mean",
-            "error_var",
-            "bandwidth",
-            "locked",
-            "updates",
-            "lock_count",
-            "unlock_count",
-            "resync_count",
-        ] {
-            let needle = format!(r#""{key}":"#);
-            let at = block[cursor..].find(&needle).unwrap_or_else(|| {
-                panic!("rate_diff is missing {key} at or after byte {cursor}: {block}")
-            });
-            cursor += at + needle.len();
-        }
-    }
-
-    #[test]
-    fn mark_dac_delay_ticks_dac_clock_without_panicking() {
-        // Wiring test: the mark_dac_delay path (the playback loop's tick) feeds
-        // the observe-only DAC-clock observer DLL. The tick reads REAL
-        // uptime for its wall-clock, so a unit test can't drive it to a
-        // deterministic lock in a tight loop — the convergence math is pinned by
-        // the dac_clock module's own tests. Here we assert the tick
-        // path is exercised and never panics, and the block stays present.
-        let state = OutputdState::new(&test_config());
-        for step in 1..=64u64 {
-            state.mark_period(
-                IoCounters {
-                    dac_frames_written: step * 48_000,
-                    ..IoCounters::default()
-                },
-                1,
-                0,
-            );
-            state.mark_dac_delay(1024);
-        }
-        let j = state.snapshot_json();
-        assert!(j.contains(r#""dac_clock":{"#), "block present: {j}");
     }
 
     #[test]

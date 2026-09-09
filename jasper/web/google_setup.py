@@ -65,9 +65,6 @@ from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     flash_error,
     guard_mutating_request,
@@ -77,11 +74,11 @@ from ._common import (
     redirect_with_legacy_msg,
     reject_csrf,
     restart_voice_daemon,
-    safe_back_href,
     send_html_response,
     write_env_file,
     SECRET_ENV_MODE,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +159,7 @@ def _render_page(
     *,
     csrf_token: str,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     """Wrap a state's body in the canonical document shell.
 
@@ -192,7 +189,7 @@ def _setup_wizard_html(
     csrf_token: str = "",
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     """State 1: no CLIENT_ID/SECRET configured. Wraps `_setup_wizard_body`
     with the page chrome. The body itself is also rendered, in
@@ -200,7 +197,7 @@ def _setup_wizard_html(
     "View setup guide" disclosure — see `_setup_wizard_body`."""
     body = _setup_wizard_body(redirect_uri, csrf_token, read_only=False)
     return _render_page(
-        "Set up Google", body,
+        "Google", body,
         csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
@@ -239,7 +236,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
             '<p class="form-hint">Saved for re-checking the original Google Cloud setup. Credentials are already saved on this speaker.</p>'
         )
         mark_done = ""
-        redirect_widget = f'<p style="margin-top:0.3em"><code>{redirect_safe}</code></p>'
+        redirect_widget = f'<p class="step4-redirect"><code>{redirect_safe}</code></p>'
         creds_form = ""
     else:
         # The reset-progress confirm and click handler live in the ES
@@ -249,7 +246,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         intro = '<p class="form-hint">Create one Google Cloud OAuth client, then paste its Client ID and Secret here. Each step links to the right Google page.</p>'
         mark_done = '<button class="btn btn--primary mark-done" type="button">I\'ve done this →</button>'
         # data-copy points the shared copy.js handler at the input by id.
-        redirect_widget = f"""<div class="copy-row" style="margin-top:0.3em">
+        redirect_widget = f"""<div class="copy-row step4-redirect">
               <input id="step4-redirect" type="text" readonly value="{redirect_safe}" data-select-on-click>
               <button type="button" class="btn btn--default" data-copy="step4-redirect">Copy</button>
             </div>"""
@@ -416,7 +413,7 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
   <button type="button" class="btn btn--default" data-copy="redirect-uri">Copy</button>
 </div>
 
-<p class="form-hint" style="margin-top:0.6em">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
+<p class="form-hint redirect-hint">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
 
 <ol class="steps">
   <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a> and click your OAuth 2.0 Client ID. (If you bookmarked the old <code>/apis/credentials</code> URL, it still works — Google redirects it here.)</li>
@@ -493,9 +490,8 @@ def _connection_details_html(client_id: str) -> str:
 
     <h3>OAuth client</h3>
     <p>Client ID: <code id="client-id-display">{masked}</code>
-       <button type="button" id="reveal-client-id" class="btn btn--default"
-               data-action="reveal-client-id" data-full="{full_attr}"
-               style="padding:0.2em 0.7em">Show full</button>
+       <button type="button" id="reveal-client-id" class="btn btn--default reveal-btn"
+               data-action="reveal-client-id" data-full="{full_attr}">Show full</button>
     </p>
     <p>Client Secret: hidden. Rotate it in Cloud Console, then reset credentials here.</p>
 
@@ -528,7 +524,7 @@ def _add_account_form_html(csrf_token: str = "") -> str:
 
 def _redirect_uri_page_html(
     redirect_uri: str, client_id: str, csrf_token: str = "",
-    *, status_msg: str = "", back_href: str = "/",
+    *, status_msg: str = "", back_href: str = "/assistant/",
 ) -> bytes:
     """State 2: credentials saved, no accounts linked yet. The user
     already added the redirect URI during the wizard's step 4, so the
@@ -556,7 +552,7 @@ def _redirect_uri_page_html(
   <div class="disclosure__body">
     <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
     {_redirect_uri_section_html(redirect_uri)}
-    <form method="post" action="reset-credentials" style="margin-top:2em"
+    <form method="post" action="reset-credentials" class="reset-credentials-form"
           data-confirm="Clear the saved Client ID and Secret? You'll need to paste them again." data-confirm-danger="1">
       {csrf}
       <button type="submit" class="btn btn--danger">Reset Google credentials</button>
@@ -565,7 +561,7 @@ def _redirect_uri_page_html(
 </details>
 """
     return _render_page(
-        "Link a Google account", body,
+        "Google", body,
         csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
@@ -613,7 +609,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
 
 def _management_html(
     registry: GoogleRegistry, redirect_uri: str, client_id: str,
-    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
+    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/assistant/",
 ) -> bytes:
     items = [
         _account_li_html(
@@ -627,7 +623,7 @@ def _management_html(
     # when at least one account is already linked (state 3). State 2
     # uses _redirect_uri_page_html, which has its own intro framing.
     add_account_clarification = (
-        '<p class="form-hint" style="margin-top:1.6em">Add another '
+        '<p class="form-hint add-account-hint">Add another '
         'household member below. No Google Cloud setup to redo.</p>'
     )
     body = f"""
@@ -654,7 +650,7 @@ def _management_html(
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
   <div class="disclosure__body">
     {_redirect_uri_section_html(redirect_uri)}
-    <form method="post" action="reset-credentials" style="margin-top:2em"
+    <form method="post" action="reset-credentials" class="reset-credentials-form"
           data-confirm="Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked." data-confirm-danger="1">
       {csrf}
       <button type="submit" class="btn btn--danger">Reset Google credentials</button>
@@ -663,7 +659,7 @@ def _management_html(
 </details>
 """
     return _render_page(
-        "Google accounts", body,
+        "Google", body,
         csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
@@ -774,7 +770,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ctx = begin_request(self)
                 self._render_index(
                     ctx["csrf_token"], status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
+                    back_href=safe_back_href((qs.get("return_to") or [""])[0], default="/assistant/"),
                 )
                 return
 
@@ -866,7 +862,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             csrf_token: str = "",
             *,
             status_msg: str = "",
-            back_href: str = "/",
+            back_href: str = "/assistant/",
         ) -> None:
             client_id, client_secret = _creds(cfg)
             if not (client_id and client_secret):

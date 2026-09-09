@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ, ROOM_FLOOR_HZ
 from jasper.camilla_config_contract import total_positive_boost_db
 
 
@@ -107,11 +107,11 @@ def design_peq(
     target_db: np.ndarray,
     freqs: np.ndarray,
     *,
-    f_low: float = 20.0,
+    f_low: float = ROOM_FLOOR_HZ,
     f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
     max_filters: int = 5,
     max_cut_db: float | np.ndarray = -10.0,
-    max_boost_db: float = 3.0,
+    max_boost_db: float | np.ndarray = 3.0,
     cuts_only: bool = True,
     flatness_target_db: float = 1.0,
     q_min: float = 1.0,
@@ -121,13 +121,13 @@ def design_peq(
     """Greedy peak-fit PEQ designer.
 
     ``measured_db`` / ``target_db`` are dB on the strictly increasing ``freqs``
-    grid; no filter is placed outside ``[f_low, f_high]``. ``max_cut_db`` is
-    either a scalar per-filter floor or an array on ``freqs`` (the per-bin
-    linearization envelope), interpolated at each candidate peak so it need not
-    share the grid; ``max_boost_db`` is always a scalar. ``cuts_only`` fits
-    only negative gains. Design stops at ``max_filters`` or when residual RMS
-    in band drops below ``flatness_target_db``, and a filter whose absolute
-    gain would fall below ``min_filter_gain_db`` is not added.
+    grid; no filter is placed outside ``[f_low, f_high]``. ``max_cut_db`` and
+    ``max_boost_db`` are each either a scalar per-filter bound or a per-bin
+    envelope on ``freqs``, interpolated at each candidate peak so an array
+    need not share the grid. ``cuts_only`` fits only negative gains. Design
+    stops at ``max_filters`` or when residual RMS in band drops below
+    ``flatness_target_db``, and a filter whose absolute gain would fall below
+    ``min_filter_gain_db`` is not added.
 
     Returns the PEQs in the order they were added (largest impact first).
     """
@@ -142,6 +142,12 @@ def design_peq(
     if max_cut_is_array and max_cut_db.shape != np.shape(freqs):
         raise ValueError(
             f"max_cut_db array shape {max_cut_db.shape} does not match "
+            f"freqs shape {np.shape(freqs)}"
+        )
+    max_boost_is_array = isinstance(max_boost_db, np.ndarray)
+    if max_boost_is_array and max_boost_db.shape != np.shape(freqs):
+        raise ValueError(
+            f"max_boost_db array shape {max_boost_db.shape} does not match "
             f"freqs shape {np.shape(freqs)}"
         )
 
@@ -183,18 +189,22 @@ def design_peq(
             q_min=q_min, q_max=q_max,
         )
 
-        # Per-bin cap: interpolate the array at this peak's frequency; a scalar
-        # cap applies unchanged.
+        # Per-bin caps: interpolate the array at this peak's frequency; a
+        # scalar cap applies unchanged.
         cut_floor = (
             float(np.interp(peak_freq, freqs, max_cut_db))
             if max_cut_is_array else max_cut_db
+        )
+        boost_ceiling = (
+            float(np.interp(peak_freq, freqs, max_boost_db))
+            if max_boost_is_array else max_boost_db
         )
 
         proposed = -peak_db
         if cuts_only:
             gain_db = float(np.clip(proposed, cut_floor, 0.0))
         else:
-            gain_db = float(np.clip(proposed, cut_floor, max_boost_db))
+            gain_db = float(np.clip(proposed, cut_floor, boost_ceiling))
 
         if abs(gain_db) < min_filter_gain_db:
             break

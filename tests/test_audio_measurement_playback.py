@@ -21,7 +21,6 @@ import pytest
 
 from jasper.audio_measurement import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.correction import playback as correction_playback
 
 from ._async_wait import wait_signalled
 
@@ -851,47 +850,6 @@ def test_neutral_surface_requires_owner_policy() -> None:
     assert tone_signature.parameters["cache_dir"].default is inspect.Parameter.empty
     assert not hasattr(playback, "DEFAULT_ALSA_DEVICE")
     assert not hasattr(playback, "DEFAULT_TONE_DIR")
-
-
-def test_correction_compatibility_surface_preserves_types_and_defaults() -> None:
-    assert correction_playback.SweepPlaybackError is playback.SweepPlaybackError
-    assert correction_playback.PlaybackError is playback.PlaybackError
-    assert correction_playback.PlaybackFailureCode is playback.PlaybackFailureCode
-    assert issubclass(correction_playback.TonePlayer, playback.TonePlayer)
-    # None is the transport-reader sentinel: play_sweep resolves
-    # correction_play_device() per call.
-    assert (
-        inspect.signature(correction_playback.play_sweep)
-        .parameters["alsa_device"]
-        .default
-        is None
-    )
-    assert inspect.signature(correction_playback._ensure_tone_wav).parameters[
-        "cache_dir"
-    ].default == Path("/var/lib/jasper/correction/tones")
-
-
-async def test_correction_wrapper_preserves_missing_file_error(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(FileNotFoundError, match="sweep WAV not found"):
-        await correction_playback.play_sweep(tmp_path / "missing.wav")
-
-
-async def test_correction_wrapper_preserves_startup_oserror(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
-    async def create(*_args, **_kwargs):
-        raise FileNotFoundError("aplay missing")
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-
-    with pytest.raises(FileNotFoundError, match="aplay missing"):
-        await correction_playback.play_sweep(wav_path)
 
 
 async def test_continuous_tone_nonzero_exit_is_typed_and_bounded(

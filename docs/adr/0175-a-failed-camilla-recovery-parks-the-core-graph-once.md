@@ -1,7 +1,10 @@
 # ADR-0175: a failed Camilla recovery parks the core graph once
 
 - **Date:** 2026-08-26
-- **Status:** Accepted
+- **Status:** Accepted. The recovery ladder, its 300 s cooldown and the
+  `outputd_restart_failed` leg are superseded by
+  [ADR-0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md);
+  the park contract below still stands.
 
 ## Context
 

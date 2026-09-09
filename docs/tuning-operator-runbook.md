@@ -38,7 +38,13 @@ Choose the order from the evidence and the next question.
    inherited corrections. For a comparison, name the candidate fingerprints
    and required poses. `jasper-angle-capture plan` previews the program and
    human effort without staging it.
-3. **Stage and measure.** Stage the chosen program, then use
+3. **Stage and measure.** Register the wired measurement mic once. Its record
+   and its calibration files live under a root-owned, group-`jasper` state
+   directory the login account is outside, so on the speaker every verb runs as
+   `sudo /opt/jasper/.venv/bin/jasper-mic-calibration <verb>`:
+   `fetch --model <key> --serial <serial>`, or `upload <file>`. `show` prints
+   the household record every take's calibration context resolves from, and a
+   box without one measures uncalibrated. Stage the chosen program, then use
    `jasper-round open --tier express` (or the chosen tier) and `jasper-round wait`.
    Give the human the returned `handoff_url` and the next placement/start action.
    `scripts/run-crossover-round.py` is the laptop adapter for one round.
@@ -148,7 +154,16 @@ The room is measured on the seat cube, through the applied tune, ungated
    the room candidate reads.
 6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
    hold across the cube, and at what fraction of positions.
-7. The room candidate kind reads those two artifacts when it lands.
+7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
+   judges a room prescription (`kind: jts_room_prescription`) against
+   `room_median.json`; `compose --base <applied fingerprint>
+   --room-prescription <doc> --room-median <path>` banks the room candidate;
+   `jasper-measure --graph-scope room_candidate --candidate-id <fingerprint>`
+   plays it for its trial through the accepted tune.
+8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
+   re-measured cube's median against flat, band by band, with the incumbent
+   round's numbers beside it; a regressed band is a disclosure, and restore
+   is the doctrine's own path.
 
 Nothing above the ceiling changes on this evidence.
 
@@ -181,6 +196,13 @@ After cancellation, a lost answer, or a physical interruption:
   evidence, and reusable parts. A restore failure needs its recorded recovery
   action; do not claim playback was restored without readback.
 
+CHECK sets each driver's initial test gain. If MEASURE then finds weak timing
+SNR, JTS keeps that take and can make one stronger retake for the weak driver.
+The increase stays within the CHECK capture ceiling and the driver caps. The
+retry state and actual gains survive a resume. If no headroom remains, or the
+retake is still weak, the flow continues with the measured SNR disclosed; it
+does not keep raising the level or discard the earlier evidence.
+
 ## The tool menu
 
 This block is generated from CLI help. Offline tools can write files.
@@ -190,12 +212,13 @@ Capture emits sound; apply persists a tune.
 | Tool | Does | Authority | Where |
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction, replacing the live tune and deleting no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
+| `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|show\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
@@ -218,6 +241,7 @@ Regenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu
 | Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
 | How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |
 | Which part of a prescription did cloud evidence constrain? | `cloud-binding` |
+| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade [--baseline]` |
 | What is predicted from banked complex solos? | `forward-model`; simulation is not a new capture |
 | Show a curve or compare two takes? | `frequency <A> [<B>]` |
 
@@ -227,10 +251,9 @@ sessions. `frequency` can read a banked round, bundle, or take file directly.
 ## URLs and access
 
 Use the tool's `handoff_url`; it derives from the selected speaker's hostname.
-Room browser capture is at `https://<speaker>/sound/room/`; it needs HTTPS and
-trust in the speaker's local CA. The crossover surface is
-`/sound/speaker/crossover/` and records with the wired Pi microphone. Its state
-is separate from the browser's mic indicator; the phone relay is retired.
+The crossover surface is `/sound/speaker/crossover/` and records with the wired
+Pi microphone; it needs HTTPS and trust in the speaker's local CA. Room has no
+browser wizard — its steps are the CLI walk above.
 
 Backend paths in tool output use `127.0.0.1:8770` on the Pi. Through nginx,
 prefix crossover paths with `/sound/speaker`, for example

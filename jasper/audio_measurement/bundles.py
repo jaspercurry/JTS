@@ -4,8 +4,8 @@
 
 """Neutral artifact-manifest primitives for acoustic evidence bundles.
 
-Owns only the byte-level manifest contract shared by room correction and
-active-speaker commissioning; feature packages own their bundle schema,
+Owns only the byte-level manifest contract active-speaker commissioning and
+the tooling on top of it share; feature packages own their bundle schema,
 directory, retention, validation, and authority rules. A bundle is forensic
 evidence: reading it never grants playback or apply authority.
 
@@ -42,22 +42,6 @@ KIND_NAMESPACE_PREFIX = "jts_"
 #: joins them. A new kind is namespaced instead.
 LEGACY_UNNAMESPACED_KINDS = frozenset(
     {
-        # room correction (jasper/correction)
-        "acoustic_quality",
-        "analysis_result",
-        "camilladsp_config",
-        "derived_frequency_response",
-        "derived_impulse_response",
-        "fir_coefficients",
-        "fir_metadata",
-        "mic_calibration_metadata",
-        "mic_calibration_raw",
-        "noise_capture",
-        "position_analysis",
-        "raw_capture",
-        "repeat_capture",
-        "runtime_integrity",
-        "session_metadata",
         # active-speaker commissioning (jasper/active_speaker)
         "apply_transaction",
         "candidate_profile",
