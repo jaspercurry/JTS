@@ -29,6 +29,11 @@ StartLimitAction=reboot
 # dead. Restart=on-failure below also covers watchdog expiry.
 Type=notify
 WatchdogSec=30s
+# Stop grace period: teardown is bounded (peering join up to 5 s, plus
+# serve/broker poll and heartbeat join adding ~2 s) to ≈7 s worst case;
+# 10 s gives margin, so a shutdown past it is wedged, not slow — SIGKILL
+# rather than blocking the reboot/restart it's often stopped for.
+TimeoutStopSec=10s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify creds live in /var/lib/jasper-intsecrets/spotify_credentials.env (written
@@ -64,7 +69,7 @@ Restart=on-failure
 SuccessExitStatus=78
 RestartPreventExitStatus=78
 # Matches jasper-voice. With StartLimitBurst=4, a transient fault gives
-# ~20 s before StartLimitAction=reboot. See ADR-0251, ADR-0261.
+# ~20 s before StartLimitAction=reboot. See ADR-0251, ADR-0267.
 RestartSec=5
 
 # jasper-control runs as a dedicated non-root
@@ -75,9 +80,9 @@ RestartSec=5
 # in group `jasper` so jasper-voice/-mux can read it.
 #
 # This drop is GATED on two hardware-validated things that ship in the SAME PR:
-#   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — the supervisor
-#       recovery paths (system_supervisor reboot, shairport_supervisor restart)
-#       and the in-process restart broker call systemctl/reboot DIRECTLY as this
+#   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — system_supervisor's
+#       recovery reboot and the in-process restart broker (which shairport_supervisor's
+#       wedge restart routes through) call systemctl/reboot DIRECTLY as this
 #       uid, which polkit now mediates instead of a uid-0 bypass; and
 #   (b) group-readable config/secret env (the jasper-doctor it spawns at
 #       /system/diagnostics fresh-reads every env_load.ENV_FILES file, and

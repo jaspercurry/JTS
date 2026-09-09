@@ -1189,3 +1189,47 @@ def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
         spool.SPOOL_TOO_MANY_STOPS,
         spool.SESSION_ALREADY_LIVE,
     })
+
+
+def test_complete_branch_batch_reaches_browser_and_banks_all_three_curves(slot, monkeypatch):
+    from jasper.audio_measurement.branch_program import is_branch_program
+    from jasper.audio_measurement.program_analysis import MeasurementPriors, analyze_program_capture
+    from tests.test_audio_measurement_program_analysis import SR, _band_impulse, _synthesize
+
+    preset = _banked(monkeypatch)
+    request = ac.request_for_program(mp.program("branches", "express"), candidates=("fp-a",))
+    spool.stage_angle_request(request)
+    prompts, consumer, specs, trims, claims = _take(preset=preset)
+    assert len(prompts) == 1 and not trims
+    index_phases = _seat_index_phases(prompts)
+    index, = [i for i, phase in index_phases.items() if phase == PHASE_LATERAL]
+    assert specs[index].graph_scope == "candidate_branches"
+    fakes, records = FakeSeams(), []
+    seams = fakes.seams()
+
+    def analyze(program, *args, **kwargs):
+        if not is_branch_program(program):
+            return seams.analyze(program, *args, **kwargs)
+        capture = _synthesize(program, woofer_ir=_band_impulse(200, 150, 20000, 1),
+                              tweeter_ir=_band_impulse(212, 150, 20000, .7), noise=1e-8)
+        return analyze_program_capture(program, capture, SR, priors=MeasurementPriors(crossover_fc_hz=2000))
+
+    conductor = _conductor(fakes, index_phase_map=index_phases, lateral_prompts=prompts,
+                          lateral_consumer=consumer, lateral_claims=claims, measure_specs_by_index=specs,
+                          seams=replace(seams, analyze=analyze, bank_take=bank_into(records, phase=PHASE_LATERAL)))
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 1)
+    program = conductor.program_for_phase(PHASE_LATERAL)
+    assert is_branch_program(program)
+    plan = flow.build_v2_capture_plan(_ROLES_BANDS, 2000, plan_shape=_hand_shape(),
+                                     include_cloud_measure=False, include_lateral=True,
+                                     lateral_prompts=prompts, lateral_candidate_ids=("fp-a",),
+                                     branch_diagnostic=True)
+    entry = next(e for e in plan.entries if e.index == index - 1)
+    assert entry.duration_ms >= program.total_samples * 1000 / program.sample_rate_hz
+    assert _run_phase(conductor, index, 1)["accepted"]
+    record, = records
+    assert {r["role"] for r in record["curves"]} == {"woofer", "tweeter", "summed"}
+    assert record["candidate_id"] == "fp-a"
+    assert record["phase_composition"] == "complete_tune_measured"
+    assert record["branch_diagnostic"]["sample_rate_hz"] == SR

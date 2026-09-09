@@ -49,7 +49,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0124](0124-one-rate-loop-and-the-summer-never-merges-with-the-reference-publisher.md) | One rate loop, and the summer never merges with the reference publisher | accepted |
 | [0125](0125-leader-tts-and-the-follower-cue-inject-pre-crossover.md) | Leader TTS and the follower fail-closed cue inject pre-crossover | accepted |
 | [0126](0126-a-subwoofer-crossover-executes-on-the-receiver.md) | A subwoofer's crossover executes on the receiver, on the one shared stereo stream | superseded by 0236 |
-| [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | accepted |
+| [0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md) | outputd parks out-of-band rather than riding its restart limit to a reboot | superseded by 0269 |
 | [0169](0169-the-outputd-ordering-guard-compares-recorded-instants-not-computed-ages.md) | the outputd ordering guard compares recorded instants, not computed ages | accepted |
 | [0175](0175-a-failed-camilla-recovery-parks-the-core-graph-once.md) | a failed Camilla recovery parks the core graph once | amended by 0264 |
 | [0178](0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md) | Every shape the ring cannot serve parks under its own name | amended by 0187 |
@@ -59,10 +59,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | amended by 0262 |
 | [0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md) | Independent subwoofers are deleted; a subwoofer on a DAC channel stays the active-speaker crossover's concern | accepted |
 | [0261](0261-the-grouping-and-dac-content-rings-are-128-frame-16-slot-s16-and-governed.md) | The grouping and dac-content rings are 128-frame, 16-slot, S16, and governed | accepted |
-| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | accepted |
+| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | amended by 0273 |
 | [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
-| [0267](0267-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
-| [0268](0268-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
+| [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | accepted |
+| [0270](0270-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
+| [0271](0271-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
+| [0273](0273-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
 
 ## Volume & hearing
 
@@ -158,12 +160,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
 | [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | accepted |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
-| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0261 |
+| [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
 | [0240](0240-mic-absence-reason-is-a-code-vocabulary.md) | The voice-input-absent marker's `reason=` is a closed code vocabulary; `detail=` carries the prose | accepted |
 | [0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md) | The server-VAD path is deleted, not kept as a knob | accepted |
 | [0246](0246-arbitration-is-the-whole-of-peering.md) | Arbitration is the whole of peering | accepted |
-| [0261](0261-the-aec-bridge-restart-ladder-matches-controls.md) | The AEC bridge's restart ladder matches control's | accepted |
+| [0267](0267-the-aec-bridge-restart-ladder-matches-controls.md) | The AEC bridge's restart ladder matches control's | accepted |
 
 ## Control plane, state & observability
 
@@ -175,10 +177,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0144](0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md) | Diagnostics leave the box over SSH, not over the LAN | accepted |
 | [0146](0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md) | Userspace liveness is two software layers, and three deferred dials | accepted |
 | [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | accepted |
-| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | accepted |
+| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | rule 2 `/state` superseded by 0270, rule 3 amended by 0270 |
 | [0243](0243-a-secret-is-replaced-whole-by-one-redactor-per-language.md) | A secret is replaced whole, by one redactor per language | accepted |
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
 | [0251](0251-jasper-control-parks-on-a-bind-failure.md) | jasper-control parks on a bind failure instead of rebooting the box | accepted |
+| [0270](0270-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
 
 ## Web & UI
 
@@ -187,7 +190,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0120](0120-one-management-frontend-gated-by-capability.md) | One management frontend for every install profile, gated by capability | accepted |
 | [0171](0171-rarely-viewed-dashboard-probes-run-in-short-lived-child-processes.md) | Rarely-viewed dashboard probes run in short-lived child processes | accepted |
 | [0187](0187-park-presentation-is-the-system-screen-only.md) | Park presentation is the system screen, not a banner | accepted |
-| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | accepted |
+| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0268 |
+| [0268](0268-the-conf-parity-exception-set-lives-in-the-test.md) | The conf-parity exception set lives in the test | accepted |
 
 ## Tuning & measurement
 
@@ -229,11 +233,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
 | [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | accepted |
-| [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | accepted |
+| [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
 | [0210](0210-polarity-has-two-frames-and-one-conversion-owner.md) | Polarity has two frames, and one conversion owner | accepted |
 | [0212](0212-way-1-reuses-the-existing-layers-it-does-not-fork-them.md) | Way-1 reuses the existing layers; it does not fork them | accepted |
-| [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250 |
+| [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250, 0275 |
 | [0216](0216-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md) | Curve slots are fixed, so a quiet save takes the live-edit path | accepted |
 | [0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md) | A durable save that moves only a trim writes in place | accepted |
 | [0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md) | The relay is deleted; the wired microphone on jts.local is the only capture path | amended by 0255 |
@@ -245,4 +249,6 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
 | [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265 |
 | [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
+| [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
+| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | accepted |

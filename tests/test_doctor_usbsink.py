@@ -248,16 +248,27 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
 
 
 @pytest.mark.parametrize(
-    "active, card_present, status, reason",
+    "active, card_present, rate, status, reason",
     [
-        (False, False, "skipped", usbsink.REASON_USBSINK_SERVICE_INACTIVE),
-        (True, True, "ok", ""),
-        (True, False, "fail", usbsink.REASON_CARD_MISSING),
+        (False, False, None, "skipped", usbsink.REASON_USBSINK_SERVICE_INACTIVE),
+        (True, False, None, "fail", usbsink.REASON_CARD_MISSING),
+        # Once the card is present, the #3194 host-stream disclosure
+        # (previously check_usbsink_host_stream) folds into this same row.
+        (True, True, None, "ok", usbsink.REASON_HOST_STREAM_NO_CONTROL),
+        (True, True, 0, "ok", usbsink.REASON_HOST_STREAM_IDLE),
+        (True, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
+        # The readiness marker being inactive does not withdraw a composed,
+        # bound card — a wedged or still-streaming host (#3194) must still
+        # surface, marker or no marker.
+        (False, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
     ],
-    ids=["disabled", "present", "missing"],
+    ids=[
+        "disabled", "missing", "present-no-control", "present-idle",
+        "present-streaming", "present-streaming-marker-inactive",
+    ],
 )
 def test_check_usbsink_card_verdicts(
-    monkeypatch, tmp_path, active, card_present, status, reason
+    monkeypatch, tmp_path, active, card_present, rate, status, reason
 ):
     monkeypatch.setattr(
         _evidence,
@@ -267,6 +278,7 @@ def test_check_usbsink_card_verdicts(
     card = tmp_path / "UAC2Gadget"
     if card_present:
         card.mkdir()
+    monkeypatch.setattr(usbsink, "_uac2_capture_rate", lambda: rate)
 
     with patch.object(usbsink, "Path") as mock_path:
         mock_path.side_effect = lambda p: (
@@ -278,42 +290,6 @@ def test_check_usbsink_card_verdicts(
     assert r.reason == reason
 
 
-# ----------------------------------------------------------------------
-# check_usbsink_host_stream — #3194 disclosure. The Pi cannot tell an idle
-# host from a wedged ISO data path, so this check only ever reports.
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "composed, card_present, rate, status, reason",
-    [
-        (False, False, None, "skipped", usbsink.REASON_HOST_STREAM_NOT_COMPOSED),
-        (True, False, None, "skipped", usbsink.REASON_HOST_STREAM_NO_CARD),
-        (True, True, None, "skipped", usbsink.REASON_HOST_STREAM_NO_CONTROL),
-        (True, True, 0, "ok", usbsink.REASON_HOST_STREAM_IDLE),
-        (True, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
-    ],
-    ids=["not-composed", "no-card", "no-control", "host-idle-or-wedged", "streaming"],
-)
-def test_check_usbsink_host_stream_discloses_without_judging(
-    monkeypatch, tmp_path, composed, card_present, rate, status, reason
-):
-    function_path = tmp_path / "uac2.usb0"
-    if composed:
-        function_path.mkdir()
-    card = tmp_path / "UAC2Gadget"
-    if card_present:
-        card.mkdir()
-    monkeypatch.setattr(usbsink, "_uac2_function_path", lambda: function_path)
-    monkeypatch.setattr(usbsink, "UAC2_CARD_PATH", str(card))
-    monkeypatch.setattr(usbsink, "_uac2_capture_rate", lambda: rate)
-
-    result = usbsink.check_usbsink_host_stream()
-
-    assert result.status == status
-    assert result.reason == reason
-
-
 @pytest.mark.parametrize(
     "raised",
     [
@@ -322,27 +298,33 @@ def test_check_usbsink_host_stream_discloses_without_judging(
     ],
     ids=["amixer-absent", "read-hung"],
 )
-def test_check_usbsink_host_stream_never_crashes_the_doctor(
+def test_check_usbsink_card_host_stream_read_never_crashes_the_doctor(
     monkeypatch, tmp_path, raised
 ):
     """alsa-utils is not in install.sh's apt lists, and a wedged card can hang
-    the read — the exact state this check exists to name. Driven through the
-    doctor's own runner, which turns an escaping exception into a red fail."""
-    function_path = tmp_path / "uac2.usb0"
-    function_path.mkdir()
+    the read — the exact state the #3194 disclosure exists to name. The card
+    itself is present and healthy either way, so this stays an ``ok`` row;
+    driven through the doctor's own runner as a defense-in-depth check that
+    an escaping exception still would not crash it."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _unit_state_fake(usbsink.USBSINK_UNIT, "active"),
+    )
     card = tmp_path / "UAC2Gadget"
     card.mkdir()
-    monkeypatch.setattr(usbsink, "_uac2_function_path", lambda: function_path)
-    monkeypatch.setattr(usbsink, "UAC2_CARD_PATH", str(card))
 
     def raise_it(*args, **kwargs):
         raise raised
 
     monkeypatch.setattr(_shared.subprocess, "run", raise_it)
 
-    result = _shared._run_doctor_check(usbsink.check_usbsink_host_stream)
+    with patch.object(usbsink, "Path") as mock_path:
+        mock_path.side_effect = lambda p: (
+            card if p == "/proc/asound/UAC2Gadget" else Path(p)
+        )
+        result = _shared._run_doctor_check(usbsink.check_usbsink_card)
 
-    assert result.status == "skipped"
+    assert result.status == "ok"
     assert result.reason == usbsink.REASON_HOST_STREAM_NO_CONTROL
 
 

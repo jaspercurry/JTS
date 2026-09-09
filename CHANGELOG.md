@@ -23,7 +23,7 @@ format. Release tags are cut manually by a maintainer.
 ### Changed
 
 - Renderer ingress is snd-aloop lanes plus fan-in's direct capture of the UAC2
-  gadget, armed by the reconciler where the box is eligible (ADR-0268).
+  gadget, armed by the reconciler where the box is eligible (ADR-0271).
 - "What is audible now" has one answer: mux's existing `active_source` STATUS
   field. `RendererClient.selected_source()` and `/state.active_source` consume
   it instead of rebuilding the answer from the manual pin and the raw winner.
@@ -33,8 +33,8 @@ format. Release tags are cut manually by a maintainer.
 - `jasper/audio_io.py` is replaced outright by `jasper/mic_capture.py` and
   `jasper/tts_playout.py`, one concern each and no compatibility shim.
 - Documentation: `docs/audio-paths.md` rewritten to the shipped topology, with
-  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0267 and
-  ADR-0268.
+  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0270 and
+  ADR-0271.
 
 ### Removed
 

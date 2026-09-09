@@ -84,8 +84,9 @@ that doesn't fit this shape is a smell; a new *instance* that does is routine.
   surfaced), never crashes startup.
 - **Wizard-owned `/var/lib/jasper/*.env` (or a `/var/lib/jasper/*.db`) config
   SSOT, read fresh** — never `os.environ` cached in a long-lived daemon.
-- **Observability is part of the contract** — a `/state` section, a flat
-  `@doctor_check`, stable `event=` logs, and **no silent failure → audible
+- **Observability is part of the contract** — a `/system/snapshot` field or a
+  flat `@doctor_check` for a health fact (`/state` stays the daemon's own
+  posture, ADR-0270), stable `event=` logs, and **no silent failure → audible
   cue** for anything that blocks a response.
 - **Strict, loud validation at the boundary** — a malformed declaration fails
   fast and visibly. (No Postel-style liberality; "be liberal in what you
@@ -150,8 +151,9 @@ The **host owns and injects** (a Feature never builds these itself):
 - **secrets and account/credential lifecycles**.
 
 A Feature **inherits, as obligations** (non-negotiable): no-silent-failure →
-audible cue (a proactive Feature that fails must speak), a `/state` section, a
-`doctor` check, and mic-mute / privacy gating.
+audible cue (a proactive Feature that fails must speak), a `/system/snapshot`
+field or `doctor` check for a health fact (`/state` is the daemon's own
+posture, not a health fact — ADR-0270), and mic-mute / privacy gating.
 
 **Build discipline (this matters):** do **not** build a generic Feature
 framework speculatively. Build the next instance —
@@ -217,7 +219,8 @@ code immediately):
 - **host-owned lifecycle + cleanup** (the author registers a resource through
   a host helper; the host tears it down — authors forget);
 - **per-entry fault isolation**;
-- the **observability obligations** (`/state`, `doctor`, cue);
+- the **observability obligations** (`/system/snapshot` or `doctor` for a
+  health fact — `/state` stays posture-only, ADR-0270 — plus the cue);
 - a **reserved-but-UNENFORCED `capabilities`/risk field** in each contract's
   metadata — documentation-only today; the cheap half of forward-compat (a
   reserved field, *not* a versioning framework). Tools already carry risk

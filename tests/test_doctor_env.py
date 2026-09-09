@@ -271,7 +271,8 @@ def test_state_group_write_checks_configured_volume_path(
 # ---------- check_state_dir: os.access(W_OK) always reports jasper-doctor's
 # own root access, not the non-root jasper-voice/-mux writers'. Converged
 # onto the same _shared._group_writable_dir predicate as
-# audio.check_camilla_configs_writable and correction.check_correction_state_dirs,
+# audio_runtime_camilla.check_camilla_configs_writable and
+# correction.check_correction_state_dirs,
 # but require_setgid=False: ensure_state_dir (install.sh) leaves STATE_DIR
 # itself plain root:jasper 0770, not setgid, because every writer here
 # already declares Group=jasper in its own unit rather than relying on

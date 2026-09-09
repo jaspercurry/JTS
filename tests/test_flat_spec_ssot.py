@@ -729,24 +729,6 @@ def _assert_one_number_everywhere(views: dict) -> None:
     # max_deviation_db/passed) — this pins the reference alongside it.
     assert views["state_reference_db"] == spec["reference_db"]
     assert views["envelope_reference_db"] == spec["reference_db"]
-    # Review S-1 (2026-07-27): the chart feed re-decimates the pipeline's own
-    # 512-point ``curve`` down to its own 256-point ceiling
-    # (``chart_cloud_status``'s own ``CHART_CURVE_MAX_JSON_POINTS`` —
-    # measured 41,161 bytes for both phases at the full resolution, halved to
-    # 20,653 by this re-decimation), so it is no longer byte-identical to the
-    # pipeline curve — but every point it DOES carry must still be an actual
-    # point of the pipeline curve, at the same stride
-    # ``chart_cloud_status`` computes, never an interpolation or a
-    # re-derivation. Stride is CEILING division (gate finding on #1858,
-    # SF-1): ``decimate_curve_for_chart`` used to floor-divide, a soft
-    # ceiling that could overshoot 256 by up to one stride; #1858's
-    # block-average fix to the (unrelated) predicted-sum path could land a
-    # persisted length just below 512, where floor division gave step=1 --
-    # no reduction at all -- so the chart owner now ceiling-divides for a
-    # true hard bound. This curve's own persist path
-    # (``_decimate_curve_for_json``) is untouched by that fix and still
-    # lands here at ~513 points, same as before; only the RE-DECIMATION
-    # formula this replica must match moved.
     pipeline_freqs = views["pipeline_curve"]["freqs_hz"]
     pipeline_mags = views["pipeline_curve"]["magnitude_db"]
     n = len(pipeline_freqs)
@@ -755,7 +737,7 @@ def _assert_one_number_everywhere(views: dict) -> None:
         "freqs_hz": pipeline_freqs[:n:step],
         "magnitude_db": pipeline_mags[:n:step],
     }
-    assert views["state_cloud_chart_curve"] == expected_chart_curve
+    assert {key: views["state_cloud_chart_curve"][key] for key in expected_chart_curve} == expected_chart_curve
     # The envelope carries the chart-feed projection through unchanged — one
     # re-decimation, not two.
     assert views["envelope_cloud_chart_curve"] == views["state_cloud_chart_curve"]

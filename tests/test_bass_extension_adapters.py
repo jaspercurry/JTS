@@ -11,6 +11,7 @@ from jasper.audio_measurement.analysis import resample_log
 from jasper.bass_extension.adapters import adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
     COMMISSION_FLOOR_HZ,
+    MIN_CURVE_POINTS,
     CabinetInfo,
     CaptureRole,
     FitRefusal,
@@ -27,6 +28,7 @@ from jasper.bass_extension.alignment import (
     lt_boost_db,
     second_order_highpass_db,
 )
+from jasper.bass_extension.profile import BassExtensionRefusal
 from jasper.bass_extension.targets import MARGINS
 
 
@@ -49,16 +51,31 @@ def _natural_curve():
 NATURAL_CURVE = _natural_curve()
 
 
+@pytest.mark.parametrize("role", (CaptureRole.WOOFER_NEARFIELD, CaptureRole.SEAT_MEDIAN))
 @pytest.mark.parametrize("f0", (45.0, 61.0, 80.0))
 @pytest.mark.parametrize("q0", (0.55, 0.707, 0.9))
-def test_sealed_clean_fit_round_trip(f0, q0):
+def test_sealed_clean_fit_round_trip(f0, q0, role):
     fit = SEALED_ADAPTER.fit_plant(
-        {CaptureRole.WOOFER_NEARFIELD: _curve(second_order_highpass_db(FREQS, f0, q0) + 7.0)},
+        {role: _curve(second_order_highpass_db(FREQS, f0, q0) + 7.0)},
         CABINET,
     )
     assert isinstance(fit, SealedPlantFit)
     assert fit.f0_hz == pytest.approx(f0, rel=0.01)
     assert fit.q0 == pytest.approx(q0, abs=0.02)
+
+
+def test_sealed_fit_window_without_support_refuses_rather_than_raising():
+    """A grid so coarse, with its roll-off so near the top of it, that the
+    fit's own window keeps too few points to fit."""
+    freqs = np.geomspace(20.0, 320.0, MIN_CURVE_POINTS + 1)
+    curve = MagnitudeCurve(
+        tuple(freqs), tuple(second_order_highpass_db(freqs, 300.0, 0.707))
+    )
+
+    fit = SEALED_ADAPTER.fit_plant({CaptureRole.SEAT_MEDIAN: curve}, CABINET)
+
+    assert isinstance(fit, FitRefusal)
+    assert fit.refusal == BassExtensionRefusal.FIT_QUALITY_INSUFFICIENT
 
 
 @pytest.mark.parametrize("f0,q0", ((45.0, 0.55), (61.0, 0.707), (80.0, 0.9)))

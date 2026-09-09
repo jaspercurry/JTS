@@ -158,7 +158,7 @@ def _grouping_runtime(cfg: object) -> dict:
 @doctor_check()
 def check_grouping() -> CheckResult:
     """Verify /var/lib/jasper/grouping.env is consistent AND actually up,
-    and surface the composite pair-lock truth ``/state.grouping`` uses.
+    and surface the composite pair-lock truth the ``/grouping`` endpoint uses.
 
     Off by default (user opts in via the grouping web wizard), so OFF is
     `ok`. For ON, `warn` on two failure classes, worst wins:
@@ -183,7 +183,7 @@ def check_grouping() -> CheckResult:
     permanent warn), not a claim that the clock lock was confirmed.
 
     Both verdicts come from the same pure `derive_grouping_runtime` the
-    /state surface uses."""
+    ``/grouping`` endpoint uses."""
     label = "grouping"
     cfg = evidence.grouping_config()
     if not cfg.enabled:
@@ -578,13 +578,61 @@ def check_grouping_rate_adjust() -> CheckResult:
     return CheckResult(label, "ok", f"rate_adjust off for bonded member ({config_path})")
 
 
+def _airplay_latency_fit_finding(cfg) -> tuple[str, str]:
+    """Does a bonded LEADER's hidden downstream delay (~150 ms pipeline +
+    the Snapcast ``buffer_ms``) fit inside the budget the AirPlay sender
+    negotiated? A miss lands leader output AFTER the AirPlay anchor →
+    bounded residual lip-sync lag (the "Stage D" gap).
+
+    OBSERVABILITY ONLY — folded into :func:`check_grouping_leader_pipe`'s
+    row rather than a row of its own; assumes the caller already confirmed
+    ``is_active_leader``. Absence from shairport's journal fail-softs to the
+    default ~2.0 s budget (comfortable). Pinned to the same pure
+    :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
+    uses, so the doctor and the dashboard tell one story.
+    """
+    from ...multiroom.airplay_latency import (
+        SHAIRPORT_BACKEND_BUFFER_SEC,
+        assess_fit,
+        read_notified_frames,
+    )
+
+    fit = assess_fit(cfg.buffer_ms, read_notified_frames())
+    budget_desc = (
+        f"AirPlay budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs "
+        f"need ~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms}) + "
+        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.3f}s"
+    )
+    if fit.tight:
+        # No local control grows the budget (AP2 latency is sender-authored)
+        # and buffer_ms has no wizard knob, so the remediation is honest about
+        # the lever that exists: lower JASPER_GROUPING_BUFFER_MS (default 400)
+        # in /var/lib/jasper/grouping.env if it was raised. Do NOT point at a
+        # /rooms control — none writes buffer_ms.
+        return (
+            f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
+            f"=> shairport drops the offset => ~{fit.residual_lag_sec * 1000:.0f} ms "
+            "residual lip-sync lag (it also logs 'stream latency too short to "
+            "accommodate an offset'). The sender's budget can't be grown locally; "
+            "if JASPER_GROUPING_BUFFER_MS (grouping.env, default 400) was raised, "
+            "lowering it shrinks the need.",
+            REASON_AIRPLAY_LATENCY_TIGHT,
+        )
+    return f"{budget_desc} fits", ""
+
+
 @doctor_check()
 def check_grouping_leader_pipe() -> CheckResult:
     """A bonded LEADER's ACTIVE CamillaDSP config must write snapserver's
     pipe (``devices.playback`` = File → SNAPFIFO) — else snapserver streams
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
-    class this check exists for."""
+    class this check exists for.
+
+    Once the pipe is confirmed wired, also folds in the AirPlay-latency
+    budget fit (:func:`_airplay_latency_fit_finding`) — a silent pipe makes
+    that timing fact moot, so it only rides an ``ok`` verdict.
+    """
     from ...active_speaker.environment import camilla_statefile_path
     from ...multiroom.config import is_active_leader
     from ...multiroom.leader_config import playback_is_pipe
@@ -630,7 +678,11 @@ def check_grouping_leader_pipe() -> CheckResult:
             "jasper-grouping-reconcile's journal)",
             reason=REASON_LEADER_PIPE_NOT_WIRED,
         )
-    return CheckResult(label, "ok", f"leader CamillaDSP writes {SNAPFIFO}")
+    airplay_detail, airplay_reason = _airplay_latency_fit_finding(cfg)
+    return CheckResult(
+        label, "ok", f"leader CamillaDSP writes {SNAPFIFO}; {airplay_detail}",
+        reason=airplay_reason,
+    )
 
 
 def _outputd_grouping_env_or_error() -> tuple[dict[str, str] | None, OSError | None]:
@@ -1078,59 +1130,6 @@ def check_grouping_household_credential() -> CheckResult:
         "re-pairs; re-save the bond from http://jts.local/sound/pair/ to restore it",
         reason=REASON_HOUSEHOLD_CREDENTIAL_MISSING,
     )
-
-
-@doctor_check()
-def check_grouping_airplay_latency() -> CheckResult:
-    """A bonded LEADER receiving AirPlay must fit its hidden downstream
-    delay (~150 ms pipeline + the Snapcast ``buffer_ms``) inside the budget
-    the AirPlay sender negotiated, or its own output lands AFTER the AirPlay
-    anchor → bounded residual lip-sync lag (the "Stage D" gap).
-
-    OBSERVABILITY ONLY — this never changes the offset. Skips (``ok``) on
-    solo / follower. For a bonded leader it reads the sender's most-recent
-    notified latency from shairport's journal (ABSENCE => the default ~2.0 s
-    budget, the free regime — fail-soft, so an unreadable journal reads as
-    comfortable) and reports the tight case as ``ok`` with a reason — no
-    local lever grows the budget. Pinned to the same pure
-    :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
-    uses, so the doctor and the dashboard tell one story."""
-    from ...multiroom.airplay_latency import assess_fit, read_notified_frames
-    from ...multiroom.config import is_active_leader
-
-    label = "grouping: AirPlay latency fit"
-    cfg = evidence.grouping_config()
-    if not is_active_leader(cfg):
-        return CheckResult(
-            label, "skipped", "not an active bond leader",
-            reason=REASON_NOT_APPLICABLE,
-        )
-
-    from ...multiroom.airplay_latency import SHAIRPORT_BACKEND_BUFFER_SEC
-
-    fit = assess_fit(cfg.buffer_ms, read_notified_frames())
-    budget_desc = (
-        f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs "
-        f"need ~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms}) + "
-        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.3f}s"
-    )
-    if fit.tight:
-        # No local control grows the budget (AP2 latency is sender-authored)
-        # and buffer_ms has no wizard knob, so the remediation is honest about
-        # the lever that exists: lower JASPER_GROUPING_BUFFER_MS (default 400)
-        # in /var/lib/jasper/grouping.env if it was raised. Do NOT point at a
-        # /rooms control — none writes buffer_ms.
-        return CheckResult(
-            label, "ok",
-            f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
-            f"=> shairport drops the offset => ~{fit.residual_lag_sec * 1000:.0f} ms "
-            "residual lip-sync lag (it also logs 'stream latency too short to "
-            "accommodate an offset'). The sender's budget can't be grown locally; "
-            "if JASPER_GROUPING_BUFFER_MS (grouping.env, default 400) was raised, "
-            "lowering it shrinks the need.",
-            reason=REASON_AIRPLAY_LATENCY_TIGHT,
-        )
-    return CheckResult(label, "ok", f"fits — {budget_desc}")
 
 
 @doctor_check()

@@ -36,6 +36,7 @@ from ._doctor_audio_runtime_fixtures import (
     _seed_units,
 )
 from .doctor_test_support import record_active_dac
+from .ring_abi import ring_abi
 from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 from .test_ring_stall_alarm import _ring_file
 
@@ -1274,6 +1275,19 @@ def test_writer_lock_guard_ignores_a_contender_that_gave_up(monkeypatch, tmp_pat
 
     assert len(seen) == 2, "a suspected two-writer read must be CONFIRMED"
     assert result.status == "ok"
+
+
+def test_writer_lock_confirm_delay_outlasts_the_ring_open_budget():
+    """The confirm sample must land AFTER a legitimate contender has given up.
+
+    `acquire_writer_lock` opens the lock file and only then spins on flock until
+    the ring ABI's `open_lock_wait_timeout_ms` expires, so a healthy box has two
+    fd holders for up to that long. A confirm delay that did not OUTLAST the
+    budget would report an ordinary create-or-attach race as the defect.
+    """
+    budget_sec = ring_abi()["open_lock_wait_timeout_ms"] / 1000.0
+
+    assert audio_runtime_ring._WRITER_LOCK_CONFIRM_DELAY_SEC > budget_sec
 
 
 def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path):

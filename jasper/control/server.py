@@ -65,7 +65,6 @@ from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..service_units import read_unit_states
 from ..local_sources import local_source_audio_refresh_units
-from ..transit.state import read_state as read_transit_state
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..doctor_contract import (
     REASON_REFRESH_FAILED,
@@ -616,19 +615,10 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
-    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
-    transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
-    service_states_snapshot: (
-        Callable[[], dict[str, dict[str, Any]]] | None
-    ) = None,
 ) -> dict[str, Any]:
-    extra: dict[str, Any] = {}
-    if transport_park_snapshot is not None:
-        extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
-        service_states_snapshot=service_states_snapshot,
         airplay_playing_snapshot=airplay_playing_snapshot,
         audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,
@@ -637,10 +627,6 @@ async def _get_state(
         voice_socket_command=_voice_socket_command,
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
-        aec_full_status=_aec_endpoints._aec_full_status,
-        read_transit_state_func=read_transit_state,
-        ha_status_snapshot=ha_status_snapshot,
-        **extra,
     )
 
 
@@ -1230,7 +1216,6 @@ def _make_handler(
     camilla_port: int,
     voice_socket_path: str,
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
@@ -1355,7 +1340,6 @@ def _make_handler(
         MeasurementRoutes,
         SystemRoutes,
     ):
-        _airplay_health_sampler = airplay_health_sampler
         _adjust_op = staticmethod(handler_adjust_op)
         _audio_health_sampler = audio_health_sampler
         _camilla_host = camilla_host
@@ -1928,7 +1912,6 @@ def build_server(
     camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
     return ControlHTTPServer(
@@ -1938,7 +1921,6 @@ def build_server(
             camilla_port,
             voice_socket_path,
             sampler,
-            airplay_health_sampler,
             audio_health_sampler,
         ),
     )
@@ -2087,23 +2069,10 @@ def main(argv: list[str] | None = None) -> int:
     # Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
-    # Multiroom cascade timeline: scans structured journal events into a small
-    # /state ring so restart chains are reconstructable without fetching raw
-    # logs first. Solo-gated (no journalctl scan when no bond is configured)
-    # and off via JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
-    from ..multiroom import cascade_timeline
-    cascade_timeline.start_sampler()
     # Runtime debug toggle: clear an expired session left on disk, or re-arm
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.
     debug_control.reconcile_on_startup()
-    logger.info(
-        "jasper-control listening on http://%s:%d "
-        "(camilla=%s:%d, voice=%s)",
-        args.host, args.port,
-        args.camilla_host, args.camilla_port,
-        args.voice_socket,
-    )
     # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
@@ -2113,6 +2082,15 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
+    log_event(
+        logger,
+        "control.ready",
+        host=args.host,
+        port=args.port,
+        camilla_host=args.camilla_host,
+        camilla_port=args.camilla_port,
+        voice_socket=args.voice_socket,
+    )
     restore_sigterm = _install_sigterm_shutdown(server)
     try:
         server.serve_forever()

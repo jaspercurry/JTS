@@ -4,7 +4,9 @@
 
 """Unit tests for the jasper-doctor CamillaDSP-graph checks."""
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,7 @@ from jasper.cli.doctor import (
     audio_runtime_camilla,
     audio_runtime_fanin,
     audio_runtime_outputd,
+    correction,
 )
 from jasper.cli.doctor._evidence import evidence
 from jasper.doctor_contract import summarize
@@ -24,6 +27,7 @@ from ._doctor_audio_runtime_fixtures import (
     _patch_status_reader,
     _seed_units,
 )
+from .doctor_test_support import _own_group, record_active_dac
 
 _GETCONFIG_READBACK = (
     Path(__file__).parent / "fixtures" / "camilla_readback" / "camilladsp_4.1.3_getconfig.yml"
@@ -60,6 +64,132 @@ def test_check_camilla_service_failures(monkeypatch, enabled, active, reason, si
     assert (result.status, result.reason, result.speaker_silent) == (
         "fail", reason, silent,
     )
+
+
+def test_check_camilla_service_a_load_error_is_not_missing(monkeypatch):
+    """``load_state == "error"`` pins the pre-existing verdict: it lands on
+    the same ``inactive`` fail as a clean stop, never ``missing`` (#2163) —
+    only ``"not-found"`` is missing."""
+    evidence.seed("units", {
+        "jasper-camilla.service": {
+            "unit": "jasper-camilla.service",
+            "load_state": "error",
+            "unit_file_state": "enabled",
+            "active_state": "inactive",
+        },
+    })
+
+    result = audio_runtime_camilla.check_camilla_service()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", audio_runtime_camilla.REASON_CAMILLA_INACTIVE, True,
+    )
+
+
+# ------------------------------------------------ CamillaDSP config dir posture
+#
+# Pins the jts3 2026-07-06 incident: a deploy left /var/lib/camilladsp/configs
+# root-only (setgid kept, group-write stripped — mode 2755), so the non-root
+# jasper-web user could not atomically write the staged active-speaker config
+# and staging failed with PermissionError.
+
+
+@pytest.mark.parametrize(
+    "mode, group, status, reason",
+    [
+        (0o2775, None, "ok", ""),
+        # the exact regression: group-write stripped
+        (0o2755, None, "fail", audio_runtime_camilla.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE),
+        # setgid lost (2775 -> 0775): a root-run process creating a NEW
+        # subdirectory later would land it group-root, not group-jasper.
+        (0o0775, None, "fail", audio_runtime_camilla.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE),
+        (
+            0o2775, "jts-no-such-group-xyz", "fail",
+            audio_runtime_camilla.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE,
+        ),
+        (None, None, "warn", audio_runtime_camilla.REASON_CAMILLA_CONFIG_DIR_MISSING),
+    ],
+    ids=["group-writable", "group-readonly", "setgid-lost", "wrong-group", "absent"],
+)
+def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status, reason):
+    d = tmp_path / "configs"
+    if mode is not None:
+        d.mkdir()
+        os.chmod(d, mode)
+
+    res = audio_runtime_camilla._camilla_configs_writable_result(
+        d, expected_group=group or _own_group()
+    )
+
+    assert res.status == status
+    assert res.reason == reason
+
+
+def test_camilla_configs_writable_targets_the_constant_dir(monkeypatch, tmp_path):
+    """The decorated check reads CAMILLA_CONFIGS_DIR, so the guard stays
+    pointed at the dir the deploy actually permissions."""
+    monkeypatch.setattr(audio_runtime_camilla, "CAMILLA_CONFIGS_DIR", tmp_path / "nope")
+
+    res = audio_runtime_camilla.check_camilla_configs_writable()
+
+    assert res.status == "warn"
+    assert res.reason == audio_runtime_camilla.REASON_CAMILLA_CONFIG_DIR_MISSING
+
+
+# ------------------------------------------------------- CamillaDSP websocket
+
+
+def _camilla_controller(monkeypatch, *, volume, clipped):
+    constructed: list[tuple[str, int]] = []
+
+    class Controller:
+        def __init__(self, host: str, port: int) -> None:
+            constructed.append((host, port))
+
+        async def get_volume_db(self):
+            if isinstance(volume, Exception):
+                raise volume
+            return volume
+
+        async def get_clipped_samples(self):
+            if isinstance(clipped, Exception):
+                raise clipped
+            return clipped
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(audio_runtime_camilla, "CamillaController", Controller)
+    return constructed
+
+
+@pytest.mark.parametrize(
+    "volume, clipped, status, reason",
+    [
+        (-12.5, 0, "ok", ""),
+        (
+            CamillaUnavailable("operation exceeded 5.0s"), 0, "fail",
+            audio_runtime_camilla.REASON_CAMILLA_UNREACHABLE,
+        ),
+        # clipped_samples is optional: an unavailable status command must not
+        # sink the probe.
+        (-18.0, CamillaUnavailable("status command unavailable"), "ok", ""),
+        # Non-negotiable #1's live half: a fader above the ceiling is a fail.
+        (6.0, 0, "fail", audio_runtime_camilla.REASON_CAMILLA_VOLUME_ABOVE_CEILING),
+    ],
+    ids=["healthy", "timeout", "clipped-optional", "above-ceiling"],
+)
+async def test_check_camilla_websocket_verdicts(
+    monkeypatch, volume, clipped, status, reason
+):
+    constructed = _camilla_controller(monkeypatch, volume=volume, clipped=clipped)
+    cfg = SimpleNamespace(camilla_host="127.0.0.1", camilla_port=1234)
+
+    result = await audio_runtime_camilla.check_camilla_websocket(cfg)
+
+    assert result.status == status
+    assert result.reason == reason
+    assert constructed == [("127.0.0.1", 1234)]
 
 
 @pytest.mark.parametrize(
@@ -108,6 +238,169 @@ async def test_check_camilla_live_volume_limit_verdicts(monkeypatch, raw, status
     result = await audio_runtime_camilla.check_camilla_live_volume_limit()
 
     assert (result.status, result.reason) == (status, reason)
+
+
+# ------------------------------------------- CamillaDSP volume_limit (NN #1)
+
+
+def _point_at_config(monkeypatch, tmp_path, text, *, name="v1.yml"):
+    config = tmp_path / name
+    config.write_text(text)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return config
+
+
+@pytest.mark.parametrize(
+    "text, status, reason",
+    [
+        ("devices:\n  samplerate: 48000\n  volume_limit: 0.0\n", "ok", ""),
+        (
+            "devices:\n  samplerate: 48000\n", "fail",
+            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  samplerate: 48000\n  volume_limit: 6.0\n", "fail",
+            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABOVE_CEILING,
+        ),
+        # Ambiguous ownership never resolves to "capped": a nested or
+        # duplicated key is not the global fader ceiling.
+        (
+            "devices:\n  playback:\n    volume_limit: 0.0\n", "fail",
+            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n", "fail",
+            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n", "fail",
+            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+    ],
+    ids=[
+        "capped", "omitted", "positive", "nested-only", "duplicate-block",
+        "duplicate-key",
+    ],
+)
+def test_check_camilla_volume_limit_verdicts(
+    monkeypatch, tmp_path, text, status, reason
+):
+    _point_at_config(monkeypatch, tmp_path, text)
+
+    r = audio_runtime_camilla.check_camilla_volume_limit()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+def test_check_camilla_volume_limit_fails_on_a_missing_config(monkeypatch, tmp_path):
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = audio_runtime_camilla.check_camilla_volume_limit()
+
+    assert r.status == "fail"
+    assert r.reason == correction.REASON_CAMILLA_CONFIG_MISSING
+
+
+# --------------------------------------------------------- camilla ring chunk
+
+
+def _stage_ring_config(tmp_path, monkeypatch, chunksize: int, extra: str = "") -> None:
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    _point_at_config(
+        monkeypatch,
+        tmp_path,
+        "devices:\n"
+        "  samplerate: 48000\n"
+        f"  chunksize: {chunksize}\n"
+        f"{extra}"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_PLAYBACK_DEVICE}"\n',
+        name="ring.yml",
+    )
+
+
+def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
+    """jts4's shape: a chunk the ring cannot open, so the box is silent."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames() * 4)
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_ABOVE_CAPACITY
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
+    """jts.local's shape: a floor that exactly fills the ring is fine."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+
+
+def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
+    monkeypatch, tmp_path
+):
+    """The state jts4 actually landed in: chunk fits the ring, box still dead.
+
+    256/4096 passes the ring-capacity half and is still refused by CamillaDSP
+    (ceiling is chunk x (queuelimit + 4) = 2048), so the box crash-loops with
+    the ring half of this check green.
+    """
+    _stage_ring_config(
+        tmp_path, monkeypatch, 256, extra="  queuelimit: 4\n  target_level: 4096\n",
+    )
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_camilla.REASON_RING_TARGET_LEVEL_ABOVE_CEILING
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
+    """A clamped box says so, so the running chunk is never unexplained.
+
+    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
+    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
+    outright, so it no longer takes this path.
+    """
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    record_active_dac("hifiberry_dac8x_studio")
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+    assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_CLAMPED
+
+
+def test_check_camilla_ring_chunk_not_applicable_off_the_ring(monkeypatch, tmp_path):
+    _point_at_config(
+        monkeypatch, tmp_path, "devices:\n  samplerate: 48000\n  chunksize: 1024\n",
+    )
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "skipped"
+    assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_NOT_APPLICABLE
 
 
 @pytest.mark.parametrize(

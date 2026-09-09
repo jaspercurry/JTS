@@ -7,6 +7,7 @@ record predicates (ADR-0233 rule 1 — one parser, one roster)."""
 from __future__ import annotations
 
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +38,61 @@ def test_unit_predicates_match_read_unit_states_record_shape(
     assert service_units.unit_loaded(record) is loaded
     assert service_units.unit_active(record) is active
     assert service_units.unit_activating(record) is activating
+
+
+@pytest.mark.parametrize(
+    ("record", "code"),
+    [
+        (None, "missing"),
+        ({}, None),
+        ({"load_state": "not-found", "active_state": "inactive"}, "missing"),
+        (
+            {"load_state": "loaded", "unit_file_state": "disabled",
+             "active_state": "inactive"},
+            "not_enabled",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "inactive"},
+            "inactive",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "activating"},
+            "starting",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "reloading"},
+            "starting",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "failed"},
+            "inactive",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "active"},
+            None,
+        ),
+        (
+            {"load_state": "error", "unit_file_state": "enabled",
+             "active_state": "inactive"},
+            "inactive",
+        ),
+    ],
+    ids=[
+        "absent", "empty", "not-found", "not-enabled", "loaded-inactive",
+        "activating", "reloading", "failed", "active", "load-state-error",
+    ],
+)
+def test_unit_not_running_reads_the_unit_record(record, code):
+    """The one classification :mod:`jasper.control.audio_health` and
+    jasper-doctor's ``_service_state_failure`` share for "this unit is not
+    doing its job". ``load_state == "error"`` is NOT ``"missing"`` (#2163):
+    origin/main's ladder only treats ``"not-found"`` that way."""
+    assert service_units.unit_not_running(record) == code
 
 
 # The two cases jasper.web._unit_snapshot's now-retired parser pinned that
@@ -82,3 +138,29 @@ def test_read_unit_states_is_none_when_the_subprocess_itself_fails(monkeypatch):
     monkeypatch.setattr(service_units.subprocess, "run", fail)
 
     assert service_units.read_unit_states(("a.service",)) is None
+
+
+@pytest.mark.parametrize(
+    ("record", "is_none"),
+    [
+        (None, True),
+        ({}, True),
+        ({"active_enter_timestamp_monotonic": None}, True),
+        ({"active_enter_timestamp_monotonic": 0}, True),
+        ({"active_enter_timestamp_monotonic": -1}, True),
+    ],
+    ids=["absent", "empty", "unset", "zero", "negative"],
+)
+def test_unit_uptime_sec_is_none_without_a_usable_timestamp(record, is_none):
+    assert (service_units.unit_uptime_sec(record) is None) is is_none
+
+
+def test_unit_uptime_sec_reads_the_monotonic_clock_shared_with_systemd():
+    now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    started_us = int(now_us - 90.0 * 1e6)
+
+    uptime = service_units.unit_uptime_sec(
+        {"active_enter_timestamp_monotonic": started_us}
+    )
+
+    assert uptime == pytest.approx(90.0, abs=1.0)

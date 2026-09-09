@@ -2,60 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Combo-mode host-slaved USB clock adapter for fan-in (C4/C5).
-//!
-//! In combo mode (`JASPER_FANIN_USB_DIRECT=enabled`) fan-in owns the
-//! `hw:UAC2Gadget` capture, so — per the invariant *the daemon that owns the
-//! gadget capture owns the pitch ctl* — fan-in also drives the host-clock
-//! ladder that steers the gadget's `Capture Pitch 1000000` ctl. The ladder /
-//! probe / servo / write-gate itself is the shared [`jasper_host_clock`] crate
-//! (the same crate the deleted usbsink solo bridge ran before that path was
-//! removed 2026-07-10, #1209 — fan-in is the sole live consumer now); this
-//! module is the thin fan-in-side adapter:
-//!
-//! 1. [`HostClockSignals`] — the Arc atomics the mixer already publishes for the
-//!    USB DIRECT lane (resampler fill gauge / input / output / lock, direct
-//!    `present`), cloned once in `main` before the mixer starts. This is the ONLY
-//!    coupling to the mixer; the ladder never touches a `LaneResampler` or a
-//!    `PCM`.
-//! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`].
-//! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: capture-generation
-//!    binding, forced-neutral readiness, fail-soft open/write recovery, and
-//!    rate-limited lifecycle logs.
-//! 4. [`run_host_clock_thread`] — the dedicated `fanin-host-clock` thread: a
-//!    100 ms sleep loop gated to `TICK_INTERVAL_MS`, single-writer by
-//!    construction (the `HostClock` and the ctl handle never leave it), with an
-//!    exit-neutralize join point.
-//!
-//! ## Obs mapping (C4)
-//!
-//! | Obs field         | fan-in source                                        |
-//! |-------------------|------------------------------------------------------|
-//! | `host_connected`  | `DirectObservability.present`                        |
-//! | `playing`         | `LaneResampler.locked_state`                         |
-//! | `steady`          | `locked_state` AND NOT the decay's declared refill   |
-//! |                   | window (ADR-0214)                                    |
-//! | `preempted`       | always `false` (fan-in MIX MUTE gates the SUM        |
-//! |                   | downstream, so steering continues                    |
-//! |                   | while deselected, keeping the lane converged)        |
-//! | `fill_frames`     | resampler `fill_frames` gauge (cursor-relative,      |
-//! |                   | frame-granular, published every render period)       |
-//! | `capture_frames`  | resampler `input_frames` (raw, monotone)             |
-//! | `playback_frames` | resampler `output_frames` (real periods only)        |
-//!
-//! **`capture_frames` is the RAW input counter — a `LaneResampler::trim_ring`
-//! must NOT be subtracted from it.** The divergence the slope estimator
-//! differences is `capture − playback = input_frames − output_frames`; a trim
-//! only advances the resampler's read CURSOR (`next_input_frame`), touching
-//! neither `input_frames` (bumped at `push_input`) nor `output_frames`
-//! (DAC-paced), so the divergence is already smooth across a trim. An earlier
-//! revision subtracted the cumulative `trimmed_frames` here as "TRIM
-//! compensation"; that INJECTED the very phantom negative divergence STEP it
-//! claimed to cancel. At a 1400-frame auto-trim — which fires at 2 s
-//! (`AUTO_TRIM_DELAY_SECONDS`), inside the 4 s probe baseline — the subtraction
-//! drove the probe `response_ratio` from ~0.85 to ~43 and railed the
-//! feed-forward at +1000 ppm in the wrong direction. So the mapping is a plain
-//! load of `input_frames`, no trim term.
+#[path = "usb_connection.rs"]
+mod usb_connection;
+use usb_connection::UsbConnection;
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -93,23 +42,8 @@ pub struct HostClockSignals {
     /// This is the existing `DirectObservability.opens` counter, not a duplicate
     /// lifecycle counter.
     pub capture_generation: Arc<AtomicU64>,
-    /// The lane resampler's LIVE correction ppm (its rate-adjustment relative to
-    /// nominal), in **milli-ppm** (ppm × 1000) stored as i64 bits in this
-    /// `AtomicU64` — the SAME atomic the resampler already publishes for STATUS
-    /// (`LaneResamplerObservability::ratio_milli_ppm`), owned/written ONLY by the
-    /// resampler on the mixer thread. This is the COMBO-mode probe/servo
-    /// observable: with the resampler absorbing the host clock, its correction ppm
-    /// is the honest host-vs-DAC rate-error readout (the fill slope is dead
-    /// weight). Decoded in [`build_obs`] the same way the STATUS layer does
-    /// (`(load() as i64) as f64 / 1000.0`), minus the decay demand below
-    /// (#3466 — rationale at [`build_obs`]).
+    /// Clock correction only, in signed milli-ppm stored as i64 bits.
     pub correction_milli_ppm: Arc<AtomicU64>,
-    /// The cushion decay's LIVE rate demand on the inner resampler, in plain
-    /// signed milli-ppm (the `commanded_milli_ppm` idiom; 0 whenever the decay
-    /// is idle). Published by the decay itself (the single source of truth for
-    /// its own demand); [`build_obs`] subtracts it from the ratio — see the
-    /// decontamination rationale there (#3466).
-    pub decay_demand_milli_ppm: Arc<AtomicI64>,
     /// The decay's DECLARED refill window (`CushionDecay::refilling`, ADR-0214):
     /// [`build_obs`] clears [`Obs::steady`] on it.
     pub decay_refilling: Arc<AtomicBool>,
@@ -128,6 +62,8 @@ pub struct HostClockSignals {
     /// `l0_locked`. The mixer's per-period decay tick reads this — decay only
     /// lowers the held target while the DLL is in this steady state.
     pub ladder_l0: Arc<AtomicBool>,
+    pub connection_epoch: Arc<AtomicU64>,
+    pub timing_failed: Arc<AtomicBool>,
     /// REVERSE signal (servo thread → mixer): the DLL's last commanded bias in
     /// milli-ppm (ppm × 1000, rounded to a plain signed `AtomicI64` — no bit-cast;
     /// the sign is native, unlike the resampler's `ratio_milli_ppm` which packs an
@@ -195,23 +131,8 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         capture_frames: signals.input_frames.load(Ordering::Relaxed),
         // DAC-paced — the divergence anchor.
         playback_frames: signals.output_frames.load(Ordering::Relaxed),
-        // The lane resampler's LIVE correction ppm — the COMBO-mode probe/servo
-        // observable — DECONTAMINATED of the cushion decay's own rate demand
-        // (#3466). While a descent is active the resampler deliberately runs
-        // ~`demand` ppm fast to drain the cushion; that term is commanded, not
-        // clock error, so feeding it to the L0 servo makes the outer loop chase
-        // the decay ramp. Subtracting the decay-published demand leaves only
-        // the genuine host-vs-DAC offset: the servo drives THAT to 0 and the
-        // ratio settles at exactly the demand while descending. The ratio
-        // atomic is signed milli-ppm as i64 bits in a u64 (the STATUS
-        // decoding); the demand is a plain signed AtomicI64, 0 whenever the
-        // decay is idle — a plain ratio read outside descents. The two relaxed loads are
-        // unpaired (published moments apart in one render period): a
-        // transition-tick tear is bounded by one demand for one 1 Hz sample
-        // and is crushed by the EW filter + slow integrator downstream.
-        correction_ppm: ((signals.correction_milli_ppm.load(Ordering::Relaxed) as i64)
-            - signals.decay_demand_milli_ppm.load(Ordering::Relaxed))
-            as f64
+        // Buffer motion is applied separately; this is clock correction only.
+        correction_ppm: (signals.correction_milli_ppm.load(Ordering::Relaxed) as i64) as f64
             / 1000.0,
     }
 }
@@ -483,6 +404,7 @@ pub fn run_host_clock_thread(
     // Construct the ctl actuator INSIDE the thread: `AlsaPitchCtl` holds a
     // `!Send` `ElemValue`, so the handle can never cross a thread boundary. It
     // lives here and nowhere else (single-writer by construction).
+    let mut connection = UsbConnection::default();
     let mut actuator = HostClockActuator::new(ctl_card, AlsaPitchCtl::open);
     let mut hc = HostClock::new(config);
     let start = Instant::now();
@@ -502,73 +424,81 @@ pub fn run_host_clock_thread(
     }
     publish_fragment(&fragment, hc.status_fragment());
 
-    // The steering loop runs inside `catch_unwind` (N5). A panic mid-tick on
-    // THIS helper thread would otherwise unwind past the exit-neutralize below
-    // while the daemon keeps running — leaving the host slaved to the last
-    // command until the unit stops (only then does the ExecStopPost belt fire).
-    // Catching the unwind lets the same exit-neutralize run on the panic path.
-    // `AssertUnwindSafe`: the only state touched after a caught panic is the
-    // final neutral ctl write + fragment publish, both idempotent and safe on a
-    // partially-updated `hc`/`actuator`.
-    let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut last_tick = Instant::now();
-        while !shutdown.load(Ordering::Relaxed) {
-            if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
-                let obs = build_obs(&signals);
-                let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
-                let tick_ms = now_ms(&start);
-                actuator.ensure_ready(capture_generation, tick_ms);
-                let control = actuator.status(capture_generation);
-
-                let mut write_failed = false;
-                for action in hc.tick_with_control(obs, tick_ms, control) {
-                    if control.ready() && !actuator.apply(action, tick_ms) {
-                        write_failed = true;
-                    }
-                }
-                let post_write_status = actuator.status(capture_generation);
-                if write_failed {
-                    hc.invalidate_control(post_write_status);
-                } else {
-                    hc.set_control_status(post_write_status);
-                }
-                // Publish the REVERSE signals the mixer's per-period decay tick
-                // reads: whether the ladder is `l0_locked` (decay's steady-state
-                // gate) and the last commanded bias in milli-ppm (its cascade
-                // guard). Written every servo tick (~1 Hz); the decay tick reads
-                // the latest snapshot each render period.
-                signals
-                    .ladder_l0
-                    .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
-                signals.commanded_milli_ppm.store(
-                    (hc.commanded_ppm() * 1000.0).round() as i64,
-                    Ordering::Relaxed,
-                );
-                publish_fragment(&fragment, hc.status_fragment());
-                last_tick = Instant::now();
+    let mut last_connection = 0;
+    let mut last_tick = Instant::now();
+    while !shutdown.load(Ordering::Relaxed) {
+        let epoch = connection.poll();
+        if epoch != last_connection {
+            let stopped = Obs {
+                playing: false,
+                steady: false,
+                ..build_obs(&signals)
+            };
+            let generation = signals.capture_generation.load(Ordering::Relaxed);
+            for action in hc.tick_with_control(stopped, now_ms(&start), actuator.status(generation))
+            {
+                actuator.apply(action, now_ms(&start));
             }
-            std::thread::sleep(Duration::from_millis(100));
+            signals.ladder_l0.store(false, Ordering::Relaxed);
+            signals.connection_epoch.store(epoch, Ordering::Relaxed);
+            last_connection = epoch;
+            log::info!("event=fanin.usb_connection epoch={epoch}");
         }
-    }));
-    if loop_result.is_err() {
-        // A caught panic: log it, fall through to the exit-neutralize so the
-        // host is still un-slaved. (The thread then ends; the daemon keeps
-        // running with the ladder inert until a restart re-spawns it.)
-        log::error!("event=fanin.host_clock.thread_panic detail=caught_unwind_neutralizing");
+        if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
+            let obs = build_obs(&signals);
+            let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
+            let tick_ms = now_ms(&start);
+            actuator.ensure_ready(capture_generation, tick_ms);
+            let control = actuator.status(capture_generation);
+
+            let mut write_failed = false;
+            for action in hc.tick_with_control(obs, tick_ms, control) {
+                if control.ready() && !actuator.apply(action, tick_ms) {
+                    write_failed = true;
+                }
+            }
+            let post_write_status = actuator.status(capture_generation);
+            if write_failed {
+                hc.invalidate_control(post_write_status);
+            } else {
+                hc.set_control_status(post_write_status);
+            }
+            // Publish the REVERSE signals the mixer's per-period decay tick
+            // reads: whether the ladder is `l0_locked` (decay's steady-state
+            // gate) and the last commanded bias in milli-ppm (its cascade
+            // guard). Written every servo tick (~1 Hz); the decay tick reads
+            // the latest snapshot each render period.
+            signals
+                .ladder_l0
+                .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
+            signals.timing_failed.store(
+                !matches!(hc.ladder(), Ladder::L0Locked | Ladder::Probing),
+                Ordering::Relaxed,
+            );
+            signals.commanded_milli_ppm.store(
+                (hc.commanded_ppm() * 1000.0).round() as i64,
+                Ordering::Relaxed,
+            );
+            publish_fragment(&fragment, hc.status_fragment());
+            last_tick = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 
-    // Exit: force the host back to a free-running clock — on BOTH the graceful
-    // shutdown path and a caught panic. A stopped thread must NEVER leave the
-    // host slaved. SIGKILL / watchdog is covered by the unit's combo-gated
-    // ExecStopPost belt-and-braces (C6).
+    // Exit: force the host back to a free-running clock on the graceful
+    // shutdown path. A stopped thread must NEVER leave the host slaved.
+    // A panic here aborts the whole process (workspace `panic = "abort"`,
+    // shared across the binary's dependency graph) instead of unwinding to
+    // this point: the process exits via SIGABRT, and the unit's combo-gated
+    // ExecStopPost neutralizes the pitch immediately (C6).
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
     hc.set_control_status(actuator.status(signals.capture_generation.load(Ordering::Relaxed)));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
     publish_fragment(&fragment, hc.status_fragment());
 
-    // Clear the REVERSE signals too, so a stopped servo thread (graceful OR
-    // caught-panic) does not leave the mixer's decay tick reading a frozen
-    // `ladder_l0=true`. Neutralizing only the actuator un-slaves the host but
+    // Clear the REVERSE signals too, so a stopped servo thread does not
+    // leave the mixer's decay tick reading a frozen `ladder_l0=true`.
+    // Neutralizing only the actuator un-slaves the host but
     // leaves the outer-loop signal stale: the decay engine would keep stepping
     // the held target toward the floor with no live DLL pinning the fill,
     // driving the thin-cushion free-run churn loop (underfill unlock → snap-back
@@ -576,6 +506,8 @@ pub fn run_host_clock_thread(
     // `l0=false` / `commanded=0` makes the very next decay tick snap the cushion
     // back to the ceiling (`DecayFrozenReason::NotL0`) and hold it there.
     signals.ladder_l0.store(false, Ordering::Relaxed);
+    signals.timing_failed.store(true, Ordering::Relaxed);
+    signals.connection_epoch.store(0, Ordering::Relaxed);
     signals.commanded_milli_ppm.store(0, Ordering::Relaxed);
 }
 
@@ -612,11 +544,12 @@ mod tests {
             present: Arc::new(AtomicBool::new(false)),
             capture_generation: Arc::new(AtomicU64::new(1)),
             correction_milli_ppm: Arc::new(AtomicU64::new(0)),
-            decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
             decay_refilling: Arc::new(AtomicBool::new(false)),
             ceiling_fill_frames: 2048,
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
+            connection_epoch: Arc::new(AtomicU64::new(0)),
+            timing_failed: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         }
     }
@@ -761,33 +694,6 @@ mod tests {
             build_obs(&s).correction_ppm,
             -250.0,
             "a negative correction must decode with the right sign"
-        );
-    }
-
-    #[test]
-    fn obs_correction_ppm_subtracts_the_live_decay_demand() {
-        // Decontamination (#3466): during an active cushion descent the
-        // resampler's ratio is `genuine clock offset + decay demand` — the
-        // demand is commanded drain, not clock error. The observable the
-        // probe/servo consume must therefore be ratio − demand, so the L0 servo
-        // steers only the genuine offset instead of chasing the decay ramp.
-        let s = signals();
-        // Ratio +315.33 ppm = genuine +190.0 ppm + decay demand +125.33 ppm
-        // (the shipped default step 6 / 1000 ms at 48 kHz / 256).
-        s.correction_milli_ppm.store(315_330, Ordering::Relaxed);
-        s.decay_demand_milli_ppm.store(125_330, Ordering::Relaxed);
-        assert_eq!(
-            build_obs(&s).correction_ppm,
-            190.0,
-            "the observable must exclude the decay's own demand"
-        );
-        // A NEGATIVE genuine offset stays correctly signed under subtraction:
-        // ratio +50.33 = genuine −75.0 + demand +125.33.
-        s.correction_milli_ppm.store(50_330, Ordering::Relaxed);
-        assert_eq!(
-            build_obs(&s).correction_ppm,
-            -75.0,
-            "a demand larger than the ratio must yield the negative remainder"
         );
     }
 

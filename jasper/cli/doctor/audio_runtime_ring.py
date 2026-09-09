@@ -619,8 +619,8 @@ def check_ring_ioplug_provenance() -> CheckResult:
 # (``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS``, 500 ms): ``acquire_writer_lock``
 # opens the lock file FIRST and only then spins on ``flock`` until that budget
 # expires, so for up to that long a healthy box legitimately has TWO processes
-# holding an fd on one ``.writer.lock``. Pinned against the header by
-# ``tests/test_ring_slot_ceiling_pin.py``.
+# holding an fd on one ``.writer.lock``. Pinned against the generated ring ABI
+# by ``tests/test_doctor_audio_runtime_ring.py``.
 _WRITER_LOCK_CONFIRM_DELAY_SEC = 0.75
 # Resolved at CALL time below, so a test can repoint it at a synthetic tree.
 _PROC_ROOT = "/proc"
@@ -1399,8 +1399,8 @@ def check_ring_transport_park() -> CheckResult:
     four shapes it cannot carry and the tracked issue each waits on. A parked box
     emits NOTHING and no automatic path recovers it, hence ``fail``. The
     classification, issue numbers and remedy text all come from
-    ``jasper.control.transport_park``, the reader
-    ``/state.resilience.transport_park`` and the household audio card also use.
+    ``jasper.control.transport_park``, the reader ``/system/snapshot``'s
+    ``transport_park`` and the household audio card also use.
 
     Three shapes land between ``ok`` and a park — the ADR-0184 coverage seam, a
     converge refusal, and ADR-0189's mirror of the seam. All three are operator

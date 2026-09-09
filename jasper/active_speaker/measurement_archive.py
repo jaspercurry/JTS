@@ -153,6 +153,10 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
         return direct
     if not direct.series:
         return replace(retained, started_at=run.started_at, state=run.state)
+    identities = {(curve.details.get("candidate_id"), curve.details.get("graph_fingerprint"))
+                  for curve in direct.series if curve.details.get("role") == "summed"}
+    if len(identities) > 1:
+        return direct
 
     # The packet owns the stored aggregate. Direct records own individual
     # curves. Packet positions remain only where no direct record replaces them.

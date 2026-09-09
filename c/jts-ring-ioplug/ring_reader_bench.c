@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
     }
 
     jts_ring_geometry_t g = {
-        .rate = 48000,
+        .rate = JTS_RING_RATE_HZ,
         .channels = 2,
         .sample_format = JTS_RING_SAMPLE_FORMAT_S16LE,
         .period_frames = period,
@@ -94,8 +94,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    uint64_t total_periods = (uint64_t)(seconds * 48000.0 / (double)period);
-    uint64_t period_ns = (uint64_t)period * 1000000000ull / 48000ull;
+    uint64_t total_periods = (uint64_t)(seconds * (double)JTS_RING_RATE_HZ / (double)period);
+    uint64_t period_ns = (uint64_t)period * 1000000000ull / (uint64_t)JTS_RING_RATE_HZ;
     uint64_t next_deadline = jts_ring_monotonic_ns();
     // Count fabricated-silence periods exactly as the capture ioplug would: an
     // empty read WHILE the writer is heartbeat-dead is a silence period.

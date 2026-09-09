@@ -190,7 +190,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     # Start with only a foreign key: no coords, so the seed is eligible.
     env_file.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
 
-    # A transit save that writes an explicit coord set (as _handle_geocode
+    # A transit save that writes an explicit coord set (as _post_geocode
     # would after resolving an address).
     london = {
         transit_setup.LAT_ENV: "51.500",

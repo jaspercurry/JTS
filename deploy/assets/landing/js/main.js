@@ -74,20 +74,7 @@ function initVolume() {
     if (safety && typeof safety.volume_allowed === 'boolean') {
       return !safety.volume_allowed;
     }
-    var audio = (data && data.audio) || {};
-    var sound = audio.sound || {};
-    var runtime = sound.runtime || {};
-    var airplay = (data && data.airplay_health) || {};
-    var airplayCurrent = airplay.current || {};
-    var camilla = airplayCurrent.camilla || {};
-    var activePath = String(
-      camilla.config_path ||
-      audio.camilla_active_config_path ||
-      sound.active_config_path ||
-      runtime.active_config_path ||
-      ''
-    );
-    return /(^|\/)active_speaker_staged_startup\.yml$/.test(activePath);
+    return false;
   }
 
   function setSafetyMuted(muted) {

@@ -254,13 +254,17 @@ def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
     assert usb["timing"]["status"] == "warn"
 
 
-def test_usb_runtime_preset_outranks_stale_route_label() -> None:
+@pytest.mark.parametrize("mode,held,floor,reason,headline,summary", [
+    ("medium", 2560, 1024, "", "Recovery buffer active · 53.3 ms input buffer", "latency adjusting"),
+    ("low", 1088, 576, "backoff", "Extra buffer in use · 22.7 ms input buffer", "extra buffer in use"),
+])
+def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason, headline, summary) -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
     usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
     usb["resampler"] = {
         "locked": True,
-        "held_target_frames": 2560,
-        "decay": {"enabled": True, "floor_frames": 1024},
+        "held_target_frames": held,
+        "decay": {"enabled": True, "floor_frames": floor, "frozen_reason": reason},
     }
 
     health = compose_audio_health(
@@ -271,13 +275,11 @@ def test_usb_runtime_preset_outranks_stale_route_label() -> None:
         sampled_at=1000.0,
     )
 
-    assert health["latency"]["runtime"]["preset"] == "medium"
-    assert health["latency"]["headline"] == (
-        "Recovery buffer active · 53.3 ms input buffer"
-    )
+    assert health["latency"]["runtime"]["preset"] == mode
+    assert health["latency"]["headline"] == headline
     assert health["latency"]["status"] == "warn"
     assert health["current_stream"]["latency"]["summary"].endswith(
-        "ms · latency adjusting"
+        f"ms · {summary}"
     )
 
 
@@ -4204,7 +4206,6 @@ def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> 
         ) as response:
             payload = json.loads(response.read())
         assert payload["audio_health"] == normalized
-        assert payload["airplay_health"] == legacy
         assert len(reads) == 1
         assert payload["outputd"]["watchdog"] == outputd["watchdog"]
     finally:

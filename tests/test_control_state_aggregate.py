@@ -165,16 +165,13 @@ async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_p
             "clipped_samples", "active_config_path",
         )}
     monkeypatch.setattr(sa, "_camilla_status", camilla_status)
-    monkeypatch.setattr(sa, "_read_tool_catalog", lambda: {})
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
     try:
         state = await sa._get_state(
             camilla_host="127.0.0.1", camilla_port=1234, voice_socket_path="/unused",
             voice_socket_command=voice_status, mux_socket_command=no_status,
-            local_status_json=no_status, aec_full_status=lambda: {},
-            read_transit_state_func=lambda: {"packs": []},
-            ha_status_snapshot=lambda: {"configured": False, "connected": False},
+            local_status_json=no_status,
             airplay_playing_snapshot=lambda: None,
         )
         assert state["voice"]["wake_event_store"] == status["wake_event_store"]
