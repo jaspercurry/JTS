@@ -13,7 +13,7 @@ Each surface owns its disk ledger. Status processes must open them read-only:
 creating a voice ledger or journal as root can prevent the daemon's writes.
 ``household_usage_reader`` owns the member list. ``usage_writer.VoiceUsageStore`` keeps
 live calls in memory and persists through one bounded worker; ordinary stores
-serve disk readers and the separate tuning writer.
+serve disk readers.
 """
 from __future__ import annotations
 
@@ -36,14 +36,10 @@ DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
 
 def tuning_usage_db_path(usage_db_path: str) -> str:
-    """Sibling ledger owned by correction-web, separate from the voice user."""
+    """The tuning-spend ledger beside the voice ledger; every surface reads it, none writes it."""
     parent = Path(usage_db_path).parent
     return str(parent / "usage-tuning.db")
 
-
-# The tuning ledger for the default install layout. Derived so a rename of
-# DEFAULT_USAGE_DB moves both.
-DEFAULT_TUNING_USAGE_DB = tuning_usage_db_path(DEFAULT_USAGE_DB)
 
 # Reserved outside both disk AUTOINCREMENT IDs and buffered session IDs.
 _UNRECORDED_SESSION = -1
@@ -853,8 +849,8 @@ def household_usage_reader(
 
     ``main_store`` lets the voice daemon pass its OWN open writer instance so
     the reader sees spend it just recorded (its live connection) rather than a
-    stale read-only reopen; the tuning sibling is always a path (correction-web
-    owns that file, this process only reads it). Callers without a live writer
+    stale read-only reopen; the tuning sibling is always a path (this process
+    only reads it). Callers without a live writer
     (the /voice card, doctor) pass both as paths."""
     tuning_db = tuning_usage_db_path(usage_db_path)
     if main_store is not None:

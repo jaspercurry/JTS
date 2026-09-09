@@ -23,12 +23,8 @@ Restart=on-failure
 RestartSec=2
 
 # Runs as the SHARED wizard identity rather than a dedicated user, because
-# three of its privileged surfaces are keyed on `jasper-web` specifically and
-# a fourth is shared state:
-#   * the tuning LLM's OPENAI_API_KEY is read fresh off
-#     /var/lib/jasper-secrets/voice_keys.env, whose group `jasper-secrets` has
-#     exactly two members (jasper-voice, jasper-web) —
-#     jasper.calibration_agent.key_provisioning.
+# two of its privileged surfaces are keyed on `jasper-web` specifically and
+# a third is shared state:
 #   * unit starts (jasper-audio-hardware-reconcile after a graph transition)
 #     go through jasper-control's restart broker, whose client list
 #     (restart_broker.BROKER_CLIENT_USERS) is closed.

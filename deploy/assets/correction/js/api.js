@@ -32,7 +32,7 @@ export var GENERIC_STEP_FAILURE =
 
 // Must equal jasper/correction/envelope.py's ENVELOPE_SCHEMA_VERSION — an
 // envelope at any other schema version is rejected as unsupported.
-export var SUPPORTED_ENVELOPE_SCHEMA = 9;
+export var SUPPORTED_ENVELOPE_SCHEMA = 10;
 
 export function homeownerError(failure, fallback) {
   var err = new Error(
@@ -68,11 +68,6 @@ export var KNOWN_FAILURES = {
   correction_update_failed: {text: "The correction could not be applied. Check the current correction before trying again.", retryable: true},
   correction_restore_failed: {text: "The previous sound could not be confirmed restored. The correction may still be applied.", retryable: true},
   correction_auto_revert_failed: {text: "That measured worse, but the correction could not be removed automatically. It is STILL APPLIED. Use Reset to remove it.", retryable: true},
-  tuning_busy: {text: "The tuning assistant just ran. Wait a moment, then try again.", retryable: true},
-  tuning_spend_limit: {text: "The daily assistant budget is reached. Try again after the daily rollover.", retryable: false},
-  tuning_unavailable: {text: "The tuning assistant is not set up yet.", retryable: false},
-  tuning_request_failed: {text: "The tuning assistant could not continue. Try again.", retryable: true},
-  tuning_proposal_rejected: {text: "That suggestion was not applied because it did not pass the speaker's safety checks.", retryable: true},
   unknown_failure: {text: "The speaker could not continue this step. Try again.", retryable: true},
 };
 

@@ -176,11 +176,11 @@ def _banked_analysis_curve(
 def banked_response_facts(bundle_dir: Path) -> list[dict[str, Any]]:
     """Every banked capture's response facts, WITHOUT re-deconvolving.
 
-    ``correction/replay_artifacts.py`` writes these so *"operators, future FIR
-    tools, and the calibration-agent evidence packet can inspect impulse and
-    response facts without re-running deconvolution for every report"* — and
-    until this function nothing in the tree opened one. The artifacts were
-    written, hashed into the manifest, and never read.
+    ``correction/replay_artifacts.py`` writes these so *"operators and future
+    FIR tools can inspect impulse and response facts without re-running
+    deconvolution for every report"* — and until this function nothing in the
+    tree opened one. The artifacts were written, hashed into the manifest, and
+    never read.
 
     Returns one row per ``analysis/*_response.json``, sorted by stem. Each row
     is identity plus the direct-arrival and deconvolution facts the writer

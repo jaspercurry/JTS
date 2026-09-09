@@ -42,7 +42,6 @@ from jasper.web import (
     correction_capture,
     correction_handlers,
     correction_setup,
-    correction_tuning,
 )
 from jasper.platform.systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
@@ -466,7 +465,6 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
 
     assert seen["verify_only"] is verify_only
     assert seen["kind"].label == expected_label
-
 
 
 def test_capture_stop_callback_is_atomic_with_starting_state():
@@ -1280,106 +1278,6 @@ def test_e2e_apply_reaches_the_dsp_despite_failed_measurement_evidence(monkeypat
         server.server_close()
 
 
-@pytest.mark.parametrize("route", ["/interpret", "/propose"])
-def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route):
-    """The spend-cap refusal maps to HTTP 429 (distinct from RequestConflict's
-    409) with the rollover-worded JSON body the panel renders verbatim. Drives
-    the real do_POST dispatch for both paid routes."""
-    handler_name = (
-        "_handle_interpret" if route == "/interpret" else "_handle_propose"
-    )
-
-    def fake(handler):
-        raise correction_tuning.SpendCapExceeded(
-            "daily spend cap reached — the tuning assistant will be "
-            "available again after the daily rollover"
-        )
-
-    monkeypatch.setattr(correction_handlers, handler_name, fake)
-    server, base = _start_server()
-    try:
-        e = request_with_csrf(
-            base,
-            route,
-            b"{}",
-            content_type="application/json",
-            expect_status=429,
-        )
-        body = json.loads(e.read().decode())
-        assert body == {
-            "failure": {
-                "code": "tuning_spend_limit",
-                "text": (
-                    "The daily assistant budget is reached. Try again after "
-                    "the daily rollover."
-                ),
-                "retryable": False,
-                "recovery_action": None,
-            },
-        }
-        assert "daily spend cap reached" not in str(body)
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-@pytest.mark.parametrize(
-    ("route", "advisor_name"),
-    [("/interpret", "interpret"), ("/propose", "propose")],
-)
-def test_e2e_tuning_provider_error_returns_closed_400(
-    monkeypatch,
-    tmp_path,
-    route,
-    advisor_name,
-):
-    """Real provider diagnostics cross both backend exception boundaries but
-    never escape the closed Room failure catalog."""
-    from jasper.calibration_agent import correction_advisor, model_client
-
-    monkeypatch.setenv("JASPER_USAGE_DB", str(tmp_path / "usage.db"))
-    monkeypatch.setenv(
-        "JASPER_VOICE_PROVIDER_FILE",
-        str(tmp_path / "voice_provider.env"),
-    )
-    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "0")
-    monkeypatch.setattr(
-        "jasper.calibration_agent.key_provisioning.tuning_llm_available",
-        lambda **_: True,
-    )
-    session = object()
-    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: session)
-    correction_tuning._tuning_last_paid_call[0] = 0.0
-
-    def fail_provider(called_session, **_kwargs):
-        assert called_session is session
-        raise model_client.AdvisorModelError("raw provider diagnostic")
-
-    monkeypatch.setattr(correction_advisor, advisor_name, fail_provider)
-    server, base = _start_server()
-    try:
-        error = request_with_csrf(
-            base,
-            route,
-            b"{}",
-            content_type="application/json",
-            expect_status=400,
-        )
-        body = json.loads(error.read().decode())
-        assert body == {
-            "failure": {
-                "code": "tuning_request_failed",
-                "text": "The tuning assistant could not continue. Try again.",
-                "retryable": True,
-                "recovery_action": None,
-            },
-        }
-        assert "raw provider diagnostic" not in str(body)
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 def test_e2e_healthz_returns_plain_ok():
     """systemd's `Type=notify` could replace this later, but for now a
     simple HTTP-200 / "ok" body is what makes `curl jts.local/sound/room/healthz`
@@ -1846,7 +1744,6 @@ def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
         v2host.resolve_setup_calibration(
             {"calibration": {"mode": "stored", "model": "minidsp_umik2"}}, None,
         )
-
 
 
 def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):

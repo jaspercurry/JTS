@@ -262,11 +262,7 @@ _PRESCRIPTION_FIELDS = frozenset({
 _FILTER_FIELDS = frozenset({"biquad_type", "freq", "q", "gain"})
 
 #: Keys no proposal may contain at any depth: a model reaching past "numbers
-#: into a fixed shape" toward config, coefficients, or execution. Adopted from
-#: ``calibration_agent.response._PROHIBITED_KEYS`` and copied rather than
-#: imported, because importing it would pull an OpenAI client into this leaf;
-#: ``tests/test_crossover_v2_blend_prescription.py`` pins the room set as a
-#: subset so the two cannot drift. Public because
+#: into a fixed shape" toward config, coefficients, or execution. Public because
 #: :mod:`.driver_prescription` gates the same class of attempt and a second
 #: hand-written blocklist is how one falls behind the other.
 PROHIBITED_PRESCRIPTION_KEYS = frozenset({

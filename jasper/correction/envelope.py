@@ -61,10 +61,6 @@ logger = logging.getLogger(__name__)
 # `crossover_region_dip_not_boosted` nudge explain that a dip AT the
 # bass-management corner is the crossover, not a room mode (both derived from
 # strategy.design_correction's `crossover_region` design-report annotation).
-# v4 (P6) adds the `tuning_llm` block: whether the "Ask the tuning assistant"
-# affordance shows on the review/apply/result screens (available when an
-# OpenAI key is configured; hidden-with-nudge otherwise). Availability only,
-# no paid call — the endpoints are per-tap and confirm-gated.
 # v5 adds the level-before-sweep actions.
 # v6 makes the ordered `sections` list the sole whole-page visibility
 # authority. The browser maps this fixed vocabulary to DOM nodes; it does not
@@ -75,7 +71,7 @@ logger = logging.getLogger(__name__)
 # v9 completes the server-owned copy boundary with progress labels, the
 # run-defaults summary template, and the automatic-repeat disclosure. v8 was
 # already shipped, so these new required fields use a distinct wire version.
-ENVELOPE_SCHEMA_VERSION = 9
+ENVELOPE_SCHEMA_VERSION = 10
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -110,7 +106,6 @@ SECTION_MEASUREMENT_REVIEW = "measurement-review"
 SECTION_APPLY_STATUS = "apply-status"
 SECTION_VERIFICATION = "verification"
 SECTION_RESULT_PROOF = "result-proof"
-SECTION_TUNING = "tuning"
 SECTION_REPORTS = "reports"
 
 SECTION_VOCABULARY = frozenset({
@@ -126,7 +121,6 @@ SECTION_VOCABULARY = frozenset({
     SECTION_APPLY_STATUS,
     SECTION_VERIFICATION,
     SECTION_RESULT_PROOF,
-    SECTION_TUNING,
     SECTION_REPORTS,
 })
 
@@ -291,7 +285,6 @@ def _sections_for(
     screen: str,
     *,
     reports_available: bool,
-    tuning_offered: bool,
     readiness_blocked: bool,
     analyzing: bool = False,
 ) -> list[str]:
@@ -311,8 +304,6 @@ def _sections_for(
             SECTION_LOCAL_CERTIFICATE_WARNING,
             SECTION_CAPTURE_SETUP,
         ))
-    if tuning_offered:
-        sections.append(SECTION_TUNING)
     if reports_available and screen in REPORT_SECTION_SCREENS:
         sections.append(SECTION_REPORTS)
     return sections
@@ -1238,9 +1229,6 @@ def build_envelope(
             failure = session_failure(getattr(session, "error", None))
         if isinstance(recovery, dict) and recovery.get("required"):
             next_action = {"label": "Retry recovery", "endpoint": "/reset"}
-    tuning_llm = _tuning_llm(screen)
-    if failure is not None or session.state.value == "analyzing":
-        tuning_llm["offered"] = False
     if session.state.value == "analyzing":
         next_action = None
     envelope: dict[str, Any] = {
@@ -1250,7 +1238,6 @@ def build_envelope(
         "sections": _sections_for(
             screen,
             reports_available=reports_available,
-            tuning_offered=bool(tuning_llm.get("offered")),
             readiness_blocked=blocker is not None,
             analyzing=session.state.value == "analyzing",
         ),
@@ -1271,32 +1258,8 @@ def build_envelope(
         "failure": failure,
         "startup_recovery": dict(recovery) if isinstance(recovery, dict) else None,
         "progress": _progress(screen),
-        "tuning_llm": tuning_llm,
     }
     return envelope
-
-
-# Screens where there is a measurement worth explaining, so the "Ask the
-# tuning assistant" affordance may show. Pre-measurement screens never
-# offer it (nothing to interpret yet).
-_TUNING_LLM_SCREENS = frozenset({SCREEN_REVIEW, SCREEN_APPLY, SCREEN_VERIFY, SCREEN_RESULT})
-
-
-def _tuning_llm(screen: str) -> dict[str, Any]:
-    """The P6 tuning-assistant affordance block.
-
-    ``offered`` gates the affordance on a screen with a measurement to
-    explain; ``available`` (+ ``nudge`` when False) is the OpenAI-key
-    availability from :mod:`jasper.calibration_agent.key_provisioning`.
-    The frontend shows the button only when both are true, and shows the
-    nudge when offered-but-unavailable. Availability only — no paid call.
-    """
-    offered = screen in _TUNING_LLM_SCREENS
-    from jasper.calibration_agent.key_provisioning import availability
-
-    block = availability().to_dict()
-    block["offered"] = offered
-    return block
 
 
 _envelope_log_lock = threading.Lock()

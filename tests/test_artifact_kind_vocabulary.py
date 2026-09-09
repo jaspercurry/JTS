@@ -263,38 +263,3 @@ def test_fir_readiness_reports_a_missing_kind_rather_than_raising(
     assert readiness["derived_impulse_response_count"] == 0
     assert readiness["ready_for_runtime_import"] is False
     assert "derived impulse-response artifacts" in readiness["missing"]
-
-
-def test_advisor_manifest_context_survives_an_unknown_kind(tmp_path: Path) -> None:
-    from jasper.calibration_agent import advisor_context
-
-    bundle = _bundle_with_unknown_kind(tmp_path)
-    context = advisor_context._manifest_context(bundle)
-    assert context["available"] is True
-    assert context["artifact_count"] == 2
-    # Unknown, and not audio by sensitivity — counted as an artifact, not as
-    # private audio, and above all not an error.
-    assert context["private_audio_count"] == 0
-
-
-def test_private_audio_allowlist_names_only_real_kinds() -> None:
-    """Every entry must be a kind something writes — the drift that bit here.
-
-    Four of this set's five entries once matched nothing at all, so the clause
-    read as coverage while `sensitivity` did all the work.
-    """
-
-    from jasper.calibration_agent import advisor_context
-
-    written = set(_kind_literals_written_under(REPO_ROOT / "jasper"))
-    dispatched = (REPO_ROOT / "jasper/correction/artifacts.py").read_text(
-        encoding="utf-8"
-    )
-    phantom = {
-        kind
-        for kind in advisor_context._PRIVATE_AUDIO_KINDS
-        if kind not in written and f'"{kind}"' not in dispatched
-    }
-    assert phantom == set(), (
-        f"private-audio allowlist names kinds nothing writes: {sorted(phantom)}"
-    )

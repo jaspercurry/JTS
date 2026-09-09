@@ -187,7 +187,7 @@ def test_render_has_one_root_for_each_envelope_section():
         "placement", "capture-setup",
         "local-certificate-warning", "level-check", "position-capture",
         "measurement-review", "apply-status", "verification",
-        "result-proof", "tuning", "reports",
+        "result-proof", "reports",
     }
     for section_id in section_ids:
         assert html.count(f'data-envelope-section="{section_id}"') == 1
@@ -553,8 +553,6 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/v2/complete",
         # The wired session's per-take retake (#2879) — same shape again.
         "/crossover/v2/retake",
-        # P6 tuning-LLM routes.
-        "/interpret", "/propose", "/propose/apply",
     }
     assert known == set(correction_setup._POST_ROUTES)
     for route in sorted(known):

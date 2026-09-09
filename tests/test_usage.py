@@ -18,8 +18,6 @@ import pytest
 from jasper.usage import (
     AggregateUsageReader,
     BillableActivityMeter,
-    DEFAULT_TUNING_USAGE_DB,
-    DEFAULT_USAGE_DB,
     _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
     Pricing,
@@ -869,8 +867,6 @@ def test_tuning_db_is_sibling_of_usage_db():
     assert tuning_usage_db_path("/var/lib/jasper/usage.db") == (
         "/var/lib/jasper/usage-tuning.db"
     )
-    # The module default is derived, not hardcoded separately.
-    assert DEFAULT_TUNING_USAGE_DB == tuning_usage_db_path(DEFAULT_USAGE_DB)
 
 
 def test_aggregate_sums_across_two_dbs(tmp_path: Path):
@@ -947,40 +943,13 @@ def test_aggregate_unreadable_member_counts_zero_not_raise(tmp_path: Path, caplo
     assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
 
 
-def test_tuning_path_record_prices_above_zero(tmp_path: Path):
-    """THE $0 GUARD at the usage layer: the default tuning model is priced
-    (not the 'unpriced:' sentinel), and recording through record_background_usage
-    with synthesized text-modality details yields cost_usd > 0. 1000 in + 1000
-    out at gpt-5.4 text rates (2.5 / 15.0 per MTok) = $0.0175."""
-    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
-
-    model = resolve_tuning_model()
-    assert not pricing_for_model(model).label.startswith("unpriced:"), (
-        f"tuning model {model!r} has no rate — cost would read $0 and the "
-        "spend cap could not bound it"
-    )
-
-    db = str(tmp_path / "usage-tuning.db")
-    store = UsageStore(db)
-    usage = {
-        "input_tokens": 1000,
-        "output_tokens": 1000,
-        "input_token_details": {"text_tokens": 1000},
-        "output_token_details": {"text_tokens": 1000},
-    }
-    cost = store.record_background_usage(
-        provider="openai", model="gpt-5.4",
-        input_tokens=1000, output_tokens=1000, usage=usage,
-    )
-    assert cost == pytest.approx(0.0175)
-    assert store.spend_last_24h_usd() == pytest.approx(0.0175)
-
-
-def test_tuning_path_without_details_would_be_zero_dollars(tmp_path: Path):
-    """Proves WHY the synthesis is load-bearing: the SAME token counts priced
-    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0. This
-    is the trap the synthesized details avoid."""
-    db = str(tmp_path / "usage-tuning.db")
+def test_background_usage_without_modality_details_would_be_zero_dollars(
+    tmp_path: Path,
+):
+    """Proves WHY the caller-side synthesis is load-bearing (the background
+    recorder in ``jasper.research.scheduler``): the SAME token counts priced
+    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0."""
+    db = str(tmp_path / "usage.db")
     store = UsageStore(db)
     naive = store.record_background_usage(
         provider="openai", model="gpt-5.4",

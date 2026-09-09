@@ -21,9 +21,7 @@ Driver EQ, crossover alignment, and driver protection remain speaker concerns.
 Preference EQ expresses taste in its own layer.
 
 Room has a guided measurement and acceptance loop. That product policy does
-not turn the separate crossover toolbox into a compulsory campaign. The
-existing Room adviser may explain evidence or propose a bounded tweak; it does
-not own the deterministic acceptance verdict.
+not turn the separate crossover toolbox into a compulsory campaign.
 
 ## Product flow
 
@@ -142,8 +140,7 @@ confirmatory capture before automatic revert. An applied graph alone is not
 acoustic verification, and an insignificant change is not a proved improvement.
 
 The result leads with the verdict, helped/hurt spread, confidence limits, current
-correction state, and next action. The optional LLM can interpret the evidence;
-it cannot replace or hide the verdict. The browser can format server-owned text;
+correction state, and next action. The browser can format server-owned text;
 it cannot substitute a different acceptance calculation.
 
 Restoration must report the actual outcome. If rollback failed, do not claim

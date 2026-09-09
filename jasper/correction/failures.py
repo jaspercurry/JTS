@@ -25,11 +25,6 @@ MEASUREMENT_ANALYSIS_FAILED = "measurement_analysis_failed"
 CORRECTION_UPDATE_FAILED = "correction_update_failed"
 CORRECTION_RESTORE_FAILED = "correction_restore_failed"
 CORRECTION_AUTO_REVERT_FAILED = "correction_auto_revert_failed"
-TUNING_BUSY = "tuning_busy"
-TUNING_SPEND_LIMIT = "tuning_spend_limit"
-TUNING_UNAVAILABLE = "tuning_unavailable"
-TUNING_REQUEST_FAILED = "tuning_request_failed"
-TUNING_PROPOSAL_REJECTED = "tuning_proposal_rejected"
 UNKNOWN_FAILURE = "unknown_failure"
 
 _FAILURE_COPY: dict[str, tuple[str, bool]] = {
@@ -89,28 +84,6 @@ _FAILURE_COPY: dict[str, tuple[str, bool]] = {
     CORRECTION_AUTO_REVERT_FAILED: (
         "That measured worse, but the correction could not be removed "
         "automatically. It is STILL APPLIED. Use Reset to remove it.",
-        True,
-    ),
-    TUNING_BUSY: (
-        "The tuning assistant just ran. Wait a moment, then try again.",
-        True,
-    ),
-    TUNING_SPEND_LIMIT: (
-        "The daily assistant budget is reached. Try again after the daily "
-        "rollover.",
-        False,
-    ),
-    TUNING_UNAVAILABLE: (
-        "The tuning assistant is not set up yet.",
-        False,
-    ),
-    TUNING_REQUEST_FAILED: (
-        "The tuning assistant could not continue. Try again.",
-        True,
-    ),
-    TUNING_PROPOSAL_REJECTED: (
-        "That suggestion was not applied because it did not pass the "
-        "speaker's safety checks.",
         True,
     ),
     UNKNOWN_FAILURE: (

@@ -190,8 +190,8 @@ const globalFetch = async (url, init = {}) => {
   let jsonBodyFn = null;
   let ok = true;
   let status = 200;
-  // Prefer the most specific endpoint. `/propose/apply` must not be captured
-  // by an older `/propose` fixture merely because it was registered first.
+  // Prefer the most specific endpoint: a longer registered path wins over a
+  // shorter prefix of it, whatever order they were registered in.
   const routes = Array.from(fetchRoutes.entries()).sort(
     (left, right) => right[0].length - left[0].length,
   );
@@ -291,12 +291,6 @@ const PROBE_INJECT = [
     resetFromBanner,
     computeTargetBand,
     autolevelAutoLockEligible,
-    // P6 tuning-assistant surfaces (IIFE-local).
-    renderTuning,
-    renderTuningProposals,
-    applyCorrectionProposal,
-    onTuningInterpret,
-    onTuningPropose,
     renderBrowserAudioReport,
     renderBrowserAudioLocal,
     renderConstraints,
@@ -325,8 +319,6 @@ const PROBE_INJECT = [
     clearThisTabStartedRun: function () {
       thisTabStartedCurrentRun = false;
     },
-    // The tuning status line text, for the fetch-error-framing tests.
-    getTuningStatusText: function () { return tuningStatus.textContent; },
     // Probe seams for the fetch-once poll-discipline test.
     getEnvelopeFetchCount: function () { return envelopeFetchCount; },
     setWizardActionInFlight: function (value) {
@@ -360,9 +352,6 @@ const PROBE_INJECT = [
 // ---- Build the eval context ----
 const docEl = makeEl("document");
 const sessionStorageValues = new Map();
-const SECTION_NODE_IDS = {
-  tuning: "tuning-panel",
-};
 const fakeDocument = {
   getElementById(id) { return getOrMake(id); },
   querySelector(selector) {
@@ -372,7 +361,7 @@ const fakeDocument = {
       return main;
     }
     const match = /^\[data-envelope-section="([^"]+)"\]$/.exec(selector);
-    if (match) return getOrMake(SECTION_NODE_IDS[match[1]] || match[1]);
+    if (match) return getOrMake(match[1]);
     return null;
   },
   querySelectorAll() { return []; },
@@ -528,7 +517,7 @@ setFetchRoute("/entry-status", () => ({
   },
 }));
 setFetchRoute("/envelope", () => ({
-  schema_version: 9, screen: "idle", state: "idle",
+  schema_version: 10, screen: "idle", state: "idle",
   sections: ["current-correction", "run-defaults"],
   run_defaults: {
     summary: "Measuring 6 positions with the flat target",
@@ -589,11 +578,6 @@ const {
   resetFromBanner,
   computeTargetBand,
   autolevelAutoLockEligible,
-  renderTuning,
-  renderTuningProposals,
-  applyCorrectionProposal,
-  onTuningInterpret,
-  onTuningPropose,
   renderBrowserAudioReport,
   renderBrowserAudioLocal,
   renderConstraints,
@@ -608,7 +592,6 @@ const {
   orientationLabel,
   primeThisTabStartedRun,
   clearThisTabStartedRun,
-  getTuningStatusText,
   getEnvelopeFetchCount,
   setWizardActionInFlight,
   getRunTransportLocked,
@@ -1002,7 +985,7 @@ await (async () => {
 // A complete envelope with sensible defaults; override per test.
 function makeEnvelope(over) {
   const env = Object.assign({
-    schema_version: 9,
+    schema_version: 10,
     screen: "idle",
     state: "idle",
     sections: ["current-correction", "run-defaults"],
@@ -1438,13 +1421,13 @@ await (async () => {
 }
 
 
-// 29. The v9 contract is closed. Unknown versions, screens, sections,
+// 29. The v10 contract is closed. Unknown versions, screens, sections,
 //     duplicates, or actions are rejected before any of them become policy.
 {
   const invalid = [
-    makeEnvelope({ schema_version: 8 }),
-    makeEnvelope({ schema_version: 10 }),
-    makeEnvelope({ schema_version: "9" }),
+    makeEnvelope({ schema_version: 9 }),
+    makeEnvelope({ schema_version: 11 }),
+    makeEnvelope({ schema_version: "10" }),
     makeEnvelope({ progress: null }),
     makeEnvelope({ progress: {...progressAt(1), position: "1"} }),
     makeEnvelope({ progress: {...progressAt(1), position: 1.5} }),
@@ -1587,17 +1570,16 @@ await (async () => {
   invalid.forEach((env, index) => {
     let rejected = false;
     try { validateEnvelope(env); } catch (_e) { rejected = true; }
-    assert(rejected, "malformed/unknown v9 envelope fails closed", { index });
+    assert(rejected, "malformed/unknown v10 envelope fails closed", { index });
   });
 }
 
 // 29aa. Failed measurement evidence on the review screen arrives as a WARN
-//       NUDGE, not as a failure: Apply stays live and tuning stays offered.
-//       The nanny burn-down (docs/measurement-loop-doctrine.md deviation (d))
-//       retired `measurement_evidence_unsafe`, which used to drive the verdict,
-//       withhold Apply, and suppress tuning on a judgement about how good the
-//       evidence was. This is the same doubt at full weight with the decision
-//       left where it belongs.
+//       NUDGE, not as a failure: Apply stays live. The nanny burn-down
+//       (docs/measurement-loop-doctrine.md deviation (d)) retired
+//       `measurement_evidence_unsafe`, which used to drive the verdict and
+//       withhold Apply on a judgement about how good the evidence was. This is
+//       the same doubt at full weight with the decision left where it belongs.
 {
   renderEnvelope(makeEnvelope({
     screen: "review", state: "ready",
@@ -1610,7 +1592,6 @@ await (async () => {
           + "measurement, so this result may not describe your room. You can "
           + "continue, but measuring again is the surer fix." },
     ],
-    tuning_llm: {offered: true, available: true},
   }));
   assert(nudgeRows().length === 1,
     "failed evidence is disclosed as a nudge", { got: nudgeRows().length });
@@ -1618,8 +1599,6 @@ await (async () => {
     "failed evidence keeps warn weight, the strongest nudge tone");
   assert(!wizNext().hidden && wizNext().disabled === false,
     "failed evidence no longer withholds Apply");
-  assert(!getOrMake("tuning-actions").hidden,
-    "failed evidence no longer suppresses tuning actions");
 }
 
 // 29a. Blocked idle renders only the typed Room copy and owner-supplied local
@@ -1843,12 +1822,12 @@ await (async () => {
     return thisCall === 1
       ? makeEnvelope({
           screen: "review", state: "ready",
-          sections: ["measurement-review", "tuning"],
+          sections: ["measurement-review"],
           next_action: { label: "Apply room correction", endpoint: "/apply" },
         })
       : makeEnvelope({
           screen: "apply", state: "applied",
-          sections: ["apply-status", "tuning"],
+          sections: ["apply-status"],
           next_action: { label: "Verify correction", endpoint: "/verify" },
         });
   });
@@ -1925,7 +1904,7 @@ await (async () => {
   }));
   renderEnvelope(makeEnvelope({
     screen: "review", state: "ready",
-    sections: ["measurement-review", "tuning"],
+    sections: ["measurement-review"],
     next_action: {label: "Apply room correction", endpoint: "/apply"},
   }));
 
@@ -2140,7 +2119,7 @@ await (async () => {
   setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "review", state: "ready",
-    sections: ["measurement-review", "tuning"],
+    sections: ["measurement-review"],
     next_action: { label: "Apply room correction", endpoint: "/apply" },
   }));
   await pollState();
@@ -2171,7 +2150,7 @@ await (async () => {
   // Phase 3: the endpoint recovers; the one bounded retry credit restores it.
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "apply", state: "applied",
-    sections: ["apply-status", "tuning"],
+    sections: ["apply-status"],
     next_action: { label: "Verify correction", endpoint: "/verify" },
   }));
   let recovered = false;
@@ -2201,188 +2180,6 @@ await (async () => {
       labels.join("|"),
     "the browser renders the six server labels verbatim");
 }
-
-// 32. P6 tuning content never overrides server-owned section visibility.
-//     When the section is present, unavailable shows a nudge and available
-//     shows the two per-tap actions.
-function tuningPanelEl() { return getOrMake("tuning-panel"); }
-function tuningNudgeEl() { return getOrMake("tuning-nudge"); }
-function tuningActionsEl() { return getOrMake("tuning-actions"); }
-function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
-{
-  renderSections(["current-correction"], {});
-  renderTuning({ offered: true, available: true, provider: "openai" });
-  assert(tuningPanelEl().hidden,
-    "tuning: offered content cannot reveal an omitted section");
-
-  renderSections(["tuning"], {});
-  renderTuning(null);
-  assert(!tuningPanelEl().hidden,
-    "tuning: section membership remains exactly what the server supplied");
-  assert(tuningNudgeEl().hidden &&
-    tuningActionsEl().hidden,
-    "tuning: a missing block clears both internal affordances");
-
-  renderTuning({ offered: false, available: true, provider: "openai" });
-  assert(tuningNudgeEl().hidden &&
-    tuningActionsEl().hidden,
-    "tuning: not offered clears both internal affordances");
-
-  renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /assistant/voice/" });
-  assert(!tuningPanelEl().hidden,
-    "tuning: offered-but-unavailable reveals the panel");
-  assert(!tuningNudgeEl().hidden,
-    "tuning: offered-but-unavailable shows the nudge");
-  assert(tuningActionsEl().hidden,
-    "tuning: offered-but-unavailable hides the action buttons");
-  assert(tuningNudgeEl().textContent.indexOf("/assistant/voice/") >= 0,
-    "tuning: the no-key nudge points at /assistant/voice/");
-
-  renderTuning({ offered: true, available: true, provider: "openai", model: "gpt-5.4" });
-  assert(!tuningActionsEl().hidden,
-    "tuning: available shows the two per-tap actions");
-  assert(tuningNudgeEl().hidden,
-    "tuning: available hides the nudge");
-}
-
-// 33. Room-correction proposals render an Apply button whatever the
-//     simulation predicted — a flagged one discloses its note and still
-//     offers Apply; a target move renders as a suggestion with plain-text
-//     guidance to the flow's Target curve picker (no apply path, and no
-//     dead #target-select anchor — that picker is hidden on the review
-//     screen, so a link would silently scroll nowhere).
-{
-  renderTuningProposals([
-    {
-      kind: "room_correction", applicable: true,
-      correction_peqs: [{ freq_hz: 62, q: 3, gain_db: -7 }],
-      rationale: "deeper cut at the 62 Hz mode",
-      simulation: { issues: [], predicted_rms_delta_db: 2.4 },
-    },
-    {
-      kind: "room_correction", applicable: true,
-      correction_peqs: [{ freq_hz: 62, q: 6, gain_db: 6 }],
-      rationale: "boost the dip",
-      simulation: {
-        issues: [{ code: "boost_would_ring", message: "would ring" }],
-        predicted_rms_delta_db: -1.2,
-      },
-    },
-    {
-      // Honest server payload shape: suggestion-only, never applicable.
-      kind: "preference_question", applicable: false, suggestion_only: true,
-      target_id: "warm", warmth: null, rationale: "you asked for warmer",
-    },
-  ]);
-  const cards = tuningProposalsEl().children;
-  assert(cards.length === 3, "tuning: three proposal cards render", { got: cards.length });
-  // The ring note is DISCLOSED and the card still offers Apply — the
-  // household reads the note and decides.
-  const flagged = cards[1];
-  assert(flagged.children.some(
-      (c) => c.className === "tuning-proposal-detail"
-        && (c.textContent || "").indexOf("would ring") >= 0),
-    "tuning: the ring-flagged proposal discloses its note");
-  assert(flagged.children.some((c) => c.className === "btn btn--primary"),
-    "tuning: the ring-flagged proposal still offers Apply");
-  // The target-move card's guidance is plain text — an honest affordance,
-  // NOT a dead #target-select link (that anchor no-ops on the review
-  // screen, where the picker's container is hidden).
-  const targetCard = cards[2];
-  const question = targetCard.children.find(
-    (c) => c.className === "tuning-question");
-  assert(question, "tuning: the target-move card renders its question line");
-  assert(question.textContent.indexOf("Pick it under Target curve") >= 0,
-    "tuning: the target-move card carries the Target curve instruction as text");
-  const pickerLink = (question.children || []).find(
-    (c) => c && c.href === "#target-select");
-  assert(!pickerLink,
-    "tuning: the target-move card has no dead #target-select link");
-
-  // Empty proposals clears the container.
-  renderTuningProposals([]);
-  assert(tuningProposalsEl().children.length === 0,
-    "tuning: empty proposals clears the cards");
-}
-
-// 34. Paid-call failures render only the typed homeowner sentence. Raw route,
-//     status, and diagnostic strings stay out of the panel; an untyped outage
-//     gets the same bounded generic posture.
-await (async () => {
-  const tuningStatusEl = () => getOrMake("tuning-status");
-
-  const rawDiagnostic = "POST /interpret → 409: provider exploded";
-  const typedMessage = "The tuning assistant just ran. Wait a moment, then try again.";
-  const typedFailure = {
-    code: "tuning_busy",
-    text: typedMessage,
-    retryable: true,
-    recovery_action: null,
-  };
-  setFetchRoute("/interpret", () => ({
-    __status: 409,
-    __body: {error: rawDiagnostic, failure: typedFailure},
-  }));
-  await onTuningInterpret();
-  const status409 = getTuningStatusText();
-  assert(status409 === typedMessage,
-    "tuning: a 409 gate refusal shows only typed homeowner copy",
-    { got: status409 });
-  assert(status409.indexOf(rawDiagnostic) < 0 &&
-      status409.indexOf("409") < 0 && status409.indexOf("/interpret") < 0,
-    "tuning: raw diagnostic/status/route never reaches the panel",
-    { got: status409 });
-
-  setFetchRoute("/propose", () => ({
-    __status: 409,
-    __body: {error: rawDiagnostic, failure: typedFailure},
-  }));
-  await onTuningPropose();
-  assert(getTuningStatusText() === typedMessage,
-    "tuning: /propose 409 refusal also shows typed homeowner copy",
-    { got: getTuningStatusText() });
-
-  setFetchRoute("/interpret", () => { throw new Error("down"); });
-  await onTuningInterpret();
-  const statusDown = getTuningStatusText();
-  assert(statusDown === "The tuning assistant could not continue. Try again.",
-    "tuning: an untyped outage gets bounded generic copy",
-    { got: statusDown });
-
-  // Restore benign defaults.
-  setFetchRoute("/interpret", () => ({}));
-  setFetchRoute("/propose", () => ({}));
-  tuningStatusEl().textContent = "";
-})();
-
-// 35. A 200/not-applied proposal still uses the typed failure block; internal
-//     validation/simulation reasons never become tuning-panel prose.
-await (async () => {
-  const raw = "proposal failed re-validation against strategy caps";
-  const typed =
-    "That suggestion was not applied because it did not pass the speaker's safety checks.";
-  setFetchRoute("/propose/apply", () => ({
-    applied: false,
-    reason: raw,
-    failure: {
-      code: "tuning_proposal_rejected", text: typed, retryable: true,
-      recovery_action: null,
-    },
-  }));
-  setFetchRoute("/status", () => ({state: "ready", autolevel: {status: "idle"}}));
-  setFetchRoute("/envelope", () => makeEnvelope({
-    screen: "review", state: "ready", sections: ["measurement-review"],
-    next_action: {label: "Apply room correction", endpoint: "/apply"},
-  }));
-
-  await applyCorrectionProposal(
-    {correction_peqs: [{freq_hz: 62, q: 3, gain_db: -7}]},
-    makeEl("button"),
-  );
-  assert(getTuningStatusText() === typed &&
-      getTuningStatusText().indexOf(raw) < 0,
-    "200/not-applied proposal renders only typed homeowner copy");
-})();
 
 // 36. A transient status-read failure can recover in the same state; the next
 //     valid envelope replaces its bounded fallback instead of leaving stale

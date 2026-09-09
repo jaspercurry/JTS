@@ -39,9 +39,9 @@ CURRENT_BUNDLE_SCHEMA_VERSION = 5
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)
 RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 
-# On the frequent default `validate_bundle` path — jasper-doctor, the
-# evidence packet (jasper.correction.evidence), and agent intake all run
-# it across every bundle — skip the full SHA-256 re-hash for artifacts
+# On the frequent default `validate_bundle` path — jasper-doctor and the
+# evidence packet (jasper.correction.evidence) both run it across every
+# bundle — skip the full SHA-256 re-hash for artifacts
 # larger than this. Raw capture WAVs are ~2 MB each and a bundle holds
 # several; re-hashing them all on every run is unbounded CPU/I/O for
 # little gain — the artifacts are immutable once written and the cheap

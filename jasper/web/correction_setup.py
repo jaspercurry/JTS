@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 from ..log_event import log_event
-from . import correction_room_flow, correction_tuning
+from . import correction_room_flow
 from ..platform.systemd import no_hold
 
 from ._common import (
@@ -73,7 +73,6 @@ from .correction_capture import (
     MAX_SYNC_WAV_BODY_BYTES,
     REQUIRED_SAMPLE_RATE,
     RequestConflict,
-    TuningSetupUnavailable,
     _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
     _FOLLOWER_DELEGATED_PAGE_PATHS,
     logger,
@@ -1065,92 +1064,6 @@ def _post_session_delete(handler: _Handler) -> None:
         handler._send_client_error(str(e), status=409)
 
 
-def _post_interpret(handler: _Handler) -> None:
-    from jasper.correction import failures
-    try:
-        handler._send_json(correction_handlers._handle_interpret(handler))
-    except BadRequest as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_REQUEST_FAILED,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except correction_tuning.SpendCapExceeded as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_SPEND_LIMIT,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.TOO_MANY_REQUESTS,
-        )
-    except TuningSetupUnavailable as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_UNAVAILABLE),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-    except RequestConflict as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_BUSY),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-
-
-def _post_propose(handler: _Handler) -> None:
-    from jasper.correction import failures
-    try:
-        handler._send_json(correction_handlers._handle_propose(handler))
-    except BadRequest as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_REQUEST_FAILED,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except correction_tuning.SpendCapExceeded as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_SPEND_LIMIT,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.TOO_MANY_REQUESTS,
-        )
-    except TuningSetupUnavailable as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_UNAVAILABLE),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-    except RequestConflict as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_BUSY),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-
-
-def _post_propose_apply(handler: _Handler) -> None:
-    from jasper.correction.runtime_safety import (
-        CorrectionRuntimeSafetyError,
-    )
-    from jasper.sound.graph_carrier import CarrierCannotHostEq
-    try:
-        handler._send_json(correction_handlers._handle_propose_apply(handler))
-    except BadRequest as e:
-        handler._send_client_error(str(e))
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
-    except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
-        handler._send_client_error(
-            str(e),
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
-        )
-
-
 # do_GET / do_POST dispatch through these exact-path tables
 # (path -> callable taking the handler). Mirrors the table in
 # jasper/web/wake_corpus_setup.py.
@@ -1200,9 +1113,6 @@ _POST_ROUTES = {
     "/apply": _post_apply,
     "/reset": _post_reset,
     "/session/delete": _post_session_delete,
-    "/interpret": _post_interpret,
-    "/propose": _post_propose,
-    "/propose/apply": _post_propose_apply,
     "/crossover/capture-cancel": _dispatch_crossover,
     "/crossover/reset": _dispatch_crossover,
     "/crossover/recover-volume": _dispatch_crossover,

@@ -81,10 +81,6 @@ class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
 
 
-class TuningSetupUnavailable(RequestConflict):
-    """The optional tuning assistant has no configured model credential."""
-
-
 # Module-level session + bridge to the async loop. Lazy-init on
 # first use so importing this module is cheap (lets `python -m
 # jasper.web.correction_setup --help` work without spinning up a

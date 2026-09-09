@@ -130,9 +130,6 @@ Two operational notes:
     for a prose change: `docs-links.yml` already fails on a broken internal
     link, but it is not a required check (branch protection requires only
     `ci`), so before this lane a docs PR could merge over a red link check.
-    Excluded from this lane: `docs/calibration-agent/**`, which install
-    rsyncs to `/opt/jasper` and the product reads at runtime — that is
-    product data, not prose, so it takes the full farm.
 
   A rename or delete still takes a narrow lane when its old path (and new
   path, for a rename) already qualify for that lane on their own; any other

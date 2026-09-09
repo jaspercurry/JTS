@@ -115,11 +115,9 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_tuning_handoff_payload,
 )
 
-# The crossover writer and the audition entry point are reached through this
-# module by jasper/web/correction_crossover_v2.py and
-# jasper/calibration_agent/sound_actions.py.
+# The crossover writer is reached through this module by
+# jasper/web/correction_crossover_v2.py.
 from .sound_active_speaker import apply_measured_crossover_geometry  # noqa: F401
-from .sound_profile_apply import audition_profile  # noqa: F401
 from .sound_profile_apply import (
     _EQ_CARRIER_NOT_PROBED,
     _apply_profile,

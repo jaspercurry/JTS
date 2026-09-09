@@ -719,7 +719,7 @@ verification = [
 
 [[subsystem]]
 id = "room-correction-and-calibration"
-title = "Room correction and calibration agent"
+title = "Room correction"
 safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
@@ -728,7 +728,6 @@ code = [
   "jasper/correction/**",
   "jasper/measurement_window.py",
   "jasper/audio_measurement/**",
-  "jasper/calibration_agent/**",
   "jasper/web/correction_*.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_active_speaker.py",
@@ -762,7 +761,7 @@ docs = [
   "docs/research/2026-07-29-attribution/README.md",
 ]
 requires_docs_when = [
-  "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
+  "Measurement workflow, sweep playback, generated correction config, confidence scoring, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, local browser capture, measured proof, acceptance authority, or target/headroom/latency promise changes.",
   "The v2 crossover commission session (open/measure/close lifecycle, four seam fields, excitation program, or temporary trial scope) or its session-volume, apply, verify, or republish contract changes — scan tuning-operator-runbook.md.",
@@ -770,7 +769,6 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
   "pytest tests/test_web_correction_setup.py",
-  "pytest tests/test_web_correction_tuning.py",
   "bash scripts/check-js-syntax.sh",
   "pytest tests/test_web_sync_flow.py",
   "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py tests/test_active_speaker_commissioning_evidence.py",

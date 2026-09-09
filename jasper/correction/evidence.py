@@ -4,10 +4,10 @@
 
 """Deterministic evidence packets for correction-bundle review.
 
-The calibration agent should reason from facts JTS collected, not from
-ad hoc parsing of raw bundle files. This module builds a compact,
-read-only packet that can be rendered in the CLI today and handed to a
-future LLM without granting it apply/reset privileges.
+A reviewer should reason from facts JTS collected, not from ad hoc
+parsing of raw bundle files. This module builds a compact, read-only
+packet that can be rendered in the CLI without granting its reader
+apply/reset privileges.
 """
 from __future__ import annotations
 

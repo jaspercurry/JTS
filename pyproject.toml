@@ -191,7 +191,6 @@ jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
 jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-correction-bundle = "jasper.cli.correction_bundle:main"
-jasper-calibration-agent = "jasper.calibration_agent.cli:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
 jasper-audition = "jasper.cli.audition:main"
 jasper-crossover-prescriber = "jasper.cli.crossover_prescriber:main"
@@ -259,8 +258,6 @@ include = ["jasper", "jasper.*"]
 "jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
 "jasper.active_speaker" = ["presets/*.json"]
-# Searchable tuning references for calibration_agent.tools.
-"jasper.calibration_agent" = ["corpus/*.md", "corpus/**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -475,7 +472,6 @@ exhaustive_ignores = [
   "audio_validation",
   "bass_extension",
   "bluetooth",
-  "calibration_agent",
   "camilla",
   "camilla_config_contract",
   "camilla_latency",

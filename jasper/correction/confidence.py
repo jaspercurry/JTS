@@ -481,8 +481,8 @@ def build_confidence_report(
 ) -> dict[str, Any]:
     """Build a JSON-serializable confidence report.
 
-    The output is suitable for `info.json`, `result.json`, the web
-    status payload, and read-only calibration-agent tools.
+    The output is suitable for `info.json`, `result.json`, and the web
+    status payload.
     """
     findings: list[ConfidenceFinding] = []
     score = 100

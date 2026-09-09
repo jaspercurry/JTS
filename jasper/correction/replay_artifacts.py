@@ -5,9 +5,9 @@
 """Replay-grade derived artifacts for correction bundles.
 
 Raw capture WAVs remain the canonical evidence. These helpers write
-small, recomputable artifacts next to them so operators, future FIR
-tools, and the calibration-agent evidence packet can inspect impulse
-and response facts without re-running deconvolution for every report.
+small, recomputable artifacts next to them so operators and future FIR
+tools can inspect impulse and response facts without re-running
+deconvolution for every report.
 """
 from __future__ import annotations
 

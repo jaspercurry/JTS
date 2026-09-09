@@ -2414,14 +2414,6 @@ def test_the_gate_cannot_accept_what_the_shipped_reader_refuses(packet):
     assert excinfo.value.reason == "boost_route_unavailable"
 
 
-def test_the_prohibited_set_stays_a_superset_of_the_room_advisors(packet):
-    """Copied rather than imported, so drift is pinned rather than prevented."""
-    from jasper.calibration_agent import response as room_response
-
-    ours = set(prescription_response_format()["prohibited_keys"])
-    assert room_response._PROHIBITED_KEYS <= ours
-
-
 # --------------------------------------------------------------------------- #
 # the response format and the round trip
 # --------------------------------------------------------------------------- #
