@@ -39,6 +39,7 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
     ROOM_FLOOR_HZ,
+    ROOM_MEDIAN_WINDOW,
     room_ceiling_hz,
 )
 
@@ -171,7 +172,7 @@ def _window(takes: Sequence[SeatTake]) -> str:
     """What the takes say about their own window, never assumed."""
     applied = {take.gating_applied for take in takes}
     if applied == {False}:
-        return "ungated"
+        return ROOM_MEDIAN_WINDOW
     return "gated" if applied == {True} else "mixed"
 
 

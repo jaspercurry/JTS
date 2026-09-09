@@ -2950,8 +2950,13 @@ def build_baseline_profile_candidate(
         "blend_correction": blend_correction,
         # The room layer this candidate applies. Top level only, NOT inside
         # recomposition_snapshot: baseline_candidate_fingerprint hashes that
-        # snapshot, and the recompose seam re-reads the room PEQs out of the
-        # applied config text, which stays their durable copy.
+        # snapshot. The applied config text is the room PEQs' durable copy, and
+        # only a seam that re-reads it carries them forward --
+        # jasper.sound.graph_carrier's preference-EQ and bass-extension
+        # recomposes, and audition.build_reduced_yaml off the anchor. A
+        # recompose that passes no room_peqs (jasper-active-speaker
+        # baseline-reemit, the setup_status readiness compare) re-emits without
+        # the room layer.
         "room_correction": room_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,

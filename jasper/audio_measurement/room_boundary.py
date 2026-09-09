@@ -128,6 +128,12 @@ CEILING_SOURCE_APPLIED = "applied_candidate"
 CEILING_SOURCE_FALLBACK = "fallback"
 CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK})
 
+# The window a room median must be read in: the seat cube is the room's own
+# measurement and is analyzed ungated (ADR-0260), so a gated or mixed median
+# measures the speaker, not the room, and is not evidence a room layer may be
+# prescribed against.
+ROOM_MEDIAN_WINDOW = "ungated"
+
 
 def room_ceiling_hz(trusted_floor_hz: float | None) -> float:
     """Where the room layer stops (ADR-0256 rule 1): the applied tune's

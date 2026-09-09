@@ -139,6 +139,14 @@ def compile_tuning_graph(
                     "measurement_candidate_tune_mismatch", candidate.fingerprint,
                 )
         else:
+            # A candidate carrying a room layer has no plain-candidate graph:
+            # this branch emits the speaker layer only, so the capture would be
+            # attributed to a graph missing part of the named candidate. The
+            # room set is measured under the room_candidate scope, or not at all.
+            if candidate_room_peqs(candidate):
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_room_scope", candidate.fingerprint,
+                )
             # The shared reducer skips malformed records. Refuse before reduction
             # so the graph cannot silently omit part of the named candidate.
             if set(candidate.linearization) - set(required_driver_roles(profile.preset.way_count)) or any(

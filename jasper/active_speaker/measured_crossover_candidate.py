@@ -181,7 +181,7 @@ def _region_for_role(preset: ActiveSpeakerPreset, role: str) -> CrossoverRegion:
 
 def _validated_room_correction(
     raw: Mapping[str, Any], *, layout_sides: tuple[str, ...]
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
     """The room PEQ set ``raw`` claims, refused whole if it breaks a room limit.
 
     Empty is the ordinary case. The room prescription door composes the set and
@@ -323,7 +323,7 @@ def _validated_room_correction(
         level_cost_db, boost_db_total, abs_tol=1e-9
     ):
         _refuse(_ROOM_INVALID, "level_cost_db must equal boost_db_total")
-    return dict(raw)
+    return raw
 
 
 @dataclass(frozen=True)
