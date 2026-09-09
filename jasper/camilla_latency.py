@@ -22,6 +22,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.env_load import bounded_env_int
 from jasper.fanin_coupling import RING_CAMILLA_GEOMETRY, RING_PCM_DEVICES
+from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +67,9 @@ def resolve_camilla_latency_for_devices(
     if governing_device in RING_PCM_DEVICES:
         for key in _OPERATOR_KNOBS:
             if os.environ.get(key, "").strip():
-                logger.warning(
-                    "event=camilla_latency.operator_knob_ignored key=%s device=%s "
-                    "detail=a_ring_end_takes_the_ring_geometry",
-                    key, governing_device,
+                log_event(
+                    logger, "camilla_latency.operator_knob_ignored",
+                    level=logging.WARNING, key=key, device=governing_device,
                 )
         return (
             RING_CAMILLA_GEOMETRY["chunksize"] if chunksize is None else chunksize,
