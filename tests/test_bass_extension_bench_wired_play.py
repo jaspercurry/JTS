@@ -310,6 +310,9 @@ class CaptureRig:
         self.played: list[Any] = []
         self.silence_scale = 1.0
         self.polls_at_play_start: int | None = None
+        #: Runs after each recorded wait — how a test stages something landing
+        #: between the seam's own steps.
+        self.on_sleep: Any = None
 
     def recorder_factory(self, rate: int, budget_s: float) -> WiredRecorder:
         self.script = []
@@ -331,6 +334,8 @@ class CaptureRig:
         if frames > 0:
             self.script.append((frames, [(0, 0)] * frames))
         await asyncio.sleep(0)
+        if self.on_sleep is not None:
+            self.on_sleep()
 
     async def aplay(self, artifact: Any, timeout_s: float) -> Any:
         self.polls_at_play_start = self._controller.peak_reads
@@ -982,16 +987,14 @@ async def test_play_proves_the_fader_where_the_audio_is_emitted(
     against has to hold where the audio is emitted."""
 
     pieces = _seam(tmp_path)
-    original_sleep = pieces.rig.sleep
 
-    async def _raise_the_house(seconds: float) -> None:
-        # The pre-guard wait is the window the engine's own proof covers and
-        # a raise-before-admission would not.
-        await original_sleep(seconds)
+    # The pre-guard wait, the re-admission over the PCM and the sha verify all
+    # sit between `raise_to_level` and the first sample; a proof taken before
+    # the play would not cover them.
+    def _the_house_turns_it_up() -> None:
         pieces.volume.fader.level_db = LEVEL_DB + 12.0
 
-    pieces.rig.sleep = _raise_the_house
-    pieces.seam._sleep = _raise_the_house
+    pieces.rig.on_sleep = _the_house_turns_it_up
 
     with pytest.raises(BenchRefused) as raised:
         await _play(pieces)
