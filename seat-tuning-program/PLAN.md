@@ -311,6 +311,11 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 01:50Z: Lane A opened row 1.1 (PR #4557, moves only, 26 files
+  +170/−180, CI clean); Opus review running. Lane D pushed
+  `claude/seat-w3-3-1-bench-binding` (2 commits, +2960/−117, no PR yet) beside
+  its `3-2-bass-fit` branch. #4546 (2.2) carries main's reconcile-test fix
+  (#4512) after a red run that was main's, not the PR's; CI re-running.
 - 2026-09-09 01:05Z: Row 2.1 LANDED: PR #4544 squash-merged at `b083c06c8` on
   green CI after the fix commit. #4546 (row 2.2) retargets to main; its
   merge-in and fixes dispatched.
