@@ -64,7 +64,11 @@ from jasper.active_speaker.graph_safety import (
     bass_extension_block_valid,
     view_from_emitted_text,
 )
-from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError,
+    ActiveSpeakerPreset,
+    CrossoverRegion,
+)
 from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
 from jasper.bass_extension.candidate_field import (
@@ -684,6 +688,14 @@ def test_driver_domain_seam_emits_layer_a_only_follower_graph(
         )
 
 
+def _applied_with_bass_family(monkeypatch, field):
+    """The applied box a bonded follower/leader compiles its Layer A from."""
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *_a, **_k: {"recomposition_snapshot": {"bass_extension": field}},
+    )
+
+
 @pytest.mark.parametrize("with_family", [True, False])
 def test_driver_domain_build_carries_the_applied_boxs_bass_family(
     monkeypatch,
@@ -705,9 +717,7 @@ def test_driver_domain_build_carries_the_applied_boxs_bass_family(
     )
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda *_a, **_k: (
-            {"recomposition_snapshot": {"bass_extension": field}} if field else None
-        ),
+        lambda *_a, **_k: {"recomposition_snapshot": {"bass_extension": field}},
     )
 
     payload = build_baseline_profile_candidate(
@@ -2693,6 +2703,50 @@ def test_recompose_applied_baseline_yaml_matches_the_durable_candidate_it_record
 
     assert issues == []
     assert recomposed == durable_yaml
+
+
+def test_recompose_takes_the_snapshots_bass_family_and_refuses_a_non_field(
+    tmp_path: Path,
+) -> None:
+    """The recompose has ONE bass input. Its default is the applied snapshot's
+    own family; an explicit ``None`` emits the un-extended plant, which is what
+    the measurement graph and the audition A/B ask for; anything else is a
+    caller bug, and a quiet no-block would ship a graph missing the bass owner's
+    subsonic high-pass."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=build_crossover_preview(draft),
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    field = bass_extension_field(owner={"role": "woofer", "channels": [0]})
+    applied["recomposition_snapshot"]["bass_extension"] = field
+
+    default_yaml, default_issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=applied
+    )
+    plain_yaml, plain_issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=applied, bass_extension=None
+    )
+
+    assert default_issues == [] and plain_issues == []
+    assert default_yaml is not None and plain_yaml is not None
+    assert bass_extension_block_valid(
+        view_from_emitted_text(default_yaml), graph_summary(field)
+    ).valid is True
+    assert "bass_ext_" not in plain_yaml
+
+    with pytest.raises(ActiveSpeakerConfigError, match="bass candidate field"):
+        recompose_applied_baseline_yaml(
+            topology, applied_profile=applied, bass_extension=object()
+        )
 
 
 def _applied_mono_baseline(tmp_path: Path):
