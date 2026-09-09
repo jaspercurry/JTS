@@ -196,7 +196,7 @@ async def stream_to_wav(
 async def run_capture(args: argparse.Namespace) -> int:
     from contextlib import AsyncExitStack
 
-    from jasper.audio_io import UdpMicCapture
+    from jasper.mic_capture import UdpMicCapture
 
     leg_dirs = all_noise_dirs(args.condition)
     output_root: Path = args.output / "noise"

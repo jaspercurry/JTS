@@ -53,6 +53,7 @@ from jasper.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )
+from jasper.camilla_config_contract import DEFAULT_TARGET_LEVEL
 from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
@@ -71,52 +72,24 @@ def test_plan_uses_dac_profile_floor_as_intended_source():
         profile_id=APPLE_USB_C_DONGLE_ID,
         route_mode="solo",
         outputd_env={
-            "JASPER_CAMILLA_CHUNKSIZE": "256",
-            "JASPER_CAMILLA_TARGET_LEVEL": "1536",
             "JASPER_OUTPUTD_PERIOD_FRAMES": "128",
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": "256",
         },
     )
 
-    assert plan.setting("JASPER_CAMILLA_CHUNKSIZE").value == 256
-    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
     assert plan.setting("JASPER_OUTPUTD_PERIOD_FRAMES").value == 128
     assert plan.setting("JASPER_OUTPUTD_DAC_BUFFER_FRAMES").value == 256
-    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").source_kind == "device_profile"
+    assert plan.setting(OUTPUTD_PERIOD_KEY).source_kind == "device_profile"
     assert plan.warnings == ()
-
-
-def test_shm_ring_plan_keeps_the_dac_floor_as_the_camilla_policy():
-    """The coupling does not rewrite the POLICY settings.
-
-    jts.local runs the Apple floor (256/1536) across the ring healthily, so a
-    plan that answered the certified ring pair here would describe a geometry no
-    ordinary graph on the box emits.
-    """
-    plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        route_mode="solo",
-        outputd_env={
-            "JASPER_CAMILLA_CHUNKSIZE": "256",
-            "JASPER_CAMILLA_TARGET_LEVEL": "1536",
-        },
-    )
-
-    chunksize = plan.setting("JASPER_CAMILLA_CHUNKSIZE")
-    target = plan.setting("JASPER_CAMILLA_TARGET_LEVEL")
-    assert (chunksize.value, target.value) == (256, 1536)
-    assert chunksize.source_kind == "device_profile"
-    assert target.source_kind == "device_profile"
-    assert chunksize.warnings == ()
-    assert target.warnings == ()
 
 
 def test_plan_reports_the_emitted_geometry_the_config_declares(tmp_path):
     """POLICY and EMITTED are two facts, and the plan reports both.
 
-    The settings answer what an emitter's fallback would read; camilla_emitted
-    is a read of the config the statefile names. They differ whenever a graph
-    passes its geometry explicitly or the ring's capacity clamps a floor.
+    The settings report the operator/default value for the two Camilla keys;
+    camilla_emitted is a read of the config the statefile names. They differ
+    whenever the emitter takes the ring geometry on a ring end rather than
+    those settings.
     """
     config = tmp_path / "sound_current.yml"
     config.write_text(
@@ -252,24 +225,21 @@ def test_invalid_lab_override_is_ignored_with_warning():
         route_mode="solo",
     )
 
-    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
+    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == DEFAULT_TARGET_LEVEL
     assert any("audio_runtime_overrides" in warning and "invalid" in warning for warning in plan.warnings)
 
 
 def test_stale_generated_floor_warns_against_device_profile():
     plan = build_audio_runtime_plan(
-        outputd_env={
-            "JASPER_CAMILLA_TARGET_LEVEL": "1024",
-        },
+        outputd_env={OUTPUTD_PERIOD_KEY: "1024"},
         profile_id=APPLE_USB_C_DONGLE_ID,
         route_mode="solo",
     )
 
-    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
-    assert any(
-        "profile floor is 1536" in warning or "profile floor for" in warning
-        for warning in plan.warnings
-    )
+    setting = plan.setting(OUTPUTD_PERIOD_KEY)
+    assert setting.value == 128
+    assert setting.source_kind == "device_profile"
+    assert setting.warnings
 
 
 def test_outputd_latency_floor_actions_set_profile_floor_when_no_operator_env():
@@ -279,9 +249,11 @@ def test_outputd_latency_floor_actions_set_profile_floor_when_no_operator_env():
         outputd_env={},
     )
 
+    # The two Camilla keys are dropped whatever the DAC: a graph with a ring
+    # end takes RING_CAMILLA_GEOMETRY, so no profile declares them any more.
     assert [(a.action, a.key, a.value) for a in actions] == [
-        ("set", "JASPER_CAMILLA_CHUNKSIZE", "256"),
-        ("set", "JASPER_CAMILLA_TARGET_LEVEL", "1536"),
+        ("unset", "JASPER_CAMILLA_CHUNKSIZE", ""),
+        ("unset", "JASPER_CAMILLA_TARGET_LEVEL", ""),
         ("set", "JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
         ("set", "JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
     ]
@@ -564,13 +536,13 @@ def test_audio_runtime_plan_import_does_not_load_runtime_contract():
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
     actions = outputd_latency_floor_actions(
         profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={"JASPER_CAMILLA_CHUNKSIZE": "512"},
-        outputd_env={"JASPER_CAMILLA_CHUNKSIZE": "256"},
+        base_env={OUTPUTD_PERIOD_KEY: "512"},
+        outputd_env={OUTPUTD_PERIOD_KEY: "128"},
     )
 
     by_key = {action.key: action for action in actions}
-    assert by_key["JASPER_CAMILLA_CHUNKSIZE"].action == "unset"
-    assert by_key["JASPER_CAMILLA_TARGET_LEVEL"].action == "set"
+    assert by_key[OUTPUTD_PERIOD_KEY].action == "unset"
+    assert by_key[OUTPUTD_DAC_BUFFER_KEY].action == "set"
 
 
 def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
@@ -595,8 +567,7 @@ def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
 
 def test_outputd_latency_floor_actions_set_the_dac8x_soak_floor():
     # The R7a hardware-validated floor reaches outputd.env through the same
-    # writer-side policy the Apple dongle uses: Camilla 256/1536 and outputd
-    # period 128 / dac_buffer 256.
+    # writer-side policy the Apple dongle uses: period 128 / dac_buffer 256.
     actions = outputd_latency_floor_actions(
         profile_id=HIFIBERRY_DAC8X_ID,
         base_env={},
@@ -604,9 +575,7 @@ def test_outputd_latency_floor_actions_set_the_dac8x_soak_floor():
     )
 
     by_key = {action.key: action for action in actions}
-    assert by_key["JASPER_CAMILLA_CHUNKSIZE"].action == "set"
-    assert by_key["JASPER_CAMILLA_CHUNKSIZE"].value == "256"
-    assert by_key["JASPER_CAMILLA_TARGET_LEVEL"].value == "1536"
+    assert by_key[OUTPUTD_PERIOD_KEY].action == "set"
     assert by_key[OUTPUTD_PERIOD_KEY].value == "128"
     assert by_key[OUTPUTD_DAC_BUFFER_KEY].value == "256"
 
@@ -632,7 +601,7 @@ def test_bad_operator_value_is_ignored_and_warned():
         route_mode="solo",
     )
 
-    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
+    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == DEFAULT_TARGET_LEVEL
     assert any("rough-test" in warning and "ignored" in warning for warning in plan.warnings)
 
 

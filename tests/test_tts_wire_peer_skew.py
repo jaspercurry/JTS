@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_io import _OutputdStreamAdapter
+from jasper.tts_playout import _OutputdStreamAdapter
 
 REPO = Path(__file__).resolve().parents[1]
 

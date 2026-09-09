@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from jasper import mux as mux_module
+from jasper.platform import wire
 from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
 
 REPO = Path(__file__).resolve().parents[1]
@@ -484,6 +485,15 @@ def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
     assert capacity.group(1) == fixture.group(1)
 
 
+def test_fanin_refuses_with_the_error_key_its_python_client_raises_on():
+    """fan-in answers a refusal as ``{"error": ...}``; platform/uds turns that
+    into the RuntimeError every mux caller classifies on (pinned in
+    tests/test_platform_uds.py). The verbs themselves, and that fan-in still
+    dispatches on each of them, are pinned in tests/test_platform_wire.py and
+    by the driven harness below."""
+    assert '"error":' in FANIN_STATE_RS.read_text()
+
+
 #: The head of fan-in's one-line control dispatch, and the catch-all arm that
 #: closes it. Extraction is bounded to that block — same idiom as
 #: ``tests/test_dac_profiles.py::_rust_env_match_literals`` — so a verb-shaped
@@ -546,7 +556,15 @@ async def test_fanin_control_command_vocabulary_matches_mux(monkeypatch, tmp_pat
     await m._fanin_lane_mute("usbsink", False)
 
     verbs = {command.split(" ", 1)[0] for command, _ in sent}
-    assert verbs == {"SELECT", "NONE", "MUTE", "UNMUTE"}
+    # The fan-in half of `jasper.platform.wire`, verb-only: that module owns
+    # these spellings now, so the expected set is read from it rather than
+    # restated as literals (their bytes are pinned in tests/test_platform_wire.py).
+    assert verbs == {
+        wire.FANIN_NONE,
+        wire.fanin_select("label").split(" ", 1)[0],
+        wire.fanin_lane_mute("label", muted=True).split(" ", 1)[0],
+        wire.fanin_lane_mute("label", muted=False).split(" ", 1)[0],
+    }
     assert verbs <= _fanin_dispatch_verbs(), (
         f"mux sends {sorted(verbs - _fanin_dispatch_verbs())} that "
         f"{FANIN_STATE_RS.relative_to(REPO)} does not dispatch"

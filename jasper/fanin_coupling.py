@@ -80,15 +80,13 @@ class RingCamillaGeometry(TypedDict):
     enable_rate_adjust: bool
 
 
-# The geometry a graph built END-TO-END on the ring passes EXPLICITLY. Certified
-# together: chunk 128 is one ring slot, queuelimit 1 makes the slot handshake
-# blocking, and rate_adjust is off because that leaves the rate controller
-# nothing to steer.
-#
-# NOT the fallback for an ordinary sound/correction graph. Those carry the box's
-# own floor clamped to the ring's capacity
-# (``camilla_latency.resolve_camilla_latency_for_devices``), so moving them onto
-# this pair is a retune with a listening test.
+# The one geometry of every ring-ended graph: the ACTIVE ring's per-driver graph
+# (``active_emit_devices``) and the flat boot graph
+# (``emit_flat_outputd_cutover_config``) pass it explicitly, and
+# ``camilla_latency.resolve_camilla_latency_for_devices`` resolves it for every
+# other graph. Certified together: chunk 128 is one ring slot, queuelimit 1 makes
+# the slot handshake blocking, and rate_adjust is off because that leaves the
+# rate controller nothing to steer.
 RING_CAMILLA_GEOMETRY: Final[RingCamillaGeometry] = cast(
     RingCamillaGeometry,
     MappingProxyType(
@@ -690,10 +688,10 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
     one answer. Resolved with NO topology: the devices are fixed and the format
     is one per box.
 
-    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is resolved per graph by
-    ``camilla_latency.resolve_camilla_latency_for_devices`` (the box's floor,
-    clamped to :func:`ring_capacity_frames` at a ring end); only a graph built
-    end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY` instead.
+    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is resolved per graph
+    by ``camilla_latency.resolve_camilla_latency_for_devices`` (a ring end
+    takes :data:`RING_CAMILLA_GEOMETRY`); the two graphs built end-to-end on
+    the ring pass it explicitly.
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-invariant and safe anywhere. PLAYBACK must never

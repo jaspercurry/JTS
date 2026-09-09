@@ -36,8 +36,8 @@ from pathlib import Path
 
 import numpy as np
 
-import jasper.audio_io as audio_io_mod
-from jasper.audio_io import TtsPlayout
+import jasper.tts_playout as tts_mod
+from jasper.tts_playout import TtsPlayout
 
 
 class _CaptureStream:
@@ -58,7 +58,7 @@ class _CaptureStream:
 
 
 def _make_playout(monkeypatch) -> tuple[TtsPlayout, _CaptureStream]:
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -76,7 +76,7 @@ async def test_write_under_watermark_does_not_sleep(monkeypatch):
     async def spy_sleep(sec: float) -> None:
         sleeps.append(sec)
 
-    monkeypatch.setattr(audio_io_mod, "_pace_sleep", spy_sleep)
+    monkeypatch.setattr(tts_mod, "_pace_sleep", spy_sleep)
     # 0.1 s of audio with an empty ring — far below the watermark.
     mono = np.zeros(4800, dtype=np.int16)
 
@@ -94,7 +94,7 @@ async def test_write_beyond_watermark_paces_off_the_excess(monkeypatch):
     # under budget. Lower bound is the assertion (sleep(x) >= x); no
     # tight upper bound so a loaded CI runner can't flake it.
     p._ring_end_monotonic = (
-        time.monotonic() + audio_io_mod._OUTPUTD_PACE_AHEAD_SEC + 0.15
+        time.monotonic() + tts_mod._OUTPUTD_PACE_AHEAD_SEC + 0.15
     )
     mono = np.zeros(4800, dtype=np.int16)  # 0.1 s — one IPC chunk
 
@@ -111,7 +111,7 @@ async def test_burst_write_is_paced_to_realtime(monkeypatch):
     at ~realtime instead of overflowing the owner's queue: total wall
     time for 0.7 s of audio written instantly must be >= 0.7 s minus
     the watermark."""
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_PACE_AHEAD_SEC", 0.2)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_PACE_AHEAD_SEC", 0.2)
     p, stream = _make_playout(monkeypatch)
     mono = np.zeros(4800, dtype=np.int16)  # 0.1 s per write
 
@@ -137,11 +137,11 @@ async def test_paced_time_is_accounted_and_taken(monkeypatch):
     async def spy_sleep(sec: float) -> None:
         sleeps.append(sec)
 
-    monkeypatch.setattr(audio_io_mod, "_pace_sleep", spy_sleep)
+    monkeypatch.setattr(tts_mod, "_pace_sleep", spy_sleep)
     # Ring already 0.30 s past the watermark: the single-IPC-chunk write
     # below must sleep that excess and account for it.
     p._ring_end_monotonic = (
-        time.monotonic() + audio_io_mod._OUTPUTD_PACE_AHEAD_SEC + 0.30
+        time.monotonic() + tts_mod._OUTPUTD_PACE_AHEAD_SEC + 0.30
     )
     mono = np.zeros(4800, dtype=np.int16)  # 0.1 s — one IPC chunk
 
@@ -176,14 +176,14 @@ def test_pace_watermark_stays_under_fanin_budget():
     budget_frames = int(m.group(1).replace("_", "")) * int(
         m.group(2).replace("_", "")
     )
-    budget_sec = budget_frames / audio_io_mod._OUTPUTD_SAMPLE_RATE
-    ipc_chunk_sec = audio_io_mod._OUTPUTD_MAX_AUDIO_CHUNK_BYTES / (
-        audio_io_mod._OUTPUTD_SAMPLE_RATE
-        * audio_io_mod._OUTPUTD_AUDIO_FRAME_BYTES
+    budget_sec = budget_frames / tts_mod._OUTPUTD_SAMPLE_RATE
+    ipc_chunk_sec = tts_mod._OUTPUTD_MAX_AUDIO_CHUNK_BYTES / (
+        tts_mod._OUTPUTD_SAMPLE_RATE
+        * tts_mod._OUTPUTD_AUDIO_FRAME_BYTES
     )
     # Worst-case pending at the owner: watermark + the chunk in flight.
     # Keep >= 0.25 s of margin for event-loop jitter.
     assert (
-        audio_io_mod._OUTPUTD_PACE_AHEAD_SEC + ipc_chunk_sec
+        tts_mod._OUTPUTD_PACE_AHEAD_SEC + ipc_chunk_sec
         <= budget_sec - 0.25
     )

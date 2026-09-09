@@ -1,0 +1,90 @@
+{
+  "layouts": {
+    "baseline_full": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
+      {"azimuth_deg": -10, "elevation_deg": 0},
+      {"azimuth_deg": 10, "elevation_deg": 0},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0},
+      {"azimuth_deg": -30, "elevation_deg": 0},
+      {"azimuth_deg": 30, "elevation_deg": 0},
+      {"azimuth_deg": -40, "elevation_deg": 0},
+      {"azimuth_deg": 40, "elevation_deg": 0},
+      {"azimuth_deg": 0, "elevation_deg": -10},
+      {"azimuth_deg": 0, "elevation_deg": 10},
+      {"azimuth_deg": 0, "elevation_deg": -20},
+      {"azimuth_deg": 0, "elevation_deg": 20}
+    ],
+    "baseline_express": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0},
+      {"azimuth_deg": 0, "elevation_deg": -10},
+      {"azimuth_deg": 0, "elevation_deg": 10}
+    ],
+    "tournament_express": [
+      {"azimuth_deg": 0, "elevation_deg": 0}
+    ],
+    "tournament_full": [
+      {"azimuth_deg": 0, "elevation_deg": 0},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0}
+    ],
+    "seat_cube": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, -0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.3]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, -0.3]}
+    ],
+    "seat_cloud": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, 0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, -0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, -0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, -0.3, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.3]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, -0.3]}
+    ],
+    "seat_express": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]}
+    ],
+    "room_quick": [
+      {"azimuth_deg": 0, "elevation_deg": 0},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0}
+    ],
+    "close_spot": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
+    ]
+  },
+  "programs": [
+    {"id": "baseline", "size": "full", "layout": "baseline_full", "purpose": "speaker", "regime": "per_driver"},
+    {"id": "baseline", "size": "express", "layout": "baseline_express", "purpose": "speaker", "regime": "per_driver"},
+    {"id": "tournament", "size": "full", "layout": "tournament_full", "purpose": "speaker", "regime": "per_driver"},
+    {"id": "tournament", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "per_driver"},
+    {"id": "branches", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},
+    {"id": "seat", "size": "cloud", "layout": "seat_cloud", "purpose": "room", "regime": "summed"},
+    {"id": "seat", "size": "cube", "layout": "seat_cube", "purpose": "room", "regime": "summed"},
+    {"id": "seat", "size": "express", "layout": "seat_express", "purpose": "room", "regime": "summed"},
+    {"id": "room", "size": "cloud", "layout": "seat_cloud", "purpose": "room", "regime": "summed"},
+    {"id": "room", "size": "quick", "layout": "room_quick", "purpose": "room", "regime": "summed"},
+    {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"}
+  ],
+  "default_sizes": {
+    "baseline": "express",
+    "tournament": "express",
+    "branches": "express",
+    "seat": "cloud",
+    "room": "cloud",
+    "close": "spot"
+  }
+}

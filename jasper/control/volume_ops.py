@@ -13,11 +13,21 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from ..identity.speaker_name import runtime_name as speaker_runtime_name
+from ..platform import wire
 from ..platform.uds import voice_socket_command
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
     resolved_spotify_redirect_uri,
 )
+from ..volume_persistence import (
+    VolumePersistence,
+    configured_path as volume_state_path,
+)
+
+# Every `# lazy: import cost` below defers for one reason: jasper-control is
+# resident, so the coordinator/actuator graph (~16 modules, ~1.5 MB) must stay
+# off the resident set of a box that never reaches those endpoints.
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +57,7 @@ def read_volume_state() -> "VolumeState":
     stays persistence-only: no Camilla socket, renderer probe, Spotify account
     registry, or OAuth client construction.
     """
-    from ..volume_coordinator import VolumeState
-    from ..volume_persistence import VolumePersistence
-    from ..volume_persistence import configured_path as volume_state_path
+    from ..volume_coordinator import VolumeState  # lazy: import cost
 
     persistence = VolumePersistence(volume_state_path())
     return VolumeState.from_record(persistence.load())
@@ -77,8 +85,10 @@ def _build_spotify_router_or_none():
     if not client_id:
         return None
     try:
+        # lazy: import cost — see module header
         from ..accounts import legacy_cache_path, registry_path
         from ..spotify_router import build_router, load_registry
+
         accounts_path = registry_path()
         cache_path = legacy_cache_path()
         redirect_uri = resolved_spotify_redirect_uri()
@@ -135,27 +145,21 @@ async def _with_coordinator(
     camilla_port: int,
     duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
-    """Build a VolumeCoordinator for one operation, run `op(coord)`,
-    dispose. Mirrors `_dispatch_transport`'s per-request pattern — each
-    HTTP request creates and tears down its own async resources, so we
-    don't have to manage a long-lived asyncio loop in this stdlib HTTP
-    server.
+    """Build a VolumeCoordinator for one operation, run `op(coord)`, dispose.
 
-    `op` is an async callable taking the live coordinator and
-    returning the per-request result (dict or scalar).
+    Per-request like `_dispatch_transport`, so this stdlib HTTP server never
+    holds a long-lived asyncio loop. `op` is an async callable taking the live
+    coordinator and returning the request's result.
 
-    `duck_active_probe` is forwarded into the coordinator. When set
-    (callers that write camilla via the accessory/web path), the
-    coordinator defers its camilla write iff the probe returns True.
-    See `_make_duck_active_probe` for the wire details."""
+    `duck_active_probe` is forwarded into the coordinator: when set, the
+    coordinator defers its camilla write iff the probe returns True. See
+    `_make_duck_active_probe` for the wire details."""
+    # lazy: import cost — see module header
     from .. import librespot_state
-    from ..camilla import CamillaController
     from ..assistant_volume import volume_context_publisher_for_runtime
+    from ..camilla import CamillaController
     from ..renderer import RendererClient
-    from ..identity.speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
-    from ..volume_persistence import VolumePersistence
-    from ..volume_persistence import configured_path as volume_state_path
 
     camilla = CamillaController(host=camilla_host, port=camilla_port)
     persistence = VolumePersistence(volume_state_path())
@@ -172,7 +176,7 @@ async def _with_coordinator(
         persistence=persistence,
         backend=backend,
         spotify_router=spotify_router,
-        spotify_device_name=_speaker_runtime_name(),
+        spotify_device_name=speaker_runtime_name(),
         duck_active_probe=duck_active_probe,
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
@@ -213,7 +217,7 @@ def _make_duck_active_probe(
     async def probe() -> Optional[bool]:
         try:
             response = await voice_socket_command(
-                voice_socket_path, "STATUS", timeout=1.0,
+                voice_socket_path, wire.STATUS, timeout=1.0,
             )
         except (
             FileNotFoundError,
@@ -243,17 +247,11 @@ async def _dispatch_transport(
     *,
     spotify_router_factory: Callable[[], Any] = _build_spotify_router_or_none,
 ) -> dict:
-    """Build renderer + Spotify-router clients in the current event
-    loop, dispatch a transport action, then close. We rebuild per
-    request because httpx's AsyncClient is loop-bound: a persistent
-    instance would be tied to the first request's loop and error on
-    every subsequent one. The cost is small (~50 ms) and remote
-    presses are rare.
+    """Dispatch one transport action against clients built in this loop.
 
-    `action` must be one of "toggle", "next", "previous" — the
-    dispatcher's documented vocabulary."""
-    # Import inside the function so jasper-control doesn't import the
-    # full voice-daemon dependency tree at startup.
+    Rebuilt per request because httpx's AsyncClient is loop-bound; ~50 ms, and
+    remote presses are rare. `action` is "toggle", "next" or "previous"."""
+    # lazy: import cost — see module header
     from .. import librespot_state
     from ..renderer import RendererClient
     from ..tools.transport import make_transport_dispatcher

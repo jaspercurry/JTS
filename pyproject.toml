@@ -258,7 +258,7 @@ include = ["jasper", "jasper.*"]
 [tool.setuptools.package-data]
 "jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
-"jasper.active_speaker" = ["presets/*.json"]
+"jasper.active_speaker" = ["measurement_plans.json", "presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -357,7 +357,6 @@ module = [
     "jasper.active_speaker.topology_tone",
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
-    "jasper.audio_io",
     # calibration and peq: latent type debt kept on the baseline, not fixed
     # inside a relocation.
     "jasper.audio_measurement.calibration",
@@ -381,6 +380,7 @@ module = [
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
     "jasper.home_assistant",
+    "jasper.mic_capture",
     "jasper.multiroom.leader_config",
     "jasper.multiroom.member_config",
     "jasper.mux",
@@ -398,6 +398,7 @@ module = [
     "jasper.transit",
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
+    "jasper.tts_playout",
     "jasper.usage",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
@@ -460,7 +461,6 @@ exhaustive_ignores = [
   "audio_buffer",
   "audio_hardware",
   "audio_input_view",
-  "audio_io",
   "audio_lab",
   "audio_measurement",
   "audio_profile_state",
@@ -490,6 +490,7 @@ exhaustive_ignores = [
   "local_sources",
   "logging_setup",
   "measurement_window",
+  "mic_capture",
   "mic_presence",
   "model_downloads",
   "multiroom",
@@ -514,6 +515,7 @@ exhaustive_ignores = [
   "tools",
   "transit",
   "transport_coherence",
+  "tts_playout",
   "tts_routing",
   "usb_mic",
   "usbsink",

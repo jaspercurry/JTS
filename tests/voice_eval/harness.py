@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Literal
 
 from jasper import transit
-from jasper.audio_io import MicCapture
+from jasper.mic_capture import MicCapture
 from jasper.camilla import CamillaController
 from jasper.config import Config
 from jasper.google_creds import build_google_clients
