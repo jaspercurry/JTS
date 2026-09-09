@@ -311,6 +311,10 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 01:05Z: #4544 fixes pushed as `4b2f62a72` (gated-median refusal via
+  `room_boundary.ROOM_MEDIAN_WINDOW`; `measurement_candidate_room_scope`;
+  duplicate side refusal; comment narrowed); review comment posted; merges on
+  green.
 - 2026-09-09 00:40Z: Owner spawned lane A (retire) from the RETIRE kickoff
   snippet; brief updated first for `room_limits.py` landing via #4544.
 - 2026-09-09 00:35Z: Lane C opened row 2.1 (PR #4544, the room candidate kind,
@@ -335,8 +339,12 @@ knobs · any browser or relay capture · an operator-less wizard.
     admitted_boosts_hz}, boost_db_total, level_cost_db}`.
     Follow-ups (not blocking, for a later row): `baseline-reemit` and
     `jasper-audition` recompose with `room_peqs=()` and would drop an applied
-    room layer (only `sound/graph_carrier.py` re-reads it) — thread the
-    extraction or make the drop explicit; the multi-side refusal uses the
+    room layer (only `sound/graph_carrier.py`'s recomposes and
+    `active_speaker/audition.build_reduced_yaml` re-read it), and
+    `setup_status.py` ~`:650` recomposes the expected graph without
+    `room_peqs` for its Layer-A fingerprint compare (confirm the fingerprint
+    excludes the room stage or a room-corrected box reports drift) — thread
+    the extraction or make the drop explicit; the multi-side refusal uses the
     generic `room_correction_invalid` (wants its own slug when per-side
     emission lands, ADR-0258); `level_reference_db` is a bin-count median on
     the take's native grid, not octave-weighted (disclosed); the three
