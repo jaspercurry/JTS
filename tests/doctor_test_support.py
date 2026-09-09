@@ -50,6 +50,7 @@ def _make_unit_states_fake(
                 "memory_current_bytes": None,
                 "cpu_usage_nsec": None,
                 "control_group": "",
+                "active_enter_timestamp_monotonic": None,
             }
             base.update(overrides.get(unit, {}))
             out[unit] = base

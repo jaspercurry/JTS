@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import types
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -627,6 +628,31 @@ def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
     assert args.count("-u") == 2
     assert args[args.index("--since") + 1] == "@10.123"
     assert args[args.index("--until") + 1] == "@40.568"
+
+
+def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
+    monkeypatch,
+) -> None:
+    # Fixed rather than the host's real CLOCK_MONOTONIC: a container whose
+    # own uptime is under 600s would otherwise see a negative timestamp.
+    now_us = 10_000.0 * 1e6
+    started_us = int(now_us - 600.0 * 1e6)
+    monkeypatch.setattr(
+        time, "clock_gettime", lambda _clock: now_us / 1e6,
+    )
+    monkeypatch.setattr(
+        airplay_health,
+        "read_unit_states",
+        lambda units, **_kw: {
+            airplay_health.CAMILLA_UNIT_FULL: {
+                "active_enter_timestamp_monotonic": started_us,
+            },
+        },
+    )
+
+    age = airplay_health._seconds_since_camilla_restart()
+
+    assert age == pytest.approx(600.0, abs=1.0)
 
 
 def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:

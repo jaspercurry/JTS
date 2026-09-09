@@ -39,6 +39,7 @@ from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.service_units import read_unit_states, unit_uptime_sec
 from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     read_status_socket_or_none,
@@ -368,32 +369,11 @@ def _seconds_since_camilla_restart() -> float | None:
     A camilla restart resets the rate controller, so "did this storm start
     shortly after a restart/deploy?" is the field that settles whether
     restarts SEED storms (vs only clearing them — the open question from the
-    deploy-correlation investigation). Read-only ``systemctl show`` needs no
-    privilege; bounded + fail-soft.
+    deploy-correlation investigation).
     """
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", CAMILLA_UNIT_FULL,
-             "-p", "ActiveEnterTimestampMonotonic"],
-            capture_output=True, text=True,
-            timeout=SUBPROCESS_TIMEOUT_SEC, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    out = proc.stdout.strip()
-    if "=" not in out:
-        return None
-    try:
-        started_us = int(out.split("=", 1)[1])
-    except ValueError:
-        return None
-    if started_us <= 0:
-        return None
-    try:
-        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
-    except (OSError, AttributeError):
-        return None
-    return round(max(0.0, (now_us - started_us) / 1e6), 1)
+    states = read_unit_states((CAMILLA_UNIT_FULL,))
+    uptime = unit_uptime_sec((states or {}).get(CAMILLA_UNIT_FULL))
+    return round(uptime, 1) if uptime is not None else None
 
 
 def _seconds_since_deploy(now_wall: float) -> float | None:
