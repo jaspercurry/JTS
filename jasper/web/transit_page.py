@@ -25,8 +25,8 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-# Owned by ..location_state / ..google_routes; transit_setup.py declares
-# these too (moved-side render helpers need them without importing back).
+# Owned by ..location_state / ..google_routes; transit_setup.py imports
+# these from here rather than redeclaring them.
 LAT_ENV = location_state.TRANSIT_LAT_ENV
 LON_ENV = location_state.TRANSIT_LON_ENV
 DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
@@ -990,7 +990,7 @@ def _index_html(
     <h2 class="provider-card__title">{html.escape(p.label)}</h2>
     <span class="badge badge--idle">no UI yet</span>
   </div>
-  <p class="provider-card__blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_setup.py</code>.</p>
+  <p class="provider-card__blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_page.py</code>.</p>
 </section>""")
 
     # The provider-pick save-form only renders when an enabled city has

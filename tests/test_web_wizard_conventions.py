@@ -35,6 +35,7 @@ from jasper.web.nav import NAV, hub_paths, render_hub
 
 WEB_SETUP_FILES = (
     *Path("jasper/web").glob("*_setup.py"),
+    *Path("jasper/web").glob("*_page.py"),
     Path("jasper/web/correction_room_flow.py"),
 )
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))

@@ -86,8 +86,17 @@ from ._common import (
     SECRET_ENV_MODE,
 )
 # Rendering helpers resolve names in transit_page's globals: patch
-# transit_page.<name>, not these aliases.
-from .transit_page import _index_html, _wrap_transit_page
+# transit_page.<name>, not these aliases. transit_page also owns the
+# LAT_ENV/etc. constants below; import rather than redeclare.
+from .transit_page import (
+    DISPLAY_NAME_ENV,
+    GOOGLE_ROUTES_API_KEY_ENV,
+    LAT_ENV,
+    LON_ENV,
+    TRAVEL_DEFAULT_MODE_ENV,
+    _index_html,
+    _wrap_transit_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,18 +106,6 @@ logger = logging.getLogger(__name__)
 TRANSIT_FILE = location_state.TRANSIT_FILE
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
-
-# Wizard-owned coordinate state (JASPER_TRANSIT_LAT, JASPER_TRANSIT_LON,
-# JASPER_TRANSIT_DISPLAY_NAME — written by the geocode handlers below).
-# Provider-owned env keys come from `transit.all_env_keys()`. Splitting
-# these is deliberate: coords are wizard-internal scaffolding, not
-# consumed by daemons directly.
-LAT_ENV = location_state.TRANSIT_LAT_ENV
-LON_ENV = location_state.TRANSIT_LON_ENV
-DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
-TRAVEL_DEFAULT_MODE_ENV = google_routes.TRAVEL_DEFAULT_MODE_ENV
-GOOGLE_ROUTES_API_KEY_ENV = google_routes.GOOGLE_ROUTES_API_KEY_ENV
-
 
 # ----------------------------------------------------------------------
 # State helpers — pure functions, IO confined to read/write_env_file.

@@ -271,6 +271,14 @@ while IFS= read -r changed; do
       add_globbed_tests "test_${package}_*.py" >/dev/null || true
       add_globbed_tests "test_${module}_*.py" >/dev/null || true
       add_globbed_tests "test_${parent}_*.py" >/dev/null || true
+      # A *_page.py split off a *_setup.py module (e.g. transit_page.py from
+      # transit_setup.py) shares the setup module's tests; name convention
+      # doesn't, so route to the sibling explicitly.
+      if [[ "${module}" == *_page ]]; then
+        sibling="${module%_page}"
+        add_test_if_present "tests/test_${sibling}_setup.py"
+        add_test_if_present "tests/test_web_${sibling}_setup.py"
+      fi
       ;;
     jasper/*.py)
       module="${changed#jasper/}"
