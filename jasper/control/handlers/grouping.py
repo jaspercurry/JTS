@@ -30,7 +30,7 @@ class GroupingRoutes(ControlHandlerMixin):
         # under stable keys so either read can fail soft to null without
         # becoming indistinguishable from a real disabled/blocked value.
         # Read SERVER-SIDE by another speaker's /rooms /unbond
-        # fan-out (rooms_setup._get_member_grouping) to discover which
+        # fan-out (rooms_peers._get_member_grouping) to discover which
         # siblings share a bond_id; /rooms bond preflight reads readiness
         # from this SAME lightweight endpoint instead of downloading the
         # catch-all /state aggregate. The browser's landing-page

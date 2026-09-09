@@ -816,25 +816,6 @@ pcm.jts_ring_playback {
 """
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("pcm.outputd_dac { type null }", "null"),
-        ('pcm.outputd_dac { type "null" }', "null"),
-        ("pcm.outputd_dac { hint { type null } type hw }", "hw"),
-        ('pcm.outputd_dac { hint { description "} type null {" } type hw }', "hw"),
-        ("pcm.outputd_dac { slave { type null } }", None),
-        ("pcm.outputd_dac { # } type null\n type hw\n}", "hw"),
-        ("# pcm.outputd_dac { type null }\npcm.outputd_dac { type hw }", "hw"),
-        ("pcm.other { type null }", None),
-        ("pcm.outputd_dac { type null", None),
-        ('pcm.outputd_dac { hint { description "unterminated } }', None),
-    ],
-)
-def test_pcm_type_belongs_to_the_named_outer_block(text, expected):
-    assert ring_assets.conf_pcm_type(text, "outputd_dac") == expected
-
-
 def test_block_parsers_survive_a_nested_brace_block(tmp_path):
     """A `hint { ... }` inside a PCM block must not truncate the body.
 

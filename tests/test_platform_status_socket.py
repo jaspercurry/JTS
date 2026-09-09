@@ -25,7 +25,6 @@ from jasper.cli import system_soak
 from jasper.control import audio_health
 from jasper.control.airplay_health import AirPlayHealthSampler
 from jasper.fanin.status import read_fanin_status
-from jasper.correction import runtime_integrity
 from jasper.platform import status_socket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from tests.status_socket_fixtures import DribblingStatusSocket, FakeStatusSocket
@@ -227,10 +226,6 @@ def _call_airplay_health(sock_path: Path) -> dict | None:
     return AirPlayHealthSampler._read_fanin_status(str(sock_path), timeout_sec=_DRIBBLE_TIMEOUT_SEC)
 
 
-def _call_runtime_integrity(sock_path: Path) -> dict | None:
-    return runtime_integrity._read_status(str(sock_path), timeout_sec=_DRIBBLE_TIMEOUT_SEC)
-
-
 def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
     """Run `call(sock_path)` on a daemon thread; return (finished, result).
 
@@ -253,7 +248,6 @@ def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
     [
         ("audio_validation.query_outputd_status", _call_audio_validation),
         ("airplay_health.AirPlayHealthSampler._read_fanin_status", _call_airplay_health),
-        ("correction.runtime_integrity._read_status", _call_runtime_integrity),
         ("fanin.read_fanin_status", lambda path: read_fanin_status(
             str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
         )),

@@ -378,22 +378,6 @@ def test_source_intent_reapply_runs_the_bounded_full_coordinator():
     assert "--stop-disabled" not in helper
 
 
-def test_upgrade_retires_destructive_combo_health_watcher():
-    """A deploy removes the obsolete observer and its persisted override state."""
-
-    body = _function_body(
-        FRAGMENT.read_text(),
-        "install_local_audio_graph_unit_files",
-    )
-    assert "systemctl disable --now jasper-fanin-combo-health.timer" in body
-    assert "systemctl stop jasper-fanin-combo-health.service" in body
-    assert "systemctl reset-failed jasper-fanin-combo-health.service" in body
-    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"' in body
-    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.service"' in body
-    assert "/var/lib/jasper/usb_combo_fallback.json" in body
-    assert "/var/lib/jasper/combo_health_tick.json" in body
-
-
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     """THE deploy hazard: a row in the MIDDLE fails. Every LATER row (including
     the newly-added guards at the end) must still be attempted, the function
@@ -845,10 +829,7 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
     support = _destinations(
         tmp_path / "support", "install_jasper_support_files"
     )
-    assert {
-        "/usr/local/lib/jasper/jasper-asound-render.sh",
-        "/usr/local/lib/jasper/jasper-core-graph-park-units.sh",
-    } <= support
+    assert {"/usr/local/lib/jasper/jasper-asound-render.sh"} <= support
     order = (tmp_path / "support" / "destinations.log").read_text().splitlines()
     assert order.index("/usr/local/sbin/jasper-wifi-guardian") < order.index(
         "/usr/local/lib/jasper/jasper-env-file.sh"

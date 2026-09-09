@@ -55,7 +55,6 @@ class BassExtensionRefusal(StrEnum):
     CAPTURE_QUALITY_REFUSED = "bass_extension_capture_quality_refused"
     CAPTURE_SNR_INSUFFICIENT = "bass_extension_capture_snr_insufficient"
     MIC_MOVED_BETWEEN_RUNGS = "bass_extension_mic_moved_between_rungs"
-    LADDER_INCOMPLETE = "bass_extension_ladder_incomplete"
     BOOST_LIMIT_EXCEEDED = "bass_extension_boost_limit_exceeded"
     PROFILE_STALE = "bass_extension_profile_stale"
 

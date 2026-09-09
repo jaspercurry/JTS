@@ -3,130 +3,77 @@ Description=CamillaDSP (always-on, outputd + master_gain ducking node)
 After=sound.target network.target jasper-audio-hardware-reconcile.service jasper-outputd.service jasper-fanin.service
 Wants=sound.target jasper-outputd.service jasper-fanin.service
 Requires=jasper-audio-hardware-reconcile.service
-# Camilla must NEVER stay stopped. The audio chain breaks the moment
-# it exits; voice and the AEC bridge deliberately keep only soft
-# dependencies so a brief DSP restart does not also kill mic progress.
-# A real-world incident on 2026-05-07 at 18:04 EDT
-# left the speaker silently dead overnight because the unit exited
-# status=0 (clean shutdown — trigger unrecoverable from logs after
-# journal rotation) and Restart=on-failure ignores clean exits.
-# Restart=always covers both crash AND clean-exit paths. The
-# start-limit guard prevents an infinite restart loop if the config
-# is genuinely broken — 5 restarts in 60s is enough for transient
-# ALSA-device hiccups but stops short of melting the system.
+# 5 restarts in 60s absorbs a transient ALSA hiccup without letting a
+# genuinely broken config loop forever.
 StartLimitIntervalSec=60
 StartLimitBurst=5
-
-# Camilla's observed start-limit failure class is often an ALSA ownership
-# race during deploy/renderer churn, where camilladsp exits cleanly with
-# "Device or resource busy" until the burst is exhausted. A raw reboot
-# destroys the `/dev/snd` holder evidence we need and can reboot-loop an
-# otherwise reachable Pi. Route the exhausted-burst case through a bounded
-# recovery/forensics oneshot instead: capture ALSA holders, park likely
-# audio owners, try one controlled graph restart, and leave the unit parked
-# if the graph still cannot converge. Other critical daemons still use the
-# direct T5.1 StartLimitAction=reboot ladder; Camilla owns this narrower
-# hardware-topology recovery contract.
+# The audio units escalate an exhausted burst to reboot only where a reboot
+# can clear the failure class AND an EX_CONFIG exit fences the config class
+# out of the burst (see jasper-outputd.service). CamillaDSP is neither: since
+# ADR-0100 it opens no device, and 4.1.3 exits CLEAN on a rejected config, so
+# the recovery handler's park is its fence (ADR-0175).
 StartLimitAction=none
 OnFailure=jasper-camilla-recover.service
 
 [Service]
-# Stage 2 audio-protection: assign to jts-audio.slice with
-# MemorySwapMax=0 so CamillaDSP's audio buffers + DSP state never
-# get swapped to zram. Empirically validated as needed by today's
-# stress test (2026-05-24) — splotchy music = zstd decompression
-# jitter on swapped audio pages.
+# MemorySwapMax=0 via the slice: zstd decompression jitter on swapped audio
+# pages is audible as splotchy music.
 Slice=jts-audio.slice
 Type=simple
-# --statefile lets CamillaDSP persist the currently-loaded config path
-# (and main_volume) across restarts. Without it, every restart drops
-# back to whatever the ExecStart resolves to, silently wiping a
-# user's room correction on reboot / power cycle / install.sh re-run.
+# --statefile persists the loaded config path and main_volume across restarts.
 #
-# The pre-outputd rollback path (a positional v1.yml plus
-# /var/lib/camilladsp/statefile.yml) was retired (issue #2240); rollback
-# is now git history plus a redeploy of an older build.
+# There is intentionally NO positional CONFIGFILE arg: in CamillaDSP v4.x a
+# positional config wins over --statefile on startup AND overwrites the
+# statefile's path on every start, which would make the statefile a no-op.
+# install.sh seeds the statefile to outputd-cutover.yml for first boot.
 #
-# CRITICAL: there is intentionally NO positional CONFIGFILE arg.
-# CamillaDSP behavior in v4.x: when both a positional config and
-# --statefile are given, the positional wins on startup AND the
-# statefile gets OVERWRITTEN with the positional's path on every
-# start. So passing a config path here would make this whole feature
-# a no-op. install.sh seeds the outputd statefile to point at
-# outputd-cutover.yml so first-boot still has a config to load.
+# Recovery from a bad correction without hand-editing the statefile: add
+# --no_config to the args, restart, fix the YAML or apply a new measurement,
+# then remove --no_config.
 #
-# Recovery from a bad correction without editing the statefile by
-# hand: add --no_config to the args (which makes Camilla ignore
-# the statefile's config and start with no config loaded), restart,
-# fix the underlying YAML or apply a new measurement, then remove
-# --no_config.
-#
-# Pipe guard: if the statefile
-# points at a BONDED pipe config but the snapserver FIFO is dead,
-# camilladsp 4.1.3 exits CLEAN (measured) — which Restart=always +
-# the start-limit recovery handler would otherwise turn into a repeated
-# parked/recovery cycle. The guard repairs the statefile to the base
-# config BEFORE launch so the failing starts never happen. This pipe-only
-# repair remains best effort (`-` prefix). The output-hardware reconciler above
-# is the hard startup gate: a failed topology/graph convergence blocks Camilla
-# before it can load a stale statefile.
+# Pipe guard: if the statefile points at a BONDED pipe config but the
+# snapserver FIFO is dead, camilladsp 4.1.3 exits CLEAN (measured), which
+# Restart=always turns into a repeated parked/recovery cycle. The guard
+# repairs the statefile to the base config before launch. Best effort (`-`);
+# the reconciler above is the hard startup gate.
 ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
     --statefile /var/lib/camilladsp/outputd-statefile.yml
-# Retire jasper-camilla-recover's core-graph park (ADR-0175). The park record
-# is what makes the handler skip re-entry, so the thing that ends the park is
-# this unit starting again — an operator, a deploy, or a reboot. Best effort:
-# a park that outlives its cause would show a red doctor row on a box that is
-# playing. Path duplicated from jasper/control/camilla_recover_state.py.
+# Retire jasper-camilla-recover's park: this unit starting again IS what ends
+# it (ADR-0175). Path duplicated from jasper/control/camilla_recover_state.py.
 ExecStartPost=-/bin/rm -f /run/jasper-camilla-recover.state
+# Restart=always, not on-failure: CamillaDSP has exited status=0 and left the
+# speaker silently dead overnight.
 Restart=always
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
 
-# Real-time scheduling (audio-latency foundation G1). CamillaDSP is the
-# in-line DSP node; an ordinary SCHED_OTHER slice lets it be preempted under
-# load, producing the short-read / xrun storms the fan-in chain reports. The
-# official v4.1.3 binary is built with audio_thread_priority and already
-# promotes its ALSA processing thread to RT within the LimitRTPRIO=99 ceiling
-# below; electing SCHED_FIFO on the unit puts the main thread at RT too.
-#
-# Priority 25 is deliberately BELOW the two sinks that must win the CPU when
-# the system is starved: jasper-fanin (30) and jasper-outputd (35). Camilla
-# feeds them, so if all three contend, the final-output owner and the summed
-# fan-in source preempt the DSP node — never the reverse. Keep this ordering
-# (25 < 30 < 35) intact if any priority is retuned.
+# The v4.1.3 binary promotes its own ALSA thread within LimitRTPRIO; electing
+# SCHED_FIFO here puts the main thread at RT too. Priority 25 is deliberately
+# BELOW the two sinks that must win a starved CPU — jasper-fanin (30) and
+# jasper-outputd (35). Keep 25 < 30 < 35 if any priority is retuned.
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=25
 LimitRTPRIO=99
 
-# LimitRTTIME caps how long an RT thread may run without blocking before the
-# kernel sends SIGXCPU (G4, mandatory with G1). On a 1 GB Pi a runaway RT
-# thread at FIFO priority can starve PID 1 and trip the hardware watchdog into
-# a full reboot; the SIGXCPU bound turns that whole-system wedge into a single
-# crashed daemon that Restart=always revives. 200 ms is generous for a normal
-# Camilla period (well under a millisecond of compute) yet far below the ~60 s
-# watchdog window. This mirrors what PipeWire's RTKit enforces (RTTimeUSec) for
-# exactly the same reason. ALL three FIFO units (camilla, fanin, outputd) carry
-# this bound.
+# SIGXCPU bound on an RT thread that runs without blocking: on a 1 GB Pi a
+# runaway FIFO thread can starve PID 1 and trip the ~60s hardware watchdog
+# into a full reboot. 200 ms is far above a normal Camilla period (well under
+# a millisecond of compute). Carried by every FIFO unit (camilla/fanin/outputd).
 LimitRTTIME=200000
 LimitMEMLOCK=infinity
 
-# CamillaDSP logs external, unstructured ALSA backend WARN lines. A degraded
-# capture graph can emit "Capture read ... instead of requested ..." many times
-# per second, crowding out previous-boot forensics. Keep a generous first burst
-# plus journald's native "messages suppressed" summary, but stop sustained
-# floods from consuming the persistent journal.
+# CamillaDSP logs unstructured ALSA backend WARN lines; a degraded capture
+# graph emits them many times per second and would crowd out previous-boot
+# forensics in the persistent journal.
 LogRateLimitIntervalSec=60s
 LogRateLimitBurst=120
 
-# OOM protection (Stage 1 of the memory-resilience plan). Camilla is the audio bottleneck:
-# silencing music = worst possible UX. -900 makes the kernel OOM
-# killer almost-never pick this process. Note -1000 is reserved for
-# sshd / systemd-journald — we need the killer to retain *some*
-# credible candidate so it doesn't pick critical infrastructure.
+# -900: silencing music is the worst UX. -1000 is reserved for
+# sshd / systemd-journald, so the OOM killer keeps a credible candidate.
 OOMScoreAdjust=-900
 
 [Install]

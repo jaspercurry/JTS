@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import closing
+import os
 import sqlite3
 import wave
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import wake_events
 from jasper.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES,
     ROLLED_OFF_SENTINEL,
@@ -495,11 +497,26 @@ async def test_attach_audio_writes_chip_aec_beam_wavs(
 
 
 async def test_attach_audio_is_atomic_no_partial_wav_visible(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
-    """Tempfile + rename means any reader (the future /wake-review/
-    UI) sees either the complete WAV or nothing — never a partial
-    write. Verifies the .tmp suffix is gone after the call returns."""
+    """Any reader (the future /wake-review/ UI) sees either the
+    complete WAV or nothing — never a partial write. The payload is
+    staged elsewhere and appears under its final name only through one
+    atomic rename, leaving no scratch file behind."""
+    renames: list[tuple[str, bool]] = []
+
+    class _ObservingOs:
+        """`os` as the module sees it, recording every rename."""
+
+        def __getattr__(self, name: str):
+            return getattr(os, name)
+
+        def replace(self, src, dst):
+            renames.append((Path(dst).name, Path(dst).exists()))
+            os.replace(src, dst)
+
+    monkeypatch.setattr(wake_events, "os", _ObservingOs())
+
     s = WakeEventStore(tmp_path)
     s.open()
     try:
@@ -513,7 +530,12 @@ async def test_attach_audio_is_atomic_no_partial_wav_visible(
             audio_on=_pcm(1.0),
             audio_off=None,
         )
-        # No leftover .tmp files
+        # attach_audio acknowledges admission only; the WAV lands on the
+        # storage worker. A read is ordered behind it, so it returns once
+        # the write is done.
+        await s.get_event("evt-atomic")
+        # The final name came into existence at the rename, not before.
+        assert renames == [("evt-atomic.aec-on.wav", False)]
         assert list(tmp_path.glob("*.tmp")) == []
     finally:
         s.close()
@@ -1129,7 +1151,6 @@ async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
 async def test_locked_sqlite_does_not_delay_audio_or_freeze_late_values(store, monkeypatch):
     import json
     import threading
-    from jasper import wake_events
 
     loop = asyncio.get_running_loop()
     write_started = asyncio.Event()

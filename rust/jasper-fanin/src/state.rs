@@ -59,16 +59,14 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_daemon::json::{
-    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_str, push_kv_u64,
-    push_kv_u64_opt,
+    event_age_ms, json_string, push_kv_bool, push_kv_f64, push_kv_str, push_kv_u64, push_kv_u64_opt,
 };
 use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 
 use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
 use crate::mixer::{
-    DirectObservability, LaneSource, Mixer, RingObservability, TrimControl,
-    OUTPUT_DELAY_UNAVAILABLE,
+    event_stamp_ms, DirectObservability, LaneSource, Mixer, RingObservability, TrimControl,
 };
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
@@ -104,13 +102,10 @@ pub struct StateServer {
     socket_path: PathBuf,
     /// Per-input state (shared with the mixer).
     inputs: Vec<InputSnapshotSource>,
-    /// Events dropped from the shared xrun-forwarding channel (global across
-    /// every input's xrun source, not per-lane — see [`crate::mixer::XrunSink`]).
-    xrun_events_dropped: Arc<AtomicU64>,
     /// Output state (shared with the mixer).
     output_frames_written: Arc<AtomicU64>,
-    output_xrun_count: Arc<AtomicU64>,
-    output_delay_frames: Arc<AtomicU64>,
+    /// `sched_getscheduler(0)` as `main` sampled it before this server spawned.
+    sched_policy: i32,
     /// Ring A observability. Cloned from the mixer so STATUS reads the same
     /// atomics the work loop writes.
     ring: RingObservability,
@@ -154,6 +149,9 @@ pub struct InputSnapshotSource {
     pub direct: Option<DirectObservability>,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
+    /// Monotonic-ms stamp of this lane's last xrun, [`NEVER_MS`] until the
+    /// first one. Rendered as `last_xrun_age_ms`.
+    pub last_xrun_ms: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS ×100 (the
     /// mixer's `Input::rms_dbfs_x100`). Serialized as `rms_dbfs`; the USB DIRECT
     /// lane's value is the combo-mode silence gate mux reads (parity with the
@@ -192,6 +190,8 @@ pub struct StateServerConfig {
     /// thread. Always present so STATUS carries a definite top-level
     /// `host_clock` key.
     pub host_clock_fragment: Arc<Mutex<String>>,
+    /// `sched_getscheduler(0)`, sampled by `main` at startup.
+    pub sched_policy: i32,
 }
 
 impl StateServer {
@@ -203,6 +203,7 @@ impl StateServer {
             input_buffer_frames,
             tts_metrics,
             host_clock_fragment,
+            sched_policy,
         } = config;
         let inputs = mixer
             .inputs()
@@ -214,6 +215,7 @@ impl StateServer {
                 direct: inp.direct_observability(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
+                last_xrun_ms: Arc::clone(&inp.last_xrun_ms),
                 rms_dbfs_x100: Arc::clone(&inp.rms_dbfs_x100),
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
@@ -226,10 +228,8 @@ impl StateServer {
             started_at: Instant::now(),
             socket_path,
             inputs,
-            xrun_events_dropped: mixer.xrun.dropped(),
             output_frames_written: Arc::clone(&mixer.frames_written),
-            output_xrun_count: Arc::clone(&mixer.output_xrun_count),
-            output_delay_frames: Arc::clone(&mixer.output_delay_frames),
+            sched_policy,
             ring: mixer.ring_observability.clone(),
             selected_input_index: mixer.selected_input_index(),
             heartbeat,
@@ -619,12 +619,13 @@ impl StateServer {
         self.push_inputs_json(&mut buf);
         buf.push(',');
 
-        // Global (not per-input) drop count on the shared xrun-forwarding
-        // channel — see [`crate::mixer::XrunSink`].
-        push_kv_u64(
+        // What the work loop is actually scheduled as, sampled by the loop
+        // itself — the unit asks for SCHED_FIFO, and losing it is silent
+        // otherwise.
+        push_kv_str(
             &mut buf,
-            "xrun_events_dropped",
-            self.xrun_events_dropped.load(Ordering::Relaxed),
+            "sched_policy",
+            &sched_policy_name(self.sched_policy),
         );
         buf.push(',');
 
@@ -687,6 +688,9 @@ impl StateServer {
     /// Render the complete per-lane STATUS array. Keeping lane-specific optional
     /// blocks here leaves snapshot_json responsible only for top-level ordering.
     fn push_inputs_json(&self, buf: &mut String) {
+        // One clock read for the whole array, so two lanes stamped in the same
+        // period cannot age apart by the render cost.
+        let now_ms = event_stamp_ms();
         buf.push_str(r#""inputs":["#);
         for (i, input) in self.inputs.iter().enumerate() {
             if i > 0 {
@@ -700,9 +704,8 @@ impl StateServer {
             // source: this lane's TRANSPORT — "direct" on the USB DIRECT lane
             // (reads hw:UAC2Gadget directly), "lane" on every aloop-reading
             // lane. Always present, additive (the TRIM-block precedent) — C7.
-            // The token set is
-            // owned by `crate::mixer::LaneSource`, so this serializer cannot
-            // invent a spelling the mixer does not use.
+            // The token set is owned by `crate::mixer::LaneSource`, so this
+            // serializer cannot invent a spelling the mixer does not use.
             push_kv_str(buf, "source", input.source.as_str());
             buf.push(',');
             // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
@@ -732,6 +735,14 @@ impl StateServer {
             );
             buf.push(',');
             push_kv_u64(buf, "xrun_count", input.xrun_count.load(Ordering::Relaxed));
+            buf.push(',');
+            // Recency beside the cumulative count: null until this lane's first
+            // xrun, so a long-lived count and a live one read differently.
+            push_kv_u64_opt(
+                buf,
+                "last_xrun_age_ms",
+                event_age_ms(now_ms, input.last_xrun_ms.load(Ordering::Relaxed)),
+            );
             buf.push(',');
             // Catch-up resync counters (mixer's drain_input_excess). Both
             // stay 0 on a DAC-locked lane; a growing pair is the operator's
@@ -1007,7 +1018,7 @@ impl StateServer {
         }
         buf.push(']');
     }
-    /// Render output transport, delay, and optional SHM-ring observability.
+    /// Render output transport and optional SHM-ring observability.
     fn push_output_json(&self, buf: &mut String) {
         buf.push_str(r#""output":{"#);
         push_kv_u64(buf, "sample_rate", self.sample_rate as u64);
@@ -1018,25 +1029,6 @@ impl StateServer {
             buf,
             "frames_written",
             self.output_frames_written.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            buf,
-            "xrun_count",
-            self.output_xrun_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        let output_delay_frames = match self.output_delay_frames.load(Ordering::Relaxed) {
-            OUTPUT_DELAY_UNAVAILABLE => None,
-            frames => Some(frames),
-        };
-        push_kv_u64_opt(buf, "snd_pcm_delay_frames", output_delay_frames);
-        buf.push(',');
-        push_kv_f64_opt(
-            buf,
-            "snd_pcm_delay_ms",
-            output_delay_frames.map(|frames| (frames as f64) * 1000.0 / (self.sample_rate as f64)),
-            3,
         );
         buf.push(',');
 
@@ -1138,6 +1130,10 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "dropped_audio_frames", counters.dropped_audio_frames());
                 buf.push(',');
+                // Recency beside the cumulative drop counters: null until the
+                // first drop.
+                push_kv_u64_opt(buf, "last_drop_age_ms", counters.last_drop_age_ms());
+                buf.push(',');
                 push_kv_u64(
                     buf,
                     "stale_commands_dropped",
@@ -1167,6 +1163,19 @@ impl StateServer {
     }
 }
 
+/// Scheduling-policy name for STATUS and the startup log line; the raw integer
+/// for a policy neither the unit nor this daemon expects (SCHED_BATCH/IDLE/
+/// DEADLINE), "unknown" for `sched_getscheduler`'s -1 error return.
+pub(crate) fn sched_policy_name(policy: i32) -> String {
+    match policy {
+        libc::SCHED_FIFO => "SCHED_FIFO".to_string(),
+        libc::SCHED_RR => "SCHED_RR".to_string(),
+        libc::SCHED_OTHER => "SCHED_OTHER".to_string(),
+        -1 => "unknown".to_string(),
+        other => other.to_string(),
+    }
+}
+
 // ---- tap helpers -----------------------------------------------------
 
 /// Truncate (or create) the tap JSONL artifact under its tmpfs dir on arm, so
@@ -1192,7 +1201,12 @@ fn epoch_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_daemon::json::NEVER_MS;
     use std::sync::atomic::AtomicI64;
+
+    /// How long ago the fixture's one stamped lane xrun'd. Any value renders the
+    /// same code path; seconds keep the assertion clear of clock noise.
+    const FIXTURE_XRUN_AGE_MS: u64 = 5_000;
 
     /// Drive one command through the SAME transport production uses, so these
     /// pin the reply a client actually reads off the socket.
@@ -1229,6 +1243,7 @@ mod tests {
                     direct: None,
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    last_xrun_ms: Arc::new(AtomicU64::new(NEVER_MS)),
                     // Silent aloop lane fixture → the -120 floor (×100).
                     rms_dbfs_x100: Arc::new(AtomicI32::new(-12000)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(0)),
@@ -1246,6 +1261,9 @@ mod tests {
                     direct: None,
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
+                    last_xrun_ms: Arc::new(AtomicU64::new(
+                        event_stamp_ms().saturating_sub(FIXTURE_XRUN_AGE_MS),
+                    )),
                     // A lane playing audible content — ~-12.34 dBFS (×100).
                     rms_dbfs_x100: Arc::new(AtomicI32::new(-1234)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
@@ -1326,6 +1344,7 @@ mod tests {
                     }),
                     frames_read: Arc::new(AtomicU64::new(96000)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    last_xrun_ms: Arc::new(AtomicU64::new(NEVER_MS)),
                     // The direct (combo) lane emitting audible content: -6.5 dBFS
                     // (×100), comfortably above the -60 dBFS combo gate.
                     rms_dbfs_x100: Arc::new(AtomicI32::new(-650)),
@@ -1366,12 +1385,8 @@ mod tests {
                     muted: Arc::new(AtomicBool::new(false)),
                 },
             ],
-            // Nonzero fixture value so the STATUS test proves the field is wired
-            // through, not coincidentally absent-and-zero.
-            xrun_events_dropped: Arc::new(AtomicU64::new(2)),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
-            output_xrun_count: Arc::new(AtomicU64::new(1)),
-            output_delay_frames: Arc::new(AtomicU64::new(1024)),
+            sched_policy: libc::SCHED_FIFO,
             ring: RingObservability {
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
@@ -1413,7 +1428,7 @@ mod tests {
             "selection_mode",
             "selected_input",
             "inputs",
-            "xrun_events_dropped",
+            "sched_policy",
             "output",
             "tts",
             "watchdog",
@@ -1610,8 +1625,6 @@ mod tests {
         let j = server.snapshot_json();
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
-        assert!(j.contains(r#""snd_pcm_delay_frames":1024"#));
-        assert!(j.contains(r#""snd_pcm_delay_ms":21.333"#));
 
         // The output block names no ALSA playback device and no ALSA output
         // buffer: the ring is the only transport (ADR-0100), so both keys were
@@ -1630,23 +1643,35 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_renders_unavailable_output_delay_as_null() {
-        let server = make_test_server();
-        server
-            .output_delay_frames
-            .store(OUTPUT_DELAY_UNAVAILABLE, Ordering::Relaxed);
-
+    fn snapshot_json_pins_every_recency_and_scheduling_field() {
         let parsed: serde_json::Value =
-            serde_json::from_str(&server.snapshot_json()).expect("STATUS parses");
-        let output = parsed["output"].as_object().expect("output object");
+            serde_json::from_str(&make_test_server().snapshot_json()).expect("STATUS parses");
+        let lane = |label: &str| {
+            parsed["inputs"]
+                .as_array()
+                .expect("inputs array")
+                .iter()
+                .find(|input| input["label"] == label)
+                .expect("fixture lane")
+                .clone()
+        };
+
+        let never = &serde_json::Value::Null;
         assert_eq!(
-            output.get("snd_pcm_delay_frames"),
-            Some(&serde_json::Value::Null),
+            lane("spotify").get("last_xrun_age_ms"),
+            Some(never),
+            "a lane that has never xrun'd must render null, not 0: {parsed}"
         );
         assert_eq!(
-            output.get("snd_pcm_delay_ms"),
-            Some(&serde_json::Value::Null),
+            parsed["tts"].get("last_drop_age_ms"),
+            Some(never),
+            "no TTS drop has happened in this fixture: {parsed}"
         );
+        let age = lane("airplay")["last_xrun_age_ms"]
+            .as_u64()
+            .expect("a stamped lane renders its age");
+        assert!(age >= FIXTURE_XRUN_AGE_MS, "{age} < {FIXTURE_XRUN_AGE_MS}");
+        assert_eq!(parsed["sched_policy"], "SCHED_FIFO");
     }
 
     #[test]

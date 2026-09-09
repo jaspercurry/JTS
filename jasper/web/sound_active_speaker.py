@@ -71,8 +71,8 @@ from jasper.active_speaker.commission_wiring import (
 )
 
 # The commission-tone helpers, timing constants and blocker vocabulary below
-# are the active-speaker domain's objects, shared with /sound/room/; the only
-# local piece is _stop_commission_tone_locked, bound to this module's
+# are the active-speaker domain's objects, shared with the measurement
+# daemon; the only local piece is _stop_commission_tone_locked, bound to this module's
 # _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK.
 #
 # COMMISSION_TONE_DURATION_S in particular MUST stay the owner's object: mux
@@ -2744,10 +2744,10 @@ async def _active_speaker_commission_load_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
-    # Serialize against the other measurement flows (room correction / pair
-    # balance / pair sync) — all play sweeps through the production graph, and
-    # commissioning does not hold the measurement window, so this cooperative
-    # check is the exclusion (see jasper.web.active_speaker_flow).
+    # Serialize against the other measurement flows (pair balance / pair
+    # sync) — they play sweeps through the production graph, and commissioning
+    # does not hold the measurement window, so this cooperative check is the
+    # exclusion (see jasper.web.active_speaker_flow).
     blocking = blocking_measurement_phase()
     if blocking is not None:
         log_event(
@@ -2765,8 +2765,8 @@ async def _active_speaker_commission_load_payload(
             "reason": "measurement_in_progress",
             "blocking_phase": blocking,
             "next_step": (
-                "Another measurement (room correction, balance, or sync) is "
-                "running. Finish or stop it before commissioning a driver."
+                "Another measurement (balance or sync) is running. Finish or "
+                "stop it before commissioning a driver."
             ),
         }
     if force:

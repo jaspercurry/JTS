@@ -121,8 +121,27 @@ def test_store_load_roundtrip_redacts_serial_from_public_metadata(tmp_path: Path
     assert "SECRET" not in str(public)
     assert Path(loaded.raw_path).exists()
     assert Path(loaded.metadata_path).exists()
-    assert (Path(loaded.raw_path).stat().st_mode & 0o777) == 0o600
-    assert (Path(loaded.metadata_path).stat().st_mode & 0o777) == 0o600
+
+
+def test_stored_calibration_files_are_readable_by_the_registry_roots_group(
+    tmp_path: Path,
+):
+    """The registry root is installed `2770 -g jasper` and `jasper-mic-calibration`
+    writes it under sudo, so a root-owned 0600 file would be unreadable to every
+    daemon that resolves a calibration -- and both resolvers skip what they
+    cannot read, so the take would measure uncalibrated with no trace."""
+    record = calibration.store_calibration(
+        text=SAMPLE_CAL,
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path,
+    )
+
+    for path in (Path(record.raw_path), Path(record.metadata_path)):
+        assert stat_module.S_IMODE(path.stat().st_mode) == 0o640
+        assert path.stat().st_gid == path.parent.stat().st_gid
 
 
 def test_load_calibration_record_rejects_corrupt_persisted_curve(tmp_path: Path):
@@ -683,7 +702,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
 # A manual upload is stored with `serial=None` (store_calibration(provider=
 # "manual_upload", ...)), so `find_stored_calibration` above — keyed by
 # serial_hash + model + orientation — can never reach it again. This is the
-# additive counterpart jasper.correction.household_mic relies on to make an
+# additive counterpart jasper.audio_measurement.household_mic relies on to make an
 # uploaded calibration findable purely from its content hash.
 def test_find_stored_calibration_by_content_hash_resolves_upload_with_no_serial(
     tmp_path: Path,
@@ -931,7 +950,7 @@ def test_migration_rederives_a_wrong_vendor_record_from_its_raw_file(
     assert fixed.orientation == "0deg"
     assert fixed.point_count == len(UMIK_0DEG_FILE_DB)
     assert Path(record.raw_path).read_text() == raw_before
-    assert (Path(record.metadata_path).stat().st_mode & 0o777) == 0o600
+    assert (Path(record.metadata_path).stat().st_mode & 0o777) == 0o640
 
 
 def test_migration_never_double_negates_an_already_correct_record(

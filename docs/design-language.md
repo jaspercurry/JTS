@@ -9,8 +9,8 @@ components on 2026-07-31. Neither is installed; we own every rule below.
 The craft reference for **every management page** — type, colour, depth, radii,
 touch targets, motion, copy — applied as each page is touched, never as a
 standalone compliance sweep. The jasper.tech capture page
-and the Sound measurement wizards at `/sound/room/`, `/sound/speaker/crossover/`
-(**Active speaker**), and `/sound/bass/` (#1941's world) carry the most design
+and the Sound measurement wizards at `/sound/speaker/crossover/`
+(**Active speaker**) and `/sound/bass/` (#1941's world) carry the most design
 attention.
 
 | Question | Read |
@@ -58,11 +58,10 @@ before reaching for a bigger number.
 - A new size gets added here first. If you can't justify it in one sentence,
   one of the five already works.
 - **No off-ladder rem values.** `0.92rem` is 14.72px — a sixth size nobody
-  chose, invisible in review and impossible to keep consistent. Known
-  offenders, all in `deploy/index.html`: `.pair-banner__text` (`0.92rem`),
-  `.pair-banner__links a` (`0.88rem`), `.volume-safety-note` (`0.86rem`).
-  Correcting them to 14px reflows the pair banner, so under §2 they are
-  **held for owner review** ([#1961](https://github.com/jaspercurry/JTS/issues/1961)).
+  chose, invisible in review and impossible to keep consistent. Held
+  off-ladder values are listed per sheet in `tests/test_web_design_system.py`
+  and are shrink-only — a page's own pass may delete an entry there, never add
+  one un-reviewed.
 
 ## 4. The text ramp — three tiers
 

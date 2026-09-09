@@ -1469,7 +1469,7 @@ def _lane_cap(replacement: Any) -> dict[str, Any]:
         # only commissioning produces. With no statefile staged the gate
         # declines and the box resolves byte-identically passive - and the
         # token names the gate's own decline, because the remedy is
-        # commissioning, not "choose a different layout at /sound/setup/".
+        # commissioning, not "choose a different layout at /sound/speaker/".
         pytest.param(None, False, "camilla_statefile_missing",
                      id="no-active-graph-staged"),
         # `active_lane_channels_for_dac` swallows its own failure, so a probe
@@ -1879,6 +1879,10 @@ def test_a_signalled_changed_predicate_exits_rather_than_dying_of_the_signal(
     # A FIFO with no writer: the fingerprint's `cat` blocks on it, which is the
     # window a TimeoutStartSec SIGTERM lands in.
     blocking = tmp_path / "blocking-topology"
+    extra_env = {"JASPER_OUTPUT_TOPOLOGY_PATH": str(blocking)}
+    converged = _run_reconcile(tmp_path, APPLE_LISTING, extra_env=extra_env)
+    assert converged.returncode == 0, converged.stderr
+    assert (tmp_path / "reconcile.inputs").is_file()
     os.mkfifo(blocking)
     process = subprocess.Popen(
         ["bash", str(SCRIPT), "--reason", "test", "--changed"],
@@ -1886,7 +1890,7 @@ def test_a_signalled_changed_predicate_exits_rather_than_dying_of_the_signal(
         env=_reconcile_env(
             tmp_path,
             APPLE_LISTING,
-            extra_env={"JASPER_OUTPUT_TOPOLOGY_PATH": str(blocking)},
+            extra_env=extra_env,
         ),
         text=True,
         stdout=subprocess.PIPE,
@@ -2314,7 +2318,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
     assert result.returncode == 0, result.stderr
     outputd_env = _outputd_env(tmp_path)
     # Armed as a composite — and still holding NEITHER half of the pair.
-    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=composite" in outputd_env
     _assert_states(
         outputd_env,
         "JASPER_OUTPUTD_ACTIVE_LANE=\n",
@@ -2561,225 +2565,6 @@ def test_env_publication_agrees_on_a_classify_time_partial_dual_apple_record(
         issue["code"] for issue in record["issues"] if issue["severity"] == "blocker"
     ] == ["dual_apple_endpoint_not_synchronous"]
     _assert_publications_agree(tmp_path)
-
-
-# --- the preserve_runtime_env fallback ---------------------------------------
-#
-# The endpoint-contract step resolves outputd's capture half by shelling out to
-# `jasper.cli.audio_config outputd-capture-device`. When that step fails the
-# reconciler exits 66 before writing any outputd env, leaving outputd running
-# whatever the file already said. If that was the REAL ALSA backend at
-# `outputd_dac` while a composite had parked that alias to `type null`, the
-# result is an output loop with no clock on either side: SIGKILL per burst and
-# StartLimitAction=reboot.
-#
-# The shims below reproduce one failing step and nothing else: every other
-# Python call in the run still reaches the real interpreter.
-
-_CLOCKLESS_PRESERVED_ENV = (
-    "JASPER_OUTPUTD_BACKEND=alsa\n"
-    "JASPER_OUTPUTD_SINK=single_alsa\n"
-    "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
-    "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
-)
-
-# The ALSA artifact a PREVIOUS pass left on disk. The guard reads this rather
-# than re-deriving what the current pass would render, because the
-# endpoint-contract exit is ~87 lines ahead of render_asound_if_needed and this
-# pass renders nothing — so these two templates are the only evidence about
-# what outputd will actually open.
-_PARKED_ASOUND_TEMPLATE = (
-    "pcm.outputd_dac {\n"
-    "    type null\n"
-    "}\n"
-    'defaults.pcm.rate_converter "samplerate_medium"\n'
-)
-_LIVE_ASOUND_TEMPLATE = (
-    "pcm.outputd_dac {\n"
-    "    type hw\n"
-    "    card A\n"
-    "    device 0\n"
-    "}\n"
-    "ctl.outputd_dac {\n"
-    "    type hw\n"
-    "    card A\n"
-    "}\n"
-    'defaults.pcm.rate_converter "samplerate_medium"\n'
-)
-
-
-# The endpoint contract resolves outputd's capture half; an unregistered
-# playback PCM answers None, which is what fails the contract.
-_ENDPOINT_CONTRACT_FAILS = {
-    "jasper.camilla_config_contract.outputd_capture_device_for_playback": (
-        lambda *_args, **_kwargs: None
-    )
-}
-
-
-def _assert_contract_really_failed(result: _Pass) -> None:
-    """Positive control: the injected failure reached the path under test.
-
-    Without this an assertion about the fallback could pass on a run that
-    never took the fallback at all.
-    """
-    assert result.returncode == 66, result.stderr
-    assert stderr_event(result.stderr, "audio_hardware_reconcile.outputd_endpoint_contract_failed")
-
-
-@pytest.mark.parametrize(
-    ("preserved_env", "expected_env"),
-    [
-        pytest.param(
-            _CLOCKLESS_PRESERVED_ENV,
-            _CLOCKLESS_PRESERVED_ENV.replace(
-                "JASPER_OUTPUTD_BACKEND=alsa", "JASPER_OUTPUTD_BACKEND=fake"
-            ),
-            id="stated-alsa-backend",
-        ),
-        # Unstated uses the service's ALSA/outputd_dac defaults, the same pair.
-        pytest.param(None, None, id="service-defaults"),
-    ],
-)
-def test_contract_failure_parks_a_clockless_output_alias(
-    tmp_path: Path, preserved_env: str | None, expected_env: str | None
-):
-    result = _run_reconcile(
-        tmp_path,
-        DUAL_APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_template=_PARKED_ASOUND_TEMPLATE,
-        initial_outputd_env=preserved_env,
-        extra_env=_dual_apple_cards(tmp_path),
-        patches=_ENDPOINT_CONTRACT_FAILS,
-    )
-
-    _assert_contract_really_failed(result)
-    assert stderr_event(result.stderr, "audio_hardware_reconcile.outputd_endpoint_contract_failed")["action"] == "park_backend_fake"
-    assert stderr_event(result.stderr, "audio_hardware_reconcile.outputd_env_clockless_park")["backend"] == "alsa->fake"
-    rendered_env = _outputd_env(tmp_path)
-    if expected_env is None:
-        assert "JASPER_OUTPUTD_BACKEND=fake" in rendered_env
-    else:
-        # Exactly one key moves; every other preserved key is already coherent.
-        assert rendered_env == expected_env
-
-
-def test_contract_failure_preserves_when_the_artifact_still_names_real_hardware(
-    tmp_path: Path,
-):
-    """Two passes: the guard must read the artifact, not re-derive one.
-
-    Pass 1 renders `type hw card A`; pass 2 sees no recognized DAC and
-    fails the contract, so nothing re-renders and the alias outputd opens
-    is what pass 1 left. A guard asking what THIS pass would render
-    answers null and parks a box whose DAC is still live.
-    """
-    first = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
-    assert first.returncode == 0, first.stderr
-    template = _template(tmp_path)
-    assert "type hw" in template and "card A" in template
-    outputd_env_after_first = _outputd_env(tmp_path)
-    assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env_after_first
-
-    second = _run_reconcile(
-        tmp_path, "", "--reason", "test", patches=_ENDPOINT_CONTRACT_FAILS
-    )
-
-    _assert_contract_really_failed(second)
-    assert stderr_event(second.stderr, "audio_hardware_reconcile.outputd_endpoint_contract_failed")["action"] == "preserve_runtime_env"
-    assert not stderr_events(second.stderr, "audio_hardware_reconcile.outputd_env_clockless_park")
-    # The artifact is untouched and still real, and the env is byte-unchanged.
-    assert _template(tmp_path) == template
-    assert _outputd_env(tmp_path) == outputd_env_after_first
-
-
-@pytest.mark.parametrize(
-    (
-        "listing",
-        "template",
-        "operator_env",
-        "preserved_env",
-        "needs_dual_cards",
-        "observation_fails",
-        "positive_event",
-    ),
-    [
-        pytest.param(
-            DUAL_APPLE_LISTING, _PARKED_ASOUND_TEMPLATE, None,
-            _CLOCKLESS_PRESERVED_ENV.replace(
-                "JASPER_OUTPUTD_BACKEND=alsa", "JASPER_OUTPUTD_BACKEND="
-            ),
-            True, False, None, id="stated-empty-backend",
-        ),
-        pytest.param(
-            APPLE_LISTING, _PARKED_ASOUND_TEMPLATE, None, _CLOCKLESS_PRESERVED_ENV,
-            False, True, "audio_hardware_reconcile.state_written_failed",
-            id="hardware-observation-failed",
-        ),
-        pytest.param(
-            APPLE_LISTING, _LIVE_ASOUND_TEMPLATE, None, _CLOCKLESS_PRESERVED_ENV,
-            False, False, None, id="alias-still-names-real-hardware",
-        ),
-        pytest.param(
-            DUAL_APPLE_LISTING, _PARKED_ASOUND_TEMPLATE, None,
-            _CLOCKLESS_PRESERVED_ENV.replace(
-                "JASPER_OUTPUTD_BACKEND=alsa", "JASPER_OUTPUTD_BACKEND=fake"
-            ),
-            True, False, None, id="backend-already-parked",
-        ),
-        pytest.param(
-            DUAL_APPLE_LISTING, _PARKED_ASOUND_TEMPLATE,
-            "JASPER_OUTPUTD_SINK=dual_apple\n",
-            "JASPER_OUTPUTD_BACKEND=alsa\n"
-            "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
-            "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0\n"
-            "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=A_1,DEV=0\n",
-            True, False, None, id="composite-sink-does-not-open-the-alias",
-        ),
-        pytest.param(
-            DUAL_APPLE_LISTING, _PARKED_ASOUND_TEMPLATE,
-            "JASPER_OUTPUTD_DAC_PCM=hw:CARD=A,DEV=0\n",
-            "JASPER_OUTPUTD_BACKEND=alsa\nJASPER_OUTPUTD_SINK=single_alsa\n",
-            True, False, None, id="overridden-dac-pcm-is-not-the-alias",
-        ),
-    ],
-)
-def test_contract_failure_preserves_an_env_without_a_clockless_output_loop(
-    tmp_path: Path,
-    listing: str,
-    template: str,
-    operator_env: str | None,
-    preserved_env: str,
-    needs_dual_cards: bool,
-    observation_fails: bool,
-    positive_event: str | None,
-):
-    """Each row keeps one conjunct of the clockless-loop guard false."""
-    extra_env = _dual_apple_cards(tmp_path) if needs_dual_cards else {}
-    patches = dict(_ENDPOINT_CONTRACT_FAILS)
-    if observation_fails:
-        patches["jasper.audio_hardware.reconcile.observe"] = _raises(OSError("no cards"))
-
-    result = _run_reconcile(
-        tmp_path,
-        listing,
-        "--reason",
-        "test",
-        initial_env=operator_env,
-        initial_template=template,
-        initial_outputd_env=preserved_env,
-        extra_env=extra_env,
-        patches=patches,
-    )
-
-    _assert_contract_really_failed(result)
-    if positive_event is not None:
-        assert stderr_event(result.stderr, positive_event)
-    assert stderr_event(result.stderr, "audio_hardware_reconcile.outputd_endpoint_contract_failed")["action"] == "preserve_runtime_env"
-    assert not stderr_events(result.stderr, "audio_hardware_reconcile.outputd_env_clockless_park")
-    assert _outputd_env(tmp_path) == preserved_env
 
 
 # --- restart gating: which units a given delta may bounce --------------------
@@ -4303,6 +4088,10 @@ def _stub_pass(
 # mode -> (stub kwargs, expected rc, stamp written, stamp_skipped reason)
 _STUB_MODES: dict[str, tuple[dict[str, Any], int, bool, str | None]] = {
     "clean": ({}, 0, True, None),
+    "first-pass": ({"body": 'cp "$JASPER_SAVED_INPUTS" "${JASPER_OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.inputs"'}, 0, False, "inputs_changed"),
+    "invalid-list": ({}, 0, False, "inputs_changed"),
+    "no-restart": ({}, 0, False, None),
+    "print-env": ({}, 0, False, None),
     "pass-fails": ({"rc": 78}, 78, False, None),
     "card-moves-mid-pass": (
         {
@@ -4330,6 +4119,17 @@ _STUB_MODES: dict[str, tuple[dict[str, Any], int, bool, str | None]] = {
         pytest.param("clean", None, 1, id="unchanged-skips"),
         pytest.param("clean", "cards", 0, id="card-set-moved-runs"),
         pytest.param("clean", "topology", 0, id="input-file-moved-runs"),
+        pytest.param("clean", "management-transport", 0, id="management-marker-moved-runs"),
+        pytest.param("clean", "missing-list", 0, id="missing-list-runs"),
+        pytest.param("clean", "malformed-list", 0, id="malformed-list-runs"),
+        pytest.param("clean", "stale-list", 0, id="stale-list-runs"),
+        pytest.param("clean", "override", 0, id="path-override-runs"),
+        pytest.param("clean", "code", 0, id="new-code-runs"),
+        pytest.param("clean", "build", 0, id="new-build-runs"),
+        pytest.param("first-pass", None, 0, id="first-list-needs-hardware-snapshot"),
+        pytest.param("invalid-list", None, 0, id="invalid-prior-list-cannot-stamp"),
+        pytest.param("no-restart", None, 0, id="no-restart-leaves-no-stamp"),
+        pytest.param("print-env", None, 0, id="print-env-leaves-no-stamp"),
         pytest.param("pass-fails", None, 0, id="failed-pass-left-no-stamp"),
         pytest.param("card-moves-mid-pass", None, 0, id="mid-pass-hotplug-no-stamp"),
         pytest.param("probe-unavailable", None, 0, id="probe-unavailable-no-stamp"),
@@ -4344,12 +4144,28 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
     successful pass already stamped may be skipped.
     """
     common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
+    code = tmp_path / "reconcile.py"
+    build = tmp_path / "build.txt"
+    code.write_text("old code\n", encoding="utf-8")
+    build.write_text("old build\n", encoding="utf-8")
     converged = _run_reconcile(
-        tmp_path, APPLE_LISTING, "--reason", "converge", extra_env=common
+        tmp_path, APPLE_LISTING, "--reason", "converge", extra_env=common,
+        patches={
+            "jasper.audio_hardware.reconcile_inputs.__file__": str(tmp_path / "reconcile_inputs.py"),
+            "jasper.audio_hardware.reconcile_inputs.BUILD_MANIFEST_FILE": build,
+        },
     )
     assert converged.returncode == 0, converged.stderr
     boot_config = (tmp_path / "config.txt").read_text(encoding="utf-8")
 
+    manifest = tmp_path / "reconcile.inputs"
+    assert manifest.is_file()
+    if mode == "first-pass":
+        saved = tmp_path / "saved.inputs"
+        manifest.rename(saved)
+        common["JASPER_SAVED_INPUTS"] = str(saved)
+    elif mode == "invalid-list":
+        manifest.write_text(manifest.read_text() + "input\t-\trelative", encoding="utf-8")
     stub_kwargs, seed_rc, stamped, skip_reason = _STUB_MODES[mode]
     stub_env = _stub_pass(tmp_path, mode, **stub_kwargs)
     seed = _run_shim(
@@ -4357,17 +4173,16 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
         APPLE_LISTING,
         "--reason",
         "seed",
+        *([f"--{mode}"] if mode in {"no-restart", "print-env"} else []),
         initial_boot_config=boot_config,
         extra_env={**common, **stub_env},
     )
     assert seed.returncode == seed_rc, seed.stderr
     assert (tmp_path / "reconcile.stamp").exists() is stamped, seed.stderr
     if skip_reason is not None:
-        _assert_states(
-            seed.stderr,
-            "event=audio_hardware_reconcile.stamp_skipped ",
-            f"reason={skip_reason}",
-        )
+        assert stderr_event(
+            seed.stderr, "audio_hardware_reconcile.stamp_skipped"
+        )["reason"] == skip_reason
 
     if mutate == "cards":
         (tmp_path / "proc-asound" / "cards").write_text(
@@ -4375,7 +4190,27 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
         )
     elif mutate == "topology":
         (tmp_path / "output_topology.json").write_text("{}\n", encoding="utf-8")
+    elif mutate == "management-transport":
+        marker = tmp_path / "management-transport.ok"
+        if marker.exists():
+            marker.unlink()
+        else:
+            marker.touch()
+    elif mutate == "missing-list":
+        manifest.unlink()
+    elif mutate == "malformed-list":
+        manifest.write_text("not a path list\n", encoding="utf-8")
+    elif mutate == "stale-list":
+        manifest.write_text(manifest.read_text().replace("V1", "V0", 1), encoding="utf-8")
+    elif mutate == "override":
+        common["JASPER_OUTPUT_TOPOLOGY_PATH"] = str(tmp_path / "other-topology.json")
+    elif mutate == "code":
+        code.write_text("new code\n", encoding="utf-8")
+    elif mutate == "build":
+        build.write_text("new build\n", encoding="utf-8")
 
+    launched = tmp_path / "check-launched"
+    check_stub = _stub_pass(tmp_path, "changed", body=f'touch "{launched}"', rc=99)
     rendered_before = _render_log(tmp_path)
     issued_before = len(_systemctl_log(tmp_path).splitlines())
     check = _run_shim(
@@ -4387,8 +4222,9 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
         # A pass may rewrite the boot config; _reconcile_env would otherwise
         # reset it under the check and manufacture a change.
         initial_boot_config=boot_config,
-        extra_env=common,
+        extra_env={**common, **check_stub},
     )
+    assert not launched.exists()
     assert check.returncode == expected_rc, check.stderr
     verdict = "skipped" if expected_rc == 1 else "changed"
     assert stderr_event(check.stderr, f"audio_hardware_reconcile.{verdict}")
@@ -4396,19 +4232,24 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
     assert _render_log(tmp_path) == rendered_before
     assert _systemctl_log(tmp_path).splitlines()[issued_before:] == []
     assert not stderr_events(check.stderr, "audio_hardware_reconcile.complete")
+    if mode == "first-pass":
+        settled = _run_shim(
+            tmp_path, APPLE_LISTING, initial_boot_config=boot_config,
+            extra_env={**common, **_stub_pass(tmp_path)},
+        )
+        assert settled.returncode == 0
+        assert (tmp_path / "reconcile.stamp").is_file()
+        assert _run_shim(
+            tmp_path, APPLE_LISTING, "--changed", initial_boot_config=boot_config,
+            extra_env={**common, **check_stub},
+        ).returncode == 1
+        assert not launched.exists()
 
 
 def test_changed_check_reruns_while_the_degraded_marker_is_present(
     tmp_path: Path,
 ) -> None:
-    """A probe outage during ``--print-env`` (install.sh's mid-install call)
-    can set the degraded marker WITHOUT going through a full pass's own
-    stamp/marker reset (that reset only runs on the mutating path) -- so an
-    OLD stamp an earlier successful full pass left behind survives, and would
-    otherwise still match the now-unchanged fingerprint. Without the marker
-    check, the doctor's remedy (`systemctl start
-    jasper-audio-hardware-reconcile`) would be skipped instead of re-running
-    the pass."""
+    """A degraded marker invalidates an otherwise unchanged successful stamp."""
     common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
     converged = _run_reconcile(
         tmp_path, APPLE_LISTING, "--reason", "converge", extra_env=common
@@ -4426,6 +4267,7 @@ def test_changed_check_reruns_while_the_degraded_marker_is_present(
     assert healthy.returncode == 0, healthy.stderr
     assert (tmp_path / "reconcile.stamp").exists()
 
+    manifest_before = (tmp_path / "reconcile.inputs").read_bytes()
     print_env = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -4435,6 +4277,7 @@ def test_changed_check_reruns_while_the_degraded_marker_is_present(
         patches=_CONTENT_FORMAT_PROBE_FAILS,
     )
     assert print_env.returncode == 0, print_env.stderr
+    assert (tmp_path / "reconcile.inputs").read_bytes() == manifest_before
     # --print-env mutates nothing and reaches no probe that marks the pass
     # degraded, so stand the marker up the way a degraded mid-install probe
     # leaves it.
@@ -4454,108 +4297,3 @@ def test_changed_check_reruns_while_the_degraded_marker_is_present(
     )
     assert check.returncode == 0, check.stderr
     assert stderr_event(check.stderr, "audio_hardware_reconcile.changed")
-
-
-# The shim's `${VAR:-default}` list is what --changed hashes. A default that
-# drifts from the module's own is not a loud failure: the fingerprint covers a
-# path nothing reads, and the pass the box needs is condition-skipped instead.
-_SHIM_DEFAULT = re.compile(
-    r'^[A-Z_0-9]+="\$\{([A-Z_0-9]+):-([^}]*)\}"$', re.MULTILINE
-)
-# Declared by the shim alone: which interpreter runs the pass is not a path the
-# pass reads, so no module states a default for it.
-_SHIM_ONLY_ENV = {"JASPER_OUTPUT_HARDWARE_PYTHON"}
-
-
-def _module_defaults() -> dict[str, str]:
-    """What the Python side answers for each env seam, with nothing set."""
-    import inspect
-
-    from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
-    from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
-    from jasper.audio_runtime_plan import (
-        DEFAULT_CAMILLA2_STATEFILE_PATH,
-        DEFAULT_CAMILLA_STATEFILE_PATH,
-    )
-    from jasper.output_hardware import probe_system_cards
-    from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
-
-    with mock.patch.dict(os.environ, {}, clear=True):
-        run = reconcile_module.Pass(
-            reason="drift", print_env=True, no_restart=True
-        )
-        return {
-            "JASPER_ENV_FILE": run.env_file,
-            "JASPER_OUTPUTD_ENV_FILE": run.outputd_env_file,
-            "JASPER_FANIN_ENV_FILE": run.fanin_env_file,
-            "JASPER_ASOUND_SOURCE_TEMPLATE": run.asound_source_template,
-            "JASPER_ASOUND_TEMPLATE": run.asound_template,
-            "JASPER_OUTPUT_HARDWARE_STATE_PATH": run.state_path,
-            "JASPER_I2S_HAT_INTENT_FILE": run.i2s_hat_intent_file,
-            "JASPER_I2S_HAT_REBOOT_REQUIRED_PATH": run.i2s_hat_reboot_required_path,
-            "JASPER_INSTALL_PROFILE_FILE": run.install_profile_file,
-            "JASPER_OUTPUT_TOPOLOGY_PATH": run.output_topology_path,
-            "JASPER_CAMILLA_CONF_DIR": run.camilla_conf_dir,
-            # Spelled by the pass AND by the plan module that reads the same
-            # two files; all three have to agree.
-            "JASPER_CAMILLA_STATEFILE": DEFAULT_CAMILLA_STATEFILE_PATH,
-            "JASPER_CAMILLA2_STATEFILE": DEFAULT_CAMILLA2_STATEFILE_PATH,
-            # Read by the boot-config and classifier layers, not by the pass.
-            "JASPER_PI_MODEL_FILE": DEFAULT_MODEL_PATH,
-            "JTS_BOOT_CONFIG_FILE": DEFAULT_BOOT_CONFIG_PATH,
-            "JASPER_UDC_CLASS_DIR": DEFAULT_UDC_CLASS_DIR,
-            "JASPER_PROC_ASOUND": str(
-                inspect.signature(probe_system_cards)
-                .parameters["proc_asound"]
-                .default
-            ),
-        }
-
-
-# The three paths the shim DERIVES from the state path rather than reading
-# from the environment, so `_SHIM_DEFAULT` cannot see them.
-_SHIM_DERIVED = re.compile(
-    r'^[A-Z_0-9]+="\$\{OUTPUT_HARDWARE_STATE_PATH%/\*\}/([^"]+)"$', re.MULTILINE
-)
-
-
-def test_the_shim_and_the_pass_agree_on_every_derived_leaf_name():
-    """The two markers and the stamp are addressed by NAME from both sides.
-
-    A leaf that drifts is silent in both directions: the pass would write a
-    degraded marker the shim's stamp guard never reads, and jasper-usbgadget's
-    `test -e` would miss a transport marker the pass did publish.
-    """
-    from jasper.output_hardware import degraded_marker_path
-
-    derived = _SHIM_DERIVED.findall(SCRIPT.read_text(encoding="utf-8"))
-    with mock.patch.dict(os.environ, {}, clear=True):
-        run = reconcile_module.Pass(reason="drift", print_env=True, no_restart=True)
-        state_dir = Path(run.state_path).parent
-        assert run.management_transport_marker.parent == state_dir
-        assert degraded_marker_path().parent == state_dir
-        assert set(derived) == {
-            run.management_transport_marker.name,
-            degraded_marker_path().name,
-            # The stamp answers --changed and nothing in the pass reads it, so
-            # the shim is its only owner; pinned here so a fourth derived path
-            # cannot appear without a Python counterpart or this list.
-            "reconcile.stamp",
-        }
-
-
-def test_the_shim_and_the_pass_agree_on_every_default_path():
-    shim = dict(_SHIM_DEFAULT.findall(SCRIPT.read_text(encoding="utf-8")))
-    expected = _module_defaults()
-
-    assert set(shim) - _SHIM_ONLY_ENV == set(expected), (
-        "a shim variable has no module-side default to compare against (or "
-        "the reverse) — an unguarded default here condition-skips a pass the "
-        "box needs"
-    )
-    assert {k: v for k, v in shim.items() if k in expected} == expected
-    # The camilla statefiles are the one pair the pass spells for itself.
-    with mock.patch.dict(os.environ, {}, clear=True):
-        run = reconcile_module.Pass(reason="drift", print_env=True, no_restart=True)
-    assert run.camilla_statefile == expected["JASPER_CAMILLA_STATEFILE"]
-    assert run.camilla2_statefile == expected["JASPER_CAMILLA2_STATEFILE"]

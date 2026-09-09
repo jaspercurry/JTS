@@ -61,7 +61,6 @@ assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_
 
 REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
 REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
-REASON_SPLIT_GROUPED_DAC_CONTENT_LANE = "split_grouped_dac_content_lane"
 REASON_SPLIT_RING_UNCONSUMED = "split_ring_unconsumed"
 REASON_SPLIT_RING_UNFED = "split_ring_unfed"
 
@@ -227,28 +226,10 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
 
 
 def _transport_park_snapshot() -> dict[str, Any]:
-    """The park verdict this run, read once for the two checks that consume it."""
+    """The park verdict this run, read once through the evidence cache."""
     from ...control import transport_park
 
     return evidence.get("transport_park", transport_park.snapshot)
-
-
-def _grouped_dac_content_lane_parked() -> bool:
-    """Is this box the bonded shape whose post-DSP hop is not a ring at all?
-
-    Fail-soft to False: an unreadable topology must not silence a real split.
-    The park check's own ``unavailable`` branch reports that read failure.
-    """
-    from ...control import transport_park
-
-    try:
-        state = _transport_park_snapshot()
-    except Exception:  # noqa: BLE001 - a park read must never crash a sibling
-        return False
-    return any(
-        park.get("park_class") == transport_park.PARK_GROUPED_DAC_CONTENT_LANE
-        for park in (state.get("parks") or [])
-    )
 
 
 def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResult:
@@ -314,17 +295,8 @@ def check_content_transport_coherence() -> CheckResult:
     it would be needed.
 
     Out of scope: a box with NEITHER end on the ring (coherent; see
-    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and a
-    bonded member in either round-trip spelling — the marker-armed one plays the
-    bond off the return ring, the legacy FIFO one is
-    :func:`check_ring_transport_park`'s named park.
-
-    PER-RUNG STAND-DOWNS, not one gate over all three: the legacy-FIFO park is
-    keyed on ``JASPER_OUTPUTD_DAC_CONTENT_FIFO`` alone, so a parked box can
-    still carry a ring bridge whose path lags the marker — outputd refuses that
-    pair at startup whatever the lane is doing. It stands the SPLIT rungs down
-    (its ``direct`` bridge beside a stereo-ring graph reads as one) and leaves
-    the path rung live.
+    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and an
+    armed bonded member, which plays the bond off the return ring.
 
     The ladder moves these keys one rung at a time, so a run taken inside one
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
@@ -400,17 +372,6 @@ def check_content_transport_coherence() -> CheckResult:
         f"{playback_device or '(none)'}"
     )
     if graph_on_ring != outputd_on_ring:
-        # THE SPLIT RUNGS ONLY: the legacy-FIFO member runs the `direct` bridge
-        # its writer no longer emits while its own graph still loads the stereo
-        # ring, which reads as a split about a box `check_ring_transport_park`
-        # already names. The path rung below is a different fact and stays live.
-        if _grouped_dac_content_lane_parked():
-            return CheckResult(
-                label,
-                "skipped",
-                "grouped dac_content lane; see the transport-park check",
-                reason=REASON_SPLIT_GROUPED_DAC_CONTENT_LANE,
-            )
         if graph_on_ring:
             return _crossed_transport_pair(
                 label,
@@ -1262,7 +1223,7 @@ def check_ring_transport_park() -> CheckResult:
                 "active-crossover layout, so none of the four named parks "
                 "describes it (ADR-0184). Unproven, not parked — nothing is "
                 "claimed to the household. Report the saved layout "
-                "(/sound/setup/) if sound is missing.",
+                "(/sound/speaker/) if sound is missing.",
                 reason=REASON_TRANSPORT_ENDPOINT_UNPROVEN,
             )
         refusal = state.get("converge_refused")
@@ -1291,7 +1252,7 @@ def check_ring_transport_park() -> CheckResult:
                 "should have armed it (ADR-0189). Not parked — whatever graph "
                 "is loaded keeps playing. A reconcile in flight clears this on "
                 "its next pass; if it persists, report the saved layout "
-                "(/sound/setup/).",
+                "(/sound/speaker/).",
                 reason=REASON_TRANSPORT_ENDPOINT_ARMED_WITHOUT_ACTIVE_MODE,
             )
         return CheckResult(
@@ -1305,7 +1266,7 @@ def check_ring_transport_park() -> CheckResult:
             "this box's declared topology resolves no ring geometry of either "
             "kind, and none of the four named parks describes it — so it is "
             "neither servable by the single transport nor tracked by an issue "
-            "yet. Report the saved layout (/sound/setup/) so it can be named.",
+            "yet. Report the saved layout (/sound/speaker/) so it can be named.",
             reason=REASON_TRANSPORT_TOPOLOGY_UNCLASSIFIED,
         )
 

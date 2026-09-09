@@ -220,7 +220,7 @@ def _transfers(sections_by_role):
     """What the HOST hands the kernel: per-role ``freqs -> complex response``.
 
     The kernel may not import ``jasper.active_speaker``
-    (``tests/test_correction_boundary_ssot.py``), so priors carry the evaluated
+    (``tests/test_audio_measurement_boundary_ssot.py``), so priors carry the evaluated
     transfer rather than the sections behind it. This mirrors
     ``crossover_v2_flow._role_transfers``.
     """

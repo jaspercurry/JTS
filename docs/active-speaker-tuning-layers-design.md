@@ -170,9 +170,9 @@ distinct angles test spatial behaviour. Increasing one cannot replace the other.
 
 Crossover capture uses a microphone connected to the Pi. A USB microphone and
 DAC do not acquire a shared sample clock merely by sharing a computer. Timing
-claims need the evidence the analysis requires. [Room](room-correction-information-design.md)
-still captures through the local browser over HTTPS. The crossover phone relay
-was retired in ADR-0222.
+claims need the evidence the analysis requires. Room measures through the same
+wired microphone, as a layer of the one toolbox (ADR-0259). The crossover phone
+relay was retired in ADR-0222.
 
 The [measurement engine](../jasper/active_speaker/crossover_v2/session.py) owns the common
 session lifetime. Domain tools retain analysis, fitting, and application policy.

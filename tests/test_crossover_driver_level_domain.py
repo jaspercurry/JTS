@@ -123,7 +123,7 @@ def test_lease_snapshot_requires_every_driver_before_ready():
 
 
 def test_discard_reference_axis_outcome_clears_runtime_and_lock_store():
-    from jasper.correction.level_match import MeasurementLevelLock
+    from jasper.audio_measurement.level_match import MeasurementLevelLock
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
     geometry = "reference_axis_driver:mono:woofer"

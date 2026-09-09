@@ -4,7 +4,7 @@
 
 """SSOT for the correction/commissioning ``aplay`` lane (``WAV -> correction_substream -> jasper-fanin -> CamillaDSP -> outputd``, snd-aloop on ``hw:Loopback,0,4``); drift guard ``tests/test_correction_substream_ssot.py``.
 
-Stays outside ``jasper.correction`` (import cycle) and stdlib-only (socket-activated wizard consumers)."""
+Stdlib-only, so the socket-activated wizard consumers never pay for numpy."""
 from __future__ import annotations
 
 import subprocess

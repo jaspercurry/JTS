@@ -4,46 +4,39 @@
 
 """HTTPS measurement daemon behind the /sound/ measurement pages.
 
-The user opens the hub on a phone and chooses the measurement job:
-room correction, active-crossover acoustic checks, or bass tuning. Room
-correction captures pre-sweep room noise plus one or more measurement
-positions, reviews confidence/visualization evidence, and optionally
-applies a bounded room-correction profile through the shared CamillaDSP
-apply path.
+It serves the active-crossover commissioning walk, the stereo-pair
+timing wizard, the read-only measurements browser and the bass display
+page.
 
 Architecture:
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
     spotify_setup, bluetooth_setup. No FastAPI / ASGI dependency.
-  - Single in-memory `MeasurementSession` (jasper.correction.session)
-    drives the multi-step state machine.
-  - Browser polls GET /status every 500 ms while work is active, the
-    presentation envelope every 900 ms on active screens, and lightweight
-    entry facts every 10 s while idle — simpler than SSE in stdlib and bounded
-    for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
-    handlers to the async session methods.
-  - HTTP routes (after nginx strips the /sound/room/ prefix): this
-    module now serves far more routes than fit a comment table.
+    handlers to the async measurement methods.
+  - Browsers poll the status/envelope routes rather than holding a
+    stream — simpler than SSE in stdlib and bounded for state
+    transitions that take seconds.
 
-Module layout: this file owns the page render, the `_GET_ROUTES` /
-`_POST_ROUTES` tables and the request handler that dispatches them.
-The route bodies live in `correction_handlers`, and the session /
-capture / microphone state both of them act on lives in
-`correction_capture`.
+Module layout: this file owns the `_GET_ROUTES` / `_POST_ROUTES` tables
+and the request handler that dispatches them. The route bodies live in
+`correction_handlers`, the capture / microphone state both of them act
+on lives in `correction_capture`, and the loop bridge, CamillaController
+factory, body readers and request exceptions all three use live in
+`correction_runtime`.
 
-Why a separate service from jasper-web (Spotify + voice settings):
-the correction flow eventually imports numpy/scipy through
-`jasper.correction.*` while handling measurements. Keeping this
-socket-activated service separate from lightweight setup pages keeps
-the idle management UI cheap on a 1 GB Pi.
+Why a separate service from jasper-web (Spotify + voice settings): the
+measurement routes eventually import numpy/scipy while handling
+captures. Keeping this socket-activated service separate from
+lightweight setup pages keeps the idle management UI cheap on a 1 GB Pi.
 """
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,145 +46,26 @@ from urllib.parse import parse_qs, urlparse
 
 
 from ..log_event import log_event
-from . import correction_room_flow, correction_tuning
 from ..platform.systemd import no_hold
 
 from ._common import (
+    RouteFn,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    guard_mutating_request,
-    guard_read_request,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
+    route_path,
     send_html_response,
     send_json_response,
 )
-from . import correction_capture, correction_handlers
-from .correction_capture import (
+from . import correction_capture, correction_handlers, correction_runtime, sync_flow
+from .correction_runtime import (
     BadRequest,
+    CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
     MAX_SYNC_WAV_BODY_BYTES,
-    REQUIRED_SAMPLE_RATE,
-    RequestConflict,
-    TuningSetupUnavailable,
-    _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-    _FOLLOWER_DELEGATED_PAGE_PATHS,
     logger,
 )
-
-
-_PAGE_BODY = correction_room_flow._PAGE_BODY
-
-
-def _render_follower_page(hostname: str, csrf_token: str = "") -> bytes:
-    return correction_room_flow.render_follower_page(
-        hostname,
-        csrf_token,
-        leader_url=bonded_follower_leader_web_url("/sound/room/"),
-    )
-
-
-def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
-    if bonded_follower_active():
-        return _render_follower_page(hostname, csrf_token)
-    return correction_room_flow.render_page(
-        hostname,
-        csrf_token,
-        required_sample_rate=REQUIRED_SAMPLE_RATE,
-        household_mic_prefill_payload=correction_capture._household_mic_prefill_payload(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
-#
-# do_GET / do_POST dispatch through these exact-path tables (path ->
-# handler-method name on _Handler); each method holds the body its
-# `if path == ...` branch had. Mirrors the table in
-# jasper/web/wake_corpus_setup.py.
-#
-# ORDERING IS LOAD-BEARING: an unlisted path 404s before the read guard
-# (GET) or the CSRF check (POST) runs, so a bogus path never reveals
-# either. The /sync/* and /crossover/* families are dispatched by prefix
-# through their own methods, which answer their own failures and so run
-# outside do_POST's blanket 500 net.
-
-_GET_ROUTES = {
-    "/": "_get_index",
-    "/crossover": "_get_crossover",
-    "/measurements": "_get_measurements",
-    "/measurements/data": "_get_measurements_data",
-    "/crossover/status": "_get_crossover_status",
-    "/crossover/envelope": "_get_crossover_envelope",
-    "/bass": "_get_bass",
-    "/bass/status": "_get_bass_status",
-    "/sync": "_get_sync",
-    "/sync/status": "_get_sync_status",
-    "/healthz": "_get_healthz",
-    "/status": "_get_status",
-    "/entry-status": "_get_entry_status",
-    "/envelope": "_get_envelope",
-    "/sessions": "_get_sessions",
-    "/session-report": "_get_session_report",
-    "/calibration/models": "_get_calibration_models",
-}
-
-# Mutating routes this handler accepts. Membership gates the 404 above;
-# deleting a line would otherwise 404 a route silently.
-_POST_ROUTES = {
-    "/start": "_post_start",
-    "/next-position": "_post_next_position",
-    "/repeat-position": "_post_repeat_position",
-    "/verify": "_post_verify",
-    "/test-tone": "_post_test_tone",
-    "/autolevel/start": "_post_autolevel_start",
-    "/autolevel/lock": "_post_autolevel_lock",
-    "/autolevel/cancel": "_post_autolevel_cancel",
-    "/upload-noise": "_post_upload_noise",
-    "/upload-capture": "_post_upload_capture",
-    "/local-capture/setup": "_post_local_capture_setup",
-    "/calibration/fetch": "_post_calibration_fetch",
-    "/calibration/upload": "_post_calibration_upload",
-    "/apply": "_post_apply",
-    "/reset": "_post_reset",
-    "/session/delete": "_post_session_delete",
-    "/interpret": "_post_interpret",
-    "/propose": "_post_propose",
-    "/propose/apply": "_post_propose_apply",
-    "/crossover/capture-cancel": "_dispatch_crossover",
-    "/crossover/reset": "_dispatch_crossover",
-    "/crossover/recover-volume": "_dispatch_crossover",
-    # v2 session flow — the only crossover-measurement flow. There is no
-    # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
-    "/crossover/v2/session": "_dispatch_crossover",
-    "/crossover/v2/verify": "_dispatch_crossover",
-    "/crossover/v2/apply": "_dispatch_crossover",
-    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
-    # so the apply door above can reach it by fingerprint. The apply slot is
-    # single-valued and every measure session overwrites it; this is the lookup
-    # it never had.
-    "/crossover/v2/republish": "_dispatch_crossover",
-    # The review screen's "Keep current sound", which #2641 found inert.
-    "/crossover/v2/decline": "_dispatch_crossover",
-    # A GATED session's position release — the report that the microphone has
-    # reached the angle the envelope named, from an EXTERNAL driver on the
-    # remote tier or from the person holding the tape on a hand-walked wired
-    # round (#2879).
-    "/crossover/v2/position-ready": "_dispatch_crossover",
-    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
-    # local stand-in for the phone's authenticated completion event.
-    "/crossover/v2/complete": "_dispatch_crossover",
-    # The WIRED session's per-take retake — the local stand-in for the phone's
-    # ``begin_capture {retake: true}``, re-opening the slot that just
-    # completed while the walk is still waiting on a person.
-    "/crossover/v2/retake": "_dispatch_crossover",
-    "/sync/start": "_dispatch_sync",
-    "/sync/play": "_dispatch_sync",
-    "/sync/analyze": "_dispatch_sync",
-    "/sync/apply": "_dispatch_sync",
-    "/sync/stop": "_dispatch_sync",
-    "/sync/reset": "_dispatch_sync",
-}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -243,109 +117,233 @@ class _Handler(BaseHTTPRequestHandler):
     ) -> None:
         self._send_json({"error": message}, status=status)
 
-    def _send_room_failure(
-        self,
-        failure: Mapping[str, Any],
-        *,
-        diagnostic: str,
-        status: int,
-    ) -> None:
-        public = dict(failure)
-        log_event(
-            logger,
-            "correction.homeowner_failure",
-            code=str(public.get("code") or "unknown_failure"),
-            retryable=bool(public.get("retryable")),
-            status=int(status),
-            diagnostic=diagnostic,
-            level=logging.WARNING,
-        )
-        self._send_json(
-            {"failure": public},
-            status=status,
-        )
+    # --- routes ---
 
-    def _dispatch_sync(self, path: str) -> None:
-        """POST /sync/* — stereo-pair acoustic timing walkthrough."""
-        from . import sync_flow
+    def do_GET(self) -> None:  # noqa: N802
+        dispatch_get(self, _GET_ROUTES)
 
-        def _schedule(coro):
-            return asyncio.run_coroutine_threadsafe(
-                coro, correction_capture._ensure_loop())
+    def do_POST(self) -> None:  # noqa: N802
+        dispatch_post(self, _POST_ROUTES, guard="header", run=_run_post_route)
 
-        try:
-            if path == "/sync/start":
-                blocked = correction_capture._correction_start_blocker()
-                if blocked is not None:
-                    self._send_json(
-                        {"ok": False, "error": (
-                            "a room-correction session is active "
-                            f"({blocked})"
-                        )},
-                        status=HTTPStatus.CONFLICT,
-                    )
-                    return
-                payload, status = sync_flow.handle_start(
-                    self.hostname, _schedule)
-            elif path == "/sync/play":
-                payload, status = sync_flow.handle_play(
-                    correction_capture._run_async, _schedule)
-            elif path == "/sync/analyze":
-                try:
-                    body = correction_handlers._read_wav_body(
-                        self,
-                        max_bytes=MAX_SYNC_WAV_BODY_BYTES,
-                    )
-                except BadRequest as e:
-                    self._send_json(
-                        {"ok": False, "error": str(e)},
-                        status=HTTPStatus.BAD_REQUEST,
-                    )
-                    return
-                payload, status = sync_flow.handle_analyze(body)
-            elif path == "/sync/apply":
-                payload, status = sync_flow.handle_apply(self)
-            else:
-                payload, status = sync_flow.handle_stop()
-            self._send_json(payload, status=int(status))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("%s failed", path)
-            self._send_json({"ok": False, "error": str(e)}, status=500)
 
-    def _dispatch_crossover(self, path: str) -> None:
-        """POST /crossover/* — secure active-crossover measurement."""
+# ---------------------------------------------------------------------------
+# Route bodies + routing
+# ---------------------------------------------------------------------------
+#
+# The bodies are module-level functions taking the handler, not methods:
+# the tables below hold them directly, so a body bound to the class would
+# be dispatched past any override on the per-server subclass
+# `_make_handler_class` builds.
 
-        if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
-            # v2 commission sessions (Wave 5a). ValueError covers both the
-            # host's typed CrossoverV2Refused (a subclass) and shared
-            # precondition refusals — same contract as the capture routes.
+def _dispatch_sync(handler: _Handler) -> None:
+    """POST /sync/* — stereo-pair acoustic timing walkthrough."""
+    path = route_path(handler.path)
+
+    def _schedule(coro):
+        return asyncio.run_coroutine_threadsafe(
+            coro, correction_runtime.ensure_loop())
+
+    try:
+        if path == "/sync/start":
+            payload, status = sync_flow.handle_start(
+                handler.hostname, _schedule)
+        elif path == "/sync/play":
+            payload, status = sync_flow.handle_play(
+                correction_runtime.run_async, _schedule)
+        elif path == "/sync/analyze":
             try:
-                self._send_json(
-                    correction_handlers._handle_crossover_v2_capture(
-                        self,
-                        verify_only=(path == "/crossover/v2/verify"),
-                        idle_hold=self.idle_hold,
-                    )
+                body = correction_runtime.read_wav_body(
+                    handler,
+                    max_bytes=MAX_SYNC_WAV_BODY_BYTES,
                 )
-            except ValueError as e:
-                # Log the refusal so it is debuggable from the journal,
-                # not just visible as a 400 in the browser. A session-open
-                # refusal never reaches the envelope, because the envelope
-                # renders from a PERSISTED failure and the pre-flight
-                # deliberately refuses before any state is written. So the
-                # reason's own action rides the 400 body instead — the
-                # wizard renders it as a button beside the message, and the
-                # household is one click from the fix rather than one
-                # navigation plus one click. Same registry entry the
-                # hard-stop screen would have read.
-                from jasper.web.correction_crossover_v2 import (
-                    refusal_next_action,
+            except BadRequest as e:
+                handler._send_json(
+                    {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
                 )
+                return
+            payload, status = sync_flow.handle_analyze(body)
+        elif path == "/sync/apply":
+            payload, status = sync_flow.handle_apply(handler)
+        else:
+            payload, status = sync_flow.handle_stop()
+        handler._send_json(payload, status=int(status))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("%s failed", path)
+        handler._send_json({"ok": False, "error": str(e)}, status=500)
 
-                refusal_body: dict[str, Any] = {"ok": False, "error": str(e)}
-                action = refusal_next_action(e)
-                if action is not None:
-                    refusal_body["next_action"] = action
+
+def _dispatch_crossover(handler: _Handler) -> None:
+    """POST /crossover/* — secure active-crossover measurement."""
+    path = route_path(handler.path)
+
+    if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
+        # v2 commission sessions (Wave 5a). ValueError covers both the
+        # host's typed CrossoverV2Refused (a subclass) and shared
+        # precondition refusals — same contract as the capture routes.
+        try:
+            handler._send_json(
+                correction_handlers._handle_crossover_v2_capture(
+                    handler,
+                    verify_only=(path == "/crossover/v2/verify"),
+                    idle_hold=handler.idle_hold,
+                )
+            )
+        except ValueError as e:
+            # Log the refusal so it is debuggable from the journal,
+            # not just visible as a 400 in the browser. A session-open
+            # refusal never reaches the envelope, because the envelope
+            # renders from a PERSISTED failure and the pre-flight
+            # deliberately refuses before any state is written. So the
+            # reason's own action rides the 400 body instead — the
+            # wizard renders it as a button beside the message, and the
+            # household is one click from the fix rather than one
+            # navigation plus one click. Same registry entry the
+            # hard-stop screen would have read.
+            from jasper.web.correction_crossover_v2 import (
+                refusal_next_action,
+            )
+
+            refusal_body: dict[str, Any] = {"ok": False, "error": str(e)}
+            action = refusal_next_action(e)
+            if action is not None:
+                refusal_body["next_action"] = action
+            log_event(
+                logger,
+                "correction.crossover_v2_refused",
+                level=logging.WARNING,
+                route=path,
+                reason=str(e),
+                code=str(getattr(e, "code", "") or ""),
+            )
+            handler._send_json(
+                refusal_body,
+                status=HTTPStatus.BAD_REQUEST,
+            )
+        except (OSError, RuntimeError, TypeError) as e:
+            # Issue #1833: a CrossoverV2FlowError raised SYNCHRONOUSLY
+            # inside prepare_v2_session's `_open` (the spec/index-map
+            # builders) reaches here, not the 400 arm above -- it is a
+            # RuntimeError subclass, so `except ValueError` misses it.
+            # `str(e)` then put a programmer string
+            # ("cloud_measure_positions must be 6..12, got 14") straight
+            # into the wizard's DOM. Route it through the ONE mapper the
+            # rest of this module already uses; it is the identity for
+            # everything outside the mapped families, so nothing else on
+            # this arm changes. The raw string still reaches the journal
+            # via logger.exception above.
+            logger.exception("%s failed", path)
+            handler._send_json(
+                {"ok": False, "error": correction_capture._capture_failure_message(e)},
+                status=500,
+            )
+        return
+
+    if path == "/crossover/v2/position-ready":
+        # A release that names the wrong (or no) pending capture is a
+        # CONFLICT, not a malformed request: the driver's view of the
+        # session is simply stale, which is the ordinary outcome of a
+        # retry that crossed a capture starting — so it answers 409,
+        # the same status a refused transition maps to elsewhere here.
+        try:
+            handler._send_json(correction_handlers._handle_crossover_v2_position_ready(handler))
+        except BadRequest as e:
+            # A malformed body is a 400, and BadRequest subclasses
+            # ValueError — so it has to be claimed BEFORE the 409 arm
+            # below, which would otherwise report a parse failure as a
+            # stale-release conflict.
+            #
+            # It must also be ANSWERED here, not re-raised: this arm
+            # sits above ``_dispatch_crossover``'s own
+            # ``except BadRequest`` (that one guards the later routes
+            # inside its own ``try``), and ``do_POST`` calls this
+            # dispatcher bare — so a re-raise escapes into
+            # ``socketserver.BaseServer.handle_error``, which logs a
+            # traceback and drops the connection with NO response at
+            # all. The driver sees a closed socket instead of the
+            # reason its body was rejected.
+            handler._send_client_error(str(e))
+        except ValueError as e:
+            handler._send_json(
+                {"ok": False, "error": str(e)},
+                status=HTTPStatus.CONFLICT,
+            )
+        except (OSError, RuntimeError, TypeError) as e:
+            logger.exception("%s failed", path)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
+
+    if path == "/crossover/v2/complete":
+        # Same shape as position-ready: a malformed body is a 400
+        # (BadRequest subclasses ValueError, so it must be claimed
+        # first), while a signal with no wired session waiting is a
+        # CONFLICT — a stale caller, not a malformed request.
+        try:
+            handler._send_json(correction_handlers._handle_crossover_v2_complete(handler))
+        except BadRequest as e:
+            handler._send_client_error(str(e))
+        except ValueError as e:
+            handler._send_json(
+                {"ok": False, "error": str(e)},
+                status=HTTPStatus.CONFLICT,
+            )
+        except (OSError, RuntimeError, TypeError) as e:
+            logger.exception("%s failed", path)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
+
+    if path == "/crossover/v2/retake":
+        # The completion signal's shape exactly, and for the same
+        # reasons: 400 for a malformed body, 409 for a signal no wired
+        # session is waiting for.
+        try:
+            handler._send_json(correction_handlers._handle_crossover_v2_retake(handler))
+        except BadRequest as e:
+            handler._send_client_error(str(e))
+        except ValueError as e:
+            handler._send_json(
+                {"ok": False, "error": str(e)},
+                status=HTTPStatus.CONFLICT,
+            )
+        except (OSError, RuntimeError, TypeError) as e:
+            logger.exception("%s failed", path)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
+
+    if path == "/crossover/v2/apply":
+        try:
+            payload = correction_handlers._handle_crossover_v2_apply(handler)
+            # Finding N: a blocked apply must not read as success — the
+            # same "compute status from payload contents" shape
+            # the capture routes already use above.
+            handler._send_json(
+                payload,
+                status=(
+                    HTTPStatus.CONFLICT
+                    if payload.get("status") == "blocked"
+                    else HTTPStatus.OK
+                ),
+            )
+        except ValueError as e:
+            # This arm answered 400 with the raw string and journaled
+            # NOTHING, which the session/verify arm above had already
+            # ruled a defect ("the 400 response is correct for the
+            # browser; the gap was purely observability" --
+            # test_crossover_v2_refusal_is_logged_not_silent). Every
+            # ValueError leaving here is now recorded; what differs is
+            # the SEVERITY, because the two halves are different events.
+            #
+            # A refusal (CrossoverV2Refused) or a malformed body
+            # (BadRequest) is the caller being told no -- WARNING, under
+            # the vocabulary the sibling already owns for "a v2 route
+            # refused", which likewise exempts neither. Anything else is
+            # the speaker faulting on its own apply path, which #2839's
+            # `allow_nan=False` refusal in `save_v2_state` made
+            # reachable -- ERROR, and named for what it is.
+            from jasper.web.correction_crossover_v2 import (
+                CrossoverV2Refused,
+            )
+            if isinstance(e, (BadRequest, CrossoverV2Refused)):
                 log_event(
                     logger,
                     "correction.crossover_v2_refused",
@@ -354,820 +352,436 @@ class _Handler(BaseHTTPRequestHandler):
                     reason=str(e),
                     code=str(getattr(e, "code", "") or ""),
                 )
-                self._send_json(
-                    refusal_body,
-                    status=HTTPStatus.BAD_REQUEST,
+            else:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_apply_fault",
+                    level=logging.ERROR,
+                    error_type=type(e).__name__,
+                    error=str(e),
                 )
-            except (OSError, RuntimeError, TypeError) as e:
-                # Issue #1833: a CrossoverV2FlowError raised SYNCHRONOUSLY
-                # inside prepare_v2_session's `_open` (the spec/index-map
-                # builders) reaches here, not the 400 arm above -- it is a
-                # RuntimeError subclass, so `except ValueError` misses it.
-                # `str(e)` then put a programmer string
-                # ("cloud_measure_positions must be 6..12, got 14") straight
-                # into the wizard's DOM. Route it through the ONE mapper the
-                # rest of this module already uses; it is the identity for
-                # everything outside the mapped families, so nothing else on
-                # this arm changes. The raw string still reaches the journal
-                # via logger.exception above.
-                logger.exception("%s failed", path)
-                self._send_json(
-                    {"ok": False, "error": correction_capture._capture_failure_message(e)},
-                    status=500,
-                )
-            return
-
-        if path == "/crossover/v2/position-ready":
-            # A release that names the wrong (or no) pending capture is a
-            # CONFLICT, not a malformed request: the driver's view of the
-            # session is simply stale, which is the ordinary outcome of a
-            # retry that crossed a capture starting — so it answers 409,
-            # the same status a refused transition maps to elsewhere here.
-            try:
-                self._send_json(correction_handlers._handle_crossover_v2_position_ready(self))
-            except BadRequest as e:
-                # A malformed body is a 400, and BadRequest subclasses
-                # ValueError — so it has to be claimed BEFORE the 409 arm
-                # below, which would otherwise report a parse failure as a
-                # stale-release conflict.
-                #
-                # It must also be ANSWERED here, not re-raised: this arm
-                # sits above ``_dispatch_crossover``'s own
-                # ``except BadRequest`` (that one guards the later routes
-                # inside its own ``try``), and ``do_POST`` calls this
-                # dispatcher bare — so a re-raise escapes into
-                # ``socketserver.BaseServer.handle_error``, which logs a
-                # traceback and drops the connection with NO response at
-                # all. The driver sees a closed socket instead of the
-                # reason its body was rejected.
-                self._send_client_error(str(e))
-            except ValueError as e:
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.CONFLICT,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        if path == "/crossover/v2/complete":
-            # Same shape as position-ready: a malformed body is a 400
-            # (BadRequest subclasses ValueError, so it must be claimed
-            # first), while a signal with no wired session waiting is a
-            # CONFLICT — a stale caller, not a malformed request.
-            try:
-                self._send_json(correction_handlers._handle_crossover_v2_complete(self))
-            except BadRequest as e:
-                self._send_client_error(str(e))
-            except ValueError as e:
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.CONFLICT,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        if path == "/crossover/v2/retake":
-            # The completion signal's shape exactly, and for the same
-            # reasons: 400 for a malformed body, 409 for a signal no wired
-            # session is waiting for.
-            try:
-                self._send_json(correction_handlers._handle_crossover_v2_retake(self))
-            except BadRequest as e:
-                self._send_client_error(str(e))
-            except ValueError as e:
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.CONFLICT,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        if path == "/crossover/v2/apply":
-            try:
-                payload = correction_handlers._handle_crossover_v2_apply(self)
-                # Finding N: a blocked apply must not read as success — the
-                # same "compute status from payload contents" shape
-                # the capture routes already use above.
-                self._send_json(
-                    payload,
-                    status=(
-                        HTTPStatus.CONFLICT
-                        if payload.get("status") == "blocked"
-                        else HTTPStatus.OK
-                    ),
-                )
-            except ValueError as e:
-                # This arm answered 400 with the raw string and journaled
-                # NOTHING, which the session/verify arm above had already
-                # ruled a defect ("the 400 response is correct for the
-                # browser; the gap was purely observability" --
-                # test_crossover_v2_refusal_is_logged_not_silent). Every
-                # ValueError leaving here is now recorded; what differs is
-                # the SEVERITY, because the two halves are different events.
-                #
-                # A refusal (CrossoverV2Refused) or a malformed body
-                # (BadRequest) is the caller being told no -- WARNING, under
-                # the vocabulary the sibling already owns for "a v2 route
-                # refused", which likewise exempts neither. Anything else is
-                # the speaker faulting on its own apply path, which #2839's
-                # `allow_nan=False` refusal in `save_v2_state` made
-                # reachable -- ERROR, and named for what it is.
-                from jasper.web.correction_crossover_v2 import (
-                    CrossoverV2Refused,
-                )
-                if isinstance(e, (BadRequest, CrossoverV2Refused)):
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_refused",
-                        level=logging.WARNING,
-                        route=path,
-                        reason=str(e),
-                        code=str(getattr(e, "code", "") or ""),
-                    )
-                else:
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_apply_fault",
-                        level=logging.ERROR,
-                        error_type=type(e).__name__,
-                        error=str(e),
-                    )
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        if path == "/crossover/v2/republish":
-            try:
-                # No payload-derived status: every refusal is a
-                # CrossoverV2Refused (a ValueError -> 400 below), and a
-                # success only moves a pointer, so there is no third
-                # "blocked" outcome to classify like apply/restore have.
-                self._send_json(correction_handlers._handle_crossover_v2_republish(self))
-            except ValueError as e:
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        if path == "/crossover/v2/decline":
-            try:
-                payload, status = correction_handlers._handle_crossover_v2_decline(self)
-                self._send_json(payload, status=int(status))
-            except ValueError as e:
-                self._send_json(
-                    {"ok": False, "error": str(e)},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-            except (OSError, RuntimeError, TypeError) as e:
-                logger.exception("%s failed", path)
-                self._send_json({"ok": False, "error": str(e)}, status=500)
-            return
-
-        from . import correction_crossover_backend as crossover_backend
-
-        volume_sensitive_routes = {
-            "/crossover/reset",
-        }
-        lease = crossover_backend.level_lease()
-        if (
-            path in volume_sensitive_routes
-            and lease.unresolved_volume_safety is not None
-        ):
-            self._send_json(
-                correction_capture._crossover_volume_safety_refusal(),
-                status=HTTPStatus.CONFLICT,
-            )
-            return
-
-        try:
-            if path == "/crossover/recover-volume":
-                from jasper.camilla import CamillaUnavailable
-
-                # When the v2 session owns the unresolved (or
-                # crash-hydrated active) session volume, route to its
-                # plan's recover_unresolved — the legacy lease holds no
-                # unresolved state for a v2 session, so routing there
-                # instead would 409 crossover_volume_recovery_not_required
-                # and leave the volume_recovery screen's own button dead.
-                from . import correction_crossover_v2 as v2host
-
-                if v2host.v2_volume_recovery_active():
-                    succeeded, recovery = v2host.recover_session_volume(
-                        correction_capture._run_async, correction_capture._camilla
-                    )
-                    # A deferral is not a failure to recover, so it must
-                    # not send the household after CamillaDSP: a live
-                    # measurement session holds the fader and the restore
-                    # lands when that session finishes.
-                    if succeeded:
-                        next_step = (
-                            "Refresh and continue crossover commissioning."
-                        )
-                    elif recovery == v2host.RECOVERY_DEFERRED:
-                        next_step = (
-                            "A measurement session still holds the volume. "
-                            "It is restored when that session finishes."
-                        )
-                    else:
-                        next_step = (
-                            "Stop playback and retry recovery when "
-                            "CamillaDSP is available."
-                        )
-                    self._send_json(
-                        {
-                            "status": "recovered" if succeeded else "refused",
-                            "recovery": recovery,
-                            "next_step": next_step,
-                        },
-                        status=(
-                            HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT
-                        ),
-                    )
-                    return
-
-                if lease.unresolved_volume_safety is None:
-                    self._send_json(
-                        {
-                            "status": "refused",
-                            "reason": "crossover_volume_recovery_not_required",
-                            "next_step": "Refresh the crossover page.",
-                        },
-                        status=HTTPStatus.CONFLICT,
-                    )
-                    return
-                cam = correction_capture._camilla()
-                from jasper.volume_owner import volume_owner
-
-                recovery_owner = volume_owner()
-                if recovery_owner is None:
-                    log_event(
-                        logger,
-                        "correction.crossover_level_volume_recovery_owner_absent",
-                        level=logging.CRITICAL,
-                    )
-                    self._send_json(
-                        {
-                            "status": "refused",
-                            "reason": "crossover_volume_recovery_unavailable",
-                            "next_step": "Restart the speaker, then retry.",
-                        },
-                        status=HTTPStatus.SERVICE_UNAVAILABLE,
-                    )
-                    return
-
-                # Routed: the recovery DECLARES the household level rather
-                # than writing the fader itself. The lease keeps its
-                # exact-then-emergency ladder and still proves each rung
-                # through its own readback below, which is what makes a
-                # declaration that was merely RECORDED under a higher-ranked
-                # claim read as "not yet safe" instead of clearing the
-                # durable intent early.
-                async def _set_recovery_volume(db: float) -> bool:
-                    return await recovery_owner.declare_household_level_db(db)
-
-                async def _get_recovery_volume() -> float:
-                    try:
-                        value = await cam.get_volume_db(best_effort=False)
-                    except CamillaUnavailable as exc:
-                        raise RuntimeError(
-                            "CamillaDSP is unavailable during volume recovery"
-                        ) from exc
-                    if value is None:
-                        raise RuntimeError(
-                            "CamillaDSP did not report the recovered volume"
-                        )
-                    return float(value)
-
-                try:
-                    recovery = correction_capture._run_async(
-                        lease.recover_unresolved_volume_safety(
-                            _set_recovery_volume,
-                            _get_recovery_volume,
-                        ),
-                        timeout=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-                    )
-                except concurrent.futures.TimeoutError:
-                    log_event(
-                        logger,
-                        "correction.crossover_level_volume_safety_recovery_timeout",
-                        level=logging.ERROR,
-                        timeout_s=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-                    )
-                    recovery = (
-                        crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
-                    )
-                succeeded = recovery is not (
-                    crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
-                )
-                self._send_json(
-                    {
-                        "status": "recovered" if succeeded else "refused",
-                        "recovery": recovery.value,
-                        "next_step": (
-                            "Refresh and continue crossover commissioning."
-                            if succeeded
-                            else "Stop playback and retry recovery when CamillaDSP is available."
-                        ),
-                    },
-                    status=(HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT),
-                )
-                return
-
-            if path == "/crossover/capture-cancel":
-                self._send_json(correction_handlers._handle_crossover_capture_cancel())
-                return
-
-            if path == "/crossover/reset":
-                payload, status = correction_handlers._handle_crossover_reset()
-                self._send_json(payload, status=int(status))
-                return
-
-            raise ValueError(f"unknown crossover route: {path}")
-        except BadRequest as e:
-            self._send_json(
-                {"ok": False, "error": str(e)},
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except ValueError as e:
-            self._send_json(
+            handler._send_json(
                 {"ok": False, "error": str(e)},
                 status=HTTPStatus.BAD_REQUEST,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            self._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
 
-    # --- routes ---
-
-    def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
-        if path not in _GET_ROUTES:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_read_request(self):
-            return
-        if bonded_follower_active() and path in _FOLLOWER_DELEGATED_PAGE_PATHS:
-            ctx = begin_request(self)
-            self._send_html(_render_follower_page(
-                self.hostname, ctx["csrf_token"],
-            ))
-            return
-        getattr(self, _GET_ROUTES[path])()
-
-    def _get_index(self) -> None:
-        ctx = begin_request(self)
-        self._send_html(_render_page(
-            self.hostname, ctx["csrf_token"], ctx["flash"],
-        ))
-
-    def _get_crossover(self) -> None:
-        from . import correction_crossover_flow
-        ctx = begin_request(self)
-        self._send_html(
-            correction_crossover_flow.render_page(
-                self.hostname, ctx["csrf_token"],
-            )
-        )
-
-    def _get_measurements(self) -> None:
-        from . import correction_measurements
-        ctx = begin_request(self)
-        self._send_html(
-            correction_measurements.render_page(
-                self.hostname, ctx["csrf_token"],
-            )
-        )
-
-    def _get_measurements_data(self) -> None:
-        from jasper.active_speaker import bundles as active_bundles
-        from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
-        from . import correction_measurements
-
-        query = parse_qs(urlparse(self.path).query)
-        run_a_id = (query.get("a") or [""])[0] or None
-        run_b_id = (query.get("b") or [""])[0] or None
+    if path == "/crossover/v2/republish":
         try:
-            self._send_json(correction_measurements.build_data(
-                sessions_dir=active_bundles.sessions_dir(),
-                campaign_root=DEFAULT_CAMPAIGN_ROOT,
-                run_a_id=run_a_id,
-                run_b_id=run_b_id,
-            ))
-        except correction_measurements.MeasurementViewRequestError as exc:
-            self._send_client_error(str(exc))
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            logger.exception("/measurements/data failed")
-            self._send_json({"error": str(exc)}, status=500)
-
-    def _get_crossover_status(self) -> None:
-        from . import correction_crossover_flow
-        from . import correction_crossover_v2 as v2host
-
-        def _crossover_status(_handler):
-            # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
-            # a session volume that outlived its 1800 s ceiling is
-            # force-drained here (cheap in-memory stale check first).
-            correction_capture._enforce_session_volume_ceiling(v2host)
-            return correction_crossover_flow.handle_status(
-                capture=correction_capture._get_capture_slot_for("crossover_v2:"),
+            # No payload-derived status: every refusal is a
+            # CrossoverV2Refused (a ValueError -> 400 below), and a
+            # success only moves a pointer, so there is no third
+            # "blocked" outcome to classify like apply/restore have.
+            handler._send_json(correction_handlers._handle_crossover_v2_republish(handler))
+        except ValueError as e:
+            handler._send_json(
+                {"ok": False, "error": str(e)},
+                status=HTTPStatus.BAD_REQUEST,
             )
+        except (OSError, RuntimeError, TypeError) as e:
+            logger.exception("%s failed", path)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
 
-        self._serve_json_route("/crossover/status", _crossover_status)
-
-    def _get_crossover_envelope(self) -> None:
-        from . import correction_crossover_flow
-        from . import correction_crossover_v2 as v2host
-
-        def _crossover_envelope(_handler):
-            # W6.1 E3: the wizard and remote driver both poll this route,
-            # so it promptly drains a walked-away or slow-driver session.
-            correction_capture._enforce_session_volume_ceiling(v2host)
-            return correction_crossover_flow.handle_envelope(
-                capture=correction_capture._get_capture_slot_for("crossover_v2:"),
-            )
-
-        self._serve_json_route("/crossover/envelope", _crossover_envelope)
-
-    def _get_bass(self) -> None:
-        from . import correction_bass_flow
-        ctx = begin_request(self)
-        self._send_html(
-            correction_bass_flow.render_page(
-                self.hostname, ctx["csrf_token"],
-            )
-        )
-
-    def _get_bass_status(self) -> None:
-        from . import correction_bass_flow
-        self._serve_json_route(
-            "/bass/status",
-            lambda _handler: correction_bass_flow.handle_status(),
-        )
-
-    def _get_sync(self) -> None:
-        from . import sync_flow
-        ctx = begin_request(self)
-        self._send_html(sync_flow.render_page(ctx["csrf_token"]))
-
-    def _get_sync_status(self) -> None:
-        from . import sync_flow
+    if path == "/crossover/v2/decline":
         try:
-            self._send_json(sync_flow.handle_status())
-        except Exception as e:  # noqa: BLE001
-            logger.exception("/sync/status failed")
-            self._send_json({"error": str(e)}, status=500)
+            payload, status = correction_handlers._handle_crossover_v2_decline(handler)
+            handler._send_json(payload, status=int(status))
+        except ValueError as e:
+            handler._send_json(
+                {"ok": False, "error": str(e)},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+        except (OSError, RuntimeError, TypeError) as e:
+            logger.exception("%s failed", path)
+            handler._send_json({"ok": False, "error": str(e)}, status=500)
+        return
 
-    def _get_healthz(self) -> None:
-        body = b"ok\n"
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    from . import correction_crossover_backend as crossover_backend
 
-    def _get_status(self) -> None:
-        self._serve_json_route("/status", correction_handlers._handle_status)
+    volume_sensitive_routes = {
+        "/crossover/reset",
+    }
+    lease = crossover_backend.level_lease()
+    if (
+        path in volume_sensitive_routes
+        and lease.unresolved_volume_safety is not None
+    ):
+        handler._send_json(
+            correction_capture._crossover_volume_safety_refusal(),
+            status=HTTPStatus.CONFLICT,
+        )
+        return
 
-    def _get_entry_status(self) -> None:
-        self._serve_json_route("/entry-status", correction_handlers._handle_entry_status)
+    try:
+        if path == "/crossover/recover-volume":
+            from jasper.camilla import CamillaUnavailable
 
-    def _get_envelope(self) -> None:
-        self._serve_json_route("/envelope", correction_handlers._handle_envelope)
+            # When the v2 session owns the unresolved (or
+            # crash-hydrated active) session volume, route to its
+            # plan's recover_unresolved — the legacy lease holds no
+            # unresolved state for a v2 session, so routing there
+            # instead would 409 crossover_volume_recovery_not_required
+            # and leave the volume_recovery screen's own button dead.
+            from . import correction_crossover_v2 as v2host
 
-    def _get_sessions(self) -> None:
-        self._serve_json_route("/sessions", correction_handlers._handle_sessions)
-
-    def _get_session_report(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_session_report(self))
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except FileNotFoundError as e:
-            self._send_client_error(str(e), status=404)
-        except Exception as e:  # noqa: BLE001
-            from jasper.correction.bundles import BundleError
-            if isinstance(e, BundleError):
-                self._send_client_error(str(e), status=422)
+            if v2host.v2_volume_recovery_active():
+                succeeded, recovery = v2host.recover_session_volume(
+                    correction_runtime.run_async, correction_runtime.camilla_controller
+                )
+                # A deferral is not a failure to recover, so it must
+                # not send the household after CamillaDSP: a live
+                # measurement session holds the fader and the restore
+                # lands when that session finishes.
+                if succeeded:
+                    next_step = (
+                        "Refresh and continue crossover commissioning."
+                    )
+                elif recovery == v2host.RECOVERY_DEFERRED:
+                    next_step = (
+                        "A measurement session still holds the volume. "
+                        "It is restored when that session finishes."
+                    )
+                else:
+                    next_step = (
+                        "Stop playback and retry recovery when "
+                        "CamillaDSP is available."
+                    )
+                handler._send_json(
+                    {
+                        "status": "recovered" if succeeded else "refused",
+                        "recovery": recovery,
+                        "next_step": next_step,
+                    },
+                    status=(
+                        HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT
+                    ),
+                )
                 return
-            logger.exception("/session-report failed")
-            self._send_json({"error": str(e)}, status=500)
 
-    def _get_calibration_models(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_calibration_models(self))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("/calibration/models failed")
-            self._send_json({"error": str(e)}, status=500)
+            if lease.unresolved_volume_safety is None:
+                handler._send_json(
+                    {
+                        "status": "refused",
+                        "reason": "crossover_volume_recovery_not_required",
+                        "next_step": "Refresh the crossover page.",
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            cam = correction_runtime.camilla_controller()
+            from jasper.volume_owner import volume_owner
 
-    def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
-        if path not in _POST_ROUTES:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
-        if bonded_follower_active() and not path.startswith("/crossover/"):
-            log_event(
-                logger,
-                "correction.follower_content_dsp_blocked",
-                path=path,
+            recovery_owner = volume_owner()
+            if recovery_owner is None:
+                log_event(
+                    logger,
+                    "correction.crossover_level_volume_recovery_owner_absent",
+                    level=logging.CRITICAL,
+                )
+                handler._send_json(
+                    {
+                        "status": "refused",
+                        "reason": "crossover_volume_recovery_unavailable",
+                        "next_step": "Restart the speaker, then retry.",
+                    },
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
+            # Routed: the recovery DECLARES the household level rather
+            # than writing the fader itself. The lease keeps its
+            # exact-then-emergency ladder and still proves each rung
+            # through its own readback below, which is what makes a
+            # declaration that was merely RECORDED under a higher-ranked
+            # claim read as "not yet safe" instead of clearing the
+            # durable intent early.
+            async def _set_recovery_volume(db: float) -> bool:
+                return await recovery_owner.declare_household_level_db(db)
+
+            async def _get_recovery_volume() -> float:
+                try:
+                    value = await cam.get_volume_db(best_effort=False)
+                except CamillaUnavailable as exc:
+                    raise RuntimeError(
+                        "CamillaDSP is unavailable during volume recovery"
+                    ) from exc
+                if value is None:
+                    raise RuntimeError(
+                        "CamillaDSP did not report the recovered volume"
+                    )
+                return float(value)
+
+            try:
+                recovery = correction_runtime.run_async(
+                    lease.recover_unresolved_volume_safety(
+                        _set_recovery_volume,
+                        _get_recovery_volume,
+                    ),
+                    timeout=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                )
+            except concurrent.futures.TimeoutError:
+                log_event(
+                    logger,
+                    "correction.crossover_level_volume_safety_recovery_timeout",
+                    level=logging.ERROR,
+                    timeout_s=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                )
+                recovery = (
+                    crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
+                )
+            succeeded = recovery is not (
+                crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
             )
-            self._send_json(
+            handler._send_json(
                 {
-                    "error": (
-                        "room correction is controlled on the pair "
-                        "leader while this speaker is a follower"
+                    "status": "recovered" if succeeded else "refused",
+                    "recovery": recovery.value,
+                    "next_step": (
+                        "Refresh and continue crossover commissioning."
+                        if succeeded
+                        else "Stop playback and retry recovery when CamillaDSP is available."
                     ),
                 },
-                status=HTTPStatus.CONFLICT,
+                status=(HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT),
             )
             return
-        if path.startswith(("/sync/", "/crossover/")):
-            getattr(self, _POST_ROUTES[path])(path)
+
+        if path == "/crossover/capture-cancel":
+            handler._send_json(correction_handlers._handle_crossover_capture_cancel())
             return
-        try:
-            getattr(self, _POST_ROUTES[path])()
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("POST %s failed", path)
-            self._send_json({"error": str(e)}, status=500)
 
-    def _post_start(self) -> None:
-        from jasper.correction import failures
-        from jasper.correction.runtime_safety import (
-            CorrectionRuntimeSafetyError,
+        if path == "/crossover/reset":
+            payload, status = correction_handlers._handle_crossover_reset()
+            handler._send_json(payload, status=int(status))
+            return
+
+        raise ValueError(f"unknown crossover route: {path}")
+    except BadRequest as e:
+        handler._send_json(
+            {"ok": False, "error": str(e)},
+            status=HTTPStatus.BAD_REQUEST,
         )
-        from jasper.sound.graph_carrier import CarrierCannotHostEq
-        try:
-            self._send_json(correction_handlers._handle_start(self))
-        except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.SPEAKER_MEASUREMENT_UNSAFE,
-                    # The reachable cause of this refusal is now an
-                    # unready speaker, so send the household where
-                    # they can act on it rather than to a retry
-                    # that will refuse again.
-                    recovery_action={
-                        "label": "Open speaker setup",
-                        "href": "/sound/setup/",
-                    },
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
-        except FileNotFoundError as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.MICROPHONE_SETUP_UNAVAILABLE,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except ValueError as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.MEASUREMENT_SETUP_INVALID,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except RequestConflict as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.MEASUREMENT_IN_PROGRESS,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.CONFLICT,
-            )
-
-    def _post_next_position(self) -> None:
-        self._send_json(correction_handlers._handle_next_position(self))
-
-    def _post_repeat_position(self) -> None:
-        self._send_json(correction_handlers._handle_repeat_position(self))
-
-    def _post_verify(self) -> None:
-        self._send_json(correction_handlers._handle_verify(self))
-
-    def _post_test_tone(self) -> None:
-        self._send_json(correction_handlers._handle_test_tone(self))
-
-    def _post_autolevel_start(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_autolevel_start(self))
-        except RequestConflict as e:
-            self._send_client_error(str(e), status=409)
-
-    def _post_autolevel_lock(self) -> None:
-        self._send_json(correction_handlers._handle_autolevel_lock(self))
-
-    def _post_autolevel_cancel(self) -> None:
-        self._send_json(correction_handlers._handle_autolevel_cancel(self))
-
-    def _post_local_capture_setup(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_local_capture_setup(self))
-        except (FileNotFoundError, ValueError) as e:
-            self._send_client_error(str(e))
-        except RequestConflict as e:
-            self._send_client_error(str(e), status=409)
-
-    def _post_upload_capture(self) -> None:
-        from jasper.audio_measurement import quality
-
-        try:
-            self._send_json(correction_handlers._handle_upload_capture(self))
-        except quality.CaptureQualityError as e:
-            sess = correction_capture._get_or_create_session()
-            self._send_json({
-                "error": str(e),
-                "session_id": sess.session_id,
-                "state": sess.state.value,
-                "current_position": sess.current_position,
-                "total_positions": sess.total_positions,
-                "capture_quality": sess.capture_quality,
-                "verify_quality": sess.verify_quality,
-                "browser_audio_report": getattr(
-                    sess, "browser_audio_report", None,
-                ),
-                "runtime_integrity": correction_capture._runtime_integrity_summary(sess),
-            }, status=422)
-        except ValueError as e:
-            self._send_client_error(str(e))
-
-    def _post_upload_noise(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_upload_noise(self))
-        except ValueError as e:
-            self._send_client_error(str(e))
-        except RequestConflict as e:
-            self._send_client_error(str(e), status=409)
-
-    def _post_calibration_fetch(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_calibration_fetch(self))
-        except ValueError as e:
-            self._send_client_error(str(e))
-        except Exception as e:  # noqa: BLE001
-            from jasper.audio_measurement.calibration import (
-                CalibrationNotFoundError,
-                CalibrationUpstreamError,
-            )
-            if isinstance(e, CalibrationNotFoundError):
-                self._send_client_error(str(e), status=404)
-            elif isinstance(e, CalibrationUpstreamError):
-                self._send_client_error(str(e), status=502)
-            else:
-                raise
-
-    def _post_calibration_upload(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_calibration_upload(self))
-        except ValueError as e:
-            self._send_client_error(str(e))
-
-    def _post_apply(self) -> None:
-        from jasper.correction.runtime_safety import (
-            CorrectionRuntimeSafetyError,
+    except ValueError as e:
+        handler._send_json(
+            {"ok": False, "error": str(e)},
+            status=HTTPStatus.BAD_REQUEST,
         )
-        from jasper.sound.graph_carrier import CarrierCannotHostEq
-        try:
-            self._send_json(correction_handlers._handle_apply(self))
-        except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
-            self._send_client_error(
-                str(e),
-                status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
+    except (OSError, RuntimeError, TypeError) as e:
+        logger.exception("%s failed", path)
+        handler._send_json({"ok": False, "error": str(e)}, status=500)
 
-    def _post_reset(self) -> None:
-        # Local import keeps session/numpy off the socket-activated
-        # process's import path (mirrors the other handlers).
-        from jasper.correction.runtime_safety import (
-            CorrectionRuntimeSafetyError,
+
+def _get_crossover(handler: _Handler) -> None:
+    from . import correction_crossover_flow
+    ctx = begin_request(handler)
+    handler._send_html(
+        correction_crossover_flow.render_page(
+            handler.hostname, ctx["csrf_token"],
         )
-        from jasper.correction.session import SessionBusyError
-        try:
-            self._send_json(correction_handlers._handle_reset(self))
-        except CorrectionRuntimeSafetyError as e:
-            self._send_client_error(
-                str(e),
-                status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
-        except SessionBusyError as e:
-            # Rejected because a sweep/analysis is mid-flight — a
-            # state conflict (409), not a server error (500).
-            self._send_client_error(str(e), status=409)
+    )
 
-    def _post_session_delete(self) -> None:
-        try:
-            self._send_json(correction_handlers._handle_session_delete(self))
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except FileNotFoundError as e:
-            self._send_client_error(str(e), status=404)
-        except RequestConflict as e:
-            self._send_client_error(str(e), status=409)
 
-    def _post_interpret(self) -> None:
-        from jasper.correction import failures
-        try:
-            self._send_json(correction_handlers._handle_interpret(self))
-        except BadRequest as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.TUNING_REQUEST_FAILED,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except correction_tuning.SpendCapExceeded as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.TUNING_SPEND_LIMIT,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.TOO_MANY_REQUESTS,
-            )
-        except TuningSetupUnavailable as e:
-            self._send_room_failure(
-                failures.public_failure(failures.TUNING_UNAVAILABLE),
-                diagnostic=str(e),
-                status=HTTPStatus.CONFLICT,
-            )
-        except RequestConflict as e:
-            self._send_room_failure(
-                failures.public_failure(failures.TUNING_BUSY),
-                diagnostic=str(e),
-                status=HTTPStatus.CONFLICT,
-            )
-
-    def _post_propose(self) -> None:
-        from jasper.correction import failures
-        try:
-            self._send_json(correction_handlers._handle_propose(self))
-        except BadRequest as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.TUNING_REQUEST_FAILED,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except correction_tuning.SpendCapExceeded as e:
-            self._send_room_failure(
-                failures.public_failure(
-                    failures.TUNING_SPEND_LIMIT,
-                ),
-                diagnostic=str(e),
-                status=HTTPStatus.TOO_MANY_REQUESTS,
-            )
-        except TuningSetupUnavailable as e:
-            self._send_room_failure(
-                failures.public_failure(failures.TUNING_UNAVAILABLE),
-                diagnostic=str(e),
-                status=HTTPStatus.CONFLICT,
-            )
-        except RequestConflict as e:
-            self._send_room_failure(
-                failures.public_failure(failures.TUNING_BUSY),
-                diagnostic=str(e),
-                status=HTTPStatus.CONFLICT,
-            )
-
-    def _post_propose_apply(self) -> None:
-        from jasper.correction.runtime_safety import (
-            CorrectionRuntimeSafetyError,
+def _get_measurements(handler: _Handler) -> None:
+    from . import correction_measurements
+    ctx = begin_request(handler)
+    handler._send_html(
+        correction_measurements.render_page(
+            handler.hostname, ctx["csrf_token"],
         )
-        from jasper.sound.graph_carrier import CarrierCannotHostEq
-        try:
-            self._send_json(correction_handlers._handle_propose_apply(self))
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except RequestConflict as e:
-            self._send_client_error(str(e), status=409)
-        except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
-            self._send_client_error(
-                str(e),
-                status=HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
+    )
+
+
+def _get_measurements_data(handler: _Handler) -> None:
+    from jasper.active_speaker import bundles as active_bundles
+    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
+    from . import correction_measurements
+
+    query = parse_qs(urlparse(handler.path).query)
+    run_a_id = (query.get("a") or [""])[0] or None
+    run_b_id = (query.get("b") or [""])[0] or None
+    try:
+        handler._send_json(correction_measurements.build_data(
+            sessions_dir=active_bundles.sessions_dir(),
+            campaign_root=DEFAULT_CAMPAIGN_ROOT,
+            run_a_id=run_a_id,
+            run_b_id=run_b_id,
+        ))
+    except correction_measurements.MeasurementViewRequestError as exc:
+        handler._send_client_error(str(exc))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        logger.exception("/measurements/data failed")
+        handler._send_json({"error": str(exc)}, status=500)
+
+
+def _get_crossover_status(handler: _Handler) -> None:
+    from . import correction_crossover_flow
+    from . import correction_crossover_v2 as v2host
+
+    def _crossover_status(_handler):
+        # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
+        # a session volume that outlived its 1800 s ceiling is
+        # force-drained here (cheap in-memory stale check first).
+        correction_capture._enforce_session_volume_ceiling(v2host)
+        return correction_crossover_flow.handle_status(
+            capture=correction_capture._get_capture_slot_for("crossover_v2:"),
+        )
+
+    handler._serve_json_route("/crossover/status", _crossover_status)
+
+
+def _get_crossover_envelope(handler: _Handler) -> None:
+    from . import correction_crossover_flow
+    from . import correction_crossover_v2 as v2host
+
+    def _crossover_envelope(_handler):
+        # W6.1 E3: the wizard and remote driver both poll this route,
+        # so it promptly drains a walked-away or slow-driver session.
+        correction_capture._enforce_session_volume_ceiling(v2host)
+        return correction_crossover_flow.handle_envelope(
+            capture=correction_capture._get_capture_slot_for("crossover_v2:"),
+        )
+
+    handler._serve_json_route("/crossover/envelope", _crossover_envelope)
+
+
+def _get_bass(handler: _Handler) -> None:
+    from . import correction_bass_flow
+    ctx = begin_request(handler)
+    handler._send_html(
+        correction_bass_flow.render_page(
+            handler.hostname, ctx["csrf_token"],
+        )
+    )
+
+
+def _get_bass_status(handler: _Handler) -> None:
+    from . import correction_bass_flow
+    handler._serve_json_route(
+        "/bass/status",
+        lambda _handler: correction_bass_flow.handle_status(),
+    )
+
+
+def _get_sync(handler: _Handler) -> None:
+    ctx = begin_request(handler)
+    handler._send_html(sync_flow.render_page(ctx["csrf_token"]))
+
+
+def _get_sync_status(handler: _Handler) -> None:
+    try:
+        handler._send_json(sync_flow.handle_status())
+    except Exception as e:  # noqa: BLE001
+        logger.exception("/sync/status failed")
+        handler._send_json({"error": str(e)}, status=500)
+
+
+def _follower_delegated(fn: RouteFn) -> RouteFn:
+    """A page a bonded follower does not own: it renders the "controlled on
+    the leader" page instead of its own. Pair timing is the one left — it is
+    a measurement of the paired playback image, so it runs on the leader."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        if bonded_follower_active():
+            ctx = begin_request(handler)
+            handler._send_html(sync_flow.render_follower_page(
+                ctx["csrf_token"],
+                leader_url=bonded_follower_leader_web_url("/sound/pair/sync/"),
+            ))
+            return
+        fn(handler)
+    return route
+
+
+def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
+    """The seam's guarded-call hook (`run=`). Content DSP is the pair
+    leader's on a bonded follower; only /crossover/* stays local. The
+    /sync/* and /crossover/* families answer their own failures, so they
+    run outside the blanket 500 net."""
+    if bonded_follower_active() and not path.startswith("/crossover/"):
+        log_event(
+            logger,
+            "correction.follower_content_dsp_blocked",
+            path=path,
+        )
+        handler._send_json(
+            {
+                "error": (
+                    "sound measurement is controlled on the pair "
+                    "leader while this speaker is a follower"
+                ),
+            },
+            status=HTTPStatus.CONFLICT,
+        )
+        return
+    if path.startswith(("/sync/", "/crossover/")):
+        route(handler)
+        return
+    try:
+        route(handler)
+    except BadRequest as e:
+        handler._send_client_error(str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST %s failed", path)
+        handler._send_json({"error": str(e)}, status=500)
+
+
+# do_GET / do_POST dispatch through these exact-path tables
+# (path -> callable taking the handler). Mirrors the table in
+# jasper/web/wake_corpus_setup.py.
+
+_GET_ROUTES = {
+    "/crossover": _get_crossover,
+    "/measurements": _get_measurements,
+    "/measurements/data": _get_measurements_data,
+    "/crossover/status": _get_crossover_status,
+    "/crossover/envelope": _get_crossover_envelope,
+    "/bass": _get_bass,
+    "/bass/status": _get_bass_status,
+    "/sync": _follower_delegated(_get_sync),
+    "/sync/status": _get_sync_status,
+}
+
+# Mutating routes this handler accepts. Membership gates the 404 above;
+# deleting a line would otherwise 404 a route silently.
+_POST_ROUTES = {
+    "/crossover/capture-cancel": _dispatch_crossover,
+    "/crossover/reset": _dispatch_crossover,
+    "/crossover/recover-volume": _dispatch_crossover,
+    # v2 session flow — the only crossover-measurement flow. There is no
+    # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
+    "/crossover/v2/session": _dispatch_crossover,
+    "/crossover/v2/verify": _dispatch_crossover,
+    "/crossover/v2/apply": _dispatch_crossover,
+    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
+    # so the apply door above can reach it by fingerprint. The apply slot is
+    # single-valued and every measure session overwrites it; this is the lookup
+    # it never had.
+    "/crossover/v2/republish": _dispatch_crossover,
+    # The review screen's "Keep current sound", which #2641 found inert.
+    "/crossover/v2/decline": _dispatch_crossover,
+    # A GATED session's position release — the report that the microphone has
+    # reached the angle the envelope named, from an EXTERNAL driver on the
+    # remote tier or from the person holding the tape on a hand-walked wired
+    # round (#2879).
+    "/crossover/v2/position-ready": _dispatch_crossover,
+    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
+    # local stand-in for the phone's authenticated completion event.
+    "/crossover/v2/complete": _dispatch_crossover,
+    # The WIRED session's per-take retake — the local stand-in for the phone's
+    # ``begin_capture {retake: true}``, re-opening the slot that just
+    # completed while the walk is still waiting on a person.
+    "/crossover/v2/retake": _dispatch_crossover,
+    "/sync/start": _dispatch_sync,
+    "/sync/play": _dispatch_sync,
+    "/sync/analyze": _dispatch_sync,
+    "/sync/apply": _dispatch_sync,
+    "/sync/stop": _dispatch_sync,
+    "/sync/reset": _dispatch_sync,
+}
 
 
 def _make_handler_class(
@@ -1227,9 +841,9 @@ def _restore_capture_entry() -> None:
 
     from jasper.active_speaker import web_commissioning
 
-    correction_capture._run_async(
+    correction_runtime.run_async(
         web_commissioning.restore_pending_capture_entry_config(
-            camilla_factory=correction_capture._camilla,
+            camilla_factory=correction_runtime.camilla_controller,
         ),
         timeout=15.0,
     )
@@ -1259,7 +873,7 @@ async def _restore_protected_neutral_program_graph() -> None:
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.dsp_apply import dsp_writer_lock
 
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
     async with dsp_writer_lock(
         DEFAULT_CAMILLA_CONFIG_DIR,
         source="crossover_v2_program_startup_recovery",
@@ -1306,14 +920,6 @@ def _claim_crossover_state_owners() -> None:
             "correction.capture_entry_restore_unavailable",
             _restore_capture_entry,
         ),
-        (
-            "correction.room_startup_recovery_unavailable",
-            lambda: correction_capture._run_async(
-                correction_handlers.recover_room_startup_state(
-                    correction_capture._get_or_create_session(), correction_capture._camilla(),
-                ), timeout=15.0,
-            ),
-        ),
     )
     for event, claim in claims:
         try:
@@ -1328,7 +934,7 @@ def _claim_crossover_state_owners() -> None:
     from jasper.camilla import CamillaUnavailable
 
     try:
-        correction_capture._run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
+        correction_runtime.run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
     except (OSError, RuntimeError, ValueError, CamillaUnavailable) as exc:
         log_event(
             logger,
@@ -1362,15 +968,15 @@ def main(argv: list[str] | None = None) -> int:
     from . import _wizard_cli
     from jasper.volume_coordinator import install_env_canonical_target_provider
 
-    # Correction and crossover applies swap the live graph from this process,
-    # so their swap duck needs a canonical target to release to.
+    # Crossover applies swap the live graph from this process, so their
+    # swap duck needs a canonical target to release to.
     install_env_canonical_target_provider()
 
     # The idle exit is exactly the abandoned-sequence moment (user closed the
     # tab, no requests for the threshold AND no work in flight) — the daemon's
     # last in-process chance to converge a capture sequence parked on the
     # all-muted anchor back to production before the process goes away. The
-    # hook is bounded (_run_async timeout) and exception-guarded by the
+    # hook is bounded (run_async timeout) and exception-guarded by the
     # tracker; on a deferred/failed restore the durable stash survives for the
     # next service-start claim boundary.
     return _wizard_cli.run_wizard_cli(

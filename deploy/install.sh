@@ -48,6 +48,7 @@ source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
+source "${REPO_DIR}/deploy/lib/install/retirements.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
@@ -636,14 +637,11 @@ install_camilladsp() {
     # group-writable for the dropped service users instead of root-only.
     #
     # The active_speaker* paths below are the same capture/sweep/tone trees
-    # /sound/ and /sound/room/ share; this list must stay in sync with
+    # /sound/ and the measurement daemon share; this list must stay in sync with
     # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
     # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
-        /var/lib/jasper/correction/sweeps \
-        /var/lib/jasper/correction/captures \
-        /var/lib/jasper/correction/sessions \
         /var/lib/jasper/correction/calibration_mics \
         /var/lib/jasper/correction/tones \
         /var/lib/jasper/active_speaker \
@@ -688,14 +686,6 @@ install_camilladsp() {
     # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
     # contract which graph is legal and fails closed if no protected graph
     # exists.
-
-    # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
-    # installed by this function. Remove any copy left behind by a prior
-    # install: an upgraded box that keeps it on disk indefinitely is still
-    # selectable in camillagui's config picker (config_dir scans
-    # /etc/camilladsp/*.yml) and can leave a flat-allowed statefile pointer
-    # aimed at a file that writes to the now-removed pcm.jasper_out dmix.
-    rm -f "${CAMILLA_CONF}/v1.yml"
 }
 
 run_captured_command() {
@@ -1160,7 +1150,7 @@ resolve_fanin_coupling_default() {
 }
 
 provision_correction_tls() {
-    # /sound/room/ requires HTTPS because getUserMedia (mic capture)
+    # The measurement pages require HTTPS because getUserMedia (mic capture)
     # only works in a secure context. There's no way around this in
     # any browser, so we provision a private CA the user trusts once
     # on iOS, then issue a server cert from it for jts.local.
@@ -1181,7 +1171,7 @@ provision_correction_tls() {
     install -d -m 0755 "${ssl_dir}"
 
     if [[ ! -f "${ca_dir}/ca.crt" || ! -f "${ca_dir}/ca.key" ]]; then
-        echo "  generating /sound/room/ private CA at ${ca_dir}/ca.crt"
+        echo "  generating measurement-page private CA at ${ca_dir}/ca.crt"
         openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
         openssl req -x509 -new -nodes -key "${ca_dir}/ca.key" \
             -sha256 -days 3650 -out "${ca_dir}/ca.crt" \
@@ -1216,7 +1206,7 @@ EOF
     # location block in nginx-jasper.conf).
     install -d -m 0755 /usr/share/jasper-web
     install -m 0644 "${ca_dir}/ca.crt" /usr/share/jasper-web/jts-root-ca.crt
-    echo "  /sound/room/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
+    echo "  measurement-page TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
 }
 
 install_management_static_assets() {
@@ -1340,9 +1330,8 @@ install_nginx_site_conf() {
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /assistant/voice/ (voice-provider config wizard)
-    # on plain HTTP. /sound/room/ and the /sound/* measurement routes are
-    # proxied on both listeners, but browser mic capture only works on the
-    # HTTPS one:
+    # on plain HTTP. The /sound/* measurement routes are proxied on both
+    # listeners, but browser mic capture only works on the HTTPS one:
     # getUserMedia grants mic access in a secure context only. That origin is
     # the installer's own self-signed cert, so it is entered deliberately and
     # never by redirect — a cert interstitial is un-automatable (issue #2632).
@@ -1744,9 +1733,9 @@ INSTALL_STEPS=(
     # After every step that creates state, before the unit install restarts the
     # daemons that read /var/lib/jasper as group `jasper`.
     "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
+    "retired|both|retire_leftovers|retire the units and files earlier releases left behind"
     "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
     "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
-    "retired_topology_state|both|remove_retired_audio_topology_state|remove the retired dmix/fanin topology switch state"
     "wifi_guardian|both|migrate_wifi_guardian|seed the WiFi guardian recovery stash"
     "memory_resilience|both|migrate_memory_resilience|apply the sysctl, MGLRU and zram memory resilience"
     "cgroup_memory|both|migrate_cgroup_memory_enabled|add the memory cgroup/PSI kernel args"

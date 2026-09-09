@@ -57,6 +57,7 @@ so every ``wake_corpus_setup.NAME`` keeps resolving for existing callers.
 from __future__ import annotations
 
 import argparse
+import functools
 import html
 import json
 import logging
@@ -209,15 +210,18 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 # one-page chrome or dialog snippets.
 from jasper.web._common import (
     JsonBodyError,
-    canonical_header,
-    canonical_page,
+    RouteFn,
+    dispatch_get,
+    dispatch_post,
     guard_mutating_host,
-    guard_read_request,
-    json_island,
+    json_body,
+    prefix_route,
     read_json_object,
+    resolve_samples,
+    route_path,
     send_json_response,
-    toggle_html,
 )
+from jasper.web.chrome import canonical_header, canonical_page, json_island, toggle_html
 from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -311,7 +315,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json({"error": message}, status=status)
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json(self) -> dict[str, Any] | None:
+        """Parsed JSON body, or None after answering the client with a
+        400 — every POST body starts by reading it and returning on None."""
         try:
             return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
         except JsonBodyError as exc:
@@ -325,7 +331,8 @@ class _Handler(BaseHTTPRequestHandler):
                 message = f"invalid JSON body: {exc.__cause__}"
             else:
                 message = "invalid JSON body"
-            raise ValueError(message) from exc
+            self._send_error_json(400, message)
+            return None
 
     def _check_csrf(self) -> bool:
         """Verify the request's Host/Origin, then its X-CSRF-Token header.
@@ -369,105 +376,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ----- routing --------------------------------------------------
     #
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler-method name) defined at the bottom of this
-    # class; do_DELETE and the few <id>-prefix routes (e.g. GET
-    # /api/clip/<id>/wav) are matched inline since they aren't exact
-    # paths. Each table entry's handler holds the exact body the inlined
-    # `if path == ...` branch had — moved into a named method, logic
-    # unchanged. Mirrors the route-table pattern in
-    # jasper/control/server.py.
-    #
-    # ORDERING IS LOAD-BEARING:
-    #   - Every method recognizes its route shape first, so unknown paths 404
-    #     without revealing read-guard or CSRF state.
-    #   - GET is read-guarded but NOT CSRF-protected (read-only). POST +
-    #     DELETE check CSRF after route recognition and before any body read.
-    #   - do_POST reads + parses the JSON body AFTER the CSRF check, then looks
-    #     up and dispatches the route handler; each handler takes parsed `body`.
-    #   - Prefix routes that don't fit an exact-match table
-    #     (`/api/clip/<id>/wav` GET, `/api/clip|session/<id>` DELETE) are
-    #     handled explicitly, in the same position as before.
+    # GET and POST ride the shared seam. do_DELETE stays hand-rolled: its
+    # `/api/clip|session/<id>` shapes are prefix routes with no table, and
+    # the seam covers GET/POST only. GET is read-guarded but NOT
+    # CSRF-protected (read-only); every POST route body wears
+    # `_csrf_guarded`, this recorder's sanctioned bespoke scheme, which
+    # runs before `@json_body` reads anything.
 
     def do_GET(self) -> None:  # noqa: N802
-        url = urlparse(self.path)
-        path = url.path.rstrip("/") or "/"
-        clip_wav_route = path.startswith("/api/clip/") and path.endswith("/wav")
-        level_route = path == "/api/recording/level"
-
-        if not (
-            path == "/"
-            or path in self._GET_ROUTES
-            or clip_wav_route
-            or level_route
-        ):
-            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-            return
-        if not guard_read_request(self):
-            return
-
-        if path == "/":
-            html_text = _render_index_html(self.csrf_token)
-            data = html_text.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
-
-        handler_name = self._GET_ROUTES.get(path)
-        if handler_name is not None:
-            getattr(self, handler_name)()
-            return
-
-        if clip_wav_route:
-            self._serve_wav(path, url)
-            return
-
-        if level_route:
-            self._serve_level_sse()
-            return
-
-        self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-
-    def _get_status(self) -> None:
-        self._send_json({
-            "voice_daemon_active": bridge_session.voice_daemon_active(),
-            "session_id": self.backend.session_id(),
-            "member": self.backend.member(),
-            "include_raw_mic_0": self.backend.include_raw_mic_0(),
-            "include_dtln": self.backend.include_dtln(),
-            "include_usb_mic": self.backend.include_usb_mic(),
-            "include_usb_dtln": self.backend.include_usb_dtln(),
-            "include_xvf_raw0_dtln": self.backend.include_xvf_raw0_dtln(),
-            "include_aec3_sweep": self.backend.include_aec3_sweep(),
-            "corpus_profile": self.backend.corpus_profile(),
-            "chip_aec_config": self.backend.chip_aec_config(),
-            "aec3_sweep_source": self.backend.aec3_sweep_source(),
-            "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
-            "aec3_sweep_config": self.backend.aec3_sweep_config(),
-            "enabled_legs": list(self.backend.enabled_legs()),
-            "capture_plan": self.backend.capture_plan(),
-            "capture_plan_conformance": self.backend.capture_plan_conformance(),
-            "audio_context": self.backend.audio_context(),
-            "bridge_outputs": bridge_session.bridge_output_status(),
-            "is_recording": self.backend.is_recording(),
-            "elapsed_sec": self.backend.elapsed_recording_sec(),
-            "clip_count": len(self.backend.list_clips()),
-        })
-
-    def _get_clips(self) -> None:
-        self._send_json({
-            "clips": [c.to_json() for c in self.backend.list_clips()],
-        })
-
-    def _get_sessions(self) -> None:
-        self._send_json({"sessions": self.backend.list_sessions()})
-
-    def _get_usb_mic_status(self) -> None:
-        self._send_json(bridge_session.usb_mic_status())
+        dispatch_get(self, _GET_ROUTES, resolve=_resolve_clip_wav)
 
     def _serve_level_sse(self) -> None:
         """Server-Sent Events stream of the live AEC-ON RMS in dBFS.
@@ -554,430 +471,12 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- POST -------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
-
-        # Route-check before CSRF-check (the _common.py wizard
-        # convention): bogus paths return 404 without revealing
-        # CSRF state.
-        if path not in self._POST_ROUTES:
-            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-            return
-
-        # All POSTs are mutating — require CSRF token. _check_csrf
-        # sends the 403 itself; we just return on failure.
-        if not self._check_csrf():
-            return
-
-        try:
-            body = self._read_json()
-        except ValueError as e:
-            self._send_error_json(400, str(e))
-            return
-
-        getattr(self, self._POST_ROUTES[path])(body)
-
-    def _post_session(self, body: dict[str, Any]) -> None:
-        member = (body.get("member") or "").strip()
-        corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
-        if corpus_profile not in CORPUS_PROFILES:
-            self._send_error_json(400, f"unknown corpus_profile: {corpus_profile}")
-            return
-        include_raw_mic_0 = bool(body.get("include_raw_mic_0", False))
-        include_dtln = bool(body.get("include_dtln", True))
-        include_usb_mic = bool(body.get("include_usb_mic", False))
-        include_usb_dtln = bool(body.get("include_usb_dtln", False))
-        include_xvf_raw0_dtln = bool(body.get("include_xvf_raw0_dtln", False))
-        include_aec3_sweep = bool(body.get("include_aec3_sweep", False))
-        try:
-            aec3_sweep_source = (
-                runtime_probe.session_aec3_sweep_source(
-                    body.get("aec3_sweep_source"),
-                )
-                if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
-            )
-        except Aec3SweepConfigError as e:
-            self._send_error_json(400, str(e))
-            return
-        if include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB:
-            include_usb_mic = True
-        if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-            include_raw_mic_0 = True
-            include_aec3_sweep = False
-        enable_bridge_outputs = bool(
-            body.get("enable_bridge_outputs", False),
-        )
-        if not member:
-            self._send_error_json(400, "member is required")
-            return
-        if self.backend.is_recording():
-            self._send_error_json(
-                409,
-                "can't begin session: recording in progress",
-            )
-            return
-        # Mic mute is a privacy promise. Refuse BEFORE the bridge-output
-        # side effects below (env writes + bridge restart) so a muted
-        # household never has its bridge reconfigured for a session that
-        # the backend would refuse anyway. The backend re-checks at
-        # begin_session/start_recording (the authoritative gate); this is
-        # the wizard-side fast path with the same user-facing message.
-        if self.backend.mic_muted():
-            log_event(
-                logger,
-                "wake_corpus.mute_refused",
-                op="post_session",
-                level=logging.WARNING,
-            )
-            self._send_error_json(409, MIC_MUTED_MESSAGE)
-            return
-        try:
-            capture_plan = bridge_session.build_capture_plan(
-                self.backend.ports(),
-                corpus_profile=corpus_profile,
-                include_dtln=include_dtln,
-                include_raw_mic_0=include_raw_mic_0,
-                include_usb_mic=include_usb_mic,
-                include_usb_dtln=include_usb_dtln,
-                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=aec3_sweep_source,
-                include_bridge_readiness=True,
-                include_runtime_profile=True,
-                plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
-            )
-        except (ValueError, Aec3SweepConfigError) as e:
-            self._send_error_json(400, str(e))
-            return
-        bridge = capture_plan.get("bridge")
-        missing_outputs = (
-            bridge.get("missing_outputs", [])
-            if isinstance(bridge, dict) else []
-        )
-        if missing_outputs and not enable_bridge_outputs:
-            labels = [
-                BRIDGE_OUTPUT_LABELS.get(key, key)
-                for key in missing_outputs
-            ]
-            self._send_json({
-                "error": (
-                    "bridge outputs are disabled for requested "
-                    f"legs: {', '.join(labels)}"
-                ),
-                "can_enable_bridge_outputs": True,
-                "missing_bridge_outputs": missing_outputs,
-                "missing_bridge_output_labels": labels,
-            }, status=409)
-            return
-        try:
-            bridge_session.set_bridge_outputs_for_plan(capture_plan)
-            capture_plan = bridge_session.build_capture_plan(
-                self.backend.ports(),
-                corpus_profile=corpus_profile,
-                include_dtln=include_dtln,
-                include_raw_mic_0=include_raw_mic_0,
-                include_usb_mic=include_usb_mic,
-                include_usb_dtln=include_usb_dtln,
-                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=aec3_sweep_source,
-                include_bridge_readiness=True,
-                include_runtime_profile=True,
-                plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
-            )
-        except subprocess.CalledProcessError as e:
-            detail = (e.stderr or e.stdout or str(e)).strip()
-            msg = (
-                f"could not enable bridge outputs; {BRIDGE_UNIT} "
-                "restart failed and the env was rolled back"
-            )
-            if detail:
-                msg = f"{msg}: {detail[-500:]}"
-            self._send_error_json(500, msg)
-            return
-        except subprocess.TimeoutExpired:
-            self._send_error_json(
-                500,
-                f"could not enable bridge outputs; {BRIDGE_UNIT} "
-                "restart timed out and the env was rolled back",
-            )
-            return
-        except OSError as e:
-            self._send_error_json(
-                500,
-                f"failed to enable bridge outputs: {e}",
-            )
-            return
-        try:
-            session_id = self.backend.begin_session(
-                member,
-                corpus_profile=corpus_profile,
-                include_raw_mic_0=include_raw_mic_0,
-                include_dtln=include_dtln,
-                include_usb_mic=include_usb_mic,
-                include_usb_dtln=include_usb_dtln,
-                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=aec3_sweep_source,
-                capture_plan=capture_plan,
-            )
-        except (ValueError, StateError) as e:
-            self._send_error_json(400, str(e))
-            return
-        self._send_json({
-            "session_id": session_id, "member": member,
-            "include_raw_mic_0": include_raw_mic_0,
-            "include_dtln": include_dtln,
-            "include_usb_mic": include_usb_mic,
-            "include_usb_dtln": include_usb_dtln,
-            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
-            "include_aec3_sweep": include_aec3_sweep,
-            "corpus_profile": corpus_profile,
-            "chip_aec_config": self.backend.chip_aec_config(),
-            "aec3_sweep_source": aec3_sweep_source,
-            "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
-            "aec3_sweep_config": self.backend.aec3_sweep_config(),
-            "enabled_legs": list(self.backend.enabled_legs()),
-            "capture_plan": self.backend.capture_plan(),
-            "audio_context": self.backend.audio_context(),
-            "bridge_outputs": bridge_session.bridge_output_status(),
-        })
-
-    def _post_capture_plan(self, body: dict[str, Any]) -> None:
-        corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
-        try:
-            plan = bridge_session.build_capture_plan(
-                self.backend.ports(),
-                corpus_profile=corpus_profile,
-                include_dtln=bool(body.get("include_dtln", True)),
-                include_raw_mic_0=bool(body.get("include_raw_mic_0", False)),
-                include_usb_mic=bool(body.get("include_usb_mic", False)),
-                include_usb_dtln=bool(body.get("include_usb_dtln", False)),
-                include_xvf_raw0_dtln=bool(
-                    body.get("include_xvf_raw0_dtln", False),
-                ),
-                include_aec3_sweep=bool(
-                    body.get("include_aec3_sweep", False),
-                ),
-                aec3_sweep_source=body.get("aec3_sweep_source"),
-                include_runtime_profile=True,
-            )
-        except (ValueError, Aec3SweepConfigError) as e:
-            self._send_error_json(400, str(e))
-            return
-        self._send_json({"capture_plan": plan})
-
-    def _post_session_load(self, body: dict[str, Any]) -> None:
-        sid = (body.get("session_id") or "").strip()
-        if not sid:
-            self._send_error_json(400, "session_id is required")
-            return
-        try:
-            result = self.backend.load_session(sid)
-        except ValueError as e:
-            self._send_error_json(404, str(e))
-            return
-        except StateError as e:
-            self._send_error_json(409, str(e))
-            return
-        self._send_json(result)
-
-    def _post_session_unload(self, body: dict[str, Any]) -> None:
-        try:
-            unloaded = self.backend.unload_session()
-        except StateError as e:
-            self._send_error_json(409, str(e))
-            return
-        self._send_json({"unloaded_session": unloaded})
-
-    def _post_clip_start(self, body: dict[str, Any]) -> None:
-        condition = (body.get("condition") or "").strip()
-        distance = (body.get("distance") or "").strip()
-        try:
-            result = self.backend.start_recording(condition, distance)
-        except (ValueError, StateError) as e:
-            self._send_error_json(409, str(e))
-            return
-        self._send_json(result)
-
-    def _post_clip_stop(self, body: dict[str, Any]) -> None:
-        try:
-            clip = self.backend.stop_recording()
-        except StateError as e:
-            self._send_error_json(409, str(e))
-            return
-        self._send_json(clip.to_json())
-
-    def _post_bridge_outputs(self, body: dict[str, Any]) -> None:
-        action = (body.get("action") or "").strip()
-        if action != "disable":
-            self._send_error_json(400, "action must be disable")
-            return
-        if self.backend.is_recording():
-            self._send_error_json(
-                409,
-                "stop the current recording before disabling bridge outputs",
-            )
-            return
-        try:
-            bridge_session.disable_bridge_corpus_outputs()
-        except subprocess.CalledProcessError as e:
-            detail = (e.stderr or e.stdout or str(e)).strip()
-            msg = (
-                f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                "restart failed and the env was rolled back"
-            )
-            if detail:
-                msg = f"{msg}: {detail[-500:]}"
-            self._send_error_json(500, msg)
-            return
-        except subprocess.TimeoutExpired:
-            self._send_error_json(
-                500,
-                f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                "restart timed out and the env was rolled back",
-            )
-            return
-        except OSError as e:
-            self._send_error_json(
-                500,
-                f"failed to disable bridge outputs: {e}",
-            )
-            return
-        self._send_json({"bridge_outputs": bridge_session.bridge_output_status()})
-
-    def _post_corpus_test_mode(self, body: dict[str, Any]) -> None:
-        action = (body.get("action") or "").strip()
-        if action not in ("enter", "exit"):
-            self._send_error_json(400, "action must be enter or exit")
-            return
-        if self.backend.is_recording():
-            self._send_error_json(
-                409,
-                "stop the current recording before changing corpus test mode",
-            )
-            return
-        try:
-            if action == "enter":
-                bridge_session.enter_corpus_test_mode(
-                    corpus_profile=str(
-                        body.get("corpus_profile") or PROFILE_STANDARD,
-                    ),
-                    include_dtln=bool(body.get("include_dtln", True)),
-                    include_usb_mic=bool(body.get("include_usb_mic", False)),
-                    include_usb_dtln=bool(body.get("include_usb_dtln", False)),
-                    include_xvf_raw0_dtln=bool(
-                        body.get("include_xvf_raw0_dtln", False),
-                    ),
-                    include_aec3_sweep=bool(
-                        body.get("include_aec3_sweep", False),
-                    ),
-                    aec3_sweep_source=body.get("aec3_sweep_source"),
-                )
-                # Mark only after voice was actually stopped, so a
-                # later startup can self-heal an abandoned session.
-                self.backend.note_test_mode_entered()
-            else:
-                bridge_session.exit_corpus_test_mode()
-                self.backend.note_test_mode_exited()
-                self.backend.unload_session()
-        except subprocess.CalledProcessError as e:
-            detail = (e.stderr or e.stdout or str(e)).strip()
-            msg = f"corpus test mode {action} failed"
-            if detail:
-                msg = f"{msg}: {detail[-500:]}"
-            self._send_error_json(500, msg)
-            return
-        except subprocess.TimeoutExpired:
-            self._send_error_json(
-                500,
-                f"corpus test mode {action} timed out while restarting "
-                f"{BRIDGE_UNIT}",
-            )
-            return
-        except StateError as e:
-            self._send_error_json(409, str(e))
-            return
-        except ValueError as e:
-            self._send_error_json(400, str(e))
-            return
-        except OSError as e:
-            self._send_error_json(
-                500,
-                f"corpus test mode {action} failed: {e}",
-            )
-            return
-        self._send_json({
-            "action": action,
-            "voice_daemon_active": bridge_session.voice_daemon_active(),
-            "bridge_outputs": bridge_session.bridge_output_status(),
-        })
-
-    def _post_voice_daemon(self, body: dict[str, Any]) -> None:
-        action = (body.get("action") or "").strip()
-        if action not in ("start", "stop"):
-            self._send_error_json(400, "action must be start or stop")
-            return
-        disable_outputs = bool(body.get("disable_bridge_outputs", False))
-        # Refuse to start jasper-voice while a recording is in
-        # progress: starting it would try to bind UDP ports the
-        # recording owns, sending the daemon into a restart loop
-        # while the operator wonders why their speaker is dead.
-        # Caller sees a clear error and knows to stop the
-        # recording first.
-        if action == "start" and self.backend.is_recording():
-            self._send_error_json(
-                409,
-                "stop the current recording first; jasper-voice "
-                "can't bind UDP ports the recording is using",
-            )
-            return
-        if action == "start" and disable_outputs:
-            try:
-                bridge_session.disable_bridge_corpus_outputs()
-            except subprocess.CalledProcessError as e:
-                detail = (e.stderr or e.stdout or str(e)).strip()
-                msg = (
-                    f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                    "restart failed and the env was rolled back"
-                )
-                if detail:
-                    msg = f"{msg}: {detail[-500:]}"
-                self._send_error_json(500, msg)
-                return
-            except subprocess.TimeoutExpired:
-                self._send_error_json(
-                    500,
-                    f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                    "restart timed out and the env was rolled back",
-                )
-                return
-            except OSError as e:
-                self._send_error_json(
-                    500,
-                    f"failed to disable bridge outputs: {e}",
-                )
-                return
-        # WS1 Phase 3: start/stop voice via the restart broker (blocking so
-        # the corpus session sees the daemon settle) — surfaces a 500 on
-        # failure, same as the previous check=True systemctl.
-        resp = manage_units(
-            VOICE_UNIT, verb=action, reason="wake-corpus session",
-            no_block=False, timeout=30.0,
-        )
-        if not resp.get("ok"):
-            detail = resp.get("error") or f"rc={resp.get('rc')}"
-            self._send_error_json(500, f"systemctl {action} failed: {detail}")
-            return
-        self._send_json({
-            "action": action,
-            "voice_daemon_active": bridge_session.voice_daemon_active(),
-            "bridge_outputs": bridge_session.bridge_output_status(),
-        })
+        dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     # ----- DELETE -----------------------------------------------------
 
     def do_DELETE(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        path = route_path(self.path)
         parts = path.split("/")
         # Route-check before CSRF-check (the _common.py wizard
         # convention): only /api/clip/<id> and /api/session/<id>
@@ -1012,31 +511,534 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"deleted_session": session_id, **result})
 
-    # ----- route tables (exact path -> handler-method name) ----------
-    # Keyed by exact path. do_GET / do_POST disambiguate by method.
-    # The string keys keep the route literals greppable; prefix routes
-    # (/api/clip/<id>/wav, the DELETE /api/clip|session/<id> forms) are
-    # handled explicitly in the do_* methods because they don't fit an
-    # exact-match table. test_get_routes_resolve_via_render_and_module
-    # asserts the ES module's relative api paths stay in sync.
 
-    _GET_ROUTES = {
-        "/api/status": "_get_status",
-        "/api/clips": "_get_clips",
-        "/api/sessions": "_get_sessions",
-        "/api/usb-mic/status": "_get_usb_mic_status",
-    }
-    _POST_ROUTES = {
-        "/api/session": "_post_session",
-        "/api/capture-plan": "_post_capture_plan",
-        "/api/session/load": "_post_session_load",
-        "/api/session/unload": "_post_session_unload",
-        "/api/clip/start": "_post_clip_start",
-        "/api/clip/stop": "_post_clip_stop",
-        "/api/bridge-outputs": "_post_bridge_outputs",
-        "/api/corpus-test-mode": "_post_corpus_test_mode",
-        "/api/voice-daemon": "_post_voice_daemon",
-    }
+# ----- route bodies -------------------------------------------------
+#
+# Module-level functions taking the handler, not methods: the tables below
+# hold them directly, so a body bound to the class would be dispatched past
+# any override on the per-server subclass `_make_handler_class` builds.
+# `@json_body` runs `_read_json()` for the POST bodies, which answers the
+# client's 400 itself, so a malformed body never reaches one.
+
+def _get_status(handler: _Handler) -> None:
+    handler._send_json({
+        "voice_daemon_active": bridge_session.voice_daemon_active(),
+        "session_id": handler.backend.session_id(),
+        "member": handler.backend.member(),
+        "include_raw_mic_0": handler.backend.include_raw_mic_0(),
+        "include_dtln": handler.backend.include_dtln(),
+        "include_usb_mic": handler.backend.include_usb_mic(),
+        "include_usb_dtln": handler.backend.include_usb_dtln(),
+        "include_xvf_raw0_dtln": handler.backend.include_xvf_raw0_dtln(),
+        "include_aec3_sweep": handler.backend.include_aec3_sweep(),
+        "corpus_profile": handler.backend.corpus_profile(),
+        "chip_aec_config": handler.backend.chip_aec_config(),
+        "aec3_sweep_source": handler.backend.aec3_sweep_source(),
+        "aec3_sweep_variants": handler.backend.aec3_sweep_variants(),
+        "aec3_sweep_config": handler.backend.aec3_sweep_config(),
+        "enabled_legs": list(handler.backend.enabled_legs()),
+        "capture_plan": handler.backend.capture_plan(),
+        "capture_plan_conformance": handler.backend.capture_plan_conformance(),
+        "audio_context": handler.backend.audio_context(),
+        "bridge_outputs": bridge_session.bridge_output_status(),
+        "is_recording": handler.backend.is_recording(),
+        "elapsed_sec": handler.backend.elapsed_recording_sec(),
+        "clip_count": len(handler.backend.list_clips()),
+    })
+
+
+def _get_clips(handler: _Handler) -> None:
+    handler._send_json({
+        "clips": [c.to_json() for c in handler.backend.list_clips()],
+    })
+
+
+def _get_sessions(handler: _Handler) -> None:
+    handler._send_json({"sessions": handler.backend.list_sessions()})
+
+
+def _get_usb_mic_status(handler: _Handler) -> None:
+    handler._send_json(bridge_session.usb_mic_status())
+
+
+@json_body
+def _post_session(handler: _Handler, body: dict[str, Any]) -> None:
+    member = (body.get("member") or "").strip()
+    corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
+    if corpus_profile not in CORPUS_PROFILES:
+        handler._send_error_json(400, f"unknown corpus_profile: {corpus_profile}")
+        return
+    include_raw_mic_0 = bool(body.get("include_raw_mic_0", False))
+    include_dtln = bool(body.get("include_dtln", True))
+    include_usb_mic = bool(body.get("include_usb_mic", False))
+    include_usb_dtln = bool(body.get("include_usb_dtln", False))
+    include_xvf_raw0_dtln = bool(body.get("include_xvf_raw0_dtln", False))
+    include_aec3_sweep = bool(body.get("include_aec3_sweep", False))
+    try:
+        aec3_sweep_source = (
+            runtime_probe.session_aec3_sweep_source(
+                body.get("aec3_sweep_source"),
+            )
+            if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+        )
+    except Aec3SweepConfigError as e:
+        handler._send_error_json(400, str(e))
+        return
+    if include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB:
+        include_usb_mic = True
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        include_raw_mic_0 = True
+        include_aec3_sweep = False
+    enable_bridge_outputs = bool(
+        body.get("enable_bridge_outputs", False),
+    )
+    if not member:
+        handler._send_error_json(400, "member is required")
+        return
+    if handler.backend.is_recording():
+        handler._send_error_json(
+            409,
+            "can't begin session: recording in progress",
+        )
+        return
+    # Mic mute is a privacy promise. Refuse BEFORE the bridge-output
+    # side effects below (env writes + bridge restart) so a muted
+    # household never has its bridge reconfigured for a session that
+    # the backend would refuse anyway. The backend re-checks at
+    # begin_session/start_recording (the authoritative gate); this is
+    # the wizard-side fast path with the same user-facing message.
+    if handler.backend.mic_muted():
+        log_event(
+            logger,
+            "wake_corpus.mute_refused",
+            op="post_session",
+            level=logging.WARNING,
+        )
+        handler._send_error_json(409, MIC_MUTED_MESSAGE)
+        return
+    try:
+        capture_plan = bridge_session.build_capture_plan(
+            handler.backend.ports(),
+            corpus_profile=corpus_profile,
+            include_dtln=include_dtln,
+            include_raw_mic_0=include_raw_mic_0,
+            include_usb_mic=include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+            include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=aec3_sweep_source,
+            include_bridge_readiness=True,
+            include_runtime_profile=True,
+            plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+        )
+    except (ValueError, Aec3SweepConfigError) as e:
+        handler._send_error_json(400, str(e))
+        return
+    bridge = capture_plan.get("bridge")
+    missing_outputs = (
+        bridge.get("missing_outputs", [])
+        if isinstance(bridge, dict) else []
+    )
+    if missing_outputs and not enable_bridge_outputs:
+        labels = [
+            BRIDGE_OUTPUT_LABELS.get(key, key)
+            for key in missing_outputs
+        ]
+        handler._send_json({
+            "error": (
+                "bridge outputs are disabled for requested "
+                f"legs: {', '.join(labels)}"
+            ),
+            "can_enable_bridge_outputs": True,
+            "missing_bridge_outputs": missing_outputs,
+            "missing_bridge_output_labels": labels,
+        }, status=409)
+        return
+    try:
+        bridge_session.set_bridge_outputs_for_plan(capture_plan)
+        capture_plan = bridge_session.build_capture_plan(
+            handler.backend.ports(),
+            corpus_profile=corpus_profile,
+            include_dtln=include_dtln,
+            include_raw_mic_0=include_raw_mic_0,
+            include_usb_mic=include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+            include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=aec3_sweep_source,
+            include_bridge_readiness=True,
+            include_runtime_profile=True,
+            plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+        )
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or str(e)).strip()
+        msg = (
+            f"could not enable bridge outputs; {BRIDGE_UNIT} "
+            "restart failed and the env was rolled back"
+        )
+        if detail:
+            msg = f"{msg}: {detail[-500:]}"
+        handler._send_error_json(500, msg)
+        return
+    except subprocess.TimeoutExpired:
+        handler._send_error_json(
+            500,
+            f"could not enable bridge outputs; {BRIDGE_UNIT} "
+            "restart timed out and the env was rolled back",
+        )
+        return
+    except OSError as e:
+        handler._send_error_json(
+            500,
+            f"failed to enable bridge outputs: {e}",
+        )
+        return
+    try:
+        session_id = handler.backend.begin_session(
+            member,
+            corpus_profile=corpus_profile,
+            include_raw_mic_0=include_raw_mic_0,
+            include_dtln=include_dtln,
+            include_usb_mic=include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+            include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=aec3_sweep_source,
+            capture_plan=capture_plan,
+        )
+    except (ValueError, StateError) as e:
+        handler._send_error_json(400, str(e))
+        return
+    handler._send_json({
+        "session_id": session_id, "member": member,
+        "include_raw_mic_0": include_raw_mic_0,
+        "include_dtln": include_dtln,
+        "include_usb_mic": include_usb_mic,
+        "include_usb_dtln": include_usb_dtln,
+        "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
+        "include_aec3_sweep": include_aec3_sweep,
+        "corpus_profile": corpus_profile,
+        "chip_aec_config": handler.backend.chip_aec_config(),
+        "aec3_sweep_source": aec3_sweep_source,
+        "aec3_sweep_variants": handler.backend.aec3_sweep_variants(),
+        "aec3_sweep_config": handler.backend.aec3_sweep_config(),
+        "enabled_legs": list(handler.backend.enabled_legs()),
+        "capture_plan": handler.backend.capture_plan(),
+        "audio_context": handler.backend.audio_context(),
+        "bridge_outputs": bridge_session.bridge_output_status(),
+    })
+
+
+@json_body
+def _post_capture_plan(handler: _Handler, body: dict[str, Any]) -> None:
+    corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
+    try:
+        plan = bridge_session.build_capture_plan(
+            handler.backend.ports(),
+            corpus_profile=corpus_profile,
+            include_dtln=bool(body.get("include_dtln", True)),
+            include_raw_mic_0=bool(body.get("include_raw_mic_0", False)),
+            include_usb_mic=bool(body.get("include_usb_mic", False)),
+            include_usb_dtln=bool(body.get("include_usb_dtln", False)),
+            include_xvf_raw0_dtln=bool(
+                body.get("include_xvf_raw0_dtln", False),
+            ),
+            include_aec3_sweep=bool(
+                body.get("include_aec3_sweep", False),
+            ),
+            aec3_sweep_source=body.get("aec3_sweep_source"),
+            include_runtime_profile=True,
+        )
+    except (ValueError, Aec3SweepConfigError) as e:
+        handler._send_error_json(400, str(e))
+        return
+    handler._send_json({"capture_plan": plan})
+
+
+@json_body
+def _post_session_load(handler: _Handler, body: dict[str, Any]) -> None:
+    sid = (body.get("session_id") or "").strip()
+    if not sid:
+        handler._send_error_json(400, "session_id is required")
+        return
+    try:
+        result = handler.backend.load_session(sid)
+    except ValueError as e:
+        handler._send_error_json(404, str(e))
+        return
+    except StateError as e:
+        handler._send_error_json(409, str(e))
+        return
+    handler._send_json(result)
+
+
+@json_body
+def _post_session_unload(handler: _Handler, _body: dict[str, Any]) -> None:
+    try:
+        unloaded = handler.backend.unload_session()
+    except StateError as e:
+        handler._send_error_json(409, str(e))
+        return
+    handler._send_json({"unloaded_session": unloaded})
+
+
+@json_body
+def _post_clip_start(handler: _Handler, body: dict[str, Any]) -> None:
+    condition = (body.get("condition") or "").strip()
+    distance = (body.get("distance") or "").strip()
+    try:
+        result = handler.backend.start_recording(condition, distance)
+    except (ValueError, StateError) as e:
+        handler._send_error_json(409, str(e))
+        return
+    handler._send_json(result)
+
+
+@json_body
+def _post_clip_stop(handler: _Handler, _body: dict[str, Any]) -> None:
+    try:
+        clip = handler.backend.stop_recording()
+    except StateError as e:
+        handler._send_error_json(409, str(e))
+        return
+    handler._send_json(clip.to_json())
+
+
+@json_body
+def _post_bridge_outputs(handler: _Handler, body: dict[str, Any]) -> None:
+    action = (body.get("action") or "").strip()
+    if action != "disable":
+        handler._send_error_json(400, "action must be disable")
+        return
+    if handler.backend.is_recording():
+        handler._send_error_json(
+            409,
+            "stop the current recording before disabling bridge outputs",
+        )
+        return
+    try:
+        bridge_session.disable_bridge_corpus_outputs()
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or str(e)).strip()
+        msg = (
+            f"could not disable bridge outputs; {BRIDGE_UNIT} "
+            "restart failed and the env was rolled back"
+        )
+        if detail:
+            msg = f"{msg}: {detail[-500:]}"
+        handler._send_error_json(500, msg)
+        return
+    except subprocess.TimeoutExpired:
+        handler._send_error_json(
+            500,
+            f"could not disable bridge outputs; {BRIDGE_UNIT} "
+            "restart timed out and the env was rolled back",
+        )
+        return
+    except OSError as e:
+        handler._send_error_json(
+            500,
+            f"failed to disable bridge outputs: {e}",
+        )
+        return
+    handler._send_json({"bridge_outputs": bridge_session.bridge_output_status()})
+
+
+@json_body
+def _post_corpus_test_mode(handler: _Handler, body: dict[str, Any]) -> None:
+    action = (body.get("action") or "").strip()
+    if action not in ("enter", "exit"):
+        handler._send_error_json(400, "action must be enter or exit")
+        return
+    if handler.backend.is_recording():
+        handler._send_error_json(
+            409,
+            "stop the current recording before changing corpus test mode",
+        )
+        return
+    try:
+        if action == "enter":
+            bridge_session.enter_corpus_test_mode(
+                corpus_profile=str(
+                    body.get("corpus_profile") or PROFILE_STANDARD,
+                ),
+                include_dtln=bool(body.get("include_dtln", True)),
+                include_usb_mic=bool(body.get("include_usb_mic", False)),
+                include_usb_dtln=bool(body.get("include_usb_dtln", False)),
+                include_xvf_raw0_dtln=bool(
+                    body.get("include_xvf_raw0_dtln", False),
+                ),
+                include_aec3_sweep=bool(
+                    body.get("include_aec3_sweep", False),
+                ),
+                aec3_sweep_source=body.get("aec3_sweep_source"),
+            )
+            # Mark only after voice was actually stopped, so a
+            # later startup can handler-heal an abandoned session.
+            handler.backend.note_test_mode_entered()
+        else:
+            bridge_session.exit_corpus_test_mode()
+            handler.backend.note_test_mode_exited()
+            handler.backend.unload_session()
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or str(e)).strip()
+        msg = f"corpus test mode {action} failed"
+        if detail:
+            msg = f"{msg}: {detail[-500:]}"
+        handler._send_error_json(500, msg)
+        return
+    except subprocess.TimeoutExpired:
+        handler._send_error_json(
+            500,
+            f"corpus test mode {action} timed out while restarting "
+            f"{BRIDGE_UNIT}",
+        )
+        return
+    except StateError as e:
+        handler._send_error_json(409, str(e))
+        return
+    except ValueError as e:
+        handler._send_error_json(400, str(e))
+        return
+    except OSError as e:
+        handler._send_error_json(
+            500,
+            f"corpus test mode {action} failed: {e}",
+        )
+        return
+    handler._send_json({
+        "action": action,
+        "voice_daemon_active": bridge_session.voice_daemon_active(),
+        "bridge_outputs": bridge_session.bridge_output_status(),
+    })
+
+
+@json_body
+def _post_voice_daemon(handler: _Handler, body: dict[str, Any]) -> None:
+    action = (body.get("action") or "").strip()
+    if action not in ("start", "stop"):
+        handler._send_error_json(400, "action must be start or stop")
+        return
+    disable_outputs = bool(body.get("disable_bridge_outputs", False))
+    # Refuse to start jasper-voice while a recording is in
+    # progress: starting it would try to bind UDP ports the
+    # recording owns, sending the daemon into a restart loop
+    # while the operator wonders why their speaker is dead.
+    # Caller sees a clear error and knows to stop the
+    # recording first.
+    if action == "start" and handler.backend.is_recording():
+        handler._send_error_json(
+            409,
+            "stop the current recording first; jasper-voice "
+            "can't bind UDP ports the recording is using",
+        )
+        return
+    if action == "start" and disable_outputs:
+        try:
+            bridge_session.disable_bridge_corpus_outputs()
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or str(e)).strip()
+            msg = (
+                f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                "restart failed and the env was rolled back"
+            )
+            if detail:
+                msg = f"{msg}: {detail[-500:]}"
+            handler._send_error_json(500, msg)
+            return
+        except subprocess.TimeoutExpired:
+            handler._send_error_json(
+                500,
+                f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                "restart timed out and the env was rolled back",
+            )
+            return
+        except OSError as e:
+            handler._send_error_json(
+                500,
+                f"failed to disable bridge outputs: {e}",
+            )
+            return
+    # WS1 Phase 3: start/stop voice via the restart broker (blocking so
+    # the corpus session sees the daemon settle) — surfaces a 500 on
+    # failure, same as the previous check=True systemctl.
+    resp = manage_units(
+        VOICE_UNIT, verb=action, reason="wake-corpus session",
+        no_block=False, timeout=30.0,
+    )
+    if not resp.get("ok"):
+        detail = resp.get("error") or f"rc={resp.get('rc')}"
+        handler._send_error_json(500, f"systemctl {action} failed: {detail}")
+        return
+    handler._send_json({
+        "action": action,
+        "voice_daemon_active": bridge_session.voice_daemon_active(),
+        "bridge_outputs": bridge_session.bridge_output_status(),
+    })
+
+
+def _get_index(handler: _Handler) -> None:
+    data = _render_index_html(handler.csrf_token).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def _get_recording_level(handler: _Handler) -> None:
+    handler._serve_level_sse()
+
+
+def _get_clip_wav(handler: _Handler) -> None:
+    handler._serve_wav(route_path(handler.path), urlparse(handler.path))
+
+
+# `/api/clip/<id>/wav` carries a path parameter, so it rides the seam's
+# resolve hook rather than an exact table key; `_serve_wav` rejects a
+# malformed id.
+_resolve_clip_wav = resolve_samples({"/api/clip/sample/wav": _get_clip_wav})(
+    prefix_route("/api/clip/", "/wav", _get_clip_wav),
+)
+
+
+def _csrf_guarded(fn: RouteFn) -> RouteFn:
+    """Run this recorder's bespoke server-token CSRF check before the route
+    body — the sanctioned exception to the shared double-submit chokepoint.
+    `_check_csrf` sends its own 403; a rejected POST reads no body."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        if not handler._check_csrf():
+            return
+        fn(handler)
+    setattr(route, "csrf_mode", "header")
+    return route
+
+
+# ----- route tables (exact path -> callable taking the handler) -----
+# test_get_routes_resolve_via_render_and_module asserts the ES module's
+# relative api paths stay in sync.
+
+_GET_ROUTES = {
+    "/": _get_index,
+    "/api/status": _get_status,
+    "/api/clips": _get_clips,
+    "/api/sessions": _get_sessions,
+    "/api/usb-mic/status": _get_usb_mic_status,
+    "/api/recording/level": _get_recording_level,
+}
+_POST_ROUTES = {
+    "/api/session": _csrf_guarded(_post_session),
+    "/api/capture-plan": _csrf_guarded(_post_capture_plan),
+    "/api/session/load": _csrf_guarded(_post_session_load),
+    "/api/session/unload": _csrf_guarded(_post_session_unload),
+    "/api/clip/start": _csrf_guarded(_post_clip_start),
+    "/api/clip/stop": _csrf_guarded(_post_clip_stop),
+    "/api/bridge-outputs": _csrf_guarded(_post_bridge_outputs),
+    "/api/corpus-test-mode": _csrf_guarded(_post_corpus_test_mode),
+    "/api/voice-daemon": _csrf_guarded(_post_voice_daemon),
+}
 
 
 def _make_handler_class(

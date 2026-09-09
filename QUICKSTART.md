@@ -199,7 +199,7 @@ that result rather than inferring the profile again from the board model.
 For a **full** profile, visit these pages from any device on the same
 Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
 
-- **`http://jts.local/sound/setup/`** — required first. Choose mono or
+- **`http://jts.local/sound/speaker/`** — required first. Choose mono or
   stereo, then passive or active. Audio stays off until you save this layout.
 - **`http://jts.local/assistant/voice/`** — required. Pick a voice provider
   (Gemini / OpenAI / Grok) and paste an API key. The speaker will

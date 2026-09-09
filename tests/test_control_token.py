@@ -202,14 +202,14 @@ def test_current_token_matches_verify_path(monkeypatch, tmp_path):
 def test_canonical_page_embeds_token_meta_only_when_present(monkeypatch, tmp_path):
     """canonical_page auto-delivers the token as a meta tag once it exists, and
     emits nothing while the gate is off (pages stay byte-identical)."""
-    from jasper.web import _common
+    from jasper.web import chrome
 
     path = tmp_path / "control_token"
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
 
-    off = _common.canonical_page("T", "<main>x</main>").decode()
+    off = chrome.canonical_page("T", "<main>x</main>").decode()
     assert "jts-control-token" not in off
 
     token = control_token.ensure_token()
-    on = _common.canonical_page("T", "<main>x</main>").decode()
+    on = chrome.canonical_page("T", "<main>x</main>").decode()
     assert f'<meta name="jts-control-token" content="{token}">' in on

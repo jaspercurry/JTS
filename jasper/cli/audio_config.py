@@ -13,9 +13,6 @@ from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     build_audio_runtime_plan_from_system,
 )
-from jasper.camilla_config_contract import (
-    outputd_capture_device_for_playback,
-)
 from jasper.audio_runtime_overrides import (
     clear_runtime_override,
     load_runtime_overrides,
@@ -82,20 +79,6 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0 if not plan.errors else 1
 
 
-
-
-def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
-    capture_device = outputd_capture_device_for_playback(args.playback_device)
-    if capture_device is None:
-        print(
-            f"no outputd capture endpoint is registered for "
-            f"CamillaDSP playback={args.playback_device!r}"
-        )
-        return 1
-    print(capture_device)
-    return 0
-
-
 def _cmd_overrides_list(args: argparse.Namespace) -> int:
     overrides = load_runtime_overrides(
         args.overrides,
@@ -147,13 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--overrides", default=runtime_overrides_path())
     explain.add_argument("--output-hardware-state", default=None)
     explain.set_defaults(func=_cmd_explain)
-
-    capture_device = sub.add_parser(
-        "outputd-capture-device",
-        help="resolve outputd's paired capture PCM for a CamillaDSP playback PCM",
-    )
-    capture_device.add_argument("--playback-device", required=True)
-    capture_device.set_defaults(func=_cmd_outputd_capture_device)
 
     overrides_list = sub.add_parser(
         "overrides-list",

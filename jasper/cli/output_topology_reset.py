@@ -4,7 +4,7 @@
 
 """Clear saved speaker intent and leave the audio path parked.
 
-This is the command-line recovery counterpart of ``/sound/setup/``.  It has
+This is the command-line recovery counterpart of ``/sound/speaker/``.  It has
 one safe meaning: replace the saved output topology with zero speaker groups.
 The runtime-convergence seam parks audio before the write; the root hardware
 reconciler owns rendering and final outputd convergence after it.

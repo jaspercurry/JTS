@@ -17,7 +17,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from jasper.control.server import _make_handler
-from jasper.control.volume_ops import _percent_to_db
+from jasper.volume_curve import percent_to_db
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -56,7 +56,7 @@ def test_get_volume_uses_persistence_only_read_path(
     assert body["muted"] is False
     assert body["restore_percent"] is None
     # `db` is computed from percent for back-compat
-    assert body["db"] == round(_percent_to_db(60), 3)
+    assert body["db"] == round(percent_to_db(60), 3)
     assert ("get", None) in fake.calls
 
 

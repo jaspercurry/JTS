@@ -222,6 +222,7 @@ def test_invalid_web_profile_fails_closed():
 _PEERING_FILES = [
     "jasper/peering/",  # whole subtree
     "jasper/web/rooms_setup.py",
+    "jasper/web/rooms_peers.py",
     "jasper/web/__main__.py",
     "jasper/voice_daemon.py",
     "jasper/control/server.py",

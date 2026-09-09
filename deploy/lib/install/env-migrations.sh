@@ -15,9 +15,9 @@
 # These helpers create/heal the shared state and secret-compartment
 # directories, re-assert their ownership and modes on every deploy,
 # sweep operator-seeded provider/Routes keys out of jasper.env into the
-# jasper-secrets compartment, seed the WiFi guardian stash, clean up
-# retired state, and render the voice-provider id manifest. All are
-# idempotent and safe on fresh installs.
+# jasper-secrets compartment, seed the WiFi guardian stash, and render the
+# voice-provider id manifest. All are idempotent and safe on fresh
+# installs.
 
 ensure_state_dir() {
     # `install -d -m` re-chmods an EXISTING dir, so every call (10+ per
@@ -135,9 +135,9 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
         "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
         "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
-        # The capture/sweep/tone trees the /sound/room/ and /sound/ commissioning
-        # arms share. install.sh's install_camilladsp() now creates these at
-        # install time (2770 group `jasper`, matching their
+        # The capture/sweep/tone trees the measurement daemon and /sound/
+        # commissioning arms share. install.sh's install_camilladsp() now
+        # creates these at install time (2770 group `jasper`, matching their
         # /var/lib/jasper/correction siblings); this heal stays for boxes
         # deployed before that landed, where whichever surface measured first
         # had already made them with a bare mkdir — root:root 0700 (its
@@ -150,13 +150,11 @@ heal_shared_state_modes() {
         "d:2770:${STATE_DIR}/active_speaker_stimuli"
         "d:2770:${STATE_DIR}/active_speaker_tone_artifacts"
     )
-    # The tuning spend ledger is SQLite, written in place rather than
-    # replaced, so a root-owned file left by the pre-drop jasper-correction-web
-    # would raise "attempt to write a readonly database" for the new writer —
-    # the file must stay writable by the non-owner in group jasper, and here
-    # that failure would silently stop the paid tuning calls counting against
-    # the household spend cap. 0644 is the mode jasper.web.correction_tuning
-    # maintains for its group-`jasper` readers.
+    # The tuning spend ledger is SQLite and is still summed into household
+    # spend (jasper.usage.household_usage_reader); a root-owned file left by
+    # the pre-drop jasper-correction-web must stay readable by group `jasper`
+    # or the aggregate silently drops it. Nothing writes it any more; heal
+    # the mode, expect no growth.
     for sidecar in \
         "${STATE_DIR}/usage-tuning.db" \
         "${STATE_DIR}/usage-tuning.db-wal" \
@@ -402,28 +400,6 @@ PY
     chmod 0644 "${tmp}"
     mv "${tmp}" "${provider_ids_file}"
     echo "  voice provider id manifest: ${provider_ids_file}"
-}
-
-# Remove the retired dmix/fanin topology switch's state file.
-#
-# `jasper-doctor`'s `check_fanin_asound_wiring` WARNs on this file's
-# presence and names re-running the installer as the fix, and this is the only
-# thing in the tree that makes that sentence true. Deleting the remover with the
-# rest of the migration would have left a WARN no operator action could ever
-# clear -- the paired "doctor warns on presence + install cleans" mechanism with
-# its cleaning half cut. Pinned by
-# tests/test_install_helpers.py::test_install_removes_the_retired_audio_topology_state.
-#
-# No backup, deliberately, unlike the migration this replaces: nothing reads the
-# file for routing (only the doctor inspects it), so a `.retired.*` copy would
-# preserve ghost state under a name the doctor does NOT warn about -- trading a
-# clearable warning for a silent one.
-#
-# Remove once jasper-doctor's check_fanin_asound_wiring drops its WARN on
-# audio_topology.env's presence AND no Pi still has /etc/asound.conf.dmix-mode-backup.
-remove_retired_audio_topology_state() {
-    rm -f "${STATE_DIR}/audio_topology.env" /etc/asound.conf.dmix-mode-backup
-    rm -f "${STATE_DIR}/renderer_lanes.env"
 }
 
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi

@@ -184,7 +184,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("audio", "jts-ring"),
         paths=(
-            # The graphs /sound/room/ validates, applies, and rolls back.
+            # The graphs the measurement daemon validates, applies and rolls back.
             "/var/lib/camilladsp/configs/*.yml",
             # Written by whichever commissioning arm measured first — /sound/
             # as jasper-web, or this unit. An unreadable one reads as "no
@@ -192,12 +192,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/active_speaker_measurements.json",
             "/var/lib/jasper/active_speaker_design_draft.json",
             "/var/lib/jasper/active_speaker_crossover_preview.json",
-            # The tuning surface reads the provider file fresh for its spend
-            # settings and sums BOTH ledgers for the household cap, so an
-            # unreadable one under-counts spend against a paid API.
-            "/var/lib/jasper/voice_provider.env",
-            "/var/lib/jasper/usage.db",
-            "/var/lib/jasper/usage-tuning.db",
         ),
     ),
     DaemonReadSpec(
@@ -547,8 +541,8 @@ def check_chat_web_readable_inputs() -> CheckResult:
 
 @doctor_check()
 def check_correction_web_readable_inputs() -> CheckResult:
-    """jasper-correction-web must be able to read the graphs it applies, the
-    commissioning stores /sound/ shares with it, and both spend ledgers."""
+    """jasper-correction-web must be able to read the graphs it applies and the
+    commissioning stores /sound/ shares with it."""
     return _check_daemon("jasper-correction-web")
 
 

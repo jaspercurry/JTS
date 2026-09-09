@@ -139,7 +139,7 @@ guard style.
 
 | If you want to … | Mirror |
 |---|---|
-| Ban a literal outside its owning constant, matched by VALUE not spelling | `tests/test_correction_boundary_ssot.py`, `tests/test_correction_substream_ssot.py` — AST `ast.Constant` values, so prose mentioning the literal is never a false positive |
+| Ban a literal outside its owning constant, matched by VALUE not spelling | `tests/test_audio_measurement_boundary_ssot.py`, `tests/test_correction_substream_ssot.py` — AST `ast.Constant` values, so prose mentioning the literal is never a false positive |
 | Freeze a convention's offenders and block new ones, or enforce one that lives only in a comment | `tests/test_atomic_io_conventions.py` (two-sided ratchet: a stale entry fails too, so the list only shrinks), `tests/test_shell_awk_environ_convention.py` (mutation-verified, names file:line and the replacement) |
 | Require every call site of a dangerous import to be preceded by its guard, or assert an import chain stays light | `tests/test_lazy_imports.py` (whole-tree AST discovery, a non-empty assertion so a broken scanner fails loudly, and a companion test that fails when an exclusion stops matching anything), `tests/test_web_wizard_import_chain.py` (subprocess import with the heavy module poisoned in `sys.modules`) |
 | Enforce a convention across every handler of a class | `tests/test_web_wizard_event_audit.py` (every state-mutating wizard handler emits an `event=` line), `tests/test_web_wizard_conventions.py` (the CSRF chokepoint, route-check-before-guard ordering, and a shape-based ban on interpolation into generated inline `on<event>=` handlers) |
@@ -193,8 +193,6 @@ Live Pi state without modifying anything:
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates, so you know whether a bonded leader's downstream delay fits. No config change, no restart |
 | [`scripts/jasper-pipe-probe`](../scripts/jasper-pipe-probe) | Renderer clock-integrity instrument: `gen-wav`/`gen-click` write the probe WAVs, `capture` pulls outputd's post-DSP `:9891` reference tap and writes an `OUT.raw.json` manifest (tap geometry, reject tallies, `all_zero`, `START_MONOTONIC_NS`), `analyze` prints per-second dominant frequency / THD+N / phase-glitch count / pitch-offset ppm (a meter — always exits 0), and `latency` measures one lane's launch-to-tap delay for before/after only. **Exits 4** unless `/var/lib/jasper/build.txt` names this checkout's commit (`--allow-skew` overrides) and **exits 3** when the instrument was blind; an all-zero tap is reported, not failed |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
-| `jasper-correction-bundle inspect <session> --recompute` | Validate a copied room-correction bundle, summarize its evidence, replay raw captures into derived curves |
-| `jasper-correction-bundle export <session> --output <dir>` | REW-friendly `.frd` / `.txt` curves and impulse-response WAVs from a bundle |
 
 Read-only `jasper-active-speaker` verbs (the audible commissioning verbs are the
 [operator runbook](tuning-operator-runbook.md)'s):

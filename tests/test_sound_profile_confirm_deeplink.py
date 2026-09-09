@@ -51,7 +51,7 @@ def test_the_deeplink_href_and_the_dom_id_agree():
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
     assert spec.next_action is not None
     href = str(spec.next_action["href"])
-    assert href == f"/sound/setup/#{ANCHOR_ID}"
+    assert href == f"/sound/speaker/#{ANCHOR_ID}"
 
     source = _source()
     assert f"var CONFIRM_SAFETY_ANCHOR_ID = '{ANCHOR_ID}';" in source
@@ -112,17 +112,20 @@ def test_the_deeplink_opens_the_owning_step_before_scrolling():
     source = _source()
     fn = source[source.index("function applySafetyLimitsDeepLink("):]
     fn = fn[: fn.index("\n  function renderDriverResearchCard(")]
-    assert "outputStepOverride = 'research';" in fn
+    # Which step it opens is pinned through the DOM by
+    # tests/js/sound_profile_harness.mjs's safetyLimitsDeepLinkOpensTheComponentStep.
     assert "render();" in fn
     assert "scrollIntoView" in fn
     # No-ops when there is nothing to review: a stale bookmark must not yank an
     # unrelated page into the component step.
     assert "needsReview" in fn
 
-    # And it is actually wired into both boot paths.
+    # And it is actually wired into the boot path. One, not two: /sound/speaker/
+    # and a bonded follower both boot through loadLocalHardware, and the pages
+    # that do not render the callout must not chase the fragment.
     assert source.count(
         "refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);"
-    ) == 2
+    ) == 1
 
 
 def test_the_callout_has_a_style_rule():
