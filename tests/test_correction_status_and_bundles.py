@@ -2302,7 +2302,7 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
                     "status": "incomplete",
                     "reason": "output_topology_unconfigured",
                     "detail": "Choose and save a speaker layout first.",
-                    "setup_href": "/sound/setup/",
+                    "setup_href": "/sound/speaker/",
                 },
             },
             "output_topology_unconfigured",
@@ -2381,7 +2381,7 @@ def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
     assert blocked.blocker["code"] == "speaker_setup_incomplete"
     assert blocked.blocker["recovery_action"] == {
         "label": "Open speaker setup",
-        "href": "/sound/setup/",
+        "href": "/sound/speaker/",
     }
 
     save_output_topology(passive, topology_path)
@@ -2428,7 +2428,7 @@ def test_room_readiness_blocks_zero_active_layout_without_flat_authority(
     assert blocked.blocker["code"] == "speaker_setup_incomplete"
     assert blocked.blocker["recovery_action"] == {
         "label": "Open speaker setup",
-        "href": "/sound/setup/",
+        "href": "/sound/speaker/",
     }
 
 

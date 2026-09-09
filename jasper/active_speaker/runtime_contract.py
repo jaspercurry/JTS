@@ -174,7 +174,7 @@ UNCONFIGURED_PARKED_EXIT = (
 # that predicate). Naming an impossible action first sends a household down a
 # road with no end, so the capability-aware surfaces use this instead.
 PARKED_MUTED_EXITS_NO_ACTIVE_LANE = (
-    "reset output setup at /sound/setup/, then choose an explicit passive "
+    "reset output setup at /sound/speaker/, then choose an explicit passive "
     "layout (passive sends full-range to every output and requires a built-in "
     "passive crossover), "
     "or attach an active-capable DAC"
@@ -613,7 +613,7 @@ def roleful_identity_confirmed(
     """Whether every ASSIGNED lane of a ROLEFUL topology is confirmed by ear.
 
     Stated once because two owners need the same answer:
-    :func:`safe_graph_for_current_topology` and the ``/sound/setup/`` identity
+    :func:`safe_graph_for_current_topology` and the ``/sound/speaker/`` identity
     endpoint. It reads the topology directly, so there is no marker file to
     drift. Scope is narrow on purpose: a passive full-range topology carries no
     crossover, so an unconfirmed lane there is a channel-swap annoyance rather

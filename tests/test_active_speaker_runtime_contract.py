@@ -4853,7 +4853,7 @@ def test_blocker_bearing_roleful_draft_parks_instead_of_blocking(
 ) -> None:
     """#2145 row 2: a savable mid-edit draft no longer aborts every deploy.
 
-    `/sound/setup/` saves a draft at every card, so a household can persist a
+    `/sound/speaker/` saves a draft at every card, so a household can persist a
     roleful topology whose channels are not all assigned yet. That topology
     carries `physical_output_unassigned`, which before #2145 forced the parked
     graph's verdict to `allowed=False` and blocked the install — even though the
@@ -5390,7 +5390,7 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
 ) -> None:
     """The reconciler replay: the re-pin's park survives its own reconcile.
 
-    `/sound/setup/`'s re-pin parks live AND writes a parked statefile, then
+    `/sound/speaker/`'s re-pin parks live AND writes a parked statefile, then
     fires `trigger_reconcile` on the same request. That reconcile runs
     `runtime-safe-graph --write-statefile`, which re-decides from scratch and
     has no parked-preservation guard of its own — so before #2814 the park was

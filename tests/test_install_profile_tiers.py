@@ -654,7 +654,7 @@ def test_deploy_script_accepts_full_and_streambox_only():
     assert "full|streambox|endpoint)" not in text
     # The bespoke endpoint verification path is gone.
     assert 'REMOTE_INSTALL_PROFILE" == "endpoint"' not in text
-    assert "http://127.0.0.1/sound/setup/" in text
+    assert "http://127.0.0.1/sound/speaker/" in text
     assert "http://127.0.0.1/sound/ || echo 000" not in text
 
 

@@ -72,7 +72,7 @@ REASON_SETUP_NOTICES_NONE = "setup_notices_none"
 REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
 
 
-_SPEAKER_SETUP_URL = "http://<speaker>/sound/setup/"
+_SPEAKER_SETUP_URL = "http://<speaker>/sound/speaker/"
 
 
 def _blocker_summary(contract) -> str:

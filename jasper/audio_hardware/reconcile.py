@@ -1184,7 +1184,7 @@ class Pass:
         if declares_no_lane:
             # The registry answered: this DAC declares no active outputd lane,
             # so the width gate never ran. Fixed only by choosing a different
-            # layout at /sound/setup/. Same literal as that save-guard's
+            # layout at /sound/speaker/. Same literal as that save-guard's
             # refusal reason.
             graph_status = "dac_no_active_lane"
         elif active_lane_cap is not None:

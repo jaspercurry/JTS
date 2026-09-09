@@ -5,7 +5,7 @@
 """Put this speaker back on the basic profile, from a shell on the speaker.
 
 **What the basic profile is.** Structure plus trim, and nothing else: the
-crossover preset the ``/sound/setup/`` wizard holds (regions, orders, channel
+crossover preset the ``/sound/speaker/`` wizard holds (regions, orders, channel
 map) together with the per-role ``gain_db`` / ``delay_ms`` / ``inverted``
 corrections. No per-driver linearization, no summed blend correction, and
 ``tuning_owner`` back to ``manual``. It is what
@@ -61,12 +61,12 @@ from jasper.identity.reader import read_identity
 from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: The basic-profile door at its EXTERNAL path. nginx's ``location
-#: /sound/setup/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the prefix
-#: stripped (deploy/nginx-jasper.conf), which is why the backend's own
+#: /sound/speaker/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the
+#: prefix stripped (deploy/nginx-jasper.conf), which is why the backend's own
 #: ``/active-speaker/...`` routes are reached with this prefix and not without
-#: it. The ``/sound/speaker/crossover/`` pages next door belong to a DIFFERENT daemon
-#: (jasper-correction-web, :8770).
-REVIEW_PATH = "/sound/setup/active-speaker/baseline-profile"
+#: it. The ``/sound/speaker/crossover/`` pages next door are a LONGER nginx
+#: prefix and a DIFFERENT daemon (jasper-correction-web, :8770).
+REVIEW_PATH = "/sound/speaker/active-speaker/baseline-profile"
 SAVE_AND_APPLY_PATH = REVIEW_PATH + "/save-and-apply"
 
 #: Mint the double-submit pair from a page this door's OWN daemon serves. The
@@ -74,7 +74,7 @@ SAVE_AND_APPLY_PATH = REVIEW_PATH + "/save-and-apply"
 #: ``Path=/`` cookie, with no per-process secret), so the correction daemon's
 #: page happens to validate here too -- but only while both daemons keep one
 #: scheme, which nothing enforces.
-CSRF_PAGE_PATH = "/sound/setup/"
+CSRF_PAGE_PATH = "/sound/speaker/"
 
 #: The door's own word for "the candidate moved under you", reused verbatim for
 #: the pre-flight refusal below so one condition has one name whichever side
