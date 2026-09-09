@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
+from ..music_sources import MUSIC_SOURCE_VALUES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -35,6 +36,7 @@ from ..volume_diagnostics import (
 from . import (
     debug_control,
     grouping_supervisor,
+    heal_supervisor,
     measurement_hold,
     shairport_supervisor,
     system_supervisor,
@@ -53,8 +55,9 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 
 # Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
 # so a consumer can branch on the number instead of probing for keys.
-# See ADR-0270 for the thirteen keys this version names.
-STATE_SCHEMA_VERSION = 4
+# See ADR-0270 for the thirteen keys version 4 named; 5 adds
+# `resilience.heal` (ADR-0271).
+STATE_SCHEMA_VERSION = 5
 
 # One deadline for the whole payload: the daemon fan-out and every section
 # read spend from it. NOT a latency control — the normal path finishes well
@@ -406,15 +409,16 @@ def _active_source(
         else overall.get("active_source")
     )
 
+    # Mux's own answer to "what is audible now" — one field, not a second
+    # reconstruction from the manual pin and the raw winner. Mux also answers
+    # "idle" and, while a measurement holds the fan-in test lease, that lane's
+    # label; neither is a source this surface may report, and both must fall
+    # through to the raw-probe fallbacks below.
     mux_effective_source = None
     if isinstance(mux_status, dict):
-        raw_selected = mux_status.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_status.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
+        raw_effective = mux_status.get("active_source")
+        if raw_effective in MUSIC_SOURCE_VALUES:
+            mux_effective_source = raw_effective
 
     if voice_session:
         return "voice"
@@ -712,7 +716,7 @@ async def _get_state(
         # Final-output owner; jasper-doctor owns the actionable failure.
         "outputd": outputd,
         "source_selection": mux,
-        # The three supervisors this process runs, and nothing else: every
+        # The four supervisors this process runs, and nothing else: every
         # other resilience fact has a module of its own that jasper-doctor
         # reads directly (ADR-0270).
         "resilience": {
@@ -726,6 +730,9 @@ async def _get_state(
             # failures (rate-limited 1/24h). Off via
             # JASPER_SYSTEM_SUPERVISOR=disabled.
             "system_supervisor": system_supervisor.snapshot(),
+            # Observer of the two silences no unit state reveals;
+            # `would_act` is what it would have done (ADR-0271).
+            "heal": heal_supervisor.snapshot(),
         },
         # Which subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),

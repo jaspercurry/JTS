@@ -18,6 +18,7 @@ from jasper.active_speaker import measurement_programs as mp
         ("baseline", "express", 5, 5, 8),
         ("tournament", "full", 3, 3, 3),
         ("tournament", "express", 1, 1, 1),
+        ("seat", "cloud", 11, 11, 11),
         ("seat", "cube", 7, 7, 7),
         ("seat", "express", 3, 3, 3),
         ("close", "spot", 1, 1, 1),
@@ -70,6 +71,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("baseline", "full"),
         ("branches", "express"),
         ("close", "spot"),
+        ("seat", "cloud"),
         ("seat", "cube"),
         ("seat", "express"),
         ("tournament", "express"),
@@ -122,18 +124,31 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
 
     assert {p.kind for p in cube.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cube.poses} == {(0, 0, 1)}
-    assert {p.seat_offset_m for p in cube.poses} == {
+    assert [p.seat_offset_m for p in cube.poses] == [
         (0.0, 0.0, 0.0),
-        (mp.SEAT_OFFSET_M, 0.0, 0.0), (-mp.SEAT_OFFSET_M, 0.0, 0.0),
-        (0.0, mp.SEAT_OFFSET_M, 0.0), (0.0, -mp.SEAT_OFFSET_M, 0.0),
-        (0.0, 0.0, mp.SEAT_OFFSET_M), (0.0, 0.0, -mp.SEAT_OFFSET_M),
-    }
+        (0.30, 0.0, 0.0), (-0.30, 0.0, 0.0),
+        (0.0, 0.30, 0.0), (0.0, -0.30, 0.0),
+        (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
+    ]
     assert [p.seat_offset_m for p in express.poses] == [
         (0.0, 0.0, 0.0), (mp.SEAT_OFFSET_M, 0.0, 0.0), (0.0, mp.SEAT_OFFSET_M, 0.0),
     ]
     assert {p.seat_offset_m for p in express.poses} <= {
         p.seat_offset_m for p in cube.poses
     }
+
+
+def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
+    cloud = mp.program("seat", "cloud")
+
+    assert {p.kind for p in cloud.poses} == {mp.POSE_KIND_SEAT}
+    assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cloud.poses} == {(0, 0, 1)}
+    assert [p.seat_offset_m for p in cloud.poses] == [
+        (-0.30, 0.30, 0.0), (0.0, 0.30, 0.0), (0.30, 0.30, 0.0),
+        (-0.30, 0.0, 0.0), (0.0, 0.0, 0.0), (0.30, 0.0, 0.0),
+        (-0.30, -0.30, 0.0), (0.0, -0.30, 0.0), (0.30, -0.30, 0.0),
+        (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
+    ]
 
 
 def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
@@ -158,4 +173,3 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
     assert row.poses == (mp.ProgramPose(azimuth, elevation, 1),)
     assert (row.mic_move_count, row.capture_count) == (1, 1)
     assert (row.program_id, row.size) == ("spot", "express")
-

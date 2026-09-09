@@ -33,7 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from jasper import fanin_coupling, ring_assets
-from jasper.camilla_config_contract import parse_camilla_devices_config
+from jasper.camilla_config_contract import (
+    devices_playback_is_pipe,
+    parse_camilla_devices_config,
+)
 from jasper.env_file import env_value, read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
@@ -47,6 +50,11 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_WIRE_FORMAT_ENV_VAR,
     RING_WIRE_FORMAT_WIDE,
+)
+from jasper.multiroom.grouping_ring import (
+    GROUPING_RING_CHANNELS,
+    GROUPING_RING_FORMAT,
+    GROUPING_RING_PCM,
 )
 
 
@@ -133,11 +141,9 @@ class RingWireDeclaration:
 
 @dataclass(frozen=True)
 class LoadedCamillaGraph:
-    """ONE snapshot of the CamillaDSP graph the durable statefile points at.
+    """One snapshot of a selected CamillaDSP graph.
 
-    A snapshot object rather than three field reads: the width gate compares a
-    lane's device, format and channels together, and one file read per field
-    gives three answers that need not come from one revision of it. ``devices``
+    The width gate compares device, format and channels from one revision. ``devices``
     is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
     subset over that single read.
 
@@ -157,7 +163,7 @@ class LoadedCamillaGraph:
 
 
 def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGraph:
-    """Read the loaded CamillaDSP graph once, for the callers that compare it.
+    """Read one graph, defaulting to the primary durable statefile.
 
     Statefile -> ``config_path`` -> the config's ``devices:`` subset, through the
     same public reader (``read_camilla_statefile_config_path``) every other
@@ -168,7 +174,8 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
     WEAKER of the two answers to "which graph is loaded": it is a durable pointer
     with several writers, so it can move while the running daemon still holds the
     previous graph. A caller holding the DAEMON's own answer
-    (``reconcile_current_dsp``'s ``current_config_path``) passes it here.
+    (``reconcile_current_dsp``'s ``current_config_path``) passes it here, and a
+    two-stage leader passes its crossover path to inspect that stage alone.
     """
     from jasper.active_speaker.environment import (  # lazy: import cost
         read_camilla_statefile_config_path,
@@ -882,7 +889,9 @@ def graph_at_active_ring_endpoint(
     and playback is the ACTIVE ring — both lanes, because a graph that plays the
     ring while capturing the snd-aloop tap captures a device nobody writes) and
     the WIRE (every ring lane states the box's resolved format AND channel
-    width).
+    width). A GROUPED LEADER splits that route over two graphs — Ring A into the
+    grouping pipe, then the grouping ring into the ACTIVE ring — so both stages
+    are read and both are proved.
 
     TWO CALLERS. :func:`ring_endpoint_anchor_converged` asks this between its
     anchor-identity and all-muted axes; :mod:`jasper.fanin.converge` asks it
@@ -895,12 +904,43 @@ def graph_at_active_ring_endpoint(
     Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a lane
     that declares no format or no channel count.
     """
+    graphs = [graph]
+    capture_device = RING_CAPTURE_DEVICE
+    if graph.devices.get("playback_type") == "File":
+        from jasper.active_speaker.environment import read_camilla_statefile_config_path  # lazy: cycle through playback_route
+        from jasper.multiroom.active_leader_config import crossover_statefile_path  # lazy: cycle through runtime_contract
+        from jasper.multiroom.reconcile import SNAPFIFO  # lazy: cycle through coupling_reconcile
+
+        if (
+            graph.devices.get("capture_device") != RING_CAPTURE_DEVICE
+            or not devices_playback_is_pipe(graph.devices, SNAPFIFO)
+        ):
+            return False, "the primary graph does not connect Ring A to the grouping pipe"
+        path = read_camilla_statefile_config_path(crossover_statefile_path())
+        if not path:
+            return False, "the grouping crossover statefile has no config path"
+        graph = read_loaded_camilla_graph(path)
+        if graph.note:
+            return False, graph.note
+        graphs.append(graph)
+
     capture = graph.devices.get("capture_device")
     playback = graph.devices.get("playback_device")
-    if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
+    if len(graphs) > 1 or capture == GROUPING_RING_PCM:
+        capture_device = GROUPING_RING_PCM
+        # Snapcast carries 16-bit stereo, independently of the output ring wire.
+        for stage, lane in [(graph, "capture")] + (
+            [(graphs[0], "playback")] if len(graphs) > 1 else []
+        ):
+            if (
+                stage.devices.get(f"{lane}_format") != GROUPING_RING_FORMAT
+                or stage.devices.get(f"{lane}_channels") != GROUPING_RING_CHANNELS
+            ):
+                return False, f"{stage.path} {lane} does not match the grouping ring wire"
+    if capture != capture_device or playback != RING_ACTIVE_PLAYBACK_DEVICE:
         return False, (
             f"the loaded graph captures {capture!r} and plays {playback!r}, "
-            f"not the ring endpoint pair (capture {RING_CAPTURE_DEVICE!r} -> "
+            f"not the ring endpoint pair (capture {capture_device!r} -> "
             f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
         )
 
@@ -908,7 +948,7 @@ def graph_at_active_ring_endpoint(
     if wire is None:
         return False, wire_problem
     problems: list[str] = []
-    for decl in graph_wire_declarations(graph):
+    for decl in (decl for stage in graphs for decl in graph_wire_declarations(stage)):
         if decl.sample_format != wire.sample_format:
             problems.append(
                 f"{decl.end} declares format {decl.sample_format}, expected "

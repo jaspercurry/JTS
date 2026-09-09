@@ -10,7 +10,10 @@ harness / mux — so the magic string isn't copied per caller.
 """
 from __future__ import annotations
 
+import pytest
+
 from jasper.fanin.status import (
+    fanin_inputs_by_label,
     DIRECT_HEALTH_CAPTURING,
     extract_direct_sample,
     fanin_usbsink_lane_is_direct,
@@ -80,3 +83,27 @@ def test_direct_sample_rejects_non_direct_and_malformed_lanes():
     assert extract_direct_sample(_status("lane")) is None
     assert extract_direct_sample(None) is None
     assert extract_direct_sample({"inputs": "bad"}) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_labels"),
+    [
+        ({"inputs": [{"label": "spotify"}, {"label": "usbsink"}]},
+         ["spotify", "usbsink"]),
+        # Fail-soft: absent, malformed, and unlabelled lanes all drop out
+        # rather than raising — every consumer keys off one projection.
+        (None, []),
+        ({}, []),
+        ({"inputs": "bad"}, []),
+        ({"inputs": []}, []),
+        ({"inputs": [{"label": 7}, "nope", {"no_label": 1}]}, []),
+        # A health snapshot re-keys lanes by SOURCE ID, not fan-in label.
+        # This projection takes raw STATUS only, so that shape yields nothing
+        # rather than silently answering for the wrong key space.
+        ({"inputs": {"bluetooth": {"label": "bluealsa"}}}, []),
+    ],
+)
+def test_inputs_by_label_projects_the_raw_status_fail_soft(
+    status, expected_labels,
+):
+    assert sorted(fanin_inputs_by_label(status)) == sorted(expected_labels)

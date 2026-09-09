@@ -33,6 +33,7 @@ import pytest
 from jasper import renderer_lanes as rl
 from jasper import ring_assets
 from jasper.fanin_coupling import resolve_ring_wire_format
+from jasper.music_sources import MUSIC_SOURCE_SPECS
 from tests.ring_abi import ring_abi
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
@@ -1652,12 +1653,8 @@ def test_every_lane_has_a_distinct_ring_path_device_and_key(label):
     assert lane.unit not in {o.unit for o in others}
 
 
-@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
-def test_every_registered_label_is_a_real_fanin_lane(label):
-    """A label absent from fan-in's compiled-in default input_renderers is
-    refused at config (ConfigClassError -> park) UNLESS
-    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
-    the compiled-in default, not the guaranteed runtime outcome."""
+def _compiled_fanin_lane_labels() -> list[str]:
+    """Scrape fan-in's compiled-in default ``input_renderers`` array."""
     rs = FANIN_CONFIG_RS.read_text()
     m = re.search(
         r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S
@@ -1668,12 +1665,36 @@ def test_every_registered_label_is_a_real_fanin_lane(label):
     # via a `pub const NAME: &str = "...";` reference (issue #3461).
     consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
     raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
-    fanin_labels = [consts.get(item, item) for item in raw_items]
+    return [consts.get(item, item) for item in raw_items]
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_registered_label_is_a_real_fanin_lane(label):
+    """A label absent from fan-in's compiled-in default input_renderers is
+    refused at config (ConfigClassError -> park) UNLESS
+    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
+    the compiled-in default, not the guaranteed runtime outcome."""
+    fanin_labels = _compiled_fanin_lane_labels()
     assert label in fanin_labels, (
         f"lane label {label!r} is missing from fan-in's compiled-in default "
         f"input_renderers {fanin_labels} (scraped from {FANIN_CONFIG_RS.name}); "
         "unless JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed "
         "env, fan-in will not recognize this lane"
+    )
+
+
+@pytest.mark.parametrize("spec", MUSIC_SOURCE_SPECS, ids=lambda s: s.id.value)
+def test_every_music_source_names_a_real_fanin_lane(spec):
+    """Every arbitrable source, not just the ring-migratable renderers.
+
+    usbsink is a music source with no renderer lane, so the registered-label
+    pin above never covers it — and every mux test mocks _fanin_select, so a
+    typo'd fanin_label would reach the box before anything noticed."""
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert spec.fanin_label in fanin_labels, (
+        f"MUSIC_SOURCE_SPECS[{spec.id.value}].fanin_label "
+        f"{spec.fanin_label!r} is missing from fan-in's compiled-in default "
+        f"input_renderers {fanin_labels} (scraped from {FANIN_CONFIG_RS.name})"
     )
 
 

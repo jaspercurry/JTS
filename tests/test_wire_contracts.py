@@ -523,7 +523,7 @@ async def test_fanin_control_command_vocabulary_matches_mux(monkeypatch, tmp_pat
     than a substring of either. The same drive owns the socket half: a
     mutation that split off onto the compiled-in default under an operator's
     ``JASPER_FANIN_CONTROL_SOCKET`` override would talk to a different daemon
-    than STATUS does. `tests/test_fanin_control.py` owns the client's own wire
+    than STATUS does. `tests/test_platform_uds.py` owns the client's own wire
     behaviour (one bounded exchange, raise on an ``{"error": ...}`` body);
     fan-in's `state_server_wire_contract_returns_valid_json_for_status_trim_
     and_errors` owns the responses.
@@ -569,7 +569,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     constant by construction, and
     ``test_fanin_control_command_vocabulary_matches_mux`` owns the override.
     """
-    from jasper import audio_validation, mux, renderer
+    from jasper import audio_validation, mux
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
     from jasper.control import audio_health, grouping_supervisor
@@ -606,7 +606,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     assert {
         status_socket.MUX_CONTROL_SOCKET_PATH,
         mux.MUX_CONTROL_SOCKET_PATH,
-        renderer.MUX_CONTROL_SOCKET_PATH,
         uds.MUX_CONTROL_SOCKET_PATH,
         audio_health.MUX_CONTROL_SOCKET_PATH,
         system_soak.STATUS_SOCKETS["mux"],
@@ -706,10 +705,10 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     },
     ("fanin",): set(_FAKE_FANIN_STATUS),
     ("outputd",): set(_FAKE_OUTPUTD_STATUS),
-    # The three supervisors that live only in this process's memory. Every
+    # The four supervisors that live only in this process's memory. Every
     # other resilience fact is read from its own module (ADR-0270).
     ("resilience",): {
-        "shairport", "grouping_supervisor", "system_supervisor",
+        "shairport", "grouping_supervisor", "system_supervisor", "heal",
     },
 }
 
@@ -753,7 +752,7 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
 
 
 async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):

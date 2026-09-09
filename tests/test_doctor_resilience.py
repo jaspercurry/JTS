@@ -17,6 +17,7 @@ import time
 import pytest
 
 from jasper import service_units
+from jasper.control import heal_supervisor
 from jasper.cli.doctor import _evidence, _shared, resilience, web
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
@@ -714,6 +715,7 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
     "check_name",
     [
         "check_bootloop_guard",
+        "check_heal_recency",
         "check_outputd_failure_reconcile_park",
         "check_required_units_active",
         "check_speaker_silence",
@@ -724,6 +726,47 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
 )
 def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()
+
+
+# ---------------------------------------------------------- check_heal_recency
+
+
+_HEAL_STALE_AFTER_SEC = 3 * 600.0
+
+
+def test_the_stale_window_is_three_supervisor_ticks():
+    assert (
+        resilience._HEAL_STALE_TICKS * heal_supervisor.TICK_INTERVAL_SEC
+        == _HEAL_STALE_AFTER_SEC
+    )
+
+
+@pytest.mark.parametrize(
+    "heal, status, reason",
+    [
+        (None, "skipped", resilience.REASON_CONTROL_UNAVAILABLE),
+        ({"enabled": False}, "skipped", resilience.REASON_HEAL_UNOBSERVED),
+        ({"age": _HEAL_STALE_AFTER_SEC + 60}, "warn", resilience.REASON_HEAL_STALE),
+        ({"age": 60.0}, "ok", resilience.REASON_HEAL_RECENT),
+        (
+            {"age": 60.0, "would_act": {"case": "silent", "action": "restart-audio"}},
+            "ok", resilience.REASON_HEAL_RECENT,
+        ),
+    ],
+)
+def test_check_heal_recency_verdicts(monkeypatch, heal, status, reason):
+    """``age`` is how long ago the supervisor published its last tick."""
+    snapshot = None if heal is None else dict(heal)
+    if snapshot is not None and "age" in snapshot:
+        snapshot["last_tick"] = time.time() - snapshot.pop("age")
+    monkeypatch.setattr(
+        resilience, "_read_resilience_state",
+        lambda: None if snapshot is None else {"heal": snapshot},
+    )
+
+    result = resilience.check_heal_recency()
+
+    assert (result.status, result.reason) == (status, reason)
 
 
 # --------------------------------------- check_outputd_failure_reconcile_park
