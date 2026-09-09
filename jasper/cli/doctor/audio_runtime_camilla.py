@@ -506,7 +506,6 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
                 f"chunksize={chunksize} and queuelimit={queuelimit}; CamillaDSP "
                 f"refuses a target above {ceiling} and will restart-loop. "
                 "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
-                speaker_silent=True,
                 reason=REASON_RING_TARGET_LEVEL_ABOVE_CEILING,
             )
 
@@ -518,7 +517,6 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             f"{'/'.join(ring_ends)}, above the ring's {capacity}-frame capacity. "
             "CamillaDSP cannot open the ring with it and will restart-loop. "
             "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
-            speaker_silent=True,
             reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
         )
     # Say so when the clamp is what put this number here; otherwise the box runs
@@ -641,6 +639,5 @@ def check_camilla_recover_park() -> CheckResult:
         label,
         "fail",
         ". ".join(parts),
-        speaker_silent=True,
         reason=REASON_CAMILLA_GRAPH_PARKED,
     )

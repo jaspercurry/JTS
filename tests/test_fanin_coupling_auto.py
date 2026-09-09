@@ -949,6 +949,7 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
 
 @pytest.mark.parametrize("reason,ladder,held,expected", [
     ("reused", "probing", 576, "applied"),
+    ("", "probing", 1600, "recovery"),
     ("backoff", "l0_locked", 1088, "held"),
 ])
 def test_usb_latency_reports_reuse_and_held_buffer(tmp_path, reason, ladder, held, expected):
@@ -956,7 +957,7 @@ def test_usb_latency_reports_reuse_and_held_buffer(tmp_path, reason, ladder, hel
         "host_clock": {"ladder": ladder},
         "inputs": {"usbsink": {"resampler": {
             "locked": True, "held_target_frames": held,
-            "decay": {"enabled": True, "floor_frames": 576, "frozen_reason": reason},
+            "decay": {"enabled": True, "floor_frames": 576, "frozen_reason": reason, "active": reason == ""},
         }}},
     }}}
     state = lm.read_state(airplay, state_path=tmp_path / "usb.env")

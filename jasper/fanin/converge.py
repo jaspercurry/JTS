@@ -46,7 +46,7 @@ and is only asked to re-derive from the moved graph.
 
 WHAT IT NEVER DOES: decide the coupling — there is one (ADR-0100). A refusal
 here is not an abort: the pass carries on, and a box nothing carries parks under
-its own name (:mod:`jasper.control.transport_park`).
+its own name (:mod:`jasper.control.transport_eligibility`).
 """
 from __future__ import annotations
 

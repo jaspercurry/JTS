@@ -37,7 +37,6 @@ from ._doctor_audio_runtime_fixtures import (
 )
 from .doctor_test_support import record_active_dac
 from .ring_abi import ring_abi
-from .test_doctor_audio_runtime_camilla import _silent_camilla_recover_park
 from .test_ring_stall_alarm import _ring_file
 
 
@@ -1905,7 +1904,6 @@ def test_a_crossed_pair_under_a_held_entry_lock_is_not_called_silence(
 
     assert result.status == "warn", result
     assert result.reason == audio_runtime_ring.REASON_RECONCILE_IN_FLIGHT
-    assert result.speaker_silent is False
 
 
 @pytest.mark.parametrize("arrange", _CROSSED_ARRANGEMENTS, ids=_CROSSED_IDS)
@@ -1922,60 +1920,3 @@ def test_a_crossed_pair_with_nobody_reconciling_is_the_silence_fail(
     result = audio_runtime_ring.check_content_transport_coherence()
 
     assert result.status == "fail", result
-    assert result.speaker_silent is True
-
-
-def _silent_split_transport(monkeypatch, tmp_path):
-    _arrange(
-        monkeypatch,
-        tmp_path,
-        bridge=DIRECT_BRIDGE,
-        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-    )
-    return audio_runtime_ring.check_content_transport_coherence
-
-
-def _silent_ring_path_projection(monkeypatch, tmp_path):
-    _arrange_projection(
-        monkeypatch, tmp_path, marker="1", carried="/dev/shm/jts-ring/content.ring"
-    )
-    return audio_runtime_ring.check_content_transport_coherence
-
-
-def _silent_ring_transport_park(monkeypatch, tmp_path):
-    from jasper.control import transport_park
-
-    monkeypatch.setattr(
-        transport_park,
-        "snapshot",
-        lambda *a, **k: {
-            "status": "parked",
-            "parked": True,
-            "parks": [{"park_class": "mono_full_range", "detail": "d"}],
-        },
-    )
-    return audio_runtime_ring.check_ring_transport_park
-
-
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        _silent_split_transport,
-        _silent_ring_path_projection,
-        _silent_camilla_recover_park,
-        _silent_ring_transport_park,
-    ],
-    ids=lambda fn: fn.__name__,
-)
-def test_a_check_that_asserts_silence_carries_speaker_silent(
-    monkeypatch, tmp_path, arrange
-) -> None:
-    """A branch whose whole finding is "the household hears nothing" must say so
-    in the structured field, not only in its prose — `render` and the dashboard
-    lead their summary with it."""
-    check = arrange(monkeypatch, tmp_path)
-
-    result = check()
-
-    assert result.status == "fail", result
-    assert result.speaker_silent is True

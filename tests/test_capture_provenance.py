@@ -32,6 +32,7 @@ from jasper.active_speaker.capture_provenance import (
     observe_capture_provenance,
     record_capture_provenance,
 )
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -221,6 +222,9 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert block["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
     assert block["graph"]["config_path"] == ANCHOR_PATH
     assert block["graph"]["fingerprint"]
+    assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
+    assert block["graph"]["config"]["pipeline"] == [{"type": "Mixer", "name": "program_routing"}]
+    assert cam.reads.count("active_raw") == 1
     assert block["stimulus"]["program_id"] == program.program_id
     assert block["stimulus"]["phase"] == PHASE_CHECK
     assert block["stimulus"]["wav_sha256"] == "a" * 64

@@ -69,12 +69,6 @@ _MODELLED_COMBO_TYPES = {
     "LinkwitzRileyLowpass": False,
 }
 
-_DELAY_UNIT_SECONDS = {
-    "ms": 1e-3,
-    "s": 1.0,
-}
-
-
 class BranchPeakError(RuntimeError):
     """This graph or stimulus cannot be rendered exactly. Fail-conservative at the call site:
     drops back to the full-stimulus-peak bound.
@@ -92,6 +86,36 @@ def _mapping(value: Any, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise BranchPeakError(f"{what} is not a mapping")
     return value
+
+
+def _delay_seconds(params: Mapping[str, Any], name: str) -> float:
+    """The whole-sample delay CamillaDSP applies when ``subsample`` is false."""
+    subsample = params.get("subsample")
+    if subsample not in (None, False):
+        if subsample is True:
+            raise BranchPeakError(
+                f"filter {name!r} uses a subsample Delay, whose allpass is not modelled"
+            )
+        raise BranchPeakError(f"filter {name!r} has invalid subsample {subsample!r}")
+    delay = _finite(params.get("delay"), f"filter {name!r} delay")
+    if delay < 0.0:
+        raise BranchPeakError(f"filter {name!r} has a negative delay")
+    unit = str(params.get("unit") or "ms")
+    if unit == "samples":
+        requested_samples = delay
+    elif unit == "ms":
+        requested_samples = delay * RESPONSE_SAMPLE_RATE_HZ / 1000.0
+    elif unit == "us":
+        requested_samples = delay * RESPONSE_SAMPLE_RATE_HZ / 1_000_000.0
+    elif unit == "mm":
+        requested_samples = delay * RESPONSE_SAMPLE_RATE_HZ / 343_000.0
+    else:
+        raise BranchPeakError(f"filter {name!r} delays in {unit!r}")
+    # CamillaDSP's default Delay is a delay line rounded to the nearest full
+    # sample. The request is non-negative, so floor(x + 0.5) matches Rust's
+    # f64::round rule at half-sample ties.
+    samples = math.floor(requested_samples + 0.5)
+    return samples / float(RESPONSE_SAMPLE_RATE_HZ)
 
 
 def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
@@ -123,7 +147,9 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
 
 
 def _filter_records(
-    names: Sequence[str], filters: Mapping[str, Any]
+    names: Sequence[str], filters: Mapping[str, Any],
+    *,
+    allow_limiter_passthrough: bool = True,
 ) -> tuple[list[dict[str, Any]], list[Any], complex, float]:
     """One pipeline step's names reduced to ``(biquads, sections, scale, delay_s)``. A transfer
     function is a product, so the four accumulators may be collected in any order and
@@ -144,6 +170,10 @@ def _filter_records(
             raise BranchPeakError(f"filter {name!r} is a {kind or 'typeless'} filter")
         params = _mapping(spec.get("parameters"), f"filter {name!r} parameters")
         if kind == "Limiter":
+            if not allow_limiter_passthrough:
+                raise BranchPeakError(
+                    f"filter {name!r} is nonlinear and has no complex transfer"
+                )
             # Pass-through: a limiter can only ever REDUCE a peak, so ignoring
             # it over-reports the branch, binding the ceiling tighter (safe).
             continue
@@ -166,20 +196,7 @@ def _filter_records(
             scale = scale * linear
             continue
         if kind == "Delay":
-            unit = str(params.get("unit") or "ms")
-            if unit == "samples":
-                seconds = (
-                    _finite(params.get("delay"), f"filter {name!r} delay")
-                    / float(RESPONSE_SAMPLE_RATE_HZ)
-                )
-            elif unit in _DELAY_UNIT_SECONDS:
-                seconds = (
-                    _finite(params.get("delay"), f"filter {name!r} delay")
-                    * _DELAY_UNIT_SECONDS[unit]
-                )
-            else:
-                raise BranchPeakError(f"filter {name!r} delays in {unit!r}")
-            delay_s += seconds
+            delay_s += _delay_seconds(params, name)
             continue
         if kind == "BiquadCombo":
             combo = str(params.get("type") or "")
@@ -230,7 +247,9 @@ def _filter_records(
 
 
 def _step_transfer(
-    names: Sequence[str], filters: Mapping[str, Any], freqs: Any
+    names: Sequence[str], filters: Mapping[str, Any], freqs: Any,
+    *,
+    allow_limiter_passthrough: bool = True,
 ) -> tuple[Any, float]:
     """``(complex response across freqs, seconds of delay it adds)``. Delay is returned, not
     checked here: the overlap bounds a whole BRANCH, accumulated per channel in
@@ -243,7 +262,9 @@ def _step_transfer(
         crossover_response_complex,
     )
 
-    biquads, sections, scale, delay_s = _filter_records(names, filters)
+    biquads, sections, scale, delay_s = _filter_records(
+        names, filters, allow_limiter_passthrough=allow_limiter_passthrough,
+    )
     response = np.full(freqs.shape, scale, dtype=np.complex128)
     if biquads:
         response = response * chain_response(biquads, freqs)
@@ -267,7 +288,9 @@ def _guard_branch_delay(delays: Sequence[float]) -> None:
 
 
 def _pipeline_operations(
-    config: Mapping[str, Any], freqs: Any, capture_channels: int
+    config: Mapping[str, Any], freqs: Any, capture_channels: int,
+    *,
+    allow_limiter_passthrough: bool = True,
 ) -> tuple[list[tuple[str, Any]], int]:
     """The applied pipeline reduced to ordered spectrum operations, plus the ending channel
     count (playback width requested output indexes are validated against).
@@ -297,7 +320,10 @@ def _pipeline_operations(
             names = [str(name) for name in step.get("names") or [] if name is not None]
             if not names:
                 continue
-            response, delay_s = _step_transfer(names, filters, freqs)
+            response, delay_s = _step_transfer(
+                names, filters, freqs,
+                allow_limiter_passthrough=allow_limiter_passthrough,
+            )
             for channel in channels:
                 delays[channel] += delay_s
             _guard_branch_delay(delays)
@@ -320,6 +346,99 @@ def _pipeline_operations(
             continue
         raise BranchPeakError(f"pipeline step {index} is a {kind or 'typeless'} step")
     return operations, width
+
+
+def complex_channel_transfer(
+    config: Mapping[str, Any],
+    freqs_hz: Any,
+    *,
+    input_weights: Mapping[int, complex],
+    output_channels: Mapping[Any, int],
+    allow_limiter_passthrough: bool = False,
+) -> dict[Any, Any]:
+    """Complex transfer from one declared input mixture to named outputs.
+
+    ``input_weights`` states the signal actually driven on each capture
+    channel. A role-routed diagnostic uses one weight of ``1``; a coherent
+    stereo summed sweep uses ``{0: 1, 1: 1}``, so the active split mixer's two
+    -6.02 dB legs are both included. The pipeline walker is the same numerical
+    owner as :func:`stimulus_branch_peaks_dbfs`, including shared filters,
+    mixers, gain/polarity and delay.
+
+    Limiters have no linear transfer. They refuse by default. A caller may
+    treat them as pass-through only after proving the compared graphs carry the
+    same limiter semantics and placement.
+    """
+    import numpy as np  # lazy: keep NumPy off admission/status imports until analysis is needed
+
+    if not isinstance(config, Mapping):
+        raise BranchPeakError("the applied config is not a mapping")
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    if freqs.ndim != 1 or not freqs.size or not np.all(np.isfinite(freqs)):
+        raise BranchPeakError("frequencies must be a non-empty finite vector")
+    if np.any(freqs < 0.0):
+        raise BranchPeakError("frequencies must be non-negative")
+    devices = _mapping(config.get("devices"), "devices")
+    rate = devices.get("samplerate")
+    if isinstance(rate, bool) or not isinstance(rate, int):
+        raise BranchPeakError(f"devices.samplerate is {rate!r}")
+    if int(rate) != RESPONSE_SAMPLE_RATE_HZ:
+        raise BranchPeakError(
+            f"the graph runs at {rate} Hz; the shared filter evaluator models "
+            f"{RESPONSE_SAMPLE_RATE_HZ} Hz"
+        )
+    capture = _mapping(devices.get("capture"), "devices.capture")
+    capture_channels = capture.get("channels")
+    if (
+        isinstance(capture_channels, bool)
+        or not isinstance(capture_channels, int)
+        or capture_channels < 1
+    ):
+        raise BranchPeakError(
+            f"devices.capture.channels is {capture_channels!r}"
+        )
+    if not input_weights:
+        raise BranchPeakError("no input channel weights were declared")
+    spectra = [np.zeros(freqs.shape, dtype=np.complex128) for _ in range(capture_channels)]
+    for channel, weight in input_weights.items():
+        if isinstance(channel, bool) or not isinstance(channel, int):
+            raise BranchPeakError(f"input channel is {channel!r}")
+        if not 0 <= channel < capture_channels:
+            raise BranchPeakError(
+                f"input channel {channel} is outside capture width {capture_channels}"
+            )
+        value = complex(weight)
+        if not (math.isfinite(value.real) and math.isfinite(value.imag)):
+            raise BranchPeakError(f"input channel {channel} has a non-finite weight")
+        spectra[channel] = np.full(freqs.shape, value, dtype=np.complex128)
+
+    operations, playback_channels = _pipeline_operations(
+        config, freqs, capture_channels,
+        allow_limiter_passthrough=allow_limiter_passthrough,
+    )
+    for kind, payload in operations:
+        if kind == "filter":
+            channels, response = payload
+            for channel in channels:
+                spectra[channel] = spectra[channel] * response
+            continue
+        width, mapping = payload
+        mixed = [np.zeros(freqs.shape, dtype=np.complex128) for _ in range(width)]
+        for dest, sources in mapping:
+            for source, gain in sources:
+                mixed[dest] = mixed[dest] + spectra[source] * gain
+        spectra = mixed
+
+    result: dict[Any, Any] = {}
+    for key, channel in output_channels.items():
+        if isinstance(channel, bool) or not isinstance(channel, int):
+            raise BranchPeakError(f"{key} names output channel {channel!r}")
+        if not 0 <= channel < playback_channels:
+            raise BranchPeakError(
+                f"{key} names output channel {channel} of {playback_channels}"
+            )
+        result[key] = spectra[channel].copy()
+    return result
 
 
 def _step_channels(step: Mapping[str, Any], width: int, index: int) -> tuple[int, ...]:

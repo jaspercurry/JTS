@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read side of the accessory supervisor's status file, for ``/state``.
+"""Read side of the accessory supervisor's status file.
 
-Kept apart from :mod:`jasper.accessories.supervisor` so jasper-control reads
+Kept apart from :mod:`jasper.accessories.supervisor` so jasper-control's
+doctor row (``jasper.cli.doctor.resilience.check_accessory_bridges``) reads
 the file without importing the bridge runtime.
 """
 from __future__ import annotations

@@ -15,11 +15,11 @@ import json
 import os
 import time
 import uuid
-from calendar import timegm
 from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import parse_utc_iso
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
@@ -241,13 +241,8 @@ def load_safe_playback_state(
     state = _normalise_state(raw, now_epoch=now_epoch)
     expires_at = state.get("expires_at")
     if state.get("status") == "armed" and isinstance(expires_at, str):
-        try:
-            expires_epoch = timegm(
-                time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ")
-            )
-        except ValueError:
-            expires_epoch = now_epoch
-        if expires_epoch <= now_epoch:
+        expires_epoch = parse_utc_iso(expires_at)
+        if expires_epoch is None or expires_epoch <= now_epoch:
             state["status"] = "expired"
             state["playback_allowed"] = False
             state["quiet_start"] = _quiet_start_base()
