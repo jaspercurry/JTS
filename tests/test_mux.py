@@ -208,27 +208,22 @@ async def _control(mux, command: str) -> dict:
     return json.loads(writer.body)
 
 
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("PREEMPT airplay", {"preempted": "airplay"}),
-        ("PREEMPT spotify", {"preempted": "spotify"}),
-    ],
-)
-async def test_preempt_control_command_runs_the_one_preempt_path(
-    mux, command, expected,
-):
+async def test_preempt_control_command_runs_the_one_preempt_path(mux):
     """The socket verb is a thin front door onto ``_pause`` — the same
     escalation a lost arbitration runs, so no caller needs its own weaker
     stop."""
     _stub_pauses(mux)
 
-    assert await _control(mux, command) == expected
-    mux._pause.assert_awaited_once_with(Source(command.split()[1]))
+    assert await _control(mux, "PREEMPT airplay") == {"preempted": "airplay"}
+    mux._pause.assert_awaited_once_with(Source.AIRPLAY)
 
 
-@pytest.mark.parametrize("command", ["PREEMPT betamax", "PREEMPT correction"])
-async def test_preempt_control_command_refuses_a_non_music_source(mux, command):
+@pytest.mark.parametrize(
+    "command",
+    ["PREEMPT spotify", "PREEMPT bluetooth", "PREEMPT usbsink",
+     "PREEMPT betamax", "PREEMPT correction"],
+)
+async def test_preempt_control_command_serves_airplay_only(mux, command):
     _stub_pauses(mux)
 
     assert "error" in await _control(mux, command)
@@ -1059,6 +1054,33 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
+
+
+async def test_status_holds_the_last_committed_source_mid_handoff(
+    mux, patched_probes,
+):
+    """Mid-handoff the losing source has already stopped while the winner is
+    not committed yet. The honest "idle" would let the volume coordinator
+    resolve a carrier against a lane this mux is about to leave."""
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._status_payload()["active_source"] == "airplay"
+
+    mid_handoff: list[str] = []
+    committed = mux._transition_to_source_locked
+
+    async def observing(*args, **kwargs):
+        mid_handoff.append(mux._status_payload()["active_source"])
+        return await committed(*args, **kwargs)
+
+    mux._transition_to_source_locked = observing
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+
+    assert mid_handoff == ["airplay"]
+    assert mux._winner is Source.SPOTIFY
+    assert mux._status_payload()["active_source"] == "spotify"
 
 
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
