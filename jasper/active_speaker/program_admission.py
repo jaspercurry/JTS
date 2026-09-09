@@ -36,6 +36,7 @@ from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from .driver_safety import evaluate_driver_safety_profile
+from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from .graph_safety import protection_requirement_present, view_from_emitted_text
 from .measurement import active_driver_targets
 from .runtime_contract import (
@@ -677,8 +678,8 @@ def readmit_summed_program_from_wav(
     """Admit a mono summed artifact through its complete protected tuning graph.
 
     The runtime contract re-proves branch boost compensation and routing. A
-    declared HP/LP must protect any segment outside a driver's permitted input
-    band; its full emitted band is retained in evidence. The caller must prove
+    declared HP/LP or proven protective-slope crossover LP must cover an out-of-band
+    segment; its full emitted band stays in evidence. The caller must prove
     this exact graph live while holding the DSP writer lock through playback.
     """
     if (
@@ -744,6 +745,13 @@ def readmit_summed_program_from_wav(
                 requirement["kind"] == "lowpass"
                 and requirement["cutoff_hz"] <= band.upper_hz
                 for requirement in requirements
+            ) or protection_requirement_present(
+                view, output_index=output, allowed_channels={output},
+                requirement={
+                    "kind": "lowpass", "cutoff_hz": band.upper_hz,
+                    "family_or_equivalent": "equivalent_or_steeper",
+                    "minimum_slope_db_per_octave": PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
+                },
             )
             peak = float(segment.gain_db) + session_volume_db
             allowed = (

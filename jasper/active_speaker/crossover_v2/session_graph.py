@@ -418,15 +418,14 @@ class MeasurementSessionGraph:
                 normalized = parse_running_graph(await cam.normalize_config_raw(
                     yaml_text, best_effort=False,
                 ))
-                graph = parse_running_graph(yaml_text)
                 assert self._entry_yaml is not None
-                graph["description"] = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
+                description = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
                     "scope": self._scope,
                     "anchor_path": self._entry_config_path,
                     "anchor_sha256": hashlib.sha256(self._entry_yaml.encode("utf-8")).hexdigest(),
                     "graph_sha256": _graph_body_fingerprint(normalized),
                 }, sort_keys=True)
-                submitted = yaml.safe_dump(graph, sort_keys=False)
+                submitted = yaml_text + "\n" + yaml.safe_dump({"description": description})
             self._submitted_yaml[yaml_text] = submitted
         loaded = await cam.set_active_config_raw(
             submitted, best_effort=False, duck=False,
