@@ -1327,6 +1327,8 @@ install_nginx_site_conf() {
     systemctl reload nginx
 }
 
+NGINX_PUBLIC_SURFACE="http://<host>/{,sources/,sound/,assistant/,system/} + https://<host>/sound/{room/,speaker/crossover/,measurements/,bass/,pair/sync/} are live"
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /assistant/voice/ (voice-provider config wizard)
@@ -1344,7 +1346,7 @@ install_nginx_site() {
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
     tune_nginx_worker_processes
     install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper.conf" /etc/nginx
-    echo "  nginx reloaded — http://<host>/{,sources/,sound/,assistant/,system/} + https://<host>/sound/{room/,speaker/crossover/,measurements/,bass/,pair/sync/} are live"
+    echo "  nginx reloaded — ${NGINX_PUBLIC_SURFACE}"
 }
 
 install_streambox_nginx_site() {
@@ -1355,7 +1357,7 @@ install_streambox_nginx_site() {
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
     tune_nginx_worker_processes
     install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" /etc/nginx
-    echo "  streambox nginx reloaded — http://<host>/{,sources/,sound/,assistant/,system/} + https://<host>/sound/{room/,speaker/crossover/,measurements/,bass/,pair/sync/} are live"
+    echo "  streambox nginx reloaded — ${NGINX_PUBLIC_SURFACE}"
 }
 
 install_avahi_jasper_control() {
