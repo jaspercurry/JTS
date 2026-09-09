@@ -940,13 +940,13 @@ def read_active_speaker_setup_status(
             "provisional": bool(profile.get("provisional")),
             "revalidation": dict(revalidation),
             "issues": profile_issues,
-            # WHICH question this block answers. `/state.active_speaker_setup`
-            # carries two baseline answers: this one is a freshly RE-DERIVED
-            # staging candidate — what the household could compile next — and
-            # routinely reads `blocked` with a different
-            # `candidate_fingerprint` while a good profile is applied and
-            # audible. The live answer is `protected_profile`; this is a
-            # proposal, and the discriminator says which is which.
+            # WHICH question this block answers. `/system/snapshot`'s
+            # `active_speaker_output_safety` carries two baseline answers:
+            # this one is a freshly RE-DERIVED staging candidate — what the
+            # household could compile next — and routinely reads `blocked`
+            # with a different `candidate_fingerprint` while a good profile
+            # is applied and audible. The live answer is `protected_profile`;
+            # this is a proposal, and the discriminator says which is which.
             "role": "staging_candidate",
             "live_answer_key": "protected_profile",
         }

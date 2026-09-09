@@ -19,15 +19,7 @@ from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
 )
-from ..source_state import (
-    usbsink_direct_audible,
-    usbsink_direct_muted,
-    usbsink_direct_rms_dbfs,
-)
-from ..usbgadget import (
-    DEFAULT_UDC_CLASS_DIR,
-    udc_host_connected,
-)
+from ..source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
@@ -87,7 +79,7 @@ _STATE_READ_POOL = ThreadPoolExecutor(
 def _remaining(deadline: float | None) -> float | None:
     """Seconds left on `deadline`, floored at zero; None when untimed."""
     return None if deadline is None else max(0.0, deadline - time.monotonic())
-_default_ha_status_cache: Any | None = None
+
 
 _VOICE_STATUS_DIRECT_KEYS = (
     "endpointer",
@@ -123,7 +115,7 @@ _VOICE_STATUS_PUBLISHED_KEYS = (
     | frozenset(_VOICE_STATUS_NESTED_FIELDS.values())
 )
 #: Not pulled through into `/state.voice`: either internal to the daemon, or
-#: published at the TOP level of `/state` instead (`research`, `cues`).
+#: published at the TOP level of `/state` instead (`cues`).
 _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "state",
     "input_ended",
@@ -147,39 +139,15 @@ def _ha_failed_status(error: str = "probe failed") -> dict[str, Any]:
     }
 
 
-def _default_ha_status_snapshot() -> dict[str, Any]:
-    """Child-process HA status snapshot for direct state-aggregate callers."""
-
-    global _default_ha_status_cache
-    if _default_ha_status_cache is None:
-        from .ha_status_cache import HomeAssistantStatusCache
-
-        _default_ha_status_cache = HomeAssistantStatusCache()
-    return _default_ha_status_cache.snapshot()
-
-
-def _build_usbsink_renderer_state(
-    fanin_status: dict[str, Any] | None,
-    *,
-    host_connected: bool,
-) -> dict[str, Any] | None:
-    """The USB-sink renderer's live state, from its two owners.
-
-    Fan-in's identity-bound DIRECT lane owns activity, level, and mix-mute.
-    ConfigFS/UDC sysfs owns host connection. ``None`` when fan-in does not
-    expose the DIRECT lane, so off/unavailable stays distinct from idle.
-    Feeds the ``usbsink`` rung of :func:`_active_source`.
+def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
+    """Whether the USB-sink DIRECT lane is audible. Feeds the ``usbsink``
+    rung of :func:`_active_source`; false when fan-in exposes no DIRECT lane.
     """
 
     input_state = fanin_usbsink_input(fanin_status)
     if not input_state or input_state.get("source") != FANIN_INPUT_SOURCE_DIRECT:
-        return None
-    return {
-        "playing": usbsink_direct_audible(fanin_status),
-        "muted": usbsink_direct_muted(fanin_status),
-        "host_connected": bool(host_connected),
-        "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
-    }
+        return False
+    return bool(usbsink_direct_audible(fanin_status))
 
 
 def _active_speaker_level_match_provisional(
@@ -406,16 +374,11 @@ def _read_sound_profile() -> dict[str, Any]:
     }
 
 
-def _spotify_state() -> dict[str, Any]:
+def _spotify_playing() -> bool:
     from .. import librespot_state
 
     blob = librespot_state.read(librespot_state.configured_path())
-    return {
-        "playing": bool(blob.get("playing", False)),
-        "track_id": blob.get("track_id"),
-        "uri": blob.get("uri"),
-        "session_active": bool(blob.get("session_active", False)),
-    }
+    return bool(blob.get("playing", False))
 
 
 def _active_source(
@@ -554,16 +517,15 @@ async def _voice_status(cmd: Callable[..., Any], socket_path: str) -> dict | Non
         return None
 
 
-def _ha_status(snapshot: Callable[[], dict[str, Any]] | None) -> dict:
+def _ha_status(snapshot: Callable[[], dict[str, Any]]) -> dict:
     """HA status for /system/snapshot via the child-process cache boundary.
 
     The cache reads the wizard env-file signature fresh, so saves are
     reflected without restarting jasper-control, while HA/httpx imports
     stay in the short-lived probe child instead of the control daemon.
     """
-    read = snapshot or _default_ha_status_snapshot
     try:
-        return read()
+        return snapshot()
     except Exception:  # noqa: BLE001
         logger.exception("home assistant state snapshot failed")
         return _ha_failed_status()
@@ -670,7 +632,7 @@ async def _get_state(
     )
     listening_level, persisted_main_volume_db = volume_state or (None, None)
 
-    spotify = _spotify_state()
+    spotify_playing = _spotify_playing()
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
@@ -683,23 +645,14 @@ async def _get_state(
         sound_profile["runtime_active"] = runtime["active"]
         sound_profile["active_config_path"] = runtime["active_config_path"]
 
-    # USB Audio Input. Fan-in owns the live DIRECT lane; kernel UDC state owns
-    # host connection. Not published — it feeds active_source's usbsink rung.
-    usbsink_state = _build_usbsink_renderer_state(
-        fanin,
-        host_connected=udc_host_connected(
-            os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
-        ),
-    )
-
     voice_session = bool(voice_status) and voice_status.get("state") == "SESSION"
     active_source = _active_source(
         voice_session=voice_session,
         audio_health=audio_health,
         mux_status=mux,
-        spotify_playing=spotify["playing"],
+        spotify_playing=spotify_playing,
         airplay_playing=airplay_playing,
-        usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
+        usbsink_playing=_usbsink_renderer_playing(fanin),
     )
 
     volume_policy = build_volume_policy_snapshot(

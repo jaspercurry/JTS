@@ -11,12 +11,9 @@ pass cannot bring the graph back, it writes a park record to
 the unit cannot exhaust another restart burst and re-enter the handler
 (ADR-0175, issue #2564).
 
-This module is the reader, and it is deliberately ONE reader with two
-consumers — ``jasper-doctor``'s ``check_camilla_recover_park`` and
-``/state.resilience.camilla_recover`` — so the operator-facing verdict
-cannot differ between the two surfaces. The shared read half, and the
-reasoning behind its fail-soft posture, live in
-:mod:`jasper.control.park_record`.
+This module is the reader for ``jasper-doctor``'s
+``check_camilla_recover_park``. The shared read half, and the reasoning
+behind its fail-soft posture, live in :mod:`jasper.control.park_record`.
 
 **Freshness.** Re-read on every call: jasper-control is not restarted when
 the graph parks, so a value captured at import would be permanently wrong.

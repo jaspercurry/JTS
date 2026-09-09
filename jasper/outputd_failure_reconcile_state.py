@@ -9,12 +9,10 @@
 outputd parked; that unit's ``ExecStartPost=`` removes it once outputd is READY
 again. Why exit 78 parks lives in the script — the actor that knows.
 
-ONE reader, two consumers (ADR-0233 rule 1): jasper-doctor's
-``check_outputd_failure_reconcile_park`` and
-``/state.resilience.outputd_failure_reconcile``. The systemd half is passed in,
-never re-read here: both consumers hold a ``systemctl show`` view already and
-rule 2 forbids ``/state`` growing a per-request fork. Re-read on every call —
-neither consumer restarts when outputd parks.
+The reader for jasper-doctor's ``check_outputd_failure_reconcile_park``. The
+systemd half is passed in, never re-read here: the caller holds a
+``systemctl show`` view already. Re-read on every call — the caller does
+not restart when outputd parks.
 """
 from __future__ import annotations
 

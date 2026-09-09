@@ -285,7 +285,6 @@ safety = "voice-runtime"
 code = [
   "jasper/conversation_history.py",
   "jasper/web/chat_setup.py",
-  "jasper/control/state_aggregate.py",
   "jasper/cli/doctor/web.py",
   "deploy/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
@@ -670,11 +669,11 @@ code = [
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
   # The composite gadget adds a small additive `usb_network` /state block to
   # that file, but the file is a multi-block aggregator already owned by
-  # conversation-history (/state.chat), volume-and-sound (/state.audio), and
-  # resilience-and-system-dashboard (/state.resilience). Routing the whole
-  # aggregator here too would spuriously flag AGENTS.md on every
-  # unrelated /state change; a real change to the usb_network block co-occurs
-  # with the gadget scripts/units/doctor globs above and still routes here.
+  # volume-and-sound (/state.audio) and resilience-and-system-dashboard
+  # (/state.resilience). Routing the whole aggregator here too would
+  # spuriously flag AGENTS.md on every unrelated /state change; a real
+  # change to the usb_network block co-occurs with the gadget
+  # scripts/units/doctor globs above and still routes here.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
 ]
 docs = [

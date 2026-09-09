@@ -11,7 +11,6 @@ from jasper.bass_extension import profile as profile_mod
 from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
 from jasper.cli.doctor import active_speaker as doctor_audio
 from jasper.cli.doctor.active_speaker import check_bass_extension_profile
-from jasper.control import state_aggregate
 
 
 def _doctor_result(monkeypatch, evaluation: BassExtensionEvaluation):
@@ -85,47 +84,3 @@ def test_doctor_bypassed_profile_is_ok(monkeypatch):
     )
     assert result.status == "ok"
     assert result.reason == doctor_audio.REASON_BASS_EXTENSION_BYPASSED
-
-
-class _FakeCamillaController:
-    def __init__(self, **_kwargs):
-        pass
-
-    async def get_volume_db(self, **_kwargs):
-        return None
-
-    async def get_playback_rms_all(self, **_kwargs):
-        return None
-
-    async def get_playback_peak_all(self, **_kwargs):
-        return None
-
-    async def get_clipped_samples(self, **_kwargs):
-        return None
-
-    async def get_config_file_path(self, **_kwargs):
-        return None
-
-
-async def _state_snapshot(monkeypatch, tmp_path):
-    import jasper.camilla as camilla_mod
-
-    async def no_status(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(camilla_mod, "CamillaController", _FakeCamillaController)
-    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    return await state_aggregate._get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path=str(tmp_path / "voice.sock"),
-        voice_socket_command=no_status,
-        mux_socket_command=no_status,
-        local_status_json=no_status,
-        aec_full_status=lambda: {},
-        read_transit_state_func=lambda: {"packs": []},
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
-    )
-
-

@@ -114,7 +114,8 @@ _PARK_MESSAGES: dict[str, str] = {
 
 # What a park's household sentence adds when the class carries a recorded
 # command rather than a tracked issue: where the household finds it. The
-# command itself stays in doctor and `/state.resilience.transport_park` (#2472).
+# command itself stays in doctor and `/system/snapshot`'s `transport_park`
+# (#2472).
 _PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 
 # The one household-facing sentence for a stopped CamillaDSP (#2163), read by
@@ -1269,7 +1270,7 @@ def _state_issues(
                 continue
             # The park CLASS rides the key; the row's detail is THIS class's
             # household sentence. The operator's raw detail and the remedy
-            # command stay in doctor and `/state.resilience.transport_park`.
+            # command stay in doctor and `/system/snapshot`'s `transport_park`.
             park_class = str(park.get("park_class"))
             issues.append(_issue(
                 f"path.transport_park.{park_class}",

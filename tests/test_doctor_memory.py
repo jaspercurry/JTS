@@ -697,13 +697,6 @@ def test_check_journald_persistence_is_registered_once_in_the_memory_module():
     assert matches[0].module == "memory"
 
 
-# ------------------------------- /state.resilience.disk (the /state mirror)
-#
-# state_aggregate._disk_snapshot reads the same statvfs as check_disk_space and
-# publishes it on /state, so the two share this fixture and must agree on when
-# the read is unusable.
-
-
 # ------------------------------------------------------ check_memory_pressure
 
 

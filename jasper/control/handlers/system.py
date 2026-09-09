@@ -109,10 +109,10 @@ def _safe_audio_quality_state() -> dict[str, Any]:
 
 class SystemRoutes(ControlHandlerMixin):
     def _transport_park_reader(self) -> Callable[[], dict[str, Any]]:
-        """The park-verdict reader both operator surfaces share: the health
-        sampler's cached verdict when it has one, so every row in one payload
-        is the same observation; the module's own fail-soft read otherwise,
-        because both routes must keep answering without a sampler."""
+        """The park-verdict reader for /system/snapshot: the health sampler's
+        cached verdict when it has one, so every row in the payload is the
+        same observation; the module's own fail-soft read otherwise, because
+        the route must keep answering without a sampler."""
         from ..transport_park import snapshot
 
         return getattr(

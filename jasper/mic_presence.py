@@ -43,12 +43,11 @@ Three layers, kept strictly separate so the next microphone needs no change here
   mic, because this module has no local probe. The doctor's ``mic ALSA card`` /
   ``mic capture`` checks own that half: they probe the device and use
   ``accessory_present`` to decide whether a missing local mic is a *failure* or
-  an expected push-to-talk-only box. **``/state.microphone`` has no such
-  sibling**: it is this record and nothing else, so it cannot separate "no
-  local mic + remote paired" from "healthy non-XVF local mic + remote paired"
-  either. ``summary`` says so in place rather than implying a distinction the
-  data does not carry; a consumer that needs the local half must read the
-  doctor.
+  an expected push-to-talk-only box. **This record has no such sibling**: it
+  is itself and nothing else, so it cannot separate "no local mic + remote
+  paired" from "healthy non-XVF local mic + remote paired" either. ``summary``
+  says so in place rather than implying a distinction the data does not
+  carry; a consumer that needs the local half must read the doctor.
 * **XVF detail is enrichment** — the reconciler also publishes an XVF-specific
   runtime profile to ``/run/jasper-mic-profile/xvf3800.json`` (schema:
   ``xvf3800.RuntimeProfile``). When the present mic is a detected XVF, that
