@@ -113,6 +113,7 @@ def bind_program_playback_seams(
     summed: bool = False,
     phase: str = "",
     before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
+    lock_source: str = "crossover_v2_program",
 ) -> dict[str, Any]:
     """The real CamillaController-backed seams for :func:`play_program`.
 
@@ -120,7 +121,8 @@ def bind_program_playback_seams(
     session_volume_plan=..., **bind_program_playback_seams(...))`` consumes.
     ``writer_lock`` is held across the play so no other DSP writer can replace
     the measurement graph mid-capture; ``readmit`` re-reads the WAV bytes fresh
-    rather than trusting the composed program.
+    rather than trusting the composed program. ``lock_source`` names the writer
+    in the lock's own record, for a host that is not the crossover wizard.
     """
     from jasper.dsp_apply import dsp_writer_lock
 
@@ -163,9 +165,7 @@ def bind_program_playback_seams(
     return {
         "play_wav": _play_wav,
         "readmit": _readmit,
-        "writer_lock": lambda: dsp_writer_lock(
-            config_dir, source="crossover_v2_program"
-        ),
+        "writer_lock": lambda: dsp_writer_lock(config_dir, source=lock_source),
     }
 
 

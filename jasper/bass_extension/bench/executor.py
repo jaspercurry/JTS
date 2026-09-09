@@ -159,6 +159,11 @@ class PlayAndCapture(Protocol):
     to compare against — the implementation needs it to compute
     ``PlayedStimulus.transparency_verdict``/``transparency_analysis``.
 
+    ``graph_yaml`` is this pass's activation read-back (R1's
+    ``active_config_raw``, already banked by the runner): the graph an
+    implementation must prove live at the moment it emits, not the text that
+    was submitted to install it.
+
     ``request.cross_check_read_count`` (R10(c)'s recorded, never-defaulted
     poll-count input) is consumed HERE, not in this module: a correct
     implementation's own live-polling loop — the one that builds
@@ -181,6 +186,7 @@ class PlayAndCapture(Protocol):
         stimulus: stimulus.PaddedStimulus,
         artifact: ArtifactIdentity,
         tag: str,
+        graph_yaml: str,
         reference: ReferenceSweepCapture | None = None,
     ) -> PlayedStimulus: ...
 
@@ -463,6 +469,7 @@ class BenchRoleExecutor:
             stimulus=padded,
             artifact=padded_identity,
             tag=tag,
+            graph_yaml=live_active_config_raw,
             reference=reference,
         )
         return played, padded, padded_identity

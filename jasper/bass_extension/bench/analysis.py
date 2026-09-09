@@ -204,12 +204,21 @@ def assess_transparency(
 
 
 def stimulus_lag_samples(
-    capture: np.ndarray, stimulus: np.ndarray, *, sample_rate_hz: int
+    capture: np.ndarray,
+    stimulus: np.ndarray,
+    *,
+    sample_rate_hz: int,
+    max_onset_s: float,
 ) -> int:
     """The capture index of ``stimulus`` sample 0, by cross-correlation.
 
     Only non-negative lags are searched: the recorder is armed before anything
     plays, so the stimulus can never start before the capture does.
+    ``max_onset_s`` is the latest the onset can lie — everything the play seam
+    waits through before the body's first sample — and it is what bounds the
+    correlation. Trimming only the reference leaves ``correlation``'s own
+    truncation backstop set to the whole capture, which on a 90 s hold is a
+    multi-million-point transform on a 1 GB box (ADR-0226).
     """
 
     signal = np.asarray(capture, dtype=np.float64)
@@ -222,11 +231,14 @@ def stimulus_lag_samples(
             f"capture ({signal.size} samples) is shorter than the stimulus "
             f"({reference.size} samples)"
         )
+    # The head must still fit after the last searched lag, so the window the
+    # backstop is given carries it on top of the onset bound.
+    window_s = max(0.0, float(max_onset_s)) + _HEAD_S
     corr = correlation(
         signal[: head.size + searchable - 1],
         head,
         sample_rate=rate,
-        max_capture_s=signal.size / float(rate),
+        max_capture_s=window_s,
     )
     if corr.size == 0:
         raise CaptureUnanalyzable(
@@ -236,14 +248,14 @@ def stimulus_lag_samples(
 
 
 def _anchor(
-    capture: np.ndarray, stimulus_body: np.ndarray, rate: int
+    capture: np.ndarray, stimulus_body: np.ndarray, rate: int, max_onset_s: float
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """``(signal, reference, onset)`` — the preamble both analyses share."""
 
     signal = np.asarray(capture, dtype=np.float64)
     reference = np.asarray(stimulus_body, dtype=np.float64)
     return signal, reference, stimulus_lag_samples(
-        signal, reference, sample_rate_hz=rate
+        signal, reference, sample_rate_hz=rate, max_onset_s=max_onset_s
     )
 
 
@@ -393,7 +405,9 @@ class SweepCaptureAnalysis:
     freqs_hz: tuple[float, ...]
     fundamental_db: tuple[float, ...]
     orders: tuple[int, ...]
-    thd_max_ratio: float
+    #: ``None`` when the measurement floor owned every band point: the frozen
+    #: protocol forbids filling an unestablished value from a default.
+    thd_max_ratio: float | None
     thd_fail_ratio: float
     floor_limited_fraction: dict[int, float]
     images_clean: bool
@@ -418,7 +432,9 @@ class SweepCaptureAnalysis:
     def protection_dict(self) -> dict[str, object]:
         return {
             "orders": [int(order) for order in self.orders],
-            "thd_max_ratio": float(self.thd_max_ratio),
+            "thd_max_ratio": (
+                None if self.thd_max_ratio is None else float(self.thd_max_ratio)
+            ),
             "thd_fail_ratio": float(self.thd_fail_ratio),
             "floor_limited_fraction": {
                 str(order): float(fraction)
@@ -439,6 +455,7 @@ def analyze_sweep_capture(
     band: tuple[float, float],
     margin: MarginPolicy,
     policy: MeasurementPolicy,
+    max_onset_s: float,
 ) -> SweepCaptureAnalysis:
     """Deconvolve one captured sweep against the bytes that were played.
 
@@ -449,11 +466,12 @@ def analyze_sweep_capture(
     the capture rather than the one the schedule declares.
 
     Protection fails closed on unclean images: a harmonic read whose windows
-    reach back into prior audio is unproven, not passing.
+    reach back into prior audio is unproven, not passing. ``max_onset_s`` bounds
+    the onset search (:func:`stimulus_lag_samples`).
     """
 
     rate = int(program.sample_rate_hz)
-    signal, reference, anchor = _anchor(capture, stimulus_body, rate)
+    signal, reference, anchor = _anchor(capture, stimulus_body, rate, max_onset_s)
     segment = program.segment(segment_id)
     needed = required_pre_guard_s(
         segment_sweep_meta(segment), DEFAULT_HARMONIC_ORDERS
@@ -474,11 +492,10 @@ def analyze_sweep_capture(
         anchor,
         band_hz=band,
         reference=reference,
-        measured_pre_roll_s=anchor / float(rate),
+        preceding_silence_s_override=anchor / float(rate),
     )
 
     proven_thd = proven_thd_max_ratio(reading)
-    thd_max_ratio = 0.0 if proven_thd is None else proven_thd
     floor_limited_fraction = {
         int(order): float(np.mean(reading.floor_limited(order)))
         for order in reading.orders
@@ -494,7 +511,7 @@ def analyze_sweep_capture(
     protection_ok = (
         images_clean
         and proven_thd is not None
-        and thd_max_ratio <= float(margin.thd_fail_ratio)
+        and proven_thd <= float(margin.thd_fail_ratio)
     )
     return SweepCaptureAnalysis(
         lag_samples=anchor,
@@ -503,7 +520,7 @@ def analyze_sweep_capture(
         freqs_hz=tuple(float(value) for value in reading.freqs_hz),
         fundamental_db=tuple(float(value) for value in reading.fundamental_db),
         orders=tuple(reading.orders),
-        thd_max_ratio=thd_max_ratio,
+        thd_max_ratio=proven_thd,
         thd_fail_ratio=float(margin.thd_fail_ratio),
         floor_limited_fraction=floor_limited_fraction,
         images_clean=images_clean,
@@ -589,16 +606,18 @@ def analyze_sustain_capture(
     band: tuple[float, float],
     margin: MarginPolicy,
     policy: MeasurementPolicy,
+    max_onset_s: float,
 ) -> SustainCaptureAnalysis:
     """Read the hold's start/end level and corner, then :func:`assess_sustain`.
 
     Every reading is a RATIO against the played body's own matching window
     (:func:`_sustain_edge`), so sag and corner shift describe the plant rather
-    than the noise realization the two edges happen to carry.
+    than the noise realization the two edges happen to carry. ``max_onset_s``
+    bounds the onset search (:func:`stimulus_lag_samples`).
     """
 
     rate = int(sample_rate_hz)
-    signal, reference, anchor = _anchor(capture, stimulus_body, rate)
+    signal, reference, anchor = _anchor(capture, stimulus_body, rate, max_onset_s)
     body = signal[anchor : anchor + reference.size]
     edge_s = min(SUSTAIN_EDGE_WINDOW_S, body.size / float(rate) / 4.0)
     edge_n = max(1, int(round(edge_s * rate)))

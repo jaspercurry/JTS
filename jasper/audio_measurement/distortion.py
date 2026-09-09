@@ -621,7 +621,7 @@ def read_segment_distortion(
     level_notes: Mapping[str, object] | None = None,
     n_fft: int | None = None,
     reference: np.ndarray | None = None,
-    measured_pre_roll_s: float | None = None,
+    preceding_silence_s_override: float | None = None,
 ) -> HarmonicReading:
     """Deconvolve one scheduled sweep at a harmonic-safe pre-guard and read it.
 
@@ -632,9 +632,10 @@ def read_segment_distortion(
     windows a capture; production behaviour is untouched.
 
     ``reference`` deconvolves against the bytes that were actually played rather
-    than the schedule's reconstruction of them. ``measured_pre_roll_s`` records
-    a pre-roll MEASURED off the capture instead of the one the schedule
-    declares.
+    than the schedule's reconstruction of them. ``preceding_silence_s_override``
+    replaces :func:`preceding_silence_s` in the reading: the CAPTURE-side quiet
+    run before the anchor, for a caller whose anchor was measured off the
+    capture rather than read off the schedule.
     """
     from .program_analysis import _deconvolve_window
 
@@ -686,8 +687,8 @@ def read_segment_distortion(
         pre_guard_s=pre_guard_got_s,
         preceding_silence_s=(
             preceding_silence_s(program, segment)
-            if measured_pre_roll_s is None
-            else float(measured_pre_roll_s)
+            if preceding_silence_s_override is None
+            else float(preceding_silence_s_override)
         ),
         n_fft=n_fft,
     )

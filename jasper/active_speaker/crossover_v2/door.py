@@ -16,7 +16,6 @@ so a restart or ``kill -9`` restores the applied graph by doing nothing
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -30,7 +29,7 @@ from ..measurement_emit import (
     MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
     emit_measurement_graph,
 )
-from ..restore_wait import resilient_restore
+from ..restore_wait import give_back, resilient_restore
 from .measure_spec import CANDIDATE_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -228,41 +227,6 @@ async def measurement_door(
                     body_error=body_error,
                 )
             )
-
-
-async def give_back(
-    steps: Sequence[Callable[[], Awaitable[Any]]],
-    *,
-    body_error: BaseException | None = None,
-) -> None:
-    """Run every give-back step, in reverse order of taking.
-
-    Every step runs even when an earlier one raises: a graph that will not come
-    back must not strand the fader at measurement level. Each step is expected
-    to be idempotent and safe against nothing-held.
-
-    ``body_error`` is the exception already in flight, if any. A cleanup failure
-    is ATTACHED to it rather than raised over it, because an ``__aexit__`` that
-    raised would demote the real cause to ``__context__`` and report the
-    symptom. With nothing in flight a give-back failure IS the failure and
-    propagates.
-    """
-    first: BaseException | None = None
-    for step in steps:
-        try:
-            await step()
-        except BaseException as failure:  # noqa: BLE001 - see the docstring
-            # EVERY step still runs: a graph that will not come back must not
-            # stop the fader coming down. The FIRST failure is the one kept, as
-            # it is the one nearest the cause.
-            if first is None:
-                first = failure
-    if first is None:
-        return
-    if body_error is None:
-        raise first
-    if body_error.__context__ is None:
-        body_error.__context__ = first
 
 
 def _measurement_claim() -> tuple[Any, Any]:

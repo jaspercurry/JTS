@@ -6,20 +6,21 @@
 
 Shaped exactly like ``jasper-null``'s ``_play_and_capture``
 (:mod:`jasper.cli.null_door`): the engine's own play path — ``play_program``
-over a FRESH re-admission of the rendered WAV, under the DSP writer lock, into
-verified aplay — wrapped by the wired capture kernel (a
+over the three seams ``crossover_v2.composition.bind_program_playback_seams``
+binds — wrapped by the wired capture kernel (a
 :class:`~jasper.audio_measurement.wired_capture.WiredRecorder` armed before any
-audio, ``mint_wired_answer`` after). There is no second recorder and no second
-admission: the pieces this bench needs already exist and are consumed here.
+audio, ``mint_wired_answer`` after). There is no second recorder, no second
+admission and no second play seam.
 
-``play_program``'s three seams are composed here rather than by
-``crossover_v2.composition.bind_program_playback_seams``: that binder's
-``play_wav`` opens with ``confirm_graph_is_live``, which requires the running
-config to be byte-equal to a submitted YAML — and a candidate rung deliberately
-patches ``clip_limit`` onto the running graph after installing it
-(:func:`~jasper.bass_extension.bench.activation.temporary_bass_activation`),
-which that read-back would refuse. The bench proves its own graph there instead,
-through ``_prove_active_graph`` and the fingerprinted read-back.
+The binder's ``graph_yaml`` is the ACTIVATION READ-BACK the runner already banks
+(``ActivationReadback.active_config_raw``), never the submitted graph text: a
+candidate rung patches ``clip_limit`` onto the running graph after installing it
+(:func:`~jasper.bass_extension.bench.activation.temporary_bass_activation`), so
+the submitted text is not what runs. ``confirm_graph_is_live`` normalizes and
+fingerprints rather than comparing bytes, so the read-back is exactly what that
+parameter wants — and taking the proof per play, inside the writer lock, is the
+only proof that covers rung *k+1*: ``measurement_window`` does not pause
+CamillaDSP, and the lock is released between rungs.
 
 The executor generates and pads every stimulus (R6) and hands this module one
 content-addressed artifact; nothing here generates or modifies stimulus bytes.
@@ -46,16 +47,22 @@ from typing import Any, AsyncIterator, cast
 
 import numpy as np
 
-from jasper.active_speaker.crossover_v2.door import give_back
+from jasper.active_speaker.crossover_v2.composition import (
+    bind_program_playback_seams,
+)
 from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim
-from jasper.active_speaker.program_admission import readmit_program_from_wav
+from jasper.active_speaker.excitation_safety_plan import (
+    ExcitationSafetyPlanError,
+    effective_sweep_duration_limit_s,
+    resolve_driver_excitation_ceilings,
+)
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_playback import (
     ProgramPlaybackError,
     ProgramPlaybackRefused,
     play_program,
-    verified_program_aplay,
 )
-from jasper.active_speaker.restore_wait import resilient_restore
+from jasper.active_speaker.restore_wait import give_back, resilient_restore
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumeOpenResult,
     SessionVolumePlan,
@@ -80,6 +87,7 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     ProgramSegment,
     finalize_program,
+    segment_emitted_band_hz,
     silence_segment,
 )
 from jasper.audio_measurement.wired_capture import (
@@ -93,9 +101,9 @@ from jasper.audio_measurement.wired_capture import (
 )
 from jasper.bass_extension.targets import MarginPolicy
 from jasper.camilla import CamillaUnavailable
-from jasper.dsp_apply import dsp_writer_lock
 from jasper.log_event import log_event
-from jasper.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window
+from jasper.output_topology import OutputTopology
+from jasper.measurement_window import measurement_window
 from jasper.volume_owner import VolumeClaimHandle, VolumeOwner
 
 from .analysis import (
@@ -123,12 +131,6 @@ from .stimulus import PaddedStimulus
 
 logger = logging.getLogger(__name__)
 
-#: ``live_proof.prove_isolation`` proves the WIZARD's gate owner, so the bench
-#: holds the gate under that same identity. A bench-specific identity waits on
-#: ``live_proof`` taking an owner parameter; declaring one here would make every
-#: R6a(i) proof fail against a gate the bench genuinely held.
-BENCH_GATE_OWNER = MEASUREMENT_GATE_OWNER
-
 BENCH_LOCK_SOURCE = "bass_extension_bench"
 
 #: Noise-floor window recorded before a sustain hold (a hold has no harmonic
@@ -145,6 +147,8 @@ PLAYBACK_TIMEOUT_MARGIN_S = 15.0
 REFUSE_COMMANDED_VOLUME = "bench_commanded_volume_mismatch"
 REFUSE_OWNER_ROLE = "bench_owner_role_unresolved"
 REFUSE_BAND = "bench_stimulus_band_unprotected"
+REFUSE_DRIVER_CAP = "bench_driver_cap_refused"
+REFUSE_HOLD_DURATION = "bench_hold_exceeds_declared_duration"
 REFUSE_ADMISSION = "bench_admission_refused"
 REFUSE_PLAYBACK = "bench_playback_failed"
 REFUSE_CONTROLLER = "bench_controller_unavailable"
@@ -160,6 +164,12 @@ REFUSE_UNANALYZABLE = "bench_capture_unanalyzable"
 #: subwoofer. No :data:`~jasper.active_speaker.profile.DRIVER_ROLES_BY_WAY`
 #: role is spelled this way, so it cannot collide with a declared driver.
 SUBWOOFER_ROLE = "subwoofer"
+
+#: How far below the lowest corner above the owner a stimulus band must stop.
+#: A Linkwitz-Riley pair is only 6 dB down AT the corner; one octave below it
+#: the LR4 high-pass on the driver above is ~24 dB further down, which is the
+#: margin :func:`assert_stimulus_band_protected`'s reasoning assumes.
+CORNER_MARGIN_OCTAVES = 1.0
 
 _LEAD_IN_SEGMENT_ID = "bench_lead_in"
 _LEAD_OUT_SEGMENT_ID = "bench_lead_out"
@@ -242,9 +252,8 @@ class BenchWindow:
 
     @asynccontextmanager
     async def _open(self) -> AsyncIterator[None]:
-        async with self._window(gate_owner=BENCH_GATE_OWNER):
-            # A leftover ACTIVE record past its own ceiling is a crashed run;
-            # `plan.open` refuses over it unless it is drained first.
+        async with self._window():
+            # Same reason `crossover_v2.door` calls it here.
             await self._plan.enforce_ceiling(self._door)
             body_error: BaseException | None = None
             try:
@@ -290,20 +299,27 @@ class AdmissionContext:
     whole, so what re-admission reads is the whole of what this seam can reach.
     """
 
-    topology: Any
+    topology: OutputTopology
     safety_profile: Mapping[str, Any]
     role_targets: Mapping[str, str]
     session_volume_db: float
     declared_sensitivities: Mapping[str, float]
-    preset: Any
+    preset: ActiveSpeakerPreset
 
 
-def bass_owner_role(preset: Any, owner_channels: Sequence[int]) -> str:
-    """The declared driver role the bass-extension owner channels belong to."""
+def bass_owner_role(
+    preset: ActiveSpeakerPreset, owner_channels: Sequence[int]
+) -> str:
+    """The declared driver role the bass-extension owner channels belong to.
+
+    Exactly one role, on both branches: an owner set that merely CONTAINS the
+    declared subwoofer index would be answered "subwoofer" while a woofer sat
+    in it too, and every cap below would then be judged for the wrong driver.
+    """
 
     owner = frozenset(int(channel) for channel in owner_channels)
-    local_sub = getattr(preset, "local_subwoofer", None)
-    if local_sub is not None and int(local_sub.physical_output_index) in owner:
+    local_sub = preset.local_subwoofer
+    if local_sub is not None and owner == {int(local_sub.physical_output_index)}:
         return SUBWOOFER_ROLE
     indexes_by_role: dict[str, set[int]] = {}
     for output in preset.channel_map.outputs:
@@ -319,26 +335,29 @@ def bass_owner_role(preset: Any, owner_channels: Sequence[int]) -> str:
 
 
 def assert_stimulus_band_protected(
-    preset: Any, *, owner_role: str, band: tuple[float, float]
+    preset: ActiveSpeakerPreset, *, owner_role: str, band: tuple[float, float]
 ) -> None:
     """Refuse a stimulus the owner's crossover does not keep to itself.
 
-    The played artifact is a 2-channel mix that reaches EVERY driver through
-    the installed graph, while admission evaluates only the bass owner's caps.
-    So the band is admissible only where the owner's own crossover is what
-    stands between the stimulus and every other driver:
+    The DECLARATION-side check, over ``preset.crossover_regions``: it names a
+    stimulus that is wrong by design, in one refusal, before the graph is even
+    read. It does NOT stand in for the per-driver caps —
+    :func:`assert_driver_caps_evaluated` judges those — so
+    what is left here is the shape of the band against the owner's own
+    crossover:
 
     * no driver may sit BELOW the owner (a region whose upper driver is the
       owner, or a local subwoofer under a non-sub owner) — that driver takes
-      the stimulus through its low-pass with no cap evaluated for it;
-    * the band's top may not pass the lowest corner above the owner, since
-      past it the driver above is being driven, not attenuated.
+      the stimulus through its low-pass at the owner's level;
+    * the band's top must stop :data:`CORNER_MARGIN_OCTAVES` below the lowest
+      corner above the owner, since a Linkwitz-Riley pair is only 6 dB down AT
+      the corner.
 
     An owner with nothing above it (a single-driver main) has no upper bound.
     """
 
     regions = preset.crossover_regions
-    local_sub = getattr(preset, "local_subwoofer", None)
+    local_sub = preset.local_subwoofer
     below = [
         region.lower_driver for region in regions if region.upper_driver == owner_role
     ]
@@ -349,7 +368,7 @@ def assert_stimulus_band_protected(
             REFUSE_BAND,
             f"{', '.join(sorted(below))} sits below the {owner_role} the "
             f"stimulus is admitted for and takes the {band[0]:g}-{band[1]:g} Hz "
-            "band through its own low-pass, against no evaluated cap",
+            "band through its own low-pass",
         )
     if owner_role == SUBWOOFER_ROLE:
         if local_sub is None:
@@ -363,14 +382,143 @@ def assert_stimulus_band_protected(
             for region in regions
             if region.lower_driver == owner_role
         ]
-    # At the corner itself a Linkwitz-Riley pair is only 6 dB down, so the
-    # band must stop short of it, not at it.
-    if corners and float(band[1]) >= min(corners):
+    if not corners:
+        return
+    ceiling_hz = min(corners) / (2.0**CORNER_MARGIN_OCTAVES)
+    if float(band[1]) > ceiling_hz:
         raise BenchRefused(
             REFUSE_BAND,
-            f"the {band[0]:g}-{band[1]:g} Hz stimulus reaches the {owner_role}'s "
+            f"the {band[0]:g}-{band[1]:g} Hz stimulus runs past {ceiling_hz:g} Hz, "
+            f"{CORNER_MARGIN_OCTAVES:g} octave below the {owner_role}'s "
             f"{min(corners):g} Hz corner, so the driver above it is driven "
             "rather than protected",
+        )
+
+
+def assert_driver_caps_evaluated(
+    admission: AdmissionContext,
+    *,
+    program: ExcitationProgram,
+    session_volume_db: float,
+) -> None:
+    """Judge EVERY declared driver against the artifact, not just the owner.
+
+    The played artifact is a 2-channel mix that reaches every driver through the
+    installed graph, but ``readmit_program_from_wav`` is the ISOLATED-driver
+    gate: it resolves a cap only for the roles the program's own channels
+    declare, which here is the bass owner alone. So every role in
+    ``role_targets`` is resolved through ``resolve_driver_excitation_ceilings``
+    — the engine's one owner of a driver's permitted band and cap — and judged:
+
+    * a driver whose permitted band OVERLAPS the stimulus band is being driven,
+      so its own cap binds on the artifact's effective peak;
+    * a driver entirely outside it must DECLARE the protection filter that puts
+      it there (a high-pass at or above its permitted floor, a low-pass at or
+      below its ceiling). Out of band with nothing declared is an unaccounted
+      driver, not a protected one.
+
+    The second clause is where this differs from
+    ``readmit_summed_program_from_wav``, which applies ``peak <= cap`` to every
+    role unconditionally — right for ITS case, a summed sweep in every driver's
+    band, but a bass stimulus sits decades inside a tweeter's stopband and that
+    rule would refuse every bench pass at the quietest driver's cap. Nothing
+    here credits a declared filter with a dB figure: that is the "separately
+    reviewed protection model" ``limiter-evidence-protocol.md``'s claim
+    boundary puts outside this campaign.
+    """
+
+    bands = [segment_emitted_band_hz(seg) for seg in program.stimulus_segments()]
+    low_hz, high_hz = min(low for low, _ in bands), max(high for _, high in bands)
+    peak_dbfs = max(
+        float(seg.gain_db) for seg in program.stimulus_segments()
+    ) + float(session_volume_db)
+    for role, fingerprint in admission.role_targets.items():
+        try:
+            permitted, cap_dbfs = resolve_driver_excitation_ceilings(
+                admission.safety_profile,
+                str(fingerprint),
+                program_admission=True,
+                declared_sensitivities=admission.declared_sensitivities,
+            )
+        except ExcitationSafetyPlanError as exc:
+            raise BenchRefused(REFUSE_DRIVER_CAP, f"{role}: {exc}") from exc
+        where = (
+            f"the {low_hz:g}-{high_hz:g} Hz stimulus and the {role}'s "
+            f"{permitted.lower_hz:g}-{permitted.upper_hz:g} Hz permitted band"
+        )
+        if low_hz <= permitted.upper_hz and high_hz >= permitted.lower_hz:
+            if peak_dbfs > cap_dbfs:
+                raise BenchRefused(
+                    REFUSE_DRIVER_CAP,
+                    f"{where} overlap, and {peak_dbfs:.3f} dBFS effective is "
+                    f"over its {cap_dbfs:.3f} dBFS cap",
+                )
+            continue
+        wanted, edge_hz = (
+            ("highpass", permitted.lower_hz)
+            if high_hz < permitted.lower_hz
+            else ("lowpass", permitted.upper_hz)
+        )
+        if not any(
+            declared["kind"] == wanted
+            and (
+                float(declared["cutoff_hz"]) >= edge_hz
+                if wanted == "highpass"
+                else float(declared["cutoff_hz"]) <= edge_hz
+            )
+            for declared in _declared_protection_filters(
+                admission.safety_profile, str(fingerprint)
+            )
+        ):
+            raise BenchRefused(
+                REFUSE_DRIVER_CAP,
+                f"{where} are disjoint, and it declares no {wanted} that puts "
+                "the stimulus there",
+            )
+
+
+def _declared_protection_filters(
+    safety_profile: Mapping[str, Any], fingerprint: str
+) -> Sequence[Mapping[str, Any]]:
+    for target in safety_profile["targets"]:
+        if target["target_fingerprint"] == fingerprint:
+            return target["required_protection_filters"]
+    return ()
+
+
+def assert_body_within_declared_duration(
+    admission: AdmissionContext, *, role: str, body_frames: int
+) -> None:
+    """Refuse a rendered body longer than the role's declared duration ceiling.
+
+    ``prepare_driver_excitation_plan`` judges every stimulus segment against
+    ``effective_sweep_duration_limit_s``, and #2921 makes that the ONE number
+    anything COMPOSING a stimulus must fit. Comparing the realized body here
+    moves the refusal into the fail-closed vocabulary and in front of the
+    fader — the same refusal otherwise arrives after ``raise_to_level``, with
+    the graph mutated and the recorder armed — and makes it visible at
+    ``--dry-run``. It catches both a hold longer than any declared sweep and
+    the phase-closing round-up a synchronized sweep adds to a requested length.
+    """
+
+    fingerprint = admission.role_targets.get(role)
+    if not fingerprint:
+        raise BenchRefused(
+            REFUSE_OWNER_ROLE,
+            f"no driver-safety target is mapped for the {role} bass owner",
+        )
+    try:
+        limit_s = effective_sweep_duration_limit_s(
+            admission.safety_profile, str(fingerprint)
+        )
+    except ExcitationSafetyPlanError as exc:
+        raise BenchRefused(REFUSE_HOLD_DURATION, f"{role}: {exc}") from exc
+    realized_s = int(body_frames) / float(PROGRAM_SAMPLE_RATE_HZ)
+    if realized_s > limit_s:
+        raise BenchRefused(
+            REFUSE_HOLD_DURATION,
+            f"the rendered body runs {realized_s:.4f} s but the {role}'s "
+            f"declared duration ceiling is {limit_s:.4f} s",
         )
 
 
@@ -500,10 +648,23 @@ class _Prepared:
     artifact: ArtifactIdentity
     program: ExcitationProgram
     segment: ProgramSegment
-    readmit: Callable[[], Awaitable[Any]]
     tag: str
     band: tuple[float, float]
     peak_dbfs: float
+    commanded_db: float
+    #: Recorded silence in front of the play, and the floor window every
+    #: analysis reads: the sweep needs its harmonic pre-guard, a hold needs a
+    #: noise-floor window and nothing more.
+    pre_guard_s: float
+
+    @property
+    def max_onset_s(self) -> float:
+        """The latest the body's first sample can land in the capture: the
+        recorded pre-guard, the artifact's own lead-in, and the capture
+        budget's allowance for everything ``play_program`` does first."""
+
+        lead_in_s = self.wav.body_start / float(PROGRAM_SAMPLE_RATE_HZ)
+        return self.pre_guard_s + lead_in_s + WIRED_PRE_PLAY_ALLOWANCE_S
 
 
 class WiredPlayAndCapture:
@@ -523,7 +684,6 @@ class WiredPlayAndCapture:
         config_dir: str | Path,
         read_mux_status: Callable[[], Awaitable[Mapping[str, Any]]],
         read_fanin_status: Callable[[], Awaitable[Mapping[str, Any]]],
-        play_wav: Callable[[ArtifactIdentity, float], Awaitable[Any]] | None = None,
         recorder_factory: Callable[[int, float], Any] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -538,16 +698,8 @@ class WiredPlayAndCapture:
         self._config_dir = config_dir
         self._read_mux_status = read_mux_status
         self._read_fanin_status = read_fanin_status
-        self._play_wav = play_wav or self._verified_aplay
         self._recorder_factory = recorder_factory or self._wired_recorder
         self._sleep = sleep
-
-    async def _verified_aplay(
-        self, artifact: ArtifactIdentity, timeout_s: float
-    ) -> Any:
-        return await verified_program_aplay(
-            self._sink.bundle_dir, artifact, timeout_s=timeout_s
-        )
 
     def _wired_recorder(self, rate: int, budget_s: float) -> Any:
         return make_wired_recorder(
@@ -555,9 +707,17 @@ class WiredPlayAndCapture:
         )
 
     def _prepare(
-        self, *, target: TargetPlan, request: StimulusRequest,
-        stimulus: PaddedStimulus, artifact: ArtifactIdentity, tag: str,
+        self, *, target: TargetPlan, role: SweepOrSustain,
+        request: StimulusRequest, stimulus: PaddedStimulus,
+        artifact: ArtifactIdentity, tag: str,
     ) -> _Prepared:
+        """Everything the play is judged on, before the fader leaves the floor.
+
+        Every refusal this raises lands in the fail-closed vocabulary with the
+        speaker still at the safe floor, the graph unmutated and no recorder
+        open — and every one of them fires at ``--dry-run`` too.
+        """
+
         wav = read_stimulus_wav(stimulus)
         role_name = bass_owner_role(self._admission.preset, target.owner_channels)
         band = (
@@ -567,6 +727,11 @@ class WiredPlayAndCapture:
         assert_stimulus_band_protected(
             self._admission.preset, owner_role=role_name, band=band
         )
+        assert_body_within_declared_duration(
+            self._admission,
+            role=role_name,
+            body_frames=wav.body_end - wav.body_start,
+        )
         commanded = float(request.requested_commanded_main_volume_db)
         program = describe_stimulus_program(
             wav,
@@ -575,30 +740,24 @@ class WiredPlayAndCapture:
             peak_dbfs=float(request.requested_stimulus_effective_peak_dbfs),
             commanded_main_volume_db=commanded,
         )
-        readmit = partial(
-            asyncio.to_thread,
-            partial(
-                readmit_program_from_wav,
-                program,
-                self._sink.bundle_dir / artifact.relative_path,
-                topology=self._admission.topology,
-                safety_profile=self._admission.safety_profile,
-                role_targets=self._admission.role_targets,
-                session_volume_db=commanded,
-                # MUST match what the session composed against: readmission
-                # re-resolves every cap.
-                declared_sensitivities=self._admission.declared_sensitivities,
-            ),
+        assert_driver_caps_evaluated(
+            self._admission, program=program, session_volume_db=commanded
         )
+        segment = program.segment(stimulus_segment_id(role_name, 0))
         return _Prepared(
             wav=wav,
             artifact=artifact,
             program=program,
-            segment=program.segment(stimulus_segment_id(role_name, 0)),
-            readmit=readmit,
+            segment=segment,
             tag=tag,
             band=band,
             peak_dbfs=wav.peak_dbfs(0),
+            commanded_db=commanded,
+            pre_guard_s=(
+                sweep_pre_roll_s(segment)
+                if role == "sweep_transparency"
+                else SUSTAIN_PRE_ROLL_S
+            ),
         )
 
     async def _read(self, what: str, call: Callable[[], Awaitable[Any]]) -> Any:
@@ -654,53 +813,68 @@ class WiredPlayAndCapture:
             raise BenchRefused(REFUSE_FADER, str(exc)) from exc
 
     async def _play_and_record(
-        self, prepared: _Prepared, *, request: StimulusRequest, role: SweepOrSustain
+        self,
+        prepared: _Prepared,
+        *,
+        request: StimulusRequest,
+        role: SweepOrSustain,
+        graph_yaml: str,
     ) -> tuple[Any, Any, list[tuple[float, ...]]]:
         wav = prepared.wav
         rate = PROGRAM_SAMPLE_RATE_HZ
-        pre_guard_s = (
-            sweep_pre_roll_s(prepared.segment)
-            if role == "sweep_transparency"
-            else SUSTAIN_PRE_ROLL_S
-        )
+        pre_guard_s = prepared.pre_guard_s
         program_s = wav.frames / float(rate)
         budget_s = (
             program_s + pre_guard_s + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
         )
         recorder = self._recorder_factory(rate, budget_s)
         try:
-            # Armed BEFORE any audio: `start` blocks until the first real chunk
-            # lands, so the pre-roll is a fact rather than a hope.
             await asyncio.to_thread(recorder.start)
         except (WiredCaptureError, OSError, ValueError) as exc:
             raise BenchRefused(REFUSE_RECORDER, str(exc)) from exc
 
         poll: asyncio.Task[list[tuple[float, ...]]] | None = None
 
-        async def _play_wav_polled() -> Any:
-            # R10(c)'s polls must sample the AUDIO. Started here, immediately
-            # in front of the aplay awaitable, because everything play_program
-            # does first — re-admission, the writer lock, the sha verify —
-            # would otherwise consume the whole poll budget before a frame is
-            # emitted.
+        async def _before_play(_program: Any, _artifact: Any, _phase: str) -> None:
+            """The binder's hook: inside the writer lock, after the live-graph
+            proof, immediately in front of aplay.
+
+            The fader is proven HERE and not before the play, because the level
+            every driver cap was judged against has to hold where the audio is
+            emitted — a household "louder" still moves the main volume
+            mid-session, and the pre-guard sleep, the re-admission over the
+            hold's PCM and the sha verify all sit in between. R10(c)'s polls
+            start in the same place, for the same reason.
+            """
+
             nonlocal poll
+            await self._hold_fader(role)
             poll = asyncio.create_task(self._poll_peaks(request))
-            return await self._play_wav(
-                prepared.artifact, program_s + PLAYBACK_TIMEOUT_MARGIN_S
-            )
+
+        seams = bind_program_playback_seams(
+            self._controller,
+            bundle_dir=str(self._sink.bundle_dir),
+            artifact=prepared.artifact,
+            config_dir=str(self._config_dir),
+            program=prepared.program,
+            wav_path=str(self._sink.bundle_dir / prepared.artifact.relative_path),
+            topology=self._admission.topology,
+            safety_profile=self._admission.safety_profile,
+            role_targets=self._admission.role_targets,
+            session_volume_db=prepared.commanded_db,
+            declared_sensitivities=self._admission.declared_sensitivities,
+            timeout_s=program_s + PLAYBACK_TIMEOUT_MARGIN_S,
+            graph_yaml=graph_yaml,
+            before_play=_before_play,
+            lock_source=BENCH_LOCK_SOURCE,
+        )
 
         finished = False
         try:
             await self._sleep(pre_guard_s)
             try:
                 result = await play_program(
-                    prepared.program,
-                    session_volume_plan=self._plan,
-                    readmit=prepared.readmit,
-                    play_wav=_play_wav_polled,
-                    writer_lock=partial(
-                        dsp_writer_lock, self._config_dir, source=BENCH_LOCK_SOURCE
-                    ),
+                    prepared.program, session_volume_plan=self._plan, **seams
                 )
             except ProgramPlaybackRefused as exc:
                 raise BenchRefused(REFUSE_ADMISSION, str(exc)) from exc
@@ -724,9 +898,12 @@ class WiredPlayAndCapture:
         finally:
             # Any escape must release the live ALSA device.
             if not finished:
-                if poll is not None and not poll.cancel():
+                if poll is not None and not poll.cancel() and not poll.cancelled():
+                    # `cancel()` False means "already done", which includes
+                    # "already cancelled" — and `.exception()` on a cancelled
+                    # task would raise over the exception in flight.
                     poll.exception()
-                recorder.abort()
+                await asyncio.to_thread(recorder.abort)
         return recording, result, live_peaks
 
     def _analyze(
@@ -741,6 +918,7 @@ class WiredPlayAndCapture:
                 band=prepared.band,
                 margin=self._margin,
                 policy=self._policy,
+                max_onset_s=prepared.max_onset_s,
             )
         return analyze_sustain_capture(
             capture=capture,
@@ -749,6 +927,7 @@ class WiredPlayAndCapture:
             band=prepared.band,
             margin=self._margin,
             policy=self._policy,
+            max_onset_s=prepared.max_onset_s,
         )
 
     def _bank_capture(
@@ -769,7 +948,14 @@ class WiredPlayAndCapture:
             {"device": dict(answer.device or {}), "capture_integrity": report},
             kind="jts_bass_extension_bench_capture_integrity",
         )
-        capture, _ = decode_wav_to_mono(answer.wav)
+        capture, capture_rate = decode_wav_to_mono(answer.wav)
+        if int(capture_rate) != PROGRAM_SAMPLE_RATE_HZ:
+            # Every analysis window below is measured at the program rate.
+            raise BenchRefused(
+                REFUSE_CAPTURE,
+                f"the take decodes at {int(capture_rate)} Hz, not the "
+                f"{PROGRAM_SAMPLE_RATE_HZ} Hz every analysis window assumes",
+            )
         return capture_id, report, capture
 
     def _transparency(
@@ -780,12 +966,17 @@ class WiredPlayAndCapture:
         candidate: SweepCaptureAnalysis,
         reference: ReferenceSweepCapture,
     ) -> tuple[ArtifactIdentity, str]:
-        banked = json.loads(
-            (
-                self._sink.bundle_dir
-                / reference.reference_signal_analysis.relative_path
-            ).read_text(encoding="utf-8")
+        path = (
+            self._sink.bundle_dir / reference.reference_signal_analysis.relative_path
         )
+        try:
+            banked = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # A missing or truncated reference artifact ends the target through
+            # the refused arm with this capture banked, not as a traceback.
+            raise CaptureUnanalyzable(
+                f"the banked reference sweep analysis could not be read: {exc}"
+            ) from exc
         freqs = np.asarray(candidate.freqs_hz, dtype=np.float64)
         reference_freqs = np.asarray(banked["freqs_hz"], dtype=np.float64)
         if reference_freqs.shape != freqs.shape or not np.allclose(
@@ -831,8 +1022,14 @@ class WiredPlayAndCapture:
         stimulus: PaddedStimulus,
         artifact: ArtifactIdentity,
         tag: str,
+        graph_yaml: str,
         reference: ReferenceSweepCapture | None = None,
     ) -> PlayedStimulus:
+        """``graph_yaml`` is this pass's activation read-back
+        (``ActivationReadback.active_config_raw``, banked by the runner): what
+        ``confirm_graph_is_live`` re-proves inside the writer lock on every
+        play."""
+
         stop.check()
         commanded = float(request.requested_commanded_main_volume_db)
         log_event(
@@ -863,6 +1060,7 @@ class WiredPlayAndCapture:
             )
         prepared = self._prepare(
             target=target,
+            role=role,
             request=request,
             stimulus=stimulus,
             artifact=artifact,
@@ -876,13 +1074,12 @@ class WiredPlayAndCapture:
         )
 
         await self._floor.raise_to_level()
-        await self._hold_fader(role)
         fader_before_db, fader_before_muted = await self._read(
             "volume_and_mute", self._controller.get_volume_and_mute
         )
 
         recording, result, live_peaks = await self._play_and_record(
-            prepared, request=request, role=role
+            prepared, request=request, role=role, graph_yaml=graph_yaml
         )
 
         fader_after_db, fader_after_muted = await self._read(
@@ -940,6 +1137,10 @@ class WiredPlayAndCapture:
                     candidate=cast(SweepCaptureAnalysis, analysis),
                     reference=reference,
                 )
+                # Same demotion as the other two: a lossy capture's paired
+                # comparison is not evidence either.
+                if not intact:
+                    transparency_verdict = "fail"
         except CaptureUnanalyzable as exc:
             # A capture the kernels cannot window (onset too close to the
             # head, shorter than the stimulus) ends the target through the

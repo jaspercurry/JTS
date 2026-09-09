@@ -284,9 +284,19 @@ class FakeController:
         self.config_path = config_path
         self.calls: list[str] = []
 
-    async def get_active_config_raw(self) -> str:
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
         self.calls.append("get_active_config_raw")
         return self.raw
+
+    async def normalize_config_raw(
+        self, raw: str, *, best_effort: bool = False
+    ) -> str:
+        """CamillaDSP's ``ReadConfig`` canonicalization, which ``confirm_graph_is_live``
+        runs the SUBMITTED text through before comparing fingerprints. The double
+        echoes: what this controller hands back IS its own normal form."""
+
+        self.calls.append("normalize_config_raw")
+        return raw
 
     async def get_config_file_path(self) -> str:
         return str(self.config_path)
@@ -388,6 +398,7 @@ class RecordingPlayAndCapture:
         stimulus: Any,
         artifact: Any,
         tag: str,
+        graph_yaml: str,
         reference: Any = None,
     ) -> executor.PlayedStimulus:
         self.calls.append(
@@ -398,6 +409,7 @@ class RecordingPlayAndCapture:
                 "stimulus": stimulus,
                 "artifact": artifact,
                 "tag": tag,
+                "graph_yaml": graph_yaml,
                 "reference": reference,
             }
         )
@@ -676,6 +688,9 @@ async def test_run_discovery_records_the_padded_identity_as_the_capture_stimulus
             sink.bundle_dir / call["artifact"].relative_path
         ).read_bytes()
         assert capture.stimulus.sha256 == hashlib.sha256(played_path_bytes).hexdigest()
+        # R1: the graph the seam must prove live is this pass's own read-back,
+        # never the text that was submitted to install it.
+        assert call["graph_yaml"] == _live_yaml()
 
 
 # --------------------------------------------------------------------------- #

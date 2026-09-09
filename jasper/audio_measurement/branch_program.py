@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Mapping
 
-from .program import ExcitationProgram, KIND_SWEEP, _finalize
+from .program import ExcitationProgram, KIND_SWEEP, finalize_program
 
 
 def is_branch_program(program: ExcitationProgram) -> bool:
@@ -42,4 +42,4 @@ def build_branch_program(summed: ExcitationProgram, role_channels: Mapping[str, 
         cursor += sweep.n_samples
         segments.append(replace(tail, segment_id=f"tail_{name}", start_sample=cursor))
         cursor += tail.n_samples
-    return _finalize(summed.phase, 2, segments, cursor)
+    return finalize_program(summed.phase, 2, segments, cursor)

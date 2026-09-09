@@ -37,9 +37,11 @@ from jasper.active_speaker.program_admission import (
     ProgramAdmissionRefusal,
     readmit_program_from_wav,
 )
+from jasper.active_speaker import program_playback
 from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 from jasper.active_speaker.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from jasper.audio_measurement.frame_ledger import REPORT_KEY_RENDER_GAPS
+from jasper.measurement_window import MEASUREMENT_GATE_OWNER
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecorder
 from jasper.bass_extension.bench import (
     activation,
@@ -197,7 +199,7 @@ class FakeFader:
 
 
 @asynccontextmanager
-async def _noop_window(*, gate_owner: str):
+async def _noop_window():
     yield None
 
 
@@ -330,7 +332,7 @@ class CaptureRig:
             self.script.append((frames, [(0, 0)] * frames))
         await asyncio.sleep(0)
 
-    async def play_wav(self, artifact: Any, timeout_s: float) -> Any:
+    async def aplay(self, artifact: Any, timeout_s: float) -> Any:
         self.polls_at_play_start = self._controller.peak_reads
         self.played.append(artifact)
         path = self._sink.bundle_dir / artifact.relative_path
@@ -398,13 +400,34 @@ def _seam(tmp_path: Path, *, admission=None, config_dir: Path | None = None):
         config_dir=str(config_dir or tmp_path),
         read_mux_status=_read_mux,
         read_fanin_status=_read_fanin,
-        play_wav=rig.play_wav,
         recorder_factory=rig.recorder_factory,
         sleep=rig.sleep,
     )
+    _TRANSPORTS[str(sink.bundle_dir)] = rig
     return SimpleNamespace(
         sink=sink, volume=volume, controller=controller, rig=rig, seam=seam
     )
+
+
+#: Rigs by bundle directory, so the one patched ``verified_program_aplay`` can
+#: find the rig whose artifact it was handed.
+_TRANSPORTS: dict[str, "CaptureRig"] = {}
+
+
+@pytest.fixture(autouse=True)
+def _only_the_transport_is_a_double(monkeypatch: pytest.MonkeyPatch):
+    """Every play runs the ENGINE's own bound seams — ``confirm_graph_is_live``,
+    the fresh re-admission and the DSP writer lock are real — with only the
+    aplay subprocess replaced by the fake speaker."""
+
+    _TRANSPORTS.clear()
+
+    async def _aplay(bundle_dir, artifact, *, alsa_device=None, timeout_s):
+        return await _TRANSPORTS[str(bundle_dir)].aplay(artifact, timeout_s)
+
+    monkeypatch.setattr(program_playback, "verified_program_aplay", _aplay)
+    yield
+    _TRANSPORTS.clear()
 
 
 async def _play(
@@ -414,6 +437,7 @@ async def _play(
     request: StimulusRequest | None = None,
     rendered: StimulusRequest | None = None,
     reference: ReferenceSweepCapture | None = None,
+    graph_yaml: str | None = None,
 ):
     """Play one stimulus through the seam. ``rendered`` generates the BYTES from
     a different request than the one the play is authorized against."""
@@ -429,6 +453,7 @@ async def _play(
             stimulus=padded,
             artifact=identity,
             tag=role,
+            graph_yaml=graph_yaml or pieces.controller.raw,
             reference=reference,
         )
 
@@ -747,26 +772,10 @@ async def test_play_refuses_a_commanded_volume_the_session_never_admitted(
 async def test_play_surfaces_a_refused_admission_and_aborts_the_recorder(
     tmp_path: Path,
 ) -> None:
-    # A woofer cap far under the stimulus peak: the fresh re-admission inside
-    # play_program refuses before any audio.
-    pieces = _seam(tmp_path, admission=_admission_context(woofer_peak=-90.0))
-
-    with pytest.raises(BenchRefused) as raised:
-        await _play(pieces)
-
-    assert raised.value.reason == wired_play.REFUSE_ADMISSION
-    assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP.value in raised.value.detail
-    assert pieces.rig.pcm is not None and pieces.rig.pcm.closed is True
-    assert not (
-        pieces.sink.bundle_dir / TARGET_ID / "sweep_transparency-capture.wav"
-    ).exists()
-
-
-async def test_play_refuses_bytes_rendered_under_the_authorized_peak(
-    tmp_path: Path,
-) -> None:
     """The described program declares the peak the request AUTHORIZED, so an
-    artifact rendered quieter than that fails the fresh admission."""
+    artifact rendered quieter than that fails the fresh re-admission the engine
+    runs inside ``play_program`` — after the recorder is rolling, before audio.
+    """
 
     pieces = _seam(tmp_path)
 
@@ -777,6 +786,59 @@ async def test_play_refuses_bytes_rendered_under_the_authorized_peak(
 
     assert raised.value.reason == wired_play.REFUSE_ADMISSION
     assert ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH.value in raised.value.detail
+    assert pieces.rig.pcm is not None and pieces.rig.pcm.closed is True
+    assert not (
+        pieces.sink.bundle_dir / TARGET_ID / "sweep_transparency-capture.wav"
+    ).exists()
+
+
+async def test_play_refuses_a_driver_over_its_own_cap_before_any_hardware(
+    tmp_path: Path,
+) -> None:
+    """Every declared driver is judged, and a breach lands in front of the
+    fader: no recorder is opened and nothing is played."""
+
+    pieces = _seam(tmp_path, admission=_admission_context(woofer_peak=-90.0))
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(pieces)
+
+    assert raised.value.reason == wired_play.REFUSE_DRIVER_CAP
+    assert pieces.rig.pcm is None and pieces.rig.played == []
+    assert pieces.volume.fader.level_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_play_refuses_a_driver_out_of_band_with_nothing_declared(
+    tmp_path: Path,
+) -> None:
+    """A driver the stimulus band never reaches is admissible only because it
+    DECLARES the filter that puts it there. Strip the declaration and the
+    tweeter becomes an unaccounted driver, not a protected one."""
+
+    context = _admission_context()
+    stripped = dict(context.safety_profile)
+    stripped["targets"] = [
+        {**target, "required_protection_filters": []}
+        if target["role"] == "tweeter"
+        else target
+        for target in context.safety_profile["targets"]
+    ]
+    pieces = _seam(
+        tmp_path,
+        admission=wired_play.AdmissionContext(
+            topology=context.topology,
+            safety_profile=stripped,
+            role_targets=context.role_targets,
+            session_volume_db=context.session_volume_db,
+            declared_sensitivities=context.declared_sensitivities,
+            preset=context.preset,
+        ),
+    )
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(pieces)
+    assert raised.value.reason == wired_play.REFUSE_DRIVER_CAP
+    assert pieces.rig.played == []
 
 
 @pytest.mark.parametrize(
@@ -784,11 +846,16 @@ async def test_play_refuses_bytes_rendered_under_the_authorized_peak(
     [
         ({}, False),
         # The stimulus runs past the woofer/tweeter corner: above it the
-        # tweeter is being driven, not protected, and no cap was evaluated
-        # for it.
+        # tweeter is being driven, not protected.
         ({"crossover_fc_hz": 300.0}, True),
         # At the corner itself the pair above is only 6 dB down.
         ({"crossover_fc_hz": 400.0}, True),
+        # One epsilon BELOW the corner is the same 6 dB: the guard carries a
+        # named margin, so this refuses where a bare `>= fc` admitted it.
+        ({"crossover_fc_hz": 400.001}, True),
+        # A whole octave of margin is the boundary the constant names.
+        ({"crossover_fc_hz": 799.0}, True),
+        ({"crossover_fc_hz": 800.0}, False),
         # A local subwoofer sits BELOW the woofer the stimulus is admitted
         # for and takes the whole band through its own low-pass.
         ({"sub_index": 4}, True),
@@ -850,6 +917,109 @@ async def test_play_refuses_a_capture_whose_onset_is_inside_the_pre_guard(
     assert (
         pieces.sink.bundle_dir / TARGET_ID / "sweep_transparency-capture.wav"
     ).is_file()
+
+
+async def test_play_refuses_a_body_past_the_declared_duration_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The protocol's 30/60/90 s hold exceeds every declared per-sweep ceiling
+    (#2921's one number), so it must refuse in front of the fader rather than
+    after the graph is mutated and the recorder is armed."""
+
+    pieces = _seam(tmp_path)
+    ceiling_s = 6.0  # `_profile_and_targets`'s declared max_sweep_duration_s
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(
+            pieces,
+            role="sustain_stress",
+            request=_request(requested_hold_duration_s=ceiling_s + 1.0),
+        )
+
+    assert raised.value.reason == wired_play.REFUSE_HOLD_DURATION
+    assert pieces.rig.pcm is None and pieces.rig.played == []
+    assert pieces.volume.fader.level_db == pytest.approx(HOUSEHOLD_DB)
+
+    # And the same body one second under it plays.
+    ok = _seam(tmp_path / "under")
+    played = await _play(
+        ok, role="sustain_stress", request=_request(requested_hold_duration_s=ceiling_s - 1.0)
+    )
+    assert played.hold_duration_s == pytest.approx(ceiling_s - 1.0, abs=0.05)
+
+
+async def test_play_refuses_a_graph_that_is_not_the_one_running(
+    tmp_path: Path,
+) -> None:
+    """The per-play proof: the graph is re-proven inside the writer lock on
+    every rung, not once per activation."""
+
+    pieces = _seam(tmp_path)
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(pieces, graph_yaml=_live_yaml().replace("40.0", "45.0"))
+
+    assert raised.value.reason == wired_play.REFUSE_PLAYBACK
+    assert pieces.rig.played == []
+    assert pieces.rig.pcm is not None and pieces.rig.pcm.closed is True
+
+
+async def test_play_proves_the_fader_where_the_audio_is_emitted(
+    tmp_path: Path,
+) -> None:
+    """A household volume action landing after the level is claimed but before
+    the first sample must refuse: the level every driver cap was judged
+    against has to hold where the audio is emitted."""
+
+    pieces = _seam(tmp_path)
+    original_sleep = pieces.rig.sleep
+
+    async def _raise_the_house(seconds: float) -> None:
+        # The pre-guard wait is the window the engine's own proof covers and
+        # a raise-before-admission would not.
+        await original_sleep(seconds)
+        pieces.volume.fader.level_db = LEVEL_DB + 12.0
+
+    pieces.rig.sleep = _raise_the_house
+    pieces.seam._sleep = _raise_the_house
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(pieces)
+
+    assert raised.value.reason == wired_play.REFUSE_FADER
+    assert pieces.rig.played == []
+
+
+async def test_play_refuses_an_unreadable_banked_reference_rather_than_raising(
+    tmp_path: Path,
+) -> None:
+    pieces = _seam(tmp_path)
+    missing = ReferenceSweepCapture(
+        reference_stimulus=_artifact_stub("stimulus"),
+        reference_admission=_artifact_stub("admission"),
+        reference_acoustic_capture=_artifact_stub("capture"),
+        reference_signal_analysis=_artifact_stub("nowhere/signal.json"),
+    )
+
+    with pytest.raises(BenchRefused) as raised:
+        await _play(pieces, reference=missing)
+
+    assert raised.value.reason == wired_play.REFUSE_UNANALYZABLE
+    assert (
+        pieces.sink.bundle_dir / TARGET_ID / "sweep_transparency-capture.wav"
+    ).is_file()
+
+
+def _artifact_stub(label: str):
+    from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+
+    return ArtifactIdentity(
+        bundle_kind="jts_bass_extension_limiter_bench",
+        bundle_id="play",
+        relative_path=label if label.endswith(".json") else f"{label}.json",
+        sha256=_sha(label),
+        byte_size=1,
+    )
 
 
 async def test_play_records_an_unreadable_peak_poll_as_an_empty_snapshot(
@@ -983,7 +1153,7 @@ async def test_campaign_over_the_wired_seam_emits_resolvable_evidence(
     assert checked >= 4
 
     # R6a(i): the gate the bench holds is the owner live_proof proves.
-    assert _mux_status()["test_owner"] == wired_play.BENCH_GATE_OWNER
+    assert _mux_status()["test_owner"] == MEASUREMENT_GATE_OWNER
     assert pieces.volume.fader.level_db == pytest.approx(HOUSEHOLD_DB)
 
 

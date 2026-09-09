@@ -189,7 +189,7 @@ def _clean_pre_roll_s(program) -> float:
     return analysis.sweep_pre_roll_s(program.segment("bench_woofer_0"))
 
 
-def _analyze_sweep(program, body, capture, *, policy=POLICY):
+def _analyze_sweep(program, body, capture, *, policy=POLICY, max_onset_s=30.0):
     return analysis.analyze_sweep_capture(
         capture=capture,
         program=program,
@@ -198,6 +198,7 @@ def _analyze_sweep(program, body, capture, *, policy=POLICY):
         band=SWEEP_BAND,
         margin=MARGIN,
         policy=policy,
+        max_onset_s=max_onset_s,
     )
 
 
@@ -209,15 +210,51 @@ def test_stimulus_lag_recovers_a_known_offset(lag: int) -> None:
     capture = capture + rng.normal(0.0, 1e-4, capture.size)
 
     assert (
-        analysis.stimulus_lag_samples(capture, burst, sample_rate_hz=RATE) == lag
+        analysis.stimulus_lag_samples(
+            capture, burst, sample_rate_hz=RATE, max_onset_s=2.0
+        )
+        == lag
     )
 
 
 def test_stimulus_lag_refuses_a_capture_shorter_than_the_stimulus() -> None:
     with pytest.raises(analysis.CaptureUnanalyzable):
         analysis.stimulus_lag_samples(
-            np.zeros(100), np.zeros(200), sample_rate_hz=RATE
+            np.zeros(100), np.zeros(200), sample_rate_hz=RATE, max_onset_s=1.0
         )
+
+
+def test_stimulus_lag_search_is_bounded_by_the_onset_window() -> None:
+    """The onset search is O(max_onset_s), not O(capture): a hold minutes long
+    must not correlate over its whole capture on a 1 GB box (ADR-0226)."""
+
+    rng = np.random.default_rng(23)
+    burst = rng.normal(0.0, 0.2, 4_096)
+    lag = 8 * RATE
+    capture = np.concatenate([np.zeros(lag), burst, np.zeros(60 * RATE)])
+    seen: dict[str, float] = {}
+    real = analysis.correlation
+
+    def _record(captured, stimulus, **kwargs):
+        # What `alignment.correlation` truncates to before it promotes to
+        # float64 — the whole point of the backstop.
+        seen["correlated"] = max(
+            int(np.asarray(stimulus).size),
+            int(kwargs["max_capture_s"] * kwargs["sample_rate"]),
+        )
+        return real(captured, stimulus, **kwargs)
+
+    analysis.correlation = _record  # type: ignore[assignment]
+    try:
+        found = analysis.stimulus_lag_samples(
+            capture, burst, sample_rate_hz=RATE, max_onset_s=10.0
+        )
+    finally:
+        analysis.correlation = real  # type: ignore[assignment]
+
+    assert found == lag
+    assert seen["correlated"] <= (10.0 + analysis._HEAD_S) * RATE
+    assert seen["correlated"] < capture.size
 
 
 @pytest.mark.parametrize(
@@ -236,6 +273,7 @@ def test_sweep_protection_gates_on_the_margin_thd_ratio(
 
     assert result.images_clean is True
     assert result.protection_verdict == expected
+    assert result.thd_max_ratio is not None
     assert (result.thd_max_ratio > MARGIN.thd_fail_ratio) is (expected == "fail")
 
 
@@ -250,7 +288,10 @@ def test_sweep_protection_fails_a_reading_the_floor_owns_outright() -> None:
     result = _analyze_sweep(program, body, capture)
 
     assert result.images_clean is True
-    assert result.thd_max_ratio == 0.0
+    # An unestablished value is banked as absent, never filled from a default
+    # (limiter-evidence-protocol.md, "Required bench owner").
+    assert result.thd_max_ratio is None
+    assert result.protection_dict()["thd_max_ratio"] is None
     assert result.protection_verdict == "fail"
 
 
@@ -351,6 +392,7 @@ def _sustain(played: np.ndarray, body: np.ndarray):
         band=HOLD_BAND,
         margin=MARGIN,
         policy=POLICY,
+        max_onset_s=5.0,
     )
 
 
