@@ -15,9 +15,11 @@ full declared (azimuth, elevation, distance) triple, never a seat index.
 
 from __future__ import annotations
 
+from .record_index import played_graph_fingerprint
+
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +79,10 @@ class PoseCapture:
     peak_idx: int
     pose_kind: str = POSE_KIND_BEARING
     seat_offset_m: tuple[float, ...] | None = None
+    candidate_id: str = ""
+    graph_fingerprint: str = ""
+    capture_sha256: str = ""
+    preprocessing: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def pose_key(self) -> str:
@@ -244,6 +250,7 @@ def discover_captures(
     round_dir: Path,
     *,
     select: Callable[[Mapping[str, Any]], bool] | None = None,
+    role: str = "summed",
 ) -> tuple[PoseCapture, ...]:
     """Read a round or bundle through canonical records, then legacy sidecars.
 
@@ -312,22 +319,46 @@ def discover_captures(
                     ),
                 },
             )
-        signal, rate = read_wav_mono(wav)
-        program_key = str(sha)
-        if program_key not in program_audio:
-            program_audio[program_key] = read_wav_mono(program)
-        program_signal, program_rate = program_audio[program_key]
-        if rate != program_rate:
-            raise RoundCapturesRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {
-                    "sidecar": sidecar.name,
-                    "detail": f"{rate} Hz capture against {program_rate} Hz program",
-                },
+        diagnostic = doc.get("branch_diagnostic")
+        retained = None
+        preprocessing: dict[str, Any] = {}
+        if isinstance(diagnostic, Mapping):
+            retained = next((r for r in diagnostic["responses"] if r["role"] == role), None)
+            if retained is None:
+                raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav)})
+            preprocessing = {
+                "role": role, "timing_reference": diagnostic["timing_reference"],
+                "clock_epsilon_ppm": diagnostic["clock_epsilon_ppm"],
+                "clock_shift_samples": retained["clock_shift_samples"],
+                "segment_id": retained["segment_id"],
+                "pre_guard_samples": retained["pre_guard_samples"],
+                "scheduled_start_sample": retained["scheduled_start_sample"],
+                "global_offset_samples": diagnostic["global_offset_samples"],
+                "microphone_correction": False,
+            }
+            rate = diagnostic["sample_rate_hz"]
+            ir = np.asarray(retained["impulse"], dtype=np.float64)
+            band = tuple(retained["band_hz"])
+        else:
+            if role != "summed":
+                raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav), "detail": "take has no retained branch diagnostic"})
+            signal, rate = read_wav_mono(wav)
+        if retained is None:
+            program_key = str(sha)
+            if program_key not in program_audio:
+                program_audio[program_key] = read_wav_mono(program)
+            program_signal, program_rate = program_audio[program_key]
+            if rate != program_rate:
+                raise RoundCapturesRefused(
+                    REFUSE_CAPTURE_UNREADABLE,
+                    {
+                        "sidecar": sidecar.name,
+                        "detail": f"{rate} Hz capture against {program_rate} Hz program",
+                    },
+                )
+            ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
+                np.float64
             )
-        ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
-            np.float64
-        )
         pose_kind, seat_offset_m = _doc_pose_category(doc)
         captures.append(
             PoseCapture(
@@ -345,6 +376,10 @@ def discover_captures(
                 peak_idx=int(np.argmax(np.abs(ir))),
                 pose_kind=pose_kind,
                 seat_offset_m=seat_offset_m,
+                candidate_id=str(doc.get("candidate_id") or ""),
+                graph_fingerprint=played_graph_fingerprint(doc),
+                capture_sha256=sha256_file(wav),
+                preprocessing=preprocessing,
             )
         )
     return tuple(sorted(captures, key=lambda cap: cap.capture_id))
@@ -366,7 +401,7 @@ REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
 
 def select_capture(
-    round_dir: Path, *, capture_id: str | None = None
+    round_dir: Path, *, capture_id: str | None = None, role: str = "summed"
 ) -> PoseCapture:
     """The one capture a single-capture reader takes out of ``round_dir``.
 
@@ -394,7 +429,7 @@ def select_capture(
 
         named = [
             capture
-            for capture in discover_captures(root, select=wanted)
+            for capture in discover_captures(root, select=wanted, role=role)
             if capture_id
             in (capture.capture_id, capture.wav.stem if capture.wav else None)
         ]
@@ -415,7 +450,7 @@ def select_capture(
         # same answer the decoded ``None`` gave.
         return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
 
-    on_axis = discover_captures(root, select=on_axis_doc)
+    on_axis = discover_captures(root, select=on_axis_doc, role=role)
     if not on_axis:
         raise RoundCapturesRefused(
             REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
@@ -440,4 +475,8 @@ def capture_row(capture: PoseCapture) -> dict[str, Any]:
         "vertical_deg": capture.vertical_deg,
         "mark_distance_m": capture.mark_distance_m,
         "stimulus_wav_sha256": capture.program_sha256,
+        "capture_wav_sha256": capture.capture_sha256,
+        "candidate_id": capture.candidate_id,
+        "preprocessing": dict(capture.preprocessing),
+        "graph_fingerprint": capture.graph_fingerprint,
     }
