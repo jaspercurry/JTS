@@ -257,8 +257,6 @@ class OutageTracker:
         self._clock = clock
         # Monotonic time of the outage's first failure; None while healthy.
         self._outage_started_at: float | None = None
-        # How long the outage `on_recovery` last cleared ran, in seconds.
-        self.last_outage_duration_s: float = 0.0
 
     @property
     def wake_cue(self) -> str:
@@ -334,30 +332,27 @@ class OutageTracker:
         )
         self._announce(cue)
 
-    def on_recovery(self) -> float:
+    def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm.
 
         Silent unless a real outage was in progress, in which case
-        `event=voice.connection.restored` reports how long it ran.
-        Returns that duration (0.0 when there was nothing to recover
-        from, e.g. the first successful connect).
+        `event=voice.connection.restored` reports how long it ran and
+        whether it was ever announced (a cue fired for it).
         """
-        duration = 0.0
         started = self._outage_started_at
         if started is not None:
-            duration = max(0.0, self._clock() - started)
+            duration = self._clock() - started
             self._outage_started_at = None
             log_event(
                 logger,
                 "voice.connection.restored",
                 duration_s=round(duration, 3),
+                announced=self._announced is not None,
             )
-        self.last_outage_duration_s = duration
         self.detail = None
         self.cue = None
         self._announced = None
         self._network_streak = 0
-        return duration
 
 
 class Deferred:

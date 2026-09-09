@@ -33,7 +33,7 @@ from jasper.voice._supervisor import (
     is_transient,
     outage_cue,
 )
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
 from tests.failure_detail_fixtures import Rejected
 
 try:
@@ -380,20 +380,32 @@ async def test_a_transient_failure_restarts_the_network_streak() -> None:
     assert calls == [NETWORK_DOWN_CUE_SLUG]
 
 
-async def test_on_recovery_records_the_outage_duration() -> None:
-    """A recovery after a real outage reports how long it ran; a
-    recovery with nothing preceding it (the first successful connect)
-    records zero rather than a stale or negative value."""
-    clock = iter([100.0, 137.5])
+async def test_on_recovery_logs_duration_and_announced(caplog) -> None:
+    """A recovery with nothing preceding it (the first successful
+    connect) emits no event; a recovery after a real outage reports how
+    long it ran and whether a cue was ever announced for it."""
+    clock = iter([100.0, 137.5, 200.0, 209.0])
     tracker = OutageTracker(clock=lambda: next(clock))
 
-    assert tracker.on_recovery() == 0.0
-    assert tracker.last_outage_duration_s == 0.0
+    with caplog.at_level(logging.INFO, logger="jasper.voice._supervisor"):
+        tracker.on_recovery()
+    assert event_records(caplog, "voice.connection.restored") == []
 
-    tracker.on_failure(_Terminal())
-    duration = tracker.on_recovery()
-    assert duration == pytest.approx(37.5)
-    assert tracker.last_outage_duration_s == pytest.approx(37.5)
+    tracker.on_failure(_Terminal())  # terminal: announces
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="jasper.voice._supervisor"):
+        tracker.on_recovery()
+    fields = event_fields(caplog, "voice.connection.restored")
+    assert fields["duration_s"] == "37.5"
+    assert fields["announced"] == "true"
+
+    tracker.on_failure(OSError("blip"))  # transient: never announces
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="jasper.voice._supervisor"):
+        tracker.on_recovery()
+    fields = event_fields(caplog, "voice.connection.restored")
+    assert fields["duration_s"] == "9.0"
+    assert fields["announced"] == "false"
 
 
 async def test_announce_task_failure_is_logged_not_swallowed(caplog) -> None:

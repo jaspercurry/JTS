@@ -2097,13 +2097,6 @@ def main(argv: list[str] | None = None) -> int:
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.
     debug_control.reconcile_on_startup()
-    logger.info(
-        "jasper-control listening on http://%s:%d "
-        "(camilla=%s:%d, voice=%s)",
-        args.host, args.port,
-        args.camilla_host, args.camilla_port,
-        args.voice_socket,
-    )
     # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
@@ -2113,7 +2106,15 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
-    log_event(logger, "control.ready", host=args.host, port=args.port)
+    log_event(
+        logger,
+        "control.ready",
+        host=args.host,
+        port=args.port,
+        camilla_host=args.camilla_host,
+        camilla_port=args.camilla_port,
+        voice_socket=args.voice_socket,
+    )
     restore_sigterm = _install_sigterm_shutdown(server)
     try:
         server.serve_forever()
