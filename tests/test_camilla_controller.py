@@ -802,6 +802,32 @@ async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     assert controller._client is None
 
 
+async def test_wedged_transport_skips_the_retry_inside_the_failure_window(monkeypatch):
+    """A wedged websocket must not charge every caller two connect timeouts:
+    within CAMILLA_FAILURE_MEMORY_S of a failed call the zero-delay retry is
+    skipped, and the caller still sees CamillaUnavailable."""
+    clients: list[object] = []
+
+    class Client:
+        def __init__(self, _host: str, _port: int) -> None:
+            self._ws = None
+            clients.append(self)
+
+        def connect(self) -> None:
+            raise TimeoutError("wedged handshake")
+
+    _install_transport_fakes(monkeypatch, Client)
+    controller = CamillaController("127.0.0.1", 1234)
+
+    with pytest.raises(CamillaUnavailable):
+        await controller._call(lambda client: client.main_volume())
+    assert len(clients) == 2
+
+    with pytest.raises(CamillaUnavailable):
+        await controller._call(lambda client: client.main_volume())
+    assert len(clients) == 3
+
+
 async def test_call_classifies_config_validation_error_as_config_rejected(monkeypatch):
     """W6 hardware run 4 finding J: a healthy CamillaDSP that REJECTED a config
     (e.g. "Use of missing mixer 'split_active_2way'") used to be folded into

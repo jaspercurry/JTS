@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
@@ -47,6 +48,9 @@ MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
 # every exit path.
 CAMILLA_OPERATION_TIMEOUT_S = 2.0
 CAMILLA_ATTEMPT_BUDGET_S = 5.0
+# Seconds after a failed call during which the transport is presumed still
+# wedged, so the zero-delay reconnect retry is skipped.
+CAMILLA_FAILURE_MEMORY_S = 1.0
 _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
 
 # CamillaDSP ramps main volume changes over `volume_ramp_time`, which is
@@ -242,6 +246,13 @@ def _is_config_validation_error(exc: BaseException) -> bool:
     return isinstance(exc, ConfigValidationError)
 
 
+def _transport_error(exc: BaseException) -> CamillaUnavailable:
+    """Classify a failed call: config rejected by a live daemon, or unreachable."""
+    if _is_config_validation_error(exc):
+        return CamillaConfigRejected(str(exc))
+    return CamillaUnavailable(str(exc))
+
+
 class CamillaController:
     """Thin wrapper around pycamilladsp for ducking + volume tools.
 
@@ -256,6 +267,8 @@ class CamillaController:
         self._port = port
         self._client: CamillaClient | None = None
         self._lock = asyncio.Lock()
+        self._failed_at: float | None = None
+        self._abandon_logged = False
         # One fixed production lock; tests may replace this instance attribute
         # with a temporary path (there is intentionally no env/config override).
         self._graph_mutation_lock_path = CANONICAL_DSP_WRITER_LOCK_PATH
@@ -448,18 +461,28 @@ class CamillaController:
     async def _call(self, fn: Callable[[CamillaClient], _T]) -> _T:
         async with self._lock:
             try:
-                return await self._run_attempt(fn)
+                result = await self._run_attempt(fn)
             except Exception as e:  # noqa: BLE001
-                # First-attempt failure is normal during a transient
-                # outage (e.g. camilla restart blip) — we always retry
-                # once. DEBUG, not WARNING: the eventual outcome is
-                # what callers care about. If the retry succeeds, the
-                # call is transparent recovery. If the retry also
-                # fails, CamillaUnavailable is raised and best_effort
-                # call sites log their own warning at the action level
-                # ("set_volume_db skipped", etc). Without this demote,
-                # a sustained camilla-down window floods the journal at
-                # ~4 Hz from old voice-side polling alone.
+                self._client = None
+                failed_at = self._failed_at
+                age_s = math.inf if failed_at is None else time.monotonic() - failed_at
+                if age_s < CAMILLA_FAILURE_MEMORY_S:
+                    if not self._abandon_logged:
+                        self._abandon_logged = True
+                        log_event(
+                            logger,
+                            "camilla.call_abandoned",
+                            level=logging.WARNING,
+                            host=self._host,
+                            port=self._port,
+                            failure_age_s=round(age_s, 3),
+                            operation=getattr(fn, "__qualname__", "?"),
+                        )
+                    raise _transport_error(e) from e
+                # Retry once: a first-attempt failure is usually a camilla
+                # restart blip. DEBUG, not WARNING — best_effort call sites
+                # log the action-level warning, and a sustained camilla-down
+                # window is polled at ~4 Hz.
                 log_event(
                     logger,
                     "camilla.operation_retry",
@@ -468,18 +491,16 @@ class CamillaController:
                     port=self._port,
                     error=type(e).__name__,
                 )
-                self._client = None
                 try:
                     return await self._run_attempt(fn)
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
-                    if _is_config_validation_error(e2):
-                        # Camilla answered and rejected the config itself
-                        # (e.g. "Use of missing mixer '...'") — a distinct
-                        # failure from an unreachable/dead daemon (W6
-                        # hardware run 4 finding J). See CamillaConfigRejected.
-                        raise CamillaConfigRejected(str(e2)) from e2
-                    raise CamillaUnavailable(str(e2)) from e2
+                    error = _transport_error(e2)
+                    if not isinstance(error, CamillaConfigRejected):
+                        self._failed_at = time.monotonic()
+                    raise error from e2
+            self._failed_at, self._abandon_logged = None, False
+            return result
 
     async def get_volume_db(
         self, *, best_effort: bool = False,
