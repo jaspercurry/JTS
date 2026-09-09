@@ -6,14 +6,13 @@
 
 This module owns exactly ONE durable JSON record —
 ``/var/lib/jasper/correction/household_mic.json`` — recording the mic and
-calibration that most recently succeeded. It is written at the two points a
-calibration is ESTABLISHED (``_handle_calibration_fetch`` /
-``_handle_calibration_upload`` in ``jasper/web/correction_handlers.py``), and
-nowhere else: without it every session made the household re-select a mic
-model and re-supply the calibration (re-type a serial or re-upload a file)
-from scratch. A session that establishes a DIFFERENT mic is never blocked;
-the new success simply replaces the record (see
-``correction.household_mic_replaced`` in ``jasper/web/correction_capture.py``).
+calibration that most recently succeeded. :func:`save_household_mic` is its
+only writer, called from the two points a calibration is ESTABLISHED
+(``jasper-mic-calibration fetch`` / ``upload``), and nowhere else: without it
+every session made the household re-select a mic model and re-supply the
+calibration (re-type a serial or re-upload a file) from scratch. A session
+that establishes a DIFFERENT mic is never blocked; the new success simply
+replaces the record (``correction.household_mic_replaced``).
 
 No secrets land in the record: ``serial_hash`` is the same one-way hash the
 calibration record itself carries, and ``serial_display`` is at most the
@@ -35,8 +34,6 @@ The record reaches a measurement two ways, and both start here:
   (``audio_measurement.wired_capture.setup_from_hint``) and
   :func:`resolve_setup_calibration` materializes back into a
   ``CalibrationRecord`` for the analysis.
-
-The room wizard's server-rendered mic selection reads the record directly.
 """
 from __future__ import annotations
 
@@ -244,6 +241,64 @@ def household_mic_path() -> Path:
             "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(DEFAULT_HOUSEHOLD_MIC_PATH),
         )
     )
+
+
+def save_household_mic(record: Any, *, serial: str | None = None) -> None:
+    """Persist a just-established calibration as the household's default
+    measurement mic.
+
+    Called from the two points a calibration is NEWLY established —
+    ``jasper-mic-calibration fetch`` and ``upload``. A caller that merely
+    LOADS an already-established ``calibration_id`` without the household
+    saying so does not call this, and neither does a capture resolving the
+    reference minted from this record: the household record only moves on a
+    new success.
+
+    Fail-soft: a write failure must never block the calibration that
+    triggered it. A different mic than the currently-remembered one is
+    never refused — the new success simply replaces the record: logged as
+    ``correction.household_mic_replaced`` rather than blocked.
+    """
+    path = household_mic_path()
+    try:
+        new_record = household_mic_from_calibration(record, serial=serial)
+        previous = read_household_mic(path=path)
+        write_household_mic(new_record, path=path)
+    except (OSError, ValueError, TypeError) as exc:
+        log_event(
+            logger,
+            "correction.household_mic_write_failed",
+            level=logging.WARNING,
+            exc_info=True,
+            path=str(path),
+            reason=type(exc).__name__,
+        )
+        return
+    # A replace is any change of mic IDENTITY: the model, or — within the
+    # same model — a different physical unit (serial_hash). The hashes
+    # themselves stay out of the log line (they are stable per-unit
+    # identifiers; the event only needs to say WHAT kind of change
+    # happened), so `changed=` is the minimal discriminator.
+    changed: list[str] = []
+    if previous is not None:
+        if previous.model_key != new_record.model_key:
+            changed.append("model")
+        if previous.serial_hash != new_record.serial_hash:
+            changed.append("serial")
+    if previous is not None and changed:
+        log_event(
+            logger,
+            "correction.household_mic_replaced",
+            old_model=previous.model_key,
+            new_model=new_record.model_key,
+            changed="+".join(changed),
+        )
+    else:
+        log_event(
+            logger,
+            "correction.household_mic_saved",
+            model=new_record.model_key,
+        )
 
 
 def resolve_household_mic_calibration(

@@ -555,25 +555,6 @@ def load_calibration_record(
     return CalibrationRecord.from_dict(data)
 
 
-def preview_curve(
-    curve: CalibrationCurve,
-    *,
-    max_points: int = 80,
-) -> dict[str, list[float]]:
-    freqs = np.asarray(curve.freqs_hz, dtype=np.float64)
-    corr = np.asarray(curve.correction_db, dtype=np.float64)
-    if len(freqs) > max_points:
-        idx = np.unique(
-            np.round(np.linspace(0, len(freqs) - 1, max_points)).astype(int)
-        )
-        freqs = freqs[idx]
-        corr = corr[idx]
-    return {
-        "freqs_hz": [float(x) for x in freqs],
-        "correction_db": [float(x) for x in corr],
-    }
-
-
 UrlOpen = Callable[[urllib.request.Request | str, float], bytes]
 
 
