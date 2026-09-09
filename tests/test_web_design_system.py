@@ -456,6 +456,15 @@ def test_page_type_stays_on_the_ladder(path: Path):
     )
 
 
+def test_off_ladder_held_table_has_no_dead_keys():
+    """A key that doesn't match an enumerated source's relative path is never
+    read by test_page_type_stays_on_the_ladder (OFF_LADDER_HELD.get(rel) would
+    just miss) — it would silently hold a stray value forever instead of
+    failing when the value is corrected or the path renamed."""
+    sources = {str(p.relative_to(ROOT)) for p in _focus_ring_css_sources()}
+    assert set(OFF_LADDER_HELD) <= sources
+
+
 def test_type_ladder_guard_actually_catches_a_new_off_ladder_value():
     """The guard is only worth having if it fires. An earlier version excluded
     anything containing "em", which silently swallowed `rem` too — the exact
