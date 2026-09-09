@@ -100,6 +100,7 @@ from ._common import (
     SECRET_ENV_MODE,
     value_for_env as _value_for,
 )
+# Rendering helpers resolve names in voice_page's globals: patch voice_page.<name>, not these aliases.
 from .voice_page import (
     _active_provider_id,
     _fmt_env_float,

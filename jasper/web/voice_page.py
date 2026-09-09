@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Page rendering for the /assistant/voice/ wizard.
-
-Split from voice_setup.py (routes, save logic, and the HTTP handler stay there).
-"""
+"""Page rendering for the /assistant/voice/ wizard."""
 from __future__ import annotations
 
 import html
