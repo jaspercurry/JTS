@@ -38,6 +38,7 @@ from typing import Any
 from jasper.log_event import log_event
 from jasper.source_state import airplay_playbackstatus_observed
 
+from . import restart_broker
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -109,6 +110,9 @@ class ShairportSupervisor:
         # household disable (/sources/ AirPlay off) rather than a
         # wedge. Edge-triggers the shairport.probe_idle log line.
         self.unit_disabled: bool = False
+        # The broker's error/stderr from the most recent refused or
+        # failed restart attempt; cleared on the next successful one.
+        self.last_restart_error: str | None = None
         # Monotonic clock for rate-limit math — separated from
         # last_restart_at so display and arithmetic don't share
         # a time base. time.monotonic() can't go backwards on NTP
@@ -224,7 +228,12 @@ class ShairportSupervisor:
                 level=logging.WARNING,
             )
             return
+        # Stamp the attempt, not the outcome, so a persistent denial rate-
+        # limits instead of retrying every tick. restart_shairport() never
+        # raises (a per-tick crash net still lives in run_supervisor_loop).
         self._last_restart_monotonic = mono
+        if not await self.restart_shairport():
+            return
         self.last_restart_at = time.time()
         self.restart_count += 1
         self.consecutive_failures = 0
@@ -235,15 +244,6 @@ class ShairportSupervisor:
             count=self.restart_count,
             level=logging.ERROR,
         )
-        try:
-            await self.restart_shairport()
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "shairport.restart_failed",
-                level=logging.ERROR,
-                exc_info=True,
-            )
 
     # ---- overridable IO ----
 
@@ -408,29 +408,35 @@ class ShairportSupervisor:
         _returncode, state = result
         return state in {"disabled", "masked", "masked-runtime"}
 
-    async def restart_shairport(self) -> None:
-        """`reset-failed` clears StartLimitBurst parking; `--no-block restart`
-        returns as soon as the recovery job is enqueued.
+    async def restart_shairport(self) -> bool:
+        """`restart`, not active-only `try-restart`: a fully dead desired-On
+        receiver must be started. A concurrent source Off/role park still
+        wins at the final systemd start boundary via the source-intent/
+        effective-role marker gate.
 
-        A fully dead desired-On receiver must be started, so active-only
-        ``try-restart`` is insufficient. A concurrent source Off/role park still
-        wins at the final systemd start boundary because both AirPlay units carry
-        the canonical source-intent/effective-role marker gate.
+        Returns False, never raises, on a broker refusal or nonzero
+        systemctl result — the caller must not count that as a restart.
         """
-        reset = await asyncio.create_subprocess_exec(
-            "systemctl", "reset-failed",
+        result = await asyncio.to_thread(
+            restart_broker.reset_then_manage,
             "shairport-sync.service", "nqptp.service",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            verb="restart",
+            reason="shairport_supervisor",
         )
-        await asyncio.wait_for(reset.wait(), timeout=5.0)
-        restart = await asyncio.create_subprocess_exec(
-            "systemctl", "--no-block", "restart",
-            "shairport-sync.service", "nqptp.service",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(restart.wait(), timeout=5.0)
+        if not result.get("ok"):
+            self.last_restart_error = str(
+                result.get("error") or result.get("stderr") or "-",
+            )
+            log_event(
+                logger,
+                "shairport.restart_failed",
+                rc=result.get("rc"),
+                error=self.last_restart_error,
+                level=logging.ERROR,
+            )
+            return False
+        self.last_restart_error = None
+        return True
 
     # ---- accessors ----
 
@@ -449,6 +455,7 @@ class ShairportSupervisor:
             "restart_count": self.restart_count,
             "last_restart_at": self.last_restart_at,
             "suppressed_count": self.suppressed_count,
+            "last_restart_error": self.last_restart_error,
         }
 
 

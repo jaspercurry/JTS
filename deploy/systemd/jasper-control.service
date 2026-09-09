@@ -75,9 +75,9 @@ RestartSec=5
 # in group `jasper` so jasper-voice/-mux can read it.
 #
 # This drop is GATED on two hardware-validated things that ship in the SAME PR:
-#   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — the supervisor
-#       recovery paths (system_supervisor reboot, shairport_supervisor restart)
-#       and the in-process restart broker call systemctl/reboot DIRECTLY as this
+#   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — system_supervisor's
+#       recovery reboot and the in-process restart broker (which shairport_supervisor's
+#       wedge restart routes through) call systemctl/reboot DIRECTLY as this
 #       uid, which polkit now mediates instead of a uid-0 bypass; and
 #   (b) group-readable config/secret env (the jasper-doctor it spawns at
 #       /system/diagnostics fresh-reads every env_load.ENV_FILES file, and
