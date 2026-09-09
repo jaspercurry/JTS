@@ -45,7 +45,7 @@ from jasper.volume_diagnostics import (
     read_diagnostics,
 )
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_owner import ClaimKind
+from jasper.volume_owner import ClaimKind, VolumeClaimRefused
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
 
@@ -2152,6 +2152,41 @@ async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gat
 
     assert cam.set_calls == []
     assert cam.mute_calls == []
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.set_listening_level(95), id="set"),
+        pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust"),
+    ],
+)
+async def test_the_level_doors_refuse_while_a_measurement_is_active(tmp_path, door):
+    """The voice tools reach these IN-PROCESS, never through jasper-control.
+
+    ``jasper.tools.audio`` calls them on this coordinator whenever the box is
+    not a bonded follower, so the HTTP measurement hold never sees the request
+    and a "louder" mid-sweep would take the driver above the declared cap the
+    session volume is enforcing. The refusal type is what ``tools.dispatch_tool``
+    turns into the model-visible error payload.
+    """
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+
+
+@pytest.mark.parametrize("asked, applied", [(150, 100), (-5, 0), (60, 60)])
+async def test_set_listening_level_clamps_to_the_percent_range(
+    tmp_path, asked, applied,
+):
+    coord, _, persistence = _real_coord(tmp_path, active={}, level=40)
+
+    assert await coord.set_listening_level(asked) == applied
+    _assert_persisted(persistence, level=applied)
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):

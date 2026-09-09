@@ -19,9 +19,10 @@ What must hold, and what would break without it:
   or a healthy long sweep un-gates itself mid-capture;
 * a second owner is **refused, by name** — this is the cross-process mutex the
   window's in-process ``_window_active`` flag structurally cannot be;
-* jasper-control **declines source-observed volume writes** while held, on the
-  established ``observation_applied: false`` contract, and **still honours
-  authoritative ones** (a human at the speaker is not locked out);
+* jasper-control **declines every volume write** while held — source-observed
+  ones on the established ``observation_applied: false`` contract, and
+  authoritative ones (landing slider, HID knob, mute key) with a 409 naming the
+  incumbent;
 * the window **releases on every exit** — normal, raised, and cancelled;
 * an unreachable jasper-control is **fail-soft** (the hazard it guards cannot
   occur while the daemon serving it is down), while a 409 is **fail-closed**.
@@ -478,16 +479,35 @@ def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):
     assert "persistence unreadable" in body["error"]
 
 
-def test_an_authoritative_write_still_lands_while_held(control_server):
-    """A human at the speaker is not locked out. This is isolation, not a lockout."""
+@pytest.mark.parametrize(
+    "route, payload",
+    [
+        ("/volume/set", {"percent": 42}),
+        ("/volume/adjust", {"delta_percent": 25}),
+        ("/volume/mute", {}),
+        ("/volume/mute", {"muted": True}),
+    ],
+)
+def test_every_authoritative_write_is_refused_while_held(
+    control_server, route, payload,
+):
+    """The landing slider, every HID volume key and the mute key, all declined.
+
+    A stimulus is playing at the session volume that IS the driver's cap
+    enforcement; any of these lands the household level on the fader for the
+    duration of that sweep.
+    """
     base, fake = control_server
     _post(f"{base}/measurement/hold", {"owner": "seat-level"})
 
-    status, body = _post(f"{base}/volume/set", {"percent": 42})
-    assert status == 200
-    assert body["percent"] == 42
-    assert ("set", 42) in fake.calls
-    assert "observation_applied" not in body
+    status, body = _post(f"{base}{route}", payload)
+    assert status == 409
+    assert body["measurement_hold"]["owner"] == "seat-level"
+    assert fake._level == 60
+    assert not [
+        kind for kind, _ in fake.calls
+        if kind in {"set", "adjust", "mute", "unmute"}
+    ]
 
 
 def test_the_observation_applies_once_the_hold_is_released(control_server):

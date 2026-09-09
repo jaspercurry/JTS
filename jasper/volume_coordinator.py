@@ -60,7 +60,7 @@ from .music_sources import (
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
-from .volume_owner import VolumeOwner, install_volume_owner
+from .volume_owner import VolumeClaimRefused, VolumeOwner, install_volume_owner
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -324,7 +324,9 @@ class VolumeCoordinator:
         # user-volume surface for the final music+TTS mix.
         self._camilla_volume_locked: bool = False
         # Correction-measurement gate for the voice daemon's own 1 Hz
-        # reconciler. This is intentionally narrow: it does not turn this
+        # reconciler AND for the voice tools' level doors (set/adjust), which
+        # reach this object in-process and so never pass jasper-control's
+        # measurement hold. This is intentionally narrow: it does not turn this
         # process-local flag into a cross-daemon Camilla lock or block an
         # emergency user mute. It prevents the observed writer from replacing
         # a ramp value with persisted listening_level mid-measurement.
@@ -508,10 +510,28 @@ class VolumeCoordinator:
     # Public API — set / adjust
     # ------------------------------------------------------------------
 
+    def _refuse_level_write_while_measuring(self) -> None:
+        """Refuse a level write while a measurement holds the fader.
+
+        These two doors are reached IN-PROCESS — `jasper.tools.audio` calls
+        them on this coordinator whenever the box is not a bonded follower, so
+        the request never crosses HTTP and jasper-control's measurement hold
+        never sees it. Raising is what makes the refusal visible: `tools`
+        turns the exception into the tool's `{"error": ...}` payload, so the
+        model says the speaker is busy rather than silently walking a
+        stimulus above the driver's declared cap. Mute/unmute deliberately
+        stay open — an emergency user mute is never refused.
+        """
+        if self._measurement_active:
+            raise VolumeClaimRefused(
+                "a measurement is in progress and holds the volume"
+            )
+
     async def set_listening_level(self, percent: int) -> int:
         """Set canonical listening_level to `percent` (clamped to 0..100).
         Dispatches to the active source (or camilla, if idle).
         Persists. Returns the level that was actually applied."""
+        self._refuse_level_write_while_measuring()
         target = max(0, min(100, int(percent)))
         async with self._mutation():
             self._refresh_from_disk()
@@ -537,6 +557,7 @@ class VolumeCoordinator:
         first so a recent remote/HTTP write from another process is
         visible — without this, voice "louder" right after a remote
         click would compute from a stale baseline."""
+        self._refuse_level_write_while_measuring()
         async with self._mutation():
             self._refresh_from_disk()
             target = max(0, min(100, self._level + int(delta)))
@@ -1732,7 +1753,8 @@ class VolumeCoordinator:
         )
 
     async def note_measurement_active(self, active: bool) -> None:
-        """Pause/resume this process's 1 Hz Camilla drift reconciler."""
+        """Pause/resume this process's 1 Hz Camilla drift reconciler and its
+        two level doors (see :meth:`_refuse_level_write_while_measuring`)."""
         async with self._reconcile_write_lock:
             self._measurement_active = bool(active)
 
