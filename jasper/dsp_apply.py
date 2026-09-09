@@ -65,7 +65,6 @@ class BassExtensionApplyPending(RuntimeError):
 class _DspLockOwnership:
     path: Path
     task: asyncio.Task[Any]
-    recovery_permitted: bool
 
 
 _DSP_LOCK_OWNERSHIP: ContextVar[_DspLockOwnership | None] = ContextVar(
@@ -502,7 +501,6 @@ async def _dsp_apply_lock(
     *,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     source: str = "unspecified",
-    allow_pending_bass_extension_recovery: bool = False,
     bass_extension_intent_path: str | Path | None = None,
 ):
     timeout = _positive_finite(timeout_s, field_name="timeout_s")
@@ -518,8 +516,7 @@ async def _dsp_apply_lock(
     )
     owned = _DSP_LOCK_OWNERSHIP.get()
     if owned is not None and owned.task is task and owned.path == path:
-        permitted = owned.recovery_permitted
-        if intent_path.exists() and not permitted:
+        if intent_path.exists():
             raise BassExtensionApplyPending(
                 "bass-extension rollback is pending; graph mutation refused"
             )
@@ -578,12 +575,12 @@ async def _dsp_apply_lock(
                     source=source,
                     wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
                 )
-            if intent_path.exists() and not allow_pending_bass_extension_recovery:
+            if intent_path.exists():
                 raise BassExtensionApplyPending(
                     "bass-extension rollback is pending; graph mutation refused"
                 )
             token = _DSP_LOCK_OWNERSHIP.set(
-                _DspLockOwnership(path, task, allow_pending_bass_extension_recovery)
+                _DspLockOwnership(path, task)
             )
             try:
                 yield
@@ -633,7 +630,6 @@ async def dsp_writer_lock(
     *,
     source: str,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
-    allow_pending_bass_extension_recovery: bool = False,
     bass_extension_intent_path: str | Path | None = None,
 ):
     """Serialize JTS DSP writers with bounded, cancellation-safe admission."""
@@ -642,9 +638,6 @@ async def dsp_writer_lock(
         _production_or_pytest_lock_path(config_dir),
         timeout_s=timeout_s,
         source=source,
-        allow_pending_bass_extension_recovery=(
-            allow_pending_bass_extension_recovery
-        ),
         bass_extension_intent_path=bass_extension_intent_path,
     ):
         yield
