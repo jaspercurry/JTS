@@ -27,7 +27,6 @@ def _fanin_status(
     airplay_frames: int = 0,
     airplay_xruns: int = 0,
     output_frames: int = 0,
-    output_xruns: int = 0,
     input_buffer_frames: int = 4096,
     progress_age_ms: int = 0,
     selected_input: str | None = None,
@@ -49,7 +48,6 @@ def _fanin_status(
             "sample_rate": 48000,
             "period_frames": 256,
             "frames_written": output_frames,
-            "xrun_count": output_xruns,
         },
         "watchdog": {
             "pings_sent": 10,
@@ -273,13 +271,11 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
             airplay_frames=0,
             airplay_xruns=7,
             output_frames=0,
-            output_xruns=1,
         ),
         _fanin_status(
             airplay_frames=240000,
             airplay_xruns=8,
             output_frames=240000,
-            output_xruns=1,
         ),
     ]
 
@@ -298,7 +294,6 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
     snap = sampler.snapshot()
     assert snap["status"] == "issue"
     assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
-    assert snap["summary_5m"]["fanin_output_xruns"] == 0
     assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
     assert snap["events"][-1]["type"] == "fanin_airplay_xrun"
 
@@ -422,24 +417,27 @@ def test_idle_silence_at_full_rate_reads_inactive_not_ok() -> None:
 
 def test_fanin_output_ring_and_tts_reach_the_composer() -> None:
     """The shaped fan-in observation carries the output ring, its per-second
-    back-pressure rate and the TTS lane; absent blocks stay None."""
+    rates and the TTS lane; absent blocks stay None."""
     now = [3000.0]
     statuses = [
         {
-            **_fanin_status(output_frames=0, output_xruns=0),
+            **_fanin_status(output_frames=0),
             "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
         },
         {
-            **_fanin_status(output_frames=480000, output_xruns=2),
+            **_fanin_status(output_frames=480000),
             "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
         },
     ]
     for status in statuses:
+        started = status["output"]["frames_written"] != 0
         status["output"]["ring"] = {
             "occupancy": 2,
             "slots": 2,
             "stall_active": False,
-            "full_waits": 0 if status["output"]["frames_written"] == 0 else 810,
+            "full_waits": 810 if started else 0,
+            "stuck_reader_drops": 1 if started else 0,
+            "drop_no_reader": 1 if started else 0,
         }
 
     sampler = _sampler(
@@ -456,7 +454,7 @@ def test_fanin_output_ring_and_tts_reach_the_composer() -> None:
 
     assert output["ring"]["occupancy"] == 2
     assert output["ring"]["full_waits_per_sec"] == 162.0
-    assert output["xruns_per_sec"] == 0.4
+    assert output["ring"]["drops_per_sec"] == 0.4
     assert sampler.snapshot()["current"]["fanin"]["tts"]["enabled"] is True
 
 
@@ -472,28 +470,8 @@ def test_fanin_ring_and_tts_absent_stay_none() -> None:
     fanin = sampler.snapshot()["current"]["fanin"]
 
     assert fanin["output"]["ring"] is None
-    assert fanin["output"]["xruns_per_sec"] is None
+    assert fanin["inputs"]["airplay"]["xruns_per_sec"] is None
     assert fanin["tts"] is None
-
-
-@pytest.mark.parametrize("unit", ["librespot", "bluealsa-aplay"])
-@pytest.mark.parametrize(
-    ("line", "classified"),
-    [
-        ("ALSA lib pcm.c: underrun occurred", True),
-        ("PCM write error: Broken pipe", True),
-        ("Loading credentials from cache", False),
-    ],
-)
-def test_renderer_underruns_are_classified(
-    unit: str, line: str, classified: bool,
-) -> None:
-    event = classify_journal_line(unit, line)
-
-    assert (event is not None) == classified
-    if classified:
-        assert event["type"] == "renderer_underrun"
-        assert event["subsystem"] == unit
 
 
 def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:

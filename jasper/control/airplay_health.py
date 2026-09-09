@@ -96,15 +96,8 @@ except (ValueError, OSError, AttributeError):
 
 SHAIRPORT_UNIT = "shairport-sync"
 CAMILLA_UNIT = "jasper-camilla"
-LIBRESPOT_UNIT = "librespot"
-BLUEALSA_APLAY_UNIT = "bluealsa-aplay"
-# Every unit one journalctl fork per scan covers. The two renderer units carry
-# no AirPlay/DSP prose of their own; they are scanned for the generic ALSA
-# underrun/broken-pipe lines their backends emit when the fan-in lane starves.
-JOURNAL_UNITS = (
-    SHAIRPORT_UNIT, CAMILLA_UNIT, LIBRESPOT_UNIT, BLUEALSA_APLAY_UNIT,
-)
-RENDERER_UNITS = (LIBRESPOT_UNIT, BLUEALSA_APLAY_UNIT)
+# Every unit one journalctl fork per scan covers.
+JOURNAL_UNITS = (SHAIRPORT_UNIT, CAMILLA_UNIT)
 CAMILLA_SHORT_READ_RE = re.compile(
     r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
 )
@@ -124,7 +117,6 @@ def _empty_bucket(t: float) -> dict[str, Any]:
         "shairport_sync_errors": 0,
         "shairport_underruns": 0,
         "fanin_airplay_xruns": 0,
-        "fanin_output_xruns": 0,
         "camilla_short_reads": 0,
         "camilla_playback_underruns": 0,
     }
@@ -139,7 +131,6 @@ EVENT_BUCKET_FIELD = {
     "shairport_broken_pipe": "shairport_events",
     "shairport_offset_too_short": "shairport_events",
     "fanin_airplay_xrun": "fanin_airplay_xruns",
-    "fanin_output_xrun": "fanin_output_xruns",
     "camilla_short_read": "camilla_short_reads",
     "camilla_playback_underrun": "camilla_playback_underruns",
 }
@@ -178,6 +169,17 @@ def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
     """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
     delta = _nonneg_delta(curr, prev)
     return delta / dt if delta is not None else None
+
+
+def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Sum of the named counters, or None unless every one of them is present."""
+    total = 0
+    for key in keys:
+        value = _as_int_or_none(block.get(key))
+        if value is None:
+            return None
+        total += value
+    return total
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
@@ -307,21 +309,6 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                 "severity": "issue",
                 "title": "Camilla playback underrun",
                 "detail": "playback buffer underrun",
-            }
-        return None
-
-    if unit in RENDERER_UNITS:
-        # librespot and bluealsa-aplay both write through alsa-lib, whose
-        # recovery prose ("underrun occurred", "Broken pipe") is the same for
-        # both and is not stable enough between versions to pin literally.
-        lowered = line.lower()
-        if "underrun" in lowered or "broken pipe" in lowered:
-            return {
-                "type": "renderer_underrun",
-                "subsystem": unit,
-                "severity": "watch",
-                "title": "Renderer output underrun",
-                "detail": "renderer recovered an output underrun",
             }
     return None
 
@@ -945,7 +932,6 @@ class AirPlayHealthSampler:
         airplay_frames = _as_int(airplay.get("frames_read")) if airplay else 0
         airplay_xruns = _as_int(airplay.get("xrun_count")) if airplay else 0
         output_frames = _as_int(output.get("frames_written"))
-        output_xruns = _as_int(output.get("xrun_count"))
         output_ring = (
             output.get("ring") if isinstance(output.get("ring"), dict) else None
         )
@@ -953,21 +939,37 @@ class AirPlayHealthSampler:
             _as_int_or_none(output_ring.get("full_waits"))
             if output_ring is not None else None
         )
+        # The ring's two loss counters, summed: both mean "a period the reader
+        # never took". An absent counter stays None — "not observed", not zero.
+        output_ring_drops = (
+            _sum_or_none(output_ring, ("stuck_reader_drops", "drop_no_reader"))
+            if output_ring is not None else None
+        )
 
         prev = self._last_fanin_counts
         airplay_rate: float | None = None
         output_rate: float | None = None
-        output_xrun_rate: float | None = None
         full_waits_rate: float | None = None
+        ring_drops_rate: float | None = None
         input_rates: dict[str, float | None] = {
             spec.id.value: None for spec in MUSIC_SOURCE_SPECS
         }
         input_empty_reads_rates: dict[str, float | None] = {
             spec.id.value: None for spec in MUSIC_SOURCE_SPECS
         }
+        input_xrun_rates: dict[str, float | None] = {
+            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
+        }
         input_frames = {
             spec.id.value: (
                 _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
+                if spec.fanin_label in inputs_by_label else 0
+            )
+            for spec in MUSIC_SOURCE_SPECS
+        }
+        input_xruns = {
+            spec.id.value: (
+                _as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
                 if spec.fanin_label in inputs_by_label else 0
             )
             for spec in MUSIC_SOURCE_SPECS
@@ -1003,12 +1005,19 @@ class AirPlayHealthSampler:
                     input_empty_reads_rates[source_id] = _nonneg_rate(
                         empty_reads, previous_empty_reads.get(source_id), dt,
                     )
+            previous_input_xruns = prev.get("input_xruns")
+            if isinstance(previous_input_xruns, Mapping):
+                for source_id, xruns in input_xruns.items():
+                    input_xrun_rates[source_id] = _nonneg_rate(
+                        xruns, previous_input_xruns.get(source_id), dt,
+                    )
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
-            output_delta = output_xruns - _as_int(prev.get("output_xruns"))
-            output_xrun_rate = _nonneg_rate(output_xruns, prev.get("output_xruns"), dt)
             full_waits_rate = _nonneg_rate(
                 output_full_waits, prev.get("output_full_waits"), dt,
+            )
+            ring_drops_rate = _nonneg_rate(
+                output_ring_drops, prev.get("output_ring_drops"), dt,
             )
             if airplay_delta > 0 and not suppress_events:
                 self._record_event(
@@ -1022,27 +1031,16 @@ class AirPlayHealthSampler:
                     },
                     count=airplay_delta,
                 )
-            if output_delta > 0 and not suppress_events:
-                self._record_event(
-                    now,
-                    {
-                        "type": "fanin_output_xrun",
-                        "subsystem": "fanin",
-                        "severity": "issue",
-                        "title": "Fan-in output xrun",
-                        "detail": f"output recovered {output_delta} xrun(s)",
-                    },
-                    count=output_delta,
-                )
 
         self._last_fanin_counts = {
             "ts": now,
             "airplay_frames": airplay_frames,
             "airplay_xruns": airplay_xruns,
             "output_frames": output_frames,
-            "output_xruns": output_xruns,
             "output_full_waits": output_full_waits,
+            "output_ring_drops": output_ring_drops,
             "input_frames": input_frames,
+            "input_xruns": input_xruns,
             "input_empty_reads": input_empty_reads,
         }
 
@@ -1103,6 +1101,10 @@ class AirPlayHealthSampler:
                 "xrun_count": (
                     _as_int(entry.get("xrun_count"))
                     if isinstance(entry, dict) else 0
+                ),
+                "xruns_per_sec": (
+                    round(input_xrun_rates[spec.id.value], 3)
+                    if input_xrun_rates[spec.id.value] is not None else None
                 ),
                 "rms_dbfs": (
                     _as_float(entry.get("rms_dbfs"))
@@ -1205,6 +1207,9 @@ class AirPlayHealthSampler:
             ring_observation["full_waits_per_sec"] = (
                 round(full_waits_rate, 2) if full_waits_rate is not None else None
             )
+            ring_observation["drops_per_sec"] = (
+                round(ring_drops_rate, 3) if ring_drops_rate is not None else None
+            )
         current = {
             "available": True,
             "input_buffer_frames": input_buffer_frames,
@@ -1230,15 +1235,8 @@ class AirPlayHealthSampler:
                     round(output_rate, 1)
                     if output_rate is not None else None
                 ),
-                "xrun_count": output_xruns,
-                "xruns_per_sec": (
-                    round(output_xrun_rate, 3)
-                    if output_xrun_rate is not None else None
-                ),
                 "sample_rate": _as_int(output.get("sample_rate")),
                 "period_frames": _as_int(output.get("period_frames")),
-                "snd_pcm_delay_frames": output.get("snd_pcm_delay_frames"),
-                "snd_pcm_delay_ms": output.get("snd_pcm_delay_ms"),
                 "ring": ring_observation,
             },
             "watchdog": {
@@ -1658,7 +1656,6 @@ class AirPlayHealthSampler:
             "shairport_sync_errors": 0,
             "shairport_underruns": 0,
             "fanin_airplay_xruns": 0,
-            "fanin_output_xruns": 0,
             "camilla_short_reads": 0,
             "camilla_playback_underruns": 0,
         }
@@ -1693,7 +1690,6 @@ class AirPlayHealthSampler:
             or summary_5m["shairport_underruns"] > 0
             or summary_5m["camilla_playback_underruns"] > 0
             or summary_5m["fanin_airplay_xruns"] > 0
-            or summary_5m["fanin_output_xruns"] > 0
         ):
             return "issue", "recent audio-path recovery event"
 
@@ -1735,7 +1731,6 @@ class AirPlayHealthSampler:
         if (
             summary_30m["shairport_events"] > 0
             or summary_30m["fanin_airplay_xruns"] > 0
-            or summary_30m["fanin_output_xruns"] > 0
             or summary_5m["camilla_short_reads"] > 0
             or summary_30m["camilla_playback_underruns"] > 0
         ):

@@ -50,6 +50,7 @@ _RING = {
     "slots": 2,
     "stall_active": False,
     "full_waits_per_sec": 0.0,
+    "drops_per_sec": 0.0,
 }
 
 
@@ -83,6 +84,7 @@ def _airplay(
                         "label": spec.fanin_label,
                         "present": True,
                         "xrun_count": 0,
+                        "xruns_per_sec": 0.0,
                         "frames_per_sec": (
                             48000.0 if spec.id.value == selected else 0.0
                         ),
@@ -107,7 +109,6 @@ def _airplay(
                 "output": {
                     "sample_rate": 48000,
                     "period_frames": 256,
-                    "xruns_per_sec": 0.0,
                     "ring": {**_RING, **(ring or {})},
                 },
             },
@@ -2147,7 +2148,6 @@ def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() ->
     assert stream["output"]["summary"] == "48 kHz final output"
     assert stream["session"]["summary"] == "No interruptions observed"
     assert [row["label"] for row in stream["reliability"]["details"]] == [
-        "Interruptions this session",
         "Output queue pressure",
     ]
 
@@ -3147,8 +3147,6 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
     assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
     assert fanin["inputs"]["spotify"]["present"] is False
     assert fanin["host_clock"]["ladder"] == "l0_locked"
-    assert fanin["output"]["snd_pcm_delay_frames"] == 864
-    assert fanin["output"]["snd_pcm_delay_ms"] == 18.0
 
     status["inputs"][0]["frames_read"] += 48000
     now[0] += 1.0
@@ -3210,28 +3208,29 @@ def test_usb_underfill_is_recorded_but_normal_stream_stop_is_suppressed(
         assert sampler.snapshot()["current_stream"]["session"]["interruptions"] == 1
 
 
-# Ring A publishes one slot per 128 frames, so this fixture's 48 kHz geometry
-# gives 375 publishes/s; `full_waits` ticks once per publish that had to wait
-# for the reader (issue #4124). A saturated ring only degrades the path when
-# the output is also losing periods.
+# Ring A is a blocking handshake pinned near full in steady state (ADR-0205),
+# so `full_waits` is normal and must never reach a verdict. Only the two loss
+# counters and the lane's own xrun rate can degrade the path.
 @pytest.mark.parametrize(
-    ("ring", "xruns_per_sec", "code"),
+    ("ring", "input_xruns_per_sec", "code"),
     [
         # A stalled ring is the CAUSE of the deafness outputd reports, so it
         # outranks `output_deaf` (the fixture below sets both).
         ({"stall_active": True}, 0.0, "output_ring_stalled"),
-        ({"full_waits_per_sec": 162.0}, 0.2, "path_pressured"),
+        ({"drops_per_sec": 0.4}, 0.0, "path_pressured"),
+        ({}, 0.2, "path_pressured"),
         ({"full_waits_per_sec": 162.0}, 0.0, "clean"),
-        ({"full_waits_per_sec": 20.0}, 0.2, "clean"),
-        ({}, 0.2, "clean"),
+        ({"full_waits_per_sec": 375.0, "drops_per_sec": 0.0}, 0.0, "clean"),
         ({}, 0.0, "clean"),
     ],
 )
-def test_ring_pressure_and_stall_are_read_by_the_signal_path(
-    ring: dict, xruns_per_sec: float, code: str,
+def test_ring_loss_and_stall_are_read_by_the_signal_path(
+    ring: dict, input_xruns_per_sec: float, code: str,
 ) -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked", ring=ring)
-    airplay["current"]["fanin"]["output"]["xruns_per_sec"] = xruns_per_sec
+    airplay["current"]["fanin"]["inputs"]["usbsink"]["xruns_per_sec"] = (
+        input_xruns_per_sec
+    )
     health = compose_audio_health(
         airplay=airplay,
         outputd=_outputd(content_deaf=ring.get("stall_active", False)),
@@ -3282,20 +3281,22 @@ def test_mixing_queue_is_omitted_when_the_ring_is_unreported() -> None:
     assert "Mixing queue" not in labels
 
 
-# jasper-outputd's TTS lane is armed only on a passive bonded member, so a solo
-# speaker's queue depth is fan-in's.
+# Fan-in's TTS socket has a non-optional default, so its lane is armed on every
+# box; the verdict must follow the DEEPEST lane, never the first armed one.
 @pytest.mark.parametrize(
     ("fanin_tts", "outputd_pending", "code"),
     [
         ({"enabled": True, "pending_frames": 96000, "budget_frames": 96000},
          0, "tts_queue_full"),
         ({"enabled": True, "pending_frames": 0, "budget_frames": 96000},
-         96000, "clean"),
+         96000, "tts_queue_full"),
+        ({"enabled": True, "pending_frames": 0, "budget_frames": 96000},
+         0, "clean"),
         ({"enabled": False}, 96000, "tts_queue_full"),
         (None, 96000, "tts_queue_full"),
     ],
 )
-def test_tts_backlog_prefers_the_fanin_lane(
+def test_tts_verdict_follows_the_deepest_armed_lane(
     fanin_tts: dict | None, outputd_pending: int, code: str,
 ) -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
@@ -3691,8 +3692,8 @@ def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
         events=[
             {
                 "ts": 1000.0,
-                "type": "fanin_output_xrun",
-                "detail": "Fan-in recovered.",
+                "type": "camilla_playback_underrun",
+                "detail": "Camilla recovered.",
             },
             {
                 "ts": 1000.0,
@@ -3714,7 +3715,7 @@ def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
 
     assert len(store.saves) == 1
     assert {item["key"] for item in store.saves[0]} == {
-        "path.fanin_output_xrun",
+        "path.camilla_playback_underrun",
         "airplay.shairport_packet_drop",
     }
 
@@ -3726,7 +3727,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
         ladder="l0_locked",
         events=[{
             "ts": 990.0,
-            "type": "fanin_output_xrun",
+            "type": "camilla_playback_underrun",
             "detail": "Recovered before this session.",
         }],
     )
@@ -3737,7 +3738,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
             *delayed["events"],
             {
                 "ts": 1001.0,
-                "type": "fanin_output_xrun",
+                "type": "camilla_playback_underrun",
                 "detail": "Recovered during this session.",
             },
         ],
@@ -3754,7 +3755,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
     assert first["current_stream"]["session"]["interruptions"] == 0
     delayed_issue = next(
         row for row in first["issues"]
-        if row["key"] == "path.fanin_output_xrun"
+        if row["key"] == "path.camilla_playback_underrun"
     )
     assert "context" not in delayed_issue
 
@@ -4382,11 +4383,9 @@ def _household_shapes() -> dict[str, dict]:
         "output_ring_stalled": _compose_with(
             _airplay(ring={"stall_active": True}, **playing)
         ),
-        "path_pressured": _compose_with(_mutated(
-            lambda ap: _fanin(ap)["output"].update(xruns_per_sec=0.2),
-            ring={"full_waits_per_sec": 162.0},
-            **playing,
-        )),
+        "path_pressured": _compose_with(
+            _airplay(ring={"drops_per_sec": 0.4}, **playing)
+        ),
         "tts_queue_full": _compose_with(
             _airplay(**playing), outputd=_outputd(tts_pending_frames=96_000)
         ),

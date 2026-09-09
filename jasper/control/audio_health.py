@@ -170,18 +170,6 @@ SIGNAL_PATH_CODES = frozenset({
     "undeclared_hardware",
 })
 
-# `path_pressured`'s gate on fan-in's output ring. `full_waits` ticks once per
-# SLOT publish that had to wait for the reader to free one, so its rate is read
-# as a fraction of the publish rate (sample_rate / RING_SLOT_FRAMES): jts4
-# measured 162 waits/s against 375 publishes/s with producer and consumer in
-# lockstep (issue #4124).
-#
-# A saturated ring is NOT on its own a fault — the shipped ring is 2 slots deep
-# and a paced producer waits on it routinely — so the branch also requires the
-# output to be losing periods. Together they say "no cushion AND failing",
-# which the per-xrun point incident cannot say on its own.
-RING_PRESSURE_RATIO = 0.25
-
 # Signal-path codes that name a CONSEQUENCE rather than a cause, so a
 # cause-naming detector may displace them (:func:`_yields_to_a_named_cause`).
 # `output_deaf` is what a stopped DSP, a live coherence contradiction and a
@@ -820,6 +808,14 @@ def _undeclared_hardware_signal(
 def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
     """Fraction of fan-in's ring publishes that had to wait for a free slot.
 
+    `full_waits` ticks once per SLOT publish that waited, so its rate is read
+    against the publish rate (sample_rate / RING_SLOT_FRAMES): jts4 measured
+    162 waits/s against 375 publishes/s in lockstep (issue #4124).
+
+    INFORMATIONAL ONLY. Ring A is a blocking handshake pinned near full by
+    design (ADR-0205), so a saturated ring is the steady state, not a fault:
+    this must never reach a verdict.
+
     None whenever any term is absent or the publish rate is underivable —
     absence must read as "not observed", never as "no pressure".
     """
@@ -843,6 +839,20 @@ def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
     if slots is None or slots < 0 or rate <= 0:
         return None
     return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
+
+
+def _tts_backlog_ratio(*lanes: Any) -> float:
+    """Deepest ``pending/budget`` across every armed TTS lane; 0.0 if none is."""
+    deepest = 0.0
+    for lane_raw in lanes:
+        lane = _mapping(lane_raw)
+        if lane.get("enabled") is not True:
+            continue
+        budget_frames = _as_int(lane.get("budget_frames"))
+        if budget_frames <= 0:
+            continue
+        deepest = max(deepest, _as_int(lane.get("pending_frames")) / budget_frames)
+    return deepest
 
 
 def _signal_path(
@@ -1004,13 +1014,14 @@ def _signal_path(
                 "sound is coming from it. Play it again, or try another source."
             ),
         }
-    pressure = _ring_pressure(output)
-    xrun_rate = _finite_number(output.get("xruns_per_sec"))
+    # Losing periods, from either end: the ring dropped a period the reader
+    # never took, or the active lane is xrunning. Both are rates, so neither
+    # latches once the box recovers.
+    ring_drops = _finite_number(ring.get("drops_per_sec"))
+    input_xrun_rate = _finite_number(active_input.get("xruns_per_sec"))
     if (
-        pressure is not None
-        and pressure >= RING_PRESSURE_RATIO
-        and xrun_rate is not None
-        and xrun_rate > 0.0
+        (ring_drops is not None and ring_drops > 0.0)
+        or (input_xrun_rate is not None and input_xrun_rate > 0.0)
     ):
         return {
             "code": "path_pressured",
@@ -1022,21 +1033,11 @@ def _signal_path(
             ),
         }
 
-    # jasper-outputd's TTS lane is armed only on a passive bonded member
-    # (jasper/multiroom/tts_route.py), so fan-in's lane is the one that
-    # answers on a solo speaker; outputd's is the fallback.
-    fanin_tts = _mapping(fanin.get("tts"))
-    tts = (
-        fanin_tts if fanin_tts.get("enabled") is True
-        else _mapping(outputd_map.get("tts"))
-    )
-    pending_frames = _as_int(tts.get("pending_frames"))
-    budget_frames = _as_int(tts.get("budget_frames"))
-    if (
-        tts.get("enabled") is True
-        and budget_frames > 0
-        and pending_frames >= budget_frames
-    ):
+    # Both TTS lanes can be armed at once — fan-in's socket has a non-optional
+    # default, and outputd's arms on a passive bonded member — so the enabled
+    # flag cannot pick between them. Report on whichever is deepest against its
+    # own budget; an idle lane can never mask a backed-up one.
+    if _tts_backlog_ratio(fanin.get("tts"), outputd_map.get("tts")) >= 1.0:
         return {
             "code": "tts_queue_full",
             "status": "warn",
@@ -1890,16 +1891,15 @@ def _receiver_latency(
 
 def _reliability(
     fanin_output: Mapping[str, Any],
-    session: Mapping[str, Any],
     service_states: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """How well this stream is holding together, one row per timeframe.
+    """The holding-together facts with no other home on the stream card.
 
-    Each row names its own scope: the interruption count is this session's, the
-    queue pressure is live, and the restart count is since startup.
+    NOT the interruption count: the session card owns that roll-up. Each row
+    names its own scope — the queue pressure is live, the restarts are since
+    startup.
     """
-    interruptions = _as_int(session.get("interruptions"))
-    details = [_detail("Interruptions this session", str(interruptions))]
+    details: list[dict[str, str]] = []
     pressure = _ring_pressure(fanin_output)
     if pressure is not None:
         details.append(_detail(
@@ -1911,14 +1911,7 @@ def _reliability(
     )
     if restarts:
         details.append(_detail("Sound restarts since startup", str(restarts)))
-    return {
-        "summary": (
-            f"{interruptions} interruption(s) since this source started"
-            if interruptions else "Playing without interruption"
-        ),
-        "detail": "",
-        "details": details,
-    }
+    return {"summary": "", "detail": "", "details": details}
 
 
 def _current_stream(
@@ -2000,9 +1993,9 @@ def _current_stream(
             "detail": "Post-DSP audio at the physical output stage.",
             "details": output_details,
         }
-    stream["reliability"] = _reliability(
-        _mapping(fanin.get("output")), session_state, service_states,
-    )
+    reliability = _reliability(_mapping(fanin.get("output")), service_states)
+    if reliability["details"]:
+        stream["reliability"] = reliability
     rms = _finite_number(source_input.get("rms_dbfs"))
     if rms is not None:
         stream["signal"] = {
@@ -2905,7 +2898,7 @@ class AudioHealthSampler:
                 and active_source != Source.AIRPLAY.value
             ):
                 continue
-            if event_type in {"fanin_output_xrun", "camilla_playback_underrun"}:
+            if event_type == "camilla_playback_underrun":
                 candidate = _issue(
                     f"path.{event_type}",
                     scope="path",
@@ -3064,11 +3057,11 @@ class AudioHealthSampler:
         }
         if self._previous_service_restarts is not None:
             for unit, stem in _RESTART_WATCH_UNITS.items():
-                previous = self._previous_service_restarts.get(unit)
+                previous_restarts = self._previous_service_restarts.get(unit)
                 current_restarts = restarts[unit]
-                if previous is None or current_restarts is None:
+                if previous_restarts is None or current_restarts is None:
                     continue
-                delta = current_restarts - previous
+                delta = current_restarts - previous_restarts
                 if delta > 0:
                     self._record_point(
                         _issue(
