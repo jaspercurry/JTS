@@ -4,46 +4,40 @@
 
 """HTTPS measurement daemon behind the /sound/ measurement pages.
 
-The user opens the hub on a phone and chooses the measurement job:
-room correction, active-crossover acoustic checks, or bass tuning. Room
-correction captures pre-sweep room noise plus one or more measurement
-positions, reviews confidence/visualization evidence, and optionally
-applies a bounded room-correction profile through the shared CamillaDSP
-apply path.
+It serves the active-crossover commissioning walk, the stereo-pair
+timing wizard, the read-only measurements browser, the bass display
+page, microphone calibration fetch/upload, the level-check test tone
+and a health probe.
 
 Architecture:
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
     spotify_setup, bluetooth_setup. No FastAPI / ASGI dependency.
-  - Single in-memory `MeasurementSession` (jasper.correction.session)
-    drives the multi-step state machine.
-  - Browser polls GET /status every 500 ms while work is active, the
-    presentation envelope every 900 ms on active screens, and lightweight
-    entry facts every 10 s while idle — simpler than SSE in stdlib and bounded
-    for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
-    handlers to the async session methods.
-  - HTTP routes (after nginx strips the /sound/room/ prefix): this
-    module now serves far more routes than fit a comment table.
+    handlers to the async measurement methods.
+  - Browsers poll the status/envelope routes rather than holding a
+    stream — simpler than SSE in stdlib and bounded for state
+    transitions that take seconds.
 
-Module layout: this file owns the page render, the `_GET_ROUTES` /
-`_POST_ROUTES` tables and the request handler that dispatches them.
-The route bodies live in `correction_handlers`, and the session /
-capture / microphone state both of them act on lives in
-`correction_capture`.
+Module layout: this file owns the `_GET_ROUTES` / `_POST_ROUTES` tables
+and the request handler that dispatches them. The route bodies live in
+`correction_handlers`, the capture / microphone state both of them act
+on lives in `correction_capture`, and the loop bridge, CamillaController
+factory, body readers and request exceptions all three use live in
+`correction_runtime`.
 
-Why a separate service from jasper-web (Spotify + voice settings):
-the correction flow eventually imports numpy/scipy through
-`jasper.correction.*` while handling measurements. Keeping this
-socket-activated service separate from lightweight setup pages keeps
-the idle management UI cheap on a 1 GB Pi.
+Why a separate service from jasper-web (Spotify + voice settings): the
+measurement routes eventually import numpy/scipy while handling
+captures. Keeping this socket-activated service separate from
+lightweight setup pages keeps the idle management UI cheap on a 1 GB Pi.
 """
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,53 +47,26 @@ from urllib.parse import parse_qs, urlparse
 
 
 from ..log_event import log_event
-from . import correction_room_flow, correction_tuning
 from ..platform.systemd import no_hold
 
 from ._common import (
+    RouteFn,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    guard_mutating_request,
-    guard_read_request,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
     route_path,
     send_html_response,
     send_json_response,
 )
-from . import correction_capture, correction_handlers
-from .correction_capture import (
+from . import correction_capture, correction_handlers, correction_runtime, sync_flow
+from .correction_runtime import (
     BadRequest,
+    CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
     MAX_SYNC_WAV_BODY_BYTES,
-    REQUIRED_SAMPLE_RATE,
-    RequestConflict,
-    TuningSetupUnavailable,
-    _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-    _FOLLOWER_DELEGATED_PAGE_PATHS,
     logger,
 )
-
-
-_PAGE_BODY = correction_room_flow._PAGE_BODY
-
-
-def _render_follower_page(hostname: str, csrf_token: str = "") -> bytes:
-    return correction_room_flow.render_follower_page(
-        hostname,
-        csrf_token,
-        leader_url=bonded_follower_leader_web_url("/sound/room/"),
-    )
-
-
-def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
-    if bonded_follower_active():
-        return _render_follower_page(hostname, csrf_token)
-    return correction_room_flow.render_page(
-        hostname,
-        csrf_token,
-        required_sample_rate=REQUIRED_SAMPLE_RATE,
-        household_mic_prefill_payload=correction_capture._household_mic_prefill_payload(),
-    )
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -151,102 +118,13 @@ class _Handler(BaseHTTPRequestHandler):
     ) -> None:
         self._send_json({"error": message}, status=status)
 
-    def _send_room_failure(
-        self,
-        failure: Mapping[str, Any],
-        *,
-        diagnostic: str,
-        status: int,
-    ) -> None:
-        public = dict(failure)
-        log_event(
-            logger,
-            "correction.homeowner_failure",
-            code=str(public.get("code") or "unknown_failure"),
-            retryable=bool(public.get("retryable")),
-            status=int(status),
-            diagnostic=diagnostic,
-            level=logging.WARNING,
-        )
-        self._send_json(
-            {"failure": public},
-            status=status,
-        )
-
     # --- routes ---
 
     def do_GET(self) -> None:  # noqa: N802
-        path = route_path(self.path)
-        handler_fn = _GET_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_read_request(self):
-            return
-        if bonded_follower_active() and path in _FOLLOWER_DELEGATED_PAGE_PATHS:
-            ctx = begin_request(self)
-            self._send_html(_render_follower_page(
-                self.hostname, ctx["csrf_token"],
-            ))
-            return
-        handler_fn(self)
+        dispatch_get(self, _GET_ROUTES)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = route_path(self.path)
-        handler_fn = _POST_ROUTES.get(path)
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if not guard_mutating_request(self):
-            reject_csrf(self)
-            return
-        if bonded_follower_active() and not path.startswith("/crossover/"):
-            log_event(
-                logger,
-                "correction.follower_content_dsp_blocked",
-                path=path,
-            )
-            self._send_json(
-                {
-                    "error": (
-                        "room correction is controlled on the pair "
-                        "leader while this speaker is a follower"
-                    ),
-                },
-                status=HTTPStatus.CONFLICT,
-            )
-            return
-        # The prefix families answer their own failures, so they run
-        # outside the blanket 500 net below.
-        if path.startswith(("/sync/", "/crossover/")):
-            handler_fn(self)
-            return
-        try:
-            handler_fn(self)
-        except BadRequest as e:
-            self._send_client_error(str(e))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("POST %s failed", path)
-            self._send_json({"error": str(e)}, status=500)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        dispatch_post(self, _POST_ROUTES, guard="header", run=_run_post_route)
 
 
 # ---------------------------------------------------------------------------
@@ -260,34 +138,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 def _dispatch_sync(handler: _Handler) -> None:
     """POST /sync/* — stereo-pair acoustic timing walkthrough."""
-    from . import sync_flow
-
     path = route_path(handler.path)
 
     def _schedule(coro):
         return asyncio.run_coroutine_threadsafe(
-            coro, correction_capture._ensure_loop())
+            coro, correction_runtime.ensure_loop())
 
     try:
         if path == "/sync/start":
-            blocked = correction_capture._correction_start_blocker()
-            if blocked is not None:
-                handler._send_json(
-                    {"ok": False, "error": (
-                        "a room-correction session is active "
-                        f"({blocked})"
-                    )},
-                    status=HTTPStatus.CONFLICT,
-                )
-                return
             payload, status = sync_flow.handle_start(
                 handler.hostname, _schedule)
         elif path == "/sync/play":
             payload, status = sync_flow.handle_play(
-                correction_capture._run_async, _schedule)
+                correction_runtime.run_async, _schedule)
         elif path == "/sync/analyze":
             try:
-                body = correction_handlers._read_wav_body(
+                body = correction_runtime.read_wav_body(
                     handler,
                     max_bytes=MAX_SYNC_WAV_BODY_BYTES,
                 )
@@ -565,7 +431,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
 
             if v2host.v2_volume_recovery_active():
                 succeeded, recovery = v2host.recover_session_volume(
-                    correction_capture._run_async, correction_capture._camilla
+                    correction_runtime.run_async, correction_runtime.camilla_controller
                 )
                 # A deferral is not a failure to recover, so it must
                 # not send the household after CamillaDSP: a live
@@ -607,7 +473,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
                     status=HTTPStatus.CONFLICT,
                 )
                 return
-            cam = correction_capture._camilla()
+            cam = correction_runtime.camilla_controller()
             from jasper.volume_owner import volume_owner
 
             recovery_owner = volume_owner()
@@ -651,19 +517,19 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 return float(value)
 
             try:
-                recovery = correction_capture._run_async(
+                recovery = correction_runtime.run_async(
                     lease.recover_unresolved_volume_safety(
                         _set_recovery_volume,
                         _get_recovery_volume,
                     ),
-                    timeout=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                    timeout=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
                 )
             except concurrent.futures.TimeoutError:
                 log_event(
                     logger,
                     "correction.crossover_level_volume_safety_recovery_timeout",
                     level=logging.ERROR,
-                    timeout_s=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                    timeout_s=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
                 )
                 recovery = (
                     crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
@@ -708,13 +574,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
     except (OSError, RuntimeError, TypeError) as e:
         logger.exception("%s failed", path)
         handler._send_json({"ok": False, "error": str(e)}, status=500)
-
-
-def _get_index(handler: _Handler) -> None:
-    ctx = begin_request(handler)
-    handler._send_html(_render_page(
-        handler.hostname, ctx["csrf_token"], ctx["flash"],
-    ))
 
 
 def _get_crossover(handler: _Handler) -> None:
@@ -809,13 +668,11 @@ def _get_bass_status(handler: _Handler) -> None:
 
 
 def _get_sync(handler: _Handler) -> None:
-    from . import sync_flow
     ctx = begin_request(handler)
     handler._send_html(sync_flow.render_page(ctx["csrf_token"]))
 
 
 def _get_sync_status(handler: _Handler) -> None:
-    from . import sync_flow
     try:
         handler._send_json(sync_flow.handle_status())
     except Exception as e:  # noqa: BLE001
@@ -832,38 +689,6 @@ def _get_healthz(handler: _Handler) -> None:
     handler.wfile.write(body)
 
 
-def _get_status(handler: _Handler) -> None:
-    handler._serve_json_route("/status", correction_handlers._handle_status)
-
-
-def _get_entry_status(handler: _Handler) -> None:
-    handler._serve_json_route("/entry-status", correction_handlers._handle_entry_status)
-
-
-def _get_envelope(handler: _Handler) -> None:
-    handler._serve_json_route("/envelope", correction_handlers._handle_envelope)
-
-
-def _get_sessions(handler: _Handler) -> None:
-    handler._serve_json_route("/sessions", correction_handlers._handle_sessions)
-
-
-def _get_session_report(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_session_report(handler))
-    except BadRequest as e:
-        handler._send_client_error(str(e))
-    except FileNotFoundError as e:
-        handler._send_client_error(str(e), status=404)
-    except Exception as e:  # noqa: BLE001
-        from jasper.correction.bundles import BundleError
-        if isinstance(e, BundleError):
-            handler._send_client_error(str(e), status=422)
-            return
-        logger.exception("/session-report failed")
-        handler._send_json({"error": str(e)}, status=500)
-
-
 def _get_calibration_models(handler: _Handler) -> None:
     try:
         handler._send_json(correction_handlers._handle_calibration_models(handler))
@@ -872,127 +697,8 @@ def _get_calibration_models(handler: _Handler) -> None:
         handler._send_json({"error": str(e)}, status=500)
 
 
-def _post_start(handler: _Handler) -> None:
-    from jasper.correction import failures
-    from jasper.correction.runtime_safety import (
-        CorrectionRuntimeSafetyError,
-    )
-    from jasper.sound.graph_carrier import CarrierCannotHostEq
-    try:
-        handler._send_json(correction_handlers._handle_start(handler))
-    except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.SPEAKER_MEASUREMENT_UNSAFE,
-                # The reachable cause of this refusal is now an
-                # unready speaker, so send the household where
-                # they can act on it rather than to a retry
-                # that will refuse again.
-                recovery_action={
-                    "label": "Open speaker setup",
-                    "href": "/sound/setup/",
-                },
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
-        )
-    except FileNotFoundError as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.MICROPHONE_SETUP_UNAVAILABLE,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except ValueError as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.MEASUREMENT_SETUP_INVALID,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except RequestConflict as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.MEASUREMENT_IN_PROGRESS,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-
-
-def _post_next_position(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_next_position(handler))
-
-
-def _post_repeat_position(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_repeat_position(handler))
-
-
-def _post_verify(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_verify(handler))
-
-
 def _post_test_tone(handler: _Handler) -> None:
     handler._send_json(correction_handlers._handle_test_tone(handler))
-
-
-def _post_autolevel_start(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_autolevel_start(handler))
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
-
-
-def _post_autolevel_lock(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_autolevel_lock(handler))
-
-
-def _post_autolevel_cancel(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_autolevel_cancel(handler))
-
-
-def _post_local_capture_setup(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_local_capture_setup(handler))
-    except (FileNotFoundError, ValueError) as e:
-        handler._send_client_error(str(e))
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
-
-
-def _post_upload_capture(handler: _Handler) -> None:
-    from jasper.audio_measurement import quality
-
-    try:
-        handler._send_json(correction_handlers._handle_upload_capture(handler))
-    except quality.CaptureQualityError as e:
-        sess = correction_capture._get_or_create_session()
-        handler._send_json({
-            "error": str(e),
-            "session_id": sess.session_id,
-            "state": sess.state.value,
-            "current_position": sess.current_position,
-            "total_positions": sess.total_positions,
-            "capture_quality": sess.capture_quality,
-            "verify_quality": sess.verify_quality,
-            "browser_audio_report": getattr(
-                sess, "browser_audio_report", None,
-            ),
-            "runtime_integrity": correction_capture._runtime_integrity_summary(sess),
-        }, status=422)
-    except ValueError as e:
-        handler._send_client_error(str(e))
-
-
-def _post_upload_noise(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_upload_noise(handler))
-    except ValueError as e:
-        handler._send_client_error(str(e))
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
 
 
 def _post_calibration_fetch(handler: _Handler) -> None:
@@ -1020,149 +726,61 @@ def _post_calibration_upload(handler: _Handler) -> None:
         handler._send_client_error(str(e))
 
 
-def _post_apply(handler: _Handler) -> None:
-    from jasper.correction.runtime_safety import (
-        CorrectionRuntimeSafetyError,
-    )
-    from jasper.sound.graph_carrier import CarrierCannotHostEq
-    try:
-        handler._send_json(correction_handlers._handle_apply(handler))
-    except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
-        handler._send_client_error(
-            str(e),
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+def _follower_delegated(fn: RouteFn) -> RouteFn:
+    """A page a bonded follower does not own: it renders the "controlled on
+    the leader" page instead of its own. Pair timing is the one left — it is
+    a measurement of the paired playback image, so it runs on the leader."""
+    @functools.wraps(fn)
+    def route(handler: Any) -> None:
+        if bonded_follower_active():
+            ctx = begin_request(handler)
+            handler._send_html(sync_flow.render_follower_page(
+                ctx["csrf_token"],
+                leader_url=bonded_follower_leader_web_url("/sound/pair/sync/"),
+            ))
+            return
+        fn(handler)
+    return route
+
+
+def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
+    """The seam's guarded-call hook (`run=`). Content DSP is the pair
+    leader's on a bonded follower; only /crossover/* stays local. The
+    /sync/* and /crossover/* families answer their own failures, so they
+    run outside the blanket 500 net."""
+    if bonded_follower_active() and not path.startswith("/crossover/"):
+        log_event(
+            logger,
+            "correction.follower_content_dsp_blocked",
+            path=path,
         )
-
-
-def _post_reset(handler: _Handler) -> None:
-    # Local import keeps session/numpy off the socket-activated
-    # process's import path (mirrors the other handlers).
-    from jasper.correction.runtime_safety import (
-        CorrectionRuntimeSafetyError,
-    )
-    from jasper.correction.session import SessionBusyError
-    try:
-        handler._send_json(correction_handlers._handle_reset(handler))
-    except CorrectionRuntimeSafetyError as e:
-        handler._send_client_error(
-            str(e),
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        handler._send_json(
+            {
+                "error": (
+                    "sound measurement is controlled on the pair "
+                    "leader while this speaker is a follower"
+                ),
+            },
+            status=HTTPStatus.CONFLICT,
         )
-    except SessionBusyError as e:
-        # Rejected because a sweep/analysis is mid-flight — a
-        # state conflict (409), not a server error (500).
-        handler._send_client_error(str(e), status=409)
-
-
-def _post_session_delete(handler: _Handler) -> None:
+        return
+    if path.startswith(("/sync/", "/crossover/")):
+        route(handler)
+        return
     try:
-        handler._send_json(correction_handlers._handle_session_delete(handler))
+        route(handler)
     except BadRequest as e:
         handler._send_client_error(str(e))
-    except FileNotFoundError as e:
-        handler._send_client_error(str(e), status=404)
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
-
-
-def _post_interpret(handler: _Handler) -> None:
-    from jasper.correction import failures
-    try:
-        handler._send_json(correction_handlers._handle_interpret(handler))
-    except BadRequest as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_REQUEST_FAILED,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except correction_tuning.SpendCapExceeded as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_SPEND_LIMIT,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.TOO_MANY_REQUESTS,
-        )
-    except TuningSetupUnavailable as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_UNAVAILABLE),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-    except RequestConflict as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_BUSY),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-
-
-def _post_propose(handler: _Handler) -> None:
-    from jasper.correction import failures
-    try:
-        handler._send_json(correction_handlers._handle_propose(handler))
-    except BadRequest as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_REQUEST_FAILED,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.BAD_REQUEST,
-        )
-    except correction_tuning.SpendCapExceeded as e:
-        handler._send_room_failure(
-            failures.public_failure(
-                failures.TUNING_SPEND_LIMIT,
-            ),
-            diagnostic=str(e),
-            status=HTTPStatus.TOO_MANY_REQUESTS,
-        )
-    except TuningSetupUnavailable as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_UNAVAILABLE),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-    except RequestConflict as e:
-        handler._send_room_failure(
-            failures.public_failure(failures.TUNING_BUSY),
-            diagnostic=str(e),
-            status=HTTPStatus.CONFLICT,
-        )
-
-
-def _post_propose_apply(handler: _Handler) -> None:
-    from jasper.correction.runtime_safety import (
-        CorrectionRuntimeSafetyError,
-    )
-    from jasper.sound.graph_carrier import CarrierCannotHostEq
-    try:
-        handler._send_json(correction_handlers._handle_propose_apply(handler))
-    except BadRequest as e:
-        handler._send_client_error(str(e))
-    except RequestConflict as e:
-        handler._send_client_error(str(e), status=409)
-    except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
-        handler._send_client_error(
-            str(e),
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
-        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST %s failed", path)
+        handler._send_json({"error": str(e)}, status=500)
 
 
 # do_GET / do_POST dispatch through these exact-path tables
 # (path -> callable taking the handler). Mirrors the table in
 # jasper/web/wake_corpus_setup.py.
-#
-# ORDERING IS LOAD-BEARING: an unlisted path 404s before the read guard
-# (GET) or the CSRF check (POST) runs, so a bogus path never reveals
-# either. The /sync/* and /crossover/* families are dispatched by prefix
-# through their own functions, which answer their own failures and so run
-# outside do_POST's blanket 500 net.
 
 _GET_ROUTES = {
-    "/": _get_index,
     "/crossover": _get_crossover,
     "/measurements": _get_measurements,
     "/measurements/data": _get_measurements_data,
@@ -1170,39 +788,18 @@ _GET_ROUTES = {
     "/crossover/envelope": _get_crossover_envelope,
     "/bass": _get_bass,
     "/bass/status": _get_bass_status,
-    "/sync": _get_sync,
+    "/sync": _follower_delegated(_get_sync),
     "/sync/status": _get_sync_status,
     "/healthz": _get_healthz,
-    "/status": _get_status,
-    "/entry-status": _get_entry_status,
-    "/envelope": _get_envelope,
-    "/sessions": _get_sessions,
-    "/session-report": _get_session_report,
     "/calibration/models": _get_calibration_models,
 }
 
 # Mutating routes this handler accepts. Membership gates the 404 above;
 # deleting a line would otherwise 404 a route silently.
 _POST_ROUTES = {
-    "/start": _post_start,
-    "/next-position": _post_next_position,
-    "/repeat-position": _post_repeat_position,
-    "/verify": _post_verify,
     "/test-tone": _post_test_tone,
-    "/autolevel/start": _post_autolevel_start,
-    "/autolevel/lock": _post_autolevel_lock,
-    "/autolevel/cancel": _post_autolevel_cancel,
-    "/upload-noise": _post_upload_noise,
-    "/upload-capture": _post_upload_capture,
-    "/local-capture/setup": _post_local_capture_setup,
     "/calibration/fetch": _post_calibration_fetch,
     "/calibration/upload": _post_calibration_upload,
-    "/apply": _post_apply,
-    "/reset": _post_reset,
-    "/session/delete": _post_session_delete,
-    "/interpret": _post_interpret,
-    "/propose": _post_propose,
-    "/propose/apply": _post_propose_apply,
     "/crossover/capture-cancel": _dispatch_crossover,
     "/crossover/reset": _dispatch_crossover,
     "/crossover/recover-volume": _dispatch_crossover,
@@ -1296,9 +893,9 @@ def _restore_capture_entry() -> None:
 
     from jasper.active_speaker import web_commissioning
 
-    correction_capture._run_async(
+    correction_runtime.run_async(
         web_commissioning.restore_pending_capture_entry_config(
-            camilla_factory=correction_capture._camilla,
+            camilla_factory=correction_runtime.camilla_controller,
         ),
         timeout=15.0,
     )
@@ -1328,7 +925,7 @@ async def _restore_protected_neutral_program_graph() -> None:
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.dsp_apply import dsp_writer_lock
 
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
     async with dsp_writer_lock(
         DEFAULT_CAMILLA_CONFIG_DIR,
         source="crossover_v2_program_startup_recovery",
@@ -1375,14 +972,6 @@ def _claim_crossover_state_owners() -> None:
             "correction.capture_entry_restore_unavailable",
             _restore_capture_entry,
         ),
-        (
-            "correction.room_startup_recovery_unavailable",
-            lambda: correction_capture._run_async(
-                correction_handlers.recover_room_startup_state(
-                    correction_capture._get_or_create_session(), correction_capture._camilla(),
-                ), timeout=15.0,
-            ),
-        ),
     )
     for event, claim in claims:
         try:
@@ -1397,7 +986,7 @@ def _claim_crossover_state_owners() -> None:
     from jasper.camilla import CamillaUnavailable
 
     try:
-        correction_capture._run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
+        correction_runtime.run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
     except (OSError, RuntimeError, ValueError, CamillaUnavailable) as exc:
         log_event(
             logger,
@@ -1431,15 +1020,15 @@ def main(argv: list[str] | None = None) -> int:
     from . import _wizard_cli
     from jasper.volume_coordinator import install_env_canonical_target_provider
 
-    # Correction and crossover applies swap the live graph from this process,
-    # so their swap duck needs a canonical target to release to.
+    # Crossover applies swap the live graph from this process, so their
+    # swap duck needs a canonical target to release to.
     install_env_canonical_target_provider()
 
     # The idle exit is exactly the abandoned-sequence moment (user closed the
     # tab, no requests for the threshold AND no work in flight) — the daemon's
     # last in-process chance to converge a capture sequence parked on the
     # all-muted anchor back to production before the process goes away. The
-    # hook is bounded (_run_async timeout) and exception-guarded by the
+    # hook is bounded (run_async timeout) and exception-guarded by the
     # tracker; on a deferred/failed restore the durable stash survives for the
     # next service-start claim boundary.
     return _wizard_cli.run_wizard_cli(

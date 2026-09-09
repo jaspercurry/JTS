@@ -510,7 +510,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, combined)
         self.assertIn("Install profile:   full", result.stdout)
-        self.assertIn("http://jts4.local/sound/setup/", result.stdout)
+        self.assertIn("http://jts4.local/sound/speaker/", result.stdout)
         self.assertIn("choose mono/stereo + passive/active", result.stdout)
         self.assertIn("audio stays off until saved", result.stdout)
         self.assertIn("http://jts4.local/assistant/voice/", result.stdout)

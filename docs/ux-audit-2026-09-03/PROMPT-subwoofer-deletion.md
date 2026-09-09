@@ -75,7 +75,7 @@ deployed Pi that `/var/lib/jasper/grouping.env` carries no
 - `jasper/camilla_emit.py` `BASS_MANAGEMENT_CORNER_HZ_*` constants (shared
   SSOT). Only their wireless-sub comment lines and the `"sub"` arm of
   `channel_select_sources` (:336) are deletable.
-- `jasper/web/sound_setup.py:412,439` layout gate; `jasper/fanin/ring_health.py:1383-1397`.
+- `jasper/web/sound_setup.py:412,439` layout gate; `jasper/fanin/ring_readiness.py:1488-1502`.
 - `deploy/assets/sound-profile/js/main.js` "Subwoofer add-on" card,
   `renderSubwooferCrossoverControl`, `toggle-output-subwoofer`;
   `active-speaker-ui.js` local sub lane. (Exception: `wirelessSubCta` :2582-2599 goes.)

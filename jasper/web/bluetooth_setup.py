@@ -54,17 +54,18 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_park_reason,
-    canonical_header,
-    canonical_page,
     close_awaitable,
-    guard_mutating_request,
-    guard_read_request,
+    dispatch_get,
+    dispatch_post,
+    first_match,
+    prefix_route,
     read_json_object,
-    reject_csrf,
+    resolve_samples,
+    route_path,
     send_html_response,
     send_json_response,
-    toggle_html,
 )
+from .chrome import canonical_header, canonical_page, toggle_html
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
@@ -562,48 +563,10 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
         # ---------- routes ----------
 
         def do_GET(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0].rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is not None:
-                if not guard_read_request(self):
-                    return
-                handler_fn(self)
-                return
-            if path.startswith("/pair/") and path.endswith("/stream"):
-                if not guard_read_request(self):
-                    return
-                encoded_mac = path[len("/pair/"):-len("/stream")]
-                mac = _normalize_mac(encoded_mac, url_encoded=True)
-                if mac is None:
-                    self.send_error(HTTPStatus.BAD_REQUEST)
-                    return
-                self._stream_pair(mac)
-                return
-            if path.startswith("/actions/") and path.endswith("/stream"):
-                if not guard_read_request(self):
-                    return
-                parts = path.split("/")
-                if len(parts) != 4:
-                    self.send_error(HTTPStatus.BAD_REQUEST)
-                    return
-                mutation_id = _normalize_mutation_id(parts[2], url_encoded=True)
-                if mutation_id is None:
-                    self.send_error(HTTPStatus.BAD_REQUEST)
-                    return
-                self._stream_device_action(mutation_id)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            dispatch_get(self, _GET_ROUTES, resolve=_resolve_stream)
 
         def do_POST(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0].rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="header")
 
         # ---------- SSE streams ----------
 
@@ -647,13 +610,11 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                 if not self._sse_write(event):
                     return
 
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) because the device-action
-    # dispatch closes over `idle_hold`. GET's two streaming routes
-    # (/pair/<mac>/stream, /actions/<id>/stream) are prefix-matched, not
-    # exact paths, so they stay outside the table as a fallback in
-    # do_GET, unchanged.
+    # The tables stay local to this closure (rather than module-level)
+    # because the device-action dispatch closes over `idle_hold`. GET's two
+    # streaming routes (/pair/<mac>/stream, /actions/<id>/stream) are
+    # prefix-matched, so they ride the seam's `resolve=` hook instead of a
+    # table key; each rejects its own malformed id, after the read guard.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         handler._send_html(_landing_html(ctx["csrf_token"]))
@@ -665,6 +626,35 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
     def _get_devices_stream(handler: BaseHTTPRequestHandler) -> None:
         handler._stream_devices()
 
+    def _get_pair_stream(handler: BaseHTTPRequestHandler) -> None:
+        path = route_path(handler.path)
+        mac = _normalize_mac(
+            path[len("/pair/"):-len("/stream")], url_encoded=True,
+        )
+        if mac is None:
+            handler.send_error(HTTPStatus.BAD_REQUEST)
+            return
+        handler._stream_pair(mac)
+
+    def _get_action_stream(handler: BaseHTTPRequestHandler) -> None:
+        parts = route_path(handler.path).split("/")
+        mutation_id = (
+            _normalize_mutation_id(parts[2], url_encoded=True)
+            if len(parts) == 4 else None
+        )
+        if mutation_id is None:
+            handler.send_error(HTTPStatus.BAD_REQUEST)
+            return
+        handler._stream_device_action(mutation_id)
+
+    _resolve_stream = resolve_samples({
+        "/pair/AA:BB:CC:DD:EE:FF/stream": _get_pair_stream,
+        "/actions/00000000-0000-0000-0000-0000/stream": _get_action_stream,
+    })(first_match(
+        prefix_route("/pair/", "/stream", _get_pair_stream),
+        prefix_route("/actions/", "/stream", _get_action_stream),
+    ))
+
     _GET_ROUTES = {
         "/": _get_index,
         "/state": _get_state,
@@ -672,9 +662,9 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
     }
 
     def _post_action(handler: BaseHTTPRequestHandler) -> None:
-        # All seven mutating paths share this one body; `path` is
-        # re-derived since it is no longer a local already in scope.
-        path = handler.path.split("?", 1)[0].rstrip("/") or "/"
+        # All seven mutating paths share this one body, so it re-derives
+        # the key the seam routed on.
+        path = route_path(handler.path)
         body = handler._read_json()
         if path in {"/power", "/discoverable"} and not isinstance(
             body.get("on"), bool,

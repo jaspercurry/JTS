@@ -35,8 +35,10 @@ then the selected tool's `--help`. Read further only for the question at hand:
 
 - [Doctrine](measurement-loop-doctrine.md): authority and layer boundaries.
 - [Methodology](tuning-methodology.md): optional scientific interpretation.
-- [Crossover](active-crossover-information-design.md) and
-  [Room](room-correction-information-design.md): their product boundaries.
+- [Crossover](active-crossover-information-design.md): its product boundary.
+  Room is a layer of the same toolbox
+  ([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md));
+  its operator steps are the runbook's Room section.
 - [Layers](active-speaker-tuning-layers-design.md): fitting and composition rationale.
 
 The capture session owns `open`, `measure`, and `close`; separate tools analyze

@@ -54,8 +54,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
      runner's contract: responsibilities, the fail-closed
      temporary-graph-activation safety contract, the reuse list, the fences, and
      what stays blocked. Implement it exactly.
-3. Read the reuse machinery (the wave-4 prompt's "Required reading" is the deeper
-   index — [`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md)):
+3. Read the reuse machinery:
    `measurement_window()` (`jasper/measurement_window.py`); the two-boundary
    admission chain (`jasper/audio_measurement/excitation_admission.py` +
    `admitted_playback.py`); `MeasurementRamp` / `safe_playback`

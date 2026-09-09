@@ -38,14 +38,10 @@ from ..log_event import log_event
 from ..env_file import read_env_file
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
     read_form,
     reject_csrf,
     restart_voice_daemon,
-    safe_back_href,
     send_html_response,
     send_rejected_form,
     send_see_other,
@@ -53,6 +49,7 @@ from ._common import (
     guard_mutating_request,
     value_for_env as _value_for,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 logger = logging.getLogger(__name__)
 

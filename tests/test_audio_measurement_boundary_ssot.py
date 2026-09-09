@@ -2,31 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract: one owner for the room-correction band edge (issue #1787, RC1).
+"""Contract: one owner for the room band edge (issue #1787, RC1).
 
-Pins ``docs/room-correction-regime-plan.md`` D3's concrete requirement — that
-moving the boundary is "a one-file, test-visible change, never a scattered
-literal edit":
+``jasper.audio_measurement.room_boundary`` owns the edge, so moving it is "a
+one-file, test-visible change, never a scattered literal edit":
 
   1. **The drift guard.** None of the routed files re-declares a band-edge
-     literal. This is the test that fails when someone adds an eleventh copy
+     literal. This is the test that fails when someone adds another copy
      of ``350.0``.
   2. **Co-ownership.** The clamp bounds and the gated spec's lower edge are the
      SSOT's values, and the documented relation between them holds.
-  3. **The #1797 fix.** A ``safe`` session grades, scores, and DISCLOSES over
-     its own band, not ``balanced``'s.
-  4. **The deliberate non-mover.** The SNR band tables (both owned by
+  3. **The deliberate non-mover.** The SNR band tables (both owned by
      ``audio_measurement.snr_policy``) still carry their static 350 Hz edge and
      still satisfy the cross-instrument pins — routing them is a trap, not an
      omission.
 
-Requirement 5 arrived with the cutover and is the same invariant one layer out:
-the truth layer imports no front end. `jasper/audio_measurement` importing
-neither consumer package is what makes it a valid home for the SSOT; adding
+The last requirement is the same invariant one layer out: the truth layer
+imports no front end. `jasper/audio_measurement` importing neither consumer
+package is what makes it a valid home for the SSOT; adding
 `jasper/active_speaker/crossover_v2` and its own front end gives the layer's
-membership — both packages, all of each — a pin instead of a claim. The engine
-never importing `jasper.correction` rides in the same table: it is what turns
-the two consumer packages from mutually dependent into a plain layer order.
+membership — both packages, all of each — a pin instead of a claim.
 """
 from __future__ import annotations
 
@@ -38,15 +33,6 @@ import pytest
 
 from jasper.active_speaker import flat_spec
 from jasper.audio_measurement import analysis, peq, room_boundary, snr_policy
-from jasper.correction import (
-    acceptance,
-    acoustic_quality,
-    confidence,
-    evidence,
-    status,
-    strategy,
-)
-from jasper.correction.session import MeasurementSession, SessionConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,18 +45,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # module that hard-codes 250/350/500 for the Tier A/Tier B handoff would pass
 # this guard simply by not being listed. Whoever adds a module that reasons
 # about the boundary adds it here in the same PR. A whole-package sweep was
-# considered and rejected for RC1: `jasper/correction/**` is full of unrelated
-# frequencies (crossover corners, analysis bands, display vocabulary) and a
-# blanket scan would be mostly false positives, which is how guards get
-# disabled.
+# considered and rejected: these packages are full of unrelated frequencies
+# (crossover corners, analysis bands, display vocabulary) and a blanket scan
+# would be mostly false positives, which is how guards get disabled.
 ROUTED_FILES: tuple[str, ...] = (
     "jasper/audio_measurement/peq.py",
-    "jasper/correction/strategy.py",
-    "jasper/correction/session.py",
-    "jasper/correction/acceptance.py",
-    "jasper/correction/confidence.py",
-    "jasper/correction/envelope.py",
-    "jasper/correction/evidence.py",
     "jasper/audio_measurement/analysis.py",
     "jasper/active_speaker/flat_spec.py",
 )
@@ -80,19 +59,6 @@ ROUTED_FILES: tuple[str, ...] = (
 # earlier spelling-based version of this guard let three of those four through
 # (mutation-verified). The scan parses each numeric literal and compares.
 SSOT_VALUES: tuple[float, ...] = (250.0, 350.0, 500.0)
-
-# Module-level constants inside routed files that are STATIC BAND VOCABULARY,
-# not the correction boundary — the same category as the SNR tables, and
-# exempt for the same reason: they label fixed reporting bands that must stay
-# comparable across sessions even after the room ceiling goes per-room. They
-# are exempted BY NAME so the exemption is a decision on the record rather
-# than a hole in the guard; a new literal anywhere else in these files still
-# fails. (POSITION_ANALYSIS_BANDS's own edges are 300/500 Hz — it does not
-# even track the 350 Hz boundary, which is the clearest evidence it is a
-# different vocabulary.)
-STATIC_BAND_VOCABULARY: dict[str, frozenset[str]] = {
-    "jasper/correction/confidence.py": frozenset({"POSITION_ANALYSIS_BANDS"}),
-}
 
 
 def _numeric_literals(path: Path) -> list[tuple[int, float]]:
@@ -114,37 +80,12 @@ def _numeric_literals(path: Path) -> list[tuple[int, float]]:
     return out
 
 
-def _exempt_line_numbers(path: Path, names: frozenset[str]) -> set[int]:
-    """Line numbers spanned by the named module-level assignments."""
-    if not names:
-        return set()
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    spans: set[int] = set()
-    found: set[str] = set()
-    for node in tree.body:
-        targets: list[ast.expr] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        for target in targets:
-            if isinstance(target, ast.Name) and target.id in names:
-                found.add(target.id)
-                spans.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
-    missing = names - found
-    assert not missing, (
-        f"{path.name} no longer defines exempted constant(s) {sorted(missing)} — "
-        "drop the stale exemption from STATIC_BAND_VOCABULARY"
-    )
-    return spans
-
-
 def _imported_module(path: Path, node: ast.ImportFrom) -> str:
     """The absolute dotted name an ``ImportFrom`` names, relative ones included.
 
-    ``from ..correction import x`` reaches exactly as far as
-    ``import jasper.correction`` does, so a scan that skips ``node.level > 0``
-    is half a guard.
+    ``from ..active_speaker import x`` reaches exactly as far as
+    ``import jasper.active_speaker`` does, so a scan that skips
+    ``node.level > 0`` is half a guard.
     """
     if node.level == 0:
         return node.module or ""
@@ -158,14 +99,6 @@ def _imported_module(path: Path, node: ast.ImportFrom) -> str:
 #: symbol genuinely belongs to the front end it is reached in, not a parking
 #: space. Removing one is the work; adding one owes the row's own argument.
 BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
-    "jasper/correction": {
-        # `runtime_safety` reads the engine's declared driver caps directly —
-        # DSP safety, not front-end policy — so this is the one site allowed
-        # to import the layer below `correction`.
-        "jasper/correction/runtime_safety.py": frozenset(
-            {"jasper.active_speaker.runtime_contract"}
-        ),
-    },
     "jasper/cli": {
         # `crossover_v2_status_block` is the web ADAPTER over the engine's
         # status projection — the loaded state, volume plan, review decision
@@ -234,13 +167,24 @@ def _upward_imports(
     ],
 )
 def test_upward_import_forms(tmp_path, monkeypatch, source, offender_count, uses_allowlist):
-    relative = "jasper/correction/runtime_safety.py"
+    """The scanner's own form coverage, on a synthetic package.
+
+    A real row would tie this to whichever allowlist entry happens to exist;
+    the forms it must recognise (plain, deferred, relative, star, aliased) are
+    the subject, so the fixture declares its own one-entry allowlist.
+    """
+    relative = "jasper/probe/leaf.py"
     path = tmp_path / relative
     path.parent.mkdir(parents=True)
     path.write_text(source, encoding="utf-8")
     monkeypatch.setattr(f"{__name__}.REPO_ROOT", tmp_path)
+    monkeypatch.setitem(
+        BOUNDARY_ALLOWLIST,
+        "jasper/probe",
+        {relative: frozenset({"jasper.active_speaker.runtime_contract"})},
+    )
 
-    offenders, used = _upward_imports("jasper/correction", (("jasper", "active_speaker"),))
+    offenders, used = _upward_imports("jasper/probe", (("jasper", "active_speaker"),))
 
     assert len(offenders) == offender_count
     assert used == (
@@ -260,12 +204,11 @@ def test_routed_files_do_not_redeclare_band_edge_literals(relative: str):
     frequency), give it a name and a comment saying so.
     """
     path = REPO_ROOT / relative
-    exempt = _exempt_line_numbers(path, STATIC_BAND_VOCABULARY.get(relative, frozenset()))
     source_lines = path.read_text(encoding="utf-8").splitlines()
     offenders = [
         f"{relative}:{number}: {value!r} in {source_lines[number - 1].strip()}"
         for number, value in _numeric_literals(path)
-        if number not in exempt and value in SSOT_VALUES
+        if value in SSOT_VALUES
     ]
     assert not offenders, (
         "band-edge literal re-declared outside the boundary SSOT:\n"
@@ -293,23 +236,18 @@ def test_clamp_bounds_and_spec_edge_are_the_ssots_values():
 PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
     (
         "jasper/audio_measurement",
-        (("jasper", "correction"), ("jasper", "active_speaker"), ("jasper", "cli")),
+        (("jasper", "active_speaker"), ("jasper", "cli")),
         "that is what makes it a valid home for the boundary SSOT",
     ),
     (
         "jasper/active_speaker",
-        (("jasper", "correction"), ("jasper", "web"), ("jasper", "cli")),
-        "correction is the layer above and web/cli are front ends; the engine must not reach up into any of them",
+        (("jasper", "web"), ("jasper", "cli")),
+        "web/cli are front ends; the engine must not reach up into either",
     ),
     (
         "jasper/cli",
         (("jasper", "web"),),
         "the CLI is a front end beside the wizard, not a client of one",
-    ),
-    (
-        "jasper/correction",
-        (("jasper", "active_speaker"),),
-        "runtime_safety.py is the only site allowed to read the engine directly",
     ),
 )
 
@@ -322,16 +260,11 @@ PACKAGE_BOUNDARIES: tuple[tuple[str, tuple[tuple[str, ...], ...], str], ...] = (
 def test_package_boundary_holds(package, forbidden, why):
     """The invariant the SSOT's placement rests on (room_boundary's docstring).
 
-    `audio_measurement` earns the home by being imported by both consumer
-    packages while importing neither — which is what lets `analysis.py` (itself
-    a routed site) read the boundary with no new cross-package edge.
+    `audio_measurement` earns the home by being imported by its consumers
+    while importing none of them — which is what lets `analysis.py` (itself a
+    routed site) read the boundary with no new cross-package edge.
 
-    The second row is the direction that made the argument awkward to state:
-    `correction` imports `active_speaker.runtime_contract`, so once the engine
-    stops importing `jasper.correction` the two packages stop being mutually
-    dependent and `correction` is simply the layer above.
-
-    If either fails, the placement argument is no longer true: either move the
+    If a row fails, the placement argument is no longer true: either move the
     offending import out, or re-argue where the SSOT belongs. Do not just
     delete this test.
     """
@@ -362,7 +295,7 @@ def test_crossover_v2_imports_no_web_front_end():
     `jasper/active_speaker/crossover_v2`, and "truth layer" means the front ends
     import it and it imports no front end. The test above pins that direction
     for the first package; this pins it for the second, whose front end is the
-    `/sound/room/` wizard under `jasper/web`.
+    crossover wizard under `jasper/web`.
 
     It is also the property the analyze registry's home rests on: the one
     decoder + calibration + mic-tier + capture-report assembly lives in
@@ -400,38 +333,12 @@ def test_every_routed_site_resolves_to_the_ssot_today():
     default = room_boundary.ROOM_BOUNDARY_DEFAULT_HZ
 
     assert inspect.signature(peq.design_peq).parameters["f_high"].default == default
-    assert (
-        inspect.signature(acceptance.evaluate_acceptance).parameters["f_high"].default
-        == default
-    )
     for fn in (
         analysis.deviation_metrics,
         analysis.before_after_fill_segments,
         analysis.before_after_delta,
     ):
         assert inspect.signature(fn).parameters["f_high"].default == default
-
-    assert confidence.DEFAULT_BAND_HZ == (20.0, default)
-    assert evidence.REPEATABILITY_BAND_HZ == (50.0, default)
-
-    assert strategy.CORRECTION_STRATEGIES["safe"].f_high_hz == (
-        room_boundary.ROOM_BOUNDARY_MIN_HZ
-    )
-    assert strategy.CORRECTION_STRATEGIES["balanced"].f_high_hz == default
-    assert strategy.CORRECTION_STRATEGIES["assertive"].f_high_hz == (
-        room_boundary.ROOM_BOUNDARY_MAX_HZ
-    )
-
-
-def test_repeatability_reclamp_follows_the_ssot_not_a_literal():
-    """The re-clamp is one of the two sites that would have capped silently.
-
-    ``min(<ceiling>, peq_f_high)`` must read the SSOT, so a raised ceiling
-    widens repeatability instead of being quietly truncated at 350 Hz.
-    """
-    source = inspect.getsource(acoustic_quality.repeatability_from_arrays)
-    assert "ROOM_BOUNDARY_DEFAULT_HZ" in source
-    assert "min(350" not in source.replace(" ", "")
 
 
 # ---------------------------------------------------------------------------
@@ -456,54 +363,3 @@ def test_snr_band_tables_keep_their_static_edge():
     )
     # The existing cross-instrument pins still hold.
     assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == snr_policy.SNR_BANDS_HZ
-    assert acoustic_quality.SNR_BANDS_HZ is snr_policy.SNR_BANDS_HZ
-
-
-# ---------------------------------------------------------------------------
-# Issue #1797 — a safe session grades and discloses over its OWN band.
-# ---------------------------------------------------------------------------
-
-
-def test_session_config_carries_no_band_shadow_copy():
-    """The defect was a frozen copy nothing ever wrote. It must stay gone."""
-    fields = SessionConfig().__dataclass_fields__
-    assert "peq_f_high" not in fields
-    assert "peq_f_low" not in fields
-
-
-@pytest.mark.parametrize(
-    ("strategy_choice", "expected_band"),
-    [
-        ("safe", (25.0, 250.0)),
-        ("balanced", (20.0, 350.0)),
-        ("assertive", (20.0, 500.0)),
-    ],
-)
-def test_session_band_follows_the_selected_strategy(strategy_choice, expected_band):
-    """#1797: the graded/scored/disclosed band is the band actually corrected.
-
-    Before the fix every one of these read ``balanced``'s 350 Hz, so a ``safe``
-    session corrected 25-250 Hz while grading ACCEPT/REVERT over 50-350,
-    scoring confidence over 20-350, and disclosing ``[20, 350]``.
-    """
-    session = MeasurementSession(strategy_choice=strategy_choice)
-
-    assert session.correction_band_hz == expected_band
-    # The band the designer actually fits.
-    fitted = strategy.CORRECTION_STRATEGIES[strategy_choice]
-    assert (fitted.f_low_hz, fitted.f_high_hz) == expected_band
-
-    # The disclosed config payload agrees, including the strategy id itself.
-    payload = status.session_config_payload(session)
-    assert (payload["peq_f_low"], payload["peq_f_high"]) == expected_band
-    assert payload["correction_strategy"] == strategy_choice
-
-
-def test_safe_session_no_longer_grades_over_the_balanced_band():
-    """The headline regression: corrected-narrow-stated-wide is impossible."""
-    safe = MeasurementSession(strategy_choice="safe")
-    balanced = MeasurementSession(strategy_choice="balanced")
-
-    assert safe.correction_band_hz[1] == 250.0
-    assert balanced.correction_band_hz[1] == 350.0
-    assert safe.correction_band_hz != balanced.correction_band_hz

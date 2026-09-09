@@ -22,6 +22,7 @@ from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _LEGACY_FANIN_COUPLING_ENV,
     _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
+    _apply_action,
     _outputd_actions,
     _write_env_actions,
     reconcile_coupling,
@@ -2044,6 +2045,10 @@ def test_a_pass_sweeps_the_retired_fanin_coupling_key(
     text = fanin_env.read_text(encoding="utf-8")
     assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
     assert read_value(text, "KEEP") == "1"
+    assert (
+        _apply_action(text, RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV))[1]
+        is False
+    )
 
 
 def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(

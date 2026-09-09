@@ -1469,7 +1469,7 @@ def _lane_cap(replacement: Any) -> dict[str, Any]:
         # only commissioning produces. With no statefile staged the gate
         # declines and the box resolves byte-identically passive - and the
         # token names the gate's own decline, because the remedy is
-        # commissioning, not "choose a different layout at /sound/setup/".
+        # commissioning, not "choose a different layout at /sound/speaker/".
         pytest.param(None, False, "camilla_statefile_missing",
                      id="no-active-graph-staged"),
         # `active_lane_channels_for_dac` swallows its own failure, so a probe

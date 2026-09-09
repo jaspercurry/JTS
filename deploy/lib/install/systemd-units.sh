@@ -1259,7 +1259,7 @@ reapply_source_intent() {
     # baseline: the coordinator is the only writer of source enablement and the
     # only path that starts a desired-on source, including Bluetooth RF-kill.
     # install.sh runs as root and invokes the same reconciler directly. Keep a
-    # process-level bound beyond the unit's 2793-second contract so a
+    # process-level bound beyond the unit's 2727-second contract so a
     # manual/stale lock holder or child regression cannot pin deploy forever.
     # The reconciler is the single authority for the source allowlist and
     # runtime ordering. A failed apply WARNs; boot or the next toggle retries.
@@ -1295,7 +1295,7 @@ PY
     fi
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
-    # pass (bounded by the unit's 2793 s ceiling); a failed/timeout path removes
+    # pass (bounded by the unit's 2727 s ceiling); a failed/timeout path removes
     # the file once more so no reader can mistake an older generation for this
     # install's.
     rm -f /run/jasper-source-intent/status.json
@@ -1453,10 +1453,9 @@ _stage_full_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.socket" \
         "${SYSTEMD_DIR}/jasper-web.socket"
-    # /sound/room/ wizard. Phase 0 = mic-permission verify only;
-    # future phases pull in heavy deps (numpy / scipy / pyfar) so
-    # this lives in its own process rather than colocating with
-    # jasper-web (Spotify + voice settings).
+    # The /sound/ measurement pages. They pull in heavy deps
+    # (numpy / scipy / pyfar), so this lives in its own process
+    # rather than colocating with jasper-web (Spotify + voice settings).
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-correction-web.service" \
         "${SYSTEMD_DIR}/jasper-correction-web.service"

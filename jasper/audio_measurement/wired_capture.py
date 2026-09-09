@@ -130,7 +130,7 @@ WIRED_POST_ROLL_S = 1.0
 #: Capture-budget allowance for everything BEFORE the program's first sample:
 #: re-admission, the DSP writer lock, and the program-graph load all run
 #: inside ``on_armed`` while the recorder is already rolling. The play seam's
-#: own transport budget (``correction_setup._run_async``'s 60 s default)
+#: own transport budget (``correction_runtime.run_async``'s 60 s default)
 #: bounds setup + program + restore together, so 20 s of setup allowance is
 #: safely above the observed graph-load cost and safely inside that bound.
 WIRED_PRE_PLAY_ALLOWANCE_S = 20.0

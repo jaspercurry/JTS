@@ -533,7 +533,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
             f"the all-muted startup anchor ({GRAPH_ALL_MUTED_ACTIVE_STARTUP})"
         )
         print(
-            "  next:   commission the speaker at http://jts.local/sound/setup/ "
+            "  next:   commission the speaker at http://jts.local/sound/speaker/ "
             "(stage a protected startup config), then re-run this command"
         )
         return 1

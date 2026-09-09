@@ -13,7 +13,7 @@ UTF-8-with-replacement TXT decode). The caller-specific bits stay with the
 caller:
 
   - Display-label derivation (TXT `name=` vs SRV host vs stripped instance
-    name) is rooms-display policy — it stays in `rooms_setup`.
+    name) is rooms-display policy — it stays in `rooms_peers`.
   - Self-filtering, port defaulting, and the TTL cache are likewise the
     caller's concern.
 

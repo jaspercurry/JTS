@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Held reference tone for the /sound/setup/ volume-floor audition.
+"""Held reference tone for the /sound/output/ volume-floor audition.
 
 Owns the tone's process, its COMMISSIONING claim on the main fader and the
 session that arbitrates them. The sound page's two routes drive that session

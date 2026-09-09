@@ -84,7 +84,7 @@ PARKED_HEADLINE = "Sound cannot come out of the speaker"
 # contradiction, and any park class with no row in the table below.
 PARKED_DETAIL = (
     "The speaker's audio setup does not fit together, so nothing can play. "
-    f"Check the speaker layout at /sound/setup/. {DIAGNOSTICS_REMEDY}"
+    f"Check the speaker layout at /sound/speaker/. {DIAGNOSTICS_REMEDY}"
 )
 
 # One household sentence per ADR-0178 park class, in the register this card
@@ -95,11 +95,11 @@ PARKED_DETAIL = (
 _PARK_MESSAGES: dict[str, str] = {
     PARK_PASSIVE_STEREO_COMPOSITE: (
         "This speaker sends sound to two sound cards at once, and JTS can no "
-        "longer drive that pair together. The speaker layout is at /sound/setup/."
+        "longer drive that pair together. The speaker layout is at /sound/speaker/."
     ),
     PARK_MONO_FULL_RANGE: (
         "This speaker is set up as a single mono output, and JTS now needs at "
-        "least two channels. The speaker layout is at /sound/setup/."
+        "least two channels. The speaker layout is at /sound/speaker/."
     ),
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED: (
         "This speaker's per-driver outputs are ready, but sound is not pointed "
@@ -271,7 +271,7 @@ def _read_output_hardware() -> Any:
     """Read the reconciler-published output-hardware record, fail-soft.
 
     Same reader ``/state.audio.output_hardware``
-    (:mod:`jasper.control.state_aggregate`) and the ``/sound/setup/``
+    (:mod:`jasper.control.state_aggregate`) and the ``/sound/speaker/``
     hardware-adoption precondition use. ``_MONITOR_ERRORS`` degrades to "no
     record" rather than taking a health tick down; a broken import is
     deliberately NOT in that set — it would fail identically on every call from
@@ -296,7 +296,7 @@ def _read_output_topology() -> Any:
     so an ``OutputTopology`` alone cannot distinguish "never declared" from
     "declared and already matches". ``snapshot.revision == "missing"`` survives
     that auto-seed and says nothing was ever persisted. Same reader
-    ``/sound/setup/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
+    ``/sound/speaker/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
     """
     try:
         from ..output_topology import load_output_topology_snapshot
@@ -602,7 +602,7 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     if label.strip():
         detail = (
             f"{label.strip()} cannot drive an active speaker layout, so nothing "
-            "can play. Choose a passive speaker layout at /sound/setup/ (passive "
+            "can play. Choose a passive speaker layout at /sound/speaker/ (passive "
             "sends full-range to every output; requires a built-in passive "
             "crossover) or attach an active-capable DAC."
         )
@@ -772,7 +772,7 @@ def _undeclared_hardware_signal(
     detail = (
         f"{output_hardware.profile_label} is connected and detected, but "
         "hasn't been set as the speaker's active output yet. Finish setup "
-        "at /sound/setup/."
+        "at /sound/speaker/."
     )
     return {
         "code": "undeclared_hardware",

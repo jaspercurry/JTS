@@ -636,14 +636,11 @@ install_camilladsp() {
     # group-writable for the dropped service users instead of root-only.
     #
     # The active_speaker* paths below are the same capture/sweep/tone trees
-    # /sound/ and /sound/room/ share; this list must stay in sync with
+    # /sound/ and the measurement daemon share; this list must stay in sync with
     # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
     # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
-        /var/lib/jasper/correction/sweeps \
-        /var/lib/jasper/correction/captures \
-        /var/lib/jasper/correction/sessions \
         /var/lib/jasper/correction/calibration_mics \
         /var/lib/jasper/correction/tones \
         /var/lib/jasper/active_speaker \
@@ -1160,7 +1157,7 @@ resolve_fanin_coupling_default() {
 }
 
 provision_correction_tls() {
-    # /sound/room/ requires HTTPS because getUserMedia (mic capture)
+    # The measurement pages require HTTPS because getUserMedia (mic capture)
     # only works in a secure context. There's no way around this in
     # any browser, so we provision a private CA the user trusts once
     # on iOS, then issue a server cert from it for jts.local.
@@ -1181,7 +1178,7 @@ provision_correction_tls() {
     install -d -m 0755 "${ssl_dir}"
 
     if [[ ! -f "${ca_dir}/ca.crt" || ! -f "${ca_dir}/ca.key" ]]; then
-        echo "  generating /sound/room/ private CA at ${ca_dir}/ca.crt"
+        echo "  generating measurement-page private CA at ${ca_dir}/ca.crt"
         openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
         openssl req -x509 -new -nodes -key "${ca_dir}/ca.key" \
             -sha256 -days 3650 -out "${ca_dir}/ca.crt" \
@@ -1216,7 +1213,7 @@ EOF
     # location block in nginx-jasper.conf).
     install -d -m 0755 /usr/share/jasper-web
     install -m 0644 "${ca_dir}/ca.crt" /usr/share/jasper-web/jts-root-ca.crt
-    echo "  /sound/room/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
+    echo "  measurement-page TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
 }
 
 install_management_static_assets() {
@@ -1340,9 +1337,8 @@ install_nginx_site_conf() {
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /assistant/voice/ (voice-provider config wizard)
-    # on plain HTTP. /sound/room/ and the /sound/* measurement routes are
-    # proxied on both listeners, but browser mic capture only works on the
-    # HTTPS one:
+    # on plain HTTP. The /sound/* measurement routes are proxied on both
+    # listeners, but browser mic capture only works on the HTTPS one:
     # getUserMedia grants mic access in a secure context only. That origin is
     # the installer's own self-signed cert, so it is entered deliberately and
     # never by redirect — a cert interstitial is un-automatable (issue #2632).

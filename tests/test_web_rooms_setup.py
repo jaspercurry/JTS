@@ -41,36 +41,40 @@ import pytest
 
 from jasper.control import household_credential
 from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS
-from jasper.web import rooms_setup
+from jasper.web import _common, rooms_peers, rooms_setup
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 _REPO = Path(__file__).resolve().parent.parent
-_REAL_GET_MEMBER_GROUPING_READINESS = rooms_setup._get_member_grouping_readiness
+_REAL_GET_MEMBER_GROUPING_READINESS = rooms_peers._get_member_grouping_readiness
 
 _ROOMS_SHARED_PUBLIC = {
-    "self_addresses",
-    "discover_speakers_cached",
-    "lan_target",
-    "request_control_token",
-    "post_grouping_to_member",
-    "resolve_bond_peer",
+    "rooms_peers": {
+        "self_addresses",
+        "discover_speakers_cached",
+        "lan_target",
+        "request_control_token",
+        "post_grouping_to_member",
+    },
+    "rooms_setup": {"resolve_bond_peer"},
 }
-_ROOMS_SHARED_OLD_PRIVATE = {f"_{name}" for name in _ROOMS_SHARED_PUBLIC}
+_ROOMS_MODULES = {"rooms_peers": rooms_peers, "rooms_setup": rooms_setup}
 
 
 def test_package_shared_rooms_boundary_is_public_and_lazily_imported():
-    rooms_tree = ast.parse(
-        (_REPO / "jasper" / "web" / "rooms_setup.py").read_text(encoding="utf-8")
-    )
-    definitions = {
-        node.name for node in rooms_tree.body if isinstance(node, ast.FunctionDef)
-    }
-    assert _ROOMS_SHARED_PUBLIC <= definitions
-    assert not (_ROOMS_SHARED_OLD_PRIVATE & definitions)
-    for private_name in _ROOMS_SHARED_OLD_PRIVATE:
-        assert not hasattr(rooms_setup, private_name)
+    for module_name, public in _ROOMS_SHARED_PUBLIC.items():
+        tree = ast.parse(
+            (_REPO / "jasper" / "web" / f"{module_name}.py").read_text(encoding="utf-8")
+        )
+        definitions = {
+            node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        old_private = {f"_{name}" for name in public}
+        assert public <= definitions, module_name
+        assert not (old_private & definitions), module_name
+        for private_name in old_private:
+            assert not hasattr(_ROOMS_MODULES[module_name], private_name)
 
     for filename in ("pair_flow.py", "sync_flow.py"):
         tree = ast.parse(
@@ -79,18 +83,84 @@ def test_package_shared_rooms_boundary_is_public_and_lazily_imported():
         module_level = {
             alias.name
             for node in tree.body
-            if isinstance(node, ast.ImportFrom) and node.module == "rooms_setup"
+            if isinstance(node, ast.ImportFrom) and node.module in _ROOMS_SHARED_PUBLIC
             for alias in node.names
         }
         assert module_level == set(), f"{filename} must preserve lazy rooms imports"
         imported = {
-            alias.name
+            (node.module, alias.name)
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "rooms_setup"
+            if isinstance(node, ast.ImportFrom) and node.module in _ROOMS_SHARED_PUBLIC
             for alias in node.names
         }
         assert imported
-        assert imported <= _ROOMS_SHARED_PUBLIC, filename
+        for module_name, name in imported:
+            assert name in _ROOMS_SHARED_PUBLIC[module_name], (filename, name)
+
+
+def test_patching_rooms_peers_intercepts_the_calls_rooms_setup_makes(monkeypatch):
+    """Every peer helper rooms_setup reaches is resolved off rooms_peers at
+    call time, so ``rooms_peers`` is the ONE patch point. A test patch that
+    stopped intercepting would otherwise pass silently."""
+    tree = ast.parse(
+        (_REPO / "jasper" / "web" / "rooms_setup.py").read_text(encoding="utf-8")
+    )
+    reached = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "rooms_peers"
+    }
+    assert reached
+    for name in reached:
+        assert hasattr(rooms_peers, name), name
+        assert not hasattr(rooms_setup, name), name
+
+    ran: list[str] = []
+
+    def sentinel(name, result):
+        def call(*_a, **_k):
+            ran.append(name)
+            return result
+        return call
+
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(
+        rooms_setup, "read_grouping_state",
+        lambda *a, **k: {"enabled": True, "role": "leader", "channel": "left",
+                         "bond_id": "bond-1", "leader_addr": ""},
+    )
+    monkeypatch.setattr(
+        rooms_peers, "self_addresses", sentinel("self_addresses", set()),
+    )
+    monkeypatch.setattr(
+        rooms_peers, "discover_speakers_cached",
+        sentinel("discover_speakers_cached", [{"address": "192.168.1.9"}]),
+    )
+    monkeypatch.setattr(
+        rooms_peers, "_get_member_grouping",
+        sentinel("_get_member_grouping",
+                 {"enabled": True, "role": "follower", "channel": "right",
+                  "bond_id": "bond-1", "leader_addr": "jts.local"}),
+    )
+    # Reached only through the unpatched rooms_peers._fan_out_grouping, so
+    # this also pins the module-internal resolution.
+    monkeypatch.setattr(
+        rooms_peers, "post_grouping_to_member",
+        sentinel("post_grouping_to_member", (True, "HTTP 200")),
+    )
+
+    handler, _ = make_real_handler(
+        rooms_setup._make_handler(), "/swap", body=b"{}", content_type=None,
+    )
+    handler.do_POST()
+
+    assert handler.status == 200
+    assert set(ran) == {
+        "self_addresses", "discover_speakers_cached", "_get_member_grouping",
+        "post_grouping_to_member",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +176,7 @@ def _isolate_household_secret(monkeypatch, tmp_path):
         household_credential, "SECRET_FILE", str(tmp_path / "household_secret"),
     )
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "_get_member_grouping_readiness",
         lambda *a, **k: ({"allowed": True, "detail": "ready"}, None),
     )
@@ -170,9 +240,9 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
             "JASPER_PEER_PRIMARY": "1" if _peering["primary"] else "0",
         },
     )
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set(self_addrs))
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set(self_addrs))
     monkeypatch.setattr(
-        rooms_setup, "_self_address",
+        rooms_peers, "_self_address",
         lambda known=None: next(iter(sorted(self_addrs)), ""),
     )
     monkeypatch.setattr(
@@ -187,7 +257,7 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
         rooms_setup, "with_airplay_latency_fit",
         lambda g: g if not isinstance(g, dict) else {**g, "airplay_latency_fit": _fit},
     )
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: list(speakers))
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached", lambda: list(speakers))
 
 
 def _get(path: str):
@@ -305,7 +375,7 @@ def test_get_root_does_not_open_a_socket_for_discovery(monkeypatch):
         calls["discover"] += 1
         raise AssertionError("GET / must not run discovery")
 
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", _boom)
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached", _boom)
     h = _get("/")
     assert h.status == 200
     assert calls["discover"] == 0
@@ -445,8 +515,8 @@ def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
         grouping=self_g,
     )
     monkeypatch.setattr(
-        rooms_setup, "_get_member_grouping",
-        lambda a, known=None, *, timeout=rooms_setup.CONTROL_HTTP_TIMEOUT_SEC: (
+        rooms_peers, "_get_member_grouping",
+        lambda a, known=None, *, timeout=rooms_peers.CONTROL_HTTP_TIMEOUT_SEC: (
             dict(peer_g) if a == "192.168.1.9" else None
         ),
     )
@@ -491,12 +561,12 @@ def test_rooms_json_balance_snapshot_uses_short_peer_read(monkeypatch):
     _patch_discovery(monkeypatch, speakers=[], grouping=self_g)
 
     def fake_get_grouping(
-        addr, known=None, *, timeout=rooms_setup.CONTROL_HTTP_TIMEOUT_SEC,
+        addr, known=None, *, timeout=rooms_peers.CONTROL_HTTP_TIMEOUT_SEC,
     ):
         timeouts.append(timeout)
         return dict(peer_g) if addr == "192.168.1.9" else None
 
-    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
+    monkeypatch.setattr(rooms_peers, "_get_member_grouping", fake_get_grouping)
 
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
 
@@ -621,14 +691,14 @@ def test_rooms_json_self_hostname_and_room_flow_from_identity(monkeypatch):
     monkeypatch.setattr(rooms_setup.identity, "read_identity", lambda: fake)
     # Stub only the non-identity bits (network + grouping + own NICs + peering);
     # name / hostname / room all flow from the patched read_identity above.
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
     monkeypatch.setattr(
         rooms_setup.peering_config, "read_state",
         lambda *a, **k: {"JASPER_PEERING": "off", "JASPER_PEER_PRIMARY": "0"},
     )
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: [])
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached", lambda: [])
 
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
     assert data["self"]["name"] == "Sun Room"
@@ -730,8 +800,8 @@ def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
         name="JTS", room="default", hostname="jts.local", peer_id="pid",
     )
     monkeypatch.setattr(rooms_setup.identity, "read_identity", lambda: fake)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
     monkeypatch.setattr(
         rooms_setup.peering_config, "read_state",
@@ -779,8 +849,8 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
     """Drive do_POST with the CSRF guard stubbed and the daemon restarts
     captured. Returns (handler, restarts_dict)."""
     restarts = {"voice": 0, "control": 0}
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "restart_voice_daemon",
                         lambda: restarts.__setitem__("voice", restarts["voice"] + 1))
@@ -815,7 +885,7 @@ def test_post_unknown_path_404s_before_csrf(monkeypatch, path):
     def _boom(*_a, **_k):
         raise AssertionError("CSRF guard must not run on an unknown POST path")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
+    monkeypatch.setattr(_common, "guard_mutating_request", _boom)
     h, _ = make_real_handler(rooms_setup._make_handler(), path, body=b"{}", content_type=None)
     h.do_POST()
     assert h.status == 404
@@ -829,7 +899,7 @@ def test_post_bond_route_matches_regardless_of_slash_or_query(monkeypatch, path)
     monkeypatch.setitem(
         rooms_setup._POST_ROUTES, "/bond", lambda h: reached.append(h.path),
     )
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     h, _ = make_real_handler(
         rooms_setup._make_handler(), path, body=b"{}", content_type=None,
     )
@@ -864,7 +934,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
     expected_error,
     expected_reads,
 ):
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
         "write_env_file",
@@ -892,7 +962,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
 
 
 def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
         "write_env_file",
@@ -931,14 +1001,14 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
     """
     effects: list[str] = []
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup.household_credential,
         "ensure",
         lambda: effects.append("household_credential.ensure"),
     )
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "_fan_out_grouping",
         lambda targets, **_k: (
             effects.append("_fan_out_grouping")
@@ -962,7 +1032,7 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
         },
     )
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "post_grouping_to_member",
         lambda *_a, **_k: (
             effects.append("post_grouping_to_member") or (True, "HTTP 200")
@@ -1085,10 +1155,10 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
         name="JTS", room="r", hostname="jts.local", peer_id="pid",
     )
     monkeypatch.setattr(rooms_setup.identity, "read_identity", lambda: fake)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: [])
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached", lambda: [])
     # Clear any ambient env so peering_config's os.environ fallthrough can't lie.
     for k in ("JASPER_PEERING", "JASPER_PEER_PRIMARY"):
         monkeypatch.delenv(k, raising=False)
@@ -1156,7 +1226,7 @@ def test_nginx_has_no_peers_route():
 # instance name ("JTS jasper-control on jts") as its directory label.
 
 def test_peer_label_prefers_txt_name():
-    label = rooms_setup._peer_label(
+    label = rooms_peers._peer_label(
         {"name": "Living Room"}, "jts.local.",
         "JTS jasper-control on jts._jasper-control._tcp.local.",
     )
@@ -1165,7 +1235,7 @@ def test_peer_label_prefers_txt_name():
 
 def test_peer_label_falls_back_to_hostname_not_instance_name():
     # No TXT name → use the resolved SRV host, stripped to a clean label.
-    label = rooms_setup._peer_label(
+    label = rooms_peers._peer_label(
         {}, "jts3.local.",
         "JTS jasper-control on jts3._jasper-control._tcp.local.",
     )
@@ -1175,16 +1245,16 @@ def test_peer_label_falls_back_to_hostname_not_instance_name():
 def test_peer_label_last_resort_is_stripped_instance_name():
     # No TXT, no server host → the stripped instance name (still better
     # than the full service-qualified string).
-    label = rooms_setup._peer_label(
+    label = rooms_peers._peer_label(
         {}, "", "Kitchen._jasper-control._tcp.local.",
     )
     assert label == "Kitchen"
 
 
 def test_hostname_label_strips_local_suffix_and_dot():
-    assert rooms_setup._hostname_label("jts3.local.") == "jts3"
-    assert rooms_setup._hostname_label("speaker.local") == "speaker"
-    assert rooms_setup._hostname_label("") == ""
+    assert rooms_peers._hostname_label("jts3.local.") == "jts3"
+    assert rooms_peers._hostname_label("speaker.local") == "speaker"
+    assert rooms_peers._hostname_label("") == ""
 
 
 # --- discovery cache (no per-poll mDNS churn) ------------------------------
@@ -1199,12 +1269,12 @@ def test_discovery_cache_serves_within_ttl_without_rebrowsing(monkeypatch):
         calls["n"] += 1
         return [{"name": "jts3", "room": "", "address": "192.168.1.9"}]
 
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", _counting_browse)
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(rooms_peers, "_discover_speakers", _counting_browse)
+    rooms_peers._disc_cache.update(at=0.0, result=[])
 
-    first = rooms_setup.discover_speakers_cached()
-    second = rooms_setup.discover_speakers_cached()
-    third = rooms_setup.discover_speakers_cached()
+    first = rooms_peers.discover_speakers_cached()
+    second = rooms_peers.discover_speakers_cached()
+    third = rooms_peers.discover_speakers_cached()
 
     assert calls["n"] == 1, "cache must not re-browse within the TTL"
     assert first == second == third
@@ -1217,13 +1287,13 @@ def test_discovery_cache_rebrowses_after_ttl_expiry(monkeypatch):
         calls["n"] += 1
         return [{"name": "jts3", "room": "", "address": "192.168.1.9"}]
 
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", _counting_browse)
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(rooms_peers, "_discover_speakers", _counting_browse)
+    rooms_peers._disc_cache.update(at=0.0, result=[])
 
-    rooms_setup.discover_speakers_cached()
+    rooms_peers.discover_speakers_cached()
     # Age the cache past the TTL → next call re-browses.
-    rooms_setup._disc_cache["at"] -= rooms_setup.DISCOVERY_CACHE_TTL_SEC + 1
-    rooms_setup.discover_speakers_cached()
+    rooms_peers._disc_cache["at"] -= rooms_peers.DISCOVERY_CACHE_TTL_SEC + 1
+    rooms_peers.discover_speakers_cached()
 
     assert calls["n"] == 2, "cache must re-browse once the TTL has elapsed"
 
@@ -1236,12 +1306,12 @@ def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
     def _flaky_browse(*a, **k):
         return seq.pop(0)
 
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", _flaky_browse)
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(rooms_peers, "_discover_speakers", _flaky_browse)
+    rooms_peers._disc_cache.update(at=0.0, result=[])
 
-    assert rooms_setup.discover_speakers_cached() == []
+    assert rooms_peers.discover_speakers_cached() == []
     # Empty wasn't cached as fresh, so this re-browses and gets the speaker.
-    assert rooms_setup.discover_speakers_cached() == [
+    assert rooms_peers.discover_speakers_cached() == [
         {"name": "jts3", "room": "", "address": "192.168.1.9"}
     ]
 
@@ -1268,18 +1338,18 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
             return member_results[addr]
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", fake_member_post)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
-    monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "192.168.1.5")
+    monkeypatch.setattr(rooms_peers, "_self_address", lambda known=None: "192.168.1.5")
     # Hermetic self-address set (the fan-out computes it once for the SSRF
     # guard); empty so no real socket probe / getaddrinfo runs under test.
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     # The follower's leader_addr is now the leader's STABLE mDNS handle
     # (read_identity().hostname), not a NIC IP — stub the helper so the bond
     # tests don't depend on the real identity reader.
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
     raw = json.dumps(body).encode()
     h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
@@ -1297,10 +1367,10 @@ def test_bond_forwards_browser_control_token_to_members(monkeypatch):
         seen_tokens.append(token)
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
     h, _ = make_real_handler(
@@ -1323,10 +1393,10 @@ def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
         seen_tokens.append(token)
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
     h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
@@ -1345,7 +1415,7 @@ def _stereo_pair_members():
 
 def test_post_bond_peer_addr_intent_builds_stereo_pair(monkeypatch):
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "discover_speakers_cached",
         lambda: [{"address": "192.168.1.9", "name": "Right Box"}],
     )
@@ -1411,7 +1481,7 @@ def test_post_bond_preflights_grouping_readiness_before_fanout(monkeypatch):
         return {"allowed": True, "detail": "ready"}, None
 
     monkeypatch.setattr(
-        rooms_setup, "_get_member_grouping_readiness", fake_readiness,
+        rooms_peers, "_get_member_grouping_readiness", fake_readiness,
     )
 
     h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
@@ -1437,7 +1507,7 @@ def test_post_bond_missing_readiness_explains_peer_update(monkeypatch):
         "update both speakers, then retry"
     )
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "_get_member_grouping_readiness",
         lambda *_a, **_k: (None, detail),
     )
@@ -1499,8 +1569,8 @@ def test_member_post_rejects_non_lan_or_ipv6_without_request(
     def fail_if_requested(*_args, **_kwargs):
         raise AssertionError("rejected targets must never reach urlopen")
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fail_if_requested)
-    ok, detail = rooms_setup.post_grouping_to_member(address, {}, known=set())
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fail_if_requested)
+    ok, detail = rooms_peers.post_grouping_to_member(address, {}, known=set())
     assert ok is False
     assert detail_token in detail
 
@@ -1523,11 +1593,11 @@ def test_member_post_rejects_non_lan_or_ipv6_without_request(
     ],
 )
 def test_lan_target_acceptance_is_ipv4_only(address, known, expected):
-    assert rooms_setup.lan_target(address, known) == expected
+    assert rooms_peers.lan_target(address, known) == expected
 
 
 def test_member_post_self_routes_to_loopback(monkeypatch):
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: {"192.168.1.5"})
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: {"192.168.1.5"})
     urls: list[str] = []
 
     class FakeResp:
@@ -1543,14 +1613,14 @@ def test_member_post_self_routes_to_loopback(monkeypatch):
         urls.append(req.full_url)
         return FakeResp()
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
-    ok, _detail = rooms_setup.post_grouping_to_member("192.168.1.5", {"x": 1})
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
+    ok, _detail = rooms_peers.post_grouping_to_member("192.168.1.5", {"x": 1})
     assert ok is True
     assert urls == ["http://127.0.0.1:8780/grouping/set"]
 
 
 def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: {"192.168.1.5"})
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: {"192.168.1.5"})
     urls: list[str] = []
 
     class FakeResp:
@@ -1563,10 +1633,10 @@ def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen",
+        rooms_peers.urllib.request, "urlopen",
         lambda req, timeout=None: urls.append(req.full_url) or FakeResp(),
     )
-    ok, _detail = rooms_setup.post_grouping_to_member("192.168.1.9", {"x": 1})
+    ok, _detail = rooms_peers.post_grouping_to_member("192.168.1.9", {"x": 1})
     assert ok is True
     assert urls == ["http://192.168.1.9:8780/grouping/set"]
 
@@ -1593,7 +1663,7 @@ def _capture_member_request_headers(monkeypatch):
         captured.update({k.lower(): v for k, v in req.header_items()})
         return FakeResp()
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
     return captured
 
 
@@ -1603,7 +1673,7 @@ def test_post_grouping_to_member_attaches_household_credential(monkeypatch):
     browser X-JTS-Token."""
     secret = household_credential.ensure()  # pair this speaker (autouse tmp file)
     headers = _capture_member_request_headers(monkeypatch)
-    ok, _ = rooms_setup.post_grouping_to_member(
+    ok, _ = rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"x": 1}, token="browser-tok",
     )
     assert ok is True
@@ -1616,7 +1686,7 @@ def test_post_grouping_to_member_omits_household_when_unpaired(monkeypatch):
     nothing to present, and the member fail-safe-accepts during bootstrap."""
     assert household_credential.is_paired() is False  # autouse tmp file is absent
     headers = _capture_member_request_headers(monkeypatch)
-    ok, _ = rooms_setup.post_grouping_to_member("192.168.1.9", {"x": 1})
+    ok, _ = rooms_peers.post_grouping_to_member("192.168.1.9", {"x": 1})
     assert ok is True
     assert "x-jts-household" not in headers
 
@@ -1626,7 +1696,7 @@ def test_post_grouping_to_member_explicit_household_overrides_live_read(monkeypa
     even over a different on-disk value."""
     household_credential.ensure()  # disk has some secret
     headers = _capture_member_request_headers(monkeypatch)
-    rooms_setup.post_grouping_to_member(
+    rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"x": 1}, household="pre-read-secret",
     )
     assert headers["x-jts-household"] == "pre-read-secret"
@@ -1640,10 +1710,10 @@ def test_save_bond_mints_household_credential(monkeypatch):
     def capture(addr, member_body, known=None, *, token=None, household=None):
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts-living.local")
 
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
     h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
@@ -1664,14 +1734,14 @@ def test_unbond_reads_household_once_and_passes_it_to_fanout(monkeypatch):
         seen_household.append(household)
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: {"enabled": True, "role": "leader",
                                          "bond_id": "bond-1", "peer_addr": "192.168.1.9"})
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "resolve_bond_peer",
                         lambda *a, **k: ("192.168.1.9", None, None))
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", capture)
 
     h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond", body=b"{}", content_type=None)
     h.do_POST()
@@ -1705,31 +1775,31 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
         started.wait(timeout=1.0)
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", fake_member_post)
     targets = [
         ("192.168.1.5", {"enabled": True}),
         ("192.168.1.9", {"enabled": True}),
     ]
-    results = rooms_setup._fan_out_grouping(targets)
+    results = rooms_peers._fan_out_grouping(targets)
     # Strictly input order: the slow/failed first target stays first.
     assert results == [(False, "slow boom"), (True, "HTTP 200")]
 
 
 def test_grouping_set_success_detail_distinguishes_live_and_scheduled_apply():
-    assert rooms_setup._grouping_set_success_detail(
+    assert rooms_peers._grouping_set_success_detail(
         200,
         b'{"ok":true,"live_apply":{"applied":true,"mode":"outputd","trim_db":-2.5}}',
     ) == "Applied live."
-    assert rooms_setup._grouping_set_success_detail(
+    assert rooms_peers._grouping_set_success_detail(
         200,
         b'{"ok":true,"reconciler_kicked":true,'
         b'"live_apply":{"applied":false,"mode":"outputd","trim_db":-2.5}}',
     ) == "Saved; audio update scheduled."
-    assert rooms_setup._grouping_set_success_detail(200, b"") == "HTTP 200"
+    assert rooms_peers._grouping_set_success_detail(200, b"") == "HTTP 200"
 
 
 def test_fan_out_grouping_empty_targets_is_empty_list():
-    assert rooms_setup._fan_out_grouping([]) == []
+    assert rooms_peers._fan_out_grouping([]) == []
 
 
 def test_fan_out_grouping_computes_self_addresses_once_not_per_member(monkeypatch):
@@ -1743,12 +1813,12 @@ def test_fan_out_grouping_computes_self_addresses_once_not_per_member(monkeypatc
         calls["n"] += 1
         return {"192.168.1.5"}
 
-    monkeypatch.setattr(rooms_setup, "self_addresses", counting_self_addresses)
+    monkeypatch.setattr(rooms_peers, "self_addresses", counting_self_addresses)
     monkeypatch.setattr(
-        rooms_setup, "post_grouping_to_member",
+        rooms_peers, "post_grouping_to_member",
         lambda addr, body, known=None, *, token=None, household=None: (True, "HTTP 200"),
     )
-    out = rooms_setup._fan_out_grouping([(f"192.168.1.{i}", {}) for i in (10, 11, 12)])
+    out = rooms_peers._fan_out_grouping([(f"192.168.1.{i}", {}) for i in (10, 11, 12)])
     assert len(out) == 3
     assert calls["n"] == 1  # computed once, shared across all three members
 
@@ -1774,14 +1844,14 @@ def test_map_peers_runs_concurrently_and_preserves_input_order():
         return "b"              # ...second finishes first
 
     t0 = _time.monotonic()
-    out = rooms_setup._map_peers(fn, [0, 1])
+    out = rooms_peers._map_peers(fn, [0, 1])
     elapsed = _time.monotonic() - t0
     assert out == ["a", "b"]          # input order, not completion order
     assert elapsed < 0.2              # concurrent: not 0.05 + serialized wait
 
 
 def test_map_peers_empty_is_empty_list():
-    assert rooms_setup._map_peers(lambda x: x, []) == []
+    assert rooms_peers._map_peers(lambda x: x, []) == []
 
 
 def test_map_peers_caps_worker_count():
@@ -1808,7 +1878,7 @@ def test_map_peers_caps_worker_count():
     done = []
 
     def run():
-        done.append(rooms_setup._map_peers(fn, items))
+        done.append(rooms_peers._map_peers(fn, items))
 
     t = threading.Thread(target=run)
     t.start()
@@ -1817,7 +1887,7 @@ def test_map_peers_caps_worker_count():
     _time.sleep(0.1)
     release.set()
     t.join(timeout=2.0)
-    assert peak["n"] <= rooms_setup._PEER_FANOUT_MAX_WORKERS
+    assert peak["n"] <= rooms_peers._PEER_FANOUT_MAX_WORKERS
 
 
 # ---- _get_member_grouping: GET a peer's /grouping behind the SSRF guard ----
@@ -1825,16 +1895,16 @@ def test_map_peers_caps_worker_count():
 
 def test_get_member_grouping_refuses_non_lan_and_non_ip_target(monkeypatch):
     """Public, named, and IPv6 targets never reach the HTTP transport."""
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
 
     def _boom(*_a, **_k):
         raise AssertionError("must not issue a request for a refused target")
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", _boom)
-    assert rooms_setup._get_member_grouping("8.8.8.8") is None         # non-LAN
-    assert rooms_setup._get_member_grouping("evil.example.com") is None  # non-IP
-    assert rooms_setup._get_member_grouping("::1") is None
-    assert rooms_setup._get_member_grouping("fd00::7") is None
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", _boom)
+    assert rooms_peers._get_member_grouping("8.8.8.8") is None         # non-LAN
+    assert rooms_peers._get_member_grouping("evil.example.com") is None  # non-IP
+    assert rooms_peers._get_member_grouping("::1") is None
+    assert rooms_peers._get_member_grouping("fd00::7") is None
 
 
 def test_remote_json_get_success_forwards_request_and_timeout(monkeypatch):
@@ -1860,9 +1930,9 @@ def test_remote_json_get_success_forwards_request_and_timeout(monkeypatch):
         )
         return FakeResp()
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
 
-    assert rooms_setup._get_remote_json_result(
+    assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/state", timeout=0.375,
     ) == ({"ok": True}, None)
     assert captured == {
@@ -1883,28 +1953,28 @@ def test_remote_json_get_rejects_oversized_peer_response(monkeypatch):
             return False
 
         def read(self, size):
-            assert size == rooms_setup.PEER_RESPONSE_MAX_BYTES + 1
+            assert size == rooms_peers.PEER_RESPONSE_MAX_BYTES + 1
             return b"x" * size
 
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
     )
 
-    assert rooms_setup._get_remote_json_result(
+    assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/state", timeout=0.5,
     ) == (None, "speaker returned an oversized response")
 
 
 def test_remote_json_get_explains_unreachable_peer(monkeypatch):
     monkeypatch.setattr(
-        rooms_setup.urllib.request,
+        rooms_peers.urllib.request,
         "urlopen",
         lambda *_a, **_k: (_ for _ in ()).throw(
-            rooms_setup.urllib.error.URLError("connection refused")
+            rooms_peers.urllib.error.URLError("connection refused")
         ),
     )
 
-    assert rooms_setup._get_remote_json_result(
+    assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.5,
     ) == (None, "speaker is unreachable — check its power and network")
 
@@ -1923,27 +1993,27 @@ def test_member_post_rejects_oversized_success_response(monkeypatch):
             return b"x" * size
 
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
     )
 
-    assert rooms_setup.post_grouping_to_member(
+    assert rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"enabled": False}, known=set(), household="secret",
     ) == (False, "peer response too large")
 
 
 def test_member_post_bounds_http_error_response(monkeypatch):
-    error = rooms_setup.urllib.error.HTTPError(
+    error = rooms_peers.urllib.error.HTTPError(
         "http://192.168.1.9:8780/grouping/set",
         500,
         "failure",
         hdrs=None,
-        fp=BytesIO(b"x" * (rooms_setup.PEER_RESPONSE_MAX_BYTES + 1)),
+        fp=BytesIO(b"x" * (rooms_peers.PEER_RESPONSE_MAX_BYTES + 1)),
     )
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
     )
 
-    assert rooms_setup.post_grouping_to_member(
+    assert rooms_peers.post_grouping_to_member(
         "192.168.1.9", {"enabled": False}, known=set(), household="secret",
     ) == (False, "HTTP 500: response too large")
 
@@ -1956,7 +2026,7 @@ def test_member_post_contains_http_error_body_read_failure(monkeypatch):
         def close(self):
             pass
 
-    error = rooms_setup.urllib.error.HTTPError(
+    error = rooms_peers.urllib.error.HTTPError(
         "http://192.168.1.9:8780/grouping/set",
         502,
         "failure",
@@ -1964,10 +2034,10 @@ def test_member_post_contains_http_error_body_read_failure(monkeypatch):
         fp=BrokenBody(),
     )
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
     )
 
-    assert rooms_setup.post_grouping_to_member(
+    assert rooms_peers.post_grouping_to_member(
         "192.168.1.9", {}, known=set(), household="house-secret",
     ) == (False, "HTTP 502")
 
@@ -1975,7 +2045,7 @@ def test_member_post_contains_http_error_body_read_failure(monkeypatch):
 def test_member_post_redacts_echoed_credentials_from_http_error(monkeypatch):
     token = "browser-secret"
     household = "house-secret"
-    error = rooms_setup.urllib.error.HTTPError(
+    error = rooms_peers.urllib.error.HTTPError(
         "http://192.168.1.9:8780/grouping/set",
         403,
         "failure",
@@ -1983,10 +2053,10 @@ def test_member_post_redacts_echoed_credentials_from_http_error(monkeypatch):
         fp=BytesIO(f"denied {token} {household}".encode()),
     )
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
     )
 
-    ok, detail = rooms_setup.post_grouping_to_member(
+    ok, detail = rooms_peers.post_grouping_to_member(
         "192.168.1.9", {}, known=set(), token=token, household=household,
     )
     assert ok is False
@@ -2006,7 +2076,7 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
     prefix = '{"error":"household_mismatch","presented":"'
     pad = "f" * (PEER_DETAIL_MAX_CHARS - len(prefix) - len("<redacted>"))
     body = (prefix + pad + household + '"}').encode()
-    error = rooms_setup.urllib.error.HTTPError(
+    error = rooms_peers.urllib.error.HTTPError(
         "http://192.168.1.9:8780/grouping/set",
         403,
         "failure",
@@ -2014,10 +2084,10 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
         fp=BytesIO(body),
     )
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
     )
 
-    ok, detail = rooms_setup.post_grouping_to_member(
+    ok, detail = rooms_peers.post_grouping_to_member(
         "192.168.1.9", {}, known=set(), household=household,
     )
     assert ok is False
@@ -2051,10 +2121,10 @@ def test_remote_json_get_explains_status_decode_or_shape(
     response = FakeResp()
     response.status = status
     monkeypatch.setattr(
-        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: response,
+        rooms_peers.urllib.request, "urlopen", lambda *_a, **_k: response,
     )
 
-    assert rooms_setup._get_remote_json_result(
+    assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.5,
     ) == (None, detail)
 
@@ -2063,8 +2133,8 @@ def test_remote_json_get_fails_soft_on_transport_timeout(monkeypatch):
     def timeout(*_args, **_kwargs):
         raise TimeoutError("peer timed out")
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", timeout)
-    assert rooms_setup._get_remote_json_result(
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", timeout)
+    assert rooms_peers._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.125,
     ) == (None, "speaker is unreachable — check its power and network")
 
@@ -2076,9 +2146,9 @@ def test_get_member_grouping_forwards_timeout_then_parses_domain(monkeypatch):
         calls.append((target, path, timeout))
         return {"grouping": {"bond_id": "bond-a"}}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
+    monkeypatch.setattr(rooms_peers, "_get_remote_json_result", fake_get)
 
-    assert rooms_setup._get_member_grouping(
+    assert rooms_peers._get_member_grouping(
         "192.168.1.9", known=set(), timeout=0.625,
     ) == {"bond_id": "bond-a"}
     assert calls == [("192.168.1.9", "/grouping", 0.625)]
@@ -2092,7 +2162,7 @@ def test_grouping_readiness_uses_shared_grouping_get_and_domain_parser(monkeypat
         calls.append((target, path, timeout))
         return {"readiness": expected}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
+    monkeypatch.setattr(rooms_peers, "_get_remote_json_result", fake_get)
 
     assert _REAL_GET_MEMBER_GROUPING_READINESS(
         "192.168.1.9", known=set(), timeout=0.75,
@@ -2109,7 +2179,7 @@ def test_grouping_readiness_self_uses_same_loopback_wire_contract(monkeypatch):
         calls.append((target, path, timeout))
         return {"readiness": expected}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
+    monkeypatch.setattr(rooms_peers, "_get_remote_json_result", fake_get)
 
     assert _REAL_GET_MEMBER_GROUPING_READINESS(
         "", known=set(), timeout=0.5,
@@ -2119,7 +2189,7 @@ def test_grouping_readiness_self_uses_same_loopback_wire_contract(monkeypatch):
 
 def test_grouping_readiness_missing_from_old_peer_explains_update(monkeypatch):
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "_get_remote_json_result",
         lambda *_a, **_k: ({"grouping": {"enabled": False}}, None),
     )
@@ -2137,7 +2207,7 @@ def test_grouping_readiness_missing_from_old_peer_explains_update(monkeypatch):
 
 def test_grouping_readiness_null_from_current_peer_explains_diagnostics(monkeypatch):
     monkeypatch.setattr(
-        rooms_setup,
+        rooms_peers,
         "_get_remote_json_result",
         lambda *_a, **_k: ({"grouping": None, "readiness": None}, None),
     )
@@ -2156,7 +2226,7 @@ def test_grouping_readiness_null_from_current_peer_explains_diagnostics(monkeypa
 def _fake_grouping_urlopen(monkeypatch, body, *, status=200):
     """Stub urlopen to return `body` (a dict, serialized) from a /grouping GET.
     Returns the list the URLs are appended to so tests can assert the path."""
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     urls: list[str] = []
 
     class FakeResp:
@@ -2176,7 +2246,7 @@ def _fake_grouping_urlopen(monkeypatch, body, *, status=200):
         urls.append(req.full_url)
         return FakeResp()
 
-    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(rooms_peers.urllib.request, "urlopen", fake_urlopen)
     return urls
 
 
@@ -2189,7 +2259,7 @@ def test_get_member_grouping_unwraps_grouping_envelope(monkeypatch):
     peer and dissolved only self.)"""
     inner = {"enabled": True, "role": "follower", "bond_id": "bond-abc"}
     urls = _fake_grouping_urlopen(monkeypatch, {"grouping": inner})
-    got = rooms_setup._get_member_grouping("192.168.1.9")
+    got = rooms_peers._get_member_grouping("192.168.1.9")
     assert got == inner
     assert urls == ["http://192.168.1.9:8780/grouping"]
 
@@ -2199,10 +2269,10 @@ def test_get_member_grouping_none_when_envelope_missing_or_null(monkeypatch):
     "unknown" → None, so it can never spuriously match a bond_id. Guards the
     unwrap against the pre-fix flat-shape assumption."""
     _fake_grouping_urlopen(monkeypatch, {"grouping": None})
-    assert rooms_setup._get_member_grouping("192.168.1.9") is None
+    assert rooms_peers._get_member_grouping("192.168.1.9") is None
     # A flat body (no envelope) — the shape the live endpoint does NOT emit.
     _fake_grouping_urlopen(monkeypatch, {"enabled": True, "bond_id": "x"})
-    assert rooms_setup._get_member_grouping("192.168.1.9") is None
+    assert rooms_peers._get_member_grouping("192.168.1.9") is None
 
 
 # ----------------------------------------------------------------------
@@ -2235,18 +2305,18 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     def fake_get_grouping(addr, known=None):
         return (peer_grouping or {}).get(addr)
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
-    monkeypatch.setattr(rooms_setup, "reject_csrf",
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(_common, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached",
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached",
                         lambda: list(speakers))
     # Empty self-address set: hermetic (no socket probe) and so the candidate
     # filter (`a not in known`) keeps every test speaker — none is "self".
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_get_member_grouping", fake_get_grouping)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", fake_member_post)
 
     h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond", body=b"{}", content_type=None)
     h.do_POST()
@@ -2438,14 +2508,14 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     def fake_get_grouping(addr, known=None):
         return (peer_grouping or {}).get(addr)
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached",
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached",
                         lambda: list(speakers))
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_get_member_grouping", fake_get_grouping)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", fake_member_post)
 
     h, _ = make_real_handler(rooms_setup._make_handler(), "/swap", body=b"{}", content_type=None)
     h.do_POST()
@@ -2584,7 +2654,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
 
     import jasper.web.rooms_setup as rooms_setup_mod
     monkeypatch.setattr(
-        rooms_setup_mod, "guard_mutating_request", lambda *a, **k: True
+        _common, "guard_mutating_request", lambda *a, **k: True
     )
     monkeypatch.setattr(
         rooms_setup_mod,
@@ -2598,13 +2668,13 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        rooms_setup_mod,
+        rooms_peers,
         "discover_speakers_cached",
         lambda: [{"address": "192.168.1.9"}],
     )
-    monkeypatch.setattr(rooms_setup_mod, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
     monkeypatch.setattr(
-        rooms_setup_mod,
+        rooms_peers,
         "_get_member_grouping",
         lambda addr, known=None: {
             "enabled": True,
@@ -2616,7 +2686,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
         if addr == "192.168.1.9"
         else None,
     )
-    monkeypatch.setattr(rooms_setup_mod, "post_grouping_to_member", flaky_self)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", flaky_self)
     h, _ = make_real_handler(rooms_setup_mod._make_handler(), "/swap", body=b"{}", content_type=None)
     h.do_POST()
     body = json.loads(h.wfile.getvalue())
@@ -2669,15 +2739,15 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
             return outcomes.pop(0)
         return True, "HTTP 200"
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
-    monkeypatch.setattr(rooms_setup, "discover_speakers_cached",
+    monkeypatch.setattr(rooms_peers, "discover_speakers_cached",
                         lambda: list(speakers))
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_get_member_grouping",
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_get_member_grouping",
                         lambda a, known=None: (peer_grouping or {}).get(a))
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member", _post)
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member", _post)
     raw = json.dumps(body).encode()
     h, _ = make_real_handler(rooms_setup._make_handler(), "/trim", body=raw, content_type=None)
     h.do_POST()
@@ -2893,11 +2963,11 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
         posts.append((addr, body))
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+    monkeypatch.setattr(_common, "guard_mutating_request",
                         lambda *a, **k: True)
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member",
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member",
                         fake_member_post)
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts.local")
 
     payload = json.dumps({"members": [
         {"addr": "", "role": "leader", "channel": "left"},
@@ -2924,12 +2994,12 @@ def _drive_bond(members, monkeypatch):
         posts.append((addr, body))
         return (True, "HTTP 200")
 
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+    monkeypatch.setattr(_common, "guard_mutating_request",
                         lambda *a, **k: True)
-    monkeypatch.setattr(rooms_setup, "post_grouping_to_member",
+    monkeypatch.setattr(rooms_peers, "post_grouping_to_member",
                         fake_member_post)
-    monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
-    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+    monkeypatch.setattr(rooms_peers, "self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_peers, "_leader_handle", lambda: "jts.local")
 
     payload = json.dumps({"members": members}).encode()
     h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=payload, content_type=None)

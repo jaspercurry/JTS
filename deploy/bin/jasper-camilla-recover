@@ -397,7 +397,7 @@ restore_core_graph() {
             # The park units NOT started above come back through the owners
             # JASPER_CORE_GRAPH_RECONCILER_OWNED_UNITS pairs them with, kicked
             # once each. --no-block, matching park_core_graph: both are
-            # Type=oneshot with TimeoutStartSec=120 and 6546, and they run
+            # Type=oneshot with TimeoutStartSec=120 and 6414, and they run
             # after the core graph is already back, so a blocking start would
             # put this handler's whole budget behind them.
             local owner kicked=""

@@ -428,7 +428,7 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     remedy = audio_runtime_outputd._transport_route_remedy()
 
     assert PASSIVE_ONLY_DAC_LABEL in remedy
-    assert "/sound/setup/" in remedy
+    assert "/sound/speaker/" in remedy
     assert "audio-hardware-reconcile" not in remedy
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. An

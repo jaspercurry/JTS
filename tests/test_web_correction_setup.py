@@ -2,24 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free tests for the /sound/room/ wizard (canonical design system).
+"""Hardware-free tests for the measurement daemon's pages and dispatch.
 
-The room-correction page is HARDWARE/BROWSER-CRITICAL — the real measurement
-flow (getUserMedia, the sweep, CamillaDSP apply) only runs on the Pi. These
-tests cover the parts that can be checked off-device: the page renders the
-canonical document shell, the relocated behaviour ships as an ES module (no
-inline IIFE remains), the routes still resolve, and the CSRF guard still
-fires. Network / CamillaDSP / session imports are lazy inside the handlers,
-so a static render needs no hardware.
+The measurement pages are HARDWARE/BROWSER-CRITICAL — the real flow
+(getUserMedia, the sweep, the CamillaDSP apply) only runs on the Pi. These
+tests cover the parts that can be checked off-device: the pages render the
+canonical document shell, their behaviour ships as ES modules (no inline
+IIFE), the routes still resolve, and the CSRF guard still fires. Network /
+CamillaDSP imports are lazy inside the handlers, so a static render needs no
+hardware.
 """
 from __future__ import annotations
 
 import io
 import json
 import logging
-import os
-import shutil
-import subprocess
 import threading
 from contextlib import nullcontext
 from http import HTTPStatus
@@ -29,22 +26,18 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.web import (
+    _common,
     correction_capture,
     correction_handlers,
+    correction_runtime,
     correction_setup,
 )
-from tests._web_test_helpers import assert_canonical_page
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
 )
 
 _IMPORTED_FIXTURES = (_wizard_harness_fixture,)
-
-
-_FAILURE_CATALOG_JS = (
-    Path(__file__).resolve().parent / "js" / "correction_failure_catalog.mjs"
-)
 
 
 @pytest.fixture(autouse=True)
@@ -71,45 +64,8 @@ def test_run_async_timeout_cancels_loop_task():
             cancelled.set()
 
     with pytest.raises(concurrent.futures.TimeoutError):
-        correction_capture._run_async(never_finishes(), timeout=0.01)
+        correction_runtime.run_async(never_finishes(), timeout=0.01)
     assert cancelled.wait(timeout=2)
-
-
-def test_room_graph_mutation_has_no_cancelling_outer_deadline(monkeypatch):
-    import asyncio
-
-    seen = {}
-
-    async def operation():
-        return "done"
-
-    def run(coro, *, timeout):
-        seen["timeout"] = timeout
-        return asyncio.run(coro)
-
-    monkeypatch.setattr(correction_capture, "_run_async", run)
-
-    assert correction_capture._run_graph_mutation(operation()) == "done"
-    assert seen == {"timeout": None}
-
-
-def test_all_room_graph_mutation_callers_use_terminal_runner():
-    import inspect
-
-    callers = (
-        correction_handlers._handle_start,
-        correction_handlers._handle_apply,
-        correction_handlers._handle_reset,
-        correction_handlers._maybe_auto_revert,
-    )
-    for caller in callers:
-        source = inspect.getsource(caller)
-        assert "_run_graph_mutation(" in source
-
-
-# ---------------------------------------------------------------------------
-# Page render — canonical shell.
-# ---------------------------------------------------------------------------
 
 
 def _render() -> str:
@@ -117,183 +73,6 @@ def _render() -> str:
         "jts.local",
         csrf_token="tok-correction-123456789012345678901234",
     ).decode("utf-8")
-
-
-def test_shared_measurement_start_blocker_prioritizes_reserved_start(
-    monkeypatch,
-):
-    class ActiveState:
-        value = "sweeping"
-
-    class ActiveSession:
-        state = ActiveState()
-
-    monkeypatch.setattr(correction_capture, "_session", ActiveSession())
-    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
-    assert correction_capture._correction_start_blocker() == "sweeping"
-
-    monkeypatch.setattr(correction_capture, "_start_in_progress", True)
-    assert correction_capture._correction_start_blocker() == "starting"
-
-    monkeypatch.setattr(correction_capture, "_session", None)
-    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
-    assert correction_capture._correction_start_blocker() is None
-
-
-def test_render_uses_canonical_shell():
-    html = _render()
-    assert_canonical_page(html)
-    assert 'name="jts-csrf"' in html
-    assert "tok-correction-123456789012345678901234" in html
-
-
-def test_render_links_page_css_and_module():
-    html = _render()
-    assert "/assets/correction/correction.css?v=" in html
-    assert "/assets/correction/js/main.js" in html
-    assert 'type="module"' in html
-
-
-def test_render_has_no_inline_script_iife():
-    """The page behaviour was relocated into the ES module; the legacy
-    inline <script> IIFE must be gone (gating: no inline JS on a migrated
-    page)."""
-    html = _render()
-    assert "(function () {" not in html
-    # Old hand-rolled shell + injection markers must be gone too.
-    assert "__STYLE__" not in html
-    assert "__DIALOG_HELPERS__" not in html
-    assert "__CSRF_FETCH_HELPERS__" not in html
-
-
-def test_render_carries_required_sample_rate_for_module():
-    """The module reads the required capture rate off the page rather than
-    hardcoding it; the server stays the source of truth."""
-    html = _render()
-    assert f'data-required-sr="{correction_capture.REQUIRED_SAMPLE_RATE}"' in html
-
-
-def test_render_back_link_is_absolute_http():
-    """/sound/room/ is HTTPS but the /sound/ hub is plain HTTP, so the back
-    affordance must be an absolute http:// link, not a relative path."""
-    html = _render()
-    assert 'href="http://jts.local/sound/"' in html
-
-
-def test_render_has_one_root_for_each_envelope_section():
-    html = _render()
-    section_ids = {
-        "current-correction", "run-defaults", "readiness-blocker",
-        "placement", "capture-setup",
-        "local-certificate-warning", "level-check", "position-capture",
-        "measurement-review", "apply-status", "verification",
-        "result-proof", "tuning", "reports",
-    }
-    for section_id in section_ids:
-        assert html.count(f'data-envelope-section="{section_id}"') == 1
-
-    for deleted_id in (
-        "advanced-correction-options",
-        "mic-panel", "measurement-reports", "measure-section",
-        "run-measurement", "apply-correction", "verify-correction",
-        "repeat-position", "continue-position", "start",
-    ):
-        assert f'id="{deleted_id}"' not in html
-
-
-def test_render_keeps_only_plain_local_certificate_warning():
-    html = _render()
-    assert "browser will warn about the speaker's local certificate" in html
-    assert "/jts-root-ca.crt" not in html
-    assert "Certificate Trust Settings" not in html
-    assert "mkcert" not in html
-    assert 'id="readiness-blocker-action" class="btn" hidden href=""' in html
-    assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
-
-
-def test_render_leaves_household_default_copy_to_the_envelope():
-    html = _render()
-
-    assert '<p id="run-defaults-summary"></p>' in html
-    assert "Measuring 6 positions with the flat target" not in html
-    assert html.count('id="change-run-defaults"') == 1
-    assert 'aria-controls="measurement-options"' in html
-    assert 'aria-expanded="false"' in html
-    assert (
-        '<option value="6" data-summary-label="6 positions" selected>'
-        '6 positions — recommended</option>'
-    ) in html
-    assert '<option value="5" selected>' not in html
-    assert "MMM averaging" not in html
-    assert "Assertive" not in html
-    assert 'id="repeat-main-position"' not in html
-    assert (
-        '<p id="repeat-main-position-disclosure" class="hint"></p>'
-        in html
-    )
-    assert "automatically repeats the main-seat measurement once" not in html
-    assert html.index('id="repeat-main-position-disclosure"') < html.index(
-        'id="measurement-options" hidden'
-    )
-    assert "house-curve tilt" not in html
-    assert "PEQ policy" not in html
-    assert "WebKit Bug" not in html
-    assert "Safari" not in html
-    assert "RMS:" not in html
-    assert "dBFS" not in html
-    assert "1 kHz" not in html
-    assert "software volume" not in html
-    assert "amplifier gain" not in html
-    assert "analog gain" not in html
-    assert "preference EQ" not in html
-    assert "raw room" not in html
-
-
-def test_browser_failure_presentation_matches_server_catalog():
-    from jasper.correction import envelope, failures
-
-    node = shutil.which("node")
-    if node is None:
-        # A developer without node gets a skip; CI does not — this is the only
-        # check that the browser's closed vocabulary still matches the
-        # server's, and a silent skip would report drift as green.
-        if os.environ.get("CI"):
-            pytest.fail("node is not on PATH in CI")
-        pytest.skip("node not on PATH")
-    proc = subprocess.run(
-        [node, str(_FAILURE_CATALOG_JS)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    payload = json.loads(proc.stdout)
-    browser = {
-        code: (entry["text"], entry["retryable"])
-        for code, entry in payload["KNOWN_FAILURES"].items()
-    }
-    server = {
-        code: (
-            failures.public_failure(code)["text"],
-            failures.public_failure(code)["retryable"],
-        )
-        for code in failures.FAILURE_CODES
-    }
-    assert browser == server
-    assert payload["SUPPORTED_ENVELOPE_SCHEMA"] == envelope.ENVELOPE_SCHEMA_VERSION
-
-
-def test_render_escapes_hostname():
-    html = correction_setup._render_page(
-        'evil"<x>', csrf_token="tok-correction-123456789012345678901234",
-    ).decode("utf-8")
-    assert 'evil"<x>' not in html
-    assert "&quot;" in html or "&lt;x&gt;" in html
-
-
-# ---------------------------------------------------------------------------
-# Routing — behaviour preserved.
-# ---------------------------------------------------------------------------
 
 
 def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
@@ -330,13 +109,6 @@ def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
     else:
         handler.do_POST()
     return wfile.getvalue()
-
-
-def test_get_root_renders_html():
-    resp = _drive("/")
-    assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert b"/assets/app.css" in resp
-    assert b"/assets/correction/js/main.js" in resp
 
 
 def test_get_crossover_subpath_renders_secure_capture_ui():
@@ -379,7 +151,7 @@ def test_get_measurement_data_dispatches_a_and_b(monkeypatch):
 
 def test_follower_keeps_local_crossover_measurement_post(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
-    monkeypatch.setattr(correction_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
     monkeypatch.setattr(
         correction_handlers,
         "_handle_crossover_reset",
@@ -399,7 +171,6 @@ def test_get_bass_subpath_renders_display_page():
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"Bass management" in resp  # P5: read-only display, not a placeholder
     assert b"/assets/correction/js/bass/main.js" in resp
-    assert b"/sound/room/" in resp  # pointer to the bass-region measurement
 
 
 def test_get_bass_status_returns_display_json():
@@ -436,68 +207,6 @@ def test_get_healthz_ok():
     assert b"ok" in resp
 
 
-def test_get_entry_status_routes_to_lightweight_handler(monkeypatch):
-    import json
-
-    payload = {
-        "screen": "idle",
-        "state": "idle",
-        "readiness_blocker": None,
-        "current_correction_presentation": {"tone": "flat"},
-    }
-    monkeypatch.setattr(
-        correction_handlers,
-        "_handle_entry_status",
-        lambda _handler: payload,
-    )
-
-    resp = _drive("/entry-status")
-
-    assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == payload
-
-
-def test_entry_status_reads_lightweight_entry_facts_without_reports(monkeypatch):
-    from jasper.correction import bundles
-
-    presentation = {
-        "tone": "flat",
-        "message_template": "No JTS room correction is applied.",
-        "applied_at_epoch": None,
-        "reset_allowed": False,
-    }
-    session = SimpleNamespace(
-        state=SimpleNamespace(value="idle"),
-    )
-    monkeypatch.setattr(
-        correction_capture, "_get_or_create_session", lambda: session,
-    )
-    monkeypatch.setattr(
-        correction_handlers,
-        "_current_config_presentation",
-        lambda sess: ({"kind": "flat"}, presentation)
-        if sess is session
-        else pytest.fail("unexpected session"),
-    )
-    monkeypatch.setattr(
-        correction_capture,
-        "_room_readiness",
-        lambda: SimpleNamespace(blocker={"code": "speaker_setup_incomplete"}),
-    )
-    monkeypatch.setattr(
-        bundles,
-        "list_bundles",
-        lambda *_args, **_kwargs: pytest.fail("entry status scanned reports"),
-    )
-
-    assert correction_handlers._handle_entry_status(None) == {
-        "screen": "idle",
-        "state": "idle",
-        "readiness_blocker": {"code": "speaker_setup_incomplete"},
-        "current_correction_presentation": presentation,
-    }
-
-
 def test_unknown_get_route_404():
     resp = _drive("/nope")
     assert b"404" in resp.split(b"\r\n", 1)[0]
@@ -506,7 +215,7 @@ def test_unknown_get_route_404():
 def test_post_without_csrf_is_rejected():
     """Every state-changing POST must fail CSRF before doing any work — the
     resilience guard must survive the restyle."""
-    resp = _drive("/start", method="POST", body=b"{}")
+    resp = _drive("/calibration/upload", method="POST", body=b"{}")
     assert b"403" in resp.split(b"\r\n", 1)[0]
 
 
@@ -522,12 +231,8 @@ def test_known_post_routes_reach_csrf_guard():
     route: each known route reaches the CSRF guard (403 without a token),
     proving it is still registered."""
     known = {
-        "/start", "/next-position", "/repeat-position", "/verify",
-        "/test-tone", "/autolevel/start", "/autolevel/lock",
-        "/autolevel/cancel", "/upload-noise", "/upload-capture",
-        "/local-capture/setup",
-        "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
-        "/session/delete",
+        "/test-tone",
+        "/calibration/fetch", "/calibration/upload",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/capture-cancel",
@@ -553,8 +258,6 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/v2/complete",
         # The wired session's per-take retake (#2879) — same shape again.
         "/crossover/v2/retake",
-        # P6 tuning-LLM routes.
-        "/interpret", "/propose", "/propose/apply",
     }
     assert known == set(correction_setup._POST_ROUTES)
     for route in sorted(known):
@@ -580,7 +283,7 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     The subject is that whichever gate refuses, the refusal is journaled, never
     silent, and it carries the code the household's screen renders from."""
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
 
@@ -618,7 +321,7 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
     from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     raw_text = "cloud_measure_positions must be 6..12, got 14"
 
@@ -642,7 +345,7 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
     families it knows, so a plain transport failure must keep saying what it
     said. Containing every 500 behind one sentence would hide real breakage."""
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     def _raise_oserror(*_a, **_k):
@@ -680,7 +383,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
 
@@ -701,7 +404,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert body["error"] == spec.message
     # Same registry entry the hard-stop screen would have rendered.
     assert body["next_action"] == dict(spec.next_action)
-    assert body["next_action"]["href"] == "/sound/setup/#confirm-safety-limits"
+    assert body["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
     # And the code is on the journal line beside the reason.
     assert any(
         f"code={REASON_PROGRAM_PROFILE_NOT_CONFIRMED}" in r.getMessage()
@@ -733,7 +436,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
         )
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(correction_handlers, "_handle_crossover_v2_capture", _refuse)
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
@@ -757,7 +460,7 @@ def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(
         v2host_mod,
@@ -800,7 +503,7 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     monkeypatch.setattr(
         v2host_mod,
@@ -841,7 +544,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     def _raise(exc):
@@ -894,7 +597,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     # borrows from exempts it no more than a typed refusal.
     caplog.clear()
     monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
-        correction_capture.BadRequest("apply body must be an object")
+        correction_runtime.BadRequest("apply body must be an object")
     ))
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
@@ -919,7 +622,6 @@ def test_make_server_smoke():
 def test_public_surface_present():
     assert callable(correction_setup.make_server)
     assert callable(correction_setup.main)
-    assert callable(correction_setup._render_page)
     assert callable(correction_setup._make_handler_class)
 
 
@@ -956,14 +658,9 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_restore_protected_neutral_program_graph", recover_program,
     )
-    async def recover_room(*_args):
-        claims.append("room")
-
-    monkeypatch.setattr(correction_handlers, "recover_room_startup_state", recover_room)
-
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "commissioning", "capture_entry", "room", "program"]
+    assert claims == ["repeat", "commissioning", "capture_entry", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
@@ -1044,7 +741,7 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
         (mutated, "correction.crossover_v2_program_mutated_recovered"),
     ):
         cam = Cam(active)
-        monkeypatch.setattr(correction_capture, "_camilla", lambda cam=cam: cam)
+        monkeypatch.setattr(correction_runtime, "camilla_controller", lambda cam=cam: cam)
         with caplog.at_level(logging.INFO):
             caplog.clear()
             asyncio.run(correction_setup._restore_protected_neutral_program_graph())
@@ -1055,13 +752,13 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
         )
 
     unrelated = Cam("devices: {}\n")
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: unrelated)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: unrelated)
     asyncio.run(correction_setup._restore_protected_neutral_program_graph())
     assert unrelated.calls == ["raw"]
 
     stuck = Cam(program_yaml)
     stuck.loaded = False
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: stuck)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: stuck)
     with pytest.raises(RuntimeError, match="was not confirmed"):
         asyncio.run(correction_setup._restore_protected_neutral_program_graph())
 
@@ -1071,7 +768,7 @@ def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
 
     The common abandon is the user closing the tab mid-sequence:
     correction-web idles out minutes later, and (being socket-activated) will
-    not run again until someone revisits /sound/room/. Without this hook the
+    not run again until someone revisits a measurement page. Without this hook the
     speaker would stay parked on the all-muted staged anchor until then.
     """
 
@@ -1181,139 +878,12 @@ def _patch_no_op_camilla(monkeypatch) -> None:
         async def get_config_file_path(self, *, best_effort=False):
             return "/etc/camilladsp/outputd-cutover.yml"
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _FakeCam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _FakeCam())
     # Resolve target without touching the topology-aware carrier.
     async def resolve(_sess, _cam):
         return Path("/etc/camilladsp/no-room.yml")
 
     monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", resolve)
-
-
-def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch, tmp_path):
-    import asyncio
-
-    _patch_no_op_camilla(monkeypatch)
-
-    # Run the async helper on a fresh event loop for the test.
-    monkeypatch.setattr(
-        correction_capture, "_run_async",
-        # asyncio.run, not new_event_loop().run_until_complete — the latter
-        # never closes the loop it makes, leaking 3 fds per call.
-        lambda coro, timeout=None: asyncio.run(coro),
-    )
-
-    for verdict in ("accept", "surface", "revert_pending_confirm", None):
-        sess = _FakeSession(verdict, tmp_path)
-        assert correction_handlers._maybe_auto_revert(sess) is False
-        assert sess.revert_calls == []  # never touched CamillaDSP
-
-    sess = _FakeSession("revert", tmp_path)
-    assert correction_handlers._maybe_auto_revert(sess) is True
-    assert sess.revert_calls == [Path("/etc/camilladsp/no-room.yml")]
-
-
-def test_maybe_auto_revert_swallows_errors(monkeypatch, tmp_path):
-    """A revert failure is logged and returns False — it never 500s the verify
-    upload (the correction is left applied for manual undo)."""
-    import asyncio
-
-    class _FailSession(_FakeSession):
-        async def auto_revert(
-            self, camilla_set_config, *, target_config_path=None,
-        ):
-            raise RuntimeError("camilla rejected the base config")
-
-    _patch_no_op_camilla(monkeypatch)
-    monkeypatch.setattr(
-        correction_capture, "_run_async",
-        # asyncio.run, not new_event_loop().run_until_complete — the latter
-        # never closes the loop it makes, leaking 3 fds per call.
-        lambda coro, timeout=None: asyncio.run(coro),
-    )
-    sess = _FailSession("revert", tmp_path)
-    assert correction_handlers._maybe_auto_revert(sess) is False
-
-
-def test_target_config_path_parameter_detection_is_shared_by_reset_and_revert():
-    # A function with the kwarg → True.
-    async def with_kwarg(cam, *, target_config_path=None):
-        return True
-
-    # A function without it and no **kwargs → False.
-    async def without_kwarg(cam):
-        return True
-
-    # A function with **kwargs → True (forwards through).
-    async def with_var_kwargs(cam, **kw):
-        return True
-
-    assert correction_handlers._accepts_target_config_path(with_kwarg) is True
-    assert correction_handlers._accepts_target_config_path(without_kwarg) is False
-    assert correction_handlers._accepts_target_config_path(with_var_kwargs) is True
-
-
-# ---------------------------------------------------------------------------
-# P4 upload-handler wiring — the verify upload that lands "revert" must drive
-# the auto-revert (SF pin: removing `auto_reverted = _maybe_auto_revert(sess)`
-# from _handle_upload_capture must fail these, not ship).
-# ---------------------------------------------------------------------------
-
-
-def _session_primed_for_confirmed_revert(tmp_path):
-    """Real MeasurementSession one verify away from a CONFIRMED regression.
-
-    Runs the real pipeline on the module's background loop (measure a
-    near-flat seat, apply, one regressed verify → revert_pending_confirm,
-    then arm the confirmatory verify sweep) and returns the session plus the
-    regressed verify WAV bytes to upload through the handler.
-    """
-    from jasper.audio_measurement import sweep
-
-    from .correction_session_fixtures import (
-        default_bass_profile_summary,
-        make_measurement_session,
-        seed_prior_sound_config,
-        stateful_camilla_stub,
-    )
-    from .test_correction_session import (
-        _measure_one_position,
-        _run_verify,
-        _synthesize_room_capture,
-    )
-
-    sess = make_measurement_session(tmp_path)
-    camilla_get_config, note_loaded = stateful_camilla_stub(
-        seed_prior_sound_config(sess)
-    )
-
-    async def _prime():
-        async def fake_play(path, **kw):
-            pass
-
-        async def fake_camilla(path: str) -> bool:
-            note_loaded(path)
-            return True
-
-        await _measure_one_position(sess, room_gain_db=0.5)
-        await sess.apply(
-            fake_camilla,
-            camilla_get_config=camilla_get_config,
-            prepare_guard=default_bass_profile_summary,
-        )
-        await _run_verify(sess, verify_room_gain_db=20.0)
-        assert sess.acceptance["verdict"] == "revert_pending_confirm"
-        # Arm the confirmatory verify; the handler does the upload.
-        await sess.start_verify_sweep(fake_play)
-
-    correction_capture._run_async(_prime(), timeout=60.0)
-
-    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
-    regressed = _synthesize_room_capture(
-        sweep_signal, sr, mode_freq_hz=80.0, mode_gain_db=20.0,
-    )
-    wav_path = tmp_path / "confirm_verify_upload.wav"
-    sweep.write_sweep_wav(wav_path, regressed.astype("float32"), sr)
-    return sess, wav_path.read_bytes()
 
 
 class _RecordingCam:
@@ -1326,82 +896,6 @@ class _RecordingCam:
 
     async def get_config_file_path(self, *, best_effort=False):
         return "/etc/camilladsp/outputd-cutover.yml"
-
-
-def test_upload_handler_runs_auto_revert_on_confirmed_regression(
-    tmp_path, monkeypatch,
-):
-    sess, wav_bytes = _session_primed_for_confirmed_revert(tmp_path)
-    cam = _RecordingCam()
-    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
-    )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
-    async def resolve(_sess, _cam):
-        return Path("/tmp/no-room-test.yml")
-
-    monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", resolve)
-
-    resp = correction_handlers._handle_upload_capture(object())
-
-    # The upload response is mechanism-only; the envelope owns presentation.
-    assert set(resp) == {
-        "session_id",
-        "state",
-        "current_position",
-        "total_positions",
-        "auto_reverted",
-    }
-    assert resp["auto_reverted"] is True
-    # The revert genuinely ran through the shared reset target.
-    assert sess.state.value == "idle"
-    assert cam.loads == ["/tmp/no-room-test.yml"]
-    assert sess.auto_revert_outcome["result"] == "ok"
-
-
-def test_upload_handler_auto_revert_failure_still_returns_ok(
-    tmp_path, monkeypatch,
-):
-    """A failed auto-revert never 500s the upload: the response reports
-    auto_reverted=false, the correction stays applied (VERIFIED), and the
-    envelope says so honestly."""
-    sess, wav_bytes = _session_primed_for_confirmed_revert(tmp_path)
-    cam = _RecordingCam()
-    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(
-        correction_handlers, "_read_wav_body", lambda handler: wav_bytes,
-    )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
-
-    async def _boom(s, c):
-        raise RuntimeError("target resolution exploded")
-
-    monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", _boom)
-
-    resp = correction_handlers._handle_upload_capture(object())
-
-    assert set(resp) == {
-        "session_id",
-        "state",
-        "current_position",
-        "total_positions",
-        "auto_reverted",
-    }
-    assert resp["auto_reverted"] is False
-    assert cam.loads == []  # nothing was loaded
-    assert sess.state.value == "verified"  # correction still applied
-    assert sess.auto_revert_outcome["result"] == "failed"
-
-    # The envelope tells the household the truth: still applied + Reset.
-    from jasper.correction.envelope import build_envelope
-
-    env = build_envelope(sess)
-    assert "STILL APPLIED" in env["verdict_text"]
-    assert "Reset" in env["verdict_text"]
-
-
-# --- W6.1 Findings D + E2: v2 capture visibility + recover-volume routing ----------
 
 
 class _CleanSessionVolumePlan:
@@ -1452,7 +946,7 @@ def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
     from jasper.volume_owner import VolumeOwner, install_volume_owner
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
 
     declared: list[float] = []
@@ -1478,7 +972,7 @@ def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
         async def get_volume_db(self, best_effort=False):
             return live["db"]
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _Cam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _Cam())
 
     class _Lease:
         unresolved_volume_safety = {"status": "unresolved"}
@@ -1512,7 +1006,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(
-        correction_setup, "guard_mutating_request", lambda handler: True
+        _common, "guard_mutating_request", lambda handler: True
     )
     drained: list = []
 
@@ -1534,7 +1028,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         async def get_volume_db(self, best_effort=False):
             return -15.0
 
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _Cam())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _Cam())
     # Production installs a fader owner before serving, and the v2 drains now
     # refuse without one rather than falling back to a second authority.
     _owned = _Cam()
