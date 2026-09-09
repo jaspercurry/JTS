@@ -3922,7 +3922,6 @@ mod tests {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             usb_connection_epoch: Arc::new(AtomicU64::new(0)),
             host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
-            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         };
 
         // The UNATTENUATED TTS period: the same fixture, the same commands and
