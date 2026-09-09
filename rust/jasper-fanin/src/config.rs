@@ -45,7 +45,9 @@ pub(crate) const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 /// Render periods spanning `ms` at a lane geometry, floored at 1 so a
 /// sub-period interval still ticks. The crate's ONE ms→periods conversion:
 /// every period-counted cadence states its wall-clock intent and derives the
-/// count here rather than shipping a hand-multiplied literal.
+/// count here rather than shipping a hand-multiplied literal. `sample_rate` is
+/// the caller's guarantee (`env_u32_positive` refuses 0); `period_frames` is
+/// guarded here because the constants call this before that parse runs.
 pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
     let period_frames = if period_frames == 0 {
         1
@@ -283,8 +285,9 @@ pub struct Config {
 
     /// The gadget capture OPEN period (frames) the USB DIRECT lane negotiates.
     /// Defaults to [`crate::mixer::DIRECT_PERIOD_FRAMES`], the
-    /// hardware-validated direct-capture envelope; fail-loud range 32..=1024. Shrinking it (e.g. 64) exposes ready frames sooner if the
-    /// gadget's readable `avail` advances in period-sized steps. The capture
+    /// hardware-validated direct-capture envelope; fail-loud range 32..=1024.
+    /// Shrinking it (e.g. 64) exposes ready frames sooner if the gadget's
+    /// readable `avail` advances in period-sized steps. The capture
     /// BUFFER stays DEEP regardless (`mixer::resolve_direct_buffer_frames`:
     /// ≥ 3 periods AND ≥ 768 frames), so a small period rides a deep buffer
     /// rather than the refuted shallow 2-period URB headroom. Unused when direct

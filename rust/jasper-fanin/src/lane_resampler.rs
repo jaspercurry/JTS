@@ -932,8 +932,9 @@ mod decay {
 
         /// The EXECUTED decay drain rate, in ppm, for a ms-space config — the
         /// exact periods-space arithmetic the machine runs on
-        /// ([`crate::config::periods_for_ms`] truncation included: defaults 6 / 1000 ms at 48 kHz / 256 ⇒ 187
-        /// periods ⇒ ~125.33 ppm, not the ms-space 125.0). The ONE derivation
+        /// ([`crate::config::periods_for_ms`] truncation included: defaults
+        /// 6 / 1000 ms at 48 kHz / 256 ⇒ 187 periods ⇒ ~125.33 ppm, not the
+        /// ms-space 125.0). The ONE derivation
         /// both config validation and [`CushionDecay::new`] consume, so the
         /// validated number and the published/subtracted number can never
         /// disagree (#3466).
