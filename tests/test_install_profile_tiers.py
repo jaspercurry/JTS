@@ -608,7 +608,7 @@ def test_pyproject_base_install_stays_minimal():
     full = data["project"]["optional-dependencies"]["full"]
     streambox = data["project"]["optional-dependencies"]["streambox"]
 
-    assert base == ["sdnotify>=0.3.2"]
+    assert base == []
     for dep_prefix in ["camilladsp", "google-genai", "openai", "onnxruntime"]:
         assert not any(dep.startswith(dep_prefix) for dep in base)
         assert any(dep.startswith(dep_prefix) for dep in full)
