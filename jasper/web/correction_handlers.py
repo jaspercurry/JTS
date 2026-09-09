@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.audio_measurement import room_boundary
+from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.camilla import CamillaUnavailable
 from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
@@ -169,10 +170,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         mic_calibration = None
         if calibration_id:
-            from jasper.audio_measurement.calibration import (
-                configured_calibration_root,
-                load_calibration_record,
-            )
+            from jasper.audio_measurement.calibration import load_calibration_record
             mic_calibration = load_calibration_record(
                 calibration_id,
                 root=configured_calibration_root(),
@@ -893,10 +891,7 @@ def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any
 def _handle_calibration_fetch(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import (
-        configured_calibration_root,
-        fetch_vendor_calibration,
-    )
+    from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
     body = correction_capture._read_json_body(handler)
     model = str(body.get("model") or "").strip()
@@ -917,7 +912,6 @@ def _handle_calibration_upload(
 ) -> dict[str, Any]:
     from jasper.audio_measurement.calibration import (
         DEFAULT_SIGN_CONVENTION,
-        configured_calibration_root,
         store_calibration,
     )
 
@@ -1163,10 +1157,7 @@ def _handle_local_capture_setup(
     This narrow setup write makes the selected device/calibration the live
     session authority before any audio upload.
     """
-    from jasper.audio_measurement.calibration import (
-        configured_calibration_root,
-        load_calibration_record,
-    )
+    from jasper.audio_measurement.calibration import load_calibration_record
     from jasper.correction.session import SessionState
 
     sess = correction_capture._get_or_create_session()

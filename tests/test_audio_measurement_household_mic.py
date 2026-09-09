@@ -210,3 +210,38 @@ def test_resolve_household_mic_calibration_fails_soft_on_corrupt_metadata_file(
     # The exact-ID lookup hits the corrupt file (KeyError inside
     # CalibrationRecord.from_dict) and must fall through cleanly, not raise.
     assert hm.resolve_household_mic_calibration(household, root=root) is None
+
+
+# --- the read+resolve step the CLI and spec builders call ---------------------
+
+
+def test_resolved_household_mic_pairs_the_record_with_its_stored_calibration(
+    tmp_path: Path, monkeypatch
+):
+    """``resolved_household_mic`` is the env-rooted one-step form: it yields the
+    pair only while BOTH halves exist, and fail-soft ``None`` once the stored
+    calibration the record points at is gone from the store (neither the ID
+    lookup nor the content-hash fallback can reach it)."""
+    root = tmp_path / "calibrations"
+    path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(path))
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(root))
+
+    assert hm.resolved_household_mic() is None  # no record at all
+
+    record = _store(tmp_path, root=root)
+    hm.write_household_mic(
+        hm.household_mic_from_calibration(record, serial="SN-123456"), path=path
+    )
+
+    resolved = hm.resolved_household_mic()
+    assert resolved is not None
+    household, stored = resolved
+    assert household.calibration_id == record.calibration_id
+    assert household.file_sha256 == record.file_sha256
+    assert household.model_key == record.model
+    assert stored.calibration_id == record.calibration_id
+    assert stored.provider == record.provider
+
+    Path(record.metadata_path).unlink()
+    assert hm.resolved_household_mic() is None
