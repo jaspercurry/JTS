@@ -28,6 +28,11 @@ from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.sweep import read_wav_mono
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
+from ..commissioning_evidence_store import EVIDENCE_ROOT
+from .record_index import bundle_measurements
+from .round_inputs import (
+    NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
+)
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -183,26 +188,71 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     return (min(los), max(his))
 
 
+def _capture_document(path: Path) -> Mapping[str, Any]:
+    try:
+        doc = json.loads(path.read_text())
+        if not isinstance(doc, Mapping):
+            raise ValueError("capture metadata is not an object")
+        return doc
+    except (OSError, ValueError) as exc:
+        raise RoundCapturesRefused(
+            REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "detail": str(exc)},
+        ) from exc
+
+
+def _capture_documents(round_dir: Path) -> tuple[Path, list[tuple[Path, Path, Mapping[str, Any]]]]:
+    try:
+        root = round_inputs(round_dir).session_dir
+    except RoundViewsError as exc:
+        if (round_dir / "bundle").exists():
+            raise RoundCapturesRefused(
+                REFUSE_CAPTURE_UNREADABLE, {"round_dir": str(round_dir), "detail": str(exc)},
+            ) from exc
+        root = round_dir
+    artifact_dir, reason = round_artifact_dir(root)
+    if artifact_dir is None and reason != NO_ROUND_ARTIFACTS_REASON:
+        raise RoundCapturesRefused(
+            REFUSE_CAPTURE_UNREADABLE, {"round_dir": str(round_dir), "detail": reason},
+        )
+    documents: dict[Path, tuple[Path, Mapping[str, Any]]] = {}
+    for row in bundle_measurements(root):
+        path = root / EVIDENCE_ROOT / "artifacts" / row.path
+        doc = _capture_document(path)
+        named = doc.get("wav_path")
+        if not isinstance(named, str) or not named:
+            continue
+        wav = (root / named).resolve()
+        if wav.parent != (root / "summed").resolve():
+            continue
+        if not doc.get("wav_sha256") or wav in documents:
+            raise RoundCapturesRefused(
+                REFUSE_CAPTURE_UNREADABLE,
+                {"sidecar": path.name, "wav": str(wav), "detail": (
+                    "multiple canonical records name this WAV" if wav in documents
+                    else "canonical capture hash is missing"
+                )},
+            )
+        documents[wav] = (path, doc)
+    for path in sorted(root.glob("summed/summed_*.json")):
+        wav = path.with_suffix(".wav").resolve()
+        if wav not in documents:
+            documents[wav] = (path, _capture_document(path))
+    return root, [(path, wav, doc) for wav, (path, doc) in documents.items()]
+
+
 def discover_captures(
     round_dir: Path,
     *,
     select: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> tuple[PoseCapture, ...]:
-    """Every summed capture under ``round_dir``, bound to its own program.
+    """Read a round or bundle through canonical records, then legacy sidecars.
 
-    ``round_dir`` is a banked round directory (the one holding ``bundle/``) or
-    the bundle itself. Raises :class:`RoundCapturesRefused` naming the missing
-    input; how MANY captures a reader needs is the reader's own bar.
-
-    ``select`` filters the parsed sidecar doc BEFORE the WAV is decoded and
-    deconvolved. The program binding is checked for every sidecar either way,
-    because a round whose captures cannot be bound to their bytes is a finding
-    about the round. With a filter, an empty result is an ordinary answer
-    rather than the no-captures refusal.
+    Each record binds its exact summed WAV and program. ``select`` runs before
+    decoding, after those bindings are checked; an empty filtered result is
+    valid. Raises :class:`RoundCapturesRefused` for missing or conflicting input.
     """
-    round_dir = Path(round_dir)
-    sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
-    if not sidecars:
+    round_dir, documents = _capture_documents(Path(round_dir))
+    if not documents:
         raise RoundCapturesRefused(
             REFUSE_NO_CAPTURES,
             {"round_dir": str(round_dir), "looked_for": "**/summed/summed_*.json"},
@@ -219,19 +269,17 @@ def discover_captures(
     captures: list[PoseCapture] = []
     # Decoded once per unique program, not once per capture.
     program_audio: dict[str, tuple[np.ndarray, int]] = {}
-    for sidecar in sidecars:
-        try:
-            doc = json.loads(sidecar.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RoundCapturesRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": str(exc)},
-            ) from exc
-        wav = sidecar.with_suffix(".wav")
+    for sidecar, wav, doc in documents:
         if not wav.is_file():
             raise RoundCapturesRefused(
                 REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": "no WAV beside the sidecar"},
+                {"sidecar": sidecar.name, "wav": str(wav), "detail": "capture WAV is missing"},
+            )
+        capture_sha = doc.get("wav_sha256")
+        if capture_sha and sha256_file(wav) != capture_sha:
+            raise RoundCapturesRefused(
+                REFUSE_CAPTURE_UNREADABLE,
+                {"sidecar": sidecar.name, "declared_capture_sha256": capture_sha},
             )
         sha = _declared_program_sha(doc, round_dir)
         program = programs.get(sha) if sha is not None else None
@@ -283,7 +331,7 @@ def discover_captures(
         pose_kind, seat_offset_m = _doc_pose_category(doc)
         captures.append(
             PoseCapture(
-                capture_id=str(doc.get("position_id") or sidecar.stem),
+                capture_id=str(doc.get("take_id") or doc.get("position_id") or sidecar.stem),
                 phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
                 wav=wav,
                 program=program,
@@ -334,12 +382,15 @@ def select_capture(
     seen: list[str] = []
     if capture_id is not None:
         def wanted(doc: Mapping[str, Any]) -> bool:
-            declared = doc.get("position_id")
+            declared = doc.get("take_id") or doc.get("position_id")
             seen.append(str(declared) if declared else "")
             # A sidecar that declares no id takes its capture id from its own
             # file name, which this predicate cannot see; the WAV-stem match
             # below decides.
-            return not declared or str(declared) == capture_id
+            return (
+                not declared or str(declared) == capture_id
+                or Path(str(doc.get("wav_path") or "")).stem == capture_id
+            )
 
         named = [
             capture
