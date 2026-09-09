@@ -102,8 +102,8 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.bass_extension.targets import MarginPolicy
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
 from jasper.measurement_window import measurement_window
+from jasper.output_topology import OutputTopology
 from jasper.volume_owner import VolumeClaimHandle, VolumeOwner
 
 from .analysis import (
