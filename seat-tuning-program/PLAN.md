@@ -19,7 +19,7 @@ dispatch. The 11-position cloud and earlier stereo room support are agreed.
 Correction above the current room ceiling is a research question (§1c), not
 an approved filter policy or a permanent exclusion from Room.
 
-**Room delivery:** rows 2.6 and 2.7 are open as
+**Room delivery:** rows 2.6 and 2.7 landed in
 [PR #4662](https://github.com/jaspercurry/JTS/pull/4662) and
 [PR #4663](https://github.com/jaspercurry/JTS/pull/4663). Neither is a stereo
 capture or hardware proof. The existing speaker-tuning owner keeps that flow.
@@ -71,8 +71,8 @@ left/centre/right, then the two vertical positions. Keep speakers fixed.
 This is the owner's chosen default, not a universal optimum. Dutch & Dutch's
 [written guide](https://support.dutchdutch.com/how-to-take-your-musical-enjoyment-from-great-to-incredible-rew-roommatching-guide/)
 uses seven positions for one listener and allows more; the recalled 11-point
-video has not been identified. The current program remains seven-point until
-row 2.7 lands; existing rounds retain their original coordinates. One registry
+video has not been identified. The default is now the 11-position cloud
+(PR #4663); existing rounds retain their original coordinates. One registry
 owns the new pose list and default spacing; the UI, CLI and LLM menu consume
 it. Bank actual coordinates and program identity. Poses remain flexible.
 
@@ -200,7 +200,7 @@ targets and candidate vocabulary. Bass owns its protection evidence and level
 policy, not another apply path. One emitter owns the complete graph and boost
 budget. Saved speaker tunes are inputs to Room, not files Room retunes.
 
-## 4. Current integration facts (main `f575fe364`, 2026-09-09)
+## 4. Current integration facts (main `b4e4ddda4`, 2026-09-09)
 
 Recheck at the implementation head; §9 retains the earlier history.
 
@@ -212,10 +212,11 @@ Recheck at the implementation head; §9 retains the earlier history.
   `_validated_room_correction` refuses stereo at lines 195–201 because the
   active emitter takes one room set. The flat emitter's `room_peqs_right` is
   not proof of stereo support here. Row 2.9 converges the two representations.
-- `crossover_v2/room_views.py:155–192` deduplicates by `pose_id` and drops
-  candidate/graph identity. An offline probe of `seat/cube` with two candidates
-  yields 14 stop IDs at seven places and one pooled “14-position” median.
-  Row 2.6 must fix this before room comparisons or bass fitting consume it.
+- `crossover_v2/room_selection.py` now selects one compatible room cohort
+  before room views run (PR #4662). Two candidates at seven places produce
+  separate seven-position summaries. Retakes count once per physical pose;
+  prescription, grade and bass fit retain source identity and shared measured
+  coverage. Missing side and resolved calibration status remain disclosed.
 - `room_ceiling.json` discloses the trusted floor and clamp. A 625 Hz trusted
   floor clamps to 500 Hz; no data earns the missing band by that clamp.
   `room_prescription.py` allows 0.5 dB at the taper; bell tails are not zero
@@ -288,13 +289,13 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 
 | Row | Concern | Tag | Proof / dependency |
 |---|---|---|---|
-| 2.5 | **PARTIAL — ADR-0277 in PR #4663 records the 11-position default and preserves saved cubes.** Record other program decisions in append-only ADRs where needed. Resolve cabinet/side identity and the per-role vs per-cabinet trim ambiguity with the speaker owner. Upper-band policy stays open under 2.11. | A | Current decision and implementation scope agree; no retroactive rewrite of ADR history. |
-| 2.6 | **OPEN — PR #4662.** One room summary per declared side, exact candidate, played graph, scope, level and calibration reference. Reuses the canonical record reader; keys positions by physical pose, discloses repeats/unusable takes and common valid frequency coverage. Prescription, grade and bass fit carry the selected basis. Current records without a side or resolved calibration status report those facts as unknown. | V | Two candidates at seven poses yield separate seven-position summaries; retakes do not add positions. Narrow measured coverage still checks filter tails against the complete room policy band. |
-| 2.7 | **OPEN — PR #4663.** Registers the 11-position default (§1a) once; old `seat/cube` and `seat/express` identities retain their coordinates. Prompts/counts come from the registry; the runbook and generated menu agree. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Fixture preview and staged records agree on 11 mono sweeps. No hardware walk yet; stereo reaches 22 only after 2.8. No duplicated product pose list. |
+| 2.5 | **PARTIAL — ADR-0277 landed in PR #4663; it records the 11-position default and preserves saved cubes.** Record other program decisions in append-only ADRs where needed. Resolve cabinet/side identity and the per-role vs per-cabinet trim ambiguity with the speaker owner. Upper-band policy stays open under 2.11. | A | Current decision and implementation scope agree; no retroactive rewrite of ADR history. |
+| 2.6 | **LANDED — PR #4662, `cafc26dc7`.** One room summary per declared side, exact candidate, played graph, scope, level and calibration reference. Reuses the canonical record reader; keys positions by physical pose, discloses repeats/unusable takes and common valid frequency coverage. Prescription, grade and bass fit carry the selected basis. Current records without a side or resolved calibration status report those facts as unknown. | V | Two candidates at seven poses yield separate seven-position summaries; retakes do not add positions. Narrow measured coverage still checks filter tails against the complete room policy band. |
+| 2.7 | **LANDED — PR #4663, `b4e4ddda4`.** Registers the 11-position default (§1a) once; old `seat/cube` and `seat/express` identities retain their coordinates. Prompts/counts come from the registry; the runbook and generated menu agree. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Fixture preview and staged records agree on 11 mono sweeps. No hardware walk yet; stereo reaches 22 only after 2.8. No duplicated product pose list. |
 | 2.8 | Side-solo capture through each cabinet's accepted speaker tune, left then right at a held pose. Extend shared scope/routing with the speaker owner; account for side-specific level/trim and protection. | P | **NN**: actual graph mutes the other side and preserves all driver protection; receipt identifies the side; one Start per pose batch. |
 | 2.9 | **Moved from 6.1.** Per-side room emission and extraction, converged with `room_peqs_right`. Keep every side's evidence and filters separate; use a common target only over supported coverage. Extend the existing budget, apply and restore owners. | E | **NN**: distinct left/right filters survive candidate fingerprint, emission, readback, trial, apply and restore; mono behavior preserved. Remove the stereo refusal only once this path exists. |
 | 2.10 | Small Room entry/resume page (§1b), generated tool entry and optional method pointers. Use existing session, plots and human placement screen. | P | Fresh and resumed sessions identify the same saved tune/round; copied instructions refer to current tool contracts; no second state owner. |
-| 2.11 | Research upper-room correction (§1c): speaker/seat compatibility, directivity, target, useful bandwidth and broad bounded candidates. Compare low-band-only with a proposed upper-tier trial; room score, direct/off-axis effects and listening stay distinct. | V/A | Cited research and one bounded experiment design with open limits; amend the ceiling/filter contract only if implementation is chosen. Research does not block 2.4/2.12. |
+| 2.11 | **Offline experiment outline prepared in §1c; experiment not run.** Research upper-room correction (§1c): speaker/seat compatibility, directivity, target, useful bandwidth and broad bounded candidates. Compare low-band-only with a proposed upper-tier trial; room score, direct/off-axis effects and listening stay distinct. | V/A | Cited research and one bounded experiment design with open limits; amend the ceiling/filter contract only if implementation is chosen. Research does not block 2.4/2.12. |
 | 2.12 | Stereo room acceptance after 2.4 and 2.8–2.10: measure 11 positions per side, trial separate corrections, compare and verify the saved pair. Add a both-playing check where it answers a remaining question. | H | Separate side evidence, useful before/after result and normal-playback readback; no claim of stereo completion from the mono trial alone. |
 
 ### Wave 3 — the bass candidate kind and protection (lane D)
@@ -342,8 +343,9 @@ until its experiment scope is settled. Shared files have one assigned writer.
 1. Refresh the affected briefs against this plan and current refs. Keep the
    existing speaker owner in charge of its engine; agree the side-solo and
    evidence contracts before editing shared capture/emitter files.
-2. Room: 2.5 → 2.6 → 2.7 → 1.6 → 2.4 for the first mono proof. Build 2.8/2.9
-   with the shared owner and 2.10 at the UI boundary, then 2.12 for stereo.
+2. Room: 2.6/2.7 are landed; 1.6 → 2.4 is the first mono proof. Finish the
+   side/trim decision in 2.5 and build 2.8/2.9 with the shared owner, plus
+   2.10 at the UI boundary, then 2.12 for stereo.
    Neither room proof waits for bass extension, cardioid or upper-band EQ.
 3. Bass: close #4643's graph-backed per-driver protection and completeness
    findings; land its part-1 seam after reconciliation with main. Fix 3.2b
@@ -403,6 +405,17 @@ service, `JASPER_*` knob, browser/relay capture, embedded LLM client or
 operator-less wizard is introduced by this plan.
 
 ## 9. Status log
+
+- 2026-09-09 18:22Z: **Rows 2.6/2.7 LANDED.** PR #4662 merged at
+  `cafc26dc7`; PR #4663 merged after it at `b4e4ddda4`. Full local lanes
+  passed (27,169 room; 27,163 cloud), combined checks passed (5,440 program
+  fast lane plus 95 room checks), and 14,622 checks covered merged upstream
+  changes. Final GitHub CI was green for both heads; no open review findings.
+  The room review's taper finding is fixed. Operator previews show cloud=11,
+  cube=7 and baseline=express. The existing package-install repair #4664
+  unblocked CI. §1c now gives an offline upper-room comparison; no trial,
+  runtime ceiling change, deployment or microphone walk occurred. Next is
+  1.6/2.4 with the owner, then the shared side/trim contract and stereo work.
 
 - 2026-09-09 17:50Z: **Room foundations opened, not landed.** PR #4662
   selects compatible room records, counts physical positions, reports usable
