@@ -607,6 +607,7 @@ def _outputd_transport_health(
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
             read_saved_topology=evidence.saved_topology_for_wire,
+            post_dsp_only=True,
         )
         if transport_report.errors:
             return CheckResult(
