@@ -432,6 +432,23 @@ def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
         assert b"cross_site_request" in req.wfile.getvalue()
 
 
+def test_mutating_get_rejects_cross_site_top_level_navigation():
+    """/reset deletes the saved Home Assistant credentials. A page GET may be
+    reached by a cross-site link; a GET that mutates may not."""
+    req = _WizardRequest(
+        home_assistant_setup._make_handler({"state_path": "/tmp/jts-test-ha.env"}),
+        "/reset",
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        },
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+
+
 # --- Route tables, pinned at the request surface --------------------------
 #
 # Every converged wizard dispatches the same five steps: normalise the path,
@@ -468,6 +485,9 @@ _TABLED_WIZARD_FACTORIES = {
     }),
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
+    ),
+    "home_assistant_setup": lambda: home_assistant_setup._make_handler(
+        {"state_path": "/tmp/jts-test-ha.env"},
     ),
     "wake_setup": lambda: wake_setup._make_handler(
         {
@@ -534,8 +554,21 @@ TABLED_WIZARDS = _tabled_wizards()
 TABLED_GET_ROUTES = [
     (name, cls, path) for name, cls, gets, _ in TABLED_WIZARDS for path in gets
 ]
+# POST routes guarded by the READ guard rather than by CSRF: read-only
+# probes that change no state. A missing CSRF token is not what rejects
+# them, so they are pinned against a cross-site read instead.
+_READ_GUARDED_POST_ROUTES = frozenset({
+    ("home_assistant_setup", "/discover"),
+    ("home_assistant_setup", "/ready"),
+    ("home_assistant_setup", "/verify"),
+})
 TABLED_POST_ROUTES = [
     (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS for path in posts
+    if (name, path) not in _READ_GUARDED_POST_ROUTES
+]
+READ_GUARDED_POST_ROUTES = [
+    (name, cls, path) for name, cls, _, posts in TABLED_WIZARDS for path in posts
+    if (name, path) in _READ_GUARDED_POST_ROUTES
 ]
 TABLED_POST_WIZARDS = [
     (name, cls) for name, cls, _, posts in TABLED_WIZARDS if posts
@@ -616,6 +649,28 @@ def test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token(
         )
         req.do_POST()
         assert req.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "handler_cls", "path"),
+    READ_GUARDED_POST_ROUTES,
+    ids=[f"{name}{path}" for name, _, path in READ_GUARDED_POST_ROUTES],
+)
+def test_read_guarded_post_route_rejects_cross_site_reads(
+    module_name, handler_cls, path,
+):
+    req = _WizardRequest(
+        handler_cls,
+        path,
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "cors",
+        },
+    )
+    req.do_POST()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"cross_site_request" in req.wfile.getvalue()
 
 
 @pytest.mark.parametrize(

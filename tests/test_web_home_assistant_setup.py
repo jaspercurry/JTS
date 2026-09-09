@@ -215,12 +215,12 @@ def _handler_cls():
 def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
     """Build a *real* /assistant/ha/ Handler instance wired to a synthetic request.
 
-    Mirrors tests/test_web_wifi_setup.py's `_make_request`. The Handler
-    defines its response helpers (_send_html / _send_json) as instance
-    methods, so we instantiate the real class (via __new__, to skip
-    BaseHTTPRequestHandler.__init__'s socket plumbing) and bolt the request
-    I/O onto it. We then override only the network-touching surface of
-    BaseHTTPRequestHandler so the real helper methods run without a socket.
+    Mirrors tests/test_web_wifi_setup.py's `_make_request`. The route
+    bodies close over the handler class's `cfg`, so we instantiate the real
+    class (via __new__, to skip BaseHTTPRequestHandler.__init__'s socket
+    plumbing) and bolt the request I/O onto it. We then override only the
+    network-touching surface of BaseHTTPRequestHandler so the real dispatch
+    runs without a socket.
 
     Status + emitted headers are captured back onto the instance as
     ``.status`` / ``.sent_headers`` (with a ``header_values(name)`` reader),
