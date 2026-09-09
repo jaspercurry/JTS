@@ -2113,6 +2113,7 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
+    log_event(logger, "control.ready", host=args.host, port=args.port)
     restore_sigterm = _install_sigterm_shutdown(server)
     try:
         server.serve_forever()

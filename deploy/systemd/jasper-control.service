@@ -29,6 +29,11 @@ StartLimitAction=reboot
 # dead. Restart=on-failure below also covers watchdog expiry.
 Type=notify
 WatchdogSec=30s
+# Stop grace period: control's cleanup (broker socket close, peering
+# stop, heartbeat stop) is quick, so a shutdown that runs past 10 s is
+# wedged, not slow — SIGKILL rather than blocking the reboot/restart
+# it's often stopped for.
+TimeoutStopSec=10s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify creds live in /var/lib/jasper-intsecrets/spotify_credentials.env (written
