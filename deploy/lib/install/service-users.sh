@@ -188,24 +188,33 @@ create_jasper_service_users() {
         usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
     fi
     if getent group jts-ring >/dev/null 2>&1; then
-        # jasper-web's RUNTIME grant comes from the unit's
-        # SupplementaryGroups= (systemd adds the group to the process
-        # directly; the group need only exist). This passwd record serves the
-        # non-systemd consumers — `sudo -u jasper-web` probes, operator shells
-        # — and this file's own convention that -G lists match each unit's
-        # SupplementaryGroups=. The useradd -G above is skipped when the user
-        # already exists, hence this idempotent add — same shape as the
+        # jasper-web READS one ring header: the /rooms/ wizards
+        # (jasper/web/rooms_setup.py, pair_flow.py) import
+        # jasper.multiroom.state, whose ring_flow_state opens
+        # /dev/shm/jts-ring/grouping.ring O_RDONLY. It writes no ring.
+        # Its RUNTIME grant comes from the unit's SupplementaryGroups=
+        # (systemd adds the group to the process directly; the group need only
+        # exist). This passwd record serves the non-systemd consumers —
+        # `sudo -u jasper-web` probes, operator shells — and this file's own
+        # convention that -G lists match each unit's SupplementaryGroups=. The
+        # useradd -G above is skipped when the user already exists, hence this
+        # idempotent add — same shape as the
         # jasper-secrets/jasper-intsecrets upgrade blocks.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
-        # #2786 — jasper-control READS one ring header: /state's grouping
-        # `ring` block opens /dev/shm/jts-ring/grouping.ring O_RDONLY for its
-        # first 128 bytes. Unlike every other member here it never writes a
-        # ring. Same shape as the jasper-web line above: the RUNTIME grant is
-        # the unit's SupplementaryGroups=, and this passwd record serves the
+        # #2786 — jasper-control READS one ring header too: /state's grouping
+        # `ring` block opens the same file O_RDONLY for its first 128 bytes.
+        # Same shape as the jasper-web line above: the RUNTIME grant is the
+        # unit's SupplementaryGroups=, and this passwd record serves the
         # non-systemd consumers plus this file's convention that the -G lists
         # match each unit. Takes effect on the daemon's next start, which the
         # deploy performs.
         usermod -aG jts-ring jasper-control 2>/dev/null || true
+        # The renderer users were members while the per-renderer ring ingress
+        # existed; nothing arms it any more, so drop the stale grant on an
+        # upgraded box (a fresh box never had it).
+        # REMOVAL CONDITION: every box has taken one install after this lands.
+        gpasswd -d pi jts-ring 2>/dev/null || true
+        gpasswd -d shairport-sync jts-ring 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; jts-ring = jasper-web, plus jasper-control as a header READER)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; jts-ring = jasper-web + jasper-control, both header READERS)"
 }

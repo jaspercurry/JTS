@@ -127,8 +127,10 @@ Group=jasper
 # lets the wizards write/read HA + Spotify credentials and token caches.
 # `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
-# `jts-ring` grants write access to /dev/shm/jts-ring only; nothing this
-# unit spawns opens a ring.
+# `jts-ring` is a READ grant: the /rooms/ wizards (jasper/web/rooms_setup.py,
+# pair_flow.py) import jasper.multiroom.state, whose ring_flow_state opens
+# /dev/shm/jts-ring/grouping.ring (0660, group jts-ring) O_RDONLY for its
+# header. This unit writes no ring.
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
