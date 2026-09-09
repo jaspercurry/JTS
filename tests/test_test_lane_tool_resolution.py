@@ -957,7 +957,8 @@ def test_fast_lane_coalesces_targets_after_policy_and_prunes_stale_failures(
         "tests/test_dependency_groups.py", "tests/test_lint_contracts.py",
         "tests/test_deploy_wiring_guards.py", "tests/test_shell_awk_environ_convention.py",
         "tests/test_shell_env_source_convention.py", "tests/test_docs_impact.py",
-        "tests/test_correction_boundary_ssot.py", "tests/test_runtime_import_closure.py",
+        "tests/test_audio_measurement_boundary_ssot.py",
+        "tests/test_runtime_import_closure.py",
         *_ci_classifier.ROUTING_POLICY_PYTEST_TARGETS,
     }
     selected, requested, previous, untouched = (

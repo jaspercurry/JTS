@@ -145,8 +145,7 @@ def test_page_shell_carries_every_element_id_the_renderer_reads():
     html = render_page("jts.local").decode()
     for element_id in cloud_ids:
         assert f'id="{element_id}"' in html, element_id
-    # The chart canvas and its wrapper — the room page's own precedent shape
-    # (deploy/assets/correction/js/main.js's #chart / .chart-wrap).
+    # The chart canvas and its wrapper.
     assert "<canvas" in html
     assert "crossover-chart-wrap" in html
     # The legend enumerates all four series the chart draws (measure, verify,

@@ -164,12 +164,9 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
         for path in installer_shell_paths()
         if path.name != "env-migrations.sh"
     )
-    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
-    assert "apply_observed_single_policy()" in reconcile
-    assert 'OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"' in reconcile
-    assert 'OUTPUT_DAC_CARD="$OBSERVED_OUTPUT_SELECTED_CARD_ID"' in reconcile
     # Classification is registry-backed and the shell holds no hardware label:
     # the classifier's env emitter names the Apple cards (ADR-0235 R2).
     assert "usb-c to 3.5mm" not in reconcile.lower()
@@ -179,17 +176,13 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "jasper_asound_render_template" in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
-    assert "JASPER_AUDIO_DAC_CARD" in reconcile
     assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
     assert "OUTPUT_DAC_ROUTE" not in install_without_env_migrations
-    assert "APPLE_DONGLE_PRESENT=1" in reconcile
-    assert "APPLE_DONGLE_PRESENT=0" in reconcile
-    assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
 
 
 def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
     route_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
-    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "JASPER_OUTPUT_DAC_ROUTE" not in route_lib
     assert "OUTPUT_DAC_ROUTE" not in route_lib
     assert "mono:([1-8])" not in route_lib
@@ -198,7 +191,6 @@ def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
     assert 'OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch"' in route_lib
     assert "type null" in route_lib
     assert "jasper_asound_route_ignored()" not in reconcile
-    assert "event=audio_hardware_reconcile.${name}" in reconcile
 
 
 def _bash_function(path: Path, name: str) -> str:
@@ -478,7 +470,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
@@ -526,15 +518,8 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     # active paths, and trusts the durable runtime contract rather than
     # transient startup-load state: a saved active baseline must stay playable
     # after setup completes.
-    assert "active_graph_status()" in reconcile
     assert "active_graph_width_out_of_range" in runtime_contract
-    assert "action=park_until_active_graph" in reconcile
-    assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
-    assert "JASPER_CAMILLA_STATEFILE" in reconcile
-    assert "JASPER_CAMILLA2_STATEFILE" in reconcile
-    assert "JASPER_OUTPUT_TOPOLOGY_PATH" in reconcile
-    assert "outputd_active_lane_decision" in reconcile
     assert "outputd_active_content_playback" in runtime_contract
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
@@ -591,7 +576,7 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
 
     # The unit owns these names; the reconciler must not become a second writer.
-    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "TTS_ENV_FILE" not in reconcile
     assert VOICE_TTS_SOCKET_ENV not in reconcile
 
@@ -673,10 +658,7 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    # The transport dispatches on sink SHAPE, not the DAC's name; `dual_apple`
-    # survives as a parse alias and the stable `/state` wire value.
     assert "SinkMode::Composite" in config_rs
-    assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
     # A PASSIVE composite is a parse-time refusal. The refusal ITSELF is owned
     # by config.rs's `a_passive_composite_parks_and_a_roleful_one_does_not`,
@@ -1297,7 +1279,6 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     recover_unit = (
         REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text()
-    recover_script = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     failure_reconcile = (
         REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
     ).read_text()
@@ -1331,9 +1312,6 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in recover_rule
     assert "Before=jasper-outputd.service" in recover_unit
-    assert "--no-block start jasper-outputd.service" in recover_script
-    assert "--no-block restart jasper-outputd.service" in recover_script
-    assert "--no-block stop jasper-voice.service jasper-outputd.service" in recover_script
 
 
 def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
@@ -1391,7 +1369,6 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
 def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
-    state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
     writer = main_rs.split("fn run_chip_ref_writer(", 1)[1].split(
         "fn write_playback_period(",
@@ -1400,12 +1377,8 @@ def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
 
     assert "JASPER_OUTPUTD_CHIP_REF_TEE_PATH" in config_rs
     assert "chip_ref_tee_path: env_optional(" in config_rs
-    assert "write_chip_ref_tee(&mut tee, &packet.samples, state);" in writer
+    assert "write_chip_ref_tee(&mut tee, &packet.samples);" in writer
     assert "write_chip_ref_tee" not in run_alsa
-    assert "diagnostic_tee_path" in state_rs
-    assert "diagnostic_tee_active" in state_rs
-    assert "diagnostic_tee_open_error_count" in state_rs
-    assert "mark_chip_ref_tee_open_error" in main_rs
 
 
 def test_outputd_optional_chip_reference_cannot_gate_dac_playback():
@@ -1442,10 +1415,10 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
         ".context(sink.prime_context())?;"
     )
     started = run_alsa.index("sink.start()?;")
-    ready = run_alsa.index("notify_ready(config)?;")
+    ready = run_alsa.index("notify_ready(config, state)?;")
 
     assert "notify(NotifyState::Ready)" not in main_fn
-    assert "notify_ready(config)?" not in main_fn
+    assert "notify_ready(config, state)?" not in main_fn
     assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
     # `prime_periods` lives in `alsa_backend.rs`: the composite's post-recovery
@@ -1471,7 +1444,7 @@ def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
     prime_loop = run_alsa.index("for _ in 0..prime_periods")
     primed = run_alsa.index(".context(sink.prime_context())?;")
     started = run_alsa.index("sink.start()?;")
-    ready = run_alsa.index("notify_ready(config)?;")
+    ready = run_alsa.index("notify_ready(config, state)?;")
 
     assert composite_open < paired_open
     assert sink_open < prime_count < prime_loop < primed < started < ready

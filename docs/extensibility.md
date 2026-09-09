@@ -119,8 +119,8 @@ doctrine most exists to close.
 ## 4. The Feature contract (the new one)
 
 A **Feature** is a self-contained vertical that the host *composes*. Today
-JTS has two forming (the async "research" feature and the calibration agent)
-and a third shipped (the conversation-history page). Each currently
+JTS has one forming (the async "research" feature) and one shipped (the
+conversation-history page). Each currently
 reinvents the same plumbing — its own store, its own LLM-provider layer, its
 own web surface, its own background-work and proactive-speech hooks. That
 duplication is the signal that the shape is real.
@@ -145,8 +145,7 @@ The **host owns and injects** (a Feature never builds these itself):
 - **one shared scheduler / worker pool** — Features do **not** spawn their
   own threads (on a 1 GB Pi that is a memory-safety requirement, not tidiness),
 - **one shared text-LLM-provider facility** — Features do **not** each build
-  their own (research and the calibration agent currently do; that is the
-  duplication to collapse),
+  their own (research currently does; that is the duplication to collapse),
 - **voice/audio arbitration and the safety/duck guards**,
 - **secrets and account/credential lifecycles**.
 
@@ -165,7 +164,7 @@ composition contract right only on the second iteration, by evolving it.
 > Status: the generic Feature *contract* is **not built yet** (by design —
 > it crystallizes on the second instance). Its first proving instance,
 > `conversation-history`, has substantially shipped; the shared helpers get
-> extracted from what it, `research`, and the calibration agent duplicate.
+> extracted from what it and `research` duplicate.
 
 ---
 

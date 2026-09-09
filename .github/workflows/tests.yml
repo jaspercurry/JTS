@@ -78,9 +78,8 @@ jobs:
     # fifth of merged PRs are this shape, and they were paying the full
     # ~8m24s farm for it.
     #
-    # "Inert" is load-bearing. The calibration-agent corpus the product reads
-    # at runtime is a package resource (jasper/calibration_agent/corpus/), not
-    # a document, so no change this lane can carry reaches product data.
+    # "Inert" is load-bearing. Markdown shipped inside the package tree is
+    # product data, not a document, so no change this lane can carry reaches it.
     #
     # The bundle is the registered set of tests that READ documentation --
     # the "pin promises with tests" contracts (AGENTS.md), which assert that
@@ -385,7 +384,6 @@ jobs:
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
-          node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
           node scripts/check-sensitivity-trim-parity.mjs
 
   rust:

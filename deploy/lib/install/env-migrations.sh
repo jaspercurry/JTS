@@ -135,9 +135,9 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
         "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
         "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
-        # The capture/sweep/tone trees the /sound/room/ and /sound/ commissioning
-        # arms share. install.sh's install_camilladsp() now creates these at
-        # install time (2770 group `jasper`, matching their
+        # The capture/sweep/tone trees the measurement daemon and /sound/
+        # commissioning arms share. install.sh's install_camilladsp() now
+        # creates these at install time (2770 group `jasper`, matching their
         # /var/lib/jasper/correction siblings); this heal stays for boxes
         # deployed before that landed, where whichever surface measured first
         # had already made them with a bare mkdir — root:root 0700 (its
@@ -150,13 +150,11 @@ heal_shared_state_modes() {
         "d:2770:${STATE_DIR}/active_speaker_stimuli"
         "d:2770:${STATE_DIR}/active_speaker_tone_artifacts"
     )
-    # The tuning spend ledger is SQLite, written in place rather than
-    # replaced, so a root-owned file left by the pre-drop jasper-correction-web
-    # would raise "attempt to write a readonly database" for the new writer —
-    # the file must stay writable by the non-owner in group jasper, and here
-    # that failure would silently stop the paid tuning calls counting against
-    # the household spend cap. 0644 is the mode jasper.web.correction_tuning
-    # maintains for its group-`jasper` readers.
+    # The tuning spend ledger is SQLite and is still summed into household
+    # spend (jasper.usage.household_usage_reader); a root-owned file left by
+    # the pre-drop jasper-correction-web must stay readable by group `jasper`
+    # or the aggregate silently drops it. Nothing writes it any more; heal
+    # the mode, expect no growth.
     for sidecar in \
         "${STATE_DIR}/usage-tuning.db" \
         "${STATE_DIR}/usage-tuning.db-wal" \

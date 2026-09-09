@@ -183,8 +183,7 @@ jasper_env_lock_path() {
 # an exec of a command literally named `{var}`, and a non-interactive shell
 # dies 127 there with the write unmade. deploy/bin/jasper-airplay-volume
 # holds its own lock on fd 9; it never sources this lib, and a caller that
-# did would lose its fd 9 here. jasper_env_file_hold parks its longer-lived
-# hold on fd 8 so the writers below can go on taking 9.
+# did would lose its fd 9 here.
 #
 # NOTHING acts on the lock by name: a jasper-group process can swap a symlink
 # into that 0770 directory between two lookups, and a by-name `touch`/`chmod`
@@ -384,42 +383,6 @@ _jasper_env_file_upsert() {
     fi
     exec 9>&-
     return "$rc"
-}
-
-# jasper_env_file_hold FILE / jasper_env_file_drop
-# Take FILE's advisory lock and KEEP it across a sequence, so a caller that
-# publishes FILE by building a candidate and renaming it excludes another
-# holder of the same lock for the whole snapshot→rename window (whichever
-# renamed second would discard the other's file entirely). It excludes BASH
-# holders only: jasper/fanin/coupling_reconcile.py, the second writer of
-# outputd.env, publishes through jasper/atomic_io.py's atomic_write_text, which
-# takes no env-file lock at all (ADR-0235 G8, open until the Python side joins
-# this path).
-# The acquire above lands on fd 9, which every writer below also takes, so the
-# hold is MOVED to fd 8 straight away: dup2 carries the open file description,
-# hence the flock, and a later write to the CANDIDATE can then open and close 9
-# without ending the hold. It cannot span a set/unset of FILE ITSELF — flock(2)
-# is per open file description, so the inner open is denied once `flock -w 10`
-# gives up. Both numbers are literal, never bash's `{var}>` (4.1): /bin/bash on
-# macOS is 3.2 and would exec a command named `{var}`.
-# The held flag lives in this lib-level variable so a drop with no hold cannot
-# close an fd 8 this lib never opened; the parser skips every `_JASPER_`-
-# prefixed key, so no parsed env file can plant one.
-# Removal condition: drop both when jasper-audio-hardware-reconcile's
-# stage_outputd_env — the one caller — no longer stages a whole env file.
-_JASPER_ENV_HOLD_HELD=''
-
-jasper_env_file_hold() {
-    jasper_env_file_drop
-    _jasper_env_lock_acquire "$(dirname "$1")" "$1" || return 1
-    exec 8>&9 9>&-
-    _JASPER_ENV_HOLD_HELD=1
-}
-
-jasper_env_file_drop() {
-    [[ -n "${_JASPER_ENV_HOLD_HELD:-}" ]] || return 0
-    _JASPER_ENV_HOLD_HELD=''
-    { exec 8>&-; } 2>/dev/null || true
 }
 
 # jasper_env_file_repair_permissions FILE [FILE_MODE]

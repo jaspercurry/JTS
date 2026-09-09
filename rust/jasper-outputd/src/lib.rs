@@ -33,15 +33,10 @@ pub mod core;
 pub mod dac_content;
 pub mod fake;
 pub mod ledger;
-pub mod loudness;
 pub mod mixer;
 // Ring B: the SHM ping-pong ring content-source reader — the one central
 // transport from CamillaDSP to the DAC (ADR-0100).
 pub mod shm_ring_source;
-// Observe-only software-AEC reference clock drift estimator (research-doc
-// increment 2): composes the shared jasper-clock DLL to measure :9891-reference
-// vs DAC-playout drift in ppm. Never warps audio.
-pub mod dac_clock;
 pub mod state;
 pub mod tts;
 pub mod types;

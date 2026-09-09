@@ -30,13 +30,14 @@ from tests.install_surface import installer_text
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
-# Every deploy/bin executable that loads the shared lib. Not only the
-# reconcilers: the drift guards below are about the loader and the quoting,
-# which every consumer must get identically right.
+# Every deploy/bin executable that loads the shared lib. The drift guards
+# below are about the loader and the quoting, which every consumer must get
+# identically right. jasper-audio-hardware-reconcile is absent because its pass
+# is Python: it writes through jasper.env_file under the SAME advisory lock
+# (jasper.atomic_io.env_lock_path == jasper_env_lock_path here).
 LIB_CONSUMERS = [
     ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
     ROOT / "deploy" / "bin" / "jasper-apply-airplay-mode",
-    ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile",
     ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
 ]
 
@@ -216,45 +217,6 @@ def test_env_file_seed_absent_reports_a_failed_write_apart_from_a_refusal(
 
     assert result.returncode == 1
     assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
-
-
-def test_env_file_hold_excludes_another_writer_until_dropped(
-    tmp_path: Path,
-) -> None:
-    """The hold must span a sequence, and release on drop.
-
-    jasper-audio-hardware-reconcile publishes outputd.env by copying the live
-    file to a candidate, writing keys into the candidate, then renaming — so
-    the exclusion has to outlive the individual writes to a DIFFERENT file.
-    Removal condition: stage_outputd_env no longer stages a whole env file.
-    """
-    env_file = tmp_path / "outputd.env"
-    env_file.write_text("SEED=1\n", encoding="utf-8")
-    lock = tmp_path / f".{env_file.name}.lock"
-    # Production always finds this already present (the installer or a prior
-    # writer created it) and takes the read-only `exec 9<` branch before
-    # moving the hold to fd 8; an absent lock would take the create branch
-    # instead and leave that path unpinned.
-    lock.touch()
-    contend = (
-        f'if bash -c \'exec 9>>"{lock}"; flock -n 9\' 2>/dev/null; '
-        'then printf "free\\n"; else printf "excluded\\n"; fi\n'
-    )
-
-    result = _bash(
-        f'jasper_env_file_hold "{env_file}"\n'
-        # A single-key write to the CANDIDATE takes its own lock on its own
-        # descriptor; sharing one would end the hold here.
-        f'jasper_env_file_set "{tmp_path}/candidate" K V\n'
-        + contend
-        + "jasper_env_file_drop\n"
-        + contend
-        # Idempotent: an exit trap may drop a hold a commit path already did.
-        + "jasper_env_file_drop\n"
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["excluded", "free"]
 
 
 def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
@@ -593,9 +555,6 @@ def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> Non
         # the lib would make the child find its guard already set and
         # define nothing.
         ("_JASPER_ENV_FILE_LIB_LOADED", "1", "JASPER_OK", "1"),
-        # The hold's held flag: an exported one would make
-        # jasper_env_file_drop close an fd 8 this lib never opened.
-        ("_JASPER_ENV_HOLD_HELD", "1", "JASPER_OK", "1"),
     ],
 )
 def test_env_file_export_skips_jasper_prefixed_keys(
