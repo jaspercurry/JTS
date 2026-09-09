@@ -38,6 +38,7 @@ import shutil
 import socket
 import tempfile
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -1032,11 +1033,11 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
     off_started = asyncio.Event()
     release_on = threading.Event()
     release_off = threading.Event()
-    commands: list[bytes] = []
+    commands: list[bool] = []
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def program_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             loop.call_soon_threadsafe(on_started.set)
             if not release_on.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_ON")
@@ -1044,12 +1045,10 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
                 return False
             if on_outcome == "error":
                 raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
-        elif payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+        else:
             loop.call_soon_threadsafe(off_started.set)
             if not release_off.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_OFF")
-        else:
-            raise AssertionError(f"unexpected fan-in command: {payload!r}")
         return True
 
     class _Cues:
@@ -1068,8 +1067,7 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             self.calls += 1
             return True
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     cues = _Cues()
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(output_gate=gate, ducker=ducker, tts=FakeTts(), cues=cues)
@@ -1087,7 +1085,7 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             f"{path} fan-in PROGRAM_DUCK_ON worker",
             producer=playing,
         )
-        assert commands == [b"PROGRAM_DUCK_ON\nCLOSE\n"]
+        assert commands == [True]
         assert wl._output_gate.active_kind == expected_kind
 
         playing.cancel()
@@ -1107,8 +1105,8 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
         )
         assert ducker.is_ducked
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
         assert wl._output_gate.active_kind == expected_kind
 
@@ -1126,8 +1124,8 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
         assert gate.end_calls == 1
         assert cues.calls == 0
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
     finally:
         release_on.set()
@@ -1143,21 +1141,18 @@ async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
 
     from jasper.voice_daemon import FanInDucker
 
-    commands: list[bytes] = []
+    commands: list[bool] = []
     worker_error = RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def program_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             if on_outcome == "false":
                 return False
             raise worker_error
-        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
-            return True
-        raise AssertionError(f"unexpected fan-in command: {payload!r}")
+        return True
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
 
     if on_outcome == "false":
         await ducker.duck()
@@ -1170,8 +1165,8 @@ async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
     await ducker.restore()
     assert not ducker.is_ducked
     assert commands == [
-        b"PROGRAM_DUCK_ON\nCLOSE\n",
-        b"PROGRAM_DUCK_OFF\nCLOSE\n",
+        True,
+        False,
     ]
 
 
@@ -1189,11 +1184,11 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
     off_started = asyncio.Event()
     release_on = threading.Event()
     release_off = threading.Event()
-    commands: list[bytes] = []
+    commands: list[bool] = []
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def program_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             loop.call_soon_threadsafe(on_started.set)
             if not release_on.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_ON")
@@ -1202,12 +1197,11 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             if on_outcome == "error":
                 raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
             return True
-        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+        else:
             loop.call_soon_threadsafe(off_started.set)
             if not release_off.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_OFF")
             return True
-        raise AssertionError(f"unexpected fan-in command: {payload!r}")
 
     class _Tts(FakeTts):
         def __init__(self) -> None:
@@ -1267,8 +1261,7 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             self.close_calls += 1
             return 0.0
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     tts = _Tts()
     content = _ContentActivity()
     volume = _Volume()
@@ -1329,8 +1322,8 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             await beginning
 
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
         assert not ducker.is_ducked
         assert cleanup_calls == 1

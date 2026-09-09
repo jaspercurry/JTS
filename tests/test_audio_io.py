@@ -770,6 +770,32 @@ async def test_outputd_end_segment_does_not_block_on_slow_meter_finish(monkeypat
     assert saved == [("acme", "m1", "v1", measurement)]
 
 
+@pytest.mark.parametrize(
+    ("on", "wire"),
+    [(True, b"PROGRAM_DUCK_ON\n"), (False, b"PROGRAM_DUCK_OFF\n")],
+)
+def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
+    """The exact verb fan-in already parses. Depth is fan-in's — the wire
+    carries the requested state and nothing else."""
+    parent, child = socket.socketpair()
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    seen: list[bytes] = []
+
+    def serve() -> None:
+        seen.append(child.recv(64))
+        child.close()
+
+    server = threading.Thread(target=serve)
+    server.start()
+    try:
+        adapter.program_duck(on)
+    finally:
+        server.join(timeout=1.0)
+        adapter.close()
+
+    assert seen == [wire]
+
+
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
     parent, child = socket.socketpair()
     adapter = audio_io_mod._OutputdStreamAdapter(parent)

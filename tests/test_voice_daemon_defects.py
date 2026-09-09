@@ -374,9 +374,11 @@ def test_session_status_surfaces_usage_tracking_degraded():
 
 
 def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
+    from types import SimpleNamespace
+
     from jasper.voice_daemon import FanInDucker
 
-    ducker = FanInDucker("/tmp/unused.sock", -25.0)
+    ducker = FanInDucker(SimpleNamespace(program_duck=lambda _on: True))
     ducker._ducked = True
     wl = wake_loop_for_tests(ducker=ducker)
 
