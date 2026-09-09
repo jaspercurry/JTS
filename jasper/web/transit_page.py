@@ -57,7 +57,7 @@ def _bus_key_source(state: dict[str, str]) -> str:
     """Return where the bus key lives: 'state' / 'env' / 'none'.
 
     'state' = persisted in /var/lib/jasper/transit.env (the wizard's
-              owned file; what `_has_bus_key` looks at).
+              owned file).
     'env'   = visible in os.environ (operator pasted it into
               /etc/jasper/jasper.env directly, OR migrated by
               install.sh into transit.env which systemd re-sourced
@@ -65,8 +65,8 @@ def _bus_key_source(state: dict[str, str]) -> str:
     'none'  = not set anywhere.
 
     Used to drive the locked / soft-unlocked / unlocked card states.
-    Save decisions still hinge on `_has_bus_key` (state-only) — this
-    function is for rendering only."""
+    Save decisions read `JASPER_MTA_BUSTIME_KEY` directly off state
+    (state-only) — this function is for rendering only."""
     if state.get("JASPER_MTA_BUSTIME_KEY", "").strip():
         return "state"
     if os.environ.get("JASPER_MTA_BUSTIME_KEY", "").strip():

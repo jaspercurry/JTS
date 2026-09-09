@@ -60,19 +60,6 @@ def test_coords_returns_tuple_when_set():
     assert transit_page._coords(state) == (40.646, -73.994)
 
 
-def test_has_bus_key_only_checks_persisted_state(monkeypatch):
-    """`_has_bus_key` must NOT consult os.environ. The wizard is a
-    long-lived process; an operator-set value in /etc/jasper/jasper.env
-    is captured at process start and won't reflect a post-startup
-    migration. Reading only the persisted state file keeps render
-    decisions consistent with save decisions."""
-    monkeypatch.setenv("JASPER_MTA_BUSTIME_KEY", "ghost-value-in-env")
-    # Empty state → no key, regardless of os.environ.
-    assert not transit_setup._has_bus_key({})
-    # State value → key present.
-    assert transit_setup._has_bus_key({"JASPER_MTA_BUSTIME_KEY": "from-state"})
-
-
 # ---------- Geocode action -------------------------------------------------
 
 
@@ -774,10 +761,8 @@ def test_handler_post_clear_wipes_owned_keys(wizard_server):
 
 def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):
     """After /clear, the next GET of / must render the bus card in
-    its locked (no-key) state again. Locks in the BLOCKER fix
-    (_has_bus_key not consulting os.environ) from a second angle:
-    even with an env-var ghost present, the rendered page reflects
-    persisted state only."""
+    its locked (no-key) state again: even with an env-var ghost
+    present, the rendered page reflects persisted state only."""
     base_url, state_path, _restarts = wizard_server
     env_file.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",

@@ -200,17 +200,6 @@ def _seed_weather_from_transit_if_missing(
     return seeded
 
 
-def _has_bus_key(state: dict[str, str]) -> bool:
-    """True iff a BusTime key is persisted in the wizard's state file.
-
-    Intentionally does NOT consult `os.environ`. The wizard process
-    is long-lived (10-min idle); `os.environ` is captured at process
-    start and won't reflect a post-startup migration that moved the
-    key out of jasper.env. Consulting the persisted state directly
-    keeps render decisions and save decisions consistent."""
-    return bool(state.get("JASPER_MTA_BUSTIME_KEY", "").strip())
-
-
 def _validate_google_routes_key(key: str) -> str | None:
     if not key:
         return None
