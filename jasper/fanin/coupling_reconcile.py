@@ -34,6 +34,8 @@ SHARED fan-in daemon (a brief all-source glitch), so it is change-gated.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import fcntl
 import logging
 from collections.abc import Callable
@@ -50,6 +52,7 @@ from jasper.atomic_io import (
     locked_upsert_env_file,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
+from jasper.control import restart_broker
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
@@ -64,14 +67,23 @@ from jasper.fanin.latency_mode import (
 )
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
+    DEFAULT_FANIN_RING_SLOTS,
+    DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+    DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
+    RING_A_CHANNELS,
+    RING_SLOTS_ENV_VAR,
     resolve_outputd_ring_path,
     resolve_outputd_ring_slots,
 )
 from jasper.log_event import log_event
+from jasper import env_load, fanin_coupling, ring_assets
+from jasper.sound import runtime as sound_runtime
+from jasper.volume_coordinator import install_env_canonical_target_provider
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
@@ -175,14 +187,7 @@ def _restart_unit(
 
     A start-consuming verb on a crash-budget daemon goes through
     :func:`restart_broker.reset_then_manage` (see the block comment above).
-    Guarded lazy import: a missing/broken control package degrades to a reported
-    failure, never an exception out of the reconcile that would defeat the
-    fail-safe ladder.
     """
-    try:
-        from jasper.control import restart_broker
-    except ImportError as e:  # pragma: no cover - control pkg always present in prod
-        return False, f"restart_broker unavailable: {e}"
     drive = (
         restart_broker.reset_then_manage
         if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS
@@ -480,12 +485,8 @@ def _reconcile_camilla(
     ahead of all three branches, so the rule cannot be true of one acceptance and
     forgotten by the next.
     """
-    import asyncio
-
-    from jasper.sound.runtime import reconcile_current_dsp
-
     try:
-        payload = asyncio.run(reconcile_current_dsp(force=force))
+        payload = asyncio.run(sound_runtime.reconcile_current_dsp(force=force))
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")
@@ -1246,38 +1247,25 @@ def _migrate_stale_fanin_ring_slots(
     and the override written into the CURRENT content — writing the stale
     snapshot back would clobber the just-written coupling line.
     """
-    from jasper.fanin_coupling import (
-        DEFAULT_FANIN_RING_SLOTS,
-        RING_SLOTS_ENV_VAR,
-    )
-    from jasper.ring_assets import (
-        RING_A_CONF_PCM,
-        ring_conf_channels,
-        ring_conf_format,
-    )
-    from jasper.ring_assets import ring_conf_n_slots
-
     # Re-read fresh: the coupling flip was already written to this file above.
     current = _read_snapshot(fanin_snapshot.path)
 
     # The axes this function does NOT own, read before it writes the one it does.
-    conf_format = ring_conf_format(RING_A_CONF_PCM)
-    conf_channels = ring_conf_channels(RING_A_CONF_PCM)
+    conf_format = ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM)
+    conf_channels = ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM)
     fanin_format, fanin_format_source = resolve_effective_fanin_wire_format(
         current.text
     )
-    from jasper.fanin_coupling import RING_A_CHANNELS
-
     wire_shear = ""
     if conf_format is not None and conf_format != fanin_format:
         wire_shear = (
             f"fan-in declares wire format {fanin_format} (from "
-            f"{fanin_format_source}) but conf.d pcm.{RING_A_CONF_PCM} declares "
+            f"{fanin_format_source}) but conf.d pcm.{ring_assets.RING_A_CONF_PCM} declares "
             f"{conf_format}"
         )
     elif conf_channels is not None and conf_channels != RING_A_CHANNELS:
         wire_shear = (
-            f"conf.d pcm.{RING_A_CONF_PCM} declares {conf_channels} channels but "
+            f"conf.d pcm.{ring_assets.RING_A_CONF_PCM} declares {conf_channels} channels but "
             f"fan-in's mixer is fixed at {RING_A_CHANNELS}"
         )
     if wire_shear:
@@ -1295,7 +1283,7 @@ def _migrate_stale_fanin_ring_slots(
         )
         return current, False
 
-    conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
+    conf_a = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM)
     if conf_a is None:
         return current, False  # indeterminate conf.d → nothing provable to heal.
     resolution = resolve_effective_fanin_ring_slots(current.text)
@@ -1381,40 +1369,28 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     ``fanin_text`` is the (post-migration) fanin.env text — used ONLY as the
     fallback expected Ring-A slot count when the conf.d is unreadable.
     """
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
-    from jasper.ring_assets import (
-        RING_A_CONF_PCM,
-        RING_A_PROGRAM_FILE,
-        RING_ACTIVE_CONF_PCM,
-        RING_ACTIVE_CONTENT_FILE,
-        RING_B_CONF_PCM,
-        RING_B_CONTENT_FILE,
-        ring_conf_n_slots,
-        ring_header_matches_conf,
-    )
-
     # Expected Ring-A slot count: the conf.d is the attach authority for what the
     # ioplug expects; fall back to fan-in's resolved env if the conf.d is
     # unreadable. Compare on-disk against the value the ioplug attaches with.
     try:
-        fanin_slots = resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
+        fanin_slots = fanin_coupling.resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
     except ValueError:
         fanin_slots = None
-    expected_a = ring_conf_n_slots(RING_A_CONF_PCM)
+    expected_a = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM)
     if expected_a is None:
         expected_a = fanin_slots
 
     deleted = False
     for path, pcm_name, expected_slots in (
-        (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, expected_a),
-        (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
+        (ring_assets.RING_A_PROGRAM_FILE, ring_assets.RING_A_CONF_PCM, expected_a),
+        (ring_assets.RING_B_CONTENT_FILE, ring_assets.RING_B_CONF_PCM, None),
         # The ACTIVE ring is judged against ITS OWN conf.d block, which is the
         # one whose CHANNELS legitimately differ per box. Unlike Ring B it can go
         # stale without anything else changing: a re-commission from a 2-way to a
         # 3-way moves only this file's width.
-        (RING_ACTIVE_CONTENT_FILE, RING_ACTIVE_CONF_PCM, None),
+        (ring_assets.RING_ACTIVE_CONTENT_FILE, ring_assets.RING_ACTIVE_CONF_PCM, None),
     ):
-        verdict = ring_header_matches_conf(
+        verdict = ring_assets.ring_header_matches_conf(
             path, pcm_name, expected_n_slots=expected_slots
         )
         if not verdict.present or verdict.ok:
@@ -1501,14 +1477,7 @@ def outputd_ring_path_for(outputd_text: str) -> str:
     and every later pass preserves it again). Falling back to the stereo default
     is what makes every crossed pair one pass from healed, whichever half moved.
     """
-    from jasper.fanin_coupling import (
-        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
-        DEFAULT_OUTPUTD_RING_PATH,
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-        ring_active_endpoint_armed,
-    )
-
-    armed = ring_active_endpoint_armed(
+    armed = fanin_coupling.ring_active_endpoint_armed(
         {
             OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: read_value(
                 outputd_text, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
@@ -1750,8 +1719,6 @@ def main(argv: "list[str] | None" = None) -> int:
     Every verb runs under the shared entry flock (:func:`_acquire_entry_lock`)
     so two passes can never interleave their ordered daemon convergences.
     """
-    import argparse
-
     # This CLI is the jasper-fanin-coupling-auto systemd entrypoint, so its
     # journal is where INFO-level transition evidence lands. Without a configured
     # handler the root logger falls back to Python's lastResort handler (WARNING+)
@@ -1760,8 +1727,6 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # `reconcile_current_dsp` swaps the live graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
-
     install_env_canonical_target_provider()
 
     parser = argparse.ArgumentParser(
@@ -1841,9 +1806,7 @@ def _run_entry_verb(args) -> int:
     # defaults. Without this, arming a coupling from a bare CLI/install shell
     # silently RESETS a tuned chunksize back to 1024. setdefault semantics keep
     # an explicit shell override winning. Mirrors jasper.cli.sound.
-    from jasper.env_load import load_env_files
-
-    load_env_files()
+    env_load.load_env_files()
 
     # Converge the ACTIVE endpoint before the ring convergence reads it.
     # Inside the entry flock, so it can never interleave with another pass.
@@ -1851,7 +1814,7 @@ def _run_entry_verb(args) -> int:
     # found it and the box parks under its own name if nothing carries its
     # program.
     if args.auto:
-        from jasper.fanin.converge import converge_active_endpoint
+        from jasper.fanin.converge import converge_active_endpoint  # lazy: cycle with jasper.fanin.converge
 
         # Guarded because this step runs BEFORE the rest of the pass: a
         # convergence that cannot even decide must cost the box its convergence,

@@ -17,21 +17,6 @@ from pathlib import Path
 
 import pytest
 
-# EAGER, AND NOT UNUSED — deleting these re-opens a cross-file failure.
-# Five modules bind ``load_output_topology_strict`` at MODULE scope (`from
-# jasper.output_topology import ...`), so whichever of them is imported FIRST
-# while this file's fixture has that function patched freezes the patch into its
-# globals permanently — monkeypatch undoes the source module, never the copy.
-# The fixture's own convergence call is what pulls them in, so importing them
-# here, before any patching, is what keeps the patch local to this file.
-# Symptom when this regresses: an unrelated test in
-# tests/test_audio_hardware_reconcile.py fails with
-# "'object' object has no attribute 'speaker_groups'".
-import jasper.active_speaker.runtime_contract  # noqa: F401
-import jasper.active_speaker.setup_status  # noqa: F401
-import jasper.cli.active_speaker  # noqa: F401
-import jasper.cli.output_topology_reset  # noqa: F401
-import jasper.correction.runtime_safety  # noqa: F401
 from jasper.fanin import converge
 
 #: The REAL re-emit, captured before any fixture replaces the attribute.
@@ -56,11 +41,11 @@ class _Box:
         cr = "jasper.fanin.ring_readiness"
         monkeypatch.setattr(converge, "_ring_gates", lambda: self.gates)
         monkeypatch.setattr(
-            "jasper.output_topology.load_output_topology_strict",
-            lambda *a, **k: object(),
+            converge, "load_output_topology_strict", lambda *a, **k: object()
         )
         monkeypatch.setattr(
-            "jasper.active_speaker.runtime_contract.active_ring_channels_for_topology",
+            converge,
+            "active_ring_channels_for_topology",
             lambda _t: 4 if self.roleful else None,
         )
         monkeypatch.setattr(
@@ -78,7 +63,8 @@ class _Box:
             lambda _g: (self.converged, "endpoint detail"),
         )
         monkeypatch.setattr(
-            "jasper.fanin.coupling_reconcile._start_audio_hardware_reconcile",
+            converge,
+            "_start_audio_hardware_reconcile",
             lambda **k: (self.kicks.append("kick"), (True, ""))[1],
         )
         monkeypatch.setattr(
@@ -126,7 +112,8 @@ def test_a_flat_box_is_a_no_op(box):
 
 def test_an_unreadable_topology_refuses_rather_than_moving(box, monkeypatch):
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        converge,
+        "load_output_topology_strict",
         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")),
     )
 

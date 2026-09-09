@@ -26,13 +26,42 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from jasper import fanin_coupling, output_topology, ring_assets
+from jasper.active_speaker.camilla_yaml import (
+    STARTUP_MUTE_GAIN_DB,
+    output_commission_mute_name,
+)
+from jasper.active_speaker.environment import read_camilla_statefile_config_path
+from jasper.active_speaker.graph_safety import (
+    output_terminally_muted,
+    view_from_yaml_dict,
+)
+from jasper.active_speaker.runtime_contract import (
+    CONTRACT_UNCONFIGURED,
+    active_ring_channels_for_topology,
+    classify_output_contract,
+    topology_sink_is_composite,
+    topology_supports_shm_ring,
+)
+from jasper.active_speaker.staging import load_staged_startup_config
+from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.env_file import read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     OUTPUTD_DEFAULT_CONTENT_FORMAT,
+    RING_A_CHANNELS,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAPTURE_DEVICE,
+    RING_PCM_DEVICES,
+    RING_SLOTS_ENV_VAR,
+    RING_WIRE_FORMAT_ENV_VAR,
+    RING_WIRE_FORMAT_WIDE,
 )
+from jasper.output_topology import OutputTopologyError
 
 
 # A ring readiness gate returns (ok, detail) and fails CLOSED.
@@ -177,9 +206,6 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
     the read is about the graph the daemon actually has. Omitted, the statefile
     stays the answer, which is what every existing caller wants.
     """
-    from jasper.active_speaker.environment import read_camilla_statefile_config_path
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-
     config_path = config_path or read_camilla_statefile_config_path()
     if not config_path:
         return LoadedCamillaGraph(
@@ -215,13 +241,8 @@ def load_topology_for_wire():
     strict/lenient split, not this helper's.
     """
     try:
-        from jasper.output_topology import (
-            OutputTopologyError,
-            load_output_topology_strict,
-        )
-
-        return load_output_topology_strict()
-    except (OutputTopologyError, OSError, ValueError, ImportError):
+        return output_topology.load_output_topology_strict()
+    except (OutputTopologyError, OSError, ValueError):
         return None
 
 
@@ -299,16 +320,11 @@ def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     conf.d, outputd's env and the loaded graph, each written by a different
     writer at a different time.
     """
-    from jasper.fanin_coupling import (
-        RING_WIRE_FORMAT_ENV_VAR,
-        resolve_ring_wire_format,
-    )
-
     raw, source = _effective_env_value(
         fanin_text, RING_WIRE_FORMAT_ENV_VAR, later_path=FANIN_ENV_PATH
     )
     if raw is None or not raw.strip():
-        return resolve_ring_wire_format(None), "default"
+        return fanin_coupling.resolve_ring_wire_format(None), "default"
     return raw.strip(), source
 
 
@@ -329,12 +345,6 @@ def graph_wire_declarations(
     either side (Ring A is CamillaDSP's capture, Ring B and the ACTIVE ring are
     its playback), and a device-keyed test costs nothing to apply twice.
     """
-    from jasper.fanin_coupling import (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-        RING_PCM_DEVICES,
-    )
-
     declarations: list[RingWireDeclaration] = []
     for lane in ("capture", "playback"):
         device = graph.devices.get(f"{lane}_device")
@@ -384,28 +394,15 @@ def ring_wire_declarations(
     than five names. Omitting it is legal (an env-only comparison) and the gate
     above is what refuses to CLAIM the graph agreed when it was not passed.
     """
-    from jasper.fanin_coupling import (
-        RING_A_CHANNELS,
-        content_lane_format_for_coupling,
-    )
-    from jasper.ring_assets import (
-        RING_A_CONF_PCM,
-        RING_B_CONF_PCM,
-        RING_CONF_D,
-        ring_asset_presence,
-        ring_conf_channels,
-        ring_conf_format,
-    )
-
     # An ABSENT conf.d is ``ring_assets_ready``'s refusal to own, not a second
     # one here — one missing file should produce one reason. A conf.d that is
     # PRESENT but declares no readable wire is a torn file, which no other gate
     # inspects, so that one stays this gate's to refuse.
-    conf_present = ring_asset_presence().conf_present
+    conf_present = ring_assets.ring_asset_presence().conf_present
     conf_absent_note = (
         ""
         if conf_present
-        else f"{RING_CONF_D} absent — ring_assets_ready owns that refusal"
+        else f"{ring_assets.RING_CONF_D} absent — ring_assets_ready owns that refusal"
     )
     fanin_format, fanin_source = resolve_effective_fanin_wire_format(fanin_text)
     outputd_channels_raw = read_value(outputd_text, _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR)
@@ -439,11 +436,11 @@ def ring_wire_declarations(
             channels=RING_A_CHANNELS,
         ),
         RingWireDeclaration(
-            end=f"conf.d {RING_A_CONF_PCM}",
-            source=RING_CONF_D,
+            end=f"conf.d {ring_assets.RING_A_CONF_PCM}",
+            source=ring_assets.RING_CONF_D,
             ring=RING_A,
-            sample_format=ring_conf_format(RING_A_CONF_PCM) if conf_present else None,
-            channels=ring_conf_channels(RING_A_CONF_PCM) if conf_present else None,
+            sample_format=ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM) if conf_present else None,
+            channels=ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM) if conf_present else None,
             note=conf_absent_note,
             # An ABSENT conf.d states nothing on either axis and the asset gate
             # owns that refusal; a PRESENT one that cannot be parsed is a torn
@@ -451,11 +448,11 @@ def ring_wire_declarations(
             channels_excused=not conf_present,
         ),
         RingWireDeclaration(
-            end=f"conf.d {RING_B_CONF_PCM}",
-            source=RING_CONF_D,
+            end=f"conf.d {ring_assets.RING_B_CONF_PCM}",
+            source=ring_assets.RING_CONF_D,
             ring=RING_B,
-            sample_format=ring_conf_format(RING_B_CONF_PCM) if conf_present else None,
-            channels=ring_conf_channels(RING_B_CONF_PCM) if conf_present else None,
+            sample_format=ring_assets.ring_conf_format(ring_assets.RING_B_CONF_PCM) if conf_present else None,
+            channels=ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM) if conf_present else None,
             note=conf_absent_note,
             channels_excused=not conf_present,
         ),
@@ -463,7 +460,7 @@ def ring_wire_declarations(
             end="CamillaDSP emitted stanzas",
             source="capture_kwargs_for_coupling(shm_ring)",
             ring=RING_B,
-            sample_format=content_lane_format_for_coupling(),
+            sample_format=fanin_coupling.content_lane_format_for_coupling(),
             note="counterfactual: what arming would emit",
             # The coupling's kwargs carry a format and no channel count — this
             # end genuinely has nothing to say on that axis, ever.
@@ -505,10 +502,8 @@ def resolve_wire_for_gate(topology: Any = None) -> tuple[Any | None, str]:
     declaration into a refusal with the parser's own sentence. One helper rather
     than a ``try`` per gate: a gate added later gets the behaviour by using it.
     """
-    from jasper.fanin_coupling import resolve_ring_wire
-
     try:
-        return resolve_ring_wire(topology), ""
+        return fanin_coupling.resolve_ring_wire(topology), ""
     except ValueError as exc:
         return None, (
             f"{exc} — refusing to arm on a wire this box cannot declare; "
@@ -658,7 +653,7 @@ def ring_edge_width_ready(
             # count and could not is indeterminate, and an indeterminate end
             # cannot be proven to match — the shape that reaches here is a
             # PRESENT conf.d whose block declares ``channels`` twice with
-            # different values (``ring_conf_channels`` answers None for exactly
+            # different values (``ring_assets.ring_conf_channels`` answers None for exactly
             # that torn file), or an outputd key that will not parse as an int.
             # Without this the channels axis passed such a box silently while
             # the format axis refused it.
@@ -737,12 +732,10 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     An unparseable declaration is refused here rather than raised — see
     :func:`resolve_wire_for_gate` for why a gate must not throw mid-arm.
     """
-    from jasper.ring_assets import ring_ioplug_wire_supported
-
     wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
     if wire is None:
         return False, wire_problem
-    support = ring_ioplug_wire_supported(wire)
+    support = ring_assets.ring_ioplug_wire_supported(wire)
     return support.ok, support.detail
 
 
@@ -759,9 +752,7 @@ def ring_assets_ready() -> tuple[bool, str]:
     second transport (ADR-0100). Presence-only (the doctor owns the deep open-probe);
     ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
     """
-    from jasper.ring_assets import ring_asset_presence
-
-    presence = ring_asset_presence()
+    presence = ring_assets.ring_asset_presence()
     if presence.all_present:
         return True, "ring platform assets present (ioplug .so + conf.d + shm dir)"
     return False, "ring platform assets incomplete: " + "; ".join(presence.missing())
@@ -790,13 +781,7 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
     wrong fix. Fail-CLOSED on anything indeterminate: an unreadable conf.d
     declares nothing, which is not proof.
     """
-    from jasper.active_speaker.runtime_contract import (
-        active_ring_channels_for_topology,
-    )
-    from jasper.fanin_coupling import ring_active_endpoint_armed
-    from jasper.ring_assets import RING_ACTIVE_CONF_PCM, ring_conf_channels
-
-    if not ring_active_endpoint_armed():
+    if not fanin_coupling.ring_active_endpoint_armed():
         return False, (
             "outputd's active-ring endpoint marker "
             "(JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT in outputd.env) is not set — "
@@ -813,24 +798,24 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
             "the saved topology resolves no active-ring width, so there is no "
             "width the conf.d block could be proved against"
         )
-    declared = ring_conf_channels(RING_ACTIVE_CONF_PCM)
+    declared = ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM)
     if declared is None:
         return False, (
             f"the ring conf.d declares no readable channels for "
-            f"pcm.{RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
+            f"pcm.{ring_assets.RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
             "to reinstall it, then re-run jasper-audio-hardware-reconcile to "
             "render the per-box wire"
         )
     if declared != width:
         return False, (
-            f"pcm.{RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
+            f"pcm.{ring_assets.RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
             f"box's active ring resolves to {width} — the ioplug attaches with "
             "what the block says, so this would fail the attach. Run `sudo "
             "systemctl start jasper-audio-hardware-reconcile` to render the "
             "conf.d wire, then re-arm"
         )
     return True, (
-        f"active-ring endpoint staged (marker set, pcm.{RING_ACTIVE_CONF_PCM} "
+        f"active-ring endpoint staged (marker set, pcm.{ring_assets.RING_ACTIVE_CONF_PCM} "
         f"declares channels={declared})"
     )
 
@@ -877,17 +862,6 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
     """
-    import yaml
-
-    from jasper.active_speaker.camilla_yaml import (
-        STARTUP_MUTE_GAIN_DB,
-        output_commission_mute_name,
-    )
-    from jasper.active_speaker.graph_safety import (
-        output_terminally_muted,
-        view_from_yaml_dict,
-    )
-
     try:
         payload = yaml.safe_load(graph.text)
     except yaml.YAMLError as exc:
@@ -944,8 +918,6 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
 
     Fail-CLOSED on every unreadable or self-contradicting record shape.
     """
-    from jasper.active_speaker.staging import load_staged_startup_config
-
     staged = load_staged_startup_config()
     # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
     # commissioning reader uses: that shape raises AttributeError on a record
@@ -1022,11 +994,6 @@ def graph_at_active_ring_endpoint(
     Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a
     lane that declares no format or no channel count.
     """
-    from jasper.fanin_coupling import (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-    )
-
     capture = graph.devices.get("capture_device")
     playback = graph.devices.get("playback_device")
     if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
@@ -1131,8 +1098,6 @@ def ring_endpoint_anchor_converged(
     :func:`ring_wire_caps_ready`, does not read the loaded graph — which is why
     axes 3 and 4 are here rather than left to the arm's preflights.
     """
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
-
     graph = read_loaded_camilla_graph(loaded_config_path)
     if graph.note:
         return False, f"cannot read the loaded CamillaDSP graph ({graph.note})"
@@ -1228,17 +1193,10 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     Non-composite topologies pass untouched — every roleful DAC array and
     stereo-ring box keeps the wire it has today.
     """
-    from jasper.active_speaker.runtime_contract import topology_sink_is_composite
-    from jasper.fanin_coupling import (
-        RING_WIRE_FORMAT_ENV_VAR,
-        RING_WIRE_FORMAT_WIDE,
-        read_declared_ring_wire_format,
-    )
-
     if topology is None or not topology_sink_is_composite(topology):
         return True, "not a composite sink; the wide-wire rule does not apply"
     try:
-        declared = read_declared_ring_wire_format()
+        declared = fanin_coupling.read_declared_ring_wire_format()
     except ValueError as exc:
         # A wire token neither language recognizes. fan-in parks at exit 78 on
         # the same value, so refusing here is the same verdict, earlier.
@@ -1309,20 +1267,12 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     carrying no remediation. The SHARED loader is deliberately not widened; it
     has other callers whose contracts are theirs.
     """
-    # Lazy: jasper.active_speaker imports this package, and this gate is the
-    # only reader of the baseline record here.
-    from jasper.active_speaker.baseline_profile import (
+    from jasper.active_speaker.baseline_profile import (  # lazy: import cost, pulls scipy via bass_extension (ADR-0226)
         applied_baseline_hardware_match,
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.runtime_contract import classify_output_contract
-    from jasper.output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
-
     try:
-        topology = load_output_topology_strict()
+        topology = output_topology.load_output_topology_strict()
         contract = classify_output_contract(topology)
     except (OutputTopologyError, OSError, ValueError) as exc:
         return False, (
@@ -1424,19 +1374,8 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
       topology's OPINION rather than an arm decision.
     """
-    from jasper.active_speaker.runtime_contract import (
-        CONTRACT_UNCONFIGURED,
-        active_ring_channels_for_topology,
-        classify_output_contract,
-        topology_supports_shm_ring,
-    )
-    from jasper.output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
-
     try:
-        topology = load_output_topology_strict()
+        topology = output_topology.load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
         if strict_unreadable:
             # An unreadable topology is NOT proven eligible — fail closed and
@@ -1514,8 +1453,6 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
     report the new default while an old ``JASPER_FANIN_RING_SLOTS=8`` in the
     earlier system env still controls the next daemon start.
     """
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
-
     raw, source = _effective_env_value(
         fanin_text, RING_SLOTS_ENV_VAR, later_path=FANIN_ENV_PATH
     )
@@ -1523,7 +1460,7 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
         source = "default"
     try:
         return FaninRingSlotsResolution(
-            value=resolve_ring_slots(raw),
+            value=fanin_coupling.resolve_ring_slots(raw),
             source=source,
             raw=raw,
         )
