@@ -244,7 +244,8 @@ def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr("jasper.fanin.coupling_reconcile.atomic_write_text", boom)
+    # The publish moved into the shared locked writer; patch it where it lives.
+    monkeypatch.setattr("jasper.atomic_io.atomic_write_text", boom)
     res = _reconcile(
         fanin_env=fanin_env,
         outputd_env=outputd_env,
@@ -314,12 +315,13 @@ def test_outputd_env_write_gives_up_after_the_bound_wait(tmp_path, monkeypatch):
     """A lock held past the bound raises rather than blocking forever.
 
     ``advisory_file_lock``'s own default (``LOCK_EX``, no ``LOCK_NB``) blocks
-    forever; ``_write_env_actions`` passes an explicit bound for exactly this
-    reason.
+    forever; the shared env writer behind ``_write_env_actions`` passes an
+    explicit bound for exactly this reason.
     """
+    from jasper import atomic_io
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr(cr, "ENV_FILE_LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(atomic_io, "ENV_FILE_LOCK_TIMEOUT_SECONDS", 0.2)
     outputd_env = _write(tmp_path / "outputd.env", "SEED=1\n")
 
     with spawn_lock_holder(outputd_env, hold_seconds=2.0):

@@ -119,14 +119,14 @@ const PARKED = {
   headline: "Sound cannot come out of the speaker",
   detail:
     "InnoMaker HiFi AMP Pro cannot drive an active speaker layout, so " +
-    "nothing can play. Choose a passive speaker layout at /sound/setup/ " +
+    "nothing can play. Choose a passive speaker layout at /sound/speaker/ " +
     "(passive sends full-range to every output; requires a built-in passive " +
     "crossover) or attach an active-capable DAC.",
   active_source: null,
 };
 const parkedStreamText = strings(api.currentStreamBody({ overall: PARKED })).join(" | ");
 assert.match(parkedStreamText, /Sound cannot come out/);
-assert.match(parkedStreamText, /\/sound\/setup\//);
+assert.match(parkedStreamText, /\/sound\/speaker\//);
 assert.doesNotMatch(parkedStreamText, /No active stream/,
   "a speaker that cannot reach its drivers never renders as confident idle");
 

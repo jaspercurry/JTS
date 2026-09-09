@@ -151,14 +151,12 @@ def test_post_known_path_with_non_ascii_token_403s(running_server_port):
     ],
 )
 def test_post_rejects_invalid_json_framing_before_dispatch(
-    monkeypatch,
     body,
     content_length,
     expected_error,
     expected_reads,
 ):
     handler, captured = _corpus_post_handler(
-        monkeypatch,
         body=body,
         content_length=content_length,
     )
@@ -174,11 +172,8 @@ def test_post_rejects_invalid_json_framing_before_dispatch(
     assert handler.rfile.read_calls == expected_reads
 
 
-def test_post_request_body_oserror_remains_distinct_from_client_json_errors(
-    monkeypatch,
-):
+def test_post_request_body_oserror_remains_distinct_from_client_json_errors():
     handler, captured = _corpus_post_handler(
-        monkeypatch,
         body=b"{}",
         content_length=2,
         read_fails=True,

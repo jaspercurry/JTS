@@ -388,7 +388,7 @@ def test_unconfigured_speaker_is_not_passive_or_room_eligible(
         "allowed": False,
         "reason": "output_topology_unconfigured",
         "detail": "Choose and save a speaker layout before room correction.",
-        "setup_href": "/sound/setup/",
+        "setup_href": "/sound/speaker/",
     }
 
 
@@ -431,7 +431,7 @@ def test_zero_active_layout_requires_flat_dac_authority(
     assert status["reason"] == "output_topology_not_ready"
     assert status["acoustic_commissioning"]["authority"] is None
     assert status["acoustic_commissioning"]["allowed"] is False
-    assert status["acoustic_commissioning"]["setup_href"] == "/sound/setup/"
+    assert status["acoustic_commissioning"]["setup_href"] == "/sound/speaker/"
     issue_codes = {item["code"] for item in status["issues"]}
     assert "output_topology_not_ready" in issue_codes
     if contract_issue is not None:
@@ -1013,57 +1013,6 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
     assert acoustic["receipt_fingerprint"] is None
     assert acoustic["reason"] == receipt_reason
     assert acoustic["detail"] == setup_mod._RECEIPT_DETAIL[receipt_reason]
-
-
-@pytest.mark.parametrize(
-    ("receipt_reason", "expected_code"),
-    [
-        (_common.ROOM_AUTHORITY_RECEIPT_ABSENT, "speaker_setup_incomplete"),
-        (_common.ROOM_AUTHORITY_RECEIPT_STALE, "speaker_setup_incomplete"),
-        (_common.ROOM_AUTHORITY_RECEIPT_MALFORMED, "speaker_setup_incomplete"),
-        (_common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED, "speaker_setup_incomplete"),
-        (_common.ROOM_AUTHORITY_RECEIPT_UNREADABLE, "speaker_readiness_fault"),
-    ],
-)
-def test_room_answers_an_unopenable_receipt_as_a_machine_fault(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    receipt_reason: str,
-    expected_code: str,
-) -> None:
-    """A receipt JTS cannot OPEN is not an unconfigured speaker.
-
-    The four record-level denials are answered by finishing or re-running
-    setup. UNREADABLE is not: Active's own detail for this decision says a
-    machine-level fault is unlikely to change by re-running, so it routes to a
-    non-retryable device-fault code and offers no "Check again" retry -- while
-    the block still carries each reason's distinct detail and errno+path for
-    the doctor, `/state`, and logs (ruling 11).
-    """
-    from jasper.web import (
-        correction_capture,
-    )
-
-    cause = "PermissionError:EACCES:/var/lib/jasper/receipt.json"
-    status = _denied_receipt_status(monkeypatch, tmp_path, receipt_reason, cause)
-    readiness = correction_capture._normalize_room_readiness(status)
-
-    assert readiness.allowed is False
-    assert readiness.reason == receipt_reason
-    assert readiness.blocker["code"] == expected_code
-    # Neither presentation is a retryable "Check again": UNREADABLE is a device
-    # fault; the record-level four are answered by finishing setup.
-    assert readiness.blocker["retryable"] is False
-    # Active's reason-specific detail and the errno+path ride the block.
-    assert readiness.blocker["detail"] == setup_mod._RECEIPT_DETAIL[receipt_reason]
-    assert readiness.blocker["cause"] == cause
-    if expected_code == "speaker_readiness_fault":
-        # A machine fault must not send the owner into a retry loop or a wizard.
-        assert readiness.blocker["recovery_action"] is None
-    else:
-        assert readiness.blocker["recovery_action"]["href"] == (
-            status["acoustic_commissioning"]["setup_href"]
-        )
 
 
 def test_every_receipt_denial_carries_a_remedy_that_is_its_own() -> None:

@@ -296,18 +296,12 @@ class _TrackingReader(BytesIO):
 
 
 def _corpus_post_handler(
-    monkeypatch: pytest.MonkeyPatch,
     *,
     body: bytes,
     content_length: int | str,
     read_fails: bool = False,
 ):
     handler_cls = wake_corpus_setup._make_handler_class(object(), "tok")
-    monkeypatch.setattr(
-        handler_cls,
-        "_post_session",
-        lambda *_a, **_k: pytest.fail("invalid request must not dispatch"),
-    )
     handler = handler_cls.__new__(handler_cls)
     handler.path = "/api/session"
     handler.headers = Message()

@@ -75,7 +75,6 @@ import re
 import secrets
 import time
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -106,21 +105,17 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     SECRET_ENV_MODE,
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     flash_error,
-    guard_mutating_request,
-    guard_read_request,
-    read_form,
+    form_guarded,
     redirect_with_legacy_msg,
-    reject_csrf,
     restart_systemd_units,
-    safe_back_href,
     send_html_response,
     send_json_response,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -772,10 +767,6 @@ def _management_html(
     )
 
 
-def _read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
-    return read_form(handler)
-
-
 _SHARE_PAGE_TIMEOUT_SEC = 5.0
 _OG_TITLE_RE = re.compile(r'<meta property="og:title" content="([^"]+)"')
 
@@ -948,37 +939,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path == "/oauth-callback":
-                if not guard_read_request(self, allow_cross_site_navigation=True):
-                    return
-                # OAuth callback from Spotify (or the bounce page) —
-                # protected by the OAuth `state` nonce, not by CSRF. Its
-                # guard variant differs from every other GET route here,
-                # so it stays a special case ahead of the table.
-                self._handle_oauth_callback_get(urllib.parse.parse_qs(url.query))
-                return
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            form = _read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
         # --- route bodies ---
 
@@ -1009,6 +973,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 health_result=health, back_href=back_href,
             ))
 
+        @form_guarded
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:
             client_id = form.get("client_id", "").strip()
             mode = form.get("mode", "").strip() or "bounce"
@@ -1042,7 +1007,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
             )
 
-        def _handle_reset_credentials(self) -> None:
+        @form_guarded
+        def _handle_reset_credentials(self, _form: dict[str, str]) -> None:
             _delete_creds_file()
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
@@ -1051,6 +1017,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             log_event(logger, "spotify.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
+        @form_guarded
         def _handle_start(self, form: dict[str, str]) -> None:
             if not cfg["client_id"]:
                 self._redirect("./?msg=Set+up+Spotify+credentials+first.")
@@ -1126,6 +1093,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._exchange_and_finish(code, state)
 
+        @form_guarded
         def _handle_paste_callback(self, form: dict[str, str]) -> None:
             """Manual mode primary path, and bounce-mode-fallback path:
             the user pasted a URL or query-string fragment containing
@@ -1174,6 +1142,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
             )
 
+        @form_guarded
         def _handle_remove(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
@@ -1195,6 +1164,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             else:
                 self._redirect("./?msg=Account+not+found")
 
+        @form_guarded
         def _handle_default(self, form: dict[str, str]) -> None:
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
@@ -1233,6 +1203,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"uri": uri, "name": name})
 
+        @form_guarded
         def _handle_playlist_add(self, form: dict[str, str]) -> None:
             account_name = form.get("account", "").strip()
             raw = form.get("url_or_uri", "").strip()
@@ -1263,6 +1234,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Added+{urllib.parse.quote(name)}+to+{urllib.parse.quote(account_name)}"
             )
 
+        @form_guarded
         def _handle_playlist_remove(self, form: dict[str, str]) -> None:
             account_name = form.get("account", "").strip()
             uri = form.get("uri", "").strip()
@@ -1308,10 +1280,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             auth.code_challenge = challenge
             auth.get_access_token(code, check_cache=False)
 
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) because the entries reference
-    # `Handler`, which is defined here.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
@@ -1325,13 +1293,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
         handler._handle_playlist_preview(qs)
 
+    def _get_oauth_callback(handler: BaseHTTPRequestHandler) -> None:
+        # Callback from Spotify (or the bounce page) — protected by the
+        # OAuth `state` nonce, not by CSRF. The read guard it needs is the
+        # table's own, which allows the redirect-follow navigation.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        handler._handle_oauth_callback_get(qs)
+
     _GET_ROUTES = {
         "/": _get_index,
         "/playlist-preview": _get_playlist_preview,
+        "/oauth-callback": _get_oauth_callback,
     }
     _POST_ROUTES = {
         "/setup-credentials": Handler._handle_setup_credentials,
-        "/reset-credentials": lambda h, f: h._handle_reset_credentials(),
+        "/reset-credentials": Handler._handle_reset_credentials,
         "/start": Handler._handle_start,
         "/paste-callback": Handler._handle_paste_callback,
         "/remove": Handler._handle_remove,

@@ -21,9 +21,7 @@ SCRIPT = ROOT / "scripts" / "bank-crossover-round.sh"
 def _run(
     *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    # The script targets a speaker, so _lib.sh requires one to be named
-    # (#3498) — nothing here reaches the network, so an unroutable name
-    # keeps the refusal under test the dest-dir one.
+    # A named invalid host satisfies _lib.sh without selecting a real speaker.
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         capture_output=True,
@@ -96,6 +94,8 @@ def test_named_bundle_keeps_its_state_after_a_later_round(tmp_path, snapshot):
     archive = tmp_path / "bundle.tar"
     with tarfile.open(archive, "w") as writer:
         writer.add(bundle, arcname=bundle.name)
+    with archive.open("ab") as padding:
+        padding.write(bytes(1024 * 1024))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     ssh = bin_dir / "ssh"

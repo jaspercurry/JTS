@@ -29,8 +29,8 @@ def _topology(**kwargs):
 def _staged_anchor_for(topology, staged_path):
     """A staged-anchor stub in the shape ``staging.py`` really writes.
 
-    The `topology` and `hardware` blocks are NOT decoration: since #2285 both
-    /sound/ and /sound/room/ gate "already loaded" on
+    The `topology` and `hardware` blocks are NOT decoration: since #2285
+    /sound/ gates "already loaded" on
     ``staged_topology_match_status``, which compares them against the box's
     saved topology, so a stub carrying only `status` + `config.path` describes
     a staged pair production never produces and makes the anchor look stale.
@@ -186,7 +186,7 @@ def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
 
 
 def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
-    """#2285: /sound/room/ gates the anchor on TWO terms, like /sound/ does.
+    """#2285: the anchor is gated on TWO terms, not on the config path alone.
 
     The fast path used to short-circuit on the config-path term alone, so a box
     whose saved topology had moved since staging -- a DAC swap, a role edit --
@@ -545,7 +545,6 @@ def test_summed_loader_threads_resolved_source_to_startup_anchor(monkeypatch):
 def test_automatic_measurement_source_peak_is_one_shared_default():
     from jasper.active_speaker import driver_acoustics
     from jasper.audio_measurement.sweep import synchronized_swept_sine
-    from jasper.correction.session import SessionConfig
 
     sweep_default = inspect.signature(synchronized_swept_sine).parameters[
         "amplitude_dbfs"
@@ -553,7 +552,6 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
     assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
     assert sweep_default == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
     assert driver_acoustics.DEFAULT_AMPLITUDE_DBFS == sweep_default
-    assert SessionConfig().amplitude_dbfs == sweep_default
 
 
 def test_summed_capture_sweep_refuses_before_session_or_graph_mutation(monkeypatch):

@@ -11,7 +11,7 @@ Stdlib only: the doctor imports this on every run.
 from __future__ import annotations
 
 import subprocess
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
 # renders, under "JTS".
@@ -85,6 +85,13 @@ SHOW_PROPERTIES = (
     "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent", "CPUUsageNSec",
     "ControlGroup",
 )
+
+# Bound on ONE `systemctl` invocation a reconciler makes to CHANGE unit state
+# (enable/start/stop/restart/reset-failed). Reconcilers run from udev and from
+# install, where an unresponsive manager would otherwise hang the pass
+# indefinitely; their own pass ceilings are multiples of this. The read-only
+# `show` probes above take a much shorter timeout of their own.
+SYSTEMCTL_TIMEOUT_SEC = 10.0
 
 
 def unit_failed(record: Mapping[str, Any] | None) -> bool:
@@ -234,14 +241,29 @@ def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def run_systemctl(
+    args: Sequence[str], *, timeout: float | None = SYSTEMCTL_TIMEOUT_SEC,
+    executable: str = "systemctl", capture_output: bool = True,
+    quiet: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [executable, *args],
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.DEVNULL if quiet else (
+            subprocess.PIPE if capture_output else None
+        ),
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
 def _show(args: list[str], timeout: float) -> str | None:
     """``systemctl show`` stdout, or None when systemctl itself is unavailable
     or the call fails, so a caller can say "unknown" rather than "inactive"."""
     try:
-        proc = subprocess.run(
-            ["systemctl", "show", "--no-page", *args],
-            capture_output=True,
-            text=True,
+        proc = run_systemctl(
+            ["show", "--no-page", *args],
             timeout=timeout,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError):

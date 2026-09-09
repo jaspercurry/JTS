@@ -628,8 +628,8 @@ EOF
         cat <<EOF
 
 Next steps (visit from any device on the LAN):
-  http://${URL_HOST}/sound/setup/  required: choose mono/stereo + passive/active;
-                                   audio stays off until saved
+  http://${URL_HOST}/sound/speaker/  required: choose mono/stereo + passive/active;
+                                     audio stays off until saved
   http://${URL_HOST}/assistant/voice/      pick a voice provider + paste API key
   http://${URL_HOST}/assistant/transit/    NYC subway / bus / Citi Bike (optional)
   http://${URL_HOST}/spotify/    connect a Spotify account (optional)

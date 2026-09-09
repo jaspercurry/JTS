@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.web import wifi_setup
+from jasper.web import _common, wifi_setup
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -814,6 +814,24 @@ def test_post_response_disconnect_keeps_single_primary_action_event(
     assert _event_records(caplog, "wifi.post_dispatch_failed") == []
 
 
+def test_post_route_that_already_answered_cannot_write_a_second_body(monkeypatch):
+    """The write-once commit guard: a route body that answers twice is
+    refused, and the dispatcher's 502 fallback does not append to a response
+    that is already on the wire."""
+    def answer_twice(handler):
+        handler._send_json({"ok": True, "message": "first"})
+        handler._send_json({"ok": False, "message": "second"}, status=502)
+
+    monkeypatch.setitem(wifi_setup._POST_ROUTES, "/scan", answer_twice)
+    h, captured = _valid_post("/scan", b"{}")
+
+    with pytest.raises(RuntimeError, match="already committed"):
+        h.do_POST()
+
+    assert captured["responses"] == [200]
+    assert json.loads(h.wfile.getvalue())["message"] == "first"
+
+
 def test_post_response_commit_guard_resets_for_keepalive(monkeypatch, caplog):
     backend_calls = []
 
@@ -842,7 +860,7 @@ def test_post_unknown_route_precedes_csrf_and_body_read(monkeypatch):
     def fail_guard(_handler):
         raise AssertionError("unknown routes must not reach CSRF")
 
-    monkeypatch.setattr(wifi_setup, "guard_mutating_request", fail_guard)
+    monkeypatch.setattr(_common, "guard_mutating_request", fail_guard)
     h, captured = _make_request("/unknown", body=b'{"on":true}')
     reader = _TrackingReader(b'{"on":true}', fail=True)
     h.rfile = reader

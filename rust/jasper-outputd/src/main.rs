@@ -26,7 +26,9 @@ use jasper_outputd::alsa_backend::{
     open_playback_pcm, prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
 };
-use jasper_outputd::config::{BackendMode, Config, SinkMode, DAC_CONTENT_RING_SLOTS};
+use jasper_outputd::config::{
+    BackendMode, Config, SinkMode, ASSISTANT_REFERENCE_PATH, DAC_CONTENT_RING_SLOTS,
+};
 use jasper_outputd::content_fill::{ContentFill, ContentFillEdge};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
@@ -95,6 +97,7 @@ fn main() -> Result<()> {
     flag::register(SIGINT, Arc::clone(&shutdown)).context("registering SIGINT handler")?;
 
     let state = Arc::new(OutputdState::new(&config));
+    state.latch_sched_policy(sched_policy_name());
 
     if let Some(socket_path) = &config.control_socket_path {
         spawn_state_server(
@@ -195,7 +198,7 @@ fn run_fake(
     let period = period_duration(config.period_frames);
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
-    notify_ready(config)?;
+    notify_ready(config, state)?;
 
     while !shutdown.load(Ordering::Relaxed) {
         let report = core.step();
@@ -465,13 +468,11 @@ fn run_alsa(
         // Learned quiet-room assistant reference: load the last value and arm
         // the persistence writer, mirroring fan-in. Best-effort — a writer
         // failure degrades to no learning and never blocks final output.
-        let reference = assistant_reference::load(
-            std::path::Path::new(&config.assistant_reference_path),
-            HOOKS,
-        );
+        let reference =
+            assistant_reference::load(std::path::Path::new(ASSISTANT_REFERENCE_PATH), HOOKS);
         core.set_held_assistant_reference(reference);
         match assistant_reference::spawn_writer(
-            PathBuf::from(&config.assistant_reference_path),
+            PathBuf::from(ASSISTANT_REFERENCE_PATH),
             reference,
             HOOKS,
         ) {
@@ -480,8 +481,7 @@ fn run_alsa(
                 _assistant_reference_writer = Some(handle);
             }
             Err(e) => eprintln!(
-                "event=outputd.assistant_reference.writer_unavailable path={} detail={e}",
-                config.assistant_reference_path,
+                "event=outputd.assistant_reference.writer_unavailable path={ASSISTANT_REFERENCE_PATH} detail={e}"
             ),
         }
         let bridge = TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
@@ -519,7 +519,7 @@ fn run_alsa(
         dac_negotiated.buffer_frames,
         dac_negotiated.period_frames,
     );
-    notify_ready(config)?;
+    notify_ready(config, state)?;
 
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
@@ -846,15 +846,32 @@ fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
     }
 }
 
-fn notify_ready(config: &Config) -> Result<()> {
+fn notify_ready(config: &Config, state: &OutputdState) -> Result<()> {
     jasper_daemon::notify(NotifyState::Ready).context("notifying systemd READY=1")?;
     eprintln!(
-        "event=outputd.ready backend={} sink_mode={} period_frames={}",
+        "event=outputd.ready backend={} sink_mode={} period_frames={} sched_policy={}",
         config.backend.as_str(),
         config.sink_mode.as_str(),
-        config.period_frames
+        config.period_frames,
+        state.sched_policy(),
     );
     Ok(())
+}
+
+/// The scheduling policy the kernel actually gave this process. The unit asks
+/// for `CPUSchedulingPolicy=fifo`; whether it got it is only knowable here.
+fn sched_policy_name() -> String {
+    // SAFETY: a pure read of the calling process's own policy (pid 0 = self);
+    // no pointers, no state changed.
+    match unsafe { libc::sched_getscheduler(0) } {
+        libc::SCHED_FIFO => "fifo".to_string(),
+        libc::SCHED_RR => "rr".to_string(),
+        libc::SCHED_OTHER => "other".to_string(),
+        libc::SCHED_BATCH => "batch".to_string(),
+        libc::SCHED_IDLE => "idle".to_string(),
+        libc::SCHED_DEADLINE => "deadline".to_string(),
+        other => format!("unknown:{other}"),
+    }
 }
 
 fn fake_counters(frames_written: u64) -> IoCounters {
@@ -1337,7 +1354,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
     Open: FnMut(&ChipRefWriterConfig<'_>, &OutputdState) -> Result<P>,
     WritePeriod: FnMut(&P, &str, &[i16], &mut PlaybackWriteReport) -> Result<()>,
 {
-    let mut tee = open_chip_ref_tee(config.tee_path, state);
+    let mut tee = open_chip_ref_tee(config.tee_path);
     let mut pcm: Option<P> = None;
     let mut retry_delay = timing.retry_initial;
     let mut retry_at = Instant::now();
@@ -1388,7 +1405,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
             Ok(packet) => {
                 let frames = (packet.samples.len() / (CHANNELS as usize)) as u64;
                 state.mark_chip_ref_dequeued(frames);
-                write_chip_ref_tee(&mut tee, &packet.samples, state);
+                write_chip_ref_tee(&mut tee, &packet.samples);
                 if let Some(opened) = pcm.as_ref() {
                     let mut report = PlaybackWriteReport::default();
                     let result =
@@ -1549,7 +1566,7 @@ fn write_playback_period(
     Ok(())
 }
 
-fn open_chip_ref_tee(path: Option<&str>, state: &OutputdState) -> Option<std::fs::File> {
+fn open_chip_ref_tee(path: Option<&str>) -> Option<std::fs::File> {
     let path = path?;
     match std::fs::OpenOptions::new()
         .create(true)
@@ -1559,24 +1576,21 @@ fn open_chip_ref_tee(path: Option<&str>, state: &OutputdState) -> Option<std::fs
     {
         Ok(file) => {
             eprintln!("event=outputd.chip_ref.tee.enabled path={path}");
-            state.mark_chip_ref_tee_opened();
             Some(file)
         }
         Err(e) => {
             eprintln!("event=outputd.chip_ref.tee.open_failed path={path} detail={e}");
-            state.mark_chip_ref_tee_open_error();
             None
         }
     }
 }
 
-fn write_chip_ref_tee(tee: &mut Option<std::fs::File>, samples: &[i16], state: &OutputdState) {
+fn write_chip_ref_tee(tee: &mut Option<std::fs::File>, samples: &[i16]) {
     let Some(file) = tee.as_mut() else {
         return;
     };
     if let Err(e) = file.write_all(i16_bytes(samples)) {
         eprintln!("event=outputd.chip_ref.tee.write_failed detail={e}");
-        state.mark_chip_ref_tee_write_error();
         *tee = None;
     }
 }
@@ -2024,8 +2038,6 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
-            assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
-                .to_string(),
             active_lane: false,
             // ACTIVE_LANE's pair — false is the passive default, which is what
             // this chip-ref fixture wants (it is not an active-ring endpoint).

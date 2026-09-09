@@ -15,7 +15,7 @@ The handler tests drive the *real* Handler class — instantiated via
 ``__new__`` to skip BaseHTTPRequestHandler's socket setup — with a fake
 request I/O surface stamped onto the instance. Driving the real class
 (rather than a stand-in with copied methods) is what exercises the
-nested ``_handle_*`` dispatch helpers.
+``_GET_ROUTES`` / ``_POST_ROUTES`` dispatch and the per-route guards.
 """
 from __future__ import annotations
 
@@ -74,8 +74,9 @@ def test_render_emits_app_header():
     html = _render()
     assert 'class="app-header"' in html
     assert 'class="app-header__title"' in html
-    # Back affordance to home, using the shared icon sprite.
+    # Back affordance to the Assistant hub, using the shared icon sprite.
     assert "#icon-back" in html
+    assert 'href="/assistant/" aria-label="Assistant"' in html
 
 
 def test_render_carries_csrf_meta_and_form_field():
@@ -211,7 +212,7 @@ def test_apply_save_preserves_existing_threshold(monkeypatch, tmp_path):
 
 def _make_request(method, path, *, body=b"", headers=None, cookie=None):
     """Build a real Handler instance (skipping the socket-binding __init__)
-    with a fake request I/O surface, so the nested _handle_* dispatch runs.
+    with a fake request I/O surface, so the real route dispatch runs.
 
     Returns (handler, captured) where captured records status/headers/body.
     """
@@ -297,7 +298,7 @@ def test_post_profile_proxies_aec_profile(tmp_path, monkeypatch):
         captured["body"] = json.loads(body.decode())
         return 200, b'{"profile":"xvf_chip_aec"}'
 
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", fake_verify)
+    monkeypatch.setattr(_common, "guard_mutating_request", fake_verify)
     monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
     h, cap = _make_request(
         "POST",
@@ -319,7 +320,7 @@ def test_post_usb_mic_proxies_boolean_to_control(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     captured = {}
 
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a: True)
 
     def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
         captured["path"] = path
@@ -348,7 +349,7 @@ def test_post_usb_mic_proxies_boolean_to_control(tmp_path, monkeypatch):
 def test_post_usb_mic_leg_proxies_choice_and_control_token(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     captured = {}
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a: True)
 
     def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
         captured["path"] = path
@@ -380,7 +381,7 @@ def test_post_usb_mic_leg_proxies_choice_and_control_token(tmp_path, monkeypatch
 def test_post_commission_proxies_action_and_control_token(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     captured = {}
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a: True)
 
     def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
         captured["path"] = path
@@ -457,7 +458,7 @@ def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
     CSRF is bypassed (guard_mutating_request mocked True) so the test stays focused on
     routing + body parsing + the proxy call shape."""
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     captured = {}
 
     def fake_apply_layer(layer, enabled, *, control_base):
@@ -478,7 +479,7 @@ def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
 
 def test_post_layer_unknown_layer_404(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     h, cap = _make_request(
         "POST", "/layer/bogus",
         body=json.dumps({"enabled": True}).encode(),
@@ -490,7 +491,7 @@ def test_post_layer_unknown_layer_404(tmp_path, monkeypatch):
 
 def test_post_sensitivity_validates_range(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     h, cap = _make_request(
         "POST", "/sensitivity",
         body=json.dumps({"value": 5.0}).encode(),
@@ -504,7 +505,7 @@ def test_post_save_writes_env_and_restarts(tmp_path, monkeypatch):
     """Happy path: a valid (bundled) model selection writes wake_model.env
     and kicks the voice daemon, then redirects with a flash."""
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *a, **k: True)
     _stage_bundled_assets(monkeypatch, tmp_path)
     restarted = {"n": 0}
     monkeypatch.setattr(

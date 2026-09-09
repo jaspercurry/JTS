@@ -14,13 +14,13 @@ use crate::assistant_source::{
 };
 use crate::fake::FakeContentSource;
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
-use crate::loudness::{
-    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
-    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
-};
 use crate::mixer::{mix_saturating, sanitize_tts_gain_db};
 use crate::types::{
     narrow_period, AssistantProfile, AudioFormat, ProgramSample, SegmentKind, CHANNELS, SAMPLE_RATE,
+};
+use jasper_tts_protocol::loudness::{
+    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
+    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
 };
 use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
 
@@ -735,7 +735,7 @@ mod tests {
     /// delivered the right samples".
     #[test]
     fn the_content_meter_observes_the_spine_content_as_its_i16_equivalent() {
-        use crate::loudness::{AssistantLoudness, AssistantLoudnessConfig, MixStage};
+        use jasper_tts_protocol::loudness::{AssistantLoudness, AssistantLoudnessConfig, MixStage};
 
         // The short-term window is 3 s; step a 1 kHz tone through enough periods
         // to fill it, then one more so the window is genuinely complete.
@@ -1021,7 +1021,9 @@ mod tests {
 
     #[test]
     fn post_dsp_live_volume_change_regains_queued_speech() {
-        use crate::loudness::{apply_gain, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
+        use jasper_tts_protocol::loudness::{
+            apply_gain, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES,
+        };
 
         const PERIOD: u32 = LIVE_VOLUME_RAMP_FRAMES; // ramp completes in one period
         let mut core = OutputCore::new(PERIOD);
@@ -1062,7 +1064,7 @@ mod tests {
         // i16 assertion's bound of 4 was the same derivation at 1/65536 the
         // scale: 8000 * 2.074e-4 ≈ 1.66, asserted as <= 4.)
         let one_ramp_step = (f64::from(gain_db_to_linear(6.0)) - 1.0)
-            / f64::from(crate::loudness::LIVE_VOLUME_RAMP_FRAMES);
+            / f64::from(jasper_tts_protocol::loudness::LIVE_VOLUME_RAMP_FRAMES);
         let derived_first_frame_delta = (f64::from(w(8000)) * one_ramp_step).abs();
         assert!(
             derived_first_frame_delta < 2.0 * f64::from(S16_LSB),

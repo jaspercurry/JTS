@@ -10,9 +10,9 @@ confidence), refused below 20 dB; null/alignment decisions need roughly 35 dB in
 band (a null of depth D needs about D + 10 dB), and a scalar noise-floor reading is NOT
 sufficient evidence there — only a real per-band measurement is.
 
-Two halves: :func:`band_levels_dbfs` (the FFT band-power estimator, shared with room correction
-via ``jasper.correction.acoustic_quality``) and :func:`band_snr_verdicts` (the decision-class
-verdict builder; ``jasper.active_speaker.driver_acoustics`` is the first consumer).
+Two halves: :func:`band_levels_dbfs` (the FFT band-power estimator, shared with room correction)
+and :func:`band_snr_verdicts` (the decision-class verdict builder;
+``jasper.active_speaker.driver_acoustics`` is the first consumer).
 
 Pure-data/pure-function: no I/O, no product policy, no CamillaDSP or playback awareness. numpy
 is module-level (the FFT needs it); callers that must stay numpy/scipy-free until a measurement
@@ -28,14 +28,21 @@ import numpy as np
 from jasper.audio_measurement import deconv
 from jasper.audio_measurement.quality_model import QualityModel
 
-# Six bands spanning the trusted phone-mic analysis window. First four are byte-identical to
-# jasper.correction.acoustic_quality.SNR_BANDS_HZ (pinned by test_audio_measurement_snr_policy.py);
-# "mid"/"treble" extend the table up through a tweeter's crossover range.
-CROSSOVER_SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
+# TRAP — these edges look like the room-correction boundary and are deliberately
+# NOT routed through jasper.audio_measurement.room_boundary. This is
+# capture-quality vocabulary shared verbatim between the room and gated
+# instruments; routing the 350 Hz edge would make banded SNR non-comparable
+# across sessions and instruments once the boundary becomes per-room. They
+# stay static. See docs/room-correction-regime-plan.md.
+SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
     ("upper_bass", 160.0, 350.0),
     ("transition", 350.0, 1000.0),
+)
+# "mid"/"treble" extend the room table up through a tweeter's crossover range.
+CROSSOVER_SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
+    *SNR_BANDS_HZ,
     ("mid", 1000.0, 4000.0),
     ("treble", 4000.0, 12000.0),
 )

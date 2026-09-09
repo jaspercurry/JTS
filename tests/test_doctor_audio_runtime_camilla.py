@@ -4,9 +4,12 @@
 
 """Unit tests for the jasper-doctor CamillaDSP-graph checks."""
 
+from pathlib import Path
+
 import pytest
 
 from jasper import audio_runtime_plan
+from jasper.camilla import CamillaUnavailable
 from jasper.cli.doctor import (
     _shared,
     audio_runtime_camilla,
@@ -20,6 +23,10 @@ from jasper.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 from ._doctor_audio_runtime_fixtures import (
     _patch_status_reader,
     _seed_units,
+)
+
+_GETCONFIG_READBACK = (
+    Path(__file__).parent / "fixtures" / "camilla_readback" / "camilladsp_4.1.3_getconfig.yml"
 )
 
 
@@ -53,6 +60,54 @@ def test_check_camilla_service_failures(monkeypatch, enabled, active, reason, si
     assert (result.status, result.reason, result.speaker_silent) == (
         "fail", reason, silent,
     )
+
+
+@pytest.mark.parametrize(
+    "raw, status, reason",
+    [
+        # CamillaDSP's own GetConfig re-serialization of a shipped graph.
+        (_GETCONFIG_READBACK.read_text(), "ok", ""),
+        ("devices:\n  samplerate: 48000\n  volume_limit: -3.0\n", "ok", ""),
+        (
+            "devices:\n  samplerate: 48000\n",
+            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  samplerate: 48000\n  volume_limit: 6.0\n",
+            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING,
+        ),
+        # A nested key is not the global fader ceiling.
+        (
+            "devices:\n  playback:\n    volume_limit: 0.0\n",
+            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABSENT,
+        ),
+        (None, "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH),
+        (" \n", "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH),
+        (
+            CamillaUnavailable("operation exceeded 5.0s"),
+            "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_UNAVAILABLE,
+        ),
+    ],
+    ids=[
+        "readback", "below", "omitted", "positive", "nested-only", "no-graph", "blank",
+        "unreachable",
+    ],
+)
+async def test_check_camilla_live_volume_limit_verdicts(monkeypatch, raw, status, reason):
+    class Controller:
+        async def get_active_config_raw(self):
+            if isinstance(raw, Exception):
+                raise raw
+            return raw
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(audio_runtime_camilla, "primary_controller", Controller)
+
+    result = await audio_runtime_camilla.check_camilla_live_volume_limit()
+
+    assert (result.status, result.reason) == (status, reason)
 
 
 @pytest.mark.parametrize(

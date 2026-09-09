@@ -578,7 +578,7 @@ def test_grouping_get_projects_readiness_under_peer_response_budget(
     base, _ = server_with_coordinator
     import jasper.control.handlers.grouping as grouping_mod
     import jasper.control.server as srv_mod
-    from jasper.web.rooms_setup import PEER_RESPONSE_MAX_BYTES
+    from jasper.web.rooms_peers import PEER_RESPONSE_MAX_BYTES
 
     monkeypatch.setattr(
         grouping_mod,
