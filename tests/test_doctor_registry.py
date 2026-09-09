@@ -22,7 +22,10 @@ import asyncio
 import collections
 import functools
 import importlib
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -412,3 +415,18 @@ def test_harness_rows_carry_a_harness_reason():
 def test_a_status_outside_the_contract_is_rejected():
     with pytest.raises(ValueError):
         CheckResult("x", "unknown")
+
+
+def test_registering_checks_does_not_import_numpy():
+    # 415 MB Pi, MemoryMax=256M cgroup — remove if the doctor roster ever
+    # legitimately needs numpy at import time.
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    out = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import jasper.cli.doctor as d; list(d.registered_checks()); "
+            "import sys; print('numpy' in sys.modules)",
+        ],
+        capture_output=True, text=True, check=True, env=env,
+    )
+    assert out.stdout.strip() == "False"

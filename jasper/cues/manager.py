@@ -35,7 +35,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
-from ..audio_io import wait_tts_drained_owned
 from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (
@@ -426,6 +425,7 @@ class AudioCueManager:
             )
             return OUTCOME_FAILED, REASON_WRITE_ERROR, slug, False
         finally:
+            from ..audio_io import wait_tts_drained_owned  # lazy: numpy
             await wait_tts_drained_owned(
                 self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
             )
@@ -545,6 +545,7 @@ class AudioCueManager:
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return OUTCOME_FAILED, REASON_WRITE_ERROR, _DYNAMIC_TEXT_SLUG, False
         finally:
+            from ..audio_io import wait_tts_drained_owned  # lazy: numpy
             await wait_tts_drained_owned(
                 self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
             )
