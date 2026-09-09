@@ -40,6 +40,7 @@ from ...install_profile import system_capabilities_for_profile
 from ...local_sources import local_source_park_units
 from ...log_event import log_event
 from .. import debug_control
+from .. import restart_broker
 from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
@@ -210,7 +211,7 @@ def _try_restart_each(
         "failed_units": [],
     }
     for unit in units:
-        result = _server.restart_broker.manage_units(
+        result = restart_broker.manage_units(
             unit, verb="try-restart", reason=reason, no_block=True, timeout=5.0,
         )
         if result.get("ok"):
@@ -670,7 +671,7 @@ class SystemRoutes(ControlHandlerMixin):
             client=self.address_string(),
         )
         if action in ("reboot", "poweroff"):
-            result = _server.restart_broker.manage_units(
+            result = restart_broker.manage_units(
                 verb=action, reason=action,
             )
             if not result.get("ok"):
@@ -685,7 +686,7 @@ class SystemRoutes(ControlHandlerMixin):
         # profile installs them, so a refusal is a real failure.
         accepted: list[str] = []
         if restart_units:
-            result = _server.restart_broker.manage_units(
+            result = restart_broker.manage_units(
                 *restart_units, verb="restart", reason=action,
                 no_block=True, timeout=5.0,
             )

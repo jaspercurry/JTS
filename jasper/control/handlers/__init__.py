@@ -5,7 +5,9 @@
 """Concern-scoped route mixins for :mod:`jasper.control.server`.
 
 The server factory retains request guards, route tables, and dispatch ordering.
-These mixins own only the route bodies behind that stable boundary.
+These mixins own the route bodies behind that stable boundary — grouping,
+system, and peering also own module-level singletons, and peering owns its
+daemon's lifecycle.
 """
 
 from .aec import AecRoutes

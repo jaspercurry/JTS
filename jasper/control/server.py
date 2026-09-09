@@ -1249,6 +1249,7 @@ def main(argv: list[str] | None = None) -> int:
     # socket) when JASPER_PEERING=off — the default. The /sound/pair/
     # Speakers page writes that env file and restarts jasper-control to
     # pick up the new mode.
+    # lazy: import cost — handlers/ loads every route mixin
     from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
 
     start_peering_daemon_if_enabled()

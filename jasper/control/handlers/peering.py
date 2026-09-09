@@ -16,7 +16,7 @@ import logging
 import threading
 import urllib.error
 import urllib.request
-from typing import Any, cast
+from typing import Any
 
 from ...log_event import log_event
 from ...service_units import read_unit_states
@@ -229,12 +229,7 @@ class PeeringRoutes(ControlHandlerMixin):
             except ValueError:
                 length = 0
             body = self.rfile.read(length) if length > 0 else b"{}"
-        # self.server is a ThreadingHTTPServer at runtime (an AF_INET
-        # socketserver.TCPServer); BaseServer's broader socketserver.pyi
-        # type covers AF_UNIX too, hence the cast.
-        server_port = cast(
-            "tuple[str, int]", self.server.server_address,
-        )[1]
+        server_port = self.server.server_address[1]
         url = "http://{}:{}{}".format(
             leader, server_port, self.path,
         )
