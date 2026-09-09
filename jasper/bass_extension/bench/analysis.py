@@ -280,7 +280,8 @@ def corner_hz(
     The passband reference is the median of the third-octave-smoothed ratio
     over the band's upper octave-and-up (``[2*band[0], band[1]]``), so a
     rolled-off low end cannot drag the level it is compared against down with
-    it. Returns ``band[1]`` when there is no in-band spectrum to read at all.
+    it. Raises :class:`CaptureUnanalyzable` when there is no in-band spectrum
+    to read at all: an unread corner must never pass as an unmoved one.
     """
 
     values = np.asarray(samples, dtype=np.float64)
@@ -288,18 +289,20 @@ def corner_hz(
     lo, hi = float(band[0]), float(band[1])
     length = min(values.size, played.size)
     if length == 0:
-        return hi
+        raise CaptureUnanalyzable("corner window is empty")
     values, played = values[:length], played[:length]
     freqs = np.fft.rfftfreq(length, 1.0 / float(sample_rate_hz))
     mask = (freqs >= lo) & (freqs <= hi)
     grid = freqs[mask]
     if grid.size == 0:
-        return hi
+        raise CaptureUnanalyzable(
+            f"corner window of {length} samples resolves no bin in {lo:g}-{hi:g} Hz"
+        )
     captured_magnitude = np.abs(np.fft.rfft(values))[mask]
     played_magnitude = np.abs(np.fft.rfft(played))[mask]
     peak = float(np.max(played_magnitude))
     if peak <= 0.0:
-        return hi
+        raise CaptureUnanalyzable("the played window carries no in-band energy")
     # A stimulus bin with no energy says nothing about the plant: its ratio is
     # capture noise over a near-zero denominator.
     readable = played_magnitude >= 1e-6 * peak

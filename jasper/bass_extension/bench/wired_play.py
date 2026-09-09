@@ -336,17 +336,23 @@ def assert_stimulus_band_protected(
             "band through its own low-pass, against no evaluated cap",
         )
     if owner_role == SUBWOOFER_ROLE:
-        corners = [float(local_sub.crossover_fc_hz)] if local_sub is not None else []
+        if local_sub is None:
+            raise BenchRefused(
+                REFUSE_BAND, "the owner is a subwoofer the preset does not declare"
+            )
+        corners = [float(local_sub.crossover_fc_hz)]
     else:
         corners = [
             float(region.fc_hz)
             for region in regions
             if region.lower_driver == owner_role
         ]
-    if corners and float(band[1]) > min(corners):
+    # At the corner itself a Linkwitz-Riley pair is only 6 dB down, so the
+    # band must stop short of it, not at it.
+    if corners and float(band[1]) >= min(corners):
         raise BenchRefused(
             REFUSE_BAND,
-            f"the {band[0]:g}-{band[1]:g} Hz stimulus passes the {owner_role}'s "
+            f"the {band[0]:g}-{band[1]:g} Hz stimulus reaches the {owner_role}'s "
             f"{min(corners):g} Hz corner, so the driver above it is driven "
             "rather than protected",
         )
@@ -653,7 +659,6 @@ class WiredPlayAndCapture:
         except (WiredCaptureError, OSError, ValueError) as exc:
             raise BenchRefused(REFUSE_RECORDER, str(exc)) from exc
 
-        await self._sleep(pre_guard_s)
         poll: asyncio.Task[list[tuple[float, ...]]] | None = None
 
         async def _play_wav_polled() -> Any:
@@ -670,6 +675,7 @@ class WiredPlayAndCapture:
 
         finished = False
         try:
+            await self._sleep(pre_guard_s)
             try:
                 result = await play_program(
                     prepared.program,
@@ -702,8 +708,8 @@ class WiredPlayAndCapture:
         finally:
             # Any escape must release the live ALSA device.
             if not finished:
-                if poll is not None:
-                    poll.cancel()
+                if poll is not None and not poll.cancel():
+                    poll.exception()
                 recorder.abort()
         return recording, result, live_peaks
 
@@ -894,6 +900,7 @@ class WiredPlayAndCapture:
             # take is demoted BEFORE it is banked: the row and the artifact
             # carry one verdict, not two that can disagree.
             quality_verdict = analysis.quality_verdict if intact else "fail"
+            protection_verdict = analysis.protection_verdict if intact else "fail"
             signal_payload = dict(analysis.signal_dict())
             signal_payload["verdict"] = quality_verdict
             signal_payload["capture_intact"] = intact
@@ -903,9 +910,11 @@ class WiredPlayAndCapture:
                 signal_payload,
                 kind="jts_bass_extension_bench_signal_analysis",
             )
+            protection_payload = dict(analysis.protection_dict())
+            protection_payload["verdict"] = protection_verdict
             protection_id = self._sink.write_json(
                 f"{target_id}/{prepared.tag}-protection.json",
-                analysis.protection_dict(),
+                protection_payload,
                 kind="jts_bass_extension_bench_protection_analysis",
             )
             if reference is not None and role == "sweep_transparency":
@@ -929,7 +938,7 @@ class WiredPlayAndCapture:
             target_id=target_id,
             snr_db=f"{analysis.snr_db:.2f}",
             quality_verdict=quality_verdict,
-            protection_verdict=analysis.protection_verdict,
+            protection_verdict=protection_verdict,
         )
 
         # The admitted cooldown is HONOURED here, not merely recorded on the
@@ -941,7 +950,7 @@ class WiredPlayAndCapture:
             signal_analysis=signal_id,
             protection_analysis=protection_id,
             quality_verdict=quality_verdict,
-            protection_verdict=analysis.protection_verdict,
+            protection_verdict=protection_verdict,
             transparency_analysis=transparency_id,
             transparency_verdict=transparency_verdict,
             mux_status_start=mux_start,
