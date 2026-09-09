@@ -66,7 +66,7 @@ _ENTRY_POINTS = {
     # `python -m jasper.web` — hosts /sound/eq/ and /sound/, which apply generated
     # DSP configs (sound_setup's `apply_dsp_config` calls).
     "jasper/web/__main__.py": "main",
-    # `jasper-correction-web` — hosts /sound/room/ and the crossover-v2 flow.
+    # `jasper-correction-web` — hosts the crossover-v2 flow and the sync wizard.
     "jasper/web/correction_setup.py": "main",
     # `jasper-control` — the live pair-balance trim patches the graph.
     "jasper/control/server.py": "main",
@@ -123,7 +123,6 @@ _GRAPH_SWAP_MODULES = {
     "jasper/active_speaker/crossover_v2/session_graph.py",
     "jasper/active_speaker/runtime_convergence.py",
     "jasper/active_speaker/web_commissioning.py",
-    "jasper/bass_extension/__init__.py",
     "jasper/bass_extension/bench/activation.py",
     "jasper/camilla.py",
     "jasper/multiroom/active_leader_config.py",
@@ -132,9 +131,6 @@ _GRAPH_SWAP_MODULES = {
     "jasper/multiroom/runtime_balance.py",
     "jasper/sound/runtime.py",
     "jasper/web/correction_crossover_v2.py",
-    # Same daemon as correction_setup below (jasper-correction-web): the route
-    # bodies that reach the apply path live in correction_handlers.
-    "jasper/web/correction_handlers.py",
     "jasper/web/correction_setup.py",
     # Both hosted by `python -m jasper.web` (jasper/web/__main__.py above): the
     # /sound/ page's apply and commissioning halves.

@@ -291,15 +291,15 @@ def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
     """
     state_file = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
-    monkeypatch.setattr(output_hardware_cli, "read_hat_eeprom", lambda: _STUDIO_HAT)
+    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: _STUDIO_HAT)
     if discovery == "sysfs":
         sys_class, proc_asound = _unified_studio_sysfs(tmp_path)
         monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
         monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
     else:
-        monkeypatch.setattr(output_hardware_cli, "probe_system_cards", lambda **_: ())
+        monkeypatch.setattr(output_hardware, "probe_system_cards", lambda **_: ())
         monkeypatch.setattr(
-            output_hardware_cli,
+            output_hardware,
             "probe_aplay_listing",
             lambda _aplay: (
                 f"hw:CARD=HiFiBerryStudio,DEV=0\n    {_UNIFIED_STUDIO_LABEL}\n"
@@ -331,7 +331,7 @@ def test_the_shared_studio_name_parks_and_publishes_a_null_hat_eeprom(
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
     monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
     monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
-    monkeypatch.setattr(output_hardware_cli, "read_hat_eeprom", lambda: None)
+    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: None)
 
     assert output_hardware_cli.main(["--write"]) == 0
 
@@ -1312,7 +1312,7 @@ def test_published_record_carries_the_partial_composite_reason(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
     monkeypatch.setattr(
-        output_hardware_cli,
+        output_hardware,
         "probe_system_cards",
         lambda **_kwargs: (_apple_child("A", "left", "1-1"),),
     )

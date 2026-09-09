@@ -7,8 +7,7 @@
 > production caller, hardware playback, or limiter value. Jasper executes the
 > later bench pass.
 
-This is the reviewed prerequisite amendment to
-[`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md). The JTS3
+This is the reviewed prerequisite amendment to Wave 4 commissioning. The JTS3
 crossover substrate burn-in is complete, as recorded in
 [`tuning-operator-runbook.md`](../tuning-operator-runbook.md).
 The remaining result is **not established**: no retained bundle binds a

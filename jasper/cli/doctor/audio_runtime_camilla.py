@@ -25,8 +25,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ...camilla import CamillaController, CamillaUnavailable, primary_controller
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
+    DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
@@ -44,6 +46,11 @@ REASON_PLAYBACK_FORMAT_MISMATCH = "playback_format_mismatch"
 
 REASON_AUDIO_PLAN_ERRORS = "audio_plan_errors"
 REASON_AUDIO_PLAN_WARNINGS = "audio_plan_warnings"
+
+REASON_LIVE_VOLUME_LIMIT_UNAVAILABLE = "live_volume_limit_unavailable"
+REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH = "live_volume_limit_no_active_graph"
+REASON_LIVE_VOLUME_LIMIT_ABSENT = "live_volume_limit_absent"
+REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING = "live_volume_limit_above_ceiling"
 
 REASON_CAMILLA_PARK_RECORD_UNREADABLE = "camilla_park_record_unreadable"
 REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
@@ -209,6 +216,50 @@ def check_camilla_playback_format() -> CheckResult:
         "loaded config disagree.",
         reason=REASON_PLAYBACK_FORMAT_MISMATCH,
     )
+
+
+@doctor_check(label="CamillaDSP live volume_limit", is_async=True, core=True)
+async def check_camilla_live_volume_limit() -> CheckResult:
+    """The graph CamillaDSP is RUNNING carries the non-positive fader cap.
+
+    Non-negotiable #1's live half. ``check_camilla_volume_limit`` reads the
+    persisted file; this one reads ``GetConfig`` back, which is the only
+    surface that sees a graph installed by ``set_active_config_raw`` (no parse
+    on upload) or by CamillaGUI (a second writer on the same websocket).
+    """
+    label = "CamillaDSP live volume_limit"
+    controller: CamillaController | None = None
+    try:
+        controller = primary_controller()
+        raw = await controller.get_active_config_raw()
+    except (CamillaUnavailable, ImportError, OSError, RuntimeError, TimeoutError, ValueError) as e:
+        return CheckResult(
+            label, "skipped", f"live config unavailable: {e}",
+            reason=REASON_LIVE_VOLUME_LIMIT_UNAVAILABLE,
+        )
+    finally:
+        if controller is not None:
+            await controller.close()
+    if raw is None or not raw.strip():
+        return CheckResult(
+            label, "skipped", "CamillaDSP is running no graph",
+            reason=REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH,
+        )
+    limit = parse_camilla_devices_config(raw).get("volume_limit")
+    if limit is None:
+        return CheckResult(
+            label, "fail",
+            "the running graph omits devices.volume_limit; CamillaDSP defaults to +50 dB",
+            reason=REASON_LIVE_VOLUME_LIMIT_ABSENT,
+        )
+    if limit > DEFAULT_VOLUME_LIMIT_DB:
+        return CheckResult(
+            label, "fail",
+            f"the running graph sets devices.volume_limit={limit:.1f} dB "
+            f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
+            reason=REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING,
+        )
+    return CheckResult(label, "ok", f"running graph devices.volume_limit={limit:.1f} dB")
 
 
 @doctor_check()

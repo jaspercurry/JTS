@@ -20,10 +20,14 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
-from jasper.audio_hardware.dac import camilla_floor_for, latency_floor_for
+from jasper.audio_hardware.dac import (
+    active_outputd_lane_channels_for,
+    camilla_floor_for,
+    latency_floor_for,
+)
 from jasper.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
@@ -52,6 +56,7 @@ from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    RING_ACTIVE_PLAYBACK_DEVICE,
     TransportTopology,
     capture_half,
     coupling_value_removed,
@@ -63,6 +68,15 @@ from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
+)
+
+# lazy: import cost — callers can supply a parsed topology (ADR-0226).
+if TYPE_CHECKING:
+    from jasper.output_topology import OutputTopology
+
+# Both transports use the same active-lane hardware/topology proof.
+_ACTIVE_ENDPOINT_DEVICES = frozenset(
+    (ACTIVE_OUTPUTD_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
 )
 
 DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
@@ -666,6 +680,82 @@ def outputd_env_buffer_pair_error(
         override_entries=entries,
         override_label=override_label,
     )
+
+
+def validate_outputd_env(
+    *,
+    base_env: str,
+    outputd_env: str,
+    fanin_env: str,
+    camilla_statefile: str,
+    camilla2_statefile: str,
+    output_topology: str | None = None,
+    topology: OutputTopology | None = None,
+    outputd_label: str = "",
+    overrides: str | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Judge a candidate outputd.env: ``(ok, report lines)``.
+
+    The lines are what the CLI prints and what the audio-hardware reconciler
+    logs; an accepted candidate may still report ``ok note=...`` for a
+    coherent-but-transient state. A supplied topology avoids a second read.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
+    overrides_path = runtime_overrides_path() if overrides is None else overrides
+    store = load_runtime_overrides(
+        overrides_path,
+        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
+    )
+    lines = list(store.warnings)
+    detail = outputd_env_buffer_pair_error(
+        base_env=base.values,
+        outputd_env=outputd.values,
+        base_label=base.path,
+        outputd_label=outputd_label or outputd.path,
+        override_entries={entry.key: entry for entry in store.entries},
+        override_label=overrides_path,
+    )
+    if detail is not None:
+        return False, (*lines, detail)
+    fanin = read_env_file_state(fanin_env)
+    devices = output_endpoint_devices_from_statefiles(
+        camilla_statefile,
+        camilla2_statefile,
+    )
+    # Invalid active graphs are demoted to the passive route by reconciliation.
+    if devices and devices.get("playback_device") in _ACTIVE_ENDPOINT_DEVICES:
+        active_cap = active_outputd_lane_channels_for(
+            str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
+        )
+        from jasper.active_speaker.runtime_contract import (  # lazy: active-endpoint import cost (ADR-0226)
+            outputd_active_lane_decision,
+        )
+
+        decision = (
+            outputd_active_lane_decision(
+                active_cap,
+                statefile_path=camilla_statefile,
+                crossover_statefile_path=camilla2_statefile,
+                topology=topology,
+                topology_path=output_topology,
+            )
+            if active_cap is not None
+            else None
+        )
+        if decision is None or not decision.ok:
+            devices = None
+    merged_outputd = {**base.values, **outputd.values}
+    report = transport_coherence_report(
+        coupling=fanin.values.get(COUPLING_ENV_VAR),
+        outputd_env=merged_outputd,
+        camilla_devices=devices,
+    )
+    if report.errors:
+        return False, (*lines, "; ".join(report.errors))
+    if report.notes:
+        return True, (*lines, "ok note=" + "; ".join(report.notes))
+    return True, (*lines, "ok")
 
 
 def route_mode_from_grouping_config(cfg: Any) -> RouteMode:
@@ -1595,6 +1685,46 @@ def _fir_metadata_paths_for_config(text: str, *, config_path: Path) -> tuple[Pat
             wav_path = config_path.parent / wav_path
         out.append(wav_path.with_suffix(".json"))
     return tuple(out)
+
+
+def outputd_floor_plan(
+    *,
+    profile_id: str,
+    base_env: str,
+    outputd_env: str,
+    overrides: str | None = None,
+) -> tuple[dict[str, str], tuple[RuntimeEnvAction, ...]]:
+    """``(latency-key summary, outputd.env actions)`` for one DAC's declared floor.
+
+    Precedence (operator env > profile floor > packaged default) stays in this
+    one policy layer instead of being restated by each caller.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
+    overrides_path = runtime_overrides_path() if overrides is None else overrides
+    store = load_runtime_overrides(
+        overrides_path,
+        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
+    )
+    plan = build_audio_runtime_plan(
+        base_env=base.values,
+        outputd_env=outputd.values,
+        overrides=store.values(),
+        profile_id=profile_id,
+        route_mode="solo",
+        base_env_label=base.path,
+        outputd_env_label=outputd.path,
+        override_label=overrides_path,
+        plan_warnings=store.warnings,
+    )
+    summary = {key: str(plan.setting(key).value) for key in OUTPUTD_LATENCY_KEYS}
+    actions = outputd_latency_floor_actions(
+        profile_id=profile_id,
+        base_env=base.values,
+        outputd_env=outputd.values,
+        overrides=store.values(),
+    )
+    return summary, actions
 
 
 def outputd_latency_floor_actions(

@@ -33,11 +33,13 @@ from .audio_hardware.dac import (
     HIFIBERRY_DAC8X_STUDIO_ID,
     MixerControl,
     by_id as _dac_profile_by_id,
+    kind_for,
     label_for as _dac_label_for,
     mixer_control_groups_for,
+    percent_pinned_control_for,
     profile_for_card_label as _dac_profile_for_card_label,
 )
-from .audio_hardware.hat_eeprom import HatEeprom
+from .audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
 from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
@@ -47,6 +49,7 @@ from .json_fields import json_fingerprint, utc_now_iso
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
+DEFAULT_PROC_ASOUND_PATH = "/proc/asound"
 DEFAULT_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 DEFAULT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
@@ -655,6 +658,116 @@ def parse_aplay_listing(
             pcm=f"hw:CARD={card_id},DEV={match.group(2)}",
         ))
     return tuple(cards)
+
+
+@dataclass(frozen=True)
+class ObservedOutput:
+    """DAC-role policy facts; an all-default value means no record (ADR-0235 R2)."""
+
+    profile_id: str = ""
+    status: str = ""
+    #: The registry's SHAPE for the observed profile. A composite is routed
+    #: onto the paired sink through this, so no profile id is spelled there.
+    kind: str = ""
+    #: The mixer control ``jasper-headphone-monitor`` re-pins, taken off the
+    #: profile the box DRIVES. Empty means that profile pins none, which is
+    #: also how the reconciler decides not to run the monitor at all.
+    headphone_control: str = ""
+    selected_card_id: str = ""
+    child_device_ids: tuple[str, ...] = ()
+    apple_card_ids: tuple[str, ...] = ()
+    blocker_codes: tuple[str, ...] = ()
+    record_changed: bool = False
+    #: ``None`` when there is no port-role record at all. The rest of that
+    #: record is emitted by USB-role reconciliation (ADR-0235 R4).
+    management_transport_available: bool | None = None
+    dual_mapping_ok: bool = False
+    dual_mapping_reason: str = ""
+    dual_order_source: str = ""
+    dual_dac_a_pcm: str = ""
+    dual_dac_b_pcm: str = ""
+
+    @property
+    def valid(self) -> bool:
+        """A record stating BOTH facts the whole DAC-role policy hangs off."""
+        return bool(self.profile_id and self.status)
+
+
+def observed_output(
+    state: OutputHardwareState,
+    cards: tuple[OutputCardFact, ...],
+    *,
+    record_changed: bool = False,
+) -> ObservedOutput:
+    """The classifier's verdict as the one typed observation both readers share."""
+    usb = state.usb_data_role
+    mapping = dual_apple_runtime_mapping(state)
+    # Padded so an absent or partial composite still answers both PCM keys.
+    pcms = [child.pcm or "" for child in mapping.child_devices] + ["", ""]
+    return ObservedOutput(
+        profile_id=state.profile_id,
+        status=state.status,
+        kind=kind_for(state.profile_id) or "",
+        headphone_control=(
+            percent_pinned_control_for(state.active_profile_id or "") or ""
+        ),
+        selected_card_id=state.selected_card_id or "",
+        child_device_ids=tuple(child.device_id for child in state.child_devices),
+        apple_card_ids=tuple(apple_output_card_ids(cards)),
+        blocker_codes=tuple(
+            str(issue.get("code") or "unnamed")
+            for issue in state.issues
+            if issue.get("severity") == "blocker"
+        ),
+        record_changed=record_changed,
+        management_transport_available=(
+            usb.management_transport_available if usb else None
+        ),
+        dual_mapping_ok=mapping.ok,
+        dual_mapping_reason=mapping.reason,
+        dual_order_source=mapping.order_source,
+        dual_dac_a_pcm=pcms[0],
+        dual_dac_b_pcm=pcms[1],
+    )
+
+
+def observe(
+    *, write: bool = False
+) -> tuple[OutputHardwareState, tuple[OutputCardFact, ...], bool]:
+    """Classify the attached output hardware: ``(state, cards, record_changed)``.
+
+    ``write`` publishes the JSON record; ``record_changed`` then says whether
+    the record it replaced named a different profile or card.
+    """
+    hat = read_hat_eeprom()
+    cards = probe_system_cards(
+        sys_class_sound=os.environ.get("JASPER_SYS_CLASS_SOUND", "/sys/class/sound"),
+        proc_asound=os.environ.get("JASPER_PROC_ASOUND", DEFAULT_PROC_ASOUND_PATH),
+        hat=hat,
+    )
+    if not cards:
+        listing = probe_aplay_listing(os.environ.get("JASPER_APLAY", "aplay"))
+        cards = parse_aplay_listing(listing, hat=hat)
+    state = apply_saved_topology_policy(classify_output_cards(cards), cards)
+    state = replace(
+        state,
+        hat_eeprom=hat,
+        usb_data_role=resolve_system_usb_port_role(
+            observed_output_profile_id=state.profile_id,
+        ),
+    )
+    record_changed = False
+    if write:
+        # Read before the write replaces it: the identity the mixer pin
+        # depends on (which profile, on which card). An absent or unreadable
+        # record reads as no identity, so a first write counts as a change.
+        previous = load_state()
+        record_changed = previous is None or (
+            previous.profile_id != state.profile_id
+            or previous.selected_card_id != state.selected_card_id
+        )
+        write_state(state)
+    return state, cards, record_changed
 
 
 # aplay -L enumerates in tens of ms; 2 s is far past a hung USB stack, well

@@ -237,8 +237,8 @@ def test_neither_swap_ducks_the_fader(tmp_path):
     holds the measurement window, so nothing is playing for a step to be loud
     against — the ramp was 0.94 s per swapping stimulus spent on silence.
 
-    Scope is the MEASUREMENT path only. ``/sound/`` and ``/sound/room/`` apply
-    keep their duck; ``test_camilla_controller.py`` pins that they still do.
+    Scope is the MEASUREMENT path only. The ``/sound/`` apply keeps its duck;
+    ``test_camilla_controller.py`` pins that it still does.
     """
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
@@ -401,7 +401,13 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
-    scopes = [("drivers", ""), ("base", ""), ("speaker_tune", ""), ("candidate", "a"), ("candidate", "b")]
+    for named in ("candidate", "room_candidate"):
+        with pytest.raises(SessionGraphError):
+            graph.select_scope(named, "")
+    scopes = [
+        ("drivers", ""), ("base", ""), ("speaker_tune", ""),
+        ("candidate", "a"), ("candidate", "b"), ("room_candidate", "a"),
+    ]
     fingerprints = {}
     for scope, candidate_id in scopes * 2:
         graph.select_scope(scope, candidate_id)
@@ -429,7 +435,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     tmp_path, tuning_profile, scope, change, monkeypatch,
 ):
     from jasper.active_speaker.measurement_emit import compile_tuning_graph
-    from jasper.web import correction_capture, correction_setup
+    from jasper.web import correction_runtime, correction_setup
     from jasper import dsp_apply
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
@@ -485,7 +491,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
         yield
 
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: cam)
     await correction_setup._restore_protected_neutral_program_graph()
     assert cam.live == ("entry: graph\n" if change == "none" else before)
     assert fingerprint == hashlib.sha256(text.encode()).hexdigest()[:16]

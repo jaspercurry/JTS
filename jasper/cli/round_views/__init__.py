@@ -45,6 +45,7 @@ from jasper.cli._refusal import (
 )
 
 from . import (
+    boundary_prior,
     candidates,
     classify_features,
     close_reference,
@@ -58,6 +59,7 @@ from . import (
     inventory,
     repeat,
     room,
+    room_grade,
     seats,
     sweeps,
 )
@@ -97,8 +99,8 @@ __all__ = [
 #: The view families, in the order their subcommands are offered.
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
-    frequency, distortion, classify_features, findings, close_reference, delay,
-    room, inventory,
+    frequency, distortion, classify_features, findings, close_reference,
+    boundary_prior, delay, room, room_grade, inventory,
 )
 
 

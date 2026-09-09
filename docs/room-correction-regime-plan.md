@@ -1,16 +1,16 @@
 # Room-correction regime — retained proposal
 
 This is the acoustic proposal from the [July research](research/2026-07-27-acoustics-round-2/02-room-correction-competitive.md),
-not a current work order or a list of shipped features. The current
-[Room reference](room-correction-information-design.md) describes the product.
-The [tuning master plan](tuning-master-plan.md) keeps Room expansion outside the
-present toolbox scope. D-numbers remain because code and research cite them.
+not a current work order or a list of shipped features. Room is a layer of the
+one tuning toolbox
+([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md));
+its operator steps are the [runbook](tuning-operator-runbook.md)'s Room section.
+D-numbers remain because code and research cite them.
 
 The shared boundary in
 [room_boundary.py](../jasper/audio_measurement/room_boundary.py) is implemented.
-[strategy.py](../jasper/correction/strategy.py) still composes static strategy
-bands from it. A per-room estimator, residual upper tier, and spatially admitted
-LF boosts are proposals below, not current correction guarantees. The old RC1–RC5
+A per-room estimator, residual upper tier, and spatially admitted LF boosts are
+proposals below, not current correction guarantees. The old RC1–RC5
 file inventories and delivery/review ladder have been removed; current repository
 rules own review and tests.
 
@@ -102,18 +102,15 @@ later direct-sound recheck establish different claims.
 Room v1 remains IIR magnitude correction. Inverting a room's non-minimum-phase
 response at one seat does not repair it throughout the listening area. FIR with
 useful low-frequency resolution can require enough latency to conflict with
-smart-speaker duties. The [FIR note](../jasper/calibration_agent/corpus/filter-design/fir-room-correction.md)
-retains filter classes and latency calculations; the current Room latency
-contract remains in force. A source survey is not evidence that JTS offers FIR
-room-filter authoring.
+smart-speaker duties. The current Room latency contract remains in force. A
+source survey is not evidence that JTS offers FIR room-filter authoring.
 
 ## D7 — Spatial protocol
 
 The research suggested diminishing returns across a modest number of listening
 positions. That supports testing a small cloud; it does not establish a universal
-optimal count. Room's current default and quick choices live in
-`jasper.correction.session`. Moving-microphone measurement was a possible future
-method, not a supported mode created by this plan.
+optimal count. Moving-microphone measurement was a possible future method, not a
+supported mode created by this plan.
 
 ## Evidence needed to resume expansion
 

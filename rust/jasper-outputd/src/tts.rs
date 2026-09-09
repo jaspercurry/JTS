@@ -164,7 +164,7 @@ pub struct TtsMetrics {
     /// The shared assistant-loudness snapshot for STATUS. `OutputCore`
     /// (audio loop) publishes into it each period via `try_lock`; the state
     /// server reads it. Mutex over a small Copy-ish struct, matching the
-    /// `sro_estimator` / `dac_clock` state pattern — the audio loop never
+    /// `sro_estimator` state pattern — the audio loop never
     /// blocks on it.
     loudness: Arc<Mutex<TtsLoudnessSnapshot>>,
 }
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn post_dsp_gain_differs_from_pre_dsp_for_same_volume_context() {
-        use crate::loudness::{
+        use jasper_tts_protocol::loudness::{
             AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, AssistantProfile,
             MixStage,
         };

@@ -260,7 +260,7 @@ do not infer it again from the board model.
 
 For a **full** profile, walk the user through these one at a time:
 
-1. **`http://<hostname>.local/sound/setup/`** — required first. Choose mono
+1. **`http://<hostname>.local/sound/speaker/`** — required first. Choose mono
    or stereo, then passive or active. Audio stays off until the layout is
    saved.
 2. **`http://<hostname>.local/assistant/voice/`** — required. Pick a voice
@@ -357,7 +357,7 @@ needed.
 
 For a **full** profile, confirm one last time:
 - They saved a mono/stereo passive/active layout at
-  `http://<hostname>.local/sound/setup/`.
+  `http://<hostname>.local/sound/speaker/`.
 - They can hit `http://<hostname>.local/assistant/voice/` from their phone/laptop.
 - They've pasted an API key for at least one voice provider.
 - They've heard the speaker respond to "Hey Jarvis" with a brief

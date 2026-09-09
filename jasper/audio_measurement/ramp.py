@@ -32,9 +32,9 @@ fresh post-latency tail. Restoring the user's own pre-ramp volume is exempt
 from the dynamic cap and honors only the 0 dB hard ceiling.
 
 Tone contract: ``play_continuous_tone`` must play until ``cancel_tone()`` is
-called (the ``correction.playback.TonePlayer.play`` shape); the kernel runs it
-as a task and an early finish ends the ramp in ERROR -- a silent tone must
-never blind-climb.
+called (the ``jasper.audio_measurement.playback.TonePlayer.play`` shape); the
+kernel runs it as a task and an early finish ends the ramp in ERROR -- a
+silent tone must never blind-climb.
 """
 
 from __future__ import annotations

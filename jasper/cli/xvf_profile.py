@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import sys
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
 from jasper.mics import xvf3800
+from jasper.shell_env import render_shell_assignments
 
 
 DEFAULT_STATE_PATH = Path("/run/jasper-mic-profile/xvf3800.json")
@@ -70,10 +70,7 @@ def _env_lines(payload: dict[str, object]) -> str:
         "JASPER_XVF_MIXER_CAPTURE_VOLUME": xvf3800.MIXER_CAPTURE_VOLUME,
         "JASPER_XVF_MIXER_VOLUME_MAX": str(xvf3800.MIXER_VOLUME_MAX),
     }
-    return "".join(
-        f"{key}={shlex.quote(value)}\n"
-        for key, value in values.items()
-    )
+    return render_shell_assignments(values)
 
 
 def build_parser() -> argparse.ArgumentParser:

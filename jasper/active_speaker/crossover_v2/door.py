@@ -20,15 +20,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, cast
 
 from jasper.log_event import log_event
 
 from ..candidate_bank import find_banked_candidate
 from ..measurement_emit import (
-    MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph,
+    MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
+    emit_measurement_graph,
 )
 from ..restore_wait import resilient_restore
+from .measure_spec import CANDIDATE_SCOPES
 
 logger = logging.getLogger(__name__)
 
@@ -319,14 +321,13 @@ def bind_measurement_graph(
     from .session_graph import MeasurementSessionGraph
 
     def emit_scoped(scope: str, candidate_id: str) -> str:
-        if scope == "candidate":
-            return compile_tuning_graph(
-                profile, candidate=find_banked_candidate(candidate_id).candidate,
-            )
-        if scope not in ("base", "speaker_tune"):
-            raise ValueError(f"unknown tuning graph scope: {scope}")
         return compile_tuning_graph(
-            profile, scope="base" if scope == "base" else "speaker_tune",
+            profile,
+            scope=cast(TuningGraphScope, scope),
+            candidate=(
+                find_banked_candidate(candidate_id).candidate
+                if scope in CANDIDATE_SCOPES else None
+            ),
         )
 
     return MeasurementSessionGraph(

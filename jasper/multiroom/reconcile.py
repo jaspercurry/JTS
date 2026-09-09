@@ -39,6 +39,7 @@ from ..fanin_coupling import (
 )
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
+from ..service_units import run_systemctl
 from ..source_intent import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -877,10 +878,8 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     masquerade as disabled or inactive.
     """
     try:
-        proc = subprocess.run(
-            ["systemctl", query, unit],
-            capture_output=True,
-            text=True,
+        proc = run_systemctl(
+            [query, unit],
             timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
         )
     except FileNotFoundError:

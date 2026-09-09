@@ -8,7 +8,6 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = ROOT / "docs" / "bass-extension-waves" / "limiter-evidence-protocol.md"
-WAVE_4 = ROOT / "docs" / "bass-extension-waves" / "wave-4-commissioning-backend.md"
 
 
 def test_protocol_pins_detector_campaign_and_evidence_artifacts() -> None:
@@ -134,35 +133,3 @@ def test_protocol_pins_total_refusal_and_determinism_contract() -> None:
         assert f"`{field}`" in text
 
     assert "transfer or\n   quality/protection failure" not in text
-
-
-def test_revision_9_authorizes_hardware_free_slice_and_keeps_fence() -> None:
-    wave = WAVE_4.read_text(encoding="utf-8")
-
-    # Rev 9 authorizes exactly the hardware-free commissioning slice.
-    assert (
-        "Revision 9 (2026-07-20) — hardware-free commissioning slice authorized"
-        in wave
-    )
-    assert "production and hardware still blocked" in wave
-    assert "unblocks exactly one hardware-free slice" in wave
-    assert (
-        "Revision 9 authorizes exactly one additional slice, and it is hardware-free."
-        in wave
-    )
-    assert "`jasper/bass_extension/ladder.py`" in wave
-    assert "`tests/test_bass_extension_ladder.py`" in wave
-
-    # The frozen producer skeleton and its pre-production fence are unchanged.
-    assert "`jasper/bass_extension/limiter_evidence.py`" in wave
-    assert "`tests/test_bass_extension_limiter_evidence.py`" in wave
-    assert "must remain unimported and uncalled by all\nproduction paths" in wave
-    assert (
-        "its refusal taxonomy, and its own pre-production fence are unchanged" in wave
-    )
-
-    # The hardware/production fence continues.
-    assert "Everything below stays **blocked**" in wave
-    assert (
-        "reviewed bench runner/temporary\n> activation owner is not present yet" in wave
-    )

@@ -14,7 +14,7 @@
 use anyhow::Result;
 use jasper_env::{env_f32, env_parse, env_str};
 
-use crate::loudness::AssistantLoudnessConfig;
+use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
 /// The SHM ring's pinned slot size in frames (Ring A), re-exported from the
 /// crate that owns the ring geometry so fan-in and outputd read one constant.

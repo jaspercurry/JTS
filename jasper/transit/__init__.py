@@ -47,7 +47,7 @@ plumbing. Each numbered item is one logical edit point:
      (new pack for a new city; append to an existing pack's `providers`
      for a new mode). `REGISTRY` derives automatically.
   3. Wizard card dispatch: add an `elif p.id == "<slug>":` branch in
-     `jasper.web.transit_setup._index_html` (next to the existing
+     `jasper.web.transit_page._index_html` (next to the existing
      `nyc_subway` / `nyc_bus` / `citibike` cases). The unknown-id
      fallback there renders a "no UI yet" placeholder so the page
      still works while a contributor wires the rest up.

@@ -364,7 +364,7 @@ async def test_a_sound_save_preserves_the_boxs_endpoint(
 ):
     """A household EQ save changes the EQ, never the transport (#2337).
 
-    ``/sound/eq/`` and ``/sound/setup/`` both land on ``load_profile_config``; pre-fix
+    ``/sound/eq/`` and ``/sound/speaker/`` both land on ``load_profile_config``; pre-fix
     a taste-EQ save disarmed the box and the reconcilers converged it to
     loopback."""
     from jasper.sound.runtime import load_profile_config
@@ -424,7 +424,7 @@ async def test_the_layer_a_binding_judges_crossover_never_the_transport(
 ):
     """Arming a box is not crossover drift and must not block room correction.
 
-    ``camilla_readback`` is what ``/sound/room/`` actually hands this check
+    ``camilla_readback`` is what the applying surface actually hands this check
     (``get_active_config_raw()``: comments dropped, scalars re-rendered);
     ``crossover_drift`` moves a REFERENCED post-split filter, inside the
     projection the fingerprint binds, so the check is not merely inert.
