@@ -18,20 +18,12 @@ from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
     resolved_spotify_redirect_uri,
 )
-from ..volume_curve import (
-    DEFAULT_VOLUME_FLOOR_DB,
-    VOLUME_CEILING_DB,
-)
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
-# Back-compat names for legacy clients/tests. The effective floor can be
-# calibrated in /sound/; these constants are the shipped default.
-VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
-VOLUME_MAX_DB = VOLUME_CEILING_DB
 # Compatibility re-export retained for server.py and older importers.
 SPOTIFY_OAUTH_CALLBACK_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
 _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC = 30.0

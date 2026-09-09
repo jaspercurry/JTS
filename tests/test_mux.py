@@ -25,6 +25,8 @@ from unittest.mock import ANY, DEFAULT, AsyncMock
 import pytest
 
 import jasper.mux as mux_module
+import jasper.airplay_session as airplay_session
+from jasper.busctl import BusctlResult
 from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
@@ -108,6 +110,7 @@ def mux(tmp_path, monkeypatch):
     # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
     # test forgets to stub the probes.
     monkeypatch.setattr(mux_module, "fanin_command", AsyncMock(return_value={}))
+    monkeypatch.setattr(airplay_session, "run_busctl", AsyncMock(return_value=BusctlResult(0, b"", b"")))
     m = Mux(
         librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
@@ -142,7 +145,7 @@ def patched_probes(monkeypatch, mux):
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
-    monkeypatch.setattr(mux, "_usbsink_playing", usbsink)
+    monkeypatch.setattr(mux, "_usbsink_streaming", usbsink)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay,
         bluetooth=bluetooth, usbsink=usbsink,
@@ -163,6 +166,7 @@ def _stub_probes(
 def _stub_pauses(mux: Mux):
     """Replace the pause action with a capturing AsyncMock."""
     mux._pause = AsyncMock()
+    mux._airplay_session.release = AsyncMock()
 
 
 @pytest.fixture
@@ -191,31 +195,57 @@ def test_duplicate_alerts_coalesce_without_applying_policy(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_notify_control_command_only_marks_source_dirty(mux):
-    class Writer:
-        def __init__(self):
-            self.body = bytearray()
+class _ControlWriter:
+    def __init__(self):
+        self.body = bytearray()
 
-        def write(self, data):
-            self.body.extend(data)
+    def write(self, data):
+        self.body.extend(data)
 
-        async def drain(self):
-            pass
+    async def drain(self):
+        pass
 
-        def close(self):
-            pass
+    def close(self):
+        pass
 
-        async def wait_closed(self):
-            pass
+    async def wait_closed(self):
+        pass
 
+
+async def _control(mux, command: str) -> dict:
     reader = asyncio.StreamReader()
-    reader.feed_data(b"NOTIFY usbsink\n")
+    reader.feed_data(command.encode() + b"\n")
     reader.feed_eof()
-    writer = Writer()
-
+    writer = _ControlWriter()
     await mux._handle_control_client(reader, writer)
+    return json.loads(writer.body)
 
-    payload = json.loads(writer.body)
+
+async def test_preempt_control_command_runs_the_one_preempt_path(mux):
+    """The socket verb is a thin front door onto ``_pause`` — the same
+    escalation a lost arbitration runs, so no caller needs its own weaker
+    stop."""
+    _stub_pauses(mux)
+
+    assert await _control(mux, "PREEMPT airplay") == {"preempted": "airplay"}
+    mux._pause.assert_awaited_once_with(Source.AIRPLAY)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["PREEMPT spotify", "PREEMPT bluetooth", "PREEMPT usbsink",
+     "PREEMPT betamax", "PREEMPT correction"],
+)
+async def test_preempt_control_command_serves_airplay_only(mux, command):
+    _stub_pauses(mux)
+
+    assert "error" in await _control(mux, command)
+    mux._pause.assert_not_awaited()
+
+
+async def test_notify_control_command_only_marks_source_dirty(mux):
+    payload = await _control(mux, "NOTIFY usbsink")
+
     assert payload == {
         "accepted": True,
         "source": "usbsink",
@@ -952,7 +982,7 @@ async def test_usb_pause_then_play_preempts_active_airplay(
     await mux._tick()
     assert mux._winner is Source.USBSINK
     preempt.assert_any_await(False, reason="new_transition")
-    mux._pause.assert_any_await(Source.AIRPLAY)
+    mux._airplay_session.release.assert_awaited()
 
 
 async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
@@ -990,8 +1020,8 @@ def _make_combo_box(mux: Mux, monkeypatch, streaming_seq):
     """
     monkeypatch.setattr(
         mux,
-        "_usbsink_playing",
-        Mux._usbsink_playing.__get__(mux, Mux),
+        "_usbsink_streaming",
+        Mux._usbsink_streaming.__get__(mux, Mux),
     )
     streaming = list(streaming_seq)
     idx = {"i": 0}
@@ -1037,6 +1067,33 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
+
+
+async def test_status_holds_the_last_committed_source_mid_handoff(
+    mux, patched_probes,
+):
+    """Mid-handoff the losing source has already stopped while the winner is
+    not committed yet. The honest "idle" would let the volume coordinator
+    resolve a carrier against a lane this mux is about to leave."""
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._status_payload()["active_source"] == "airplay"
+
+    mid_handoff: list[str] = []
+    committed = mux._transition_to_source_locked
+
+    async def observing(*args, **kwargs):
+        mid_handoff.append(mux._status_payload()["active_source"])
+        return await committed(*args, **kwargs)
+
+    mux._transition_to_source_locked = observing
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+
+    assert mid_handoff == ["airplay"]
+    assert mux._winner is Source.SPOTIFY
+    assert mux._status_payload()["active_source"] == "spotify"
 
 
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
@@ -1108,7 +1165,7 @@ async def test_usb_streaming_preempts_active_airplay(
     # USB is now streaming (frames advancing) and is the newest source.
     await mux._tick()
     assert mux._winner is Source.USBSINK
-    mux._pause.assert_awaited_with(Source.AIRPLAY)
+    mux._airplay_session.release.assert_awaited()
     status = mux._status_payload()
     assert (
         status["sources"]["usbsink"]["started_seq"]
@@ -1159,7 +1216,7 @@ async def test_auto_select_uses_starts_observed_while_manual_pin_was_active(
     await mux.auto_select()
     assert mux._manual_source is None
     assert mux._winner is Source.USBSINK
-    mux._pause.assert_awaited_with(Source.AIRPLAY)
+    mux._airplay_session.release.assert_awaited()
 
 
 async def test_manual_control_refresh_preserves_newest_start_for_auto(
@@ -1229,25 +1286,6 @@ def _make_mux_mute_stubbed(tmp_path):
     fanin_mute = AsyncMock(return_value={})
     m._fanin_lane_mute = fanin_mute
     return m, fanin_mute
-
-
-async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_path):
-    """STATUS and mutations must not split across sockets under an override."""
-
-    command = AsyncMock(return_value={})
-    monkeypatch.setattr(mux_module, "fanin_command", command)
-    monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
-
-    await m._fanin_select_label("correction", reason="test")
-    await m._fanin_none(reason="test")
-    await m._fanin_lane_mute("usbsink", True)
-
-    assert [call.kwargs["socket_path"] for call in command.await_args_list] == [
-        "/tmp/override.sock",
-        "/tmp/override.sock",
-        "/tmp/override.sock",
-    ]
 
 
 # ----------------------------------------------------------------------
@@ -1897,7 +1935,7 @@ async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
         coord.events.append("drop:airplay")
 
     mux._fanin_select.side_effect = select_with_order
-    mux._airplay_drop_session_for_preempt = drop_with_order
+    mux._airplay_session.release = drop_with_order
     _stub_probes(patched_probes, airplay=True, usbsink=True)
 
     await mux._tick()
@@ -1983,88 +2021,84 @@ async def test_landed_strict_gate_closes_the_best_effort_failure_episode(
     ] == [("manual", "1")]
 
 
-async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
-    calls: list[tuple[tuple[str, ...], float]] = []
-
-    async def fake_system_busctl(
-        *args: str,
-        timeout: float = 2.0,
-    ) -> bytes | None:
-        calls.append((args, timeout))
-        return b"response\xff"
-
-    monkeypatch.setattr(mux_module, "system_busctl", fake_system_busctl)
-
-    result = await mux_module._busctl("call", "org.example.Service")
-
-    assert result == "response\ufffd"
-    assert calls == [(("call", "org.example.Service"), 2.0)]
-
-
-async def test_airplay_preempt_drops_receiver_session(mux, monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
-    calls: list[tuple[str, ...]] = []
-
-    async def fake_busctl(*args):
-        calls.append(args)
-        return ""
-
-    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
-
-    await mux._pause(Source.AIRPLAY)
-
-    assert calls == [(
-        "call",
-        "org.gnome.ShairportSync",
-        "/org/gnome/ShairportSync",
-        "org.gnome.ShairportSync",
-        "DropSession",
-    )]
-    assert "event=airplay.preempt_drop_session" in caplog.records[-1].message
-    assert "result=ok" in caplog.records[-1].message
-
-
-async def test_airplay_preempt_falls_back_to_stop_when_drop_session_fails(
-    mux, monkeypatch, caplog,
+@pytest.mark.parametrize("return_to_auto", [False, True])
+@pytest.mark.parametrize("prior_playback", [False, True])
+async def test_paused_airplay_session_is_released_on_takeover(
+    mux, patched_probes, monkeypatch, return_to_auto, prior_playback,
 ):
-    caplog.set_level(logging.INFO)
-    calls: list[tuple[str, ...]] = []
+    drop = AsyncMock(return_value=BusctlResult(0, b"", b""))
+    monkeypatch.setattr(airplay_session, "run_busctl", drop)
+    _stub_probes(patched_probes, airplay=prior_playback)
+    await mux._tick()
+    _stub_probes(patched_probes)
+    await mux._tick()
+    drop.assert_not_awaited()
 
-    async def fake_busctl(*args):
-        calls.append(args)
-        return None if args[-1] == "DropSession" else ""
-
-    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
-
-    await mux._pause(Source.AIRPLAY)
-
-    assert [call[-1] for call in calls] == ["DropSession", "Stop"]
-    messages = [record.message for record in caplog.records]
-    assert any("event=airplay.preempt_drop_session_failed" in m for m in messages)
-    assert any(
-        "event=airplay.preempt_stop" in m and "result=fallback_ok" in m
-        for m in messages
-    )
+    if return_to_auto:
+        await mux.select_source(Source.USBSINK)
+        drop.assert_not_awaited()
+    _stub_probes(patched_probes, usbsink=True)
+    if return_to_auto:
+        await mux.auto_select()
+    else:
+        await mux._tick()
+    assert mux._winner is Source.USBSINK
+    assert [call.args[-1] for call in drop.await_args_list] == ["DropSession"]
+    await mux._tick()
+    assert drop.await_count == 1
 
 
-async def test_airplay_preempt_failure_keeps_new_source_authoritative(
-    mux, monkeypatch, caplog,
+@pytest.mark.parametrize(
+    "responses,methods,status,reason",
+    [
+        ([BusctlResult(0, b"", b"")], ["DropSession"], "ok", "drop_acknowledged"),
+        ([None, BusctlResult(0, b"", b"")], ["DropSession", "Stop"], "degraded", "stop_unconfirmed"),
+        ([None, None], ["DropSession", "Stop"], "degraded", "cleanup_failed"),
+        ([BusctlResult(1, b"", b'Call failed: Name "org.gnome.ShairportSync" does not exist')], ["DropSession"], "ok", "receiver_absent"),
+    ],
+)
+async def test_airplay_cleanup_outcome_keeps_new_source_authoritative(
+    mux, patched_probes, monkeypatch, responses, methods, status, reason,
 ):
-    calls: list[tuple[str, ...]] = []
+    drop = AsyncMock(side_effect=responses)
+    monkeypatch.setattr(airplay_session, "run_busctl", drop)
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._status_payload()["airplay_session_cleanup"]["status"] == "unobserved"
+    _stub_probes(patched_probes, usbsink=True)
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    assert [call.args[-1] for call in drop.await_args_list] == methods
+    fact = mux._status_payload()["airplay_session_cleanup"]
+    assert (fact["status"], fact["reason"], fact["attempts"]) == (status, reason, 1)
+    assert fact["attempted_at"] > 0
 
-    async def fake_busctl(*args):
-        calls.append(args)
-        return None
 
-    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+async def test_airplay_cleanup_finishes_before_a_new_selection(
+    mux, patched_probes, monkeypatch,
+):
+    entered, finish = asyncio.Event(), asyncio.Event()
 
-    # Receiver cleanup is best-effort: an unavailable D-Bus control surface
-    # must not raise into the already-completed fan-in handoff.
-    await mux._pause(Source.AIRPLAY)
+    async def drop(*args):
+        assert mux._winner is Source.USBSINK
+        entered.set()
+        await finish.wait()
+        assert mux._winner is Source.USBSINK
+        return BusctlResult(0, b"", b"")
 
-    assert [call[-1] for call in calls] == ["DropSession", "Stop"]
-    assert "event=airplay.preempt_stop_failed" in caplog.records[-1].message
-    assert "action=new_source_remains_authoritative" in caplog.records[-1].message
+    monkeypatch.setattr(airplay_session, "run_busctl", drop)
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    _stub_probes(patched_probes, usbsink=True)
+    takeover = asyncio.create_task(mux._tick())
+    await wait_signalled(entered, "AirPlay cleanup entered")
+    newer_selection = asyncio.create_task(mux.select_source(Source.AIRPLAY))
+    await asyncio.sleep(0)
+    assert not newer_selection.done()
+    assert mux._status_payload()["airplay_session_cleanup"]["reason"] == "cleanup_pending"
+    finish.set()
+    await asyncio.gather(takeover, newer_selection)
+    assert mux._manual_source is Source.AIRPLAY
 
 
 async def test_bluetooth_preempt_uses_avrcp_pause(mux, monkeypatch):
@@ -2406,27 +2440,3 @@ def test_debounce_ticks_constant_removed():
     assert not hasattr(Mux, "DEBOUNCE_TICKS")
 
 
-async def test_voice_socket_command_times_out_on_stalled_connect(monkeypatch):
-    """A wedged voice-daemon listener must not hang _voice_socket_command's
-    connect past its 1s bound -- it feeds the duck-active probe polled on
-    mux's control path."""
-    async def _hang(*_a, **_kw):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(mux_module.asyncio, "open_unix_connection", _hang)
-
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(
-            mux_module._voice_socket_command(
-                "/tmp/jasper-test-stalled.sock", "STATUS",
-            ),
-            timeout=10.0,
-        )
-    elapsed = loop.time() - start
-    assert elapsed < 3.0, (
-        f"_voice_socket_command took {elapsed:.1f}s against a stalled "
-        "listener -- its connect must raise within its own 1.0s "
-        "asyncio.timeout bound, not the test's outer safety net"
-    )

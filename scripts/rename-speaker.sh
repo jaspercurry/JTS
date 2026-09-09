@@ -159,6 +159,7 @@ else
 fi
 
 echo "==> Done. Speaker is ${NEW_FQDN}"
-echo "    verify: curl -s http://${NEW_FQDN}:8780/state | jq .resilience.identity"
+echo "    verify: ssh ${NEW_TARGET} sudo /opt/jasper/.venv/bin/jasper-doctor | grep 'identity coherence'"
+echo "            — OS, mDNS and configured names agree"
 echo "    note: an onboard-time ssh alias for the old name may linger in"
 echo "    ~/.ssh/config; update its HostName if you use it."

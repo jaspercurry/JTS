@@ -749,6 +749,7 @@ def validate_outputd_env(
         coupling=fanin.values.get(COUPLING_ENV_VAR),
         outputd_env=merged_outputd,
         camilla_devices=devices,
+        allow_grouping_capture=True,
     )
     if report.errors:
         return False, (*lines, "; ".join(report.errors))

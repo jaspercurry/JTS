@@ -1122,6 +1122,12 @@ impl StateServer {
         let ring = &self.ring;
         buf.push(',');
         buf.push_str(r#""ring":{"#);
+        push_kv_bool(
+            buf,
+            "nominal_clock",
+            ring.nominal_clock.load(Ordering::Relaxed),
+        );
+        buf.push(',');
         push_kv_str(buf, "path", &ring.path);
         buf.push(',');
         push_kv_u64(buf, "slots", ring.slots as u64);
@@ -1459,6 +1465,7 @@ mod tests {
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             sched_policy: libc::SCHED_FIFO,
             ring: RingObservability {
+                nominal_clock: Arc::new(AtomicBool::new(false)),
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
                 wire_format: "S32_LE",

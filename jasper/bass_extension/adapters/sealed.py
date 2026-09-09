@@ -22,6 +22,7 @@ from jasper.bass_extension.alignment import (
 )
 from .base import (
     COMMISSION_FLOOR_HZ,
+    TARGET_RESPONSE_RESERVE_DB,
     CabinetInfo,
     CaptureRole,
     FitRefusal,
@@ -29,6 +30,7 @@ from .base import (
     TargetSpec,
     _curve_arrays,
     passband_normalize,
+    target_response_grid,
     woofer_curve,
 )
 
@@ -144,6 +146,35 @@ def _fit_model(
     return result.x, rms
 
 
+def _deepest_bounded_corner(
+    plant: SealedPlantFit,
+    boost_cap_db: float,
+) -> float:
+    """Lowest LT corner whose complete response stays within the cap."""
+
+    grid = target_response_grid()
+
+    def boost(fp_hz: float) -> float:
+        response = lt_response_db(grid, plant.f0_hz, plant.q0, fp_hz, 0.65)
+        return boost_headroom_db(response, np.zeros_like(response))
+
+    limit = max(0.0, boost_cap_db - TARGET_RESPONSE_RESERVE_DB)
+    floor = min(COMMISSION_FLOOR_HZ, plant.f0_hz)
+    if boost(floor) <= limit:
+        return floor
+    if boost(plant.f0_hz) > limit:
+        return plant.f0_hz
+
+    too_deep, admitted = floor, plant.f0_hz
+    for _ in range(64):
+        candidate = math.sqrt(too_deep * admitted)
+        if boost(candidate) > limit:
+            too_deep = candidate
+        else:
+            admitted = candidate
+    return admitted
+
+
 class SealedAdapter:
     adapter_id = "sealed_v1"
     adapter_version = 1
@@ -206,10 +237,12 @@ class SealedAdapter:
             COMMISSION_FLOOR_HZ,
             plant.f0_hz / 10.0 ** (margin.boost_cap_db / 40.0),
         )
+        if plant.q0 <= 1.2:
+            deepest = _deepest_bounded_corner(plant, margin.boost_cap_db)
         subsonic = {
             "type": "ButterworthHighpass",
-            "freq": max(15.0, 0.5 * deepest),
-            "order": 2,
+            "freq": max(15.0, margin.subsonic_corner_ratio * deepest),
+            "order": margin.subsonic_order,
         }
         natural = TargetSpec(
             target_id="natural",
@@ -223,7 +256,7 @@ class SealedAdapter:
             return (natural,)
 
         corners = np.geomspace(deepest, plant.f0_hz, n_targets)
-        grid = np.geomspace(10.0, 500.0, 960)
+        grid = target_response_grid()
         natural_chain = second_order_highpass_db(grid, plant.f0_hz, plant.q0)
         natural_chain += butterworth_highpass_db(
             grid, float(subsonic["freq"]), int(subsonic["order"])

@@ -2,8 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Client side of the voice-daemon and jasper-mux control sockets, shared by
-control, measurement and doctor callers."""
+"""The one client for JTS's line-oriented control sockets.
+
+voice_daemon, jasper-mux, jasper-fanin and jasper-outputd all speak the same
+shape: one ASCII command line in, one JSON-object line back, ``{"error": ...}``
+for a refusal. :func:`daemon_command` is that exchange; the named wrappers below
+only carry each daemon's default socket path and timeout. Every wire-level
+failure raises ``RuntimeError``; transport failures raise the underlying
+``OSError``/``TimeoutError``.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +18,7 @@ import json
 import time
 from typing import Any
 
-from .status_socket import MUX_CONTROL_SOCKET_PATH
+from .status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 
 # The one ceiling every local STATUS reader in jasper-control shares.  It is a
 # safety bound on a hostile or wedged local daemon, not a size estimate for any
@@ -20,22 +27,21 @@ from .status_socket import MUX_CONTROL_SOCKET_PATH
 # jasper-outputd's own STATUS is tens of KiB on a chip-AEC box.
 MAX_STATUS_BYTES = 256 * 1024
 
-# voice_daemon creates its control socket last during startup (~2s after the
-# process itself starts). A connect landing in that window would otherwise
-# surface as a hard "not running" 503 for a daemon that is merely still
-# coming up. Bounded well under the bridge's 2.0s per-request HTTP timeout
-# (jasper/platform/control_client.py DEFAULT_TIMEOUT) so a caller sees one clean 503
-# rather than its own request timing out mid-retry.
+# Seconds. voice_daemon creates its control socket last during startup (~2s
+# after the process itself starts). A connect landing in that window would
+# otherwise surface as a hard "not running" 503 for a daemon that is merely
+# still coming up. Bounded well under the bridge's 2.0s per-request HTTP
+# timeout (jasper/platform/control_client.py DEFAULT_TIMEOUT) so a caller sees
+# one clean 503 rather than its own request timing out mid-retry.
 _CONNECT_RETRY_INTERVAL_SEC = 0.25
 _CONNECT_RETRY_BUDGET_SEC = 1.2
 
-
-async def _connect_voice_socket(
-    socket_path: str,
+async def _connect(
+    socket_path: str, retry_budget_sec: float,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Open the voice_daemon UDS, retrying a not-yet-created/not-yet-bound
-    socket for up to ``_CONNECT_RETRY_BUDGET_SEC``."""
-    deadline = time.monotonic() + _CONNECT_RETRY_BUDGET_SEC
+    """Open the UDS, optionally retrying a not-yet-created/not-yet-bound
+    socket for up to ``retry_budget_sec``."""
+    deadline = time.monotonic() + retry_budget_sec
     while True:
         try:
             return await asyncio.open_unix_connection(socket_path)
@@ -45,51 +51,30 @@ async def _connect_voice_socket(
             await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SEC)
 
 
-async def voice_socket_command(
-    socket_path: str, cmd: str, *, timeout: float = 5.0,
-) -> dict:
-    """Send one ASCII line to voice_daemon's control socket and return
-    the parsed JSON response. Used by /session/start, /session/end,
-    and /cue/play. The default 5s timeout covers session-state
-    commands; cue playback takes longer (~6s for a 5s cue plus
-    duck/restore plus drain) and bumps timeout explicitly."""
-    reader, writer = await _connect_voice_socket(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("voice_daemon returned no response")
-    return json.loads(line.decode("utf-8"))
-
-
-async def mux_socket_command(
-    cmd: str,
+async def daemon_command(
+    socket_path: str,
+    command: str,
     *,
-    socket_path: str = MUX_CONTROL_SOCKET_PATH,
-    timeout: float = 2.0,
+    timeout: float,
+    daemon: str,
+    connect_retry_budget_sec: float = 0.0,
 ) -> dict[str, Any]:
-    """Send one ASCII command to jasper-mux's local control socket.
+    """Send one ASCII command line and return the daemon's JSON object.
 
-    The web frontend should not talk to fan-in directly: mux owns the
-    manual-vs-auto source policy and uses fan-in only as the low-level
-    audio gate.
+    ``timeout`` is seconds, and is ONE deadline covering connect, send,
+    response and close: separate per-stage timeouts multiply the advertised
+    bound, and an unbounded close wait could wedge a caller holding a
+    transition lock.
     """
-    if not cmd or "\n" in cmd or "\r" in cmd:
-        raise ValueError("jasper-mux command must be one non-empty line")
+    if not command or "\n" in command or "\r" in command:
+        raise ValueError(f"{daemon} command must be one non-empty line")
     if timeout <= 0:
-        raise ValueError("jasper-mux command timeout must be positive")
+        raise ValueError(f"{daemon} command timeout must be positive")
 
     async def exchange() -> bytes:
-        reader, writer = await asyncio.open_unix_connection(socket_path)
+        reader, writer = await _connect(socket_path, connect_retry_budget_sec)
         try:
-            writer.write((cmd + "\n").encode("ascii"))
+            writer.write((command + "\n").encode("ascii"))
             await writer.drain()
             return await reader.readline()
         finally:
@@ -101,30 +86,74 @@ async def mux_socket_command(
             except (OSError, RuntimeError):
                 pass
 
-    # One deadline covers connect, send, response, and close. In particular,
-    # correction's lease-renewal deadline cannot be defeated by a wedged UDS
-    # connect or writer drain while mux's safety lease continues to age.
-    #
     # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11 wait_for
     # SWALLOWS a CancelledError that arrives in the same tick its awaited
     # future completes (Lib/asyncio/tasks.py: `except CancelledError: if
-    # fut.done(): return fut.result()`). measurement_window.py's
-    # _refresh_measurement_gate_lease calls this from a cancellation-only
-    # `while True:` that measurement_window()'s finally cancels and then
-    # awaits unboundedly -- a swallowed cancel here makes that task immortal
-    # and wedges the whole window teardown (#1952, same class as #1935's
-    # Mux.run() patrol wait). Do not "simplify" this back to wait_for while
-    # 3.11 is supported.
+    # fut.done(): return fut.result()`). Callers on cancellation-only
+    # `while True:` loops -- measurement_window's lease refreshers (#1952),
+    # VolumeObserver._run through renderer.selected_source (#2003), Mux.run()'s
+    # patrol wait (#1935) -- would become immortal and wedge their owner's
+    # teardown. Do not "simplify" this back to wait_for while 3.11 is supported.
     async with asyncio.timeout(timeout):
         line = await exchange()
     if not line:
-        raise RuntimeError("jasper-mux returned no response")
-    payload = json.loads(line.decode("utf-8"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
+        raise RuntimeError(f"{daemon} returned no response")
+    try:
+        payload = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{daemon} returned invalid JSON") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError("jasper-mux returned non-object JSON")
+        raise RuntimeError(f"{daemon} returned non-object JSON")
+    if "error" in payload:
+        raise RuntimeError(str(payload["error"]))
     return payload
+
+
+async def voice_socket_command(
+    socket_path: str, cmd: str, *, timeout: float = 5.0,
+) -> dict[str, Any]:
+    """One command to voice_daemon's control socket.
+
+    ``timeout`` is seconds; the default covers session-state commands.
+    Cue playback takes longer
+    (~6s for a 5s cue plus duck/restore plus drain) and bumps ``timeout``.
+    """
+    return await daemon_command(
+        socket_path,
+        cmd,
+        timeout=timeout,
+        daemon="voice_daemon",
+        connect_retry_budget_sec=_CONNECT_RETRY_BUDGET_SEC,
+    )
+
+
+async def mux_socket_command(
+    cmd: str,
+    *,
+    socket_path: str = MUX_CONTROL_SOCKET_PATH,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """One command to jasper-mux's local control socket. ``timeout`` is seconds.
+
+    The web frontend should not talk to fan-in directly: mux owns the
+    manual-vs-auto source policy and uses fan-in only as the low-level
+    audio gate.
+    """
+    return await daemon_command(
+        socket_path, cmd, timeout=timeout, daemon="jasper-mux",
+    )
+
+
+async def fanin_command(
+    command: str,
+    *,
+    socket_path: str = FANIN_STATUS_SOCKET,
+    timeout_sec: float = 2.0,
+) -> dict[str, Any]:
+    """One command to jasper-fanin's control socket (mux's source gate)."""
+    return await daemon_command(
+        socket_path, command, timeout=timeout_sec, daemon="jasper-fanin",
+    )
 
 
 async def local_status_json(

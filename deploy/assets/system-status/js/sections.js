@@ -46,14 +46,13 @@ export function waitingNote(spanGrid) {
 // Owner ruling 2026-08-27: no banner anywhere — every transport park names
 // itself here, on the operator's own screen. Every FACT below (the class
 // token, its tracked issue, its one-line reason, its remedy) is read from
-// `/system/snapshot.transport_park`, the same verdict `/state.resilience
-// .transport_park` and jasper-doctor read, so this card cannot name a park
-// the other two surfaces do not. Only the framing sentence per status is
-// written here.
+// `/system/snapshot.transport_park`, the same verdict jasper-doctor reads,
+// so this card cannot name a park the other surface does not. Only the
+// framing sentence per status is written here.
 //
 // Class labels are DERIVED from the token rather than mapped, so a fifth
-// class added in jasper/control/transport_park.py appears here with no JS
-// edit and no second vocabulary to drift.
+// class added in jasper/control/transport_eligibility.py appears here with
+// no JS edit and no second vocabulary to drift.
 // Exported so the harness can pin status -> entry SELECTION by identity
 // instead of matching the copy, which would make every reword a test edit.
 export const PARK_HEADLINE = {

@@ -360,19 +360,20 @@ def playback_is_pipe(text: str, fifo: str) -> bool:
 def active_leader_pipe_path() -> str:
     """``SNAPFIFO`` when the ACTIVE CamillaDSP config writes the
     snapserver pipe, else ``""``. The producer-liveness signal for
-    runtime health (/state + jasper-doctor): daemon-adjacent truth —
-    CamillaDSP's own statefile names the loaded config, and that config's
-    own devices block says whether it writes the pipe — never a mirror of env
-    intent (the retired ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total:
-    any read failure resolves to ``""`` (degraded — fail visible)."""
+    runtime health (the grouping control-plane route + jasper-doctor):
+    daemon-adjacent truth — CamillaDSP's own statefile names the loaded
+    config, and that config's own devices block says whether it writes the
+    pipe — never a mirror of env intent (the retired
+    ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total: any read failure resolves to
+    ``""`` (degraded — fail visible)."""
     # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override,
     # the shipped default, and the ``config_path`` parse all live in
     # active_speaker.environment. Lazy like every other import in this module,
-    # and free for all three daemons that reach this function: jasper-control's
-    # `_get_state` already imports that module for `active_speaker_parked`;
+    # and free for every daemon that reaches this function: jasper-control's
+    # own audio-health sampler (audio_health.py) already imports that module;
     # jasper-web builds every role-eligible wizard at startup, and `/sound`
     # pulls it under the same role set that gates `/rooms`; the doctor's
-    # correction module imports it outright.
+    # correction and grouping modules import it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
     from .reconcile import SNAPFIFO

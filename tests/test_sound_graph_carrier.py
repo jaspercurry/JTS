@@ -768,7 +768,7 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     assert result.yaml == "eqd-active-yaml"
     assert result.room_peq_count == 0
     assert recompose.call_args.kwargs["out_path"] == out
-    assert recompose.call_args.kwargs["room_peqs"] == []
+    assert recompose.call_args.kwargs["room_peqs"] is None
     # The household's manual headroom / loudness-match trim is forwarded to the
     # active emitter, not silently dropped.
     assert recompose.call_args.kwargs["output_trim_db"] == 3.0
@@ -1118,11 +1118,23 @@ def test_bass_extension_recompose_preserves_exact_program_overlays(
         updated_at="2026-07-19T12:00:00Z",
     )
     settings = SoundSettings(headroom_trim_db=6.0)
-    room_peqs = [PeqFilter(freq=83.0, q=4.2, gain=-3.0)]
+    room_correction = {
+        "sides": {"mono": [{"freq": 83.0, "q": 4.2, "gain": -3.0}]},
+        "ceiling_hz": 350.0,
+        "ceiling_source": "applied_candidate",
+        "basis": {
+            "round_id": "round-1",
+            "room_median_sha256": "b" * 64,
+            "admitted_boosts_hz": [],
+        },
+        "boost_db_total": 0.0,
+        "level_cost_db": 0.0,
+    }
+    applied["room_correction"] = room_correction
+    applied["recomposition_snapshot"]["room_correction"] = room_correction
     current, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        room_peqs=room_peqs,
         preference_filters=build_sound_filter_slots(preference),
         output_trim_db=output_trim_db(preference, settings),
     )

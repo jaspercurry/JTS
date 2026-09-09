@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import threading
 import time
 from typing import Any
 
@@ -40,10 +39,10 @@ from jasper.source_state import airplay_playbackstatus_observed
 
 from . import restart_broker
 from .supervisor_runtime import (
-    build_asyncio_thread,
     resolve_env_mode,
     run_supervisor_loop,
     snapshot_or_disabled,
+    spawn_on_control_loop,
 )
 
 logger = logging.getLogger(__name__)
@@ -284,9 +283,11 @@ class ShairportSupervisor:
         toward "a listener is there", and a genuine sender that publishes no
         track title must not be restarted out from under.
 
-        If the probe is unknown, fail safe to "active" only
-        while systemd still reports shairport-sync live or unknown. A
-        dead/inactive unit cannot be protecting a listener, so it
+        A shairport whose MPRIS name is absent from the bus answers a
+        definite "not playing" — there is no session for a wedge restart to
+        interrupt. Only a transport failure is unknown, and that fails safe
+        to "active" while systemd still reports shairport-sync live or
+        unknown. A dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
 
         An absent MPRIS bus name is not unknown: the probe classifies it as a
@@ -464,7 +465,6 @@ class ShairportSupervisor:
 # wrt the instance and Python attribute reads are atomic at the
 # snapshot dict's resolution.
 _supervisor: ShairportSupervisor | None = None
-_supervisor_thread: threading.Thread | None = None
 
 
 def snapshot() -> dict[str, Any]:
@@ -475,18 +475,18 @@ def snapshot() -> dict[str, Any]:
     )
 
 
-def start_supervisor() -> threading.Thread | None:
-    """Start the supervisor in a background thread. No-op when
-    `JASPER_SHAIRPORT_SUPERVISOR=disabled` (exact match, case-
+def start_supervisor() -> None:
+    """Start the supervisor on jasper-control's shared background loop.
+    No-op when `JASPER_SHAIRPORT_SUPERVISOR=disabled` (exact match, case-
     insensitive). Idempotent under sequential calls — the sole
     caller is `jasper-control`'s single-threaded `main()`."""
-    global _supervisor, _supervisor_thread
-    if _supervisor_thread is not None:
-        return _supervisor_thread
+    global _supervisor
+    if _supervisor is not None:
+        return
     mode = resolve_env_mode("JASPER_SHAIRPORT_SUPERVISOR")
     if mode == "disabled":
         log_event(logger, "shairport.disabled")
-        return None
+        return
     if mode != "auto":
         logger.warning(
             "JASPER_SHAIRPORT_SUPERVISOR=%r unrecognized; "
@@ -494,11 +494,9 @@ def start_supervisor() -> threading.Thread | None:
             mode,
         )
     _supervisor = ShairportSupervisor()
-    _supervisor_thread = build_asyncio_thread(
+    spawn_on_control_loop(
         target=_supervisor.run,
         name="shairport-supervisor",
         logger=logger,
         crash_event="shairport.thread_crash",
     )
-    _supervisor_thread.start()
-    return _supervisor_thread

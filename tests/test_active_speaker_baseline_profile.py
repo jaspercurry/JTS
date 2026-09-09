@@ -66,6 +66,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
+    candidate_room_peqs,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE, PeqFilter
@@ -4888,11 +4889,7 @@ _ROOM_CORRECTION: dict[str, Any] = {
 def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
     tmp_path: Path,
 ) -> None:
-    """A v2 candidate's own room set reaches the graph it applies: the PEQs
-    round-trip back out of the emitted config text, their boost is absorbed by
-    active_baseline_headroom, and the applied-now record lands on the payload's
-    top level (never inside the fingerprinted recomposition_snapshot). A
-    candidate without the field emits no room stage at all."""
+    """An accepted room layer is emitted and persisted for recomposition."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
@@ -4936,15 +4933,74 @@ def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
         _headroom_gain_db(plain_text) - 3.0
     )
     assert payload["room_correction"] == candidate.room_correction
-    assert "room_correction" not in payload["recomposition_snapshot"]
+    assert payload["recomposition_snapshot"]["room_correction"] == candidate.room_correction
+
+    applied = {**payload, "status": "applied"}
+    preserved, preserved_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        bass_extension_profile=None,
+    )
+    speaker_only, speaker_only_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=(),
+        bass_extension_profile=None,
+    )
+    assert preserved_issues == speaker_only_issues == []
+    assert preserved is not None and speaker_only is not None
+    assert extract_room_peqs_from_config_text(preserved) == list(
+        candidate_room_peqs(candidate)
+    )
+    assert extract_room_peqs_from_config_text(speaker_only) == []
 
     assert plain["status"] == "ready_to_apply", plain["issues"]
     assert plain["room_correction"] == {}
+    assert "room_correction" not in plain["recomposition_snapshot"]
     assert [
         name
         for name in yaml_lib.safe_load(plain_text)["filters"]
         if name.startswith("room_peq_")
     ] == []
+
+
+def test_legacy_applied_room_mirror_survives_frozen_read_and_recompose(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset, room_correction=_ROOM_CORRECTION)
+    legacy = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    legacy["status"] = "applied"
+    legacy["recomposition_snapshot"].pop("room_correction")
+
+    frozen = baseline_profile_mod._frozen_applied_profile(legacy)
+    assert frozen is not None
+    assert frozen["room_correction"] == candidate.room_correction
+    recomposed, recompose_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=frozen,
+        bass_extension_profile=None,
+    )
+    assert recompose_issues == []
+    assert recomposed is not None
+    assert extract_room_peqs_from_config_text(recomposed) == list(
+        candidate_room_peqs(candidate)
+    )
 
 
 def test_build_baseline_profile_candidate_threads_linearization_outcome(

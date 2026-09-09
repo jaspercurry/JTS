@@ -28,8 +28,8 @@ re-read wizard/reconciler-owned files fresh, never trust the
     answering with the ``os.environ`` snapshot a unit started with; a
     consumer that caches its answer (``Config.from_env``) still needs a
     restart.
-  * :func:`snapshot` — the ``/state.resilience.identity`` and doctor
-    surface; reads fresh, derives a status, never raises.
+  * :func:`snapshot` — the doctor surface; reads fresh, derives a
+    status, never raises.
 
 A missing file (fresh install before the first reconciler run, dev
 checkout) degrades to "no extra names / status=absent" — exactly the
@@ -148,7 +148,7 @@ def mutating_request_allowed(headers: Mapping[str, str]) -> tuple[bool, str]:
 
 
 def snapshot(path: str | None = None) -> dict[str, Any]:
-    """State surface for ``/state.resilience.identity`` and the doctor.
+    """State surface for jasper-doctor's identity-coherence check.
 
     Always returns a dict, never raises. ``status`` is one of:
 

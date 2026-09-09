@@ -40,6 +40,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
         responses.append(response)
         records.append({
             "role": role, "segment_id": seg.segment_id,
+            "input_channel": seg.channel,
             "scheduled_start_sample": seg.start_sample, "pre_guard_samples": pre,
             "clock_shift_samples": shift, "gate": response.gating,
             "band_hz": list(_radiated_band_hz(seg)),

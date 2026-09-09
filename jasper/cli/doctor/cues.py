@@ -69,8 +69,6 @@ def check_cue_cache(cfg: Config) -> CheckResult:
     buckets: dict[str, list[str]] = defaultdict(list)
     for cue in CUES:
         buckets[_cue_state(manager, cue, by_slug, memo)].append(cue.slug)
-    # speaker_silent stays default False (doctor_contract.CheckResult): the
-    # assistant goes silent here, not the output chain.
     for bucket, status, reason, template in _SEVERITY:
         if slugs := buckets[bucket]:
             detail = template.format(

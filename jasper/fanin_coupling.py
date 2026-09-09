@@ -10,7 +10,7 @@ CamillaDSP's capture. ONE transport: ``shm_ring``, the end-to-end SHM-ring path
 via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B (or
 to the ACTIVE ring on an armed roleful box). See ADR-0100 — a topology the ring
 cannot serve parks under its own name
-(:mod:`jasper.control.transport_park`); it never falls back.
+(:mod:`jasper.control.transport_eligibility`); it never falls back.
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the ring without pulling in NumPy/SciPy.
@@ -307,7 +307,7 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # correct.
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
 # One END of the box is off the one transport (ADR-0100): a coupling or bridge
-# declaration a daemon parks on. Not a second route: jasper.control.transport_park
+# declaration a daemon parks on. Not a second route: jasper.control.transport_eligibility
 # is what names such a box. The ring MARKER's shape is NOT this one — see
 # TRANSPORT_DAC_CONTENT_RING below, which is served.
 TRANSPORT_OFF_RING = "off_ring"

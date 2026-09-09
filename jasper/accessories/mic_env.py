@@ -156,8 +156,7 @@ def read_accessory_mic_sources(path: str | None = None) -> tuple[str, ...]:
 
     Three outcomes, deliberately NOT collapsed into one. Every one of them
     parks voice, so the *verdict* is the same; the *fact* is not, and the fact
-    is what reaches an operator through ``/state.microphone.reason`` and the
-    doctor headline:
+    is what reaches an operator through the doctor headline:
 
     * **No file, or a file that publishes nothing** → ``()``. A real answer: no
       accessory microphone is paired.

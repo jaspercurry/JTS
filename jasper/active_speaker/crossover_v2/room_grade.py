@@ -20,6 +20,7 @@ regression can restore the incumbent through the doctrine's own path
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -56,9 +57,10 @@ class RoomGradeBand:
     lo_hz: float
     hi_hz: float
     n_bins: int
-    rms_db: float
-    max_db: float
-    spread_db: float
+    rms_db: float | None
+    max_db: float | None
+    spread_db: float | None
+    compared_hz: tuple[float, float] | None = None
     #: The incumbent's own bin count in this band on ITS grid -- ``None`` with
     #: no incumbent, ``0`` when its grid carries no bin here, which is why the
     #: three numbers below and ``regressed`` read null rather than zero.
@@ -80,6 +82,7 @@ class RoomGrade:
     bands: tuple[RoomGradeBand, ...]
     incumbent_ceiling_hz: float | None = None
     incumbent_n_positions: int | None = None
+    comparison: Mapping[str, Any] | None = None
 
     @property
     def regressed_bands(self) -> list[float]:
@@ -97,6 +100,7 @@ class RoomGrade:
                 "ceiling_hz": self.incumbent_ceiling_hz,
                 "n_positions": self.incumbent_n_positions,
             },
+            "comparison": None if self.comparison is None else dict(self.comparison),
             "regressed_bands": self.regressed_bands,
         }
 
@@ -110,21 +114,169 @@ class _BandMetrics(NamedTuple):
     spread_db: float
 
 
-#: What a band whose grid carries no bin grades as, beside its zero count.
-_NO_BINS = _BandMetrics(0, 0.0, 0.0, 0.0)
-
-
 def _metrics(median: RoomMedian, mask: np.ndarray) -> _BandMetrics | None:
     """One band's bin count, RMS and max against flat, and its mean spread, or
     ``None`` when this median's grid carries no bin in the band."""
-    deviation = median.median_db[mask]
-    if not deviation.size:
+    return _array_metrics(median.median_db, median.spread_db, mask)
+
+
+def _array_metrics(
+    deviation: np.ndarray, spread: np.ndarray, mask: np.ndarray,
+) -> _BandMetrics | None:
+    values = deviation[mask]
+    if not values.size:
         return None
     return _BandMetrics(
-        n_bins=int(deviation.size),
-        rms_db=float(np.sqrt(np.mean(deviation ** 2))),
-        max_db=float(np.max(np.abs(deviation))),
-        spread_db=float(np.mean(median.spread_db[mask])),
+        n_bins=int(values.size),
+        rms_db=float(np.sqrt(np.mean(values ** 2))),
+        max_db=float(np.max(np.abs(values))),
+        spread_db=float(np.mean(spread[mask])),
+    )
+
+
+_INTERVENTION_FIELDS = (
+    "candidate_id", "submitted_graph_fingerprint", "graph_fingerprint", "graph_scope",
+)
+_COMPARABILITY_FIELDS = (
+    "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
+    "stimulus_peak_dbfs", "gating_applied",
+)
+
+
+def _capture_calibration_identity(value: Any) -> tuple[bool, str | None, str | None] | None:
+    if not isinstance(value, Mapping) or type(value.get("applied")) is not bool:
+        return None
+    calibration_id = value.get("calibration_id")
+    fingerprint = value.get("curve_fingerprint")
+    if calibration_id is not None and not isinstance(calibration_id, str):
+        return None
+    if value["applied"] and not isinstance(fingerprint, str):
+        return None
+    if not value["applied"] and fingerprint is not None:
+        return None
+    return value["applied"], calibration_id, fingerprint
+
+
+def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, Any]:
+    """Separate the graph change under test from capture facts that must agree."""
+    now_evidence = median.evidence if isinstance(median.evidence, Mapping) else {}
+    was_evidence = incumbent.evidence if isinstance(incumbent.evidence, Mapping) else {}
+    now_raw, was_raw = now_evidence.get("basis"), was_evidence.get("basis")
+    now = now_raw if isinstance(now_raw, Mapping) else {}
+    was = was_raw if isinstance(was_raw, Mapping) else {}
+    changed = [
+        field for field in _INTERVENTION_FIELDS
+        if field in now and field in was and now.get(field) != was.get(field)
+    ]
+    incompatible: list[str] = []
+    unknown: list[str] = []
+    for field in _COMPARABILITY_FIELDS:
+        left, right = now.get(field), was.get(field)
+        if left is None or right is None:
+            unknown.append(field)
+        elif left != right:
+            incompatible.append(field)
+
+    # New captures carry this per-take resolution. Old medians have only the
+    # reference/applied pair; those remain usable, with their missing fact named.
+    left_calibration = _capture_calibration_identity(now.get("capture_calibration"))
+    right_calibration = _capture_calibration_identity(was.get("capture_calibration"))
+    if left_calibration is not None and right_calibration is not None:
+        if left_calibration != right_calibration:
+            incompatible.append("capture_calibration")
+    else:
+        unknown.append("capture_calibration")
+        for field in ("calibration_reference", "calibration_applied"):
+            left, right = now.get(field), was.get(field)
+            if left is None or right is None:
+                unknown.append(field)
+            elif left != right:
+                incompatible.append(field)
+
+    if median.n_positions != incumbent.n_positions:
+        incompatible.append("n_positions")
+    left, right = now_evidence.get("pose_keys"), was_evidence.get("pose_keys")
+    if left is None or right is None:
+        unknown.append("pose_keys")
+    elif left != right:
+        incompatible.append("pose_keys")
+    return {
+        "basis_status": (
+            "incompatible" if incompatible else "unknown" if unknown else "compatible"
+        ),
+        "intervention_fields": sorted(set(changed)),
+        "incompatible_fields": sorted(set(incompatible)),
+        "unknown_fields": sorted(set(unknown)),
+    }
+
+
+def _support(median: RoomMedian) -> tuple[float, float]:
+    return (
+        max(float(median.freqs_hz[0]), float(median.band_hz[0])),
+        min(float(median.freqs_hz[-1]), float(median.band_hz[1])),
+    )
+
+
+def _removed_support(
+    support: tuple[float, float], common: tuple[float, float] | None,
+) -> list[list[float]]:
+    if common is None:
+        return [[support[0], support[1]]]
+    removed = []
+    if support[0] < common[0]:
+        removed.append([support[0], common[0]])
+    if common[1] < support[1]:
+        removed.append([common[1], support[1]])
+    return removed
+
+
+def _comparison_arrays(
+    median: RoomMedian, incumbent: RoomMedian,
+) -> tuple[dict[str, Any], tuple[np.ndarray, ...] | None]:
+    basis = _comparison_basis(median, incumbent)
+    now_support, was_support = _support(median), _support(incumbent)
+    lo, hi = max(now_support[0], was_support[0]), min(now_support[1], was_support[1])
+    common = (lo, hi) if lo < hi else None
+    comparison: dict[str, Any] = {
+        **basis,
+        "available": False,
+        "unavailable_reason": None,
+        "candidate_support_hz": list(now_support),
+        "incumbent_support_hz": list(was_support),
+        "common_support_hz": None if common is None else list(common),
+        "candidate_removed_support_hz": _removed_support(now_support, common),
+        "incumbent_removed_support_hz": _removed_support(was_support, common),
+        "level_reference_db": None,
+        "level_alignment_db": None,
+    }
+    if basis["incompatible_fields"]:
+        comparison["unavailable_reason"] = "incompatible_measurement_basis"
+        return comparison, None
+    if common is None:
+        comparison["unavailable_reason"] = "no_common_frequency_support"
+        return comparison, None
+
+    grid = np.unique(np.concatenate((
+        np.asarray([lo, hi]),
+        median.freqs_hz[(median.freqs_hz >= lo) & (median.freqs_hz <= hi)],
+        incumbent.freqs_hz[(incumbent.freqs_hz >= lo) & (incumbent.freqs_hz <= hi)],
+    )))
+    now_raw = np.interp(grid, median.freqs_hz, median.median_db + median.level_reference_db)
+    was_raw = np.interp(
+        grid, incumbent.freqs_hz, incumbent.median_db + incumbent.level_reference_db,
+    )
+    now_spread = np.interp(grid, median.freqs_hz, median.spread_db)
+    was_spread = np.interp(grid, incumbent.freqs_hz, incumbent.spread_db)
+    reference = float(np.median(was_raw))
+    alignment = reference - float(np.median(now_raw))
+    comparison.update({
+        "available": True,
+        "level_reference_db": reference,
+        "level_alignment_db": alignment,
+    })
+    return comparison, (
+        grid, now_raw + alignment - reference, was_raw - reference,
+        now_spread, was_spread,
     )
 
 
@@ -133,24 +285,42 @@ def grade_room_median(
 ) -> RoomGrade:
     """Grade ``median``, and disclose how each band moved against ``incumbent``.
 
-    The incumbent is graded on the CANDIDATE's bands, on its own grid: the two
-    documents can carry different ceilings, and the one being graded is the one
-    whose bands the reader is looking at.
+    With an incumbent, both curves are interpolated onto their common support.
+    The incumbent sets the level reference there; one disclosed scalar aligns
+    the candidate to it, so a whole-graph attenuation is not tonal regression.
     """
     bands = []
-    incumbent_masks = (
-        () if incumbent is None else band_masks(incumbent.freqs_hz, median.ceiling_hz)
-    )
+    comparison = None
+    compared = None
+    if incumbent is not None:
+        comparison, compared = _comparison_arrays(median, incumbent)
     for index, (low, high, mask) in enumerate(band_masks(median.freqs_hz, median.ceiling_hz)):
-        now = _metrics(median, mask)
-        was = None if incumbent is None else _metrics(incumbent, incumbent_masks[index][2])
-        graded = _NO_BINS if now is None else now
+        if incumbent is None or compared is None:
+            now = _metrics(median, mask)
+            was = None
+            compared_hz = None
+        else:
+            grid, now_curve, was_curve, now_spread, was_spread = compared
+            compared_mask = (grid >= low) & (
+                (grid <= high) if index == len(band_masks(grid, median.ceiling_hz)) - 1
+                else (grid < high)
+            )
+            now = _array_metrics(now_curve, now_spread, compared_mask)
+            was = _array_metrics(was_curve, was_spread, compared_mask)
+            compared_freqs = grid[compared_mask]
+            compared_hz = (
+                None if not compared_freqs.size
+                else (float(compared_freqs[0]), float(compared_freqs[-1]))
+            )
         # A band one of the two grids carries nothing in was measured on one
         # side only: there is no difference to state, let alone to grade.
         moved = None if now is None or was is None else now.rms_db - was.rms_db
         bands.append(RoomGradeBand(
-            lo_hz=low, hi_hz=high, n_bins=graded.n_bins, rms_db=graded.rms_db,
-            max_db=graded.max_db, spread_db=graded.spread_db,
+            lo_hz=low, hi_hz=high, n_bins=0 if now is None else now.n_bins,
+            rms_db=None if now is None else now.rms_db,
+            max_db=None if now is None else now.max_db,
+            spread_db=None if now is None else now.spread_db,
+            compared_hz=compared_hz,
             incumbent_n_bins=(
                 None if incumbent is None else 0 if was is None else was.n_bins
             ),
@@ -167,6 +337,7 @@ def grade_room_median(
         bands=tuple(bands),
         incumbent_ceiling_hz=None if incumbent is None else incumbent.ceiling_hz,
         incumbent_n_positions=None if incumbent is None else incumbent.n_positions,
+        comparison=comparison,
     )
 
 

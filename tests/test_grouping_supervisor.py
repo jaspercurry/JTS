@@ -31,8 +31,8 @@ from jasper.control.grouping_supervisor import (
     snapshot,
 )
 from jasper.control.grouping_supervisor import logger as _gs_logger
-from jasper.multiroom.cascade_timeline import _parse_logfmt_event
 from jasper.multiroom.config import GroupingConfig
+from tests._log_events import event_fields
 
 
 def _cfg(
@@ -581,17 +581,9 @@ async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping(
     assert household not in sup.reassert_last_detail
     assert "<redacted>" in sup.reassert_last_detail
 
-    events = [
-        fields
-        for event, fields in filter(
-            None,
-            (_parse_logfmt_event(r.getMessage()) for r in caplog.records),
-        )
-        if event == "grouping_supervisor.reassert_failed"
-    ]
-    assert len(events) == 1
-    assert household not in events[0]["detail"]
-    assert "<redacted>" in events[0]["detail"]
+    fields = event_fields(caplog, "grouping_supervisor.reassert_failed")
+    assert household not in fields["detail"]
+    assert "<redacted>" in fields["detail"]
 
 
 async def test_unbond_resets_the_journal_noise_latches():

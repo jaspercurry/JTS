@@ -50,7 +50,13 @@ from .assistant_volume import (
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .busctl import run_busctl
 from .log_event import log_event
-from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
+from .music_sources import (
+    MUSIC_SOURCE_VALUES,
+    SOURCE_TO_ACTIVE_KEY,
+    Source,
+    VolumeMode,
+    volume_mode,
+)
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
@@ -1368,6 +1374,19 @@ class VolumeCoordinator:
         prev_carries = await self._camilla_carries_level(prev_source)
         curr_carries = await self._camilla_carries_level(current_source)
         async with self._mutation():
+            # The verdict was resolved before the cross-daemon lease. Re-check
+            # source ownership at the ordering point, as
+            # `observe_source_volume` does, so a handoff that landed meanwhile
+            # cannot pin camilla against a lane the mux has already left.
+            active = await self._active_source()
+            if active != current_source:
+                self._refresh_from_disk()
+                logger.debug(
+                    "active_source transition %s→%s: dropped, active "
+                    "source became %s",
+                    prev_source.value, current_source.value, active.value,
+                )
+                return
             # Pull the latest listening_level from disk before
             # dispatching. The control daemon (remote / HTTP) writes
             # the same file on every twist, but voice_daemon's in-
@@ -1687,7 +1706,9 @@ class VolumeCoordinator:
         if publisher is None:
             return
         try:
-            await publisher(context)
+            if not await publisher(context):
+                # The active route names no mix stage, so nothing was sent.
+                return
             log_event(
                 logger,
                 "volume.context_published",
@@ -1964,10 +1985,16 @@ class VolumeCoordinator:
         if selected_source is not None:
             try:
                 selected = await selected_source()
-                if selected:
+                # Mux answers with a music source, "idle", or — during a
+                # measurement lease — a fan-in lane label. It holds its last
+                # committed answer while a handoff is in flight, so "idle" is
+                # true idle and takes the attenuating camilla-master carrier.
+                # Only the lane label is not a source; it falls through to the
+                # raw probes.
+                if selected in MUSIC_SOURCE_VALUES:
                     return Source(selected)
-            except (ValueError, TypeError):
-                logger.debug("mux selected_source was unknown; ignoring")
+                if selected == Source.IDLE.value:
+                    return Source.IDLE
             except Exception as e:  # noqa: BLE001
                 logger.debug("selected_source() failed (%s); using probes", e)
         try:

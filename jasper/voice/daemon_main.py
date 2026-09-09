@@ -800,7 +800,6 @@ async def run() -> None:
         # answering None in a process that has an owner is precisely how a later
         # caller ends up minting the second one.
         install_volume_owner(volume_coordinator.volume_owner)
-        ducker = FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
         try:
             target_level, restore_reason = await volume_coordinator.initialize(
                 stale_after_sec=cfg.volume_regress_after_sec,
@@ -1141,6 +1140,8 @@ async def run() -> None:
         _arelease(stack, "content_activity", content_activity.stop)
         await content_activity.start()
 
+        # After the playout: the duck verb rides that connection.
+        ducker = FanInDucker(tts)
         cues_manager.attach_tts(tts)
         _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)

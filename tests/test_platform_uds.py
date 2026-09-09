@@ -127,25 +127,38 @@ async def test_voice_socket_command_retries_connection_refused_too(monkeypatch):
     assert attempts == 2
 
 
-async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
+# Every daemon client is the same exchange; only the default socket path and
+# timeout differ. Parametrized over the wrappers so a divergence in any one of
+# them is caught here.
+_CLIENTS = {
+    "mux": (uds.mux_socket_command, "timeout"),
+    "fanin": (uds.fanin_command, "timeout_sec"),
+    "voice": (
+        lambda cmd, **kw: uds.voice_socket_command("/tmp/voice.sock", cmd, **kw),
+        "timeout",
+    ),
+}
+
+
+@pytest.mark.parametrize("client", sorted(_CLIENTS))
+async def test_daemon_command_is_one_bounded_json_exchange(monkeypatch, client):
+    call, timeout_kw = _CLIENTS[client]
     reader, writer = _connection(b'{"active_source":"idle"}\n')
     opener = AsyncMock(return_value=(reader, writer))
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
 
-    result = await uds.mux_socket_command(
-        "STATUS",
-        socket_path="/tmp/mux.sock",
-        timeout=0.25,
-    )
+    result = await call("STATUS", **{timeout_kw: 0.25})
 
     assert result == {"active_source": "idle"}
-    opener.assert_awaited_once_with("/tmp/mux.sock")
     writer.write.assert_called_once_with(b"STATUS\n")
     writer.drain.assert_awaited_once()
     writer.close.assert_called_once()
+    writer.wait_closed.assert_not_awaited()
 
 
-async def test_mux_command_deadline_includes_connect(monkeypatch):
+@pytest.mark.parametrize("client", sorted(_CLIENTS))
+async def test_daemon_command_deadline_includes_connect(monkeypatch, client):
+    call, timeout_kw = _CLIENTS[client]
     connect_started = asyncio.Event()
 
     async def stalled_connect(_path):
@@ -155,11 +168,15 @@ async def test_mux_command_deadline_includes_connect(monkeypatch):
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", stalled_connect)
 
     with pytest.raises(asyncio.TimeoutError):
-        await uds.mux_socket_command("STATUS", timeout=0.01)
+        await call("STATUS", **{timeout_kw: 0.01})
     assert connect_started.is_set()
 
 
-async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
+@pytest.mark.parametrize("client", sorted(_CLIENTS))
+async def test_daemon_command_wedged_close_cannot_extend_deadline(
+    monkeypatch, client,
+):
+    call, timeout_kw = _CLIENTS[client]
     reader, writer = _connection(b'{"active_source":"idle"}\n')
     writer.wait_closed.side_effect = lambda: asyncio.Event().wait()
     monkeypatch.setattr(
@@ -168,32 +185,51 @@ async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
         AsyncMock(return_value=(reader, writer)),
     )
 
-    result = await uds.mux_socket_command("STATUS", timeout=0.01)
+    result = await call("STATUS", **{timeout_kw: 0.01})
 
     assert result == {"active_source": "idle"}
     writer.close.assert_called_once()
     writer.wait_closed.assert_not_awaited()
 
 
-async def test_mux_command_validates_request_and_response(monkeypatch):
-    with pytest.raises(ValueError, match="one non-empty line"):
-        await uds.mux_socket_command("STATUS\nAUTO")
-    with pytest.raises(ValueError, match="positive"):
-        await uds.mux_socket_command("STATUS", timeout=0)
+@pytest.mark.parametrize("client", sorted(_CLIENTS))
+@pytest.mark.parametrize("reply, match", [
+    (b'{"error":"bad owner"}\n', "bad owner"),
+    (b"[]\n", "non-object"),
+    (b"not-json\n", "invalid JSON"),
+    (b"", "no response"),
+])
+async def test_daemon_command_rejects_error_and_malformed_replies(
+    monkeypatch, client, reply, match,
+):
+    call, _timeout_kw = _CLIENTS[client]
+    reader, writer = _connection(reply)
+    monkeypatch.setattr(
+        uds.asyncio,
+        "open_unix_connection",
+        AsyncMock(return_value=(reader, writer)),
+    )
+    with pytest.raises(RuntimeError, match=match):
+        await call("STATUS")
 
-    for reply, match in (
-        (b'{"error":"bad owner"}\n', "bad owner"),
-        (b"[]\n", "non-object"),
-        (b"", "no response"),
-    ):
-        reader, writer = _connection(reply)
-        monkeypatch.setattr(
-            uds.asyncio,
-            "open_unix_connection",
-            AsyncMock(return_value=(reader, writer)),
-        )
-        with pytest.raises(RuntimeError, match=match):
-            await uds.mux_socket_command("STATUS")
+
+@pytest.mark.parametrize("client", sorted(_CLIENTS))
+async def test_daemon_command_validates_the_request(client):
+    call, timeout_kw = _CLIENTS[client]
+    with pytest.raises(ValueError, match="one non-empty line"):
+        await call("STATUS\nAUTO")
+    with pytest.raises(ValueError, match="positive"):
+        await call("STATUS", **{timeout_kw: 0})
+
+
+async def test_mux_command_defaults_to_the_shared_socket_path(monkeypatch):
+    reader, writer = _connection(b'{"active_source":"idle"}\n')
+    opener = AsyncMock(return_value=(reader, writer))
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
+
+    await uds.mux_socket_command("STATUS")
+
+    opener.assert_awaited_once_with(uds.MUX_CONTROL_SOCKET_PATH)
 
 
 async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):

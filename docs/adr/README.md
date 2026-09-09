@@ -97,6 +97,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
 | [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | amended by 0266 |
 | [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
+| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | amended by 0276 |
+| [0276](0276-usb-buffer-acquisition-overlaps-the-timing-check.md) | USB buffer acquisition overlaps the timing check | accepted |
+| [0279](0279-airplay-session-release-belongs-to-source-takeover.md) | AirPlay session release belongs to source takeover | accepted |
 
 ## Multiroom & grouping
 
@@ -175,10 +178,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0144](0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md) | Diagnostics leave the box over SSH, not over the LAN | accepted |
 | [0146](0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md) | Userspace liveness is two software layers, and three deferred dials | accepted |
 | [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | accepted |
-| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | accepted |
+| [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | rule 2 `/state` superseded by 0270, rule 3 amended by 0270 |
 | [0243](0243-a-secret-is-replaced-whole-by-one-redactor-per-language.md) | A secret is replaced whole, by one redactor per language | accepted |
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
 | [0251](0251-jasper-control-parks-on-a-bind-failure.md) | jasper-control parks on a bind failure instead of rebooting the box | accepted |
+| [0270](0270-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
+| [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | accepted |
 
 ## Web & UI
 
@@ -245,8 +250,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
 | [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265 |
-| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
+| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | §2 seat default amended by 0277 |
+| [0277](0277-the-seat-cloud-adds-eleven-positions-without-renaming-saved-cubes.md) | The seat cloud adds eleven positions without renaming saved cubes | accepted |
 | [0263](0263-a-ring-ended-camilladsp-graph-takes-the-ring-geometry.md) | A ring-ended CamillaDSP graph takes the ring geometry | accepted |
 | [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
-| [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | accepted |
