@@ -278,10 +278,27 @@ or Schroeder estimate is derived.
 
 ## 12. Bass
 
-Bass extension is fitted on the seat-cube median to an extended-corner target
-per rung, with no nearfield rung; protection is declared plant facts, the
-in-room distortion-versus-level ladder and the limiter evidence
-([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md);
-[ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md)).
-`close-reference` stays the on-demand room-gain split. This section is written
-in the wave that lands the bass fit view and the protection ladder.
+Bass extension is fitted on the seat-cube median: `jasper-round-views
+bass-fit` reads `room_median.json` and publishes `bass_fit.json`, the
+declared plant's extended-corner family for its bass-owning driver, each
+rung deepest-first and ending in `natural` (zero boost)
+([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md);
+[ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md)).
+The prescription door (`jts_bass_prescription`) adopts members of that
+family onto the crossover candidate's `bass_extension` field; it validates
+against the fit and refuses anything the fit does not support.
+
+A rung spending boost headroom is admissible only once both protection
+evidences are attached: the in-room distortion-versus-level ladder proving
+that rung's level, and the limiter evidence bundle. Until then a boosted
+rung is a hard stop (`bass_prescription_protection_missing`) — only
+`natural` is admissible. The ladder is a code-owned measurement program, not
+an LLM choice: stepped-level sweeps at the seat prove one rung, and a
+failing step leaves that rung and everything above it inadmissible.
+
+At rest the emitter plays the natural rung's subsonic protection from the
+applied candidate's field; nothing boosted plays without its evidence.
+
+Deliberately not done here: no nearfield rung; the LLM chooses corners and
+margins, never how loud a rung may play; `close-reference` stays the
+on-demand room-gain split, not a required pose.

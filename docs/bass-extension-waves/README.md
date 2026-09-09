@@ -39,9 +39,9 @@ supervised on-device pass gate any hardware playback) is
 | 0 | `wave-0-hardware-spikes.md` | **Operator + hardware** (not Codex) | none — run early |
 | 1 | `wave-1-numerics.md` | Codex | none |
 | 2 | `wave-2-profile-observability.md` | Codex | Wave 1 merged |
-| 3 | `wave-3-graph-emission.md` | Codex | Waves 1–2 merged + Wave 0 memo |
+| 3 | `wave-3-graph-emission.md` | Codex | Executed; superseded — ADR-0259 §3 retires its apply/bypass transaction, replaced by the candidate apply (§5) |
 | 4 | — | — | retired — ADR-0259 §3; the engine's candidate apply supersedes it (§5) |
-| 5 | `wave-5-runtime-scheduler.md` | Codex | Waves 2–3 merged + Wave 0 memo for the mandatory stop audit; implementation additionally requires merged Wave 4 limiter producer + replacement Wave 5 prompt |
+| 5 | `wave-5-runtime-scheduler.md` | Codex | Blocked — schedules the same apply transaction ADR-0259 §3 retires and §5 supersedes; its limiter evidence now grounds in the ladder, not nearfield commissioning (ADR-0260 §3); needs a replacement prompt |
 | 6 | — | — | retired — ADR-0259 §3; the engine's candidate apply supersedes it (§5) |
 | 7 | `wave-7-hardware-validation.md` | Operator, Codex assists | everything |
 

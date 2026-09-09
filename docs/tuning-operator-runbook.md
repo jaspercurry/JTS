@@ -161,6 +161,38 @@ The room is measured on the seat cube, through the applied tune, ungated
 
 Nothing above the ceiling changes on this evidence.
 
+## Bass
+
+The bass family is fitted on the seat-cube median, through the applied tune
+(methodology §12). In order:
+
+1. `jasper-round-views bass-fit <round-dir>`: fits the declared plant
+   against `room_median.json` and publishes `bass_fit.json` — the
+   extended-corner family, deepest rung first, ending in `natural`; each
+   rung's `target`, `max_listening_level` and `lt_boost_db`.
+2. `jasper-measure --graph-scope bass_candidate --candidate-id <fingerprint>
+   --bass-target-id <target_id> --level-dbfs <dBFS> [--level-dbfs ...]`:
+   stepped-level sweeps at the seat for one rung's graph, refused whole
+   before any audio when the seat-level reference cannot predict the SPL
+   (`bass_ladder_reference_unbanked`) or a step would reach the
+   commissioning SPL ceiling (`bass_ladder_spl_ceiling`).
+3. `jasper-round-views bass-ladder <round-dir> --target-id <id>`: grades the
+   banked steps — THD from clean orders against the target's margin, each
+   step's compression — and publishes `bass_ladder/<target_id>.json`
+   (`verdict`, `max_level_db`, `steps`); a failed first step leaves the rung
+   inadmissible. The sustain (noise-hold) test stays the limiter bench's,
+   not graded here.
+4. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
+   judges a bass prescription (`kind: jts_bass_prescription`) against
+   `bass_fit.json` (`--bass-fit` when it is not beside the round or the
+   packet); a rung spending boost headroom refuses
+   (`bass_prescription_protection_missing`) without both the ladder
+   evidence above and the limiter evidence bundle. `stage` gates the same
+   document; the next round takes it and lands it as the crossover
+   candidate's `bass_extension` field.
+
+Nothing above `natural` plays unmeasured.
+
 ## Evidence and recovery
 
 Measurement records own numbers and identities. An optional
