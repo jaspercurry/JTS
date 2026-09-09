@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import pytest
@@ -23,13 +23,19 @@ from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.room_grade import (
     ROOM_GRADE_KIND,
+    ROOM_GRADE_RESOLUTION_DB,
     grade_room_median,
     read_room_median,
 )
-from jasper.active_speaker.crossover_v2.room_views import band_edges
+from jasper.active_speaker.crossover_v2.room_views import (
+    ROOM_BAND_SPLITS_HZ,
+    band_edges,
+    band_masks,
+)
 from jasper.active_speaker.crossover_v2.room_prescription import (
     ROOM_MEDIAN_UNAVAILABLE,
 )
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_MIN_HZ
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE
 
@@ -67,11 +73,30 @@ def test_the_ceiling_tops_the_last_band():
     assert band_edges(CEILING_HZ) == BAND_EDGES_HZ
 
 
+def test_a_bin_sitting_on_a_split_is_counted_once_by_the_band_above_it():
+    """The masks are half-open below a split and closed at the ceiling. No
+    1/12-octave grid lands on 60 or 120 Hz, so pin the seam on one that does."""
+    grid = np.array([20.0, 60.0, 90.0, 120.0, 200.0, CEILING_HZ])
+    masks = [mask for _, _, mask in band_masks(grid, CEILING_HZ)]
+
+    for index, split_hz in enumerate(ROOM_BAND_SPLITS_HZ, start=1):
+        on_split = grid == split_hz
+        assert on_split.any()
+        assert np.array_equal(masks[index] & on_split, on_split)
+        assert not (masks[index - 1] & on_split).any()
+    # Every bin -- the two splits and the bin on the ceiling included -- in
+    # exactly one band.
+    assert np.array_equal(
+        sum(mask.astype(int) for mask in masks), np.ones(grid.size, dtype=int)
+    )
+
+
 def test_the_grade_is_the_fixture_arithmetic_below_the_ceiling():
     grade = grade_room_median(read_room_median(room_median_document()))
     artifact = grade.to_dict()
 
     assert artifact["kind"] == ROOM_GRADE_KIND
+    assert artifact["resolution_db"] == ROOM_GRADE_RESOLUTION_DB
     assert artifact["ceiling_hz"] == CEILING_HZ
     assert artifact["ceiling_source"] == "applied_candidate"
     assert artifact["n_positions"] == N_POSITIONS
@@ -134,6 +159,51 @@ def test_an_incumbent_with_another_ceiling_is_graded_on_this_rounds_bands():
     top = incumbent.median_db[incumbent.freqs_hz >= BAND_EDGES_HZ[2][0]]
     assert artifact["bands"][2]["incumbent_rms_db"] == pytest.approx(float(np.sqrt(np.mean(top ** 2))))
     assert incumbent.freqs_hz[-1] <= OTHER_CEILING_HZ < CEILING_HZ
+
+
+def _grid_cropped_below(document: dict[str, Any], hi_hz: float) -> dict[str, Any]:
+    """``document`` with its grid cropped below ``hi_hz``. The door checks that a
+    median's grid stays inside the room band, not that it spans it, so this is
+    still a median it reads."""
+    keep = [index for index, freq in enumerate(document["freqs_hz"]) if freq < hi_hz]
+
+    def cropped(values: Sequence[float]) -> list[float]:
+        return [values[index] for index in keep]
+
+    return {
+        **document,
+        "freqs_hz": cropped(document["freqs_hz"]),
+        "median_db": cropped(document["median_db"]),
+        "spread_db": cropped(document["spread_db"]),
+        "positions": [
+            {**row, "deviation_db": cropped(row["deviation_db"])}
+            for row in document["positions"]
+        ],
+        "ceiling_hz": ROOM_BOUNDARY_MIN_HZ,
+    }
+
+
+def test_a_band_the_incumbent_never_measured_grades_as_unknown():
+    """Zero bins is no evidence, not a flat incumbent: the band it cannot see
+    reads null rather than grading this round's own RMS as a regression."""
+    graded = grade_room_median(
+        read_room_median(room_median_document()),
+        incumbent=read_room_median(
+            _grid_cropped_below(room_median_document(), BAND_EDGES_HZ[2][0])
+        ),
+    )
+    artifact = graded.to_dict()
+
+    top = artifact["bands"][2]
+    assert top["incumbent_n_bins"] == 0
+    assert top["incumbent_rms_db"] is None
+    assert top["delta_rms_db"] is None
+    assert top["regressed"] is None
+    assert BAND_EDGES_HZ[2][0] not in artifact["regressed_bands"]
+    # The bands its grid does cover are graded as usual.
+    assert [row["incumbent_n_bins"] for row in artifact["bands"][:2]] == list(
+        BAND_BINS[:2]
+    )
 
 
 def test_the_view_grades_the_median_beside_the_round(tmp_path, capsys):

@@ -44,7 +44,8 @@ __all__ = [
 
 ROOM_GRADE_KIND = "jts_room_grade"
 
-#: The artifact's numbers are read to this, dB; a band regresses only past it.
+#: The threshold, dB, an RMS delta must exceed before the band is called
+#: regressed; a smaller difference is not one. Disclosed in the artifact.
 ROOM_GRADE_RESOLUTION_DB = 0.1
 
 
@@ -58,6 +59,10 @@ class RoomGradeBand:
     rms_db: float
     max_db: float
     spread_db: float
+    #: The incumbent's own bin count in this band on ITS grid -- ``None`` with
+    #: no incumbent, ``0`` when its grid carries no bin here, which is why the
+    #: three numbers below and ``regressed`` read null rather than zero.
+    incumbent_n_bins: int | None = None
     incumbent_rms_db: float | None = None
     incumbent_max_db: float | None = None
     incumbent_spread_db: float | None = None
@@ -83,6 +88,7 @@ class RoomGrade:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": ROOM_GRADE_KIND,
+            "resolution_db": ROOM_GRADE_RESOLUTION_DB,
             "ceiling_hz": self.ceiling_hz,
             "ceiling_source": self.ceiling_source,
             "n_positions": self.n_positions,
@@ -104,11 +110,16 @@ class _BandMetrics(NamedTuple):
     spread_db: float
 
 
-def _metrics(median: RoomMedian, mask: np.ndarray) -> _BandMetrics:
-    """One band's bin count, RMS and max against flat, and its mean spread."""
+#: What a band whose grid carries no bin grades as, beside its zero count.
+_NO_BINS = _BandMetrics(0, 0.0, 0.0, 0.0)
+
+
+def _metrics(median: RoomMedian, mask: np.ndarray) -> _BandMetrics | None:
+    """One band's bin count, RMS and max against flat, and its mean spread, or
+    ``None`` when this median's grid carries no bin in the band."""
     deviation = median.median_db[mask]
     if not deviation.size:
-        return _BandMetrics(0, 0.0, 0.0, 0.0)
+        return None
     return _BandMetrics(
         n_bins=int(deviation.size),
         rms_db=float(np.sqrt(np.mean(deviation ** 2))),
@@ -133,14 +144,21 @@ def grade_room_median(
     for index, (low, high, mask) in enumerate(band_masks(median.freqs_hz, median.ceiling_hz)):
         now = _metrics(median, mask)
         was = None if incumbent is None else _metrics(incumbent, incumbent_masks[index][2])
+        graded = _NO_BINS if now is None else now
+        # A band one of the two grids carries nothing in was measured on one
+        # side only: there is no difference to state, let alone to grade.
+        moved = None if now is None or was is None else now.rms_db - was.rms_db
         bands.append(RoomGradeBand(
-            lo_hz=low, hi_hz=high, n_bins=now.n_bins, rms_db=now.rms_db,
-            max_db=now.max_db, spread_db=now.spread_db,
+            lo_hz=low, hi_hz=high, n_bins=graded.n_bins, rms_db=graded.rms_db,
+            max_db=graded.max_db, spread_db=graded.spread_db,
+            incumbent_n_bins=(
+                None if incumbent is None else 0 if was is None else was.n_bins
+            ),
             incumbent_rms_db=None if was is None else was.rms_db,
             incumbent_max_db=None if was is None else was.max_db,
             incumbent_spread_db=None if was is None else was.spread_db,
-            delta_rms_db=None if was is None else now.rms_db - was.rms_db,
-            regressed=None if was is None else now.rms_db - was.rms_db > ROOM_GRADE_RESOLUTION_DB,
+            delta_rms_db=moved,
+            regressed=None if moved is None else moved > ROOM_GRADE_RESOLUTION_DB,
         ))
     return RoomGrade(
         ceiling_hz=median.ceiling_hz,
