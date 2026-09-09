@@ -827,10 +827,8 @@ def check_fanin_coupling() -> CheckResult:
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
-    running fan-in is on the ring whatever that file says. Whether outputd
-    consumes what this graph writes belongs to
-    :func:`check_content_transport_coherence`.
+    KEYED ON THE LOADED GRAPH. Whether outputd consumes what this graph writes
+    belongs to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,

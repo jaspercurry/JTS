@@ -28,8 +28,8 @@ RuntimeDirectory=jasper-source-intent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 # The pass always visits all four sources and every child operation has its own
-# shorter ceiling. 2793 s is the final finite boot/request boundary with margin
-# over the declared worst-case path; the synchronous broker waits 2803 s for
+# shorter ceiling. 2727 s is the final finite boot/request boundary with margin
+# over the declared worst-case path; the synchronous broker waits 2737 s for
 # PID 1 to report the terminal result.
 TimeoutStartSec=2727
 # Do not use Restart= here. Persistent malformed intent or hardware failure

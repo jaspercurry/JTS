@@ -386,7 +386,7 @@ def transport_coherence_report(
                 )
             # D5 belt-and-suspenders (wide-output-path program): an ARMED ring's
             # DECLARING ENDS must agree with the wire the resolver resolved.
-            # jasper.fanin.coupling_reconcile's ring_edge_width_ready gate
+            # jasper.fanin.ring_readiness's ring_edge_width_ready gate
             # refuses to ARM when the emitter's override path is broken; this is
             # the standing coherence check for a box already armed, and it asks
             # a different question — not "does the emitter still force the
@@ -418,7 +418,7 @@ def transport_coherence_report(
                     f"but {OUTPUTD_CONTENT_FORMAT_ENV_VAR}={outputd_format!r}; outputd "
                     "attaches Ring B demanding its own declared format, so the ends "
                     "shear and the attach fails — see ring_edge_width_ready "
-                    "(jasper.fanin.coupling_reconcile)"
+                    "(jasper.fanin.ring_readiness)"
                 )
             _compare_lane_channels(topology.camilla_to_outputd, "playback")
     return TransportCoherenceReport(errors=tuple(errors), notes=tuple(notes))

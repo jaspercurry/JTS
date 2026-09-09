@@ -104,7 +104,10 @@ _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 # Remove once every deployed Pi has booted a build carrying this sweep; the
 # fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
 # still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
-# behind here would park the unit.
+# behind here would park the unit. The sweep reaches the reconciler-owned
+# fanin.env ONLY: jasper-fanin.service also loads /etc/jasper/jasper.env, which
+# nothing here writes, so a hand-set copy there now reaches the daemon and parks
+# it — `grep -R JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/` and remove it by hand.
 _LEGACY_FANIN_COUPLING_ENV = "JASPER_FANIN_CAMILLA_COUPLING"
 
 # Cross-invocation serialization of the reconcile ENTRY verbs.
@@ -689,7 +692,7 @@ def reconcile_coupling(
     )
     if result.changed and result.ok:
         # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
-        # (TimeoutStartSec=6546) and killing the client would not cancel the
+        # (TimeoutStartSec=6414) and killing the client would not cancel the
         # queued job. `ok` is "systemd ACCEPTED the job" — logged because a
         # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
@@ -1241,10 +1244,10 @@ def _migrate_stale_fanin_ring_slots(
     read first and a shear there DECLINES the write. Declining costs nothing: the
     slots value is still writable on the next pass, once the wire agrees.
 
-    IMPORTANT: this runs AFTER the coupling write, so the passed
-    ``fanin_snapshot`` is the PRE-write snapshot; the file is re-read fresh here
+    IMPORTANT: this runs AFTER the legacy-key sweep, so the passed
+    ``fanin_snapshot`` is the PRE-sweep snapshot; the file is re-read fresh here
     and the override written into the CURRENT content — writing the stale
-    snapshot back would clobber the just-written coupling line.
+    snapshot back would reinstate the lines the sweep just removed.
     """
     from jasper.fanin_coupling import (
         DEFAULT_FANIN_RING_SLOTS,
