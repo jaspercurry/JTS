@@ -684,12 +684,12 @@ def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
     ]
 
 
-@pytest.mark.parametrize("coverage", ["express", "cube", "cloud"])
+@pytest.mark.parametrize("program_id,coverage", [("seat", "express"), ("seat", "cube"), ("seat", "cloud"), ("room", "quick")])
 @pytest.mark.parametrize("room_candidate", [False, True])
 def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
-    slot, monkeypatch, coverage, room_candidate,
+    slot, monkeypatch, program_id, coverage, room_candidate,
 ):
-    program = mp.program("seat", coverage)
+    program = mp.program(program_id, coverage)
     preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
     candidate_ids = ("room-fp",) if room_candidate else ()
     spool.stage_angle_request(ac.request_for_program(program, candidates=candidate_ids))
@@ -724,14 +724,16 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
         [None, None] + [gating.SEAT_EXEMPT] * len(lateral_indexes)
     )
     assert [
-        (record["pose_kind"], record["seat_offset_m"], record["mark_distance_m"],
+        (record.get("pose_kind", mp.POSE_KIND_BEARING), record.get("seat_offset_m"), record["mark_distance_m"],
          record["gating_applied"])
         for record in records
     ] == [
-        (mp.POSE_KIND_SEAT, list(pose.seat_offset_m), None,
+        (pose.kind, list(pose.seat_offset_m) if pose.seat_offset_m is not None else None,
+         None if pose.kind == mp.POSE_KIND_SEAT else flow.MARK_DISTANCE_M,
          bool(analysis.summed_response.gating["applied"]))
         for pose, analysis in zip(program.poses, analyses[-len(records):])
     ]
+    assert {record["measurement_purpose"] for record in records} == {mp.PURPOSE_ROOM}
     assert len({doc_pose_key(record) for record in records}) == len(records)
     assert [specs[index].graph_scope for index in lateral_indexes] == [
         "room_candidate" if room_candidate else "speaker_tune"
@@ -1238,3 +1240,14 @@ def test_complete_branch_batch_reaches_browser_and_banks_all_three_curves(slot, 
     assert record["candidate_id"] == "fp-a"
     assert record["phase_composition"] == "complete_tune_measured"
     assert record["branch_diagnostic"]["sample_rate_hz"] == SR
+
+
+def test_arm_room_plan_uses_speaker_tune_without_changing_its_positions(slot):
+    request = ac.request_for_program(mp.program("room", "quick"), mover=ac.MOVER_ARM)
+    spool.stage_angle_request(request)
+    prompts, _, specs, _, claims = _take(shape=_arm_shape())
+    assert [flow.position_angle_deg(p) for p in prompts] == [0, -20, 20]
+    assert {p.kind for p in prompts} == {mp.POSE_KIND_BEARING}
+    assert {p.purpose for p in prompts} == {mp.PURPOSE_ROOM}
+    assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {"speaker_tune"}
+    assert {claim.measurement_purpose for claim in claims} == {mp.PURPOSE_ROOM}

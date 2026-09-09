@@ -37,7 +37,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
-from jasper.audio_io import InputDeviceUnavailable
+from jasper.mic_capture import InputDeviceUnavailable
 from jasper.config import VoiceProviderNotConfigured
 from jasper.env_load import ENV_FILES
 from jasper.mic_presence import (

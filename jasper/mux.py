@@ -91,11 +91,17 @@ from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
 from .airplay_session import AirplaySessionCleanup
+from .assistant_volume import volume_context_publisher_for_runtime
 from .bluetooth.avrcp import bluetooth_avrcp_call
+from .camilla import primary_controller
 from .control import restart_broker
+from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command, fanin_command, local_status_json
+from .renderer import RendererClient
+from .source_events import start_source_event_tasks
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
@@ -103,6 +109,11 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
+from .volume_coordinator import VolumeCoordinator
+from .volume_persistence import (
+    VolumePersistence,
+    configured_path as volume_state_path,
+)
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -265,8 +276,6 @@ class Mux:
                   librespot_state=self._librespot_state_path)
         await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
-        from .source_events import start_source_event_tasks
-
         event_tasks = start_source_event_tasks(
             self.notify_source_changed,
             spotify_state_path=self._librespot_state_path,
@@ -290,18 +299,10 @@ class Mux:
 
                     timeout = max(0.0, next_patrol - loop.time())
                     woke = False
-                    # asyncio.timeout(), NOT asyncio.wait_for(): on CPython
-                    # <= 3.11 wait_for SWALLOWS a CancelledError that arrives
-                    # in the same tick its awaited future completes (Lib/
-                    # asyncio/tasks.py: `except CancelledError: if fut.done():
-                    # return fut.result()`). This wait sits on exactly that
-                    # seam — an alert resolves the event constantly — so a
-                    # cancellation delivered alongside an alert was eaten and
-                    # run() became IMMORTAL: it kept patrolling forever and
-                    # every awaiter of the task hung (#1935). 3.12 rewrote
-                    # wait_for on top of asyncio.timeout(); using it directly
-                    # gets the correct behaviour on 3.11 too. Do not "simplify"
-                    # this back to wait_for while 3.11 is supported.
+                    # asyncio.timeout(), never wait_for() — see the rule in
+                    # jasper/platform/uds.py. This wait sits right on that seam
+                    # (an alert resolves the event constantly), and a swallowed
+                    # cancel made run() immortal (#1935).
                     try:
                         async with asyncio.timeout(timeout):
                             await self._reconcile_wake.wait()
@@ -1038,14 +1039,6 @@ class Mux:
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
-        from .camilla import primary_controller
-        from .assistant_volume import volume_context_publisher_for_runtime
-        from .renderer import RendererClient
-        from .identity.speaker_name import runtime_name as speaker_runtime_name
-        from .volume_coordinator import VolumeCoordinator
-        from .volume_persistence import VolumePersistence
-        from .volume_persistence import configured_path as volume_state_path
-
         camilla = primary_controller()
         persistence = VolumePersistence(volume_state_path())
         backend = RendererClient(librespot_state_path=self._librespot_state_path)
@@ -1279,11 +1272,11 @@ class Mux:
         # never leave the gate believed idle.
         self._fanin_none_asserted = False
         return await self._fanin_gate(
-            f"SELECT {label}", reason=reason, label=label,
+            wire.fanin_select(label), reason=reason, label=label,
         )
 
     async def _fanin_none(self, *, reason: str) -> dict[str, Any]:
-        result = await self._fanin_gate("NONE", reason=reason)
+        result = await self._fanin_gate(wire.FANIN_NONE, reason=reason)
         self._fanin_none_asserted = True
         return result
 
@@ -1322,9 +1315,9 @@ class Mux:
         A per-lane silence on the same mux→fan-in control channel as the
         selected-input gate (SELECT/NONE), orthogonal to selection and to
         volume. Lane-general, like SELECT."""
-        verb = "MUTE" if muted else "UNMUTE"
         return await fanin_command(
-            f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
+            wire.fanin_lane_mute(label, muted=muted),
+            socket_path=FANIN_CONTROL_SOCKET,
         )
 
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
@@ -1576,7 +1569,10 @@ class Mux:
             )
             return None
         try:
+            # lazy: an import failure here must degrade the pause path
+            # (the except below), not stop jasper-mux from starting.
             from .spotify_router import build_router
+
             router = build_router(
                 client_id=client_id,
                 redirect_uri=resolved_spotify_redirect_uri(),
@@ -1603,8 +1599,7 @@ class Mux:
         router = self._ensure_spotify_router()
         if router is None:
             return False
-        from .identity.speaker_name import runtime_name as _speaker_runtime_name
-        device_name = _speaker_runtime_name()
+        device_name = speaker_runtime_name()
         matches = await router.devices_named(device_name)
         # is_active devices first (lowest-latency path); fall through to
         # inactive JTS-named devices in the same pass — never retried twice.
@@ -1701,7 +1696,7 @@ def _make_duck_active_probe() -> Any:
             # Seconds, TOTAL: voice STATUS is a synchronous attribute read,
             # so a slower answer means the daemon is wedged.
             response = await daemon_command(
-                socket_path, "STATUS", timeout=1.0, daemon="voice_daemon",
+                socket_path, wire.STATUS, timeout=1.0, daemon="voice_daemon",
             )
         except (OSError, RuntimeError, ValueError):
             return None

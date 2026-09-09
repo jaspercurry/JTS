@@ -241,7 +241,7 @@ pub const MAX_COMMAND_LINE_BYTES: usize = 8 * 1024;
 /// The ack is the response half of this wire protocol. fan-in (solo) and
 /// outputd (bonded multiroom member) each render it from their OWN playout
 /// ledger — the *values* differ (mix-commit vs DAC-true) but the *key
-/// shape* must not, because one Python consumer (`jasper/audio_io.py`,
+/// shape* must not, because one Python consumer (`jasper/tts_playout.py`,
 /// `jasper/voice/turn_playback.py`) and the barge-in truncation path parse
 /// both. Each daemon's tests assert its rendered ack satisfies this
 /// contract; changing it is a deliberate wire change touching both daemons

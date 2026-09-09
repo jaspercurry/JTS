@@ -15,7 +15,9 @@ import numpy as np
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.json_fields import finite_float
 
-from ..measurement_programs import POSE_KIND_SEAT
+from ..measurement_programs import (
+    POSE_KIND_BEARING, PURPOSE_ROOM, resolved_measurement_purpose, validated_pose,
+)
 from .journey import PHASE_LATERAL
 from .position_cycle import parse_curve_magnitude
 from .record_index import Measurement, measurement_documents, played_graph_fingerprint
@@ -55,6 +57,7 @@ def _basis(row: Measurement, record: Mapping[str, Any]) -> dict[str, Any]:
         "played_graph_recorded": bool((provenance.get("graph") or {}).get("fingerprint")),
         "graph_scope": row.graph_scope or None,
         "side": record.get("side"),
+        "pose_kind": record.get("pose_kind") or POSE_KIND_BEARING,
         "calibration_reference": setup.get("calibration"),
         "calibration_applied": calibration.get("applied"),
         "capture_calibration": calibration or None,
@@ -68,8 +71,12 @@ def _basis(row: Measurement, record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
-    offset = record.get("seat_offset_m")
-    if not isinstance(offset, list) or len(offset) != 3 or any(finite_float(v) is None for v in offset):
+    kind = record.get("pose_kind") or POSE_KIND_BEARING
+    try:
+        offset, _ = validated_pose(kind, record.get("seat_offset_m"), record.get("mark_distance_m"))
+    except (ValueError, TypeError):
+        return None
+    if offset is None and finite_float(record.get("position_deg")) is None:
         return None
     if record.get("incident") or record.get("measurement_status") == "incomplete":
         return None
@@ -101,7 +108,13 @@ def select_seat_takes(bundle_dir: Path, *, capture_id: str | None = None) -> Sea
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any]]]] = {}
     bases: dict[str, dict[str, Any]] = {}
     for row, record in measurement_documents(bundle_dir):
-        if row.phase != PHASE_LATERAL or record.get("pose_kind") != POSE_KIND_SEAT:
+        try:
+            purpose = resolved_measurement_purpose(
+                record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
+            )
+        except ValueError:
+            continue
+        if row.phase != PHASE_LATERAL or purpose != PURPOSE_ROOM:
             continue
         basis = _basis(row, record)
         key = json_fingerprint(basis)

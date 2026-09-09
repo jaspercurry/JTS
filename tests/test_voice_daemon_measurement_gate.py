@@ -35,7 +35,7 @@ import numpy as np
 
 import pytest
 
-from jasper.audio_io import TtsPlayout
+from jasper.tts_playout import TtsPlayout
 from jasper.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
 from jasper.timers import Timer
@@ -294,7 +294,7 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
-    with caplog.at_level(logging.INFO, logger="jasper.audio_io"):
+    with caplog.at_level(logging.INFO, logger="jasper.tts_playout"):
         await wl._play_listening_chirp(going_on=True)
         await wl._tts.write_segment(b"\x00\x00", segment_kind="assistant")
 

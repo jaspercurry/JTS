@@ -55,6 +55,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
@@ -1701,8 +1702,13 @@ def test_the_emitters_default_to_todays_literals_byte_for_byte():
     )
 
 
-def test_the_parked_emitter_keeps_its_own_literals():
-    """The deliberate exclusion, pinned so it reads as a choice, not an omission."""
+def test_the_parked_emitter_takes_its_queue_from_its_governing_device():
+    """The deliberate exclusion, pinned so it reads as a choice, not an omission.
+
+    It names no queue of its own; its ``/dev/null`` File sink is clockless, so
+    its Ring A capture governs and hands it the ring's queue with the rest of
+    the certified pairing.
+    """
     import inspect
 
     import yaml
@@ -1710,7 +1716,7 @@ def test_the_parked_emitter_keeps_its_own_literals():
     parked = active_camilla_yaml.emit_active_speaker_parked_config
     assert "queuelimit" not in inspect.signature(parked).parameters
     devices = yaml.safe_load(parked(output_count=2))["devices"]
-    assert devices["queuelimit"] == 4
+    assert devices["queuelimit"] == RING_CAMILLA_QUEUELIMIT
     assert devices["enable_rate_adjust"] is False
 
 

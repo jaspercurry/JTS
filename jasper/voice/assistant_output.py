@@ -27,7 +27,7 @@ from ..assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )
-from ..audio_io import (
+from ..tts_playout import (
     TtsPlayout,
     tts_wire_is_wide as _tts_wire_is_wide,
 )

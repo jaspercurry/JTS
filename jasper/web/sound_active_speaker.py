@@ -44,6 +44,7 @@ from jasper.audio_hardware.i2s_hat import (
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
+from jasper.platform import wire
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
@@ -1536,7 +1537,7 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     """Best-effort return from setup-only routing to normal latest-source-wins."""
 
     try:
-        payload = _commission_tone_mux_command("AUTO")
+        payload = _commission_tone_mux_command(wire.MUX_AUTO)
     except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
         log_event(
             logger,

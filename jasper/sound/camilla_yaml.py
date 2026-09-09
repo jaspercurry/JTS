@@ -349,7 +349,7 @@ def emit_sound_config(
     playback_format: str | None = None,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
-    queuelimit: int = 4,
+    queuelimit: int | None = None,
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
@@ -460,11 +460,12 @@ def emit_sound_config(
     sink_device = None if playback_pipe_path is not None else playback_device
     # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
     # emitted devices decide the fallback.
-    chunksize, target_level = resolve_camilla_latency_for_devices(
+    chunksize, target_level, queuelimit = resolve_camilla_latency_for_devices(
         capture_device=capture_device,
         playback_device=sink_device,
         chunksize=chunksize,
         target_level=target_level,
+        queuelimit=queuelimit,
     )
     if channel_delays_ms is not None:
         if len(channel_delays_ms) != 2:

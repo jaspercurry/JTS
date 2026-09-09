@@ -1991,7 +1991,7 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
-    from jasper.active_speaker.measurement_programs import off_the_mark
+    from jasper.active_speaker.measurement_programs import baseline_scope
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2104,10 +2104,7 @@ def _take_staged_angle_walk(
         prompts, request.stops,
     ):
         if stop.regime in (REGIME_SUMMED, REGIME_BRANCHES):
-            # A seat or close pose with no candidate plays the applied tune
-            # whole (the VERIFY shape): the room is measured through the
-            # speaker stage it sits on (docs/measurement-loop-doctrine.md 1a).
-            through_tune = off_the_mark(stop.kind) and not stop.candidate_id
+            through_tune = baseline_scope(stop.purpose) == "speaker_tune" and not stop.candidate_id
             specs_by_index[index] = MeasureSpec(
                 kind=MEASURE_KIND_VERIFY if through_tune else MEASURE_KIND_CANDIDATE,
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
@@ -2119,7 +2116,7 @@ def _take_staged_angle_walk(
                 ),
             )
     lateral_claims = tuple(
-        TakeClaim(candidate_id=stop.candidate_id)
+        TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
         for stop in request.stops
     )
 
@@ -4232,7 +4229,7 @@ def _bind_engine_measure_leg(
             )
             pose = {"position_deg": geometry.degrees, "position_axis": geometry.axis,
                     "vertical_deg": geometry.vertical_deg, "prompt": prompt.text,
-                    **pose_kind_fields(geometry)}
+                    **pose_kind_fields(geometry), "measurement_purpose": prompt.purpose}
         elif entry is not None:
             screen = entry.screen
             spec = dataclasses.replace(

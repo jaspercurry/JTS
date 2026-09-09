@@ -32,8 +32,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import audio_io
-from jasper.audio_io import (
+from jasper import tts_playout
+from jasper.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
     _OUTPUTD_AUDIO_FRAME_BYTES_WIDE,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
@@ -412,6 +412,6 @@ def test_the_spine_scale_is_the_shift_the_rust_primitive_applies():
     assert _SPINE_SCALE == 2 ** int(match.group(1))
 
 
-def test_audio_io_module_is_the_one_the_worktree_owns():
+def test_tts_module_is_the_one_the_worktree_owns():
     """Guard against a shared venv resolving `jasper` to another checkout."""
-    assert Path(audio_io.__file__).resolve().parent.parent == _REPO
+    assert Path(tts_playout.__file__).resolve().parent.parent == _REPO

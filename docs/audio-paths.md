@@ -495,7 +495,7 @@ matched, which reference won (`live_content`, `held_content`,
 
 TTS writes record bytes accepted by the output transport. They do not prove
 DAC output or what a listener heard. `TtsPlayout` in
-[`jasper/audio_io.py`](../jasper/audio_io.py) estimates a drain deadline from
+[`jasper/tts_playout.py`](../jasper/tts_playout.py) estimates a drain deadline from
 accepted sample duration plus `JASPER_TTS_DRAIN_TAIL_SEC`.
 `expected_drain_at()` returns that deadline; `wait_drained()` waits for it.
 [`play_responses()` and `idle_watchdog()`](../jasper/voice/turn_playback.py)

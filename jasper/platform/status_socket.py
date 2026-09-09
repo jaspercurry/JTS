@@ -13,6 +13,8 @@ from typing import Any
 
 from jasper.log_event import log_event
 
+from . import wire
+
 
 logger = logging.getLogger("jasper.platform.status_socket")
 
@@ -73,7 +75,7 @@ def read_status_socket(
         arm_remaining_timeout()
         sock.connect(path)
         arm_remaining_timeout()
-        sock.sendall(b"STATUS\n")
+        sock.sendall(wire.encode(wire.STATUS))
         chunks: list[bytes] = []
         received = 0
         while True:

@@ -11,6 +11,7 @@ import json
 
 from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
 from ...log_event import log_event
+from ...platform import wire
 from .. import server as _server
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
@@ -31,7 +32,7 @@ class VoiceRoutes(ControlHandlerMixin):
             st = asyncio.run(
                 _server._voice_socket_command(
                     self._voice_socket_path,
-                    "STATUS",
+                    wire.STATUS,
                     timeout=2.0,
                 ),
             )
@@ -59,8 +60,9 @@ class VoiceRoutes(ControlHandlerMixin):
         )
 
     def _post_session(self) -> None:
-        cmd = "START" if self.path.endswith("start") else "END"
-        if cmd == "START":
+        is_start = self.path.endswith("start")
+        cmd = wire.voice_start() if is_start else wire.VOICE_END
+        if is_start:
             payload = self._read_json()
             source = payload.get("source")
             if source is not None:
@@ -82,12 +84,12 @@ class VoiceRoutes(ControlHandlerMixin):
                         status=400,
                     )
                     return
-                cmd = f"START {source.strip()}"
+                cmd = wire.voice_start(source.strip())
         result = self._voice_cmd_or_error(
             cmd,
             missing_error="voice_daemon not running (socket not found)",
             log_label=f"session {cmd}",
-            refusal_event="session.manual_refused" if cmd.startswith("START") else None,
+            refusal_event="session.manual_refused" if is_start else None,
         )
         if result is None:
             return
@@ -133,7 +135,7 @@ class VoiceRoutes(ControlHandlerMixin):
         # Cues run ~5-6s of audio plus duck/restore plus drain.
         # 30s gives generous headroom even for the longest reasonable cue.
         result = self._voice_cmd_or_error(
-            f"CUE_PLAY {slug}",
+            wire.voice_cue_play(slug),
             timeout=30.0,
             missing_error="voice_daemon not running",
             log_label="cue play",
@@ -172,7 +174,7 @@ class VoiceRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        cmd = "MUTE" if bool(body["muted"]) else "UNMUTE"
+        cmd = wire.voice_mic_mute(bool(body["muted"]))
         result = self._voice_cmd_or_error(
             cmd,
             timeout=3.0,
@@ -193,7 +195,7 @@ class VoiceRoutes(ControlHandlerMixin):
             st = asyncio.run(
                 _server._voice_socket_command(
                     self._voice_socket_path,
-                    "STATUS",
+                    wire.STATUS,
                     timeout=2.0,
                 )
             )

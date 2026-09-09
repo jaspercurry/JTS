@@ -250,3 +250,20 @@ def test_room_ceiling_writes_the_disclosed_fallback_and_inventory_lists_the_room
     }
     assert rows["room_ceiling.json"] is True
     assert {"room_median.json", "room_persistence.json"} <= set(rows)
+
+
+def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_path, capsys):
+    round_dir = bank_seat_round(tmp_path)
+    root = round_inputs(round_dir).session_dir
+    seats = [(row, record) for row, record in measurement_documents(root) if record.get("pose_kind") == "seat"]
+    for index, (row, record) in enumerate(seats):
+        record.update(pose_kind="bearing", position_deg=[0, -20, 20][index % 3],
+                      mark_distance_m=1.0, measurement_purpose="room" if index < 3 else "speaker")
+        record.pop("seat_offset_m")
+        take_artifact_path(root, row.path).write_text(json.dumps(record))
+    _run(capsys, ["room-median", str(round_dir)])
+    result = json.loads((round_dir / "room_median.json").read_text())
+    assert result["n_positions"] == 3
+    assert result["window"] == "ungated"
+    assert result["evidence"]["basis"]["pose_kind"] == "bearing"
+    assert len(set(result["evidence"]["pose_keys"])) == 3

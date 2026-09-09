@@ -838,6 +838,8 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
 @pytest.mark.parametrize(
     ("program_id", "size_args", "expected_size"),
     [
+        ("room", [], "cloud"),
+        ("room", ["--size", "quick"], "quick"),
         ("seat", [], "cloud"),
         ("seat", ["--size", "cube"], "cube"),
         ("seat", ["--size", "express"], "express"),
@@ -1030,6 +1032,9 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
         "vertical_deg": 0,
         "regime": REGIME_PER_DRIVER,
         "candidate_id": None,
+        "purpose": "speaker",
+        "baseline_scope": "base",
+        "prompt": resolve_request(request_for_program(mp.program("baseline", "full")))[0].prompt.text,
     }
     assert body["out"] == str(path)
     assert body["next"] == "jasper-round open --tier full"
@@ -1262,3 +1267,15 @@ def test_mutation_the_busy_guard_cannot_be_removed(slot):
     # The positive control: the SAME request, the same slot, an idle speaker.
     volume_state.unlink()
     assert spool.stage_angle_request(per_driver_at([0])).is_file()
+
+
+def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slot, capsys):
+    args = cli.build_parser().parse_args(["stage", "--program", "room", "--size", "quick", "--mover", "arm"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["stops_count"] == 3
+    assert receipt["next"] == "jasper-round open --tier remote"
+    assert [s["azimuth_deg"] for s in receipt["stops"]] == [0, -20, 20]
+    assert {(s["purpose"], s["baseline_scope"], s["regime"]) for s in receipt["stops"]} == {
+        ("room", "speaker_tune", "summed"),
+    }

@@ -18,6 +18,7 @@ import json
 import time
 from typing import Any
 
+from . import wire
 from .status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 
 # The one ceiling every local STATUS reader in jasper-control shares.  It is a
@@ -167,7 +168,7 @@ async def local_status_json(
         async with asyncio.timeout(timeout):
             reader, writer = await asyncio.open_unix_connection(socket_path)
             try:
-                writer.write(b"STATUS\n")
+                writer.write(wire.encode(wire.STATUS))
                 await writer.drain()
                 chunks: list[bytes] = []
                 total = 0

@@ -20,7 +20,7 @@
 //! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
-//! `audio_io.py` speaks it unchanged — the reconciler only flips the
+//! `tts_playout.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer (command vocabulary +
 //! `read_command` parser) and the server half (accept loop, client
 //! ceiling, socket counters, the per-client read loop, the queue hand-off
