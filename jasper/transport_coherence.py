@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping
 
 from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
-    UNPAIRED_POST_DSP_PLAYBACK_DEVICES,
+    POST_DSP_PLAYBACK_DEVICES,
 )
 from jasper.fanin.ring_health import load_topology_for_wire, resolve_wire_for_gate
 from jasper.fanin_coupling import (
@@ -331,11 +331,13 @@ def transport_coherence_report(
                 "direction: the ring is the one legal ACTIVE endpoint, and an "
                 "off-ring roleful box has no content transport at all."
             )
-        elif playback_device in UNPAIRED_POST_DSP_PLAYBACK_DEVICES:
+        elif playback_device in POST_DSP_PLAYBACK_DEVICES:
             # MEMBERSHIP, not one `==`: the retired snd-aloop ACTIVE lane
             # (#2534) and the stereo ring under an off-ring plan are two
             # contradictions with no documented next step, and both must be
-            # reported.
+            # reported. The retired snd-aloop STEREO lane is deliberately not a
+            # member (ADR-0262): an unreconciled box still carrying that graph
+            # is stale, not contradictory.
             errors.append(
                 f"post-DSP route has no registered outputd capture for "
                 f"Camilla playback={playback_device!r}"

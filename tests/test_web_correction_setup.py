@@ -201,12 +201,6 @@ def test_crossover_status_contains_unexpected_failures(monkeypatch):
     assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {"error": "surprise"}
 
 
-def test_get_healthz_ok():
-    resp = _drive("/healthz")
-    assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert b"ok" in resp
-
-
 def test_unknown_get_route_404():
     resp = _drive("/nope")
     assert b"404" in resp.split(b"\r\n", 1)[0]
@@ -215,7 +209,7 @@ def test_unknown_get_route_404():
 def test_post_without_csrf_is_rejected():
     """Every state-changing POST must fail CSRF before doing any work — the
     resilience guard must survive the restyle."""
-    resp = _drive("/calibration/upload", method="POST", body=b"{}")
+    resp = _drive("/crossover/reset", method="POST", body=b"{}")
     assert b"403" in resp.split(b"\r\n", 1)[0]
 
 
@@ -231,8 +225,6 @@ def test_known_post_routes_reach_csrf_guard():
     route: each known route reaches the CSRF guard (403 without a token),
     proving it is still registered."""
     known = {
-        "/test-tone",
-        "/calibration/fetch", "/calibration/upload",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/capture-cancel",

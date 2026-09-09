@@ -116,7 +116,7 @@ Restart=on-failure
 # marks voice-input-absent and stops jasper-voice.
 SuccessExitStatus=66 78
 RestartPreventExitStatus=66 78
-RestartSec=2
+RestartSec=5
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4

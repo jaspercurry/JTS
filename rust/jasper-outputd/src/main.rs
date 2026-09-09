@@ -41,6 +41,15 @@ use jasper_tts_protocol::assistant_reference;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
+/// The ONE upstream a run reads. `Config::from_env` resolves exactly one, so
+/// this is chosen before the period loop rather than re-tested each period.
+enum ContentSource {
+    /// The bond's program coming back out of the sync engine (round-trip lane).
+    DacContent(DacContentSource),
+    /// The central CamillaDSP -> outputd ring (ADR-0100).
+    ShmRing(ShmRingSource),
+}
+
 /// Outputd's voice for shared code that emits on its behalf. Every channel
 /// is stderr: this daemon installs no `log` implementation.
 const HOOKS: DaemonHooks = DaemonHooks {
@@ -374,28 +383,28 @@ fn run_alsa(
     // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
     // ends from — so outputd declares one tuple and the crate's field-by-field
     // attach is the whole negotiation. The reader owns any staging its wire
-    // needs (see `ShmRingSource`), so a box that resolved some OTHER source —
-    // a `direct` declaration, or an armed round-trip marker — allocates nothing
-    // for it, which matters under `mlockall`.
-    let mut shm_ring = match config.shm_ring.as_ref() {
-        Some(ring) => {
+    // needs (see `ShmRingSource`), so a box that resolved the OTHER source — an
+    // armed round-trip marker — allocates nothing for it, which matters under
+    // `mlockall`.
+    let shm_ring = match config.shm_ring.as_ref() {
+        Some(path) => {
             eprintln!(
                 "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} format={} sample_rate={}",
-                ring.path,
-                ring.n_slots,
+                path,
+                jasper_ring::RING_SLOTS,
                 config.period_frames,
                 config.content_channels,
                 config.content_format.as_str(),
                 config.sample_rate,
             );
             let src = ShmRingSource::new(
-                &ring.path,
+                path,
                 config.period_frames,
                 config.content_channels,
                 config.content_format,
-                ring.n_slots,
+                jasper_ring::RING_SLOTS,
             )
-            .map_err(|e| classify_ring_attach_error("shm_ring", &ring.path, e))?;
+            .map_err(|e| classify_ring_attach_error("shm_ring", path, e))?;
             Some(src)
         }
         None => None,
@@ -408,42 +417,47 @@ fn run_alsa(
     // the bond's shared program coming back out of the sync engine, so the
     // leader is sample-locked with its members. An armed lane IS the content
     // source — it never falls back, and a period it cannot fill is silence
-    // (D4). `Config::from_env` has already refused both transports at once, so
-    // at most one arm is built here; neither armed (solo) leaves this loop
-    // byte-identical to before.
-    let dac_content_lane = config
-        .dac_content_ring
-        .as_deref()
-        .map(|path| ("ring", path))
-        .or_else(|| {
-            config
-                .dac_content_fifo
-                .as_deref()
-                .map(|path| ("fifo", path))
-        });
-    let mut dac_content = match dac_content_lane {
-        Some((transport, path)) => {
+    // (D4). Unarmed (solo) leaves this loop byte-identical to before.
+    let dac_content = match config.dac_content_ring.as_deref() {
+        Some(path) => {
             eprintln!(
-                "event=outputd.dac_content.enabled transport={} path={} channel={}",
-                transport,
+                "event=outputd.dac_content.enabled transport=ring path={} channel={}",
                 path,
                 config.dac_content_channel.as_str(),
             );
-            Some(if transport == "ring" {
+            Some(
                 DacContentSource::ring(
                     path,
                     config.dac_content_channel,
                     config.period_frames,
                     DAC_CONTENT_RING_SLOTS,
                 )
-                .map_err(|e| classify_ring_attach_error("dac_content", path, e))?
-            } else {
-                DacContentSource::fifo(path, config.dac_content_channel, config.period_frames)
-            })
+                .map_err(|e| classify_ring_attach_error("dac_content", path, e))?,
+            )
         }
         None => None,
     };
-    // Bonded-member TTS (Increment 5 PR-2): constructed ONLY when the
+    // THE ONE CONTENT SOURCE for this run. `Config::from_env` resolves exactly
+    // one upstream — an armed round-trip marker takes `ContentBridgeMode::
+    // DacContentRing` and leaves `shm_ring` None, every other box takes
+    // `ShmRing` and leaves `dac_content_ring` None — so the period loop below
+    // consults one arm, chosen here instead of per period.
+    let mut content = match (dac_content, shm_ring) {
+        (Some(src), _) => ContentSource::DacContent(src),
+        (None, Some(src)) => ContentSource::ShmRing(src),
+        // Not expressible: an unarmed marker resolves `ShmRing`, which always
+        // carries a ring. Park-class (EX_CONFIG 78) rather than a panic, so an
+        // impossible resolution still idles at the unit instead of
+        // restart-looping into StartLimitAction=reboot.
+        (None, None) => {
+            return Err(
+                anyhow::anyhow!("PARKED: no content upstream").context(FinalSinkStartupConfigError)
+            )
+        }
+    };
+    let on_dac_content = matches!(content, ContentSource::DacContent(_));
+
+    // Bonded-member TTS: constructed ONLY when the
     // reconciler set the socket env — solo keeps fanin-owned TTS and
     // this loop stays byte-identical. The OutputCore engine (assistant
     // segments, loudness, saturating mix, the DAC-true PlayoutLedger)
@@ -490,16 +504,13 @@ fn run_alsa(
         None
     };
     // Pair-balance trim: a runtime-adjustable linear gain on the round-trip
-    // content path (FIFO and inv-B fallback periods alike — no level jump on a
-    // starvation transition). <= 0 dB is enforced at config/control parse, so
-    // this can only attenuate.
+    // content path, starved periods included — no level jump on a starvation
+    // transition. <= 0 dB is enforced at config/control parse, so this can only
+    // attenuate.
     let zero_period = vec![0 as ProgramSample; content_period_samples];
     let dac_negotiated = sink.dac_negotiated();
-    // Which source is live is fixed for the run (the loop below consults
-    // exactly one). A box with NEITHER parks on its first period, before this
-    // ever observes anything.
     let mut content_fill = ContentFill::new(
-        if dac_content.is_some() {
+        if on_dac_content {
             "dac_content"
         } else {
             "shm_ring"
@@ -529,63 +540,35 @@ fn run_alsa(
     while !shutdown.load(Ordering::Relaxed) {
         let period_clipped_samples: u32;
         // Did THIS period carry content, or did the live source zero-fill it?
-        // Whichever arm below runs answers, in its own vocabulary (#3458).
-        let mut period_served = false;
-        // An armed round-trip lane owns the content period outright: it fills
-        // `content_buf` with the bond's program or with silence, so there is no
-        // second source to consult and the arms below belong to a box with no
-        // lane at all. Metrics are published BEFORE the fatal-fault `?` can
-        // propagate, so `/state`'s last sample stays honest.
-        let served_from_dac_content = match dac_content.as_mut() {
-            Some(src) => {
+        // Whichever arm answers does so in its own vocabulary (#3458). Both
+        // publish their counters BEFORE the fatal-fault `?` can propagate, so
+        // `/state`'s last sample stays honest.
+        let period_served = match &mut content {
+            // An armed round-trip lane owns the content period outright: it
+            // fills `content_buf` with the bond's program or with silence.
+            ContentSource::DacContent(src) => {
                 let filled = src.fill_period(&mut content_buf);
                 let metrics = src.metrics();
                 state.mark_dac_content(metrics);
                 filled?;
-                period_served = metrics.serving_fifo;
-                true
+                metrics.serving_fifo
             }
-            None => false,
-        };
-        if !served_from_dac_content {
-            if let Some(src) = shm_ring.as_mut() {
-                // Try-read one slot from the SHM ping-pong ring;
-                // empty -> silence (read_period zero-fills). Never blocks, and a
-                // ring fault is never a runtime error (it degrades to silence +
-                // counters — StartLimitAction=reboot discipline).
-                //
-                // The reader delivers onto the spine at its own wire's width —
-                // an S16 ring widens through the same shared door every other
-                // S16 ingress uses, an S32 ring is already the spine's width and
-                // copies straight in. The `?` is the staging-length contract the
-                // widening always carried, unmoved — and, as before, the ring's
-                // counters for THIS period are published before it can
-                // propagate, so a fatal staging fault still leaves `/state`'s
-                // last sample honest.
+            // Try-read one slot from the SHM ping-pong ring;
+            // empty -> silence (read_period zero-fills). Never blocks, and a
+            // ring fault is never a runtime error (it degrades to silence +
+            // counters — StartLimitAction=reboot discipline).
+            //
+            // The reader delivers onto the spine at its own wire's width —
+            // an S16 ring widens through the same shared door every other
+            // S16 ingress uses, an S32 ring is already the spine's width and
+            // copies straight in. The `?` is the staging-length contract the
+            // widening always carried, unmoved.
+            ContentSource::ShmRing(src) => {
                 let read = src.read_period(&mut content_buf);
                 state.mark_shm_ring(src.metrics());
-                period_served = read? > 0;
-            } else {
-                // ADR-0100: the ring-fed CamillaDSP chain is the only upstream
-                // outputd serves. A box that reaches here declared
-                // `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`, so no ring was
-                // attached and there is nothing else to read — it PARKS rather
-                // than playing silence. Park-class (EX_CONFIG 78) because no
-                // restart can change a declaration. Which NAMED park it is
-                // comes from `jasper.control.transport_park` (ADR-0178).
-                return Err(anyhow::anyhow!(
-                    "PARKED: no content upstream. \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct names the retired \
-                     snd-aloop route, which no longer exists, so outputd \
-                     attached no ring and has nothing to read. The SHM ring is \
-                     the one transport (ADR-0100): remove the stale \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE line from \
-                     /var/lib/jasper/outputd.env — an UNDECLARED bridge is the \
-                     ring — or set it to shm_ring."
-                )
-                .context(FinalSinkStartupConfigError));
+                read? > 0
             }
-        }
+        };
         match content_fill.observe(period_served) {
             Some(ContentFillEdge::Deaf) => eprintln!(
                 "event=outputd.content.deaf source={} threshold_periods={} \
@@ -604,7 +587,7 @@ fn run_alsa(
             content_fill.consecutive_empty_periods(),
             content_fill.deaf(),
         );
-        let trim = if dac_content.is_some() {
+        let trim = if on_dac_content {
             state.dac_content_trim_gain()
         } else {
             1.0
@@ -678,10 +661,9 @@ fn run_alsa(
                     sink.dac_negotiated().buffer_frames as u64
                 }
             };
-            // Real clip accounting (replaces the hardwired 0): the passthrough
-            // never clips, so a full-scale sample means CamillaDSP hit the
-            // ceiling upstream — the honest signal the Stage-6 no-clip gate
-            // needs (it was vacuously green against a hardwired 0).
+            // Real clip accounting: the passthrough never clips, so a
+            // full-scale sample means CamillaDSP hit the ceiling upstream —
+            // the honest signal the no-clip gate needs.
             let clipped = count_full_scale_samples(&content_buf);
             let next_reference_sequence = reference_sequence.saturating_add(1);
             if content_channels == CHANNELS as usize {
@@ -804,15 +786,14 @@ const SPINE_S16_LSB: ProgramSample = 1 << 16;
 /// the ceiling upstream.
 ///
 /// "Full scale" is a band one S16 LSB wide at each rail, NOT equality with the
-/// i32 rails, and that is the whole subtlety of moving this to the spine. A
-/// widened S16 full-scale sample is `0x7FFF_0000` — one S16 LSB BELOW `i32::MAX`
-/// — so an `s == i32::MAX` test would report 0 forever on every S16-content box
-/// and quietly restore the vacuously-green Stage-6 no-clip gate this function was
-/// written to fix. The band is symmetric by construction
+/// i32 rails. A widened S16 full-scale sample is `0x7FFF_0000` — one S16 LSB
+/// BELOW `i32::MAX` — so an `s == i32::MAX` test would report 0 forever on
+/// every S16-content box and quietly leave the no-clip gate vacuously green.
+/// The band is symmetric by construction
 /// (`[i32::MAX - 65535, i32::MAX]` and `[i32::MIN, i32::MIN + 65535]`) and
-/// contains both the widened-S16 rails and the native-S32 rails, so the count is
-/// unchanged on today's fleet and correct once the lane goes wide. The nearest
-/// non-clipping S16 value, widened, is 65536 below the band and is not counted.
+/// contains both the widened-S16 rails and the native-S32 rails, so the count
+/// is correct on both. The nearest non-clipping S16 value, widened, is 65536
+/// below the band and is not counted.
 fn count_full_scale_samples(samples: &[ProgramSample]) -> u32 {
     samples
         .iter()
@@ -832,9 +813,8 @@ fn count_full_scale_samples(samples: &[ProgramSample]) -> u32 {
 /// wide spine was introduced to keep, and it would lose it on the two paths a
 /// grouped member uses constantly. f64 represents every i32 exactly.
 ///
-/// Rounds rather than truncating (the old i16 version's `as i16` cast truncated
-/// toward zero). At duck depths either is inaudible; rounding is chosen because
-/// the whole point of this change is that resolution is given up in exactly one
+/// Rounds rather than truncating toward zero. At duck depths either is
+/// inaudible; rounding is chosen so resolution is given up in exactly one
 /// place, and this is not that place. The clamp is belt: with gain <= 1.0 the
 /// product's magnitude cannot exceed the input's.
 fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
@@ -1147,8 +1127,8 @@ impl ChipRefDownsampler {
         })
     }
 
-    /// KNOWN ALLOCATION EXCEPTION on the playout thread — pre-existing, unchanged
-    /// by the i32 spine, and deliberately left alone here.
+    /// KNOWN ALLOCATION EXCEPTION on the playout thread, deliberately left
+    /// alone here.
     ///
     /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
     /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
@@ -1156,8 +1136,7 @@ impl ChipRefDownsampler {
     /// period, and ONLY on boxes with the chip-reference leg armed
     /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
     /// second thread for it. Fixing it means giving the writer a pool or a
-    /// pre-sized ring, which changes the queue's ownership model: out of scope for
-    /// the spine widening, and it must not be silently folded in.
+    /// pre-sized ring, which changes the queue's ownership model.
     fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
         let input_frames = stereo_samples.len() / (CHANNELS as usize);
         let output_frames =
@@ -1181,13 +1160,11 @@ impl ChipRefDownsampler {
 
 /// Reinterpret an S16 slice as its little-endian wire bytes.
 ///
-/// **Deliberately monomorphic in `i16`, and that is the point.** It replaces a
-/// type-adaptive `bytemuck_i16<T>`-shaped helper whose name promised i16 while
-/// its body would happily accept `&[i32]` and emit TWICE the bytes — with the
-/// program spine now i32, calling that helper on a spine slice would have sent
-/// 2x-length datagrams to `jasper-aec-bridge` and written 2x bytes to the
-/// chip-ref tee, silently, with every counter still reporting success. The
-/// signature is the guard: a spine slice does not compile here.
+/// **Deliberately monomorphic in `i16`, and that is the point.** A
+/// type-adaptive helper whose body accepted `&[i32]` would emit TWICE the
+/// bytes — sending 2x-length datagrams to `jasper-aec-bridge` and writing 2x
+/// bytes to the chip-ref tee, silently, with every counter still reporting
+/// success. The signature is the guard: a spine slice does not compile here.
 /// `the_reference_datagram_is_exactly_one_s16_stereo_period` pins the resulting
 /// wire length.
 fn i16_bytes(samples: &[i16]) -> &[u8] {
@@ -1638,9 +1615,8 @@ fn watchdog_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the test `Config` literal names it now that the run loop's ring
-    // staging moved into `ShmRingSource`; importing it at module scope would
-    // be an unused import in a non-test build.
+    // Only the test `Config` literal names this type; importing it at
+    // module scope would be an unused import in a non-test build.
     use jasper_outputd::config::ContentBridgeMode;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1659,8 +1635,8 @@ mod tests {
 
     /// A ring WIRE mismatch parks the unit; it does not restart-loop it.
     ///
-    /// Ring v2 gave the ring geometry two per-box axes (format, channels), so a
-    /// writer and this reader can now disagree on a field that no slot/period
+    /// The ring v2 geometry has two per-box axes (format, channels), so a
+    /// writer and this reader can disagree on a field that no slot/period
     /// check would notice. This walks a REAL such disagreement — an S16 ring
     /// file against an S32 declaration — through the SAME
     /// `classify_shm_ring_attach_error` the run loop applies to it, and pins the
@@ -1686,7 +1662,7 @@ mod tests {
         let _writer = TestRingWriter::create_or_attach(
             &path,
             Geometry {
-                rate: 48_000,
+                rate: jasper_ring::RATE_HZ,
                 channels: 2,
                 sample_format: SAMPLE_FORMAT_S16LE,
                 period_frames: 128,
@@ -2021,7 +1997,7 @@ mod tests {
             sample_rate: 48_000,
             period_frames: 128,
             dac_buffer_frames: 256,
-            content_bridge_mode: ContentBridgeMode::Direct,
+            content_bridge_mode: ContentBridgeMode::ShmRing,
             shm_ring: None,
             chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
             chip_ref_sample_rate: 16_000,
@@ -2031,7 +2007,6 @@ mod tests {
             chip_ref_tee_path: None,
             reference_udp_target: None,
             control_socket_path: None,
-            dac_content_fifo: None,
             dac_content_ring: None,
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,
@@ -2144,9 +2119,8 @@ mod tests {
             &mut out,
         );
 
-        // Same monitor contract as before the spine widened — the pairwise child
-        // averages, now exact at the spine's resolution instead of rounded onto
-        // the S16 grid (these particular averages are whole numbers either way).
+        // The pairwise child averages, exact at the spine's resolution (these
+        // particular averages are whole numbers either way).
         assert_eq!(out, wv(&[200, 2000, -200, -2000]));
     }
 
@@ -2251,7 +2225,7 @@ mod tests {
         assert_ne!(w(i16::MAX), ProgramSample::MAX, "the trap must be real");
         assert_eq!(count_full_scale_samples(&[w(i16::MAX)]), 1);
         assert_eq!(count_full_scale_samples(&[w(i16::MIN)]), 1);
-        // A native S32 lane's own rails count too (what PR-6 will feed it).
+        // A native S32 lane's own rails count too.
         assert_eq!(count_full_scale_samples(&[ProgramSample::MAX]), 1);
         assert_eq!(count_full_scale_samples(&[ProgramSample::MIN]), 1);
 

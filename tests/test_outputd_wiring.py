@@ -1093,18 +1093,17 @@ def test_neither_outputd_sink_opens_a_content_pcm():
     # vocabulary — no lane negotiated anything to report instead.
     assert "fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {" in alsa_rs
     assert _non_comment_rust(alsa_rs).count("synthetic_content_negotiated(config)") == 2
-    # And the run loop has one source. A box that declared no ring reaches the
-    # park, never a second read path.
-    assert "shm_ring.as_mut()" in main_rs
+    # And the run loop has one source, chosen once before it: two real arms,
+    # never a second read path.
+    assert "let period_served = match &mut content {" in main_rs
     assert "read_content_period" not in main_rs
     # The no-upstream arm parks by CLASS, not by wording: the marker is what
     # `runtime_error_exit_code` downcasts into EX_CONFIG 78, and pinning the
     # sentence instead would make a reworded remedy a test failure. Sliced from
-    # the run loop's own else-arm so the marker cannot drift onto some other
+    # the source selection's own arm so the marker cannot drift onto some other
     # error and leave this arm exiting 1 into the restart ladder.
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
-    no_upstream = run_alsa.split("shm_ring.as_mut()", 1)[1].split("} else {", 1)[1]
-    no_upstream = no_upstream.split("\n            }", 1)[0]
+    no_upstream = run_alsa.split("(None, None) => {", 1)[1].split("\n        }", 1)[0]
     assert "FinalSinkStartupConfigError" in no_upstream, no_upstream
     assert "return Err(" in no_upstream, no_upstream
 

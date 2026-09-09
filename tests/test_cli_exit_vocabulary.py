@@ -148,6 +148,16 @@ def _audition_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]
     return ["start"]
 
 
+def _mic_calibration_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The household record is the input here, so its absence is the refusal:
+    the door declines to show a mic nothing has registered."""
+
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "absent.json")
+    )
+    return ["show"]
+
+
 #: One invocation per tool that PASSES argparse and reaches the tool, and that
 #: the tool must decline: a round, bundle or spec that is not there, a program
 #: nobody ships, a coordinate off the walk's grid, a door on a port nothing
@@ -158,6 +168,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.basic_profile": lambda tmp, mp: [
         "review", "--hostname", "jts.local", "--base-url", UNANSWERED_URL,
     ],
+    "jasper.cli.mic_calibration": _mic_calibration_argv,
     "jasper.cli.seat_level": lambda tmp, mp: [
         "--mic-serial", "no-such-serial", "--stimulus-wav", str(tmp / "absent.wav"),
     ],

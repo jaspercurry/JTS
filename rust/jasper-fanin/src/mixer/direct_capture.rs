@@ -363,7 +363,6 @@ pub(super) fn read_direct_and_render(
     input: &mut Input,
     period_frames: usize,
     tap: &mut DirectTapHook,
-    xrun: &XrunSink,
 ) -> usize {
     // The lane's resampler fill BEFORE this period's push — the diagnostic
     // `ring_fill_frames` the tap records (not added to harness latency). Read via
@@ -386,7 +385,7 @@ pub(super) fn read_direct_and_render(
     match &direct {
         DirectCapture::Present(_) => {
             let outcome =
-                drain_direct_capture(&direct, input, period_frames, tap, ring_fill_before, xrun);
+                drain_direct_capture(&direct, input, period_frames, tap, ring_fill_before);
             // Every non-`Ok` outcome retires this handle. Take it OUT of the state
             // machine so the opener thread performs the `snd_pcm_close` (#2533);
             // dropping it here would run a blocking device call in the render loop.
@@ -544,7 +543,6 @@ fn drain_direct_capture(
     period_frames: usize,
     tap: &mut DirectTapHook,
     ring_fill_before: u64,
-    xrun: &XrunSink,
 ) -> DirectDrainOutcome {
     let DirectCapture::Present(pcm) = direct else {
         return DirectDrainOutcome::Ok;
@@ -582,7 +580,7 @@ fn drain_direct_capture(
             Err(e) => match classify_pcm_errno(e.errno()) {
                 PcmIoFate::WouldBlock => break,
                 PcmIoFate::Xrun => {
-                    recover_direct_xrun(pcm, input, e, period_frames, xrun, "avail_update");
+                    recover_direct_xrun(pcm, input, e, "avail_update");
                     break;
                 }
                 PcmIoFate::Fatal => return DirectDrainOutcome::DeviceLost,
@@ -684,7 +682,7 @@ fn drain_direct_capture(
                 Err(e) => match classify_pcm_errno(e.errno()) {
                     PcmIoFate::WouldBlock => stop = true,
                     PcmIoFate::Xrun => {
-                        recover_direct_xrun(pcm, input, e, period_frames, xrun, "readi");
+                        recover_direct_xrun(pcm, input, e, "readi");
                         stop = true;
                     }
                     PcmIoFate::Fatal => return DirectDrainOutcome::DeviceLost,
@@ -787,31 +785,17 @@ fn record_drain_entry(input: &Input, avail: i64) {
     }
 }
 
-/// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, forward the xrun
-/// event, `try_recover` the PCM, restart it if not Running, and reset the
-/// resampler (a discontinuity). Mirrors `recover_resampler_input_xrun` for the
-/// direct lane. Best-effort — a failed recover just leaves the PCM for the next
-/// period's `avail_update` to re-observe (which will classify a hard failure as
-/// a device loss).
-fn recover_direct_xrun(
-    pcm: &PCM,
-    input: &mut Input,
-    error: alsa::Error,
-    period_frames: usize,
-    xrun: &XrunSink,
-    operation: &str,
-) {
-    let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+/// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, `try_recover` the
+/// PCM, restart it if not Running, and reset the resampler (a discontinuity).
+/// Mirrors `recover_resampler_input_xrun` for the direct lane. Best-effort — a
+/// failed recover just leaves the PCM for the next period's `avail_update` to
+/// re-observe (which will classify a hard failure as a device loss).
+fn recover_direct_xrun(pcm: &PCM, input: &mut Input, error: alsa::Error, operation: &str) {
+    let count = input.note_xrun();
     warn!(
         "event=fanin.xrun source=input label={} count={} op={} (usb_direct lane)",
         input.label, count, operation,
     );
-    xrun.send(XrunEvent {
-        source: XrunSource::Input,
-        label: input.label.clone(),
-        frames: period_frames as u32,
-        count,
-    });
     if pcm.try_recover(error, true).is_ok() && pcm.state() != State::Running {
         let _ = pcm.start();
     }

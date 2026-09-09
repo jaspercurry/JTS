@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime
+import json
 import logging
 import math
 import os
@@ -39,6 +40,7 @@ from jasper.fanin.status import fanin_inputs_by_label
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.service_units import read_unit_states, unit_uptime_sec
 from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     read_status_socket_or_none,
@@ -96,6 +98,8 @@ except (ValueError, OSError, AttributeError):
 
 SHAIRPORT_UNIT = "shairport-sync"
 CAMILLA_UNIT = "jasper-camilla"
+# Every unit one journalctl fork per scan covers.
+JOURNAL_UNITS = (SHAIRPORT_UNIT, CAMILLA_UNIT)
 CAMILLA_SHORT_READ_RE = re.compile(
     r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
 )
@@ -115,7 +119,6 @@ def _empty_bucket(t: float) -> dict[str, Any]:
         "shairport_sync_errors": 0,
         "shairport_underruns": 0,
         "fanin_airplay_xruns": 0,
-        "fanin_output_xruns": 0,
         "camilla_short_reads": 0,
         "camilla_playback_underruns": 0,
     }
@@ -130,7 +133,6 @@ EVENT_BUCKET_FIELD = {
     "shairport_broken_pipe": "shairport_events",
     "shairport_offset_too_short": "shairport_events",
     "fanin_airplay_xrun": "fanin_airplay_xruns",
-    "fanin_output_xrun": "fanin_output_xruns",
     "camilla_short_read": "camilla_short_reads",
     "camilla_playback_underrun": "camilla_playback_underruns",
 }
@@ -169,6 +171,17 @@ def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
     """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
     delta = _nonneg_delta(curr, prev)
     return delta / dt if delta is not None else None
+
+
+def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Sum of the named counters, or None unless every one of them is present."""
+    total = 0
+    for key in keys:
+        value = _as_int_or_none(block.get(key))
+        if value is None:
+            return None
+        total += value
+    return total
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
@@ -357,32 +370,11 @@ def _seconds_since_camilla_restart() -> float | None:
     A camilla restart resets the rate controller, so "did this storm start
     shortly after a restart/deploy?" is the field that settles whether
     restarts SEED storms (vs only clearing them — the open question from the
-    deploy-correlation investigation). Read-only ``systemctl show`` needs no
-    privilege; bounded + fail-soft.
+    deploy-correlation investigation).
     """
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", CAMILLA_UNIT_FULL,
-             "-p", "ActiveEnterTimestampMonotonic"],
-            capture_output=True, text=True,
-            timeout=SUBPROCESS_TIMEOUT_SEC, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    out = proc.stdout.strip()
-    if "=" not in out:
-        return None
-    try:
-        started_us = int(out.split("=", 1)[1])
-    except ValueError:
-        return None
-    if started_us <= 0:
-        return None
-    try:
-        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
-    except (OSError, AttributeError):
-        return None
-    return round(max(0.0, (now_us - started_us) / 1e6), 1)
+    states = read_unit_states((CAMILLA_UNIT_FULL,))
+    uptime = unit_uptime_sec((states or {}).get(CAMILLA_UNIT_FULL))
+    return round(uptime, 1) if uptime is not None else None
 
 
 def _seconds_since_deploy(now_wall: float) -> float | None:
@@ -609,16 +601,15 @@ class _StormTrajectory:
 
 
 class AirPlayHealthSampler:
-    """Background sampler for recent AirPlay health.
+    """Collector for recent AirPlay health.
 
     Tests inject probe functions and call _tick() directly. Production
-    starts the daemon thread via start().
+    drives it via sample_once(), composed into AudioHealthSampler's loop.
     """
 
     def __init__(
         self,
         *,
-        sample_interval_sec: float = SAMPLE_INTERVAL_SEC,
         journal_interval_sec: float = JOURNAL_INTERVAL_SEC,
         mpris_interval_sec: float = MPRIS_INTERVAL_SEC,
         camilla_interval_sec: float = CAMILLA_INTERVAL_SEC,
@@ -626,7 +617,8 @@ class AirPlayHealthSampler:
         history_seconds: float = HISTORY_SECONDS,
         fanin_probe: Callable[[], dict[str, Any] | None] | None = None,
         journal_reader: (
-            Callable[[str, float, float], list[str]] | None
+            Callable[[tuple[str, ...], float, float], list[tuple[str, str]]]
+            | None
         ) = None,
         mpris_probe: Callable[[], dict[str, Any] | None] | None = None,
         camilla_probe: Callable[[], dict[str, Any] | None] | None = None,
@@ -647,7 +639,6 @@ class AirPlayHealthSampler:
         context_probe: Callable[[], dict[str, Any]] | None = None,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
-        self._sample_interval = sample_interval_sec
         self._journal_interval = journal_interval_sec
         self._mpris_interval = mpris_interval_sec
         self._camilla_interval = camilla_interval_sec
@@ -705,10 +696,7 @@ class AirPlayHealthSampler:
         self._last_journal_scan_at = 0.0
         self._last_mpris_sample_at = 0.0
         self._last_camilla_sample_at = 0.0
-        self._journal_since = {
-            SHAIRPORT_UNIT: self._time(),
-            CAMILLA_UNIT: self._time(),
-        }
+        self._journal_since = self._time()
         self._last_fanin_counts: dict[str, Any] | None = None
         self._last_link_counts: dict[str, Any] | None = None
         self._last_receiver_counts: dict[str, Any] | None = None
@@ -720,25 +708,8 @@ class AirPlayHealthSampler:
         self._maintenance_suppressed = False
         self._maintenance_suppressed_until: float | None = None
 
-        self._stopped = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="jasper-airplay-health-sampler",
-            daemon=True,
-        )
-
-    def start(self) -> None:
-        if not self._thread.is_alive():
-            self._thread.start()
-
-    def stop(self) -> None:
-        """For tests; production runs the daemon thread to process exit."""
-        self._stopped = True
-
     def sample_once(self) -> None:
-        """Take one sample without starting this collector's own thread.
-
-        The speaker-wide audio-health sampler composes this AirPlay-specific
+        """The speaker-wide audio-health sampler composes this AirPlay-specific
         collector and calls it from the one existing monitoring loop.
         """
         self._tick()
@@ -749,10 +720,6 @@ class AirPlayHealthSampler:
             summary_30m = self._summary_locked(30 * 60.0)
             status, reason = self._status_locked(summary_5m, summary_30m)
             return {
-                "sample_interval_sec": self._sample_interval,
-                "journal_interval_sec": self._journal_interval,
-                "bucket_seconds": self._bucket_seconds,
-                "history_points": self._history_points,
                 "last_sample_at": self._last_sample_at,
                 "maintenance_suppressed": self._maintenance_suppressed,
                 "maintenance_suppressed_until": self._maintenance_suppressed_until,
@@ -782,20 +749,7 @@ class AirPlayHealthSampler:
                     "onset": copy.deepcopy(self._storm_onset),
                 },
                 "events": [dict(event) for event in self._events],
-                "history": self._history_locked(),
             }
-
-    def _run(self) -> None:
-        while not self._stopped:
-            sample_start = time.monotonic()
-            try:
-                self._tick()
-            except Exception:  # noqa: BLE001
-                logger.exception("airplay health sampler tick failed")
-            elapsed = time.monotonic() - sample_start
-            # Floor bounds the loop rate when a tick overruns the interval,
-            # so a slow tick under load can't collapse it to a tight spin.
-            time.sleep(max(1.0, self._sample_interval - elapsed))
 
     def _tick(self) -> None:
         now = self._time()
@@ -842,7 +796,7 @@ class AirPlayHealthSampler:
         suppress_events = suppress_base or in_connect_grace
 
         if suppress_events:
-            self._advance_journal_cursors(now)
+            self._advance_journal_cursor(now)
         elif now - self._last_journal_scan_at >= self._journal_interval:
             self._scan_journals(now)
 
@@ -913,20 +867,44 @@ class AirPlayHealthSampler:
         airplay_frames = _as_int(airplay.get("frames_read")) if airplay else 0
         airplay_xruns = _as_int(airplay.get("xrun_count")) if airplay else 0
         output_frames = _as_int(output.get("frames_written"))
-        output_xruns = _as_int(output.get("xrun_count"))
+        output_ring = (
+            output.get("ring") if isinstance(output.get("ring"), dict) else None
+        )
+        output_full_waits = (
+            _as_int_or_none(output_ring.get("full_waits"))
+            if output_ring is not None else None
+        )
+        # The ring's two loss counters, summed: both mean "a period the reader
+        # never took". An absent counter stays None — "not observed", not zero.
+        output_ring_drops = (
+            _sum_or_none(output_ring, ("stuck_reader_drops", "drop_no_reader"))
+            if output_ring is not None else None
+        )
 
         prev = self._last_fanin_counts
         airplay_rate: float | None = None
         output_rate: float | None = None
+        full_waits_rate: float | None = None
+        ring_drops_rate: float | None = None
         input_rates: dict[str, float | None] = {
             spec.id.value: None for spec in MUSIC_SOURCE_SPECS
         }
         input_empty_reads_rates: dict[str, float | None] = {
             spec.id.value: None for spec in MUSIC_SOURCE_SPECS
         }
+        input_xrun_rates: dict[str, float | None] = {
+            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
+        }
         input_frames = {
             spec.id.value: (
                 _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
+                if spec.fanin_label in inputs_by_label else 0
+            )
+            for spec in MUSIC_SOURCE_SPECS
+        }
+        input_xruns = {
+            spec.id.value: (
+                _as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
                 if spec.fanin_label in inputs_by_label else 0
             )
             for spec in MUSIC_SOURCE_SPECS
@@ -962,9 +940,20 @@ class AirPlayHealthSampler:
                     input_empty_reads_rates[source_id] = _nonneg_rate(
                         empty_reads, previous_empty_reads.get(source_id), dt,
                     )
+            previous_input_xruns = prev.get("input_xruns")
+            if isinstance(previous_input_xruns, Mapping):
+                for source_id, xruns in input_xruns.items():
+                    input_xrun_rates[source_id] = _nonneg_rate(
+                        xruns, previous_input_xruns.get(source_id), dt,
+                    )
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
-            output_delta = output_xruns - _as_int(prev.get("output_xruns"))
+            full_waits_rate = _nonneg_rate(
+                output_full_waits, prev.get("output_full_waits"), dt,
+            )
+            ring_drops_rate = _nonneg_rate(
+                output_ring_drops, prev.get("output_ring_drops"), dt,
+            )
             if airplay_delta > 0 and not suppress_events:
                 self._record_event(
                     now,
@@ -977,26 +966,16 @@ class AirPlayHealthSampler:
                     },
                     count=airplay_delta,
                 )
-            if output_delta > 0 and not suppress_events:
-                self._record_event(
-                    now,
-                    {
-                        "type": "fanin_output_xrun",
-                        "subsystem": "fanin",
-                        "severity": "issue",
-                        "title": "Fan-in output xrun",
-                        "detail": f"output recovered {output_delta} xrun(s)",
-                    },
-                    count=output_delta,
-                )
 
         self._last_fanin_counts = {
             "ts": now,
             "airplay_frames": airplay_frames,
             "airplay_xruns": airplay_xruns,
             "output_frames": output_frames,
-            "output_xruns": output_xruns,
+            "output_full_waits": output_full_waits,
+            "output_ring_drops": output_ring_drops,
             "input_frames": input_frames,
+            "input_xruns": input_xruns,
             "input_empty_reads": input_empty_reads,
         }
 
@@ -1057,6 +1036,10 @@ class AirPlayHealthSampler:
                 "xrun_count": (
                     _as_int(entry.get("xrun_count"))
                     if isinstance(entry, dict) else 0
+                ),
+                "xruns_per_sec": (
+                    round(input_xrun_rates[spec.id.value], 3)
+                    if input_xrun_rates[spec.id.value] is not None else None
                 ),
                 "rms_dbfs": (
                     _as_float(entry.get("rms_dbfs"))
@@ -1137,6 +1120,31 @@ class AirPlayHealthSampler:
                     if ring is not None else None
                 ),
             }
+        # Ring A back-pressure: `occupancy` counts SLOTS (not frames), and
+        # `full_waits` climbs once per publish that had to wait for a live
+        # reader to drain one -- the "running too tight" signal (issue #4124).
+        ring_observation: dict[str, Any] | None = None
+        if output_ring is not None:
+            ring_observation = {
+                key: copy.deepcopy(output_ring.get(key))
+                for key in (
+                    "occupancy",
+                    "slots",
+                    "published",
+                    "full_waits",
+                    "stuck_reader_drops",
+                    "drop_no_reader",
+                    "stall_active",
+                    "last_stall_ms",
+                )
+                if key in output_ring
+            }
+            ring_observation["full_waits_per_sec"] = (
+                round(full_waits_rate, 2) if full_waits_rate is not None else None
+            )
+            ring_observation["drops_per_sec"] = (
+                round(ring_drops_rate, 3) if ring_drops_rate is not None else None
+            )
         current = {
             "available": True,
             "input_buffer_frames": input_buffer_frames,
@@ -1162,11 +1170,9 @@ class AirPlayHealthSampler:
                     round(output_rate, 1)
                     if output_rate is not None else None
                 ),
-                "xrun_count": output_xruns,
                 "sample_rate": _as_int(output.get("sample_rate")),
                 "period_frames": _as_int(output.get("period_frames")),
-                "snd_pcm_delay_frames": output.get("snd_pcm_delay_frames"),
-                "snd_pcm_delay_ms": output.get("snd_pcm_delay_ms"),
+                "ring": ring_observation,
             },
             "watchdog": {
                 "last_progress_age_ms": _as_int(
@@ -1174,6 +1180,10 @@ class AirPlayHealthSampler:
                 ),
                 "pings_skipped": _as_int(watchdog.get("pings_skipped")),
             },
+            "tts": (
+                copy.deepcopy(status.get("tts"))
+                if isinstance(status.get("tts"), dict) else None
+            ),
         }
         with self._lock:
             self._current_fanin = current
@@ -1347,9 +1357,8 @@ class AirPlayHealthSampler:
             self._current_camilla = current if isinstance(current, dict) else None
         self._last_camilla_sample_at = now
 
-    def _advance_journal_cursors(self, now: float) -> None:
-        for unit in (SHAIRPORT_UNIT, CAMILLA_UNIT):
-            self._journal_since[unit] = max(self._journal_since.get(unit, now), now)
+    def _advance_journal_cursor(self, now: float) -> None:
+        self._journal_since = max(self._journal_since, now)
         self._last_journal_scan_at = now
 
     def _scan_journals(self, now: float) -> None:
@@ -1357,20 +1366,18 @@ class AirPlayHealthSampler:
             now - self._last_journal_scan_at if self._last_journal_scan_at else 0.0
         )
         material_short_reads = 0
-        for unit in (SHAIRPORT_UNIT, CAMILLA_UNIT):
-            since = self._journal_since.get(unit, now)
-            try:
-                lines = self._journal_reader(unit, since, now)
-            except Exception:  # noqa: BLE001
-                logger.debug("journal scan failed for %s", unit, exc_info=True)
-                lines = []
-            for line in lines:
-                event = classify_journal_line(unit, line)
-                if event is not None:
-                    self._record_event(now, event)
-                    if event.get("type") == "camilla_short_read":
-                        material_short_reads += 1
-            self._journal_since[unit] = now
+        try:
+            entries = self._journal_reader(JOURNAL_UNITS, self._journal_since, now)
+        except Exception:  # noqa: BLE001
+            logger.debug("journal scan failed", exc_info=True)
+            entries = []
+        for unit, line in entries:
+            event = classify_journal_line(unit, line)
+            if event is not None:
+                self._record_event(now, event)
+                if event.get("type") == "camilla_short_read":
+                    material_short_reads += 1
+        self._journal_since = now
         self._last_journal_scan_at = now
         material_per_min = (
             material_short_reads / scan_window * 60.0 if scan_window > 0 else 0.0
@@ -1584,7 +1591,6 @@ class AirPlayHealthSampler:
             "shairport_sync_errors": 0,
             "shairport_underruns": 0,
             "fanin_airplay_xruns": 0,
-            "fanin_output_xruns": 0,
             "camilla_short_reads": 0,
             "camilla_playback_underruns": 0,
         }
@@ -1619,7 +1625,6 @@ class AirPlayHealthSampler:
             or summary_5m["shairport_underruns"] > 0
             or summary_5m["camilla_playback_underruns"] > 0
             or summary_5m["fanin_airplay_xruns"] > 0
-            or summary_5m["fanin_output_xruns"] > 0
         ):
             return "issue", "recent audio-path recovery event"
 
@@ -1661,19 +1666,11 @@ class AirPlayHealthSampler:
         if (
             summary_30m["shairport_events"] > 0
             or summary_30m["fanin_airplay_xruns"] > 0
-            or summary_30m["fanin_output_xruns"] > 0
             or summary_5m["camilla_short_reads"] > 0
             or summary_30m["camilla_playback_underruns"] > 0
         ):
             return "watch", "recent non-fatal audio-path warning"
         return "ok", "AirPlay path clean"
-
-    def _history_locked(self) -> dict[str, list[Any]]:
-        keys = list(_empty_bucket(0.0).keys())
-        return {
-            key: [bucket.get(key, 0) for bucket in self._buckets]
-            for key in keys
-        }
 
     @staticmethod
     def _read_fanin_status(
@@ -1687,17 +1684,28 @@ class AirPlayHealthSampler:
         )
 
     @staticmethod
-    def _read_journal_lines(unit: str, since: float, now: float) -> list[str]:
+    def _read_journal_lines(
+        units: tuple[str, ...], since: float, now: float,
+    ) -> list[tuple[str, str]]:
+        """``(unit, message)`` for every scanned unit, in ONE journalctl fork.
+
+        ``-o json`` rather than ``-o cat`` because a merged scan has to know
+        which unit emitted each line; one fork per scan instead of one per unit
+        keeps this 30 s cadence off the Pi's process budget (ADR-0226).
+        """
+        argv = ["journalctl"]
+        for unit in units:
+            argv += ["-u", unit]
+        argv += [
+            "--since", f"@{since:.3f}",
+            "--until", f"@{now:.3f}",
+            "--no-pager",
+            "-o", "json",
+            "--output-fields=_SYSTEMD_UNIT,MESSAGE",
+        ]
         try:
             proc = subprocess.run(
-                [
-                    "journalctl",
-                    "-u", unit,
-                    "--since", f"@{since:.3f}",
-                    "--until", f"@{now:.3f}",
-                    "--no-pager",
-                    "-o", "cat",
-                ],
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=SUBPROCESS_TIMEOUT_SEC,
@@ -1707,7 +1715,22 @@ class AirPlayHealthSampler:
             return []
         if proc.returncode not in (0, 1):
             return []
-        return proc.stdout.splitlines()
+        by_unit_id = {f"{unit}.service": unit for unit in units}
+        entries: list[tuple[str, str]] = []
+        for raw in proc.stdout.splitlines():
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            unit = by_unit_id.get(record.get("_SYSTEMD_UNIT"))
+            message = record.get("MESSAGE")
+            # journald renders a non-UTF-8 MESSAGE as a list of byte values;
+            # no classifier pattern can match one.
+            if unit is not None and isinstance(message, str):
+                entries.append((unit, message))
+        return entries
 
     @staticmethod
     def _read_airplay_mpris() -> dict[str, Any] | None:

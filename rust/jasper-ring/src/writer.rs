@@ -515,7 +515,7 @@ impl Drop for RingWriter {
 /// Clamped nanosleep for one full-ring wait tick: 1/4 period, capped at 2 ms,
 /// never a hot spin. Mirrors the C writer's `clamped_nanosleep`.
 fn clamped_nanosleep(period_frames: u32) {
-    let period_ns = (period_frames as u64) * 1_000_000_000 / 48_000;
+    let period_ns = (period_frames as u64) * 1_000_000_000 / u64::from(layout::RATE_HZ);
     let mut nap_ns = period_ns / 4;
     if nap_ns > MAX_TICK_NS {
         nap_ns = MAX_TICK_NS;
@@ -556,7 +556,7 @@ mod tests {
 
     fn proto_geometry() -> Geometry {
         Geometry {
-            rate: 48_000,
+            rate: layout::RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,
