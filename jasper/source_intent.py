@@ -48,9 +48,15 @@ from jasper.audio_hardware.usb_port_role import (
 from jasper.atomic_io import (
     advisory_file_lock,
     atomic_write_text,
+    locked_update_env_file,
     read_regular_bytes_nofollow,
 )
+from jasper.control.restart_broker import manage_units
 from jasper.env_file import parse_env_lines
+from jasper.install_profile import (
+    install_profile_allows_local_sources,
+    read_install_profile,
+)
 from jasper.fanin.status import (
     DIRECT_HEALTH_CAPTURING,
     DIRECT_HEALTH_IDLE,
@@ -701,8 +707,6 @@ def _publish_reconcile_status(
 
 
 def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
-    from jasper.atomic_io import locked_update_env_file
-
     locked_update_env_file(
         path,
         updates,
@@ -716,8 +720,6 @@ def kick_source_reconcile(
     *, reason: str = "source enable/disable"
 ) -> Mapping[str, Any]:
     """Run the canonical source owner synchronously without changing intent."""
-
-    from jasper.control.restart_broker import manage_units
 
     return manage_units(
         RECONCILE_UNIT,
@@ -972,13 +974,9 @@ def _unit_available(unit: str) -> bool:
 
 
 def _local_sources_allowed() -> bool:
-    try:
-        from jasper.install_profile import (
-            install_profile_allows_local_sources,
-            read_install_profile,
-        )
-        from jasper.local_sources.markers import local_sources_allowed
+    from jasper.local_sources.markers import local_sources_allowed  # lazy: cycle with jasper.local_sources.markers
 
+    try:
         if not install_profile_allows_local_sources(read_install_profile()):
             return False
         return local_sources_allowed()[0]
@@ -1058,10 +1056,10 @@ def _set_bluetooth_rfkill_blocked(blocked: bool) -> tuple[int, str]:
 
 
 def _read_bluez_powered() -> bool | None:
-    from dbus_next.errors import DBusError  # type: ignore
+    from dbus_next.errors import DBusError  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
     try:
-        from jasper.bluetooth.adapter import state
+        from jasper.bluetooth.adapter import state  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
         snapshot = asyncio.run(
             asyncio.wait_for(
@@ -1075,10 +1073,10 @@ def _read_bluez_powered() -> bool | None:
 
 
 def _set_bluez_powered(enabled: bool) -> tuple[int, str]:
-    from dbus_next.errors import DBusError  # type: ignore
+    from dbus_next.errors import DBusError  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
     try:
-        from jasper.bluetooth.adapter import set_powered
+        from jasper.bluetooth.adapter import set_powered  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
         asyncio.run(
             asyncio.wait_for(
@@ -1092,8 +1090,7 @@ def _set_bluez_powered(enabled: bool) -> tuple[int, str]:
 
 
 def _publish_markers() -> None:
-    # Deferred: jasper.local_sources.markers imports this module.
-    from jasper.local_sources.markers import (
+    from jasper.local_sources.markers import (  # lazy: cycle with jasper.local_sources.markers
         SHARED_LABEL,
         publish_allowed_markers,
     )
@@ -1189,7 +1186,7 @@ def _attempt_teardown(
 ) -> None:
     """Run one safe teardown step and retain a bounded error for the caller."""
 
-    from dbus_next.errors import DBusError  # type: ignore
+    from dbus_next.errors import DBusError  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
     try:
         action()
@@ -1545,7 +1542,7 @@ def _reconcile_bluetooth(
         # Optional Bluetooth accessories own their own adapter-unit registry.
         # Request a fresh pass; the owner's freshness barrier is the request
         # file it claims — see jasper.accessories.reconcile.request_reconcile.
-        from jasper.accessories.reconcile import request_reconcile
+        from jasper.accessories.reconcile import request_reconcile  # lazy: cycle with jasper.accessories.reconcile
 
         request_reconcile("source-intent")
 
@@ -1667,7 +1664,7 @@ def _reconcile_once(
     separate deploy-only stop mode.
     """
 
-    from dbus_next.errors import DBusError  # type: ignore
+    from dbus_next.errors import DBusError  # lazy: import cost, dbus_next must stay out of the resident daemons (ADR-0226)
 
     operations = ops or default_reconcile_ops()
 

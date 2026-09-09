@@ -753,6 +753,7 @@ def readmit_summed_program_from_wav(
         caps.append(cap)
         output = physical[fingerprint]["output_index"]
         requirements = declared[fingerprint]["required_protection_filters"]
+        protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
             if not protection_requirement_present(
                 view, output_index=output, allowed_channels={output}, requirement=requirement,
@@ -767,7 +768,7 @@ def readmit_summed_program_from_wav(
             low, high = segment_emitted_band_hz(segment)
             low_ok = low >= band.lower_hz or any(
                 requirement["kind"] == "highpass"
-                and requirement["cutoff_hz"] >= band.lower_hz
+                and requirement["cutoff_hz"] >= protected_floor_hz
                 for requirement in requirements
             )
             high_ok = high <= band.upper_hz or any(

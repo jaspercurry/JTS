@@ -964,3 +964,16 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     assert "is unreadable" in detail
 
 
+def test_topology_read_fails_soft_when_its_module_will_not_import(monkeypatch):
+    """An unimportable ``jasper.output_topology`` answers ``None``, not a raise.
+
+    The read defers that module, so the import is one more thing that can fail
+    at call time; the exception type it raises with lives in the same module.
+    """
+    import sys
+
+    from jasper.fanin import ring_readiness as rr
+
+    monkeypatch.setitem(sys.modules, "jasper.output_topology", None)
+
+    assert rr.load_topology_for_wire() is None

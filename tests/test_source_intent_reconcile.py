@@ -417,11 +417,9 @@ def test_lock_timeout_invalidates_old_status(tmp_path, monkeypatch):
 def test_default_writer_publishes_env_and_inner_lock_for_both_web_owners(
     monkeypatch,
 ):
-    from jasper import atomic_io
-
     calls = []
     monkeypatch.setattr(
-        atomic_io,
+        source_intent,
         "locked_update_env_file",
         lambda path, updates, **kwargs: calls.append((path, updates, kwargs)),
     )
@@ -509,11 +507,9 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
 
 
 def test_web_broker_wait_outlasts_complete_source_reconcile(monkeypatch):
-    from jasper.control import restart_broker
-
     calls = []
     monkeypatch.setattr(
-        restart_broker,
+        source_intent,
         "manage_units",
         lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
     )
