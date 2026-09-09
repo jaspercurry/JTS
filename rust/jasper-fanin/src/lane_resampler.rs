@@ -172,16 +172,8 @@ pub struct LaneResampler {
     /// Fractional read cursor in the ring's monotonic frame space.
     next_input_frame: f64,
     locked: bool,
-    /// Consecutive render periods spent priming (unlocked, waiting for the
-    /// deep prefill). Bounds the prime: once it exceeds `max_prime_periods`
-    /// with *some* input buffered, `try_lock` falls through and seats at
-    /// whatever safe depth is available, so a slow/sparse-but-real producer
-    /// can never wedge in silence forever waiting for the full cushion.
-    prime_periods: u32,
-    /// Max consecutive priming periods before the fall-through lock. Always at
-    /// least one, so the deep prefill cannot deadlock on input that arrives
-    /// just under the cushion threshold.
-    max_prime_periods: u32,
+    /// One second of real playback before an underfill clears stale input.
+    acquisition_grace_periods: u32,
     /// Frames left in the startup de-click ramp. Set to one render period on
     /// every lock, then counted down to zero while rendering real audio.
     startup_ramp_frames_remaining: usize,
@@ -199,7 +191,7 @@ pub struct LaneResampler {
     last_frame: Vec<i32>,
     /// Consecutive real render periods since the most recent lock. Early
     /// underfills during acquisition retain buffered input so the lane can keep
-    /// priming; after this reaches `max_prime_periods`, underfill is treated as
+    /// priming; after this reaches `acquisition_grace_periods`, underfill is treated as
     /// a real discontinuity and clears stale buffered audio.
     real_periods_since_lock: u32,
     // Lifetime counters mirrored into observability atomics on update.
@@ -294,10 +286,7 @@ impl LaneResampler {
         }
         let ring = AudioRing::new(ring_frames, channels)
             .map_err(|e| format!("lane resampler ring: {e}"))?;
-        // 1 s of periods at this rate: after that much priming with some input
-        // buffered, `try_lock` falls through and seats at whatever safe depth
-        // exists, so a slow-but-real producer can never wedge in silence.
-        let max_prime_periods = (sample_rate / period_frames.max(1) as u32).max(1);
+        let acquisition_grace_periods = (sample_rate / period_frames.max(1) as u32).max(1);
         // The acquisition CEILING the decay lowers FROM and snaps back TO.
         let ceiling = (target_fill_frames + warmup_cushion_frames) as u64;
         let decay = decay_params.build(ceiling, period_frames as u32, sample_rate, max_adjust_ppm);
@@ -323,8 +312,7 @@ impl LaneResampler {
             max_adjust_ppm,
             next_input_frame: 0.0,
             locked: false,
-            prime_periods: 0,
-            max_prime_periods,
+            acquisition_grace_periods,
             startup_ramp_frames_remaining: 0,
             shutdown_ramp_frames_remaining: 0,
             last_frame: vec![0; channels],
@@ -577,9 +565,6 @@ impl LaneResampler {
             // While priming, the published fill is the buffered-input depth, so
             // STATUS shows the lane filling toward the prefill before it locks.
             self.publish_fill(self.ring.fill_frames() as u64);
-            if self.ring.fill_frames() > 0 {
-                self.prime_periods = self.prime_periods.saturating_add(1);
-            }
             self.try_lock();
         }
         if !self.locked {
@@ -679,7 +664,6 @@ impl LaneResampler {
         self.next_input_frame = 0.0;
         self.locked = false;
         self.locked_state.store(false, Ordering::Relaxed);
-        self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
@@ -689,37 +673,18 @@ impl LaneResampler {
         self.publish_ratio();
     }
 
-    /// Lock once enough input has buffered to seat the cursor at the held
-    /// target (`target_fill + warm-up cushion`) behind the write head with
-    /// kernel headroom. Until then `render_period` emits silence.
-    ///
-    /// Bounded prime: if the full cushion never accumulates (a slow-but-real
-    /// producer delivering just under one period per render) the loop would sit
-    /// silent forever. After `max_prime_periods` priming periods with at least
-    /// the safe minimum buffered, fall through and seat at whatever depth is
-    /// available so a real stream always starts.
+    // A shallow start makes buffer refill saturate the correction gauge used
+    // by the host-clock probe. Start at the held target so it measures the host.
     fn try_lock(&mut self) {
-        let fill = self.ring.fill_frames();
-        let deep_prefill = self.startup_prefill_frames();
-        let prime_expired = self.prime_periods >= self.max_prime_periods;
-        let seat = if fill >= deep_prefill {
-            self.hold_fill_frames()
-        } else if prime_expired && fill >= self.fallthrough_prefill_frames() {
-            // Slow producer: seat at whatever is buffered, but only once there
-            // is one render period of runway beyond the hard interpolation
-            // floor. Hardware USB acquisition arrives in short bursts, and
-            // seating at the bare minimum gives lock→underfill→relock chatter
-            // before the ring builds enough depth to run continuously.
-            fill - (RADIUS_FRAMES as usize + 1)
-        } else {
+        if self.ring.fill_frames() < self.startup_prefill_frames() {
             return;
-        };
+        }
+        let seat = self.hold_fill_frames();
         self.next_input_frame = (self.ring.write_frame() - seat as u64) as f64;
         let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
         self.locked = true;
         self.locked_state.store(true, Ordering::Relaxed);
-        self.prime_periods = 0;
         self.startup_ramp_frames_remaining = self.period_frames;
         // A fresh lock supersedes any pending tail: the startup ramp owns the
         // transition back to audio, so a stale tail must not play under it.
@@ -739,13 +704,12 @@ impl LaneResampler {
         self.locked = false;
         self.locked_state.store(false, Ordering::Relaxed);
         self.unlock_count.fetch_add(1, Ordering::Relaxed);
-        let acquisition_underfill = self.real_periods_since_lock < self.max_prime_periods;
+        let acquisition_underfill = self.real_periods_since_lock < self.acquisition_grace_periods;
         if !acquisition_underfill {
             self.ring.clear();
         }
         self.controller.reset();
         self.next_input_frame = 0.0;
-        self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
@@ -883,18 +847,6 @@ impl LaneResampler {
     /// headroom.
     fn startup_prefill_frames(&self) -> usize {
         self.hold_fill_frames() + RADIUS_FRAMES as usize + 1
-    }
-
-    /// Minimum buffered frames for the bounded-prime fallback. This is lower
-    /// than the full held-cushion prefill, but high enough that the first
-    /// fallback lock has one full render period of runway if the next USB burst
-    /// is late.
-    fn fallthrough_prefill_frames(&self) -> usize {
-        let interpolation_runway =
-            self.minimum_safe_fill_frames() + self.period_frames + RADIUS_FRAMES as usize + 1;
-        let usb_burst_runway =
-            self.target_fill_frames + (2 * self.period_frames) + RADIUS_FRAMES as usize + 1;
-        interpolation_runway.max(usb_burst_runway)
     }
 
     /// The LIVE held target the controller disciplines the ring toward. Read
@@ -1627,9 +1579,6 @@ mod decay {
             assert!(d.refilling(), "the descent must not close the window");
         }
 
-        /// An `Unlocked` snap-back is a session boundary: it CLEARS a window
-        /// rather than arming one, so a fall-through re-lock that seats below the
-        /// ceiling does not start life with the servo parked.
         #[test]
         fn a_session_boundary_clears_the_window_instead_of_arming_one() {
             let mut d = descend_then_snap_back();
@@ -2026,6 +1975,9 @@ mod decay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_host_clock::{
+        Action, HostClock, HostClockConfig, Ladder, Obs, ObsMode, ProbeResult,
+    };
     use jasper_resampler::clamp_i16;
 
     const RATE: u32 = 48_000;
@@ -2436,7 +2388,7 @@ mod tests {
         // boundary: stale pre-pause samples must not survive into the next
         // acquisition.
         let block = tone(PERIOD as usize);
-        for _ in 0..r.max_prime_periods {
+        for _ in 0..r.acquisition_grace_periods {
             r.push_input(&block);
             assert_eq!(r.render_period(&mut out), PERIOD as usize);
         }
@@ -2770,51 +2722,92 @@ mod tests {
         );
     }
 
-    /// A slow-but-real producer (delivering JUST under one period per render)
-    /// must NOT wedge forever in prime-silence — the bounded prime falls
-    /// through and locks at whatever safe depth exists.
     #[test]
-    fn slow_producer_falls_through_and_locks_within_the_prime_bound() {
-        // A runtime-like cushion, so the fallback threshold sits below the deep
-        // prefill; the compact test cushion locks via the deep path instead. A
-        // tiny rate keeps max_prime_periods small and the test fast: at
-        // 4800 Hz / 256 period, max_prime_periods = 18.
-        let mut r = LaneResampler::new(
-            2,
-            PERIOD,
-            4_800,
-            TARGET,
-            1536,
-            MAX_PPM,
-            RING,
-            DecayParams::disabled(),
-        )
-        .unwrap();
-        let max_prime = r.max_prime_periods;
-        assert!(max_prime >= 1);
-        let mut out = vec![0i16; PERIOD as usize * 2];
-
-        // Enough for the bounded-prime fallback, never enough for the full
-        // cushion: below the deep prefill, above the USB-burst runway.
-        let buffered = r.fallthrough_prefill_frames();
-        assert!(
-            buffered < r.startup_prefill_frames(),
-            "below the deep prefill"
-        );
-        r.push_input(&tone(buffered));
-
-        let mut locked = false;
-        for _ in 0..(max_prime + 2) {
-            r.render_period(&mut out);
-            if r.locked {
-                locked = true;
-                break;
+    fn host_probe_distinguishes_compliance_after_a_stalled_start() {
+        for (prefill, compliant) in [(1024, true), (1500, false), (2560, true)] {
+            let params = DecayParams {
+                enabled: true,
+                floor_frames: 576,
+                step_frames: 6,
+                interval_ms: 1000,
+                stability_ms: 10_000,
+                cascade_guard_ppm: 400.0,
+            };
+            let mut r =
+                LaneResampler::new(2, PERIOD, RATE, TARGET, 2048, MAX_PPM, RING, params).unwrap();
+            let gauges = r.observability();
+            let mut out = vec![0i16; PERIOD as usize * 2];
+            r.push_input(&tone(prefill + RADIUS_FRAMES as usize + 1));
+            for _ in 0..(RATE / PERIOD) {
+                r.render_period(&mut out);
+                if r.locked {
+                    break;
+                }
             }
+            let mut clock = HostClock::new(HostClockConfig {
+                enabled: true,
+                probe_ppm: 300.0,
+                obs_mode: ObsMode::Correction,
+                log_prefix: "fanin",
+            });
+            clock.startup_neutralize();
+            let mut pitch = 0.0;
+            let mut fractional = 0.0_f64;
+            for period in 1..=(RATE * 90 / PERIOD) {
+                let host_ppm = 50.0 + if compliant { pitch } else { 0.0 };
+                fractional += PERIOD as f64 * (1.0 + host_ppm / 1e6);
+                let frames = fractional.floor() as usize;
+                fractional -= frames as f64;
+                let frames = frames - if period <= 4 { 128 } else { 0 };
+                r.push_input(&tone(frames));
+                r.render_period(&mut out);
+                r.tick_decay(
+                    clock.ladder() == Ladder::L0Locked,
+                    clock.commanded_ppm().abs(),
+                );
+                let elapsed_frames = period as u64 * PERIOD as u64;
+                if elapsed_frames / RATE as u64 == (elapsed_frames - PERIOD as u64) / RATE as u64 {
+                    continue;
+                }
+                let obs = Obs {
+                    playing: r.locked,
+                    host_connected: true,
+                    preempted: false,
+                    steady: r.locked && !gauges.decay_refilling.load(Ordering::Relaxed),
+                    fill_frames: gauges.fill_frames.load(Ordering::Relaxed) as f64 + 2560.0
+                        - gauges.held_target_frames.load(Ordering::Relaxed) as f64,
+                    capture_frames: gauges.input_frames.load(Ordering::Relaxed),
+                    playback_frames: gauges.output_frames.load(Ordering::Relaxed),
+                    correction_ppm: (gauges.ratio_milli_ppm.load(Ordering::Relaxed) as i64
+                        - gauges.decay_demand_milli_ppm.load(Ordering::Relaxed))
+                        as f64
+                        / 1000.0,
+                };
+                for Action::WritePitch { ppm, .. } in
+                    clock.tick(obs, elapsed_frames * 1000 / RATE as u64)
+                {
+                    pitch = ppm.round();
+                }
+            }
+            assert_eq!(
+                clock.probe_result(),
+                if compliant {
+                    ProbeResult::Pass
+                } else {
+                    ProbeResult::Fail
+                }
+            );
+            assert_eq!(
+                clock.ladder(),
+                if compliant {
+                    Ladder::L0Locked
+                } else {
+                    Ladder::L2Fallback
+                }
+            );
+            assert_eq!(r.unlock_count.load(Ordering::Relaxed), 0);
+            assert_eq!(r.hold_fill_frames() < 2560, compliant);
         }
-        assert!(
-            locked,
-            "a slow-but-real producer must lock via the bounded-prime fall-through"
-        );
     }
 
     /// A burst larger than the ring's headroom (capacity − target) overruns a
@@ -3291,7 +3284,7 @@ mod tests {
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         let block = tone(PERIOD as usize);
         // Prove stable for the acquisition grace window, then decay down.
-        for _ in 0..r.max_prime_periods {
+        for _ in 0..r.acquisition_grace_periods {
             r.push_input(&block);
             r.render_period(&mut out);
             r.tick_decay(true, 0.0);

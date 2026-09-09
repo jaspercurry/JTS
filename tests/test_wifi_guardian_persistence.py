@@ -226,19 +226,19 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
     write_stash raises so the wizard's hook can log a warning AND
     surface the drift via doctor. The actual swallow happens one layer
     up — see `_stash_after_connect` in wifi_setup."""
-    import jasper.net.wifi_guardian_persistence as mod
+    import jasper.atomic_io as atomic_io_mod
 
     def boom(*args, **kwargs):
         raise OSError("simulated permission denied")
 
-    monkeypatch.setattr(mod.tempfile, "mkstemp", boom)
+    monkeypatch.setattr(atomic_io_mod.tempfile, "mkstemp", boom)
     with pytest.raises(OSError, match="simulated"):
         write_stash(_path(tmp_path), "X", "y", "wpa-psk")
 
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
     """A parent-dir fsync failure logs a WARNING and the write succeeds."""
-    import jasper.net.wifi_guardian_persistence as mod
+    import jasper.atomic_io as atomic_io_mod
 
     seen_paths = []
 
@@ -246,7 +246,7 @@ def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
         seen_paths.append(Path(path))
         raise OSError("simulated parent-dir fsync failure")
 
-    monkeypatch.setattr(mod, "fsync_directory", fail_directory_fsync)
+    monkeypatch.setattr(atomic_io_mod, "fsync_directory", fail_directory_fsync)
     with caplog.at_level("DEBUG"):
         write_stash(_path(tmp_path), "X", "y", "wpa-psk")
     # File was still written successfully.

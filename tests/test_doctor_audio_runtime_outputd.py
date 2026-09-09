@@ -84,33 +84,6 @@ def _patch_ring_coupled_box(
         )
 
 
-def test_outputd_service_fails_when_disabled(monkeypatch):
-    _seed_units(enabled="disabled")
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_UNIT_NOT_ENABLED
-    assert r.speaker_silent is True
-
-
-def test_outputd_service_fails_when_status_socket_unreachable(monkeypatch):
-    """An active unit whose STATUS cannot be reached at all: outputd owns the
-    DAC write loop, so a daemon that answers nothing writes nothing."""
-    _seed_units()
-    _patch_unreachable_status(monkeypatch)
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_STATUS_UNREACHABLE
-    assert r.speaker_silent is True
-
-
-def test_outputd_service_ok_with_expected_status(monkeypatch):
-    _seed_units()
-    _patch_status_reader(monkeypatch, _outputd_status_payload())
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "ok", r.detail
-    assert r.reason == ""
-
-
 def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
     monkeypatch, tmp_path
 ):
@@ -159,154 +132,6 @@ def test_outputd_content_bridge_detail_reports_every_mode():
     for malformed in ({}, {"content_bridge": None}, {"content_bridge": {}},
                       {"content_bridge": {"mode": ""}}):
         assert _outputd_content_bridge_detail(malformed) == "content_bridge=missing", malformed
-
-
-def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
-    """Ring-coupled box: coupling=shm_ring + content.source='shm_ring' is OK.
-
-    Uses the REAL synthetic content.buffer_frames a shm_ring box publishes
-    (== dac.period_frames, because outputd never opens the content ALSA PCM),
-    NOT the 4096 default that masked the bug. On pre-fix doctor code the generic
-    ">= 2x period" floor rejects it (period < 2*period), so this asserts the new
-    shm_ring branch that exempts the floor and validates the content.ring
-    geometry contract instead (jts.local, 2026-07-06 first post-default-flip
-    smoke, made honest end-to-end)."""
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(
-            content_source="shm_ring",
-            # The honest synthetic: content.buffer_frames == period. This is
-            # below the generic 2*period floor and MUST pass only via the
-            # shm_ring geometry branch, not the masking 4096 default.
-            content_buffer_frames=1024,
-            period_frames=1024,
-        ),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_path):
-    """shm_ring with no content.ring geometry contract fails loud (a
-    pre-honesty-fix outputd binary, or a corrupt STATUS)."""
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _seed_units()
-    payload = json.loads(
-        _outputd_status_payload(
-            content_source="shm_ring",
-            content_buffer_frames=1024,
-            period_frames=1024,
-        ).decode()
-    )
-    del payload["content"]["ring"]
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CONTRACT_MISSING
-
-
-def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_path):
-    """The shm_ring branch keeps its teeth: a ring slot that does not match the
-    DAC period is a real geometry break, not an exempted synthetic."""
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(
-            content_source="shm_ring",
-            content_buffer_frames=1024,
-            period_frames=1024,
-            shm_ring_slot_frames=512,
-        ),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH
-
-
-def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_path):
-    """content.ring.capacity_frames must equal n_slots*slot_frames — a mismatch
-    is dishonest STATUS and fails loud."""
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(
-            content_source="shm_ring",
-            content_buffer_frames=1024,
-            period_frames=1024,
-            shm_ring_capacity_frames=9999,
-        ),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_RING_CAPACITY_INCOHERENT
-
-
-def test_outputd_service_fails_when_the_daemon_lags_its_own_env(
-    monkeypatch, tmp_path
-):
-    """The check keeps its teeth: a ring bridge in outputd's env with outputd
-    still live on the ALSA content lane (it missed the flip restart) fails with
-    the reconcile remedy.
-
-    The expectation comes from outputd's OWN env, not from
-    ``JASPER_FANIN_CAMILLA_COUPLING``: that file selects nothing under ADR-0100,
-    so it cannot predict what outputd opened.
-    """
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(content_source="alsa"),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH
-
-
-def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
-    """An ACTIVE single-ALSA box is healthy on the ring, declaring NO content PCM.
-
-    The width readout is the assertion that matters, and it comes from the env,
-    independently of the transport.
-    """
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DAC_PCM),
-    )
-    _patch_ring_coupled_box(
-        monkeypatch, tmp_path, active_endpoint=True, active_channels=2
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "ok", r.detail
-    assert r.reason == ""
 
 
 def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
@@ -391,23 +216,6 @@ def _write_no_lane_active_topology(path: Path) -> None:
     )
 
 
-def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
-    monkeypatch,
-    tmp_path,
-):
-    # Pin the saved topology: an unconfigured one is the reconcilable case, so
-    # the remedy names the reconciler.
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
-    )
-    _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED
-
-
 def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     monkeypatch,
     tmp_path,
@@ -436,194 +244,6 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     assert "full-range audio to every output" in remedy
     assert "built-in passive crossover" in remedy
     assert "attach an active-capable DAC" in remedy
-
-
-def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
-    _seed_units()
-    _patch_status_reader(monkeypatch, _outputd_status_payload())
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
-        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
-            devices=None,
-            errors=("statefile unavailable",),
-        ),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
-
-
-@pytest.mark.parametrize(
-    "tts_overrides, reason",
-    [
-        (
-            {"connections_rejected": 3},
-            audio_runtime_outputd.REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED,
-        ),
-        (
-            {"frame_timeouts": 2},
-            audio_runtime_outputd.REASON_OUTPUTD_TTS_FRAME_TIMEOUTS,
-        ),
-    ],
-    ids=["connections-rejected", "frame-timeouts"],
-)
-def test_outputd_service_reports_tts_ceiling_counters_without_escalating(
-    monkeypatch, tts_overrides, reason
-):
-    """Cumulative-since-start ceiling counters surface via `reason`, never a
-    forced `warn` — the same idiom as dropped_commands, which also never
-    escalates severity on its own."""
-    _seed_units()
-    payload = json.loads(_outputd_status_payload().decode())
-    payload["tts"].update(tts_overrides)
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "ok", r.detail
-    assert r.reason == reason
-
-
-def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
-    payload = json.loads(_outputd_status_payload().decode())
-    payload.pop("assistant_loudness", None)
-    _seed_units()
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
-    """Outputd's post-DSP lane runs the same engine, so the same contract."""
-    payload = json.loads(_outputd_status_payload().decode())
-    payload["assistant_loudness"].update(
-        {
-            "decision_seen": True,
-            "calibrated": True,
-            "requested_gain_db": -4.0,
-            "peak_cap_gain_db": -6.0,
-            "final_gain_db": -4.0,
-        }
-    )
-    _seed_units()
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT
-
-
-def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_path):
-    _seed_units()
-    payload = json.loads(
-        _outputd_status_payload(
-            sink_mode="dual_apple",
-            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
-        ).decode()
-    )
-    payload.pop("dual_apple", None)
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "fail", r.detail
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING
-
-
-def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp_path):
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(
-            sink_mode="dual_apple",
-            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
-            dual_apple_status={
-                "dac_a_pcm": "hw:CARD=A,DEV=0",
-                "dac_b_pcm": "hw:CARD=A_1,DEV=0",
-                "linked": False,
-                "delay_delta_frames": 0,
-                "delay_delta_baseline_frames": 0,
-                "delay_delta_error_frames": 0,
-                "max_delay_delta_frames": 2,
-            },
-        ),
-    )
-    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "warn", r.detail
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED
-
-
-def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
-    """The armed composite box on the ring — jts.local's own shape.
-
-    #2285 P2 moved the three dual_apple tests off the direct bridge. A composite
-    sink declaring no content PCM is REFUSED at parse on the direct bridge
-    (``Config::from_env``, EX_CONFIG), and the only other direct-bridge shape —
-    a composite naming the passive lane — is the 4ch-over-a-2ch-slave reuse this
-    PR rejected as hearing-adjacent. A running composite box is a ring box.
-    """
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(
-            sink_mode="dual_apple",
-            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
-        ),
-    )
-    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "ok", r.detail
-    assert r.reason == ""
-    for name in (
-        "dac_a_xruns",
-        "dac_b_xruns",
-        "group_recoveries",
-        "delay_baseline_relatches",
-        "reprime_alignment_failures",
-    ):
-        assert f"dual_{name}=0" in r.detail
-
-
-def test_outputd_service_fails_on_fake_backend(monkeypatch):
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(backend="fake"),
-    )
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_BACKEND_NOT_ALSA
-    assert r.speaker_silent is True
-
-
-def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        _outputd_status_payload(dac_buffer_frames=1024),
-    )
-    r = audio_runtime_outputd.check_outputd_service()
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED
-
-
-def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
-    payload = json.loads(_outputd_status_payload().decode())
-    payload["reference_outputs"] = {}
-    _seed_units()
-    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "fail"
-    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED
 
 
 def _outputd_aec_clock_payload(
@@ -1048,53 +668,6 @@ def test_an_unbonded_box_keeps_expecting_the_central_ring():
     assert stale.status == "fail"
 
 
-def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
-    """END TO END: a healthy bonded member must come out `ok`, not `fail`.
-
-    Three of this check's steps read the content hop, and all three had to learn
-    the marker together or the box fails on one of them: the content.source
-    expectation (`alsa`, not `shm_ring`), the transport coherence report (the
-    dac-content shape, not an off-ring one), and the buffer geometry — outputd
-    seeds `content.buffer_frames` to the period and negotiates no content PCM,
-    so the ALSA ">= 2x period" jitter floor would fail every such box.
-    """
-    grouping_env = tmp_path / "grouping-outputd.env"
-    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
-    )
-    _seed_units()
-    _patch_status_reader(
-        monkeypatch,
-        # What outputd publishes with no CENTRAL ring attached: `alsa`, and a
-        # period-sized content buffer with no content.ring sub-block.
-        _outputd_status_payload(
-            content_source="alsa", content_buffer_frames=1024, period_frames=1024
-        ),
-    )
-    # RING A IS STILL LIVE on a bonded member — fan-in serves it here like
-    # anywhere else — so the graph captures it. (The status-socket helper's own
-    # default pairs an `alsa` content source with the snd-aloop tap, which is
-    # the genuinely off-ring box, not this one.)
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
-
-    monkeypatch.setattr(
-        audio_runtime_plan,
-        "output_endpoint_evidence_from_statefiles",
-        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
-            devices={
-                "playback_device": RING_PLAYBACK_DEVICE,
-                "capture_device": RING_CAPTURE_DEVICE,
-            }
-        ),
-    )
-
-    r = audio_runtime_outputd.check_outputd_service()
-
-    assert r.status == "ok", r.detail
-    assert r.reason == ""
-
-
 @pytest.mark.parametrize(
     "stale_ms,payload,check",
     [
@@ -1200,3 +773,296 @@ def test_outputd_dac_render_reads_the_rendered_alsa_config(
     r = audio_runtime_outputd.check_outputd_dac_render()
 
     assert (r.status, r.reason) == (status, reason), r.detail
+
+
+# ===========================================================================
+# check_outputd_service — one seed/patch setup per behavior, one status+reason
+# (/ speaker_silent / detail substring) assertion tail (AGENTS.md: one
+# altitude per behavior, prefer one parametrized test over an example
+# cluster). Test ids equal the old per-behavior function names so
+# `pytest -k` and CI history keep working.
+# ===========================================================================
+
+
+def _case_disabled(monkeypatch, tmp_path):
+    _seed_units(enabled="disabled")
+
+
+def _case_status_unreachable(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_unreachable_status(monkeypatch)
+
+
+def _case_expected_status(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
+
+
+def _case_shm_ring_content_source(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="shm_ring", content_buffer_frames=1024, period_frames=1024
+        ),
+    )
+
+
+def _case_shm_ring_missing_ring_geometry(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _seed_units()
+    payload = json.loads(
+        _outputd_status_payload(
+            content_source="shm_ring", content_buffer_frames=1024, period_frames=1024
+        ).decode()
+    )
+    del payload["content"]["ring"]
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+
+def _case_shm_ring_slot_frames_mismatch(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="shm_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
+            shm_ring_slot_frames=512,
+        ),
+    )
+
+
+def _case_shm_ring_capacity_incoherent(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="shm_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
+            shm_ring_capacity_frames=9999,
+        ),
+    )
+
+
+def _case_daemon_lags_its_own_env(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload(content_source="alsa"))
+
+
+def _case_single_alsa_active_lane(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DAC_PCM),
+    )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True, active_channels=2)
+
+
+def _case_active_graph_feeds_passive_reader(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
+    )
+    _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
+
+
+def _case_transport_evidence_unavailable(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices=None,
+            errors=("statefile unavailable",),
+        ),
+    )
+
+
+def _case_tts_ceiling(overrides):
+    def _case(monkeypatch, tmp_path):
+        _seed_units()
+        payload = json.loads(_outputd_status_payload().decode())
+        payload["tts"].update(overrides)
+        _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    return _case
+
+
+def _case_loudness_owned_by_fanin(monkeypatch, tmp_path):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload.pop("assistant_loudness", None)
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+
+def _case_gain_exceeds_peak_cap(monkeypatch, tmp_path):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["assistant_loudness"].update(
+        {
+            "decision_seen": True,
+            "calibrated": True,
+            "requested_gain_db": -4.0,
+            "peak_cap_gain_db": -6.0,
+            "final_gain_db": -4.0,
+        }
+    )
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+
+def _case_dual_apple_status_missing(monkeypatch, tmp_path):
+    _seed_units()
+    payload = json.loads(
+        _outputd_status_payload(
+            sink_mode="dual_apple", dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID
+        ).decode()
+    )
+    payload.pop("dual_apple", None)
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
+
+
+def _case_dual_apple_pcm_link_missing(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            sink_mode="dual_apple",
+            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
+            dual_apple_status={
+                "dac_a_pcm": "hw:CARD=A,DEV=0",
+                "dac_b_pcm": "hw:CARD=A_1,DEV=0",
+                "linked": False,
+                "delay_delta_frames": 0,
+                "delay_delta_baseline_frames": 0,
+                "delay_delta_error_frames": 0,
+                "max_delay_delta_frames": 2,
+            },
+        ),
+    )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
+
+
+def _case_dual_apple_status_ok(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            sink_mode="dual_apple", dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID
+        ),
+    )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
+
+
+def _case_fake_backend(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload(backend="fake"))
+
+
+def _case_small_runtime_buffers(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload(dac_buffer_frames=1024))
+
+
+def _case_reference_contract_missing(monkeypatch, tmp_path):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["reference_outputs"] = {}
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+
+def _case_marker_armed_member_ok(monkeypatch, tmp_path):
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8")
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env))
+    _seed_units()
+    _patch_status_reader(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="alsa", content_buffer_frames=1024, period_frames=1024
+        ),
+    )
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices={
+                "playback_device": RING_PLAYBACK_DEVICE,
+                "capture_device": RING_CAPTURE_DEVICE,
+            }
+        ),
+    )
+
+
+_R = audio_runtime_outputd
+_SILENT = {"speaker_silent": True}
+_DUAL_APPLE_COUNTERS = {
+    "detail_contains": (
+        "dual_dac_a_xruns=0",
+        "dual_dac_b_xruns=0",
+        "dual_group_recoveries=0",
+        "dual_delay_baseline_relatches=0",
+        "dual_reprime_alignment_failures=0",
+    )
+}
+
+
+@pytest.mark.parametrize(
+    "setup, expected_status, expected_reason, extra",
+    [
+        pytest.param(_case_disabled, "fail", _R.REASON_OUTPUTD_UNIT_NOT_ENABLED, _SILENT, id="test_outputd_service_fails_when_disabled"),
+        pytest.param(_case_status_unreachable, "fail", _R.REASON_OUTPUTD_STATUS_UNREACHABLE, _SILENT, id="test_outputd_service_fails_when_status_socket_unreachable"),
+        pytest.param(_case_expected_status, "ok", "", None, id="test_outputd_service_ok_with_expected_status"),
+        pytest.param(_case_shm_ring_content_source, "ok", "", None, id="test_outputd_service_ok_with_shm_ring_content_source"),
+        pytest.param(_case_shm_ring_missing_ring_geometry, "fail", _R.REASON_OUTPUTD_RING_CONTRACT_MISSING, None, id="test_outputd_service_fails_shm_ring_missing_ring_geometry"),
+        pytest.param(_case_shm_ring_slot_frames_mismatch, "fail", _R.REASON_OUTPUTD_RING_SLOT_FRAMES_MISMATCH, None, id="test_outputd_service_fails_shm_ring_slot_frames_mismatch"),
+        pytest.param(_case_shm_ring_capacity_incoherent, "fail", _R.REASON_OUTPUTD_RING_CAPACITY_INCOHERENT, None, id="test_outputd_service_fails_shm_ring_capacity_incoherent"),
+        pytest.param(_case_daemon_lags_its_own_env, "fail", _R.REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH, None, id="test_outputd_service_fails_when_the_daemon_lags_its_own_env"),
+        pytest.param(_case_single_alsa_active_lane, "ok", "", None, id="test_outputd_service_ok_with_single_alsa_active_lane"),
+        pytest.param(_case_active_graph_feeds_passive_reader, "fail", _R.REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED, None, id="test_outputd_service_fails_when_active_graph_feeds_passive_reader"),
+        pytest.param(_case_transport_evidence_unavailable, "warn", _R.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN, None, id="test_outputd_service_warns_when_transport_evidence_is_unavailable"),
+        pytest.param(_case_tts_ceiling({"connections_rejected": 3}), "ok", _R.REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED, None, id="test_outputd_service_reports_tts_ceiling_counters_without_escalating[connections-rejected]"),
+        pytest.param(_case_tts_ceiling({"frame_timeouts": 2}), "ok", _R.REASON_OUTPUTD_TTS_FRAME_TIMEOUTS, None, id="test_outputd_service_reports_tts_ceiling_counters_without_escalating[frame-timeouts]"),
+        pytest.param(_case_loudness_owned_by_fanin, "ok", "", None, id="test_outputd_service_ok_when_loudness_is_owned_by_fanin"),
+        pytest.param(_case_gain_exceeds_peak_cap, "warn", _R.REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT, None, id="test_outputd_service_warns_when_gain_exceeds_the_peak_cap"),
+        pytest.param(_case_dual_apple_status_missing, "fail", _R.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING, None, id="test_outputd_service_fails_when_dual_apple_status_missing"),
+        pytest.param(_case_dual_apple_pcm_link_missing, "warn", _R.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED, None, id="test_outputd_service_warns_when_dual_apple_pcm_link_missing"),
+        pytest.param(_case_dual_apple_status_ok, "ok", "", _DUAL_APPLE_COUNTERS, id="test_outputd_service_ok_with_dual_apple_status"),
+        pytest.param(_case_fake_backend, "fail", _R.REASON_OUTPUTD_BACKEND_NOT_ALSA, _SILENT, id="test_outputd_service_fails_on_fake_backend"),
+        pytest.param(_case_small_runtime_buffers, "fail", _R.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED, None, id="test_outputd_service_fails_on_small_runtime_buffers"),
+        pytest.param(_case_reference_contract_missing, "fail", _R.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED, None, id="test_outputd_service_fails_when_reference_contract_missing"),
+        pytest.param(_case_marker_armed_member_ok, "ok", "", None, id="test_outputd_service_ok_on_a_marker_armed_member"),
+    ],
+)
+def test_outputd_service_status(
+    monkeypatch, tmp_path, setup, expected_status, expected_reason, extra
+):
+    setup(monkeypatch, tmp_path)
+
+    r = audio_runtime_outputd.check_outputd_service()
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason
+    extra = extra or {}
+    if "speaker_silent" in extra:
+        assert r.speaker_silent is extra["speaker_silent"]
+    if "detail_contains" in extra:
+        for substr in extra["detail_contains"]:
+            assert substr in r.detail

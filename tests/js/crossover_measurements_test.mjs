@@ -19,6 +19,7 @@ class Element {
     this.textContent = "";
     this.value = "";
     this.checked = false;
+    this.style = {};
   }
   addEventListener(type, listener) {
     (this.listeners[type] = this.listeners[type] || []).push(listener);
@@ -29,6 +30,7 @@ class Element {
     }
   }
   replaceChildren(...children) { this.children = children; }
+  setAttribute(name, value) { this[name] = value; }
 }
 
 function h(tag, props, ...children) {
@@ -60,6 +62,7 @@ const elements = new Map([
   ["measurement-chart-status", new Element("p")],
   ["measurement-series", new Element("div")],
   ["measurement-metadata", new Element("section")],
+  ["measurement-frequency-window", new Element("div")],
 ]);
 globalThis.document = { getElementById: (id) => elements.get(id) };
 globalThis.window = { addEventListener() {} };
@@ -132,6 +135,22 @@ globalThis.__svg = h;
 globalThis.__getJSON = getJSON;
 globalThis.__cssColor = (_canvas, _name, fallback) => fallback;
 globalThis.__drawFrequencyChart = drawFrequencyChart;
+const { FREQUENCY_SLIDER_STEPS, fmtFreq, freqToSlider, sliderToFreq } = await loadEsm(repoPath('deploy/assets/shared/js/frequency-scale.js'));
+for (const [lo, hi] of [[20, 20000], [100, 1000]]) {
+  for (const step of [0, 1, 250, 500, 750, 999, FREQUENCY_SLIDER_STEPS]) {
+    assert.equal(freqToSlider(sliderToFreq(step, lo, hi), lo, hi), step);
+  }
+  assert.equal(sliderToFreq(-1, lo, hi), lo);
+  assert.equal(sliderToFreq(FREQUENCY_SLIDER_STEPS + 1, lo, hi), hi);
+}
+globalThis.__FREQUENCY_SLIDER_STEPS = FREQUENCY_SLIDER_STEPS;
+globalThis.__fmtFreq = fmtFreq;
+globalThis.__sliderToFreq = sliderToFreq;
+const { frequencyWindow } = await loadEsm(repoPath('deploy/assets/correction/js/measurement-frequency-window.js'), {
+  stripImports: true,
+  prelude: 'const h = globalThis.__h; const sliderToFreq = globalThis.__sliderToFreq; const FREQUENCY_SLIDER_STEPS = globalThis.__FREQUENCY_SLIDER_STEPS; const fmtFreq = globalThis.__fmtFreq;\n',
+});
+globalThis.__frequencyWindow = frequencyWindow;
 
 await loadEsm(repoPath("deploy/assets/correction/js/measurements.js"), {
   stripImports: true,
@@ -142,6 +161,7 @@ await loadEsm(repoPath("deploy/assets/correction/js/measurements.js"), {
     "const getJSON = globalThis.__getJSON;",
     "const cssColor = globalThis.__cssColor;",
     "const drawFrequencyChart = globalThis.__drawFrequencyChart;",
+    "const frequencyWindow = globalThis.__frequencyWindow;",
   ].join(" ") + "\n",
 });
 await new Promise((resolve) => setImmediate(resolve));
@@ -158,6 +178,25 @@ check(
   "the picker says which entries are banked rounds",
 );
 let chart = chartPayloads.at(-1);
+assert.deepEqual(chart.frequencyRangeHz, [20, 20000]);
+const rangeControls = elements.get('measurement-frequency-window');
+const [lower, upper] = descendants(rangeControls, 'input');
+const resetRange = descendants(rangeControls, 'button')[0];
+const requestCount = requests.length;
+for (const [control, value, expected] of [
+  [lower, 500, [632.5, 20000]],
+  [upper, 900, [632.5, 10023.7]],
+  [lower, 1000, [9954.7, 10023.7]],
+  [upper, 0, [9954.7, 10023.7]],
+]) {
+  control.value = value;
+  await control.dispatch('input');
+  assert.deepEqual(chartPayloads.at(-1).frequencyRangeHz, expected);
+}
+check(requests.length === requestCount, 'moving the range redraws without fetching measurements');
+await resetRange.dispatch('click');
+assert.deepEqual(chartPayloads.at(-1).frequencyRangeHz, [20, 20000]);
+check(resetRange.disabled, 'reset restores the full frequency range');
 check(
   chart.series.map((series) => series.draw).join(",") === "true,false,false",
   "only the aggregate is visible by default",
@@ -188,8 +227,11 @@ check(
 );
 
 elements.get("measurement-run-b").value = "round:r3";
+lower.value = 500;
+await lower.dispatch('input');
 await elements.get("measurement-run-b").dispatch("change");
 chart = chartPayloads.at(-1);
+assert.deepEqual(chart.frequencyRangeHz, [632.5, 20000]);
 check(
   requests.at(-1) === "data?a=a&b=round%3Ar3" && chart.series.length === 6,
   "selecting a banked round as run B loads and draws the A/B view",

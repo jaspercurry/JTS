@@ -22,7 +22,6 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     extracted route bodies without changing their runtime dispatch shape.
     """
 
-    _airplay_health_sampler: Any
     _adjust_op: Any
     _audio_health_sampler: Any
     _camilla_host: str

@@ -185,7 +185,6 @@ def upstream_control():
                     },
                 ],
             },
-            "airplay_health": {"status": "ok", "reason": "clean"},
             "audio_health": {
                 "schema_version": 1,
                 "sampled_at": 1_750_000_000.0,
@@ -431,7 +430,6 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
     assert payload["audio_health"]["overall"]["headline"] == "Audio is ready"
-    assert payload["airplay_health"]["status"] == "ok"
     assert payload["outputd"]["backend"] == "alsa"
     assert payload["audio_quality"]["converter"] == "samplerate_medium"
     assert ("GET", "/system/snapshot") in received

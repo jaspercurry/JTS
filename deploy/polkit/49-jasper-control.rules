@@ -10,10 +10,10 @@
 // reboot / poweroff it runs is mediated by polkit instead of being a uid-0
 // bypass. jasper-control performs these from the in-process restart broker
 // (jasper/control/restart_broker.py — reboot/poweroff, the /system buttons,
-// and system_supervisor's recovery reboot all route through it, falling back
-// to a direct spawn only when the broker itself is unreachable) AND directly
-// from its other supervisors (shairport_supervisor restart, grouping/aec
-// reconciler kicks). Without this rule the implicit default for all of these
+// system_supervisor's recovery reboot, and shairport_supervisor's wedge
+// restart all route through it, falling back to a direct spawn only when
+// the broker itself is unreachable) AND directly from its other supervisors
+// (grouping/aec reconciler kicks). Without this rule the implicit default for all of these
 // is auth_admin / auth_admin_keep, which DENIES a headless daemon (no agent
 // to authenticate), silently breaking the Tier-3/Tier-5 recovery paths.
 // Verified on hardware
