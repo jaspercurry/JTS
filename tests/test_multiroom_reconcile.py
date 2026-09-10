@@ -549,24 +549,112 @@ def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     assert _assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
 
 
-def test_outputd_grouping_env_tts_socket_by_member_shape():
-    """A PASSIVE bonded member mixes its own replies at its own outputd; an
-    active endpoint keeps that socket cleared because active voice rides fan-in
-    upstream of the crossover."""
+def _passive_channel(role: str, index: int, **extra) -> dict:
+    channel = {"role": role, "physical_output_index": index, "identity_verified": True}
+    channel.update(extra)
+    return channel
+
+
+def _mains(*, protected: bool = False) -> list[dict]:
+    left = _passive_channel(
+        "full_range",
+        0,
+        **(
+            {"protection_required": True,
+             "protection_status": "software_guard_requested"}
+            if protected
+            else {}
+        ),
+    )
+    return [
+        {"id": "left", "label": "Left", "kind": "left",
+         "mode": "full_range_passive", "channels": [left]},
+        {"id": "right", "label": "Right", "kind": "right",
+         "mode": "full_range_passive", "channels": [_passive_channel("full_range", 1)]},
+    ]
+
+
+_MAIN_ROUTING = {"main_left_group_id": "left", "main_right_group_id": "right"}
+
+
+def _topology_passive_stereo():
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    return _topology(_mains(), _MAIN_ROUTING)
+
+
+def _topology_subwoofer_with_passive_mains():
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    groups = _mains() + [
+        {"id": "sub", "label": "Sub", "kind": "subwoofer", "mode": "subwoofer",
+         "channels": [_passive_channel("subwoofer", 2)]},
+    ]
+    return _topology(groups, {**_MAIN_ROUTING, "subwoofer_group_ids": ["sub"]})
+
+
+def _topology_protected_full_range():
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    return _topology(_mains(protected=True), _MAIN_ROUTING)
+
+
+def _topology_active_2way():
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    return _active_topology("stereo", "active_2_way")
+
+
+@pytest.mark.parametrize(
+    "build_topology, direct_dac_paths_allowed",
+    [
+        (_topology_passive_stereo, True),
+        (_topology_subwoofer_with_passive_mains, False),
+        (_topology_protected_full_range, False),
+        (_topology_active_2way, False),
+    ],
+    ids=["passive_stereo", "subwoofer_present", "protected_output", "active_2way"],
+)
+def test_outputd_direct_dac_paths_follow_one_topology_predicate(
+    monkeypatch, tmp_path, build_topology, direct_dac_paths_allowed,
+):
+    """#2380: outputd's OWN paths to the DAC — the post-graph TTS mixer and the
+    dac-content ChannelPick lane — arm on ONE answer.
+
+    Both bypass CamillaDSP, so a topology whose outputs the graph owns must
+    refuse both. ``active_group_count > 0`` alone is narrower than that: a
+    subwoofer beside passive mains and a protected full-range output declare no
+    active group, and gating only on it left the TTS mixer armed there —
+    ADR-0112's "passive bonded NON-SUB member", implemented. A LEADER is the
+    reachable shape: a follower additionally parks voice.
+    """
     from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
+        output_topology_state,
+        voice_grouping_env,
     )
+    from jasper.output_topology import save_output_topology
+    from jasper.tts_routing import VOICE_TTS_SOCKET_ENV
 
-    for ch in ("left", "right", "stereo", "mono"):
-        env = outputd_grouping_env(_follower(channel=ch))
-        assert env[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
-        active_env = outputd_grouping_env(
-            _follower(channel=ch),
-            active_endpoint=True,
-        )
-        assert active_env[OUTPUTD_TTS_SOCKET_ENV] == ""
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(build_topology(), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    active_box_state, flat_output_allowed = output_topology_state()
+    facts = {
+        "active_endpoint": active_box_state is True,
+        "flat_output_allowed": flat_output_allowed,
+    }
+    cfg = _leader()
+    outputd = outputd_grouping_env(
+        cfg, outputd_period_frames=DAC_CONTENT_RING_PERIOD_FRAMES, **facts
+    )
+    voice = voice_grouping_env(cfg, **facts)
+
+    assert bool(outputd[OUTPUTD_TTS_SOCKET_ENV]) is direct_dac_paths_allowed
+    assert bool(outputd[DAC_CONTENT_LANE_ENV]) is direct_dac_paths_allowed
+    assert (VOICE_TTS_SOCKET_ENV in voice) is direct_dac_paths_allowed
 
 
 def test_assemble_args_disabled_clears_both():
