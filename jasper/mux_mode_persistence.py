@@ -107,7 +107,7 @@ def write_mode(path: str | Path, manual_source: Source | None) -> None:
     if manual_source is not None:
         payload = {"mode": "manual", "selected_source": manual_source.value}
     try:
-        atomic_write_text(path, json.dumps(payload) + "\n", mode=0o644)
+        atomic_write_text(path, json.dumps(payload) + "\n", mode=0o660)
     except OSError as e:
         logger.warning(
             "mux mode persistence: write to %s failed (%s)", path, e,

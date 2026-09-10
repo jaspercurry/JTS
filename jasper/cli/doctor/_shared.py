@@ -372,6 +372,11 @@ _RUNTIME_STATE_UNITS = (
     # evidence only in `systemctl --failed` + the journal; tracking it here
     # makes that doctor-visible.
     "jasper-fanin-coupling-auto.service",
+    # Same reasoning (#2802 item 3): a dead grouping or source-intent
+    # reconciler was doctor-invisible except indirectly, via USB combo
+    # consistency.
+    "jasper-grouping-reconcile.service",
+    "jasper-source-intent-reconcile.service",
 )
 
 # Type=oneshot members of the tracked set: `activating` is their NORMAL
@@ -381,6 +386,8 @@ _RUNTIME_STATE_UNITS = (
 # jasper-fanin-coupling-auto) moves it to `failed`.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
+    "jasper-grouping-reconcile.service",
+    "jasper-source-intent-reconcile.service",
 })
 
 def _loopback_playback_active() -> bool:

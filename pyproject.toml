@@ -5,12 +5,7 @@ description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP 
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "LICENSE-third-party.md"]
-dependencies = [
-    # systemd watchdog notification (sd_notify protocol). Kept in the
-    # base install because jasper-control runs on both full speakers and
-    # endpoint-tier renderers with Type=notify.
-    "sdnotify>=0.3.2",
-]
+dependencies = []
 
 [project.optional-dependencies]
 plots = ["matplotlib>=3.8,<4"]

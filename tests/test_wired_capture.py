@@ -29,9 +29,10 @@ What is pinned, and why each pin exists:
 """
 from __future__ import annotations
 
+import io
 import struct
 import wave
-import io
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -342,6 +343,35 @@ def test_channel_tie_resolves_to_zero():
     recording = _record([(64, [(3, 3)] * 64)])
     channel, _mono, _rms = select_capture_channel(recording)
     assert channel == 0
+
+
+@pytest.mark.parametrize(
+    "model_key, expected_channel, expected_sample",
+    [
+        ("minidsp_umik2", 0, 10_000),
+        ("generic_measurement_mic", 1, 10_001),
+    ],
+)
+def test_model_channel_is_stable_while_generic_capture_selects_strongest(
+    model_key, expected_channel, expected_sample,
+):
+    recording = _record([(64, [(10_000, 10_001)] * 64)])
+    answer = mint_wired_answer(
+        recording, device=replace(_umik2(), model_key=model_key),
+    )
+
+    assert answer.device["channel_selected"] == expected_channel
+    assert len(answer.device["channel_rms_dbfs"]) == 2
+    mono, _rate = decode_wav_to_mono(answer.wav)
+    assert mono[0] == pytest.approx(expected_sample / ((1 << 31) - 1))
+
+
+@pytest.mark.parametrize("declared_channel", [-1, 2, True, "0"])
+def test_declared_channel_must_fit_the_capture(declared_channel):
+    recording = _record([(64, [(1, 2)] * 64)])
+
+    with pytest.raises(WiredCaptureError):
+        select_capture_channel(recording, declared_channel=declared_channel)
 
 
 # --------------------------------------------------------------------------- #

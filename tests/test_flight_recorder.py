@@ -18,6 +18,7 @@ import pytest
 
 from jasper import debug_mode
 from jasper import flight_recorder as fr
+from jasper.conversation_history import ConversationStore
 from jasper.log_event import log_event
 
 
@@ -108,10 +109,33 @@ def test_auto_flush_floor_keys_log_event_on_the_event_name():
         logger.removeHandler(ring)
 
 
+def test_a_log_wrapper_keeps_its_callers_keys_distinct(tmp_path):
+    """`ConversationStore._warn` logs on behalf of eight call sites. The floor
+    keys on the record's file:line, so without `stacklevel=2` inside the
+    wrapper every one of them collapses into ONE key and every dump after the
+    first is suppressed. Driven through the real wrapper, not a stand-in.
+    """
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    store = ConversationStore(str(tmp_path / "conversations.db"))
+    logger = logging.getLogger(ConversationStore.__module__)
+    logger.addHandler(ring)
+    logger.setLevel(logging.DEBUG)
+    propagate, logger.propagate = logger.propagate, False
+    try:
+        store._warn("store add failed: %s", "a")
+        store._warn("store get failed: %s", "b")
+        assert s.getvalue().count("event=flightrec.dump ") == 2
+    finally:
+        logger.removeHandler(ring)
+        logger.propagate = propagate
+
+
 def test_auto_flush_floor_survives_redaction_flattening():
     """The redacting filter rewrites `record.msg` to the rendered, redacted
-    line, so the floor keys on the template it stashes — otherwise one
-    chronic credential-carrying warning dumps the whole ring on every call.
+    line, which differs per call. The floor keys on the record's call site,
+    which the rewrite cannot move — otherwise one chronic
+    credential-carrying warning dumps the whole ring on every call.
     """
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)

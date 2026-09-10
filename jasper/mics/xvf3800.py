@@ -218,6 +218,14 @@ class FirmwareUpdateTarget:
     expected_size_bytes: int
     upstream_dir_url: str
     expected_capture_channels: int = RECOMMENDED_CAPTURE_CHANNELS
+    #: Provenance the LEGACY square build publishes and the Flex family does
+    #: not: the Flex blobs carry no build-repo hash and their date lives in
+    #: prose (BRINGUP.md). Empty means "this family does not report it" — a
+    #: recording's metadata omits the key rather than borrowing another
+    #: family's answer (#4361). ``sha256`` above is the provenance every
+    #: family does carry.
+    known_good_as_of: str = ""
+    build_repo_hash: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -524,6 +532,8 @@ FIRMWARE_UPDATE_TARGETS = (
         sha256=FIRMWARE_KNOWN_GOOD_SHA256,
         expected_size_bytes=FIRMWARE_KNOWN_GOOD_SIZE_BYTES,
         upstream_dir_url=FIRMWARE_UPSTREAM_DIR_URL,
+        known_good_as_of=FIRMWARE_KNOWN_GOOD_AS_OF,
+        build_repo_hash=FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
     ),
     FirmwareUpdateTarget(
         target_id="flex_linear_6ch",
@@ -653,6 +663,25 @@ def firmware_update_target_for_profile(
         return None
     for target in FIRMWARE_UPDATE_TARGETS:
         if variant_id in target.from_variant_ids:
+            return target
+    return None
+
+
+def recommended_firmware_target(variant_id: str) -> FirmwareUpdateTarget | None:
+    """The 6-channel firmware THIS board family runs, from either side of it.
+
+    Unlike :func:`firmware_update_target_for_profile`, which answers "what may
+    this board be flashed to next" and therefore only matches the 2-channel
+    side, this matches an already-flashed 6-channel variant too — the question a
+    recording's provenance asks. ``None`` for a board the registry does not
+    know, whose provenance is then reported as unknown rather than as the
+    legacy square build's (#4361).
+    """
+
+    if not variant_id:
+        return None
+    for target in FIRMWARE_UPDATE_TARGETS:
+        if variant_id in target.from_variant_ids or variant_id == target.to_variant_id:
             return target
     return None
 

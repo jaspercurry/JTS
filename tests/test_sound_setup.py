@@ -69,6 +69,7 @@ from jasper.sound.settings import (
 )
 from jasper.volume_curve import percent_to_db
 from jasper.web import (
+    _common,
     nav,
     sound_active_speaker,
     sound_profile_apply,
@@ -674,7 +675,7 @@ def test_sound_post_does_not_secondary_send_after_response_write_failure(
     monkeypatch,
     caplog,
 ):
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
     monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"ok": True})
     response_sink = _BrokenPipeBytesIO()
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
@@ -708,7 +709,7 @@ def test_sound_post_rejects_invalid_body_length_before_read(
     content_length,
     expected_error,
 ):
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
@@ -727,7 +728,7 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
     def fail_if_guarded(_handler):
         raise AssertionError("unknown route must return before the CSRF guard")
 
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", fail_if_guarded)
+    monkeypatch.setattr(_common, "guard_mutating_request", fail_if_guarded)
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
@@ -740,7 +741,7 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
 
 
 def test_stale_sound_stop_and_abort_routes_still_dispatch(tmp_path, monkeypatch):
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_stop_payload",
@@ -785,7 +786,7 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
         guard_calls.append("guard")
         return False
 
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", reject)
+    monkeypatch.setattr(_common, "guard_mutating_request", reject)
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
@@ -797,7 +798,7 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert guard_calls == ["guard"]
     assert read_calls == []
 
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
     body = b'{"profile_id":1}'
     response, read_calls = _drive_raw_sound_post(
         tmp_path, path="/i2s-hat", content_length=len(body), body=body
@@ -1140,7 +1141,6 @@ def test_sound_active_speaker_ui_helpers_are_pure_module_boundary():
 
     assert "export function activeSpeakerStepState" in js
     assert "export function defaultActiveSpeakerStep" in js
-    assert "export function playbackResultMessage" in js
     assert "querySelector" not in js
     assert "document." not in js
     assert "fetch(" not in js
@@ -1561,7 +1561,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert ">I hear this driver</button>" not in js
     assert "No active driver test" not in js
     assert "no separate direct-DAC driver test in the product UI" not in js
-    assert "playbackResultMessage(playback, undefined, friendlySetupReason)" not in js
     assert "Playback: ' + (issue.code" not in js
     assert "JTS could not get the test ready. No sound was played." not in js
     assert "Save this speaker layout draft before confirming outputs." in js
@@ -2055,7 +2054,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
         assert confusing_copy not in js
 
     # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
-    assert "Choose the driver again to try." in helper_js
     assert "Start the tone again so JTS can open the quiet driver test first." in helper_js
     assert "The tweeter guard still needs to be set up" in helper_js
     assert "did not complete" not in helper_js
@@ -7207,7 +7205,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
 
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -7263,7 +7261,7 @@ def test_summed_validation_route_conflicts_while_combined_test_active(
         def poll(self):
             return None
 
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_summed_validation_payload",

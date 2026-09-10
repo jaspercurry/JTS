@@ -2694,7 +2694,7 @@ def _owned_coord(tmp_path, db: float):
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     """The reconciler writes by DECLARING the household level, so a duck held
     in this process outranks it — no dB inference is involved, which is why
-    `RECONCILE_DUCK_SKIP_DB` is not what protects `CueDuck`.
+    `RECONCILE_DUCK_SKIP_DB` is not what protects a cue's duck.
 
     The duck is shallower than that threshold, so the carve-out cannot be
     what spares it; releasing the claim lands the fader back on the household
@@ -2823,7 +2823,7 @@ async def test_a_refused_write_speaks_once_and_says_when_it_lands(
     assert len(event_records(caplog, "volume.reconciled")) == 1
 
 
-# ---------- graph-swap duck composed with CueDuck ---------------------------
+# ---------- graph-swap duck composed with a ranked TRANSIENT_DUCK -----------
 
 # enter/exit sequences for the two holders. The two orders the review probed
 # are `bracket_first_cue_last` and `cue_first_bracket_last`; the other two are
@@ -2859,13 +2859,21 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
         coord.get_camilla_target_db,
     )
 
-    cue = camilla_module.CueDuck(coord.volume_owner, -25.0)
+    owner = coord.volume_owner
+    cue: list = []
+
+    async def _cue_enter() -> None:
+        cue.append(await owner.acquire_duck(-25.0))
+
+    async def _cue_exit() -> None:
+        await owner.release(cue.pop())
+
     bracket = cam._graph_mutation("test.swap")
     steps = {
         "B_enter": bracket.__aenter__,
         "B_exit": lambda: bracket.__aexit__(None, None, None),
-        "C_enter": cue.__aenter__,
-        "C_exit": lambda: cue.__aexit__(None, None, None),
+        "C_enter": _cue_enter,
+        "C_exit": _cue_exit,
     }
     for step in _INTERLEAVINGS[order]:
         await steps[step]()
