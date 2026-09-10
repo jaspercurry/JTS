@@ -502,19 +502,7 @@ def test_self_restart_is_queued_after_other_units(broker, monkeypatch):
     """A wizard restart list may include jasper-control itself. The broker
     must queue voice/mux first so killing control cannot cancel them."""
     sock_path, calls, _ = broker
-    popen_calls: list[list[str]] = []
-
-    class _FakePopen:
-        pid = 12345
-
-    def fake_popen(argv, **kwargs):
-        popen_calls.append(list(argv))
-        assert kwargs["start_new_session"] is True
-        assert kwargs["stdout"] is subprocess.DEVNULL
-        assert kwargs["stderr"] is subprocess.DEVNULL
-        return _FakePopen()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    popen_calls = _record_popen(monkeypatch)
 
     resp = _request_restart_retrying_transient_failures(
         "jasper-voice",
@@ -645,6 +633,32 @@ def test_a_detached_spawn_does_not_wait_for_its_child(monkeypatch):
     assert not reaped.is_set()  # returned while the child is still running
     release.set()
     assert reaped.wait(10)      # and the reaper did run, just not inline
+
+
+def test_a_detached_spawn_is_session_detached_with_piped_stderr(monkeypatch):
+    """The child may be restarting (or powering off) the broker that spawned
+    it, so it must leave the broker's session or die with it; and its stderr
+    is the reaper's only input, since the rc can never reach the client."""
+    seen: dict[str, object] = {}
+
+    def fake_popen(argv, **kw):
+        seen.update(kw)
+        return _FinishedPopen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        restart_broker, "threading", SimpleNamespace(Thread=_InlineThread),
+    )
+
+    restart_broker._spawn_detached(
+        ["systemctl", "reboot"], verb="reboot", units_label="-",
+    )
+
+    assert seen["start_new_session"] is True
+    assert seen["close_fds"] is True
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["stdout"] is subprocess.DEVNULL
+    assert seen["stderr"] is subprocess.PIPE
 
 
 def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
