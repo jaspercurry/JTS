@@ -29,6 +29,7 @@ import numpy as np
 
 
 from .record_index import bundle_measurements
+from .measurement_context import CAPTURE_FIELDS, compare_capture_basis
 from .room_prescription import RoomMedian, read_room_median
 from .room_views import band_masks
 
@@ -134,80 +135,14 @@ def _array_metrics(
     )
 
 
-_INTERVENTION_FIELDS = (
-    "candidate_id", "submitted_graph_fingerprint", "graph_fingerprint", "graph_scope",
-)
-_COMPARABILITY_FIELDS = (
-    "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "gating_applied",
-)
-
-
-def _capture_calibration_identity(value: Any) -> tuple[bool, str | None, str | None] | None:
-    if not isinstance(value, Mapping) or type(value.get("applied")) is not bool:
-        return None
-    calibration_id = value.get("calibration_id")
-    fingerprint = value.get("curve_fingerprint")
-    if calibration_id is not None and not isinstance(calibration_id, str):
-        return None
-    if value["applied"] and not isinstance(fingerprint, str):
-        return None
-    if not value["applied"] and fingerprint is not None:
-        return None
-    return value["applied"], calibration_id, fingerprint
-
-
 def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, Any]:
-    """Separate the graph change under test from capture facts that must agree."""
-    now_evidence = median.evidence if isinstance(median.evidence, Mapping) else {}
-    was_evidence = incumbent.evidence if isinstance(incumbent.evidence, Mapping) else {}
-    now_raw, was_raw = now_evidence.get("basis"), was_evidence.get("basis")
-    now = now_raw if isinstance(now_raw, Mapping) else {}
-    was = was_raw if isinstance(was_raw, Mapping) else {}
-    changed = [
-        field for field in _INTERVENTION_FIELDS
-        if field in now and field in was and now.get(field) != was.get(field)
-    ]
-    incompatible: list[str] = []
-    unknown: list[str] = []
-    for field in _COMPARABILITY_FIELDS:
-        left, right = now.get(field), was.get(field)
-        if left is None or right is None:
-            unknown.append(field)
-        elif left != right:
-            incompatible.append(field)
-
-    # New captures carry this per-take resolution. Old medians have only the
-    # reference/applied pair; those remain usable, with their missing fact named.
-    left_calibration = _capture_calibration_identity(now.get("capture_calibration"))
-    right_calibration = _capture_calibration_identity(was.get("capture_calibration"))
-    if left_calibration is not None and right_calibration is not None:
-        if left_calibration != right_calibration:
-            incompatible.append("capture_calibration")
-    else:
-        unknown.append("capture_calibration")
-        for field in ("calibration_reference", "calibration_applied"):
-            left, right = now.get(field), was.get(field)
-            if left is None or right is None:
-                unknown.append(field)
-            elif left != right:
-                incompatible.append(field)
-
-    if median.n_positions != incumbent.n_positions:
-        incompatible.append("n_positions")
-    left, right = now_evidence.get("pose_keys"), was_evidence.get("pose_keys")
-    if left is None or right is None:
-        unknown.append("pose_keys")
-    elif left != right:
-        incompatible.append("pose_keys")
-    return {
-        "basis_status": (
-            "incompatible" if incompatible else "unknown" if unknown else "compatible"
-        ),
-        "intervention_fields": sorted(set(changed)),
-        "incompatible_fields": sorted(set(incompatible)),
-        "unknown_fields": sorted(set(unknown)),
-    }
+    def basis(value: RoomMedian) -> dict[str, Any]:
+        evidence = value.evidence if isinstance(value.evidence, Mapping) else {}
+        raw = evidence.get("basis")
+        return {**(raw if isinstance(raw, Mapping) else {}),
+                "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
+    return compare_capture_basis(basis(median), basis(incumbent),
+                                 required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"))
 
 
 def _support(median: RoomMedian) -> tuple[float, float]:

@@ -20,7 +20,8 @@ from ..measurement_programs import (
 )
 from .journey import PHASE_LATERAL
 from .position_cycle import parse_curve_magnitude
-from .record_index import Measurement, measurement_documents, played_graph_fingerprint
+from .record_index import Measurement, measurement_documents
+from .measurement_context import capture_basis
 from .round_captures import RoundCapturesRefused, doc_pose_key
 
 REFUSE_ROOM_SELECTION = "room_capture_selection_required"
@@ -41,33 +42,6 @@ class SeatTake:
 class SeatSelection:
     takes: tuple[SeatTake, ...]
     evidence: Mapping[str, Any]
-
-
-def _basis(row: Measurement, record: Mapping[str, Any]) -> dict[str, Any]:
-    provenance = record.get("provenance") or {}
-    setup = record.get("capture_setup") or {}
-    device = record.get("capture_device") or {}
-    calibration = record.get("capture_calibration") or {}
-    stimulus = provenance.get("stimulus") or {}
-    return {
-        "candidate_id": row.candidate_id or None,
-        "speaker_candidate_id": (provenance.get("graph") or {}).get("speaker_candidate_id"),
-        "submitted_graph_fingerprint": row.graph_fingerprint or None,
-        "graph_fingerprint": played_graph_fingerprint(record) or None,
-        "played_graph_recorded": bool((provenance.get("graph") or {}).get("fingerprint")),
-        "graph_scope": row.graph_scope or None,
-        "side": record.get("side"),
-        "pose_kind": record.get("pose_kind") or POSE_KIND_BEARING,
-        "calibration_reference": setup.get("calibration"),
-        "calibration_applied": calibration.get("applied"),
-        "capture_calibration": calibration or None,
-        "capture_device": {k: device.get(k) for k in ("card", "usb_id", "model_key", "pcm", "channel_selected")} if device else None,
-        "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
-        "stimulus_dbfs": record.get("stimulus_dbfs"),
-        "stimulus_wav_sha256": stimulus.get("wav_sha256"),
-        "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
-        "gating_applied": record.get("gating_applied"),
-    }
 
 
 def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
@@ -116,7 +90,7 @@ def select_seat_takes(bundle_dir: Path, *, capture_id: str | None = None) -> Sea
             continue
         if row.phase != PHASE_LATERAL or purpose != PURPOSE_ROOM:
             continue
-        basis = _basis(row, record)
+        basis = capture_basis(record)
         key = json_fingerprint(basis)
         bases[key] = basis
         groups.setdefault(key, []).append((row, record))
