@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 from enum import Enum
+from typing import NoReturn
 
 from jasper.log_event import log_event
 
@@ -2576,9 +2577,63 @@ class WakeLoop:
         self._arm_turn_background_end()
 
     async def _begin_turn_output_episode(self) -> None:
-        self._turn_output_episode = await self._assistant_output.begin_turn_episode(
-            self._turn_output_episode,
+        """Take the turn's output episode, or abandon the turn to a measurement.
+
+        `AssistantOutputGate.begin_turn` queues behind paused admission with
+        no bound, and `MeasurementHold` closes admission and sets
+        `_measurement_active` without awaiting in between — so a wake that
+        cleared `_check_input_admission` a moment earlier would otherwise wait
+        here for the whole window (up to MEASUREMENT_AUTOCLEAR_SEC), deaf and
+        uncued. Racing the two is exactly "a measurement opened while this
+        wake was mid-acquire", and such a wake is not alive: it is dropped
+        silently, like one `_wake_late_cancelled` catches at a checkpoint.
+        """
+        if self._measurement_active.is_set():
+            self._refuse_output_episode_for_measurement()
+        gate = self._output_gate
+        if not gate.admission_paused and not gate.is_active:
+            # Uncontended: `begin_turn` cannot suspend, so the claim lands in
+            # this same event-loop turn — no task, no extra hop for a turn
+            # that races nothing. The gate's lock is never held across an
+            # await, so the two reads above are still true when it acquires.
+            self._turn_output_episode = (
+                await self._assistant_output.begin_turn_episode(
+                    self._turn_output_episode,
+                )
+            )
+            return
+        taking = asyncio.ensure_future(
+            self._assistant_output.begin_turn_episode(self._turn_output_episode),
         )
+        measuring = asyncio.ensure_future(self._measurement_active.wait())
+        try:
+            await asyncio.wait(
+                (taking, measuring), return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            measuring.cancel()
+            # `asyncio.wait` has returned and nothing has awaited since, so a
+            # task that is not done cannot have taken the gate — cancelling it
+            # strands no episode. One that IS done is adopted even when this
+            # task was itself cancelled, or the gate stays owned forever.
+            if not taking.done():
+                taking.cancel()
+            elif not taking.cancelled() and taking.exception() is None:
+                self._turn_output_episode = taking.result()
+        if not taking.done():
+            self._refuse_output_episode_for_measurement()
+        # The episode is already stored; this only re-raises a real failure.
+        taking.result()
+
+    @staticmethod
+    def _refuse_output_episode_for_measurement() -> NoReturn:
+        log_event(
+            logger,
+            "wake.late_cancel",
+            reason="measurement_active",
+            phase="output_episode",
+        )
+        raise _InputAdmissionClosed("MEASURING")
 
     async def _cleanup_after_failed_begin(self) -> None:
         if self._ending:

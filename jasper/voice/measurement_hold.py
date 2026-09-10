@@ -6,7 +6,8 @@
 
 The window itself is owned by ``jasper.measurement_window``; this is the
 voice daemon's copy of "a measurement is live", driven by the MEASURE_PAUSE /
-MEASURE_RESUME control-socket commands. It closes assistant output admission,
+MEASURE_RESUME control-socket commands and, at startup, by
+:meth:`MeasurementHold.adopt_live_window`. It closes assistant output admission,
 gates the mic, hands the volume-owner lease over, pauses the outputd content
 meter, and keeps a crash backstop armed so a coordinator that dies mid-sweep
 cannot strand the speaker silent.
@@ -23,6 +24,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING
 
+from ..control.measurement_hold import read_measurement_hold
 from ..log_event import log_event
 
 if TYPE_CHECKING:
@@ -112,6 +114,38 @@ class MeasurementHold:
         self._transition_lock = asyncio.Lock()
         self._safety_task: asyncio.Task | None = None
         self._lease_generation = 0
+
+    async def adopt_live_window(self) -> bool:
+        """Come up already paused when a measurement is running (issue #4789).
+
+        ``WakeLoop._measurement_active`` is in-memory, so a daemon restarted
+        mid-sweep listens again until the coordinator's next MEASURE_PAUSE
+        renewal — up to ``MEASUREMENT_LEASE_REFRESH_SEC`` of wake alive inside
+        a window that is supposed to have none. jasper-control's hold is the
+        copy of that same fact that survived the restart, so ask it once, at
+        startup, before any mic frame is read.
+
+        Unreachable and nothing-held both mean "stay listening": the
+        coordinator's renewal, not this, is the guarantee it re-arms.
+        """
+
+        hold = await asyncio.to_thread(read_measurement_hold)
+        if not (hold and hold.get("active")):
+            return False
+        try:
+            result = (await self.pause_response()).get("result")
+        except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+            result = type(error).__name__
+        armed = result == "ok"
+        log_event(
+            logger,
+            "measurement.hold_adopted",
+            owner=str(hold.get("owner")),
+            expires_in_s=hold.get("expires_in_s"),
+            result=result,
+            level=logging.INFO if armed else logging.WARNING,
+        )
+        return armed
 
     async def pause_response(self) -> dict[str, object]:
         """Open/renew a pause and include additive drain evidence on the wire."""
