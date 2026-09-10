@@ -368,34 +368,26 @@ verify_absolute_tolerance_db = _verification.verify_absolute_tolerance_db
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
 # GCC-seed/capture confidence floor. A DISCLOSURE trigger, not a gate: below it
-# the capture is ACCEPTED and the confidence is banked as a reservation.
+# the capture is ACCEPTED and the confidence is banked as a reservation. See
+# ADR-0180.
 ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # ms, added on BOTH sides of the crossover region's declared ``delay_range_ms``
 # (a SEARCH bound, not a physical limit) before a measured delay is rejected:
 # GCC can return a confidently wrong lag that still clears the floor above.
 ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 
-# Measurement-honesty disclosure G1, dB. A DISCLOSURE trigger, not a gate (owner
-# ruling 2026-08-03, #2087): above it the capture is ACCEPTED with a reservation.
-# Calibrated on the 2026-07-22 corpus — 13 clean captures at 4.387-9.031 dB
-# against one corrupt at 27.316. THE FRAME: the summed branch sum at zero delay
-# residual and at the polarity the candidate ships.
+# Measurement-honesty disclosure G1, dB. A DISCLOSURE trigger, not a gate. See
+# ADR-0181.
 MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 
-# Measurement-honesty gate G3, dB. VERIFY replays the IDENTICAL program through
-# the IDENTICAL graph, so its leading pilot pair's transfer must not move between
-# attempts. Measured 2026-07-22: 0.75-0.82 dB across a dishonest sequence,
-# ≤0.05 dB across the clean multi-attempt session.
+# Measurement-honesty gate G3, dB: how far VERIFY's leading pilot-pair transfer
+# may step between attempts before the recorder itself is suspect. See
+# ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 # dB. How close two consecutive graded VERIFY attempts must land before the
-# mismatch is called DETERMINISTIC rather than transient (#1873). MEASURED:
-# ``captures/repeat-floor-20260731/README.md`` puts the consecutive-pair repeat
-# floor of ``max_db_notch_excluded`` over 1000-4000 Hz at 0.085 dB p95, and
-# ``attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`` (2.0) owns the doubling — 0.17016,
-# of which 0.2 is that README's conservative display rounding. Do NOT tighten
-# toward 0.17016: a SMALLER floor narrows the agreement window, and this is a
-# fixed-mic number a hand-held phone exceeds.
+# mismatch is called DETERMINISTIC rather than transient (#1873). See ADR-0183
+# — do NOT tighten toward the raw measured p95 without rereading it.
 VERIFY_REPEAT_FLOOR_DB = 0.2
 
 #: ``terminal_outcome`` for the verdict above: the captures agreed, and the
