@@ -30,6 +30,7 @@ from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
+INTENT_ENV_OWNER = "JTS /aec USB mic control"
 INTENT_KEY = "JASPER_USB_MIC"
 USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
 USB_MIC_PRIMARY_LEG = "primary"
@@ -109,6 +110,7 @@ def write_usb_mic_enabled(
         mode=0o644,
         max_bytes=_MAX_ENV_BYTES,
         lock_timeout_sec=2.0,
+        owner=INTENT_ENV_OWNER,
     )
 
 
@@ -144,6 +146,7 @@ def write_usb_mic_leg(
         mode=0o644,
         max_bytes=_MAX_ENV_BYTES,
         lock_timeout_sec=2.0,
+        owner=INTENT_ENV_OWNER,
     )
 
 

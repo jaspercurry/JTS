@@ -46,6 +46,9 @@ from typing import Iterable
 # written values win over operator-managed defaults — same pattern as
 # voice_provider.env and spotify_credentials.env.
 WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
+#: Written by both the /assistant/wake/ wizard (model picker) and
+#: jasper-control's sensitivity slider endpoint (JASPER_WAKE_THRESHOLD).
+WAKE_MODEL_ENV_OWNER = "JTS /assistant/wake wizard"
 
 # Where install.sh stages downloaded non-bundled models. Files here
 # survive package reinstalls because they live under /var/lib, not

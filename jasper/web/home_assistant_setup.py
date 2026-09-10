@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 
 
 HA_ENV_FILE = _ha_mod.HA_ENV_FILE
+HA_ENV_OWNER = "JTS /assistant/ha wizard"
 
 # mDNS service the official HA zeroconf integration advertises. Always
 # fully-qualified with the trailing `.local.` per the python-zeroconf
@@ -971,7 +972,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             values[ENV_RECENT_URLS] = json.dumps(recent)
         if values:
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not reset: {e}")
                 return
@@ -1100,7 +1101,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if recent:
                 values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1116,7 +1117,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if recent:
                 values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1140,7 +1141,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if recent:
                 values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1164,7 +1165,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         if not verify_ssl:
             values[ENV_VERIFY_SSL] = "0"
         try:
-            write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
+            write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
         except OSError as e:
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
@@ -1201,6 +1202,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     cfg["state_path"],
                     {ENV_RECENT_URLS: json.dumps(recent)},
                     mode=SECRET_ENV_MODE,
+                    owner=HA_ENV_OWNER,
                 )
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not disconnect: {e}")

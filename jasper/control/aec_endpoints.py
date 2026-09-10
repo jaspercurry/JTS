@@ -49,10 +49,11 @@ from ..chip_aec.policy import (
     combine_mic_availability,
     effective_chip_aec_dac_gate,
 )
-from ..wake_models import WAKE_MODEL_FILE
+from ..wake_models import WAKE_MODEL_ENV_OWNER, WAKE_MODEL_FILE
 from . import restart_broker
 
 _AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
+_AEC_MODE_ENV_OWNER = "JTS /aec mode control"
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
@@ -151,6 +152,7 @@ def _write_aec_leg(leg: str, enabled: bool) -> None:
             _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
             "JASPER_AUDIO_INPUT_PROFILE": "custom",
         },
+        owner=_AEC_MODE_ENV_OWNER,
     )
 
 
@@ -188,6 +190,7 @@ def _write_audio_input_profile(profile: str) -> None:
         _AEC_MODE_FILE,
         profile_env_updates(normalized),
         mode=0o644,
+        owner=_AEC_MODE_ENV_OWNER,
     )
 
 
@@ -221,6 +224,7 @@ def _write_wake_threshold(value: float) -> None:
         _WAKE_MODEL_FILE,
         {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
         mode=0o644,
+        owner=WAKE_MODEL_ENV_OWNER,
     )
 
 

@@ -205,7 +205,7 @@ def _write_creds_file(
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
         "SPOTIFY_OAUTH_MODE": mode,
-    }, mode=SECRET_ENV_MODE)
+    }, mode=SECRET_ENV_MODE, owner="JTS /spotify wizard")
 
 
 def _delete_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> None:

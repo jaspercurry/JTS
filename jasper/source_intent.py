@@ -707,6 +707,9 @@ def _publish_reconcile_status(
     return True
 
 
+_INTENT_ENV_OWNER = "JTS /sources intent control"
+
+
 def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
     locked_update_env_file(
         path,
@@ -714,6 +717,7 @@ def _default_write_intent(path: str, updates: Mapping[str, str]) -> None:
         mode=_INTENT_FILE_MODE,
         max_bytes=_MAX_INTENT_BYTES,
         lock_timeout_sec=_REQUEST_LOCK_TIMEOUT_SEC,
+        owner=_INTENT_ENV_OWNER,
     )
 
 

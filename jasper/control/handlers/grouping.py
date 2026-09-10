@@ -414,7 +414,9 @@ def _write_grouping(
     # config.format_roster).
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
-    locked_update_env_file(GROUPING_ENV_FILE, updates, mode=0o644)
+    locked_update_env_file(
+        GROUPING_ENV_FILE, updates, mode=0o644, owner="JTS /rooms grouping control",
+    )
 
 
 class GroupingRoutes(ControlHandlerMixin):
