@@ -31,17 +31,23 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests._wake_loop import FakeTts, wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
 class _RecordingTts(FakeTts):
-    """TtsPlayout stand-in that records end_segment calls."""
+    """TtsPlayout stand-in that records end_segment and flush calls."""
 
     def __init__(self, *, end_segment_raises: bool = False) -> None:
         self.end_segment_calls = 0
+        self.flush_calls = 0
         self._raises = end_segment_raises
+
+    async def flush(self):
+        self.flush_calls += 1
 
     async def end_segment(self):
         self.end_segment_calls += 1
@@ -100,12 +106,12 @@ def _make_wakeloop(tts: _RecordingTts):
     return wl
 
 
-async def _teardown_owning_output(wl) -> None:
+async def _teardown_owning_output(wl, reason: str = "ended") -> None:
     """A real turn always holds the output episode `_end_turn_inner` guards
     its stream writes on, `end_segment` among them; a fixture without one
     would satisfy the counts below by never reaching the call."""
     wl._turn_output_episode = await wl._output_gate.begin_turn()
-    await wl._end_turn()
+    await wl._end_turn(reason)
 
 
 def test_teardown_calls_end_segment_once():
@@ -120,6 +126,21 @@ def test_teardown_calls_end_segment_once():
 
     asyncio.run(_teardown_owning_output(wl))
 
+    assert tts.end_segment_calls == 1
+
+
+@pytest.mark.parametrize(
+    "reason, flushes",
+    [("ended", 0), ("playback_failed", 1), ("conversation_ended", 1)],
+)
+def test_teardown_drops_the_queued_tail_only_when_it_must_not_be_heard(reason, flushes):
+    """A dismissal is as much a "do not play the rest" as a failed output."""
+    tts = _RecordingTts()
+    wl = _make_wakeloop(tts)
+
+    asyncio.run(_teardown_owning_output(wl, reason))
+
+    assert tts.flush_calls == flushes
     assert tts.end_segment_calls == 1
 
 

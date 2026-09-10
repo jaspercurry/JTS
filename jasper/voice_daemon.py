@@ -639,6 +639,10 @@ class WakeLoop:
         # flag, deliberately NOT an early _state flip — _state must stay
         # SESSION through the teardown so output-stream gates hold.
         self._ending: bool = False
+        # The previous turn's provider teardown, still in flight. The user's
+        # closure never waits on it; the next acquire does, so one provider
+        # session is open at a time.
+        self._pending_release: asyncio.Task | None = None
         self._playback_report = PlaybackReport()
         self._bg_tasks: set[asyncio.Task] = set()
         self._followup = FollowupWindow(cfg.followup_timeout_sec)
@@ -2671,6 +2675,9 @@ class WakeLoop:
         self._session_id = self._usage_store.open_session(
             provider=self._cfg.voice_provider,
         )
+        if (release := self._pending_release) is not None:
+            self._pending_release = None
+            await asyncio.gather(release, return_exceptions=True)
         self._turn = await self._connection.acquire_turn()
         t_after_acquire = time.monotonic()
         self._check_input_admission(input_epoch)
@@ -3000,6 +3007,27 @@ class WakeLoop:
                 music_db_at_turn=self._content_activity.music_dbfs,
             )
 
+    async def _release_turn(self, turn: LiveTurn) -> None:
+        """Tear the provider turn down off the closure path, and time it.
+
+        The user's chirp, duck restore and return to wake listening run
+        while this is in flight; `_begin_turn` is what waits for it.
+        """
+        started = time.monotonic()
+        error = await capture_cleanup_error(turn.release)
+        fields: dict[str, object] = {
+            "provider": self._cfg.voice_provider,
+            "ms": int((time.monotonic() - started) * 1000),
+        }
+        if error is not None:
+            fields["exc_type"] = type(error).__name__
+        log_event(
+            logger, "turn.release", fields=fields,
+            level=logging.WARNING if isinstance(error, Exception) else logging.INFO,
+        )
+        if error is not None and not isinstance(error, Exception):
+            raise error
+
     async def _record_and_release_turn(
         self, reason: str, episode: AssistantOutputEpisode | None,
     ) -> bool:
@@ -3019,7 +3047,9 @@ class WakeLoop:
         async def end_segment() -> None:
             if episode is not None and self._output_gate.is_current(episode):
                 try:
-                    if reason == "playback_failed":
+                    # Endings where the queued tail must not reach the room:
+                    # output already failed, or the user asked us to stop.
+                    if reason in ("playback_failed", "conversation_ended"):
                         await self._tts.flush()
                 finally:
                     await self._tts.end_segment()
@@ -3027,8 +3057,7 @@ class WakeLoop:
         phases.append(("end_segment", end_segment))
         if self._input_ended or self._user_speech_seen or self._manual_endpoint_this_turn:
             phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
-        phases.append(("turn_release", turn.release))
-        release_base_error: BaseException | None = None
+        cleanup_base_error: BaseException | None = None
         for phase, operation in phases:
             error = await capture_cleanup_error(operation)
             if isinstance(error, Exception):
@@ -3036,8 +3065,11 @@ class WakeLoop:
                     logger, "turn.cleanup_phase_failed", phase=phase,
                     exc_type=type(error).__name__, err=str(error), level=logging.WARNING,
                 )
-            elif release_base_error is None:
-                release_base_error = error
+            elif cleanup_base_error is None:
+                cleanup_base_error = error
+        self._pending_release = self._create_fire_and_forget_task(
+            self._release_turn(turn), name="turn-release",
+        )
 
         play_no_answer_cue = False
         usage = turn.usage()
@@ -3185,8 +3217,8 @@ class WakeLoop:
         )
 
         self._research.finish_window(research_window)
-        if release_base_error is not None:
-            raise release_base_error
+        if cleanup_base_error is not None:
+            raise cleanup_base_error
         return play_no_answer_cue
 
 

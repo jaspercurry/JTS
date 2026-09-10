@@ -15,6 +15,7 @@ from ..tools import ToolRegistry, tool
 
 END_OF_UTTERANCE_SILENCE_SEC = 0.8
 NO_SPEECH_ABORT_SEC = 5.0
+END_CONVERSATION_TOOL = "end_conversation"
 
 
 @dataclass

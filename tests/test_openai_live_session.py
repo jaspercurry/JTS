@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import pytest
@@ -15,6 +16,7 @@ from pydantic import TypeAdapter
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import openai_live_session
+from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from tests._async_wait import wait_until
 from tests._log_events import event_fields
@@ -246,3 +248,60 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
         await turn.on_event(output_audio(QUIET_PCM))
         assert turn.audio_chunks_pending() == 3
         assert turn.chunks_received() == 2
+
+
+async def test_a_dismissal_survives_a_delegation_that_cancels_its_round():
+    """A new delegation cancels the in-flight tool round; the user's
+    "never mind" is not a request that a later one can make obsolete."""
+    socket = LiveSocket()
+    registry = ToolRegistry()
+    ends = []
+    register_conversation_tools(registry, lambda: ends.append("end"))
+    dispatching, resume = asyncio.Event(), asyncio.Event()
+
+    async def observer(stage, name):
+        if stage == "called" and name == END_CONVERSATION_TOOL:
+            dispatching.set()
+            await resume.wait()
+
+    registry.set_dispatch_observer(lambda: observer)
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(registry, "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        await delegate(turn, "d1", "r1", END_CONVERSATION_TOOL, {})
+        await wait_until(dispatching.is_set)
+        await turn.on_event({
+            "type": "session.delegation.created",
+            "delegation": {"id": "d2", "target": "responses"},
+        })
+        resume.set()
+        await wait_until(lambda: ends == ["end"])
+    finally:
+        resume.set()
+        await turn.release()
+        await conn.stop()
+
+
+async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monkeypatch):
+    monkeypatch.setattr(openai_live_session, "CLOSE_ACK_TIMEOUT_SEC", 0.05)
+
+    class SilentSocket(LiveSocket):
+        async def send(self, event):
+            CLIENT_EVENT.validate_python(event)
+            self.sent.append(event)
+            if event["type"] == "session.start":
+                await self.events.put({"type": "session.started"})
+
+    socket = SilentSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    started = time.monotonic()
+    await turn.release()
+    elapsed = time.monotonic() - started
+    await conn.stop()
+
+    assert [e["type"] for e in socket.sent].count("session.close") == 1
+    assert socket.closed
+    assert elapsed < 1.0

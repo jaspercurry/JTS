@@ -85,29 +85,24 @@ def _record_output_writes(wl: WakeLoop, timeline: list[str]) -> None:
     wl._tts.wait_drained = _wait_drained
 
 
-class _BlockingReleaseTurn(FakeLiveTurn):
-    """`LiveTurn.release()` as a real teardown finds it: an await that can
-    park. BOTH teardown paths call it after they have read who owns output
-    and before they act on the answer, so the surrender lands inside it and
-    a single answer read up front is stale when it is used."""
+class _ParkedPeeringNotify:
+    """`PeeringClient.session_ended` as a real teardown finds it: a write to
+    the peering daemon that can park on its socket. BOTH teardown paths call
+    it after they have read who owns output and before they act on the
+    answer — the END_SEGMENT, the chirp, the drain wait, the duck restore,
+    the gate release — so a surrender landing inside it is the window a
+    single ownership answer read once at the top would miss."""
 
-    def __init__(
-        self,
-        timeline: list[str],
-        release_started: asyncio.Event,
-        allow_release: asyncio.Event,
-    ) -> None:
-        super().__init__()
+    def __init__(self, timeline: list[str]) -> None:
         self._timeline = timeline
-        self._release_started = release_started
-        self._allow_release = allow_release
+        self.parked = asyncio.Event()
+        self.resume = asyncio.Event()
 
-    async def release(self) -> None:
-        await super().release()
-        self._timeline.append("release_start")
-        self._release_started.set()
-        await asyncio.wait_for(self._allow_release.wait(), timeout=5.0)
-        self._timeline.append("release_end")
+    async def __call__(self, _reason: str) -> None:
+        self._timeline.append("peering_notify")
+        self.parked.set()
+        await asyncio.wait_for(self.resume.wait(), timeout=5.0)
+        self._timeline.append("peering_resumed")
 
 
 class _CueDuringSurrender:
@@ -119,14 +114,14 @@ class _CueDuringSurrender:
     def __init__(
         self,
         timeline: list[str],
-        allow_release: asyncio.Event,
+        resume_opener: asyncio.Event,
         opener_done: asyncio.Event,
         *,
         resume_opener_during_play: bool,
     ) -> None:
         self._wl: WakeLoop
         self._timeline = timeline
-        self._allow_release = allow_release
+        self._resume_opener = resume_opener
         self._opener_done = opener_done
         self._resume_opener_during_play = resume_opener_during_play
         self.played: list[str] = []
@@ -143,7 +138,7 @@ class _CueDuringSurrender:
         )
         self._timeline.append("cue_play_start")
         if self._resume_opener_during_play:
-            self._allow_release.set()
+            self._resume_opener.set()
             await asyncio.wait_for(self._opener_done.wait(), timeout=5.0)
         self.active_at_play_end = self._wl._output_gate.is_active
         self.kind_at_play_end = self._wl._output_gate.active_kind
@@ -220,29 +215,29 @@ async def _drive_cancel_timeout(
         0.01,
     )
     timeline: list[str] = []
-    release_started = asyncio.Event()
-    allow_release = asyncio.Event()
     opener_done = asyncio.Event()
-    turn = _BlockingReleaseTurn(timeline, release_started, allow_release)
+    turn = FakeLiveTurn()
+    notify = _ParkedPeeringNotify(timeline)
     cues = (
         _CueDuringSurrender(
             timeline,
-            allow_release,
+            notify.resume,
             opener_done,
             resume_opener_during_play=resume_during_cue,
         )
         if cues_configured else None
     )
     wl = wake_loop_for_tests(ducker=_OrderedDucker(timeline), cues=cues)
+    wl._peering.session_ended = notify
     wl._state = State.WAKE
     _record_output_writes(wl, timeline)
     if cues is not None:
         cues._wl = wl
     opener = asyncio.create_task(_OPENERS[teardown](wl, turn, opener_done))
     try:
-        # Parked inside `turn.release()`: past the point where each teardown
-        # path reads who owns output, before the point where it acts on it.
-        await asyncio.wait_for(release_started.wait(), timeout=5.0)
+        # Parked inside the peering notify: past the point where each
+        # teardown path reads who owns output, before it acts on it.
+        await asyncio.wait_for(notify.parked.wait(), timeout=5.0)
         # Armed only now: `_end_turn_inner` reads the confirmation window at
         # its top, and the window's own dismissal bookkeeping is another
         # test's subject.
@@ -268,7 +263,7 @@ async def _drive_cancel_timeout(
             task for task in wl._fire_and_forget
             if task.get_name() == "wake-arbitrate-acquire-drain"
         )), timeout=5.0)
-        allow_release.set()
+        notify.resume.set()
         await asyncio.wait_for(opener, timeout=5.0)
     finally:
         opener.cancel()
@@ -564,25 +559,6 @@ async def test_refusal_is_a_structured_event(
         assert played == [INTERNAL_ERROR_CUE_SLUG]
 
 
-class _ParkedPeeringNotify:
-    """`PeeringClient.session_ended` as a real teardown finds it: a write
-    to the peering daemon that can park on its socket. It sits between the
-    teardown's episode capture and every output action guarded on
-    ownership — the END_SEGMENT, the chirp, the drain wait, the duck
-    restore, the gate release — so a surrender landing inside it is the
-    window a single ownership answer read once at the top would miss."""
-
-    def __init__(self, timeline: list[str]) -> None:
-        self._timeline = timeline
-        self.parked = asyncio.Event()
-        self.resume = asyncio.Event()
-
-    async def __call__(self, _reason: str) -> None:
-        self._timeline.append("peering_notify")
-        self.parked.set()
-        await asyncio.wait_for(self.resume.wait(), timeout=5.0)
-
-
 async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
     """`_end_turn_inner` losing output ownership after it has begun and
     before it has written anything: the research cancel timeout's handover,
@@ -634,7 +610,7 @@ async def test_a_surrender_inside_the_teardown_stops_every_later_write() -> None
 
     # Nothing after the surrender: no end_segment, no chirp write, no drain
     # wait, no duck restore.
-    assert timeline == ["duck", "peering_notify", "surrender"]
+    assert timeline == ["duck", "peering_notify", "surrender", "peering_resumed"]
     # The cue that took the gate still owns it — the teardown released
     # nothing — while the opener still finished the turn it was holding.
     assert wl._output_gate.active_kind == "admin"
@@ -660,7 +636,7 @@ async def test_a_surrendered_opener_neither_writes_nor_unducks(
     chirp mixed into the cue, no drain wait held open for someone else's
     audio, no duck restore, no gate release. Ownership is therefore asked
     again AT each of those actions, not once before the awaits that
-    separate them (`turn.release()` is one of those awaits, and the
+    separate them (the peering notify is one of those awaits, and the
     surrender lands inside it)."""
     wl, timeline, cues = await _drive_cancel_timeout(
         monkeypatch, teardown=teardown, resume_during_cue=resume_during_cue,
@@ -709,13 +685,13 @@ async def test_the_surrendered_duck_comes_back_once_with_no_cue_manager(
         cues_configured=False,
     )
     assert cues is None
-    # One restore, landing while the opener is still parked in `release()`:
-    # the timeout path's, after the surrender — not the opener's.
+    # One restore, landing while the opener is still parked in the peering
+    # notify: the timeout path's, after the surrender — not the opener's.
     assert timeline.count("restore") == 1
     assert (
-        timeline.index("release_start")
+        timeline.index("peering_notify")
         < timeline.index("restore")
-        < timeline.index("release_end")
+        < timeline.index("peering_resumed")
     )
     assert [entry for entry in timeline if entry.startswith("write_")] == []
     assert wl._output_gate.is_active is False

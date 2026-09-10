@@ -362,7 +362,43 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
     assert not wl._output_gate.is_active
 
 
-@pytest.mark.parametrize("phase", ["outcome", "peering", "segment", "release", "drain", "restore", "meter"])
+async def test_closure_completes_without_waiting_for_the_provider_release():
+    """The user's ending — chirp, duck restore, back to wake listening —
+    runs while the provider teardown is still in flight."""
+    wl = _make_wakeloop()
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    finish_release = asyncio.Event()
+    order: list[str] = []
+
+    async def release():
+        try:
+            await finish_release.wait()
+        finally:
+            order.append("release_done")
+
+    async def restore():
+        order.append("duck_restore")
+
+    async def chirp(*, going_on):
+        order.append(f"chirp_{going_on}")
+
+    wl._turn.release = release
+    wl._ducker.restore = restore
+    wl._assistant_output.listening_chirp = chirp
+
+    teardown = asyncio.create_task(wl._end_turn("conversation_ended"))
+    try:
+        await wait_until(lambda: wl._state is State.WAKE)
+        assert order == ["chirp_False", "duck_restore"]
+        assert teardown.done()
+    finally:
+        finish_release.set()
+        await asyncio.gather(teardown, return_exceptions=True)
+    await wl._pending_release
+    assert order[-1] == "release_done"
+
+
+@pytest.mark.parametrize("phase", ["outcome", "peering", "segment", "drain", "restore", "meter"])
 @pytest.mark.parametrize("cancellation", ["caller", "operation"])
 async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     phase, cancellation,
@@ -409,7 +445,13 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
         proceed.set()
         await asyncio.gather(cleanup, return_exceptions=True)
 
-    assert calls == ["outcome", "peering", "segment", "release", "drain", "restore", "meter"]
+    # "release" is no longer an owned cleanup phase, so it carries no
+    # position in the closure — only the fact that it still ran.
+    assert [name for name in calls if name != "release"] == [
+        "outcome", "peering", "segment", "drain", "restore", "meter",
+    ]
+    await wl._pending_release
+    assert "release" in calls
     assert wl._usage_store.close_calls == 1
     assert wl._state is State.WAKE
     assert wl._turn is None

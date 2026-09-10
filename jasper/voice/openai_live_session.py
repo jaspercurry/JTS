@@ -18,8 +18,9 @@ import time
 
 from ..log_event import log_event
 from ..tools import dispatch_tool
-from ._base import BaseLiveConnection, BaseLiveTurn
+from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
 from ._supervisor import failure_detail
+from .conversation import END_CONVERSATION_TOOL
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
@@ -51,6 +52,12 @@ SILENCE_BRIDGE_SEC = 0.8
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
+
+# Ceiling on waiting for the server's `session.close` ack. Live bills per
+# connected minute, so the close is still sent and the transport still
+# torn down; only the ack is given up on. Measured ~2.9 s per turn end on
+# jts.local, which is dead time the next wake would inherit.
+CLOSE_ACK_TIMEOUT_SEC = 1.5
 
 
 class OpenAILiveTurn(BaseLiveTurn):
@@ -252,7 +259,14 @@ class OpenAILiveTurn(BaseLiveTurn):
             except (ValueError, TypeError):
                 result = {"error": "invalid_arguments"}
             else:
-                result = await dispatch_tool(self._conn._registry, call["name"], args)
+                dispatch = dispatch_tool(self._conn._registry, call["name"], args)
+                # A dismissal is never obsolete: a new delegation cancels this
+                # round mid-await, and the user's "never mind" would go with it.
+                result = await (
+                    asyncio.shield(dispatch)
+                    if call["name"] == END_CONVERSATION_TOOL
+                    else dispatch
+                )
             if self._released or delegation != self._delegation_id:
                 return
             await self._conn._send({"type": "response.item.create", "item": {
@@ -373,7 +387,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         try:
             if self._session is not None and not self._closed.is_set():
                 await self._send({"type": "session.close"})
-                await asyncio.wait_for(self._closed.wait(), 15)
+                await asyncio.wait_for(self._closed.wait(), CLOSE_ACK_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001
             log_event(logger, "live.finalization_incomplete", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
         finally:
@@ -389,7 +403,9 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._receive_task = None
         if self._session_cm is not None:
             try:
-                await asyncio.wait_for(self._session_cm.__aexit__(None, None, None), 3)
+                await asyncio.wait_for(
+                    self._session_cm.__aexit__(None, None, None), SESSION_CLOSE_TIMEOUT_SEC,
+                )
             except Exception as exc:  # noqa: BLE001
                 log_event(logger, "live.transport_close_failed", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
             finally:
