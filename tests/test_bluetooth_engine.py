@@ -59,6 +59,7 @@ def _wiim_device() -> BluetoothDevice:
 class _FakeObserver:
     def __init__(self, device: BluetoothDevice) -> None:
         self._device = device
+        self.started = True
 
     def get_by_mac(self, _mac: str) -> BluetoothDevice:
         return self._device
@@ -224,11 +225,21 @@ class _FakeScanBus:
 
 
 class _FakeScanObserver:
-    def __init__(self) -> None:
+    def __init__(self, *, started: bool = True, start_error: Exception | None = None):
         self.stopped = False
+        self.started = started
+        self.start_calls = 0
+        self._start_error = start_error
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        if self._start_error is not None:
+            raise self._start_error
+        self.started = True
 
     async def stop(self) -> None:
         self.stopped = True
+        self.started = False
 
 
 def _scan_engine(adapter: _FakeAdapter) -> BluetoothEngine:
@@ -589,6 +600,70 @@ async def test_engine_start_bounds_a_hung_connect_and_arms_recovery(monkeypatch)
     assert bus.journal == ["bus_disconnect"]
     # A bootstrap that lost the race to BlueZ must leave the lazy path armed.
     assert engine._bus_recovery_required is True
+
+
+async def test_engine_start_arms_recovery_when_the_bus_socket_is_absent(monkeypatch):
+    """The dominant boot failure raises in the constructor, not in connect().
+
+    dbus-next opens the unix socket in `MessageBus.__init__`, so an absent or
+    refused system bus never reaches `connect()`. If that raise escapes the
+    guarded block, `_bus_recovery_required` stays False and the lazy recovery
+    no-ops for the life of the process while POST /scan still answers ok.
+    """
+
+    def _refused(**_kwargs):
+        raise ConnectionRefusedError("system bus socket refused")
+
+    monkeypatch.setattr(engine_module, "MessageBus", _refused)
+
+    engine = BluetoothEngine()
+    observer = _FakeScanObserver(started=False)
+    setattr(engine, "_observer", observer)
+    with pytest.raises(ConnectionRefusedError):
+        await engine.start()
+
+    assert engine._bus is None
+    assert engine._bus_recovery_required is True
+    assert observer.start_calls == 0
+
+
+async def test_bus_recovery_restarts_an_observer_that_never_completed_init():
+    """A deferred bootstrap must not strand the live device list forever.
+
+    `observer.start()` is only otherwise called from `engine.start()`, so
+    without this the device list stays empty until the daemon restarts.
+    """
+
+    adapter = _FakeAdapter()
+    engine = _scan_engine(adapter)
+    observer = _FakeScanObserver(started=False)
+    setattr(engine, "_observer", observer)
+
+    await engine._recover_bus_if_required()
+
+    assert observer.start_calls == 1
+    assert observer.started is True
+
+    await engine._recover_bus_if_required()
+
+    assert observer.start_calls == 1
+
+
+async def test_bus_recovery_survives_an_observer_that_cannot_start(caplog):
+    adapter = _FakeAdapter()
+    engine = _scan_engine(adapter)
+    observer = _FakeScanObserver(
+        started=False, start_error=DBusError("org.bluez.Error.NotReady", "no adapter")
+    )
+    setattr(engine, "_observer", observer)
+    caplog.set_level(logging.WARNING, logger="jasper.bluetooth.engine")
+
+    await engine.start_discovery(duration_s=0)
+
+    assert observer.start_calls == 1
+    assert observer.started is False
+    assert "event=bluetooth.observer_restart_failed" in caplog.text
+    assert adapter.start_calls == 1
 
 
 async def test_scan_start_before_engine_start_creates_no_timer():

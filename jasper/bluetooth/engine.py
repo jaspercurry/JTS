@@ -32,7 +32,12 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
-from .adapter import BLUEZ_ERRORS, BUS_CONNECT_TIMEOUT_SEC, connect_bounded
+from .adapter import (
+    BLUEZ_CALL_TIMEOUT_SEC,
+    BLUEZ_ERRORS,
+    BUS_CONNECT_TIMEOUT_SEC,
+    connect_bounded,
+)
 from .handlers import pick
 from .models import (
     BluetoothActionResult,
@@ -45,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
-SCAN_DBUS_TIMEOUT_SEC = 5.0
+SCAN_DBUS_TIMEOUT_SEC = BLUEZ_CALL_TIMEOUT_SEC
 CONNECT_TIMEOUT_S = 30.0
 SCAN_OPERATION_ERRORS = (*BLUEZ_ERRORS, RuntimeError)
 AccessoryReconciler = Callable[[str], Awaitable[object]]
@@ -185,16 +190,28 @@ class BluetoothEngine:
         return self._observer
 
     async def start(self) -> None:
+        """Bring up the shared bus and the observer's live device list.
+
+        Total worst-case budget 15 s: 5 s for this bus (BUS_CONNECT_TIMEOUT_SEC)
+        plus the observer's own 5 s connect and 5 s ObjectManager snapshot. That
+        has to stay well under systemd's DefaultTimeoutStartSec (90 s), or a
+        bluetoothd that owns org.bluez but never answers costs the unit its
+        READY=1 and it is SIGTERMed into the restart loop this bound exists for.
+        """
         self._closing = False
-        bus = MessageBus(bus_type=BusType.SYSTEM)
         try:
+            # The constructor opens the socket, so an absent or refused system
+            # bus raises here, before connect() is ever awaited.
+            bus = MessageBus(bus_type=BusType.SYSTEM)
             await connect_bounded(
                 bus, BUS_CONNECT_TIMEOUT_SEC, site="engine_start",
             )
         except BLUEZ_ERRORS:
-            # BlueZ can still be coming up (minutes, on a low-memory Pi Zero
-            # 2 W). A bootstrap that loses the race must not cost the daemon
-            # its bus for good: arm the lazy recovery the request paths run.
+            # dbus-daemon itself is unreachable, wedged, or refusing us. A
+            # bootstrap that loses that race must not cost the daemon its bus
+            # for good: arm the lazy recovery the request paths run. (A BlueZ
+            # that is merely late does not land here — the broker answers Hello
+            # regardless; late BlueZ surfaces below, out of observer.start().)
             self._bus_recovery_required = True
             raise
         self._bus = bus
@@ -352,15 +369,46 @@ class BluetoothEngine:
         )
 
     async def _recover_bus_if_required(self) -> None:
-        """Bound and serialize recovery after fail-closed bus release."""
+        """Bound and serialize recovery after a fail-closed or deferred start.
 
+        Every bus-using request runs this first, so it is also the only place a
+        deferred bootstrap (see `jasper.web.bluetooth_setup`) can get the
+        observer's live device list back.
+        """
+
+        await self._reconnect_shared_bus()
+        await self._restart_observer_if_stalled()
+
+    async def _restart_observer_if_stalled(self) -> None:
+        """Retry an observer whose init never completed.
+
+        `start()` is the only other caller of `observer.start()`, so without
+        this a deferred bootstrap leaves the device list empty for the life of
+        the process. Best-effort: the shared bus is already back and a request
+        must not fail because BlueZ still is not answering ObjectManager.
+        """
+
+        if self._closing or self._observer.started:
+            return
+        try:
+            await self._observer.start()
+        except SCAN_OPERATION_ERRORS as error:
+            log_event(
+                logger,
+                "bluetooth.observer_restart_failed",
+                error_type=type(error).__name__,
+                error=str(error),
+                level=logging.WARNING,
+            )
+
+    async def _reconnect_shared_bus(self) -> None:
         if self._bus is not None or not self._bus_recovery_required:
             return
         async with self._bus_recovery_lock:
             if self._bus is not None or not self._bus_recovery_required:
                 return
-            bus = MessageBus(bus_type=BusType.SYSTEM)
             try:
+                bus = MessageBus(bus_type=BusType.SYSTEM)
                 await connect_bounded(
                     bus, SCAN_DBUS_TIMEOUT_SEC, site="bus_recovery",
                 )

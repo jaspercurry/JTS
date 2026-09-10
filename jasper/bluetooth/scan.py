@@ -26,7 +26,11 @@ from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
-from .adapter import BUS_CONNECT_TIMEOUT_SEC, connect_bounded
+from .adapter import (
+    BLUEZ_CALL_TIMEOUT_SEC,
+    BUS_CONNECT_TIMEOUT_SEC,
+    connect_bounded,
+)
 from .models import BluetoothDevice, UUID_BATTERY_LEVEL
 
 logger = logging.getLogger(__name__)
@@ -97,11 +101,20 @@ class DeviceObserver:
         self._listeners: set[asyncio.Queue] = set()
         self._bus: MessageBus | None = None
         self._om = None
+        # Idempotency key. `_bus` is set the moment the bus connects, so keying
+        # on it would make a start() that died in the BlueZ snapshot below
+        # self-no-op forever; the engine's lazy recovery retries on this.
+        self._started = False
         self._unsubscribes: list[Callable[[], None]] = []
         self._device_unsubscribes: dict[str, Callable[[], None]] = {}
         self._battery_unsubscribes: dict[str, Callable[[], None]] = {}
         self._watch_tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
+
+    @property
+    def started(self) -> bool:
+        """Whether `start()` ran all the way through."""
+        return self._started
 
     @property
     def devices(self) -> list[BluetoothDevice]:
@@ -119,22 +132,38 @@ class DeviceObserver:
 
     async def start(self) -> None:
         """Connect to the system bus, subscribe to bluez signals,
-        snapshot the current devices into memory."""
-        if self._bus is not None:
+        snapshot the current devices into memory.
+
+        Bounded end to end (5 s connect + 5 s for the BlueZ exchange): a
+        bluetoothd that owns org.bluez without answering ObjectManager would
+        otherwise hang the caller's start() forever, and dbus-next proxy calls
+        carry no timeout of their own. On any failure this unwinds fully, so
+        the next call is a clean retry rather than a second half-built bus.
+        """
+        if self._started:
             return
         bus = MessageBus(bus_type=BusType.SYSTEM)
         await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="observer_start")
         self._bus = bus
-        intro = await bus.introspect(BLUEZ_BUS, "/")
-        self._om = bus.get_proxy_object(
-            BLUEZ_BUS,
-            "/",
-            intro,
-        ).get_interface("org.freedesktop.DBus.ObjectManager")
+        try:
+            await self._start_subscribed(bus)
+        except BaseException:
+            await self.stop()
+            raise
+        self._started = True
+
+    async def _start_subscribed(self, bus: MessageBus) -> None:
+        async with asyncio.timeout(BLUEZ_CALL_TIMEOUT_SEC):
+            intro = await bus.introspect(BLUEZ_BUS, "/")
+            self._om = bus.get_proxy_object(
+                BLUEZ_BUS,
+                "/",
+                intro,
+            ).get_interface("org.freedesktop.DBus.ObjectManager")
+            # Snapshot existing devices + battery interfaces.
+            managed = await self._om.call_get_managed_objects()
         om = self._om
 
-        # Snapshot existing devices + battery interfaces.
-        managed = await self._om.call_get_managed_objects()
         for path, ifaces in managed.items():
             dev_props = ifaces.get("org.bluez.Device1")
             if dev_props is None:
@@ -234,6 +263,7 @@ class DeviceObserver:
             self._schedule_battery_refresh(path)
 
     async def stop(self) -> None:
+        self._started = False
         bus = self._bus
         self._bus = None
         self._om = None

@@ -34,6 +34,8 @@ from unittest import mock
 
 import pytest
 
+from dbus_next.errors import AuthError
+
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
@@ -1081,17 +1083,27 @@ def test_slow_bluez_boot_defers_the_engine_instead_of_failing_the_daemon(
         async def connect(self):
             return self
 
+    class _FakeObserver:
+        def __init__(self) -> None:
+            self.started = False
+
+        async def start(self) -> None:
+            self.started = True
+
     buses = [_HungBus(), _LiveBus()]
     monkeypatch.setattr(engine_module, "MessageBus", lambda *, bus_type: buses.pop(0))
     monkeypatch.setattr(engine_module, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
 
     dispatcher = bluetooth_setup._AsyncDispatcher()
+    observer = _FakeObserver()
+    setattr(dispatcher.engine, "_observer", observer)
     try:
         with caplog.at_level(logging.WARNING, logger=bluetooth_setup.__name__):
             dispatcher.start()
 
         engine = dispatcher.engine
         assert engine._bus is None
+        assert observer.started is False
         assert event_fields(
             caplog, "bluetooth.engine_start_deferred",
         )["error_type"] == "TimeoutError"
@@ -1100,6 +1112,57 @@ def test_slow_bluez_boot_defers_the_engine_instead_of_failing_the_daemon(
 
         assert isinstance(engine._bus, _LiveBus)
         assert engine._bus_recovery_required is False
+        # The live device list comes back with the bus, not at the next
+        # daemon start.
+        assert observer.started is True
+    finally:
+        loop = dispatcher._loop
+        assert loop is not None
+        loop.call_soon_threadsafe(loop.stop)
+        dispatcher._thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+
+
+@pytest.mark.parametrize(
+    "start_error, deferred",
+    [
+        (AuthError("EXTERNAL handshake rejected"), True),
+        (ConnectionRefusedError("system bus socket refused"), True),
+        (RuntimeError("dispatcher not started"), False),
+    ],
+    ids=["auth", "refused", "bug"],
+)
+def test_engine_bootstrap_defers_environment_failures_and_crashes_on_bugs(
+    monkeypatch, caplog, start_error, deferred,
+):
+    """Only an environment failure earns a degraded daemon.
+
+    A rejected EXTERNAL handshake and a refused socket are misconfiguration the
+    daemon cannot fix but the page can survive. A RuntimeError on this path is a
+    dead loop or a bug inside start(): it must crash, not serve degraded.
+    """
+
+    async def _failing_start() -> None:
+        raise start_error
+
+    dispatcher = bluetooth_setup._AsyncDispatcher()
+    monkeypatch.setattr(dispatcher._engine, "start", _failing_start)
+    try:
+        with caplog.at_level(logging.WARNING, logger=bluetooth_setup.__name__):
+            if deferred:
+                dispatcher.start()
+            else:
+                with pytest.raises(RuntimeError):
+                    dispatcher.start()
+
+        events = [
+            r for r in caplog.records
+            if "event=bluetooth.engine_start_deferred" in r.getMessage()
+        ]
+        assert bool(events) is deferred
+        if deferred:
+            assert event_fields(
+                caplog, "bluetooth.engine_start_deferred",
+            )["error_type"] == type(start_error).__name__
     finally:
         loop = dispatcher._loop
         assert loop is not None

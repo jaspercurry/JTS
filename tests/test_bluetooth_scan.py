@@ -262,6 +262,54 @@ async def test_device_observer_start_bounds_a_hung_connect(monkeypatch) -> None:
     assert bus.journal == ["bus_disconnect"]
 
 
+async def test_device_observer_start_bounds_a_silent_bluez(monkeypatch) -> None:
+    """A bluetoothd that owns org.bluez but never answers must not hang start().
+
+    dbus-next proxy calls carry no timeout, so an unbounded snapshot blocks the
+    daemon past DefaultTimeoutStartSec and systemd SIGTERMs it into the restart
+    loop. The failed start must also unwind, or the retry finds `_bus` set and
+    self-no-ops forever.
+    """
+
+    class _SilentObjectManager:
+        async def call_get_managed_objects(self):
+            await asyncio.Event().wait()
+
+    class _SilentBus(_FakeBus):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.om = _SilentObjectManager()
+
+    bus = _SilentBus()
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: bus)
+    monkeypatch.setattr(scan, "BLUEZ_CALL_TIMEOUT_SEC", 0.01)
+
+    observer = DeviceObserver()
+    with pytest.raises(TimeoutError):
+        await observer.start()
+
+    assert observer.started is False
+    assert observer._bus is None
+    assert bus.disconnected is True
+
+
+async def test_device_observer_start_is_idempotent_on_completed_init(
+    monkeypatch,
+) -> None:
+    buses = [_FakeBus({}), _FakeBus({})]
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: buses[0])
+
+    observer = DeviceObserver()
+    await observer.start()
+    assert observer.started is True
+
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: buses[1])
+    await observer.start()
+
+    assert observer._bus is buses[0]
+    assert buses[1].disconnected is False
+
+
 async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     monkeypatch,
 ) -> None:
