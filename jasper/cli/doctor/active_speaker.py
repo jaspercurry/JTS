@@ -61,8 +61,6 @@ REASON_STARTUP_HOLD_STALE = "startup_hold_stale"
 REASON_ROOM_AUTHORITY_NO_DECISION = "room_authority_no_decision"
 REASON_ROOM_AUTHORITY_NOT_REQUIRED = "room_authority_not_required"
 REASON_ROOM_AUTHORITY_UNBANKED = "room_authority_unbanked"
-REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE = "room_authority_receipt_unreadable"
-REASON_ROOM_AUTHORITY_UNPROVEN = "room_authority_unproven"
 REASON_ROOM_AUTHORITY_BLOCKED = "room_authority_blocked"
 
 REASON_SETUP_NOTICES_NONE = "setup_notices_none"
@@ -589,18 +587,12 @@ def check_active_speaker_startup_hold() -> CheckResult:
 def check_room_correction_authority() -> CheckResult:
     """Room correction runs unproven — this is the line that says so.
 
-    Ruling S10 and ADR-0019: only a RECEIPT denial lets the run proceed and
+    Ruling S10 and ADR-0019: only the ABSENT denial lets the run proceed and
     bank nothing (`ok`, the disclosure this line exists for); every other
-    denial stops room correction outright, so it warns. Never FAIL, and the
-    denials do not share one line because they do not share a remedy (ADR-0196).
+    denial stops room correction outright, so it warns. Never FAIL (ADR-0196).
     """
 
-    from ...active_speaker._common import (
-        ROOM_AUTHORITY_RECEIPT_ABSENT,
-        ROOM_AUTHORITY_RECEIPT_MALFORMED,
-        ROOM_AUTHORITY_RECEIPT_STALE,
-        ROOM_AUTHORITY_RECEIPT_UNREADABLE,
-    )
+    from ...active_speaker._common import ROOM_AUTHORITY_RECEIPT_ABSENT
     label = "room correction authority"
     try:
         status = evidence.active_speaker_setup_status()
@@ -638,21 +630,6 @@ def check_room_correction_authority() -> CheckResult:
             f"room correction runs unbanked ({denial})"
             + (f": {cause}" if cause else ""),
             reason=REASON_ROOM_AUTHORITY_UNBANKED,
-        )
-    if denial == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
-        # A machine fault, not a verdict on the record: the file and errno are
-        # the sentence that ends the incident. Without them an operator reads
-        # "unproven" and goes looking for a mint that was never the problem.
-        return CheckResult(
-            label, "warn",
-            "room correction cannot read its commissioning record "
-            f"({cause or denial}): {detail}",
-            reason=REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
-        )
-    if denial in {ROOM_AUTHORITY_RECEIPT_STALE, ROOM_AUTHORITY_RECEIPT_MALFORMED}:
-        return CheckResult(
-            label, "ok", f"room correction runs unproven ({denial}): {detail}",
-            reason=REASON_ROOM_AUTHORITY_UNPROVEN,
         )
     return CheckResult(
         label, "warn",

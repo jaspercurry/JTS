@@ -698,17 +698,6 @@ def test_active_speaker_startup_hold_verdicts(
                 "required": True,
                 "allowed": False,
                 "authority": None,
-                "reason": "active_commissioning_receipt_stale",
-                "detail": "re-mint it when convenient",
-            },
-            "ok", active_speaker.REASON_ROOM_AUTHORITY_UNPROVEN,
-            id="unproven_runs_anyway",
-        ),
-        pytest.param(
-            {
-                "required": True,
-                "allowed": False,
-                "authority": None,
                 "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
                 "detail": "finish commissioning when convenient",
             },
@@ -734,18 +723,6 @@ def test_active_speaker_startup_hold_verdicts(
                 "required": True,
                 "allowed": False,
                 "authority": None,
-                "reason": _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
-                "cause": "PermissionError:EACCES:/var/lib/jasper/receipt.json",
-                "detail": "a machine-level fault",
-            },
-            "warn", active_speaker.REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
-            id="machine_fault_still_warns",
-        ),
-        pytest.param(
-            {
-                "required": True,
-                "allowed": False,
-                "authority": None,
                 "reason": "active_applied_profile_graph_mismatch",
                 "detail": "apply that crossover again",
             },
@@ -761,12 +738,12 @@ def test_active_speaker_startup_hold_verdicts(
 def test_room_correction_authority_discloses_but_never_fails(
     monkeypatch, acoustic, status, reason,
 ):
-    """The doctor line is the only place an unproven room run is visible.
+    """The doctor line is the only place an unbanked room run is visible.
 
-    Ruling S10 stopped the RECEIPT from refusing the run, so nothing else tells
-    a household that the result it just measured is not banked as verified: an
-    unproven receipt is `ok` with its reason. A machine fault reading the
-    record, and every denial that is not a receipt at all, warn.
+    Ruling S10 stopped the ABSENT receipt from refusing the run, so nothing
+    else tells a household that the result it just measured is not banked as
+    verified: an absent receipt is `ok` with its reason. Every other denial
+    warns.
     """
     monkeypatch.setattr(
         setup_status_mod,

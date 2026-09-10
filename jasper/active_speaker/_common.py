@@ -22,13 +22,11 @@ from typing import Any
 REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 
 
-# Why the applied automatic crossover did not vouch for itself. These name what
+# Why the applied automatic crossover did not vouch for itself: no
+# `source.measured_candidate_fingerprint` on the applied profile. Names what
 # cannot be CLAIMED, never what is refused: room correction runs in all four
 # (ADR-0019). Reader's guide: ADR-0196.
 ROOM_AUTHORITY_RECEIPT_ABSENT = "active_commissioning_receipt_absent"
-ROOM_AUTHORITY_RECEIPT_STALE = "active_commissioning_receipt_stale"
-ROOM_AUTHORITY_RECEIPT_MALFORMED = "active_commissioning_receipt_malformed"
-ROOM_AUTHORITY_RECEIPT_UNREADABLE = "active_commissioning_receipt_unreadable"
 
 
 # The saved topology no longer hashes to what the applied baseline was minted

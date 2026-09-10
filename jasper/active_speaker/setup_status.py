@@ -23,9 +23,6 @@ from jasper.output_topology import OutputTopologyError, load_output_topology_str
 from ._common import (
     BASELINE_TOPOLOGY_CHANGED,
     ROOM_AUTHORITY_RECEIPT_ABSENT,
-    ROOM_AUTHORITY_RECEIPT_MALFORMED,
-    ROOM_AUTHORITY_RECEIPT_STALE,
-    ROOM_AUTHORITY_RECEIPT_UNREADABLE,
 )
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
@@ -60,24 +57,6 @@ _RECEIPT_DETAIL_DEFAULT = (
 )
 _RECEIPT_DETAIL = {
     ROOM_AUTHORITY_RECEIPT_ABSENT: _RECEIPT_DETAIL_DEFAULT,
-    ROOM_AUTHORITY_RECEIPT_STALE: (
-        "The measured candidate this speaker's automatic crossover names is "
-        "not the one it is playing, so room correction is running without "
-        "banking a verified result. Re-apply from the crossover review screen "
-        "when convenient."
-    ),
-    ROOM_AUTHORITY_RECEIPT_MALFORMED: (
-        "The applied automatic crossover's record of the candidate it came "
-        "from is not valid, so room correction is running without banking a "
-        "verified result. Re-apply from the crossover review screen to "
-        "replace it."
-    ),
-    ROOM_AUTHORITY_RECEIPT_UNREADABLE: (
-        "JTS could not read what the applied automatic crossover was composed "
-        "from, so room correction is running without banking a verified "
-        "result. That is a machine-level fault rather than a verdict on the "
-        "crossover, and re-applying is unlikely to change it."
-    ),
 }
 
 _STAGED_CONFIG_BASENAMES = {
