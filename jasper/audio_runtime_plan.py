@@ -262,11 +262,7 @@ class AudioRouteProfile:
     low_latency_claim: bool
     fanin_usb_direct_required: bool
     fanin_input_resampler_required: bool
-    camilla_required: bool
-    outputd_final_reference_required: bool
-    bitperfect: bool = False
     active: bool = True
-    aec_reference_mode: str = "outputd_final_electrical"
     blocking_reason: str = ""
     warnings: tuple[str, ...] = ()
 
@@ -278,13 +274,7 @@ class AudioRouteProfile:
             "low_latency_claim": self.low_latency_claim,
             "fanin_usb_direct_required": self.fanin_usb_direct_required,
             "fanin_input_resampler_required": self.fanin_input_resampler_required,
-            "camilla_required": self.camilla_required,
-            "outputd_final_reference_required": (
-                self.outputd_final_reference_required
-            ),
-            "bitperfect": self.bitperfect,
             "active": self.active,
-            "aec_reference_mode": self.aec_reference_mode,
         }
         if self.blocking_reason:
             out["blocking_reason"] = self.blocking_reason
@@ -795,8 +785,6 @@ def resolve_audio_route_profile(
             low_latency_claim=True,
             fanin_usb_direct_required=True,
             fanin_input_resampler_required=True,
-            camilla_required=True,
-            outputd_final_reference_required=True,
             warnings=warnings,
         )
 
@@ -808,15 +796,10 @@ def resolve_audio_route_profile(
             low_latency_claim=False,
             fanin_usb_direct_required=False,
             fanin_input_resampler_required=False,
-            camilla_required=False,
-            outputd_final_reference_required=True,
-            bitperfect=True,
             active=False,
-            aec_reference_mode="degraded_until_final_reference_proven",
             blocking_reason=(
                 "bit-perfect passthrough is declared but inactive; it must "
-                "prove passive/full-range safety and final-reference truth "
-                "before activation"
+                "prove passive/full-range safety before activation"
             ),
             warnings=warnings,
         )
@@ -828,8 +811,6 @@ def resolve_audio_route_profile(
         low_latency_claim=False,
         fanin_usb_direct_required=False,
         fanin_input_resampler_required=False,
-        camilla_required=True,
-        outputd_final_reference_required=True,
         warnings=warnings,
     )
 

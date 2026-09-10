@@ -610,8 +610,6 @@ def test_audio_route_profile_defaults_to_corrected_safe_path():
 
     assert plan.route_profile.route_id == ROUTE_CORRECTED_48K
     assert plan.route_profile.low_latency_claim is False
-    assert plan.route_profile.camilla_required is True
-    assert plan.route_profile.outputd_final_reference_required is True
     assert plan.route_config_hash
     assert plan.to_dict()["route_profile"]["route_id"] == ROUTE_CORRECTED_48K
 
@@ -725,8 +723,6 @@ def test_usb_low_latency_route_requires_direct_fanin_resampler_and_reference():
     assert profile.low_latency_claim is True
     assert profile.fanin_usb_direct_required is True
     assert profile.fanin_input_resampler_required is True
-    assert profile.camilla_required is True
-    assert profile.outputd_final_reference_required is True
     assert by_key[FANIN_INPUT_RESAMPLER_KEY].value == "enabled"
     assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
@@ -873,15 +869,12 @@ def test_non_low_latency_route_clears_fanin_resampler_knobs_only():
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
 
 
-def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
+def test_bitperfect_route_is_declared_but_inactive():
     profile = resolve_audio_route_profile(
         {AUDIO_ROUTE_PROFILE_KEY: ROUTE_BITPERFECT_DECLARED}
     )
 
     assert profile.active is False
-    assert profile.bitperfect is True
-    assert profile.camilla_required is False
-    assert profile.aec_reference_mode == "degraded_until_final_reference_proven"
     assert "inactive" in profile.blocking_reason
 
 

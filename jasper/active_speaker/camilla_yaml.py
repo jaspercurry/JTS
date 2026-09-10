@@ -2082,14 +2082,13 @@ def _sub_baseline_pipeline_lines(
 def _emit_driver_domain_pipeline(
     preset: ActiveSpeakerPreset,
     *,
-    pair_trim_db: float = 0.0,
     bass_extension: dict[str, Any] | None = None,
 ) -> str:
     # Driver-domain-only (follower) pipeline, in order: the inter-speaker
     # channel-select (a 2->2 Mixer picking L/R/mono from the leader's corrected
-    # program), the optional pair-balance trim, the intra-speaker 2->N split,
-    # then each driver's crossover/delay/gain/limiter chain. One helper owns
-    # this ordering so the trimmed and untrimmed cases cannot fork.
+    # program), the pair-balance trim, the intra-speaker 2->N split, then each
+    # driver's crossover/delay/gain/limiter chain. One helper owns this
+    # ordering so the bass-extension-trimmed and untrimmed cases cannot fork.
     lines = [
         "  - type: Mixer",
         f"    name: {CHANNEL_SELECT_MIXER}",
@@ -2277,7 +2276,6 @@ def emit_active_speaker_parked_config(
     topology_id: str | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
-    playback_format: str | None = None,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
@@ -2294,10 +2292,7 @@ def emit_active_speaker_parked_config(
     * **The sink is a ``File``, not a DAC** (:data:`PARKED_SINK_PATH`) — no DAC
       attached, so no driver can be over-driven regardless of the saved
       topology, and parking works on a board with no active outputd lane at all.
-      Its ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``; ``playback_format``
-      is not applicable to a ``/dev/null`` File sink and passing one EXPLICITLY
-      is refused rather than ignored (a presence check on the caller-supplied
-      argument, never a comparison against the default).
+      Its ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``.
     * **Every physical output is hard muted** by the repo's one mute idiom — a
       ``Gain`` at :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` — and the
       mixer feeds every destination at that same -120 dB floor, so even a
@@ -2310,20 +2305,6 @@ def emit_active_speaker_parked_config(
 
     capture_device = _yaml_string(capture_device, "capture_device")
     capture_format = _yaml_string(capture_format, "capture_format")
-    # A bare ``is not None`` presence check on the CALLER-SUPPLIED argument,
-    # never a value comparison against DEFAULT_PLAYBACK_FORMAT: a module global
-    # read fresh at call time would diverge from this parameter's def-time-bound
-    # default the moment the two constants stop being assigned in lockstep. The
-    # only production caller never passes playback_format — the box must always
-    # be able to park — and the emitted format is always the pinned constant.
-    if playback_format is not None:
-        raise ActiveSpeakerConfigError(
-            "the parked graph's /dev/null File sink is pinned to "
-            f"DEFAULT_PIPE_SINK_FORMAT={DEFAULT_PIPE_SINK_FORMAT!r} — "
-            "playback_format is not applicable to this sink at all; passing "
-            f"one explicitly (got {playback_format!r}) is a caller bug, not "
-            "a wire-format request; they are different axes"
-        )
     sample_rate = _positive_int(sample_rate, "sample_rate")
     output_count = _positive_int(output_count, "output_count")
     # playback_device=None because this sink is a clockless /dev/null File: it
@@ -3868,7 +3849,6 @@ def emit_active_speaker_driver_domain_config(
     ))
     pipeline_yaml = _emit_driver_domain_pipeline(
         preset,
-        pair_trim_db=pair_trim_db,
         bass_extension=bass_extension,
     )
     metadata_comments = [
