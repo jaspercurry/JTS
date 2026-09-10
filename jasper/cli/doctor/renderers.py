@@ -32,6 +32,7 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
+    _PROBE_FRAMES,
     _exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
@@ -951,12 +952,8 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
-#: The probe is bounded by its OWN work, not by outlasting a timer: `aplay -s`
-#: writes `_PROBE_FRAMES` frames (100 ms at 48 kHz, per channel) then exits 0
-#: after open → prepare → write → drain — ~0.16 s on a Pi. `_PROBE_TIMEOUT_SEC`
-#: is a backstop only: a kill (124) is a FAILURE, since a probe that never
-#: finished proved nothing.
-_PROBE_FRAMES = "4800"
+#: `timeout(1)`'s kill guard over a `_PROBE_FRAMES` burst: a kill (124) is a
+#: FAILURE, since a probe that never finished proved nothing.
 _PROBE_TIMEOUT_SEC = "2.0"
 
 

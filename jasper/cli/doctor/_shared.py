@@ -165,6 +165,13 @@ REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
+#: Frames an ALSA open-probe moves before it exits: `aplay -s` / `arecord -s`
+#: bounds the probe by its OWN work, not by outlasting a timer — 100 ms at
+#: 48 kHz, per channel, so rc 0 means open → prepare → transfer → drain all
+#: completed (~0.16 s on a Pi). Every probe's timeout stays a BACKSTOP: a kill
+#: is a FAILURE, since a probe that never finished proved nothing.
+_PROBE_FRAMES = "4800"
+
 def _parse_systemd_environment(text: str) -> dict[str, str]:
     """Parse ``systemctl show -p Environment`` output into key/value pairs."""
     text = text.strip()

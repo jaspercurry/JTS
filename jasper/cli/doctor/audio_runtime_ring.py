@@ -23,7 +23,7 @@ from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _PROBE_FRAMES, _run
 from .audio_runtime_camilla import _camilla_statefile
 from .audio_runtime_fanin import _requires_roleful_graph
 from .audio_runtime_outputd import _outputd_reconciled_env
@@ -185,14 +185,14 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     ring_path = _jts_ring_path_for(pcm)
     pre_existed = ring_path is not None and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
-    # (feed silence in). 48 kHz / 1 s.
+    # (feed silence in), 48 kHz, bounded by `_PROBE_FRAMES` frames of work.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
-    # 4 s, not 6: up to three PCMs are probed in one row and a doctor row is cut
-    # off at 15 s. 4 s still leaves 3 s of slack over a 1 s capture/playback.
+    # Backstop only, and generous: up to three PCMs are probed in one row and a
+    # doctor row is cut off at 15 s.
     try:
         proc = _run(
             [tool, "-D", pcm, "-c", str(channels), "-r", "48000",
-             "-f", sample_format, "-d", "1", sink],
+             "-f", sample_format, "-s", _PROBE_FRAMES, sink],
             timeout=4.0,
         )
     except subprocess.TimeoutExpired:
