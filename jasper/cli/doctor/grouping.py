@@ -884,7 +884,7 @@ def check_grouping_tts_lane() -> CheckResult:
     # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
     from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
-    from ...multiroom.reconcile import is_active_speaker_box
+    from ...multiroom.reconcile import output_topology_state
     from ...multiroom.tts_route import (
         VOICE_PARK_ENV,
         expected_grouping_tts_route,
@@ -899,8 +899,17 @@ def check_grouping_tts_lane() -> CheckResult:
     label = "grouping: TTS lane"
     cfg = evidence.grouping_config()
     active = is_active_member(cfg)
-    active_endpoint = is_active_speaker_box() if active else False
-    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
+    # The reconciler's OWN two facts, from its own one read: the route is a
+    # function of both, and asking with only one would expect a socket the
+    # writer never armed.
+    active_box_state, flat_output_allowed = (
+        output_topology_state() if active else (False, False)
+    )
+    route = expected_grouping_tts_route(
+        cfg,
+        active_endpoint=active_box_state is True,
+        flat_output_allowed=flat_output_allowed,
+    )
 
     voice_runtime_env, voice_runtime_error = _resolved_jasper_voice_env()
     voice_socket = (

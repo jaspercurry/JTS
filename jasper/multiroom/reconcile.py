@@ -547,9 +547,15 @@ def outputd_grouping_env(
     mixer is stereo-only and post-crossover, and on an active lane a 2-way
     speaker is also "2 channels", so arming that socket would send full-range
     assistant audio to the tweeter. Active endpoints therefore clear the outputd
-    TTS socket along with the lane.
+    TTS socket along with the lane — and so does every other box whose DAC
+    outputs the graph owns, which is why the route reads ``flat_output_allowed``
+    from the same decision the lane does (#2380).
     """
-    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
+    route = expected_grouping_tts_route(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+    )
 
     if cfg.enabled and cfg.error is None:
         if not member_lane_decision(
@@ -593,6 +599,7 @@ def voice_grouping_env(
     cfg: GroupingConfig,
     *,
     active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
 ) -> dict[str, str]:
     """jasper-voice's grouping-derived env. PURE.
 
@@ -602,8 +609,16 @@ def voice_grouping_env(
     endpoints fail closed to fan-in or park, with outputd TTS unarmed. Solo also
     returns an EMPTY dict — the key is omitted, never present-but-empty (a
     set-empty value would be read as a real, invalid socket path).
+
+    Takes the SAME two route facts as :func:`outputd_grouping_env`: the two
+    files are one route, and a caller that answered them differently would aim
+    voice at a socket outputd does not serve.
     """
-    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
+    route = expected_grouping_tts_route(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+    )
     if cfg.enabled and cfg.error is None:
         env = (
             {}
@@ -1780,6 +1795,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         if cleared and env_ok:
             _restart_outputd()
+        # The PAIR, from the same two facts: an unreadable topology denies the
+        # flat DAC output, which unarms outputd's TTS socket, and voice must not
+        # be left aimed at a socket nobody serves.
+        voice_cleared, voice_ok = _write_derived_env(
+            voice_grouping_env(role.cfg, flat_output_allowed=False),
+            path=VOICE_GROUPING_ENV_FILE,
+            consumer="voice",
+        )
+        if voice_cleared and voice_ok:
+            _restart_unit(AEC_RECONCILE_UNIT, no_block=True)
         return 1
 
     # A member whose outputd period cannot carry the return ring has no
@@ -2093,7 +2118,11 @@ def main(argv: list[str] | None = None) -> int:
     # goes to jasper-aec-reconcile, NOT jasper-voice directly: that script is the
     # single owner of the voice/bridge units and decides restart-vs-park from
     # this flag plus its own provider + mic gates.
-    voice_env = voice_grouping_env(role.cfg, active_endpoint=role.active_endpoint)
+    voice_env = voice_grouping_env(
+        role.cfg,
+        active_endpoint=role.active_endpoint,
+        flat_output_allowed=role.flat_output_allowed,
+    )
     voice_changed, voice_ok = _write_derived_env(
         voice_env,
         path=VOICE_GROUPING_ENV_FILE,

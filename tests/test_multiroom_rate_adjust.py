@@ -900,7 +900,7 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
         resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
         outputd_text="".join(
             f"{k}={v}\n"
-            for k, v in outputd_grouping_env(cfg).items()
+            for k, v in outputd_grouping_env(cfg, flat_output_allowed=True).items()
         ),
         tmp_path=tmp_path,
     )
@@ -917,9 +917,11 @@ def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path
     r = _tts_lane_check(
         monkeypatch, cfg=cfg,
         voice_text="".join(
-            f"{k}={v}\n" for k, v in voice_grouping_env(cfg).items()),
+            f"{k}={v}\n"
+            for k, v in voice_grouping_env(cfg, flat_output_allowed=True).items()),
         outputd_text="".join(
-            f"{k}={v}\n" for k, v in outputd_grouping_env(cfg).items()),
+            f"{k}={v}\n"
+            for k, v in outputd_grouping_env(cfg, flat_output_allowed=True).items()),
         tmp_path=tmp_path,
     )
     assert r.status == "ok"
@@ -929,36 +931,35 @@ def test_grouping_tts_route_matrix_matches_reconciler_writers():
     """One matrix feeds both env writers, including special endpoints."""
     from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
 
+    leader = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
+    follower = _cfg(
+        enabled=True,
+        role="follower",
+        channel="right",
+        bond_id="b",
+        leader_addr="jts.local",
+    )
+    # (cfg, active_endpoint, flat_output_allowed) — the third fact is the
+    # graph-owned-output arm (#2380): a roleful box that declares no active
+    # group still refuses outputd's own direct DAC paths.
     cases = (
-        (_cfg(), False),
-        (_cfg(enabled=True, role="leader", channel="left", bond_id="b"), False),
-        (
-            _cfg(
-                enabled=True,
-                role="follower",
-                channel="right",
-                bond_id="b",
-                leader_addr="jts.local",
-            ),
-            False,
-        ),
-        (_cfg(enabled=True, role="leader", channel="right", bond_id="b"), True),
-        (
-            _cfg(
-                enabled=True,
-                role="follower",
-                channel="right",
-                bond_id="b",
-                leader_addr="jts.local",
-            ),
-            True,
-        ),
+        (_cfg(), False, True),
+        (_cfg(enabled=True, role="leader", channel="left", bond_id="b"), False, True),
+        (follower, False, True),
+        (leader, True, False),
+        (follower, True, False),
+        (leader, False, False),
+        (follower, False, False),
     )
 
-    for cfg, active_endpoint in cases:
-        route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
-        voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
-        outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
+    for cfg, active_endpoint, flat_output_allowed in cases:
+        facts = {
+            "active_endpoint": active_endpoint,
+            "flat_output_allowed": flat_output_allowed,
+        }
+        route = expected_grouping_tts_route(cfg, **facts)
+        voice_env = voice_grouping_env(cfg, **facts)
+        outputd_env = outputd_grouping_env(cfg, **facts)
 
         if route.voice_env_socket is None:
             assert VOICE_TTS_SOCKET_ENV not in voice_env
@@ -996,7 +997,8 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     falls back to fan-in upstream of the crossover."""
     from jasper.multiroom.reconcile import voice_grouping_env
     leader = voice_grouping_env(
-        _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
+        _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        flat_output_allowed=True)
     assert leader == {
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
         TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
@@ -1006,7 +1008,8 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     # outputd socket route.
     follower = voice_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
-             bond_id="b", leader_addr="jts.local"))
+             bond_id="b", leader_addr="jts.local"),
+        flat_output_allowed=True)
     assert follower == {
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
         TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
@@ -1036,7 +1039,8 @@ def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
     from jasper.multiroom.reconcile import outputd_grouping_env
     bonded = outputd_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
-             bond_id="b", leader_addr="jts.local"))
+             bond_id="b", leader_addr="jts.local"),
+        flat_output_allowed=True)
     assert bonded[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
     solo = outputd_grouping_env(_cfg())
     assert solo[OUTPUTD_TTS_SOCKET_ENV] == ""  # empty = unset to outputd
