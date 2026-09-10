@@ -1891,14 +1891,18 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
     counterfactual therefore also carries #1752's term-exact-zero rule: it is
     held FIXED so that smoothing ORDER stays the one mutated variable.
 
-    Measured on the S0 main leg at ``compression_horn``: 13 in-band bins
-    lose allowed depth, worst 6.06 dB. The comb peak at 12786.4 Hz, sitting
+    Measured on the S0 main leg at ``compression_horn``: 18 in-band bins
+    lose allowed depth, worst 5.47 dB. The comb peak at 12786.4 Hz, sitting
     *between* the second and third identified nulls and fully correctable,
-    would have fallen from 9.18 to 3.12 dB; the one at 10223.7 Hz from 15.23
-    to 11.09 dB — all three figures unchanged by the #1752 hardening. The
-    bin COUNT fell from 18 to 13 because five of the eighteen sat above
-    mic-trust's exact zero, where both curves now read 0.0 and so neither
-    can lose anything.
+    would have fallen from 13.14 to 7.67 dB; the one at 10223.7 Hz from
+    16.21 to 12.00 dB.
+
+    Re-measured after #3297 widened the reference tier's mic-trust taper
+    (``_MIC_TRUST_TABLE_HZ["reference"]``'s exact-zero, 16 kHz -> 20 kHz,
+    owner ruling 2026-08-29): only 1 of these bins now sits at mic-trust's
+    own exact zero, versus 5 before, so the bin count no longer falls to 13
+    -- it stays at 18, and the two named peaks lose more than previously
+    pinned.
 
     Those peaks are what the registry sized its intervals to protect
     (``IdentifiedNull``: half-depth width, so the span's comb *peaks* stay
@@ -1937,12 +1941,12 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
     correctable = in_band & ~excluded
     assert np.all(counterfactual[correctable] <= masked.allowed_depth_db[correctable])
     losses = masked.allowed_depth_db[correctable] - counterfactual[correctable]
-    assert int(np.count_nonzero(losses > 0.005)) == 13
-    assert float(losses.max()) == pytest.approx(6.06, abs=0.02)
+    assert int(np.count_nonzero(losses > 0.005)) == 18
+    assert float(losses.max()) == pytest.approx(5.47, abs=0.02)
 
     for f_hz, shipped_db, pre_smoothing_db in (
-        (10_223.7, 15.23, 11.09),
-        (12_786.4, 9.18, 3.12),
+        (10_223.7, 16.21, 12.00),
+        (12_786.4, 13.14, 7.67),
     ):
         i = int(np.argmin(np.abs(grid - f_hz)))
         assert not excluded[i]
