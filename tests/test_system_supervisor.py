@@ -35,6 +35,7 @@ from jasper.control.system_supervisor import (
     _control_health_response_alive,
     _read_reboot_state,
 )
+from tests._log_events import event_fields, event_records
 
 
 # ---------- policy tests ----------
@@ -185,10 +186,7 @@ async def test_reboot_failed_is_logged_when_reboot_system_raises(caplog):
     with caplog.at_level("ERROR", logger="jasper.control.system_supervisor"):
         for _ in range(3):
             await sup._tick()
-    assert any(
-        "event=system_supervisor.reboot_failed" in rec.getMessage()
-        for rec in caplog.records
-    )
+    assert event_records(caplog, "system_supervisor.reboot_failed")
 
 
 async def test_recovery_before_threshold_resets_counter():
@@ -269,12 +267,8 @@ async def test_sshd_disabled_policy_logs_single_skip_breadcrumb(caplog):
     with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
         assert await sup.should_probe_sshd() is False
         assert await sup.should_probe_sshd() is False
-    skipped = [
-        r for r in caplog.records
-        if "event=system_supervisor.sshd_probe_skipped" in r.getMessage()
-    ]
-    assert len(skipped) == 1
-    assert "ssh.service:disabled,sshd.service:not-found" in skipped[0].getMessage()
+    fields = event_fields(caplog, "system_supervisor.sshd_probe_skipped")
+    assert fields["reason"] == "ssh.service:disabled,sshd.service:not-found"
 
 
 async def test_sshd_policy_skips_when_common_units_disabled_or_missing():
@@ -329,11 +323,8 @@ async def test_sshd_port_zero_env_disables_only_sshd_probe(caplog):
         await sup._tick()
     assert sup.sshd_probe_calls == 0
     assert sup.last_probe_ok is True
-    assert any(
-        "event=system_supervisor.sshd_probe_skipped reason=port_disabled"
-        in r.getMessage()
-        for r in caplog.records
-    )
+    fields = event_fields(caplog, "system_supervisor.sshd_probe_skipped")
+    assert fields["reason"] == "port_disabled"
 
 
 def test_control_health_overload_response_counts_as_alive():
@@ -456,14 +447,9 @@ def test_restored_reboot_state_logs_breadcrumb(caplog):
     with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
         sup = SystemSupervisor(reboot_state_path=state_path)
     assert sup.last_reboot_at == float(reboot_at)
-    restored = [
-        r for r in caplog.records
-        if "event=system_supervisor.reboot_state_restored" in r.getMessage()
-    ]
-    assert len(restored) == 1
-    msg = restored[0].getMessage()
-    assert "last_reboot_at=%d" % reboot_at in msg
-    assert "age=" in msg and "s" in msg.split("age=", 1)[1]
+    fields = event_fields(caplog, "system_supervisor.reboot_state_restored")
+    assert fields["last_reboot_at"] == "%d" % reboot_at
+    assert fields["age"].endswith("s")
 
 
 def test_no_persisted_reboot_state_logs_no_breadcrumb(caplog):
@@ -477,10 +463,7 @@ def test_no_persisted_reboot_state_logs_no_breadcrumb(caplog):
     with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
         sup = SystemSupervisor(reboot_state_path=state_path)
     assert sup.last_reboot_at is None
-    assert not [
-        r for r in caplog.records
-        if "event=system_supervisor.reboot_state_restored" in r.getMessage()
-    ]
+    assert not event_records(caplog, "system_supervisor.reboot_state_restored")
 
 
 @pytest.mark.parametrize("contents", [None, "{ not json", '{"last_reboot_at": "nope"}', "[]"])

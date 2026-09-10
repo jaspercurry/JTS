@@ -152,7 +152,10 @@ def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str])
         result.update(changed)
         return result or None
 
-    locked_transform_env_file(state_path, _transform, mode=TRANSIT_FILE_MODE)
+    locked_transform_env_file(
+        state_path, _transform, mode=TRANSIT_FILE_MODE,
+        owner=location_state.TRANSIT_ENV_OWNER,
+    )
 
 
 def _seed_weather_from_transit_if_missing(
@@ -193,6 +196,7 @@ def _seed_weather_from_transit_if_missing(
 
     locked_transform_env_file(
         weather_path, _seed_transform, mode=location_state.WEATHER_FILE_MODE,
+        owner=location_state.WEATHER_ENV_OWNER,
     )
     return seeded
 
@@ -525,6 +529,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     cfg["routes_secret_path"],
                     routes_new,
                     mode=SECRET_ENV_MODE,
+                    owner=location_state.TRANSIT_ENV_OWNER,
                 )
             else:
                 delete_env_file(cfg["routes_secret_path"])

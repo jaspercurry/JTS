@@ -12,6 +12,7 @@ import struct
 import pytest
 
 from jasper.cli import usb_mic as usb_mic_cli
+from jasper.env_file import read_env_file
 from jasper.cli.usb_mic import (
     ALSA_BUFFER_FRAMES,
     ALSA_PERIOD_BYTES,
@@ -62,7 +63,7 @@ def test_intent_is_explicit_and_atomic(tmp_path: Path) -> None:
     assert usb_mic_enabled(path) is False
     write_usb_mic_enabled(True, path)
     assert usb_mic_enabled(path) is True
-    assert path.read_text() == "JASPER_USB_MIC=enabled\n"
+    assert read_env_file(str(path)) == {"JASPER_USB_MIC": "enabled"}
     write_usb_mic_enabled(False, path)
     assert usb_mic_enabled(path) is False
     assert read_intent(path).valid is True

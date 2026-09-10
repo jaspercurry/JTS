@@ -348,7 +348,7 @@ def test_post_save_url_only_advances_to_partial(monkeypatch):
     monkeypatch.setattr(ha, "read_env_file", lambda path: {})
     monkeypatch.setattr(
         ha, "write_env_file",
-        lambda path, values, mode=0o600: written.update({"v": values}),
+        lambda path, values, mode=0o600, **kwargs: written.update({"v": values}),
     )
     restarted = {"n": 0}
     monkeypatch.setattr(ha, "restart_voice_daemon", lambda: restarted.__setitem__("n", restarted["n"] + 1))
@@ -379,7 +379,7 @@ def test_post_save_with_token_verifies_and_restarts(monkeypatch):
     )
     monkeypatch.setattr(
         ha, "write_env_file",
-        lambda path, values, mode=0o600: written.update({"v": values}),
+        lambda path, values, mode=0o600, **kwargs: written.update({"v": values}),
     )
     restarted = {"n": 0}
     monkeypatch.setattr(
@@ -409,7 +409,7 @@ def test_post_disconnect_clears_and_restarts(monkeypatch):
     monkeypatch.setattr(ha, "read_env_file", lambda path: _state_connected())
     monkeypatch.setattr(ha, "delete_env_file", lambda path: deleted.__setitem__("n", deleted["n"] + 1))
     monkeypatch.setattr(
-        ha, "write_env_file", lambda path, values, mode=0o600: None,
+        ha, "write_env_file", lambda path, values, mode=0o600, **kwargs: None,
     )
     monkeypatch.setattr(
         ha, "restart_voice_daemon",

@@ -10,14 +10,15 @@ this module is the mechanism.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from dbus_next import BusType, Message, MessageType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
-from dbus_next.errors import DBusError  # type: ignore
+from dbus_next.errors import AuthError, DBusError  # type: ignore
 
 from ..log_event import log_event
 
@@ -33,9 +34,55 @@ DEFAULT_ADAPTER = "hci0"
 # the radio closes the pairing window after a few minutes.
 DISCOVERABLE_AUTO_OFF_SEC = 300
 
-# dbus-next reports an unreachable bus, a refused connection or an unexpected
-# reply shape as any of these; a read-only BlueZ probe treats them all alike.
-BLUEZ_ERRORS = (AttributeError, DBusError, EOFError, OSError, TypeError, ValueError)
+# dbus-next reports an unreachable bus, a refused connection, a rejected
+# EXTERNAL handshake or an unexpected reply shape as any of these; a read-only
+# BlueZ probe treats them all alike.
+BLUEZ_ERRORS = (
+    AttributeError, AuthError, DBusError, EOFError, OSError, TypeError, ValueError,
+)
+
+# `connect()` is an exchange with dbus-daemon, not with bluetoothd: it awaits
+# the Hello reply, which the broker answers whether or not BlueZ has claimed
+# org.bluez yet. A broker that accepts the socket without answering hangs it
+# forever, so bound it. Shared by callers that keep the bus open past this call
+# (engine.py, scan.py) and so can't use `_system_bus`'s connect-use-drop shape.
+BUS_CONNECT_TIMEOUT_SEC = 5.0
+
+# Bound one BlueZ method exchange on an already-connected bus (introspect, an
+# ObjectManager snapshot, an Adapter1 call). Unlike Hello these do wait on
+# bluetoothd, which can own its name and still never answer.
+BLUEZ_CALL_TIMEOUT_SEC = 5.0
+
+
+async def connect_bounded(bus: MessageBus, timeout: float, *, site: str) -> None:
+    """Connect `bus` under a bound, dropping it unless it comes up.
+
+    dbus-next opens the socket in `MessageBus.__init__` and registers the loop
+    reader before it awaits Hello, so a `connect()` abandoned by the bound (or
+    by a cancel) strands a live reader on that fd unless `disconnect()` still
+    runs — the same invariant `_system_bus` states below. `disconnect()` only
+    shuts the socket down; that EOF is what makes dbus-next drop the reader,
+    and the fd itself goes when the bus object is collected. Cleanup lives here
+    so no caller can get it wrong: on return the bus is either connected or
+    dropped. `site` names the caller in the timeout line.
+    """
+    connected = False
+    try:
+        async with asyncio.timeout(timeout):
+            await bus.connect()
+        connected = True
+    except TimeoutError:
+        log_event(
+            logger, "bluetooth.connect_timeout",
+            level=logging.WARNING, site=site, timeout_sec=timeout,
+        )
+        raise
+    finally:
+        if not connected:
+            # A bus that never finished connecting can refuse the teardown;
+            # the connect failure is the news, not the socket already going.
+            with suppress(*BLUEZ_ERRORS):
+                bus.disconnect()
 
 
 @asynccontextmanager
@@ -44,8 +91,8 @@ async def _system_bus() -> AsyncIterator[MessageBus]:
 
     The socket is opened by the constructor and `connect()` awaits the Hello
     reply, so a cancellation (a caller's timeout) landing inside `connect()`
-    must still reach `disconnect()`, or the reader dbus-next registered keeps
-    the connection alive forever.
+    must still reach `disconnect()`, or the reader dbus-next registered stays
+    on the loop for good.
     """
 
     bus = MessageBus(bus_type=BusType.SYSTEM)

@@ -31,6 +31,7 @@ from jasper.active_speaker.crossover_v2.session_graph import (
 from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDARY
 from jasper.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
+from tests._log_events import event_fields, event_records, parse_event
 from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile
 
@@ -175,7 +176,7 @@ def test_the_reinstall_is_disclosed_loudly(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.active_speaker.crossover_v2.session_graph"):
         asyncio.run(graph.install())
 
-    assert "result=reinstall" in caplog.text
+    assert event_fields(caplog, "active_speaker.session_graph")["result"] == "reinstall"
 
 
 def test_the_entry_graph_is_snapshotted_once_not_per_install(tmp_path):
@@ -347,8 +348,9 @@ def test_an_unavailable_dsp_during_restore_raises_a_named_error_and_says_so(
         with pytest.raises(SessionGraphError, match="websocket closed"):
             asyncio.run(graph.restore())
 
-    assert "action=restore" in caplog.text
-    assert "result=failed" in caplog.text
+    fields = event_fields(caplog, "active_speaker.session_graph")
+    assert fields["action"] == "restore"
+    assert fields["result"] == "failed"
 
 
 def test_a_rejected_restore_is_a_different_line_from_a_raised_one(tmp_path, caplog):
@@ -362,7 +364,7 @@ def test_a_rejected_restore_is_a_different_line_from_a_raised_one(tmp_path, capl
         with pytest.raises(SessionGraphError, match="could not be restored"):
             asyncio.run(graph.restore())
 
-    assert "result=rejected" in caplog.text
+    assert event_fields(caplog, "active_speaker.session_graph")["result"] == "rejected"
 
 
 @pytest.mark.parametrize("failure", ["unavailable", "not_live"])
@@ -649,10 +651,10 @@ def test_a_variant_swap_is_not_logged_as_a_concurrent_writer(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger=_LOGGER):
         asyncio.run(graph.install(("tweeter",)))
 
-    swap = [r for r in caplog.records if r.name == _LOGGER]
+    swap = event_records(caplog, "active_speaker.session_graph")
     assert len(swap) == 1, "the swap must be journalled exactly once"
     assert swap[0].levelno == logging.INFO
-    assert "result=variant" in swap[0].getMessage()
+    assert parse_event(swap[0].getMessage())[1]["result"] == "variant"
 
 
 def test_a_variant_swap_over_a_STOMPED_graph_still_discloses_the_stomp(tmp_path, caplog):
@@ -671,10 +673,10 @@ def test_a_variant_swap_over_a_STOMPED_graph_still_discloses_the_stomp(tmp_path,
     with caplog.at_level(logging.INFO, logger=_LOGGER):
         asyncio.run(graph.install(("tweeter",)))
 
-    swap = [r for r in caplog.records if r.name == _LOGGER]
+    swap = event_records(caplog, "active_speaker.session_graph")
     assert len(swap) == 1
     assert swap[0].levelno == logging.WARNING
-    assert "result=reinstall" in swap[0].getMessage()
+    assert parse_event(swap[0].getMessage())[1]["result"] == "reinstall"
 
 
 def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
@@ -688,10 +690,10 @@ def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger=_LOGGER):
         asyncio.run(graph.install(("tweeter",)))
 
-    stomp = [r for r in caplog.records if r.name == _LOGGER]
+    stomp = event_records(caplog, "active_speaker.session_graph")
     assert len(stomp) == 1
     assert stomp[0].levelno == logging.WARNING
-    assert "result=reinstall" in stomp[0].getMessage()
+    assert parse_event(stomp[0].getMessage())[1]["result"] == "reinstall"
     loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
     assert len(loads) == 2, "the stomp is repaired"
 
@@ -763,9 +765,8 @@ def test_a_tuning_layer_change_between_two_captures_latches_the_boundary(
     assert graph.comparability_boundary is True
     disclosed = [
         record
-        for record in caplog.records
-        if record.name == _LOGGER
-        and f"result={COMPARABILITY_BOUNDARY}" in record.getMessage()
+        for record in event_records(caplog, "active_speaker.session_graph")
+        if parse_event(record.getMessage())[1]["result"] == COMPARABILITY_BOUNDARY
     ]
     assert len(disclosed) == 1
     assert disclosed[0].levelno == logging.WARNING
