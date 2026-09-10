@@ -747,14 +747,13 @@ def main(argv: list[str] | None = None) -> int:
         del carried["status"], carried["reason"]
         return failed(EXIT_REFUSED, str(result.reason), {**carried, "detail": detail})
     print(f"converged: {detail}", file=sys.stderr)
-    # The ramp banked the reference; the telemetry behind it stays on the
-    # ``event=`` lines rather than riding a converged run's answer.
     print(
         json.dumps(
             {
                 "reference_volume_db": result.reference_volume_db,
                 "measured_db_spl": result.measured_db_spl,
                 "restored": result.restored,
+                "ramp": result.ramp,
                 "detail": detail,
                 "out": str(seat_level_reference_state_path()),
             },

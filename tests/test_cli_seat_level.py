@@ -1168,6 +1168,8 @@ def test_a_re_measured_room_floor_is_disclosed_on_the_line(
     assert answer["reference_volume_db"] == -13.69
     assert answer["measured_db_spl"] == 72.63
     assert answer["restored"] is True
+    assert answer["ramp"]["ambient_remeasured"] is True
+    assert answer["ramp"]["ambient_remeasured_db_spl"] == 49.7
     assert "re-measured in silence: 49.7 dB SPL" in answer["detail"]
     assert answer["out"] == str(seat_level_reference_state_path())
 

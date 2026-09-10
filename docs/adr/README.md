@@ -70,6 +70,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 
 | ADR | Decision | Status |
 |---|---|---|
+| [0289](0289-leveling-performance-requires-observed-evidence.md) | Instrument the existing leveler before selecting a faster controller; distinguish simulated and live evidence | accepted (evidence changes only) |
 | [0004](0004-duck-release-algebra-and-reference.md) | The duck release algebra — `min(reference, current + own depth)`, and the reference is a reader | accepted |
 | [0121](0121-preference-boosts-boost-room-boosts-are-compensated.md) | Preference boosts boost; room-correction boosts are headroom-compensated | accepted |
 | [0176](0176-the-airplay-sender-slider-is-not-a-control-surface.md) | The AirPlay sender slider is not a control surface — AirPlay 2 took the back-channel away | accepted |

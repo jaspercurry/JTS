@@ -21,6 +21,7 @@ import pytest
 
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.crossover_v2.measurement_context import capture_basis
 from jasper.active_speaker.crossover_v2.room_grade import (
     ROOM_GRADE_KIND,
     ROOM_GRADE_RESOLUTION_DB,
@@ -222,6 +223,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "side": side,
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
+            "loudness_volume_db": -30.0,
             "stimulus_dbfs": -12.0,
             "stimulus_wav_sha256": "program",
             "stimulus_peak_dbfs": -12.0,
@@ -272,6 +274,9 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
 
 
 @pytest.mark.parametrize(("changed_field", "change"), [
+    ("loudness_volume_db", lambda document: document["evidence"]["basis"].update(
+        loudness_volume_db=capture_basis({"loudness_volume_db": -20.0})["loudness_volume_db"],
+    )),
     ("pose_keys", lambda document: document["evidence"].update(
         pose_keys=["different", *document["evidence"]["pose_keys"][1:]],
     )),
@@ -306,6 +311,7 @@ def test_legacy_unknown_basis_is_disclosed_without_blocking_comparison():
 
     assert artifact["comparison"]["available"] is True
     assert artifact["comparison"]["basis_status"] == "unknown"
+    assert "loudness_volume_db" in artifact["comparison"]["unknown_fields"]
     assert "capture_calibration" in artifact["comparison"]["unknown_fields"]
     assert "calibration_applied" in artifact["comparison"]["unknown_fields"]
 
