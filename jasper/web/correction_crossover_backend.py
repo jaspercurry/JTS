@@ -143,7 +143,6 @@ class CrossoverLevelLease:
         self.session_id = "active-crossover"
         self.level_lock_store = LevelLockStore()
         self._level_result_lock = threading.RLock()
-        self._targets: dict[str, dict[str, Any]] = {}
         self._restore_lock = asyncio.Lock()
         self.context_id: str | None = None
         self.noise_floor_db = None
@@ -402,7 +401,6 @@ class CrossoverLevelLease:
         with self._level_result_lock:
             self._level_run_store.invalidate_succeeded_result()
             self.level_lock_store = LevelLockStore()
-            self._targets = {}
             self.context_id = None
             self.noise_floor_db = None
             self.mic_calibration = None
@@ -666,21 +664,11 @@ class CrossoverLevelLease:
             current_context_id is None
             or self.context_id == current_context_id
         )
-        missing = list(self._targets)
         return {
             "locks": self.level_lock_store.snapshot(),
             "context_id": self.context_id,
             "valid": context_valid,
-            "targets": list(self._targets.values()),
             "unresolved_volume_safety": self.unresolved_volume_safety,
-            "missing_targets": missing,
-            "next_target": self._targets.get(missing[0]) if missing else None,
-            "ready": bool(
-                self._targets
-                and not missing
-                and context_valid
-                and self._volume_safety_state is None
-            ),
             "repeats": self.repeat_snapshot(),
         }
 
