@@ -417,12 +417,12 @@ async def test_the_cue_bake_is_scheduled_before_the_checks_that_park(
 ) -> None:
     """NN-6: `main()` can only speak a park cue that already has a baked WAV.
 
-    Every boot park is raised at or after the mic open — the mic itself, the
-    SpeechVAD built beside it, `_require_usable_input` — and deploy/install.sh
-    bakes cues in its LAST full-profile step, so an install that aborted
-    part-way leaves the daemon to bake them. Scheduling that after the checks
-    (where it used to sit, beside the playout) means the park it announces has
-    already happened.
+    The mic-open parks this reorder covers — the mic itself, the SpeechVAD
+    built beside it, `_require_usable_input` — all raise at or after the mic
+    open, and deploy/install.sh bakes cues in its LAST full-profile step, so
+    an install that aborted part-way leaves the daemon to bake them.
+    Scheduling that after the checks (where it used to sit, beside the
+    playout) means the park it announces has already happened.
     """
     await _run_daemon_once(teardown_trace)
 

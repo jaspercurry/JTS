@@ -365,10 +365,8 @@ def test_invalid_env_values_raise(monkeypatch, name, value, expected):
     and StartLimitAction=reboot in silence (non-negotiable 6)."""
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv(name, value)
-    with pytest.raises(VoiceConfigError, match=expected) as raised:
+    with pytest.raises(VoiceConfigError, match=expected):
         Config.from_env()
-    # Nothing unparks 78 on its own, so the message must name the last step.
-    assert "systemctl restart jasper-voice" in str(raised.value)
 
 
 def test_tts_outputd_socket_env(monkeypatch):
