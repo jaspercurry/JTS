@@ -17,7 +17,6 @@ import hashlib
 import json
 import logging
 import os
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
@@ -40,6 +39,7 @@ from jasper.dsp_apply import (
     same_config_file,
     validate_camilla_config,
 )
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
@@ -214,10 +214,6 @@ def _bass_extension_graph_summary(
             ),
         },
     }
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def baseline_config_path(path: str | Path | None = None) -> Path:

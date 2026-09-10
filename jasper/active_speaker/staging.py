@@ -27,6 +27,7 @@ from jasper.camilla_config_contract import (
     read_camilla_devices_config,
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import (
     OutputTopology,
     SpeakerChannel,
@@ -121,10 +122,6 @@ _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 class StagedAnchorLockContended(RuntimeError):
     """The staged startup anchor pair was held past the bounded wait."""
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _safe_stem(value: str) -> str:

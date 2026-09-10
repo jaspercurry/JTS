@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json, fsync_directory
-from jasper.json_fields import finite_float as _finite
+from jasper.json_fields import finite_float as _finite, utc_now_iso as _utc_now
 
 from ._common import require_sha256_hex
 from .level_trim import MAX_ATTENUATION_DB
@@ -97,10 +96,6 @@ def base_trim_state_path(path: str | Path | None = None) -> Path:
     """Where the base trim lives: an explicit path, the env override, or the
     default. One resolver, so every surface probes the file the reader reads."""
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _chain_fingerprint(value: Any) -> str | None:

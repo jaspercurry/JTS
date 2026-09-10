@@ -21,7 +21,6 @@ import json
 import logging
 import math
 import stat
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
@@ -34,6 +33,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     validate_camilla_config,
 )
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import gate as _gate, issue as _issue
@@ -75,10 +75,6 @@ AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _normalise_issue(raw: Any) -> dict[str, str]:

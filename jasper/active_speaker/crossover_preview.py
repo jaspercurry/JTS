@@ -15,11 +15,11 @@ import json
 import hashlib
 import math
 import os
-import time
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
@@ -57,10 +57,6 @@ _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 #: ``tests/test_crossover_declaration.py``.
 DEFAULT_FILTER_TYPE = "Linkwitz-Riley"
 DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def crossover_preview_path(path: str | Path | None = None) -> Path:

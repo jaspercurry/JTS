@@ -32,12 +32,12 @@ from __future__ import annotations
 import json
 import math
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import utc_now_iso as _utc_now
 
 from ._common import finite_float
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -152,10 +152,6 @@ def seat_level_reference_state_path(path: str | Path | None = None) -> Path:
 
 
 _state_path = seat_level_reference_state_path
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def load_seat_level_reference(
