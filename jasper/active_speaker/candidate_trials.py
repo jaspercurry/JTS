@@ -6,20 +6,15 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.audio_measurement.bundles import (
-    BundleError,
-    read_artifact_manifest,
-    relative_artifact_path,
-    sha256_file,
-)
+from jasper.audio_measurement.bundles import BundleError
 from jasper.json_fields import finite_float
 
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .measured_crossover_candidate import candidate_trial_scope
 
 
@@ -87,7 +82,7 @@ def require_candidate_trial(
     ):
         return None
     from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader
-    from .crossover_v2.record_index import bundle_measurements  # lazy: pulls the tuning engine
+    from .crossover_v2.record_index import bundle_measurements, reopen_measurement_capture  # lazy: pulls the tuning engine
     from .crossover_v2.round_inputs import iter_round_sessions  # lazy: pulls the tuning engine
 
     scope = candidate_trial_scope(candidate)
@@ -96,9 +91,9 @@ def require_candidate_trial(
         for row in bundle_measurements(bundle, candidate_id=candidate.fingerprint):
             path = bundle / EVIDENCE_ROOT / "artifacts" / row.path
             try:
-                record = json.loads(path.read_text())
+                record, wav = reopen_measurement_capture(bundle, path)
                 if (
-                    record.get("measurement_status") != "captured"
+                    wav is None
                     or record.get("candidate_id") != candidate.fingerprint
                     or record.get("graph_scope") != scope
                     or record.get("incident") != ""
@@ -108,26 +103,8 @@ def require_candidate_trial(
                     and record.get("graph_fingerprint") != expected_graph_fingerprint
                 ):
                     continue
-                wav = relative_artifact_path(bundle, record.get("wav_path") or "")
-                artifacts = read_artifact_manifest(bundle).get("artifacts", [])
-                identities = {item.get("path"): item for item in artifacts}
-                record_path = relative_artifact_path(bundle, path)
-                if wav not in identities.get(record_path, {}).get("dependencies", []):
-                    continue
-                intact = True
-                for relative in (record_path, wav):
-                    identity = identities.get(relative, {})
-                    raw = bundle / relative
-                    if (
-                        not identity.get("sha256") or raw.stat().st_size <= 0
-                        or raw.stat().st_size != identity.get("byte_size")
-                        or sha256_file(raw) != identity["sha256"]
-                    ):
-                        intact = False
-                        break
-                if not intact:
-                    continue
-            except (OSError, ValueError, TypeError, AttributeError, BundleError):
+            except (OSError, ValueError, TypeError, AttributeError, KeyError,
+                    BundleError, CommissioningEvidenceStoreError):
                 continue
             return {**record, "record_path": str(path)}
     raise CandidateBankRefusal(

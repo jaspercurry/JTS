@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ..commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+
+from ..bundles import BUNDLE_KIND
+from ..commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from .contracts import (
     BANKED_TAKE_GLOB,
     MEASURE_KIND_KEY,
@@ -26,8 +30,10 @@ from .contracts import (
 
 __all__ = [
     "Measurement",
+    "MeasurementCaptureIdentityError",
     "bundle_measurements",
     "measurement_documents",
+    "reopen_measurement_capture",
 ]
 
 
@@ -45,6 +51,38 @@ class Measurement:
     captured_at: str | None
     graph_scope: str = ""
     graph_fingerprint: str = ""
+
+
+class MeasurementCaptureIdentityError(ValueError):
+    """A captured take does not name its exact dependent WAV."""
+
+
+def reopen_measurement_capture(
+    bundle_dir: Path, record_path: str | Path,
+) -> tuple[dict[str, Any], bytes | None]:
+    """Verify a banked take and its WAV; incomplete takes have no capture bytes."""
+    info = json.loads((bundle_dir / "info.json").read_text())
+    store = CommissioningEvidenceStore.open(bundle_dir, expected_session_id=info["session_id"])
+    artifacts = {row["path"]: row for row in read_artifact_manifest(bundle_dir)["artifacts"]}
+
+    def identity(path: str | Path) -> ArtifactIdentity:
+        relative = relative_artifact_path(bundle_dir, path)
+        recorded = artifacts[relative]
+        return ArtifactIdentity(BUNDLE_KIND, store.session_id, relative,
+                                recorded["sha256"], recorded["byte_size"])
+
+    record_identity = identity(record_path)
+    record = store.reopen_json_artifact(record_identity)
+    if record.get("measurement_status") != "captured" or record.get("incident"):
+        return record, None
+    wav_identity = identity(record["wav_path"])
+    if (
+        wav_identity.byte_size <= 0
+        or record.get("wav_sha256") != wav_identity.sha256
+        or wav_identity.relative_path not in artifacts[record_identity.relative_path].get("dependencies", [])
+    ):
+        raise MeasurementCaptureIdentityError("measurement_capture_identity_mismatch")
+    return record, store.reopen_artifact(wav_identity)
 
 
 def _text(value: Any) -> str:

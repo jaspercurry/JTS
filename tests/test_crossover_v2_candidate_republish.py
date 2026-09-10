@@ -192,7 +192,7 @@ def _stage_trial(bank, record_fields: dict) -> tuple[Path, Path, Path]:
     bundle = Path(info["bundle_dir"])
     wav = bundle / "capture.wav"
     wav.write_bytes(b"recorded capture bytes")
-    record_artifact(
+    wav_identity = record_artifact(
         bundle, wav, kind="jts_capture_wav", sensitivity="audio",
         recomputable=False, generated_by="test",
     )
@@ -205,6 +205,7 @@ def _stage_trial(bank, record_fields: dict) -> tuple[Path, Path, Path]:
         "level_db": -25.0,
         "measurement_status": "captured",
         "wav_path": wav.name,
+        "wav_sha256": wav_identity["sha256"],
         **record_fields,
     }
     store = BankedRecordStore(CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"]), "trial-capture")
@@ -221,7 +222,7 @@ def _retain_round(bank, bundle: Path) -> Path:
     return saved
 
 
-@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest", "edited_labels", "legacy_labels"])
+@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest", "edited_labels", "legacy_labels", "wav_hash", "wav_hash_missing", "dependency"])
 def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
     parent = _candidate()
     _publish(bank, parent)
@@ -239,6 +240,8 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         "incident": {"incident": "stimulus_play_failed"},
         "level": {"level_db": None},
         "status": {"measurement_status": "planned"},
+        "wav_hash": {"wav_sha256": "0" * 64},
+        "wav_hash_missing": {"wav_sha256": None},
     }
     bundle, path, wav = _stage_trial(
         bank, {"candidate_id": child.fingerprint, **faults.get(fault, {})},
@@ -247,10 +250,14 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         edited = json.loads(path.read_text())
         edited["graph_fingerprint"] = graph_fingerprint("different: graph\n")
         path.write_text(json.dumps(edited))
-    elif fault == "legacy_labels":
+    elif fault in {"legacy_labels", "dependency"}:
         manifest = bundle / "artifact_manifest.json"
         data = json.loads(manifest.read_text())
-        data["artifacts"] = [row for row in data["artifacts"] if row["path"] == wav.name]
+        if fault == "legacy_labels":
+            data["artifacts"] = [row for row in data["artifacts"] if row["path"] == wav.name]
+        else:
+            for row in data["artifacts"]:
+                row["dependencies"] = []
         manifest.write_text(json.dumps(data))
     if fault == "missing":
         wav.unlink()

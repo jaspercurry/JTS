@@ -712,7 +712,7 @@ def summed_capture_bundle(tmp_path, request):
         WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
         bundle, recorder_factory=lambda *_: Recorder(),
     )
-    async def bank(take_id, *, setup=None, scope="room_tune", candidate="", retain_program=True):
+    async def bank(take_id, *, setup=None, scope="room_tune", candidate="", retain_program=True, wav_hash=None):
         async def play():
             pass
         configured = replace(capture, setup_reference=lambda: setup)
@@ -721,6 +721,8 @@ def summed_capture_bundle(tmp_path, request):
         answer = configured.take_answer()
         if not retain_program:
             answer = replace(answer, program=None)
+        if wav_hash is not None:
+            answer = replace(answer, wav_sha256=wav_hash)
         return await records.bank_answer({
             "kind": "candidate" if candidate else "baseline", "take_id": take_id,
             "measurement_status": "captured", "incident": "", "phase": "measurement",
@@ -790,13 +792,27 @@ def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_
     ]) == EXIT_UNREADABLE
 
 
-@pytest.mark.parametrize("scope,retain_program,code", [
-    ("drivers", True, "measurement_analysis_program_unsupported"),
-    ("room_tune", False, "measurement_program_manifest_missing"),
+@pytest.mark.parametrize("fault,code", [
+    ("scope", "measurement_analysis_program_unsupported"),
+    ("program", "measurement_program_manifest_missing"),
+    ("wav_hash", "measurement_capture_identity_mismatch"),
+    ("dependency", "measurement_capture_identity_mismatch"),
 ])
-def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, scope, retain_program, code):
+def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, fault, code, tmp_path):
     bundle, _, _, bank = summed_capture_bundle
-    asyncio.run(bank("take", scope=scope, retain_program=retain_program))
+    asyncio.run(bank(
+        "take", scope="drivers" if fault == "scope" else "room_tune",
+        retain_program=fault != "program", wav_hash="0" * 64 if fault == "wav_hash" else None,
+    ))
+    if fault == "dependency":
+        manifest = bundle / "artifact_manifest.json"
+        document = json.loads(manifest.read_text())
+        for row in document["artifacts"]:
+            row["dependencies"] = []
+        manifest.write_text(json.dumps(document))
     with pytest.raises(MeasurementAnalysisRefused) as caught:
         analyze_measurement_bundle(bundle)
     assert caught.value.code == code
+    assert round_views_main([
+        "frequency", str(bundle), "--analyze-wavs", "--out", str(tmp_path / "refused.json"),
+    ]) == EXIT_UNREADABLE
