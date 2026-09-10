@@ -1425,7 +1425,24 @@ mod tests {
         ) in [
             (1024, true, 4, 50.0, false, false, 0, 90),
             (1500, false, 4, 50.0, false, false, 2, 0),
-            (2560, true, 4, -250.0, false, false, 1, 150),
+            // `retries`: was 1 (stale, pre-#4659-fix expectation -- the old
+            // lock-only AwaitLock gate baselined before the deficit's own
+            // recovery had settled, so this row's first probe attempt read a
+            // contaminated response and needed a retry). The new
+            // `fill_ready` gate (AwaitLock now waits for the fill's own
+            // motion to genuinely stop before baselining) makes attempt 1
+            // measure only after the deficit has actually resolved, so it
+            // passes clean on the first attempt now -- 0 retries. Measured
+            // (not desk-checked) by running this exact row -- same schedule,
+            // same pause/reset at 172s -- against the real `LaneResampler` +
+            // `HostClock` in a standalone macOS-buildable harness built from
+            // this file's own alsa-free source (`lane_resampler.rs` +
+            // `latency.rs` need no ALSA; only the `jasper-fanin` binary's
+            // other modules do): `probe_retries()==0`, `probe_result()==Pass`,
+            // `ladder()==L0Locked`, `first_low==44` (< 150). Every other row
+            // in this table was measured the same way and its expected value
+            // held exactly, so only this row's `retries` changed.
+            (2560, true, 4, -250.0, false, false, 0, 150),
             (2560, true, 0, 250.0, false, false, 0, 35),
             (2560, true, 0, 50.0, false, false, 0, 35),
             (2560, false, 0, -250.0, false, false, 2, 0),
@@ -1596,8 +1613,22 @@ mod tests {
                     r.decay.backoffs(),
                 );
             }
-            assert_eq!(clock.probe_retries(), retries);
-            assert_eq!(r.hold_fill_frames() < 2560, compliant);
+            assert_eq!(
+                clock.probe_retries(),
+                retries,
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 compliant={compliant}: unexpected retry count \
+                 (first_low={first_low:?}, probe_result={:?})",
+                clock.probe_result(),
+            );
+            assert_eq!(
+                r.hold_fill_frames() < 2560,
+                compliant,
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 compliant={compliant}: hold_fill_frames()={} did not match the \
+                 expected decay-floor-vs-ceiling split (first_low={first_low:?})",
+                r.hold_fill_frames(),
+            );
         }
     }
 
