@@ -156,6 +156,7 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     radiating_band_hz,
 )
+from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
@@ -5117,6 +5118,48 @@ def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():
     assert tweeter_pilot.linearity_ok is True
     assert res.pilot_snr_ok is False
     assert res.linearity_ok is None
+
+
+def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
+    """#2647's ROUTING ruling, approximating the #1838 production shape
+    (session cap_-Us10xORVNlFa_dgi-sP7g: -60.9 dB captured against a +10.0 dB
+    programmed pilot delta -- a quiet pilot buried by room noise, not a
+    mis-anchored window).
+
+    Heavier rumble than `test_check_low_snr_quiet_pilot_routes_to_snr_floor_
+    not_linearity_fail` above also blows the woofer's captured delta past
+    `DELTA_IMPLAUSIBLE_GAP_DB`, so both rung-2 tells the ladder can read are on
+    the table here. The conductor's ruling: when the SNR floor already failed,
+    it -- not the retriable `anchor_ambiguous` -- is the honest, actionable
+    finding, because a retake in a quieter room is what actually cures a pilot
+    this buried. ``anchor_ambiguous`` is forced ``False`` to isolate
+    ``delta_implausible`` from the near-tie guard this fixture also trips,
+    the same isolation `test_the_impossible_delta_alone_turns_that_verdict_
+    into_a_retake` (`tests/test_audio_measurement_anchor_resolution.py`) uses
+    for the OTHER (mis-anchored, SNR-valid) shape, which still resolves to
+    ``anchor_ambiguous`` -- the split this test is the other half of.
+    """
+    prog, cap = _check_rumble_capture((300.0, 500.0, 800.0), 0.08, seed=23)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    assert woofer_pilot.delta_implausible is True
+    assert abs(woofer_pilot.captured_delta_db - woofer_pilot.programmed_delta_db) > 48.0
+    assert res.pilot_snr_ok is False
+    assert res.channel_map_ok is False, "the guard must not repair the map"
+
+    plan = res.gain_plan
+    kind = _capture_dispatch.check_screens(_capture_dispatch.CheckScreens(
+        stimulus_located=True,
+        anchor_ambiguous=False,  # isolate: the near-tie guard is not on trial
+        delta_implausible=res.delta_implausible,
+        channel_map_ok=res.channel_map_ok,
+        pilot_snr_ok=res.pilot_snr_ok,
+        linearity_ok=res.linearity_ok,
+        gain_plan_present=plan is not None,
+        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
+    ))
+    assert kind == _capture_dispatch.SCREEN_SNR_FLOOR
+    assert kind != _capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS
 
 
 def test_pilot_linearity_aggregate_is_tri_state():

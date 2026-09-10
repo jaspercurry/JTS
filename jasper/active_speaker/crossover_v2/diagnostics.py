@@ -255,18 +255,25 @@ def _log_check_diag(
         logger, "correction.crossover_v2_check_diag",
         session_id=session_id, accepted=verdict.accepted, code=verdict.code or "",
         pilot_snr_ok=analysis.pilot_snr_ok,
+        # The two independent rung-2 tells (#2647), split out so an operator can
+        # tell which one fired without inferring it from the code alone -- both
+        # route through the shared ``anchor_ambiguous`` code today.
+        anchor_ambiguous=analysis.anchor_ambiguous,
+        delta_implausible=analysis.delta_implausible,
         woofer_snr_db=woofer["snr_db"],
         woofer_captured_delta_db=woofer["captured_delta_db"],
         woofer_programmed_delta_db=woofer["programmed_delta_db"],
         woofer_channel_map_target_rise_db=woofer["channel_map_target_rise_db"],
         woofer_channel_map_cross_rise_db=woofer["channel_map_cross_rise_db"],
         woofer_channel_map_isolation_db=woofer["channel_map_isolation_db"],
+        woofer_delta_implausible=woofer["delta_implausible"],
         tweeter_snr_db=tweeter["snr_db"],
         tweeter_captured_delta_db=tweeter["captured_delta_db"],
         tweeter_programmed_delta_db=tweeter["programmed_delta_db"],
         tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
         tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
         tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
+        tweeter_delta_implausible=tweeter["delta_implausible"],
         # The two constants the isolation figures above are GRADED against, on the
         # same line as the numbers. The bound is what the ratio had to clear; the
         # threshold is the CROSS rise above which the ratio was judged at all

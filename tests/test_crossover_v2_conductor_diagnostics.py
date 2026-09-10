@@ -377,6 +377,12 @@ def test_check_diag_logs_full_numbers_on_accept(caplog):
     fields = event_fields(caplog, "correction.crossover_v2_check_diag")
     assert fields["accepted"] == "true"
     assert fields["pilot_snr_ok"] == "true"
+    # The two independent rung-2 tells (#2647): both False here, so this pin
+    # also covers the accepted, neither-fired shape.
+    assert fields["anchor_ambiguous"] == "false"
+    assert fields["delta_implausible"] == "false"
+    assert fields["woofer_delta_implausible"] == "false"
+    assert fields["tweeter_delta_implausible"] == "false"
     assert fields["woofer_snr_db"] == "20.0"
     assert fields["tweeter_snr_db"] == "15.0"
     assert fields["woofer_captured_delta_db"] == "10.0"
@@ -628,6 +634,39 @@ def test_check_diag_logs_full_numbers_on_rejection_too(caplog):
     # Numbers still present on the rejected capture.
     assert fields["woofer_snr_db"] == "5.0"
     assert fields["tweeter_snr_db"] == "15.0"
+
+
+def test_check_diag_names_which_rung_2_signal_fired(caplog):
+    """#2647's SHOULD-FIX: the shared ``anchor_ambiguous`` code cannot say
+    which of the two independent tells fired. The structured fields must,
+    down to which driver's delta was the implausible one.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        pilots=(
+            _pilot_obs("woofer", captured_delta_db=-55.0, delta_implausible=True),
+            _pilot_obs("tweeter"),
+        ),
+        linearity_ok=True, channel_map_ok=False, pilot_snr_ok=True,
+        anchor_ambiguous=False, delta_implausible=True,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -11.0, "tweeter": -13.0},
+            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "anchor_ambiguous"
+    fields = event_fields(caplog, "correction.crossover_v2_check_diag")
+    assert fields["code"] == "anchor_ambiguous"
+    assert fields["anchor_ambiguous"] == "false"
+    assert fields["delta_implausible"] == "true"
+    assert fields["woofer_delta_implausible"] == "true"
+    assert fields["tweeter_delta_implausible"] == "false"
 
 
 def test_measure_diag_logs_full_numbers_on_accept(caplog):

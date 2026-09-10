@@ -810,6 +810,14 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
     (`DELTA_IMPLAUSIBLE_GAP_DB`), so CHECK must still retake rather than send
     the household to check its wiring, even when the anchor's own correlation
     was confident -- not just near-tied.
+
+    The conductor ruling on this PR's rung 2 (routing `delta_implausible`
+    through `anchor_ambiguous` only while `pilot_snr_ok` is `True`) changes
+    WHICH retake code this exact fixture gets: this incident's own woofer
+    pilot reads `pilot_snr_ok=False` (the mis-anchored window landed on a
+    quieter stretch than the true pilot), so it now resolves to `snr_floor`,
+    not `anchor_ambiguous` -- the snr-floor rung's copy is actionable and a
+    retake in a quieter room also cures the mis-anchoring, so it wins.
     """
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
@@ -838,7 +846,14 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
         gain_plan_present=plan is not None,
         gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
     ))
-    assert kind == _dispatch.SCREEN_ANCHOR_AMBIGUOUS
+    assert analysis.pilot_snr_ok is False, (
+        "premise: this is the pilot_snr_ok=False shape the ruling repoints -- "
+        "see test_an_impossible_delta_is_asked_before_the_wiring_verdict_"
+        "even_with_a_confident_anchor (tests/test_crossover_v2_capture_"
+        "dispatch.py) for the pilot_snr_ok=True shape that still resolves "
+        "to anchor_ambiguous"
+    )
+    assert kind == _dispatch.SCREEN_SNR_FLOOR
 
 
 def test_the_band_limited_locate_puts_the_whole_timeline_back():
