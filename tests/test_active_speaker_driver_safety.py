@@ -2834,22 +2834,13 @@ def test_later_confirmation_records_confirmation_time_not_draft_creation(
     )
 
 
-def test_component_entry_fields_present_in_all_four_allowlist_gates():
-    """Drift guard for the four independent allowlist copies (#1665).
-
-    ``driver_class``/``radiating_diameter_mm``/``pad`` must be accepted by
-    every gate that re-validates the same driver record: the two save-path
-    allowlists (whose drift 500s a save), the AI-research paste-back
-    allowlist, and the research staleness-comparison set.  One superset
-    assertion per copy so the next field lands in all four or fails loudly
-    here.
-    """
+def test_component_fields_have_distinct_declaration_and_research_contracts():
     from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
+    from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 
     new_fields = {"driver_class", "radiating_diameter_mm", "pad"}
-    assert new_fields <= set(dd._MANUAL_DRIVER_FIELDS)
-    assert new_fields <= set(ds._MANUAL_DRIVER_FIELDS)
+    assert new_fields <= MANUAL_DRIVER_FIELDS
     # pad is deliberately NOT researchable; the research gates carry the
     # two researchable fields only.
     researchable = new_fields - {"pad"}
@@ -2872,14 +2863,13 @@ def test_retired_driver_fields_are_gone_from_every_schema_copy():
     """
     from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
-    from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS
+    from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS
 
     # A vacuous pass over an empty set would assert nothing at all.
     assert LEGACY_DROPPED_DRIVER_FIELDS
     assert "horn_coverage_deg" in LEGACY_DROPPED_DRIVER_FIELDS
     for schema in (
-        dd._MANUAL_DRIVER_FIELDS,
-        ds._MANUAL_DRIVER_FIELDS,
+        MANUAL_DRIVER_FIELDS,
         ds._V2_RESEARCH_DRIVER_FIELDS,
         dd._V2_RESEARCH_COMPARABLE_FIELDS,
     ):

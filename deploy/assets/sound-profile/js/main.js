@@ -25,6 +25,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import { initSeatLevel, isSeatLevelRunning, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
+import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -876,6 +877,7 @@ import {
     }
     driverResearch.error = '';
     driverResearch.dirty = true;
+    if (field.startsWith('installation_')) return;
     driverResearch.safetyDirty = true;
     driverResearch.editedDriverTargets[targetId] = true;
     invalidateDriverResearchBinding();
@@ -885,7 +887,7 @@ import {
     // here must re-render immediately or the newly-relevant field stays
     // hidden until some unrelated action repaints the page. Mirrors
     // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
-    if (field === 'driver_class' || field === 'pad_kind') render();
+    if (field === 'driver_class' || field === 'pad_kind' || field === 'enclosure_kind') render();
   }
   function refreshDriverResearchDerivedUi() {
     var topology = currentOutputTopology();
@@ -937,6 +939,8 @@ import {
       out.required_protection_filters = protectionFiltersFromSetting(setting);
       var cabinet = cabinetFromSetting(setting);
       if (Object.keys(cabinet).length) out.cabinet = cabinet;
+      var installation = installationFromSetting(setting);
+      if (installation) out.installation = installation;
       var pad = padFromSetting(setting);
       if (pad) out.pad = pad;
       var limits = levelDurationLimitsFromSetting(setting);
@@ -953,6 +957,7 @@ import {
         driver.radiating_diameter_mm != null ||
         driver.driver_class ||
         driver.cabinet ||
+        driver.installation ||
         driver.pad ||
         driver.hard_excitation_band_hz ||
         driver.measurement_band_hz ||
@@ -989,7 +994,7 @@ import {
       return candidate;
     }).filter(Boolean);
     return drivers.length || candidates.length
-      ? {drivers: drivers, crossover_candidates: candidates}
+      ? Object.assign({}, (driverResearch.designDraft || {}).manual_settings, {drivers: drivers, crossover_candidates: candidates})
       : null;
   }
   function applyDriverSafetyToSetting(driver, setting) {
@@ -1203,6 +1208,7 @@ import {
         driver,
         driverResearch.settings.drivers[targetId]
       );
+      applyInstallationToSetting(driver, driverResearch.settings.drivers[targetId]);
     });
     (Array.isArray(manual.crossover_candidates) ? manual.crossover_candidates : [])
       .forEach(function(candidate) {

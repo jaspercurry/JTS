@@ -24,7 +24,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology
 
-from ._common import LEGACY_DROPPED_DRIVER_FIELDS
+from ._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS, MANUAL_SETTINGS_FIELDS
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -71,41 +71,6 @@ MAX_PROVENANCE_SOURCES = 8
 #: datasheet URL and any URL the list accepts must be promotable here verbatim.
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
-#: Single owning definition of manual_settings' allowed top-level keys,
-#: consumed by design_draft's own manual-settings gate. #1864:
-#: driver_spacing_mm is the declared woofer<->tweeter acoustic-center
-#: distance -- the ONE owner of physical driver spacing, alongside
-#: radiating_diameter_mm/driver_class (#1665/#1675) on the same
-#: manual_settings surface. Absent means undeclared, never a default: see
-#: design_draft.declared_driver_spacing_m.
-MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
-_MANUAL_DRIVER_FIELDS = {
-    "target_id",
-    "role",
-    "model",
-    "manufacturer",
-    "nominal_impedance_ohm",
-    "sensitivity_db_2v83_1m",
-    "usable_frequency_range_hz",
-    "recommended_highpass_hz",
-    "recommended_highpass_slope_db_per_octave",
-    "recommended_lowpass_hz",
-    "do_not_test_below_hz",
-    "gain_offset_db",
-    "gain_offset_db_provenance",
-    "notes",
-    "hard_excitation_band_hz",
-    "required_protection_filters",
-    "measurement_band_hz",
-    "level_duration_limits",
-    "cabinet",
-    "source",
-    # design_draft.py's manual-driver allowlist already accepts these, and this
-    # allowlist re-validates the SAME normalised record, so it must too.
-    "driver_class",
-    "radiating_diameter_mm",
-    "pad",
-}
 _MANUAL_CANDIDATE_FIELDS = {
     "between_roles",
     "frequency_hz",
@@ -1535,7 +1500,7 @@ def _normalise_profile_manual_settings(
         _reject_unknown_keys(
             raw,
             field_name,
-            _MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+            MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
         )
         _reject_bool_tree(raw, field_name)
         driver: dict[str, Any] = {

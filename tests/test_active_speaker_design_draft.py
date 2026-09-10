@@ -32,11 +32,43 @@ from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_slopes_db_per_octave,
 )
 from jasper.output_topology import OutputTopology
+from jasper.active_speaker.installation import installation_evidence, normalise_installation
 from tests.active_speaker_fixtures import mono_output_topology
 
 
 def _topology() -> OutputTopology:
     return mono_output_topology(card_id=None)
+
+
+def test_installation_round_trips_without_changing_driver_authority(tmp_path):
+    manual = {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "Test driver"}],
+              "driver_spacing_mm": 150}
+    before = build_design_draft(_topology(), manual_settings=manual)
+    facts = {"amplifier_model": "TPA3255", "amplifier_gain_control": "Fixed; volume in software", "supply_voltage_v": 36,
+             "passive_radiator_model": "E180HE-PR", "passive_radiator_added_mass_g": 0}
+    manual['drivers'][0]['installation'] = facts
+    path = tmp_path / 'draft.json'
+    saved = save_design_draft(_topology(), manual_settings=manual, path=path)
+    loaded = load_design_draft(topology=_topology(), path=path)
+    assert loaded['manual_settings']['drivers'][0]['installation'] == facts
+    assert declared_driver_spacing_m(loaded) == pytest.approx(.15)
+    assert saved['driver_safety_profile'] == before['driver_safety_profile']
+    assert saved['permissions'] == before['permissions']
+    evidence = installation_evidence(loaded)
+    assert evidence['authorizes_playback'] is False
+    assert evidence['drivers'][0]['amplifier_estimate']['ideal_btl_rms_voltage_ceiling_v'] == pytest.approx(25.4558, abs=.0001)
+    assert evidence['drivers'][0]['acoustic_limit']['status'] == 'not_estimated'
+    assert 'installation' not in json.loads(path.read_text())
+    assert normalise_installation({"amplifier_model": "TPA3255"}) == {"amplifier_model": "TPA3255"}
+
+
+@pytest.mark.parametrize('facts', [
+    {'supply_voltage_v': -1}, {'supply_voltage_v': True}, {'net_volume_l': float('inf')},
+    {'passive_radiator_count': 1.5}, {'passive_radiator_added_mass_g': -1}, {'safe_boost_db': 15},
+])
+def test_installation_rejects_invalid_facts(facts):
+    with pytest.raises(ValueError):
+        normalise_installation(facts)
 
 
 def _research() -> dict:
