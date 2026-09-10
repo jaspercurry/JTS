@@ -135,10 +135,125 @@ def test_a_start_the_gate_allows_retires_the_previous_refusal(
     assert gate.run().returncode == ALLOW
 
     monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(gate.record))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(gate.statefile))
     assert gate_state.snapshot() == {
         "status": "absent", "refused": False, "path": str(gate.record),
     }
     assert camilla_doctor.check_camilla_topology_gate().status == "ok"
+
+
+def test_no_refusal_and_no_proof_stamp_is_a_blind_gate_not_a_healthy_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate ALLOWS on unknown, so "no refusal" alone cannot tell a proved
+    graph from a gate that can never refuse anything. The proof stamp beside the
+    statefile is the difference, and the doctor row is where it is said."""
+    from jasper.cli.doctor import audio_runtime_camilla as camilla_doctor
+
+    gate = _Gate(tmp_path)
+    gate.stamp(None, None)
+    assert gate.run().returncode == ALLOW
+    monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(gate.record))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(gate.statefile))
+
+    row = camilla_doctor.check_camilla_topology_gate()
+
+    assert row.status == "warn"
+    assert row.reason == camilla_doctor.REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING
+
+
+def test_a_record_the_gate_could_not_write_still_refuses_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """The refusal is the verdict; the record is only one of its three surfaces.
+    A record that cannot be written must not soften the exit code, and must not
+    vanish silently — the doctor row and heal go blind on it."""
+    gate = _Gate(tmp_path)
+    gate.stamp("b" * 64, "a" * 64)
+    unwritable = tmp_path / "readonly"
+    unwritable.mkdir(mode=0o500)
+    gate.env["JASPER_CAMILLA_TOPOLOGY_GATE_STATE"] = str(unwritable / "gate.state")
+
+    result = gate.run()
+
+    assert result.returncode in SKIP_BAND
+    assert "event=camilla_topology_gate.record_write_failed" in result.stderr
+    assert "event=camilla_topology_gate.refused" in result.stderr
+
+
+def test_the_gate_allows_when_it_cannot_read_the_guard_library(
+    tmp_path: Path,
+) -> None:
+    """The library owns the logger and the statefile default, so an unreadable
+    one leaves the gate with nothing to compare — which is unknown, which
+    allows, like every other unknown here."""
+    gate = _Gate(tmp_path)
+    gate.stamp("b" * 64, "a" * 64)
+    gate.env["JASPER_CAMILLA_GUARD_COMMON_LIB"] = str(tmp_path / "absent.sh")
+
+    result = gate.run()
+
+    assert result.returncode == ALLOW
+    assert "reason=common_lib_unavailable" in result.stderr
+
+
+def test_a_real_failed_convergence_refuses_the_real_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole chain with nothing stubbed: a real convergence writes real
+    stamps beside a real statefile, and the real ExecCondition script reads them.
+
+    The two halves the unit tests cannot see together — a convergence that
+    proved nothing leaves CamillaDSP refused, and the next one that proves a
+    graph lets it start.
+    """
+    from tests.test_runtime_convergence import (
+        _boot_convergence_paths,
+        _empty_topology,
+        _unassigned_passive_mono,
+    )
+    from jasper.active_speaker import runtime_convergence
+
+    # The only redirect: where the generated PARKED graph lands. Everything the
+    # gate reads — decision, statefile, both stamps, the script — is real.
+    monkeypatch.setattr(
+        "jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR", tmp_path
+    )
+    paths = _boot_convergence_paths(tmp_path)
+    gate = _Gate(tmp_path)
+    gate.env["JASPER_CAMILLA_STATEFILE"] = str(paths["statefile_path"])
+
+    proved = runtime_convergence.converge_boot_statefile(
+        topology=_empty_topology(), write_statefile=True, **paths
+    )
+    assert proved.ok is True
+    assert gate.run().returncode == ALLOW
+
+    refused = runtime_convergence.converge_boot_statefile(
+        topology=_unassigned_passive_mono(), write_statefile=True, **paths
+    )
+    assert refused.ok is False
+
+    blocked = gate.run()
+    assert blocked.returncode in SKIP_BAND
+    monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(gate.record))
+    assert gate_state.snapshot()["refused"] is True
+
+    # And the next pass that DOES prove a graph re-arms the start.
+    assert runtime_convergence.converge_boot_statefile(
+        topology=_empty_topology(), write_statefile=True, **paths
+    ).ok is True
+    assert gate.run().returncode == ALLOW
+    assert gate_state.snapshot()["refused"] is False
+
+
+def test_the_doctor_row_is_registered() -> None:
+    """A check nothing registers reaches no operator."""
+    from jasper.cli.doctor import _registry
+
+    assert "check_camilla_topology_gate" in [
+        check.func.__name__ for check in _registry.registered_checks()
+    ]
 
 
 @pytest.mark.parametrize(

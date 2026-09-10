@@ -47,9 +47,11 @@ from jasper.output_topology import (
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
+    clear_topology_fingerprint_stamp,
     read_topology_fingerprint_stamp,
     topology_config_fingerprint,
     topology_fingerprint_matches,
+    write_topology_fingerprint_stamp,
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
 )
@@ -2012,6 +2014,39 @@ def test_an_anchor_written_before_the_narrowing_still_names_its_topology() -> No
     assert not topology_fingerprint_matches("a" * 64, topology)
     assert not topology_fingerprint_matches(None, topology)
     assert not topology_fingerprint_matches("", topology)
+
+
+def test_a_stamp_nobody_could_write_or_retire_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Both halves are best-effort on the boot path, and both end in "unknown",
+    which the gate ALLOWS — so the journal line is the only place a box that has
+    gone blind is visible. It must not be an exception either way."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    unwritable = tmp_path / "readonly"
+    unwritable.mkdir()
+    stamp = unwritable / "s.topology"
+    stamp.write_text("a" * 64 + "\n", encoding="utf-8")
+    unwritable.chmod(0o500)
+
+    try:
+        assert write_topology_fingerprint_stamp(stamp, "b" * 64) is False
+        assert clear_topology_fingerprint_stamp(stamp) is False
+    finally:
+        unwritable.chmod(0o700)
+
+    # Absent is retired, not a failure: the steady state after a clean apply.
+    assert clear_topology_fingerprint_stamp(tmp_path / "never-existed") is True
+
+    events = {
+        record.getMessage().split()[0]
+        for record in caplog.records
+        if record.getMessage().startswith("event=")
+    }
+    assert "event=camilla_topology_stamp.write_failed" in events
+    assert "event=camilla_topology_stamp.clear_failed" in events
 
 
 def test_an_unreadable_or_empty_stamp_reads_as_unknown(tmp_path: Path) -> None:

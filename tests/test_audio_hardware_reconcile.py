@@ -3263,6 +3263,59 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
     assert "jasper-voice.service" not in _systemctl_log(tmp_path)
 
 
+def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
+    tmp_path: Path,
+) -> None:
+    """A pass that exits before the graph proved no graph, and the gate has to
+    see that.
+
+    The unproved stamp is opened at the TOP of the pass, not inside the
+    convergence, precisely so the exits BEFORE the convergence — this one, an
+    i2s apply error, an OOM kill — are not read as "a graph was proved".
+    """
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        read_topology_fingerprint_stamp,
+        statefile_unproved_stamp_path,
+        topology_config_fingerprint,
+    )
+
+    graph_env = _apple_active_graph_env(tmp_path)
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
+        initial_outputd_env=(
+            "JASPER_OUTPUTD_BACKEND=alsa\n"
+            "JASPER_OUTPUTD_SINK=single_alsa\n"
+            "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
+        ),
+        extra_env={
+            **graph_env,
+            **_override_store(
+                tmp_path,
+                JASPER_OUTPUTD_PERIOD_FRAMES="1024",
+                JASPER_OUTPUTD_DAC_BUFFER_FRAMES="256",
+            ),
+        },
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert stderr_event(
+        result.stderr, "audio_hardware_reconcile.outputd_candidate_rejected"
+    )
+    # The convergence never ran, so nothing could have closed the stamp.
+    assert result.converge_calls == []
+    statefile = Path(graph_env["JASPER_CAMILLA_STATEFILE"])
+    topology = load_output_topology_strict(graph_env["JASPER_OUTPUT_TOPOLOGY_PATH"])
+    assert read_topology_fingerprint_stamp(
+        statefile_unproved_stamp_path(statefile)
+    ) == topology_config_fingerprint(topology)
+
+
 def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     tmp_path: Path
 ) -> None:

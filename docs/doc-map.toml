@@ -908,6 +908,7 @@ code = [
   "deploy/systemd/jasper-mux.service",
   "deploy/systemd/jasper-camilla-crossover.service",
   "deploy/bin/jasper-camilla-pipe-guard",
+  "deploy/bin/jasper-camilla-topology-gate",
   "deploy/bin/jasper-camilla-crossover-guard",
   "deploy/lib/jasper-camilla-guard-common.sh",
   "scripts/multiroom-spike.sh",

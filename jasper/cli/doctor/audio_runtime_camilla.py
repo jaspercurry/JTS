@@ -662,10 +662,13 @@ def check_camilla_topology_gate() -> CheckResult:
     ``ExecCondition=``: it skips the start when the graph the statefile names
     was proved against a different speaker topology than the one the last
     convergence was working on, so the previous speakers' crossover and
-    protection cannot reach these drivers (#4416 R8). Severity is ``fail``: the
-    speaker emits NOTHING and only a convergence that succeeds clears it. The
-    record's own ``action=``/``re_arm=`` text is surfaced verbatim rather than
-    restated here.
+    protection cannot reach these drivers (#4416 R8, ADR-0283). Severity is
+    ``fail``: the speaker emits NOTHING and only a convergence that succeeds
+    clears it. The record's own ``action=``/``re_arm=`` text is surfaced
+    verbatim rather than restated here.
+
+    No refusal is not automatically ``ok``, because the gate ALLOWS on unknown:
+    see :func:`_topology_gate_allowed_result`.
     """
     label = "camilla statefile topology"
 

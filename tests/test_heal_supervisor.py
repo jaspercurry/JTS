@@ -235,15 +235,15 @@ def test_the_module_snapshot_is_disabled_before_the_supervisor_starts(
         # The gate skipped the start: a condition skip is a SUCCESS, so no unit
         # reads failed and nothing systemd owns will re-try it.
         (False, "success", False, True, "topology_gate"),
-        # A start job cancelled by a failed requirement dependency.
-        (False, "dependency", False, False, "dependency_cancelled"),
         # Running: nothing to heal, whatever the record says happened before.
-        (True, "dependency", False, False, None),
-        # An operator stop, and a crash: neither is heal's.
+        (True, "success", False, True, None),
+        # An operator stop, and a crash: neither is heal's, gate or no gate.
         (False, "success", False, False, None),
         (False, "exit-code", False, False, None),
+        # `Wants=` propagates no failure, so a cancelled start job is no longer
+        # a posture this box can reach — and it is not heal's either way.
+        (False, "dependency", False, False, None),
         # The reconciler is still failed: the fault is systemd's own to answer.
-        (False, "dependency", True, False, None),
         (False, "success", True, True, None),
     ],
 )

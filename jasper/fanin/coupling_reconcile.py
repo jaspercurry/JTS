@@ -206,13 +206,15 @@ def _camilla_up_or_gate_refusal() -> tuple[bool, str]:
     while the speaker stays silent. Read the unit back and, when it is not
     active, name the gate's own record instead of reporting a start that worked.
 
-    Unknown is not failure: no systemctl answer leaves the ok verdict alone,
-    the same fail-soft rule :func:`jasper.service_units.read_unit_states` sets.
+    Unknown is not failure: no systemctl answer, or a manager that does not know
+    this unit at all, leaves the ok verdict alone — the same fail-soft rule
+    :func:`jasper.service_units.read_unit_states` sets.
     """
-    from jasper.service_units import read_unit_states, unit_active
+    from jasper.service_units import read_unit_states, unit_active, unit_loaded
 
     records = read_unit_states((CAMILLA_UNIT,))
-    if records is None or unit_active(records.get(CAMILLA_UNIT)):
+    record = records.get(CAMILLA_UNIT) if records else None
+    if not unit_loaded(record) or unit_active(record):
         return True, ""
     # lazy: the control package is optional here for the same reason the broker
     # import above is — a broken install degrades to a reported failure.
