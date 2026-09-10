@@ -111,6 +111,7 @@ def bind_program_playback_seams(
     timeout_s: float = 60.0,
     graph_yaml: str,
     summed: bool = False,
+    bass_extension: Mapping[str, Any] | None = None,
     phase: str = "",
     before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
@@ -156,7 +157,7 @@ def bind_program_playback_seams(
         else:
             readmit = partial(
                 readmit_summed_program_from_wav, program, wav_path,
-                graph_yaml=graph_yaml, **arguments,
+                graph_yaml=graph_yaml, bass_extension=bass_extension, **arguments,
             )
         return await asyncio.to_thread(readmit)
 
@@ -183,6 +184,7 @@ def bind_program_composer(
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
+    bass_extension_for_spec: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
 
@@ -224,6 +226,7 @@ def bind_program_composer(
             role_targets=role_targets, session_volume_db=session_volume_db,
             declared_sensitivities=declared_sensitivities,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
+            bass_extension=bass_extension_for_spec(spec) if bass_extension_for_spec else None,
             phase=phase, before_play=partial(before_play, spec) if before_play else None,
         ))
 

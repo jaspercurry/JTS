@@ -14,6 +14,7 @@ from jasper.json_fields import finite_float
 from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.baseline_profile import (
     applied_baseline_hardware_match,
+    applied_bass_extension,
     recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
@@ -41,9 +42,13 @@ __all__ = [
     "TuningGraphScope",
     "compile_tuning_graph",
     "emit_measurement_graph",
+    "measurement_bass_extension",
 ]
 
-TuningGraphScope = Literal["base", "speaker_tune", "candidate", "room_candidate", "candidate_branches"]
+TuningGraphScope = Literal[
+    "base", "speaker_tune", "room_tune", "applied", "candidate",
+    "room_candidate", "bass_candidate", "candidate_branches",
+]
 
 
 @dataclass(frozen=True)
@@ -80,22 +85,37 @@ def _filter_list(value: Any) -> bool:
     )
 
 
+def measurement_bass_extension(
+    profile: MeasurementGraphProfile,
+    *,
+    scope: str,
+    candidate: MeasuredCrossoverCandidate | None = None,
+) -> dict[str, Any]:
+    """Resolve the same optional layer for graph emission and peak admission."""
+    if scope == "bass_candidate":
+        if candidate is None:
+            raise MeasurementGraphRefused("measurement_candidate_required", scope)
+        if not isinstance(candidate, MeasuredCrossoverCandidate):
+            raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
+        if not candidate.bass_extension:
+            raise MeasurementGraphRefused("measurement_candidate_no_bass", candidate.fingerprint)
+        return dict(candidate.bass_extension)
+    if scope == "applied":
+        return applied_bass_extension(profile.applied_profile or {})
+    return {}
+
+
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     *,
     scope: TuningGraphScope = "base",
     candidate: MeasuredCrossoverCandidate | None = None,
 ) -> str:
-    """Compile a stereo graph for summed captures, clouds and confirmation.
+    """Compile a temporary graph from the accepted upstream tuning layers.
 
-    Base keeps the applied structure, protection, trims and alignment; accepted
-    speaker tune also keeps linearization and blend. A named candidate replaces
-    those corrections with its complete candidate layer, and ``room_candidate``
-    plays the accepted speaker tune through that candidate's room set — the
-    layer-3 capture of ``docs/measurement-loop-doctrine.md`` §1a, whose rule
-    also keeps preference and bass extension out of every scope here. Callers
-    must compare DSP readback with the emitted graph before attributing a
-    capture to it.
+    Room starts at speaker_tune; bass starts at room_tune. Candidate scopes
+    replace only their named layer. Applied includes all saved tuning layers.
+    Callers must prove DSP readback before attributing a capture to this graph.
     """
     if scope == GRAPH_SCOPE_DRIVERS or scope not in GRAPH_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
@@ -111,7 +131,10 @@ def compile_tuning_graph(
         raise MeasurementGraphRefused(
             "measurement_base_mismatch", "declared speaker differs from applied base",
         )
-    room_peqs: tuple[PeqFilter, ...] = ()
+    room_peqs: tuple[PeqFilter, ...] | None = (
+        None if scope in {"room_tune", "bass_candidate", "applied"} else ()
+    )
+    bass_extension = measurement_bass_extension(profile, scope=scope, candidate=candidate)
     if candidate is not None:
         if not isinstance(candidate, MeasuredCrossoverCandidate):
             raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
@@ -119,15 +142,15 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused(
                 "measurement_candidate_base_mismatch", candidate.fingerprint,
             )
-        if scope == "room_candidate":
-            room_peqs = candidate_room_peqs(candidate)
-            if not room_peqs:
+        if candidate.bass_extension and scope != "bass_candidate":
+            raise MeasurementGraphRefused("measurement_candidate_bass_scope", candidate.fingerprint)
+        if scope in {"room_candidate", "bass_candidate"}:
+            if scope == "room_candidate":
+                room_peqs = candidate_room_peqs(candidate)
+            if scope == "room_candidate" and not room_peqs:
                 raise MeasurementGraphRefused(
                     "measurement_candidate_no_room", candidate.fingerprint,
                 )
-            # A room trial proves the room set THROUGH the accepted tune
-            # (docs/measurement-loop-doctrine.md §1a), so the candidate that
-            # applies afterwards must carry that same speaker layer.
             if (
                 driver_corrections(candidate) != snapshot.get("corrections")
                 or linearization_filters_by_role(candidate.linearization)
@@ -138,6 +161,10 @@ def compile_tuning_graph(
                 raise MeasurementGraphRefused(
                     "measurement_candidate_tune_mismatch", candidate.fingerprint,
                 )
+            if scope == "bass_candidate" and candidate.room_correction != snapshot.get(
+                "room_correction", (profile.applied_profile or {}).get("room_correction", {}),
+            ):
+                raise MeasurementGraphRefused("measurement_candidate_room_mismatch", candidate.fingerprint)
         else:
             # A candidate carrying a room layer has no plain-candidate graph:
             # this branch emits the speaker layer only, so the capture would be
@@ -207,7 +234,7 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused("measurement_filters_invalid", scope)
     text, issues = recompose_applied_baseline_yaml(
         profile.topology, applied_profile=profile.applied_profile or {},
-        playback_device=profile.playback_device, bass_extension_profile=None,
+        playback_device=profile.playback_device, bass_extension=bass_extension,
         room_peqs=room_peqs, drop_measured_correction=scope == "base",
         protection_sections_by_role=profile.protection_sections_by_role,
     )

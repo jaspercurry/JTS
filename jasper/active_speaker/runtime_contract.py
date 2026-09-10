@@ -2523,6 +2523,14 @@ def _active_graph_evidence(
         ))
         return {"issues": issues, "safe": False}
     view = view_from_yaml_dict(payload)
+    if payload.get("processors") or any(
+        not isinstance(step, Mapping) or step.get("type") not in {"Filter", "Mixer"}
+        for step in payload.get("pipeline", [])
+    ):
+        return {"issues": [_issue(
+            "blocker", "active_graph_processor_unrecognized",
+            "active graph contains an unproved processing step",
+        )], "safe": False}
 
     required_indexes = _required_roleful_indexes(contract)
     by_output = _assignment_by_output(contract)
@@ -3757,7 +3765,10 @@ def _classify_bass_extension_snapshot(
     # independent graph-only proof.
     staged = _json_mapping(staged_metadata_bytes) or {}
     snapshot = (applied or {}).get("recomposition_snapshot") or {}
+    if not isinstance(snapshot, Mapping):
+        return _unsafe_boundary("bass_extension_block_invalid", "saved tune snapshot is invalid")
     descriptor = snapshot.get("bass_extension") or {}
+    channels: tuple[int, ...] = ()
     if descriptor:
         try:
             descriptor = validate_dynamic_bass_descriptor(descriptor)
@@ -3785,6 +3796,7 @@ def _classify_bass_extension_snapshot(
         details={
             **graph.details,
             "bass_extension": dict(descriptor),
+            "bass_output_channels": list(channels),
         },
     )
 

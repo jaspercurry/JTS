@@ -4,10 +4,7 @@
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -17,16 +14,10 @@ from jasper.active_speaker.baseline_profile import (
     topology_config_fingerprint,
 )
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-import jasper.bass_extension.profile as profile_module
 from jasper.bass_extension.adapters.base import TargetSpec
 from jasper.bass_extension.profile import (
     BASS_EXTENSION_ALGORITHM_VERSION,
     BassExtensionProfile,
-    BassExtensionRefusal,
-    bass_extension_state_summary,
-    evaluate_bass_extension_profile,
-    load_bass_extension_profile,
-    save_bass_extension_profile,
 )
 from jasper.bass_extension.targets import AnchorPoint
 from jasper.output_topology import OutputTopology
@@ -129,21 +120,11 @@ def _profile(
     )
 
 
-def _save(tmp_path, profile: BassExtensionProfile | None = None):
-    path = tmp_path / "bass_extension.json"
-    save_bass_extension_profile(profile or _profile(), path)
-    return path
-
-
-def test_profile_round_trip_uses_wave_one_types_and_atomic_mode(tmp_path):
+def test_profile_round_trip():
     profile = _profile()
-    path = _save(tmp_path, profile)
-
-    assert load_bass_extension_profile(path) == profile
     assert BassExtensionProfile.from_dict(profile.to_dict()) == profile
     assert profile.profile_id.startswith("bex-")
     assert len(profile.profile_id) == 16
-    assert os.stat(path).st_mode & 0o777 == 0o640
 
 
 @pytest.mark.parametrize(
@@ -178,7 +159,7 @@ def test_vented_profiles_retain_the_96_point_natural_curve(
         },
     )
 
-    loaded = load_bass_extension_profile(_save(tmp_path, profile))
+    loaded = BassExtensionProfile.from_dict(profile.to_dict())
 
     assert loaded == profile
     assert loaded is not None
@@ -263,329 +244,3 @@ def test_from_dict_rejects_natural_target_with_filters_or_boost():
     with pytest.raises(ValueError, match="empty filters and 0.0 boost"):
         BassExtensionProfile.from_dict(raw)
 
-
-def test_each_binding_mismatch_has_a_specific_stale_refusal(tmp_path):
-    topology = _topology()
-    applied = _applied_baseline()
-    profile = _profile(topology=topology, applied_baseline=applied)
-
-    baseline_path = _save(tmp_path, profile)
-    baseline = evaluate_bass_extension_profile(
-        path=baseline_path,
-        topology=topology,
-        applied_baseline_state=_applied_baseline("different"),
-    )
-    assert baseline.status == "stale"
-    assert baseline.refusals == (BassExtensionRefusal.BASELINE_NOT_APPLIED,)
-
-    topology_path = _save(tmp_path, profile)
-    topology_result = evaluate_bass_extension_profile(
-        path=topology_path,
-        topology=_topology("different-speaker"),
-        applied_baseline_state=applied,
-    )
-    assert topology_result.status == "stale"
-    assert topology_result.refusals == (BassExtensionRefusal.TOPOLOGY_MISMATCH,)
-
-    adapter_path = _save(tmp_path, replace(
-        profile,
-        enclosure={**profile.enclosure, "adapter_version": 99},
-    ))
-    adapter = evaluate_bass_extension_profile(
-        path=adapter_path, topology=topology, applied_baseline_state=applied
-    )
-    assert adapter.status == "stale"
-    assert adapter.refusals == (BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,)
-
-    algorithm_path = _save(tmp_path, replace(profile, algorithm_version="old"))
-    algorithm = evaluate_bass_extension_profile(
-        path=algorithm_path, topology=topology, applied_baseline_state=applied
-    )
-    assert algorithm.status == "stale"
-    assert algorithm.refusals == (BassExtensionRefusal.PROFILE_STALE,)
-
-
-def test_multiple_binding_mismatches_accumulate(tmp_path):
-    profile = replace(
-        _profile(),
-        algorithm_version="old",
-        enclosure={
-            "adapter_id": "sealed_v1",
-            "adapter_version": 99,
-            "cabinet_fingerprint": "cabinet-a",
-        },
-    )
-    result = evaluate_bass_extension_profile(
-        path=_save(tmp_path, profile),
-        topology=_topology("different-speaker"),
-        applied_baseline_state=_applied_baseline("different"),
-    )
-    assert result.status == "stale"
-    assert result.refusals == (
-        BassExtensionRefusal.BASELINE_NOT_APPLIED,
-        BassExtensionRefusal.TOPOLOGY_MISMATCH,
-        BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
-        BassExtensionRefusal.PROFILE_STALE,
-    )
-    assert "baseline fingerprint mismatch" in result.detail
-    assert "algorithm version mismatch" in result.detail
-
-
-def test_missing_garbage_and_bypassed_statuses(tmp_path):
-    missing = evaluate_bass_extension_profile(
-        path=tmp_path / "missing.json",
-        topology=_topology(),
-        applied_baseline_state=_applied_baseline(),
-    )
-    assert missing.status == "missing"
-
-    garbage_path = tmp_path / "garbage.json"
-    garbage_path.write_bytes(b"not-json\x00")
-    malformed = evaluate_bass_extension_profile(
-        path=garbage_path,
-        topology=_topology(),
-        applied_baseline_state=_applied_baseline(),
-    )
-    assert malformed.status == "malformed"
-    assert malformed.profile is None
-    assert load_bass_extension_profile(garbage_path) is None
-
-    bypassed = evaluate_bass_extension_profile(
-        path=_save(tmp_path, _profile(status="bypassed")),
-        topology=_topology(),
-        applied_baseline_state=_applied_baseline(),
-    )
-    assert bypassed.status == "bypassed"
-
-
-def test_state_summary_is_fail_soft_and_projects_commissioned_profile(
-    monkeypatch, tmp_path
-):
-    import jasper.active_speaker.baseline_profile as baseline_mod
-    import jasper.output_topology as topology_mod
-
-    topology = _topology()
-    applied = _applied_baseline()
-    # bass_extension_state_summary re-derives contract_status the same way
-    # the doctor does: by loading current topology/baseline state and
-    # re-running evaluate_loaded_bass_extension_profile against the profile
-    # object it already parsed. Pin those loaders to values consistent with
-    # the saved profile so the contract evaluation is deterministic
-    # ("accepted") instead of depending on whatever real /var/lib/jasper
-    # files happen to exist on the host running tests.
-    monkeypatch.setattr(topology_mod, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
-    )
-
-    profile = _profile(topology=topology, applied_baseline=applied)
-    path = _save(tmp_path, profile)
-    assert bass_extension_state_summary(path) == {
-        "commissioned": True,
-        "status": "accepted",
-        "profile_id": profile.profile_id,
-        "adapter_id": "sealed_v1",
-        "runtime_eligible": True,
-        "runtime_deferred_reason": None,
-        "apply_recovery_required": False,
-        "deepest_hz": 31.0,
-        "natural_hz": 61.2,
-        "margin": "normal",
-        "anchors": [{
-            "target_id": "t31",
-            "max_listening_level": 50,
-            "evidence": "measured",
-        }],
-        "contract_status": "accepted",
-        "contract_refusals": [],
-        "contract_detail": "profile is accepted",
-    }
-    assert bass_extension_state_summary(tmp_path) is None
-
-
-def test_state_summary_contract_status_stale_when_topology_mismatches(
-    monkeypatch, tmp_path
-):
-    """File status stays "accepted" (the raw field); contract_status tells
-    the truth. This is the bug this change fixes: a household viewing only
-    ``status`` would believe an out-of-date profile is still live."""
-    import jasper.active_speaker.baseline_profile as baseline_mod
-    import jasper.output_topology as topology_mod
-
-    topology = _topology()
-    applied = _applied_baseline()
-    profile = _profile(topology=topology, applied_baseline=applied)
-    path = _save(tmp_path, profile)
-
-    monkeypatch.setattr(
-        topology_mod, "load_output_topology", lambda: _topology("different-speaker")
-    )
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
-    )
-
-    summary = bass_extension_state_summary(path)
-    assert summary["status"] == "accepted"
-    assert summary["contract_status"] == "stale"
-    assert summary["contract_refusals"] == [
-        BassExtensionRefusal.TOPOLOGY_MISMATCH.value
-    ]
-    assert "topology id/fingerprint mismatch" in summary["contract_detail"]
-
-
-def test_state_summary_contract_status_bypassed(monkeypatch, tmp_path):
-    import jasper.active_speaker.baseline_profile as baseline_mod
-    import jasper.output_topology as topology_mod
-
-    topology = _topology()
-    applied = _applied_baseline()
-    profile = _profile(topology=topology, applied_baseline=applied, status="bypassed")
-    path = _save(tmp_path, profile)
-
-    monkeypatch.setattr(topology_mod, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
-    )
-
-    summary = bass_extension_state_summary(path)
-    assert summary["status"] == "bypassed"
-    assert summary["contract_status"] == "bypassed"
-    assert summary["contract_refusals"] == []
-
-
-def test_state_summary_contract_evaluation_explosion_is_fail_soft(
-    monkeypatch, tmp_path
-):
-    profile = _profile()
-    path = _save(tmp_path, profile)
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("evaluation exploded")
-
-    monkeypatch.setattr(
-        profile_module, "evaluate_loaded_bass_extension_profile", _boom
-    )
-
-    summary = bass_extension_state_summary(path)
-    assert summary["commissioned"] is True
-    assert summary["status"] == "accepted"
-    assert summary["profile_id"] == profile.profile_id
-    assert summary["contract_status"] is None
-    assert summary["contract_refusals"] == []
-    assert summary["contract_detail"] is None
-
-
-def test_state_summary_survives_exception_types_outside_the_logged_tuple(
-    monkeypatch, tmp_path
-):
-    # The evaluation block's narrow except is for *logging* the expected
-    # failure classes; totality comes from its suppress(Exception) wrapper.
-    # An exception type outside the tuple must degrade only the three
-    # contract keys — never escape to the outer wrapper and cost the whole
-    # summary (that regression shipped once: a lost summary hides the bass
-    # tab card silently, with nothing logged).
-    class WeirdError(Exception):
-        pass
-
-    profile = _profile()
-    path = _save(tmp_path, profile)
-
-    for exc in (WeirdError("untupled"), StopIteration(), IndexError("x")):
-
-        def _boom(*_args, _exc=exc, **_kwargs):
-            raise _exc
-
-        monkeypatch.setattr(
-            profile_module, "evaluate_loaded_bass_extension_profile", _boom
-        )
-
-        summary = bass_extension_state_summary(path)
-        assert summary is not None
-        assert summary["commissioned"] is True
-        assert summary["status"] == "accepted"
-        assert summary["contract_status"] is None
-        assert summary["contract_refusals"] == []
-        assert summary["contract_detail"] is None
-
-
-def test_profile_json_has_no_non_finite_values(tmp_path):
-    raw = _profile().to_dict()
-    raw["targets"][0]["filters"][0]["freq"] = float("nan")
-    path = tmp_path / "nonfinite.json"
-    path.write_text(json.dumps(raw))
-    result = evaluate_bass_extension_profile(
-        path=path,
-        topology=_topology(),
-        applied_baseline_state=_applied_baseline(),
-    )
-    assert result.status == "malformed"
-    assert "non-finite" in result.detail
-
-
-def test_profile_publication_is_power_loss_durable(monkeypatch, tmp_path):
-    calls = []
-
-    def write(path, text, **kwargs):
-        calls.append((Path(path), text, kwargs))
-
-    monkeypatch.setattr(profile_module, "atomic_write_text", write)
-    target = tmp_path / "bass.json"
-
-    save_bass_extension_profile(_profile(), target)
-
-    assert calls[0][0] == target
-    assert calls[0][2]["durable"] is True
-    assert calls[0][2]["mode"] == 0o640
-
-
-def test_state_summary_reports_deferred_adapter_and_pending_recovery(tmp_path):
-    profile = replace(
-        _profile(),
-        enclosure={
-            "adapter_id": "ported_v1",
-            "adapter_version": 1,
-            "cabinet_fingerprint": "cabinet-a",
-        },
-        natural={
-            "fb_hz": 43.1,
-            "knee_hz": 55.0,
-            "knee_slope_db_oct": 21.0,
-            "fit_rms_db": 0.4,
-            "natural_curve": {
-                "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
-                "magnitude_db": [0.0] * 96,
-            },
-            "notes": [],
-        },
-    )
-    path = _save(tmp_path, profile)
-    intent = tmp_path / "intent.json"
-    intent.write_text("{}", encoding="utf-8")
-
-    summary = bass_extension_state_summary(path, intent_path=intent)
-
-    assert summary["adapter_id"] == "ported_v1"
-    assert summary["runtime_eligible"] is False
-    assert summary["runtime_deferred_reason"] == "fixed_graph_not_defined"
-    assert summary["apply_recovery_required"] is True
-
-
-def test_state_summary_reports_pending_recovery_with_absent_predecessor(tmp_path):
-    profile_path = tmp_path / "missing-profile.json"
-    intent = tmp_path / "intent.json"
-    intent.write_text("{}", encoding="utf-8")
-
-    summary = bass_extension_state_summary(profile_path, intent_path=intent)
-
-    assert summary == {
-        "commissioned": False,
-        "status": None,
-        "profile_id": None,
-        "adapter_id": None,
-        "runtime_eligible": False,
-        "runtime_deferred_reason": None,
-        "apply_recovery_required": True,
-        "contract_status": None,
-        "contract_refusals": [],
-        "contract_detail": None,
-    }

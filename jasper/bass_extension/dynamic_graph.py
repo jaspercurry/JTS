@@ -65,10 +65,16 @@ def build_native_dynamic_bass_graph(
     loud_channels = tuple(range(channels, channels + count))
     delta_channels = loud_channels
     detector_channels = tuple(range(channels + count, channels + 2 * count))
-    expanded_channels = channels + count
+    control_channel = channels + count
+    loud_count = channels + count
+    expanded_channels = loud_count + 1
     working_channels = channels + 2 * count
 
     filters: dict[str, dict[str, Any]] = {
+        f"{PREFIX}_volume_ramp": {
+            "type": "Volume",
+            "parameters": {"fader": "Aux1", "ramp_time": 400.0},
+        },
         f"{PREFIX}_loudness": {
             "type": "Loudness",
             "parameters": {
@@ -103,6 +109,7 @@ def build_native_dynamic_bass_graph(
 
     expand_sources = [[_source(channel)] for channel in range(channels)]
     expand_sources.extend([[_source(owner)] for owner in owners])
+    expand_sources.append([])
     form_sources = [[_source(channel)] for channel in range(channels)]
     form_sources.extend(
         [_source(loud), _source(owner, inverted=True)]
@@ -115,7 +122,8 @@ def build_native_dynamic_bass_graph(
 
     mixers = {
         f"{PREFIX}_expand": _mixer(channels, expanded_channels, expand_sources),
-        f"{PREFIX}_form_delta": _mixer(expanded_channels, working_channels, form_sources),
+        f"{PREFIX}_drop_control": _mixer(expanded_channels, loud_count, [[_source(c)] for c in range(loud_count)]),
+        f"{PREFIX}_form_delta": _mixer(loud_count, working_channels, form_sources),
         f"{PREFIX}_reduce": _mixer(working_channels, channels, reduce_sources),
     }
     processors = {
@@ -139,6 +147,9 @@ def build_native_dynamic_bass_graph(
 
     pipeline: list[dict[str, Any]] = [
         {"type": "Mixer", "name": f"{PREFIX}_expand"},
+        # Volume advances Aux1 smoothly; its zero signal never reaches an output.
+        {"type": "Filter", "channels": [control_channel], "names": [f"{PREFIX}_volume_ramp"]},
+        {"type": "Mixer", "name": f"{PREFIX}_drop_control"},
         {
             "type": "Filter",
             "channels": list(loud_channels),

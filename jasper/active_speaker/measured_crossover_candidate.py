@@ -95,7 +95,7 @@ from .camilla_yaml import (
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
-from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
+from .graph_safety import unprotected_tweeter_outputs, view_from_yaml_dict
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
     SIDES_BY_LAYOUT,
@@ -800,6 +800,8 @@ def candidate_room_peqs(
 def candidate_trial_scope(candidate: MeasuredCrossoverCandidate) -> str:
     """The measurement scope that captures the candidate's complete graph."""
 
+    if candidate.bass_extension:
+        return "bass_candidate"
     return "room_candidate" if candidate.room_correction else "candidate"
 
 
@@ -897,6 +899,7 @@ def compile_candidate_config(
         corrections=corrections,
         linearization=linearization,
         blend_correction=list(candidate.blend_correction),
+        bass_extension=candidate.bass_extension,
         **emit_kwargs,
     )
 
@@ -919,7 +922,7 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     )
 
     preset = effective_preset(candidate)
-    view = view_from_emitted_text(yaml_text)
+    view = view_from_yaml_dict(_yaml.safe_load(yaml_text))
     tweeter_channels = {
         output.index
         for output in preset.channel_map.outputs

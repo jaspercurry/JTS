@@ -41,12 +41,11 @@ from jasper.output_topology import OutputTopology
 
 from .driver_safety import evaluate_driver_safety_profile
 from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-from .graph_safety import protection_requirement_present, view_from_emitted_text
+from .graph_safety import protection_requirement_present, view_from_yaml_dict
 from .measurement import active_driver_targets
 from .runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
-    NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    classify_camilla_graph,
+    classify_bass_extension_graph,
 )
 from .excitation_safety_plan import (
     DriverSweepGeneratorPlan,
@@ -678,6 +677,7 @@ def readmit_summed_program_from_wav(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
+    bass_extension: Mapping[str, Any] | None = None,
 ) -> ProgramAdmission:
     """Admit a mono summed artifact through its complete protected tuning graph.
 
@@ -709,23 +709,25 @@ def readmit_summed_program_from_wav(
         or any(physical[fingerprint]["role"] != role for role, fingerprint in role_targets.items())
     ):
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
-    graph = classify_camilla_graph(
-        topology=topology, text=graph_yaml,
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    graph = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph_yaml,
+        applied_baseline_state={
+            "recomposition_snapshot": {"bass_extension": bass_extension or {}},
+        },
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
                   program_id=program.program_id, classification=graph.classification,
                   issues=graph.issues)
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
-    view = view_from_emitted_text(graph_yaml)
+    payload = yaml.safe_load(graph_yaml)
+    view = view_from_yaml_dict(payload)
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
     channels_by_role = {segment.role: segment.channel for segment in program.stimulus_segments()
                         if segment.role in role_targets} if branches else {}
     if branches:
-        payload = yaml.safe_load(graph_yaml)
         mapping = [entry for name, mixer in payload["mixers"].items()
                    if name.startswith("split_active_") for entry in mixer["mapping"]]
         if set(channels_by_role) != set(role_targets) or set(channels_by_role.values()) != {0, 1}:
@@ -737,7 +739,9 @@ def readmit_summed_program_from_wav(
             source = entries[0]["sources"][0]
             if source["channel"] != channels_by_role[role] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
-    caps: list[float] = []
+    input_caps: list[float] = []
+    bass_channels = set(graph.details.get("bass_output_channels", ()))
+    bass_boost_db = float((graph.details.get("bass_extension") or {}).get("low_boost_db", 0.0))
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
     declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
@@ -750,8 +754,10 @@ def readmit_summed_program_from_wav(
             duration = effective_sweep_duration_limit_s(safety_profile, fingerprint)
         except ExcitationSafetyPlanError as exc:
             return _refused_program(program, session_volume_db, _map_safety_plan_error(exc))
-        caps.append(cap)
         output = physical[fingerprint]["output_index"]
+        # Reserve the maximum lift; admission remains valid across Aux updates.
+        boost_db = bass_boost_db if output in bass_channels else 0.0
+        input_caps.append(cap - boost_db)
         requirements = declared[fingerprint]["required_protection_filters"]
         protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
@@ -783,7 +789,7 @@ def readmit_summed_program_from_wav(
                     "minimum_slope_db_per_octave": PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
                 },
             )
-            peak = float(segment.gain_db) + session_volume_db
+            peak = float(segment.gain_db) + session_volume_db + boost_db
             allowed = (
                 low_ok and high_ok and peak <= cap
                 and segment.n_samples / program.sample_rate_hz <= duration
@@ -798,7 +804,7 @@ def readmit_summed_program_from_wav(
     channel_facts = []
     for channel in range(program.channels):
         facts, channel_refusals = _channel_facts(
-            program, pcm, channel=channel, role="summed", cap_dbfs=min(caps),
+            program, pcm, channel=channel, role="summed", cap_dbfs=min(input_caps),
             session_volume_db=session_volume_db,
         )
         channel_facts.append(facts)

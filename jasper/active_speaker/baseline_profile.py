@@ -186,7 +186,7 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
 
 def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     source = load_applied_baseline_profile_state() if profile is None else profile
-    snapshot = source.get("recomposition_snapshot") or {}
+    snapshot = (source or {}).get("recomposition_snapshot") or {}
     raw = snapshot.get("bass_extension") or {}
     return validate_dynamic_bass_descriptor(raw) if raw else {}
 
@@ -3113,6 +3113,7 @@ def recompose_applied_baseline_yaml(
     out_path: str | Path | None = None,
     playback_device: str | None = None,
     drop_measured_correction: bool = False,
+    bass_extension: Mapping[str, Any] | None = None,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
@@ -3297,7 +3298,7 @@ def recompose_applied_baseline_yaml(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
-        bass_extension=applied_bass_extension(applied_profile),
+        bass_extension=(applied_bass_extension(applied_profile) if bass_extension is None else bass_extension),
         linearization=linearization,
         blend_correction=blend_correction,
         protection_sections_by_role=(
