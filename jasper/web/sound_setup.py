@@ -66,6 +66,10 @@ from .chrome import (
     json_island,
 )
 from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
+from .sound_seat_level import (
+    seat_level_start_payload as _seat_level_start_payload,
+    seat_level_stop_payload as _seat_level_stop_payload,
+)
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     OutputTopologyRevisionConflict,
@@ -117,6 +121,9 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_staged_config_payload,
     _active_speaker_startup_load_payload,
     _active_speaker_tuning_handoff_payload,
+)
+from .sound_seat_level import (  # noqa: F401 - resolved by name
+    seat_level_status_payload as _seat_level_status_payload,
 )
 
 # The crossover writer is reached through this module by
@@ -180,6 +187,33 @@ _CROSSOVER_CHILD_LINK = f"""<section class="info-card">
 
 def _crossover_child_link(page_mode: str) -> str:
     return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
+
+
+#: Household surface for jasper-seat-level (#2761): an operator SPL target
+#: and a big stop control, backed by jasper.web.sound_seat_level. Solo
+#: speakers only -- a bonded follower's delegation page never renders this
+#: markup, so seat-level.js's initSeatLevel() finds no #seat-level-card and
+#: no-ops (main.js's own boot gates the call on `not followerMode` too).
+_SEAT_LEVEL_CARD = """<section class="info-card" id="seat-level-card">
+    <h2 class="eyebrow">Seat-level leveling</h2>
+    <p class="form-hint">Ramp the volume until a calibrated mic at your
+    listening seat reads your target level, then bank it as the crossover
+    session's measurement reference.</p>
+    <div class="field">
+      <label for="seat-level-target">Target level (dB SPL)</label>
+      <input id="seat-level-target" type="number" step="0.5" inputmode="decimal"
+             autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button type="button" class="btn btn--primary" id="seat-level-start">Start leveling</button>
+      <button type="button" class="btn btn--danger" id="seat-level-stop" hidden>Stop</button>
+    </div>
+    <p class="form-hint" id="seat-level-status" role="status" aria-live="polite"></p>
+  </section>"""
+
+
+def _seat_level_card(page_mode: str) -> str:
+    return _SEAT_LEVEL_CARD if page_mode == "speaker" else ""
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
@@ -316,6 +350,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
   {_crossover_child_link(page_mode)}
+  {_seat_level_card(page_mode)}
 </main>
 """
     )
@@ -388,6 +423,10 @@ _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
     "/active-speaker/channel-identity": (
         "_active_speaker_channel_identity_payload",
         "sound.active_speaker_channel_identity",
+    ),
+    "/active-speaker/seat-level/status": (
+        "_seat_level_status_payload",
+        "sound.active_speaker_seat_level_status",
     ),
 }
 
@@ -826,6 +865,12 @@ def _make_handler(
                         )
                     )
                     return
+                if path == "/active-speaker/seat-level/start":
+                    self._send_json(_seat_level_start_payload(raw))
+                    return
+                if path == "/active-speaker/seat-level/stop":
+                    self._send_json(_seat_level_stop_payload())
+                    return
                 if path == "/output-topology":
                     try:
                         self._send_json(
@@ -1177,6 +1222,8 @@ def _make_handler(
         "/active-speaker/calibration-level": Handler._dispatch_post_route,
         "/active-speaker/channel-identity": Handler._dispatch_post_route,
         "/active-speaker/channel-protection": Handler._dispatch_post_route,
+        "/active-speaker/seat-level/start": Handler._dispatch_post_route,
+        "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
         "/active-speaker/stage-config": Handler._dispatch_post_route,
         "/active-speaker/check-path-safety": Handler._dispatch_post_route,
         "/active-speaker/load-startup-config": Handler._dispatch_post_route,

@@ -24,6 +24,7 @@
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
+import { initSeatLevel, isSeatLevelRunning, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -5609,6 +5610,9 @@ import {
     if (volumeFloorTone.active || volumeFloorTone.inFlight) {
       stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'});
     }
+    if (isSeatLevelRunning()) {
+      stopSeatLevel({keepalive: true, quiet: true});
+    }
     // A Draft is live in CamillaDSP but persisted nowhere, so leaving the page
     // would keep it audible with no surface that shows it. Put the persisted
     // profile back. Never gated on the page really going away: bfcache freezes
@@ -5628,4 +5632,5 @@ import {
   });
   if (followerMode || pageMode === 'speaker') loadLocalHardware();
   else loadState();
+  if (pageMode === 'speaker' && !followerMode) initSeatLevel();
 })();
