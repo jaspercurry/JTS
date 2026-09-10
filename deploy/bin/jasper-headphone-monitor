@@ -184,12 +184,18 @@ card_index() {
 # takes exactly one <card> (alsactl(1)), so a board with two Apple DACs runs
 # two of them, fanned out from a single process-substitution subshell that
 # `wait`s on both -- their stdout shares that subshell's one pipe, so a
-# single blocking `read` still sees every armed card's events, and the pipe
-# only EOFs (waking the read promptly) once every card's process has
-# exited. Each start enumerates the board's cards once and exits when one of
-# them is removed, so both directions of a card population move are
-# answered by re-opening it.
+# single blocking `read` still sees every armed card's events, and the
+# subshell writes MONITOR_GONE once every card's process has exited. Each
+# start enumerates the board's cards once and exits when one of them is
+# removed, so both directions of a card population move are answered by
+# re-opening it.
 MONITOR_PGID=""
+# A generation announces its own end in band, because nothing else can tell
+# a quiet window from a monitor that went away: `read -t` exits 1 for both
+# timeout and EOF on bash 3.2, and `kill -0` on the subshell keeps
+# succeeding until bash reaps it, which happens after the EOF is readable
+# often enough to matter.
+MONITOR_GONE="__monitor_gone__"
 # How long a blocked read waits before re-checking the card population.
 # Builtins only on that path.
 MONITOR_POLL_SEC=5
@@ -262,6 +268,7 @@ start_monitor() {
             child_pids+=("$!")
         done
         wait
+        printf '%s\n' "$MONITOR_GONE" 2>/dev/null
     )
     MONITOR_PGID=$!
 }
@@ -408,19 +415,19 @@ while true; do
         set_monitor_mode poll not_installed
         sweep_due=1
         sleep "$MONITOR_POLL_SEC"
-    elif read -r -t "$MONITOR_POLL_SEC" -u 3; then
+    elif ! read -r -t "$MONITOR_POLL_SEC" -u 3; then
+        # A full read window elapsed with the monitor still connected and
+        # nothing to report: whatever backoff an earlier retry grew has
+        # proven itself unneeded.
         set_monitor_mode monitor
         MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
-        sweep_due=1
-    elif ! kill -0 "$MONITOR_PGID" 2>/dev/null; then
-        # The pid, not `read`'s exit code, is what separates a plain timeout
-        # from the monitor going away — alsactl exits when a card it holds
-        # is removed, or failed to open its control device at all. This
-        # generation already having reached mode=monitor is what tells the
-        # two apart: eof if it once proved connected, exec_failed if it
-        # never got the chance. Re-open it with backoff; never fall back to
-        # polling for good, or a dongle plugged back in would never be
-        # watched again.
+    elif [[ "$REPLY" == "$MONITOR_GONE" ]]; then
+        # alsactl exits when a card it holds is removed, or failed to open
+        # its control device at all. This generation already having reached
+        # mode=monitor is what tells the two apart: eof if it once proved
+        # connected, exec_failed if it never got the chance. Re-open it with
+        # backoff; never fall back to polling for good, or a dongle plugged
+        # back in would never be watched again.
         wait "$MONITOR_PGID" 2>/dev/null
         exit_reason="exec_failed"
         [[ "$MONITOR_MODE" == "monitor" ]] && exit_reason="eof"
@@ -432,10 +439,8 @@ while true; do
         (( MONITOR_BACKOFF > MONITOR_BACKOFF_CAP_SEC )) &&
             MONITOR_BACKOFF="$MONITOR_BACKOFF_CAP_SEC"
     else
-        # A full read window elapsed with the monitor still connected and
-        # nothing to report: whatever backoff an earlier retry grew has
-        # proven itself unneeded.
         set_monitor_mode monitor
         MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+        sweep_due=1
     fi
 done
