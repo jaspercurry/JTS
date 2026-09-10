@@ -46,7 +46,14 @@ pub(super) fn open_input(
     // blocking forever in the PREPARED state.
     pcm.start()
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
-    Ok(lane_input(Some(pcm), pcm_name, label, config, resampler))
+    Ok(lane_input(
+        Some(pcm),
+        pcm_name,
+        label,
+        config.period_frames,
+        config.sample_rate,
+        resampler,
+    ))
 }
 
 /// Build the USB lane with NO capture device: `JASPER_FANIN_USB_DIRECT` is off,
@@ -59,20 +66,28 @@ pub(super) fn disabled_input(
     config: &Config,
     resampler: Option<LaneResampler>,
 ) -> Input {
-    lane_input(None, "", label, config, resampler)
+    lane_input(
+        None,
+        "",
+        label,
+        config.period_frames,
+        config.sample_rate,
+        resampler,
+    )
 }
 
 /// The per-lane `Input` every lane is built from; the DIRECT lane overrides the
 /// few fields that differ. `pcm_name` is what STATUS reports as this lane's
 /// device — empty when the lane opens none.
-fn lane_input(
+pub(super) fn lane_input(
     pcm: Option<PCM>,
     pcm_name: &str,
     label: &str,
-    config: &Config,
+    period_frames: u32,
+    sample_rate: u32,
     resampler: Option<LaneResampler>,
 ) -> Input {
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    let period_samples = (period_frames as usize) * (CHANNELS as usize);
     Input {
         pcm,
         direct: None,
@@ -89,7 +104,7 @@ fn lane_input(
         resampler,
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
-        lane_fade: LaneFade::for_lane(label, config.sample_rate),
+        lane_fade: LaneFade::for_lane(label, sample_rate),
     }
 }
 
@@ -107,22 +122,22 @@ pub(super) fn open_direct_input(
 ) -> Input {
     let device = config.usb_direct_device.clone();
     let open_period = config.usb_direct_period_frames;
+    let obs = DirectObservability::new(device.clone(), open_period);
     // The buffer the lane ACTUALLY negotiated at open; the request is
     // `resolve_direct_buffer_frames(open_period)`, but the kernel may round
     // `set_buffer_size_near` up, so seed from the request and overwrite with the
     // negotiated size on a successful open. Absent-at-startup keeps the request
     // as a best-effort placeholder (present=false makes the number advisory).
-    let buffer_frames = Arc::new(AtomicU64::new(
-        resolve_direct_buffer_frames(open_period) as u64
-    ));
-    let present = Arc::new(AtomicBool::new(false));
-    let opens = Arc::new(AtomicU64::new(0));
-    let retries = Arc::new(AtomicU64::new(0));
+    obs.buffer_frames.store(
+        resolve_direct_buffer_frames(open_period) as u64,
+        Ordering::Relaxed,
+    );
     let direct = match open_direct_capture(&device, open_period) {
         Ok((pcm, negotiated_buffer)) => {
-            present.store(true, Ordering::Relaxed);
-            opens.fetch_add(1, Ordering::Relaxed);
-            buffer_frames.store(negotiated_buffer as u64, Ordering::Relaxed);
+            obs.present.store(true, Ordering::Relaxed);
+            obs.opens.fetch_add(1, Ordering::Relaxed);
+            obs.buffer_frames
+                .store(negotiated_buffer as u64, Ordering::Relaxed);
             info!(
                 "event=fanin.usb_direct.present device={} period_frames={} buffer_frames={} (initial open) opens=1 retries=0",
                 device, open_period, negotiated_buffer,
@@ -149,8 +164,7 @@ pub(super) fn open_direct_input(
     // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
     // failure leaves the lane WITHOUT self-heal rather than restoring an inline
     // `snd_pcm_open` inside the render loop's 5.33 ms period budget.
-    let reopen_pending = Arc::new(AtomicBool::new(false));
-    let direct_opener = match direct_capture::DirectOpener::spawn(Arc::clone(&reopen_pending)) {
+    let direct_opener = match direct_capture::DirectOpener::spawn(Arc::clone(&obs.reopen_pending)) {
         Ok(opener) => Some(opener),
         Err(e) => {
             warn!(
@@ -164,30 +178,18 @@ pub(super) fn open_direct_input(
     };
     // The direct lane has no aloop substream — its only source is the gadget
     // capture in `direct`, so that device is also its reported `pcm`.
-    let base = lane_input(None, &device, label, config, resampler);
+    let base = lane_input(
+        None,
+        &device,
+        label,
+        config.period_frames,
+        config.sample_rate,
+        resampler,
+    );
     Input {
         direct: Some(direct),
         direct_opener,
-        direct_obs: Some(DirectObservability {
-            device,
-            period_frames: open_period,
-            buffer_frames,
-            present,
-            streaming: Arc::new(AtomicBool::new(false)),
-            stream_starts: Arc::new(AtomicU64::new(0)),
-            stream_stops: Arc::new(AtomicU64::new(0)),
-            notify_attempts: Arc::new(AtomicU64::new(0)),
-            notify_failures: Arc::new(AtomicU64::new(0)),
-            opens,
-            retries,
-            reopen_pending,
-            reopens: Arc::new(AtomicU64::new(0)),
-            zero_avail_streak: Arc::new(AtomicU64::new(0)),
-            frames_flowed_since_open: Arc::new(AtomicBool::new(false)),
-            liveness_last_checked_drain: Arc::new(AtomicU64::new(0)),
-            card_gen_reopens: Arc::new(AtomicU64::new(0)),
-            drain_stats: DrainStats::new(),
-        }),
+        direct_obs: Some(obs),
         ..base
     }
 }

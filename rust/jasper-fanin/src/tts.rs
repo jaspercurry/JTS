@@ -721,8 +721,9 @@ impl TtsMixer {
         }
         // Frames popped into the program this period are committed downstream
         // toward the DAC; advance the playout watermark by them. This pop is
-        // paced by the blocking snd-aloop write, so the count is DAC-rate-
-        // paced, not a queued-frame estimate (see [`crate::playout`]).
+        // paced by the blocking Ring A publish, which drains only as far as the
+        // DAC pulls, so the count is DAC-rate-paced rather than a queued-frame
+        // estimate — see [`crate::playout`] for the pipeline depth it over-reads by.
         let popped_samples = queued_samples_before.saturating_sub(self.pending_samples);
         self.ledger
             .advance_played(popped_samples / (CHANNELS as u64));

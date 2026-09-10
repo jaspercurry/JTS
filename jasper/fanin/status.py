@@ -22,11 +22,12 @@ from typing import Any
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 
 
-# The STATUS input-lane ``source`` value on the USB DIRECT lane. Every
-# aloop-reading lane serialises ``source:"lane"``; only the gadget-direct-capture
-# lane serialises ``source:"direct"`` (rust/jasper-fanin/src/state.rs, pinned by
-# its ``source":"direct"`` unit tests). This is the load-bearing USB signal:
-# fan-in owns the gadget capture directly as the sole live ingress owner.
+# The STATUS input-lane ``source`` value on the USB DIRECT lane. The vocabulary
+# is ``lane`` (an snd-aloop capture substream), ``direct`` (the gadget capture)
+# and ``disabled`` (a roster lane with no transport) —
+# rust/jasper-fanin/src/mixer.rs ``LaneSource``, pinned by its unit tests.
+# ``direct`` is the load-bearing USB signal: fan-in owns the gadget capture
+# directly as the sole live ingress owner.
 FANIN_INPUT_SOURCE_DIRECT = "direct"
 USBSINK_INPUT_LABEL = "usbsink"
 

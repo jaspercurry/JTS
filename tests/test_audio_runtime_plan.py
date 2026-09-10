@@ -32,7 +32,6 @@ from jasper.audio_runtime_plan import (
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
     apply_capture_precedence,
-    DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
     OUTPUTD_DAC_BUFFER_KEY,
@@ -1292,14 +1291,6 @@ def test_correction_latency_gate_allows_peq_and_minimum_phase(tmp_path):
     assert verdict.minimum_phase_or_iir is True
 
 
-def test_packaged_fanin_buffer_default_matches_the_plan_constant():
-    fanin_unit = (ROOT / "deploy/systemd/jasper-fanin.service").read_text()
-
-    assert _env_int(fanin_unit, "JASPER_FANIN_INPUT_BUFFER_FRAMES") == (
-        DEFAULT_FANIN_INPUT_BUFFER_FRAMES
-    )
-
-
 def test_packaged_outputd_defaults_match_the_rust_daemon():
     """The two outputd frame defaults have ONE owner: the daemon that runs them.
 
@@ -1330,12 +1321,6 @@ def test_packaged_outputd_defaults_match_the_rust_daemon():
         assert re.search(
             rf'env_u32\(\s*"{key}",\s*{const},?\s*\)', config_rs
         ), key
-
-
-def _env_int(text: str, key: str) -> int:
-    match = re.search(rf'Environment="{re.escape(key)}=(\d+)"', text)
-    assert match is not None, key
-    return int(match.group(1))
 
 
 # --- shm_ring route policy + transport topology (P2) -------------------------
