@@ -16,7 +16,7 @@ inverting macOS's observed square-root step transfer (see
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a remote twist that triggered an outbound write to the
-gadget mixer (we don't actually do this — see ADR-0271) wouldn't bounce
+gadget mixer (we don't actually do this — see ADR-0281) wouldn't bounce
 back as a phantom user-side change.
 
 Reads are event-driven: `alsaaudio.Mixer.polldescriptors()` hands over

@@ -9,7 +9,7 @@ assistant loudness behave differently on the two shapes, so it is the first
 thing to establish when testing either.
 
 Why the pre-mix sits in fan-in at all — CamillaDSP takes one ALSA capture
-device per process — is [ADR-0277](adr/0277-the-pre-mix-lives-in-fan-in.md).
+device per process — is [ADR-0282](adr/0282-the-pre-mix-lives-in-fan-in.md).
 
 ## The physical path
 
@@ -39,7 +39,7 @@ TTS / CUE chain (CROSSED OVER on every output profile)
 
 Renderer ingress has two shapes and no third: an snd-aloop lane, or fan-in
 opening a capture device itself
-([ADR-0271](adr/0271-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md)).
+([ADR-0281](adr/0281-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md)).
 Only the `usbsink` lane takes the second, and only where it is armed.
 
 **The USB leg specifically.** `usbsink` is the one lane with no aloop

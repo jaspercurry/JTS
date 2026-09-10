@@ -1,4 +1,4 @@
-# ADR-0271: Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else
+# ADR-0281: Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else
 
 - **Date:** 2026-09-08
 - **Status:** Accepted

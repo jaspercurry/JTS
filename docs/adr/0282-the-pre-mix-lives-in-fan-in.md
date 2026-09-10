@@ -1,4 +1,4 @@
-# ADR-0277: The pre-mix lives in fan-in, because CamillaDSP captures one device
+# ADR-0282: The pre-mix lives in fan-in, because CamillaDSP captures one device
 
 - **Date:** 2026-09-08
 - **Status:** Accepted
