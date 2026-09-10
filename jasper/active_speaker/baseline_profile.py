@@ -1670,6 +1670,16 @@ def applied_profile_displacement(
 #: See ADR-0195.
 _REBUILD_BLIND_SOURCE_KEYS = frozenset({"measured_candidate_fingerprint"})
 
+#: Source keys ``_source_payload`` started writing after profiles already on
+#: disk were saved. Absent-on-saved means "predates this key", not "changed"
+#: — without this, every fleet profile applied before the key existed reads
+#: as superseded on its first post-upgrade rebuild. Unlike
+#: ``_REBUILD_BLIND_SOURCE_KEYS`` (a permanent apply-vs-rebuild asymmetry),
+#: this is a one-way migration exemption: remove the key here once no fleet
+#: profile predates ``candidate_graph_context_fingerprint``'s introduction
+#: (#2416).
+_MIGRATION_EXEMPT_SOURCE_KEYS = frozenset({"candidate_graph_context_fingerprint"})
+
 
 def _changed_source_keys(
     saved_source: Mapping[str, Any],
@@ -1688,6 +1698,8 @@ def _changed_source_keys(
         key
         for key in keys
         if key not in _REBUILD_BLIND_SOURCE_KEYS or key in current_source
+        if key not in _MIGRATION_EXEMPT_SOURCE_KEYS
+        or (key in saved_source and key in current_source)
         if saved_source.get(key) != current_source.get(key)
     )
 
