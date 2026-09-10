@@ -33,6 +33,7 @@ import pytest
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup
+from jasper.web._common import RestartOutcome
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -645,7 +646,7 @@ def wizard_server(tmp_path: Path, monkeypatch):
     # the handler imports it from _common into its own namespace.
     monkeypatch.setattr(
         transit_setup, "restart_voice_daemon",
-        lambda: restarts.append(None),
+        lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     server = transit_setup.make_server(
         ("127.0.0.1", 0),

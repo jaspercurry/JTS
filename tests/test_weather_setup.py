@@ -13,6 +13,7 @@ from http.cookiejar import CookieJar
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import _common, weather_setup
+from jasper.web._common import RestartOutcome
 
 
 def test_apply_save_geocodes_and_writes_weather_location(monkeypatch):
@@ -92,7 +93,10 @@ def test_weather_handler_save_writes_env_and_restarts(monkeypatch, tmp_path):
         source="nominatim",
     ))
     restart_calls = []
-    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: restart_calls.append(1))
+    monkeypatch.setattr(
+        weather_setup, "restart_voice_daemon",
+        lambda: restart_calls.append(1) or RestartOutcome.RAN,
+    )
 
     state_path = tmp_path / "weather.env"
     transit_path = tmp_path / "transit.env"

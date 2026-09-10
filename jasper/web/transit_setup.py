@@ -73,6 +73,7 @@ from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
+    RESTART_CLAUSE,
     api_key_token_is_valid,
     begin_request,
     form_guarded,
@@ -534,8 +535,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # No station/stop/dock IDs in the log — those reveal the
         # household's home location. Record only that a save landed.
         log_event(logger, "transit.save", client=handler.address_string())
-        restart_voice_daemon()
-        send_see_other(handler, "./", flash="Saved. Voice daemon restarting.")
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        send_see_other(handler, "./", flash=f"Saved.{clause}")
 
     @form_guarded
     def _post_cities(
@@ -560,10 +561,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
             client=handler.address_string(),
         )
-        restart_voice_daemon()
-        send_see_other(
-            handler, "./", flash="Saved cities. Voice daemon restarting.",
-        )
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        send_see_other(handler, "./", flash=f"Saved cities.{clause}")
 
     @form_guarded
     def _post_clear(
@@ -583,10 +582,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
         log_event(logger, "transit.clear", client=handler.address_string())
-        restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         send_see_other(
-            handler, "./",
-            flash="Cleared transit settings. Voice restarting.",
+            handler, "./", flash=f"Cleared transit settings.{clause}",
         )
 
     _GET_ROUTES = {"/": _get_index}

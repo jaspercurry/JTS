@@ -39,7 +39,7 @@ from jasper import env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
 from jasper.web import _common, voice_page, voice_setup
-from jasper.web._common import RestartOutcome
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 
 # ---------- Save logic -----------------------------------------------------
@@ -823,7 +823,7 @@ def test_e2e_a_saver_describes_the_restart_it_actually_got(
         assert status == 303
         flash = urllib.parse.unquote(location)
         assert "Saved" in flash
-        for candidate, clause in voice_setup._RESTART_CLAUSE.items():
+        for candidate, clause in RESTART_CLAUSE.items():
             if not clause:
                 continue
             assert (clause.strip() in flash) is (candidate is outcome)
