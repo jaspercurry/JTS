@@ -46,6 +46,7 @@ EXPECTED: dict[str, int] = {
     "jasper-system-web": 200,  # wizard tier
     "jasper-bluetooth-web": 200,  # wizard tier
     "jasper-web": 200,  # wizard tier
+    "jasper-correction-web": 200,  # wizard tier: NumPy/SciPy, socket-activated
     "jasper-enhanced-aec-install": 900,  # optional compiler; kill before live audio
 }
 

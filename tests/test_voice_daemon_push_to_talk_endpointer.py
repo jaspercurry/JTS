@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import pytest
 
 from jasper.voice.session import TurnUsage
-from jasper.voice.turn_playback import PlaybackReport
+from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON, PlaybackReport
 from tests._cue_spy import SpyCues as _SpyCues
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
@@ -401,6 +402,9 @@ class _TeardownTurn:
     def last_activity_at(self) -> float:
         return 0.0
 
+    def end_input_at(self) -> float:
+        return 0.0
+
     def turn_lost(self) -> bool:
         return self._turn_lost
 
@@ -594,6 +598,34 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
     assert fields["reason"] == event_reason
+
+
+async def test_a_capped_pre_response_turn_ends_as_itself(caplog):
+    """#4532: a turn the idle watchdog's pre-response cap released ends
+    under its own name, not the generic "ended".
+
+    The household still hears the no-answer cue and the turn still counts
+    towards `silent_responses_session` (non-negotiable 6), and both the
+    journal line and the timeline say which ending it was, so the cap's
+    removal condition can be read off `/state` rather than guessed."""
+    wl = _teardown_loop()
+    wl._turn_anchor = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(
+            wl=wl, manual=False, chunks=0, input_ended=True, user_speech=True,
+            reason=PRE_RESPONSE_CAPPED_REASON,
+        )
+
+    assert wl._cues.played == ["internal_error"]
+    status = wl.session_status()
+    assert status["silent_responses_session"] == 1
+    assert status["turns_pre_response_capped"] == 1
+    assert event_fields(caplog, "turn.silent_response")["reason"] == (
+        PRE_RESPONSE_CAPPED_REASON
+    )
+    assert event_fields(caplog, "turn.timeline")["outcome"] == (
+        PRE_RESPONSE_CAPPED_REASON
+    )
 
 
 @pytest.mark.parametrize("dropped, reason, suppressed", [
@@ -950,6 +982,9 @@ class _AcquiredTurn:
         return asyncio.get_event_loop().time()
 
     def last_chunk_at(self) -> float:
+        return 0.0
+
+    def end_input_at(self) -> float:
         return 0.0
 
     def audio_chunks_pending(self) -> int:

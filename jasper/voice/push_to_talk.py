@@ -27,9 +27,13 @@ logger = logging.getLogger("jasper.voice_daemon")
 # Head-room a push-to-talk turn must leave the model to start answering
 # after the button closes the user's input.
 #
-# `idle_watchdog`'s pre-response timer is anchored at TURN OPEN, not at
-# end-of-input, so the hold and the model's first-chunk latency share one
-# `JASPER_IDLE_TIMEOUT_SEC` envelope. Its own docstring puts that latency
+# `idle_watchdog`'s pre-response timer is anchored at the turn's last
+# PROGRESS event, and a hold need produce none — Gemini streams input
+# transcription while the button is down, which does move the anchor,
+# but a quiet hold moves nothing and the OpenAI-shaped providers
+# transcribe only after the commit. Sized for that worst case, the hold
+# and the model's first-chunk latency share one `JASPER_IDLE_TIMEOUT_SEC`
+# envelope measured from turn open. Its own docstring puts that latency
 # at "3-5 s, sometimes longer" for Live API providers; 6 s covers the
 # documented range with margin. Whatever the hold cap ends up being, it
 # must fire this far below `idle_timeout_sec` or the watchdog reaps the
@@ -132,14 +136,17 @@ class PushToTalk:
         """How long a held button may hold the user's input open.
 
         Not simply ``HARD_RECORDING_CAP_SEC``. ``idle_watchdog``'s
-        pre-response timer is anchored at turn open and fires at
-        ``JASPER_IDLE_TIMEOUT_SEC`` (default 20 s) when no model chunk has
-        arrived — and none can while input is still open, because
-        ``last_activity_at()`` tracks *model* activity and stays at the
-        turn-start value. So the 30 s cap is unreachable at the shipped
-        default: the watchdog wins by ~10 s, and because ``_end_turn`` cancels
-        ``play_responses`` before it calls ``end_input``, the user gets no
-        answer at all rather than a truncated one.
+        pre-response timer fires at ``JASPER_IDLE_TIMEOUT_SEC`` (default
+        20 s) once the turn has made no progress for that long, and a
+        held button need make none: ``last_activity_at()`` tracks model
+        output and provider transcripts, so on a quiet hold — and on any
+        hold whose provider transcribes only after the commit — the
+        anchor stays at the turn-start value and no model chunk can
+        arrive while input is open. So the 30 s cap is unreachable at the
+        shipped default: the watchdog wins by ~10 s, and because
+        ``_end_turn`` cancels ``play_responses`` before it calls
+        ``end_input``, the user gets no answer at all rather than a
+        truncated one.
 
         Deriving the cap from the same ``idle_timeout_sec`` the watchdog uses
         keeps the two in step when an operator retunes either, and aims to

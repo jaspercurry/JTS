@@ -22,9 +22,7 @@ active `JASPER_VOICE_PROVIDER` so cue audio comes from the same
 provider that drives the live conversation — no Gemini round-trips
 when the user is on OpenAI Realtime, and vice versa. It's called from
 `jasper.voice.daemon_main._build_cues_manager`, which builds the whole
-`AudioCueManager` (`jasper.voice.daemon_main._build_cues_manager` is a
-delegating shim kept for backward compatibility, not a production
-call site).
+`AudioCueManager` and is called from `run()` at daemon startup.
 """
 from __future__ import annotations
 

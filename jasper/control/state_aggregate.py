@@ -108,6 +108,7 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "push_to_talk_only",
     "tool_packs",
     "silent_responses_session",
+    "turns_pre_response_capped",
 )
 _VOICE_STATUS_NESTED_FIELDS = {
     "last_at": "barge_in_last_at",

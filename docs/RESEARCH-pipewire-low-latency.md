@@ -208,8 +208,10 @@ zero-copy. The borrow is the clock-tracking **algorithm**, not the architecture.
 `spa/include/spa/buffer/buffer.h` + `src/pipewire/mem.c` (zero-copy / `SCM_RIGHTS`);
 `docs.pipewire.org/page_scheduling.html`.
 
-Last verified: 2026-06-28 (shared-resampler note narrowed to the
-jasper-resampler crate consumed by content_bridge; its C++ usbsink mirror
-and the usbsink rate-match stage were cut as the wrong tool for the
+Last verified: 2026-09-09 (2026-06-28 pass: shared-resampler note narrowed
+to the jasper-resampler crate consumed by content_bridge; its C++ usbsink
+mirror and the usbsink rate-match stage were cut as the wrong tool for the
 observed USB drops. PipeWire master; techniques traced to the cited source
-and design docs by a 4-area code-reading pass + synthesis).
+and design docs by a 4-area code-reading pass + synthesis. 2026-09-09 pass:
+dead link to the deleted HANDOFF corpus repointed to ADR-0199; ADR-0250
+note reconfirmed accurate).
