@@ -1392,6 +1392,10 @@ mod tests {
             (2560, false, 0, 250.0, false, false, 2),
             (2560, true, 0, 0.0, true, false, 0),
             (2560, true, 0, 50.0, false, true, 0),
+            // #4659: a startup deficit (128 fewer frames in each of the
+            // first two periods) must not let the recovery transient alias a
+            // compliant response.
+            (2560, false, 2, 50.0, false, false, 2),
         ] {
             let params = DecayParams {
                 enabled: true,
@@ -1479,6 +1483,18 @@ mod tests {
                     clock.tick(obs, elapsed_frames * 1000 / RATE as u64)
                 {
                     pitch = ppm.round();
+                }
+                if !compliant {
+                    assert_ne!(
+                        clock.ladder(),
+                        Ladder::L0Locked,
+                        "prefill={prefill} offset={offset} short_periods={short_periods} \
+                         second={seconds}: a noncompliant host must never reach L0Locked \
+                         (fill={:.0} held={} correction={:.1})",
+                        obs.fill_frames,
+                        gauges.held_target_frames.load(Ordering::Relaxed),
+                        obs.correction_ppm,
+                    );
                 }
             }
             assert_eq!(
