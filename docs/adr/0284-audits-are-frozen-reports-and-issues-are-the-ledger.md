@@ -14,7 +14,7 @@ snapshot itself, so the directory keeps getting re-opened and re-edited after
 the audit that produced it is long past. `docs/VOICE-AUDIT-2026-09-05.md` plus
 `docs/voice-audit-2026-09-05/` (1,810 lines total) does the same. Between
 them, 148 distinct issue references are scattered across prose rather than
-tracked as issues. The 2026-09-09 deep audit (54 agents, per MEMORY.md) never
+tracked as issues. The 2026-09-09 deep audit (114 agents) never
 landed a `docs/` file at all — its only record lived in a session scratchpad.
 No two of these four runs are discoverable, supersedable, or closeable the
 same way.
@@ -31,7 +31,9 @@ same way.
    findings additionally get `owner-decision`). A finding fixed in a PR closes
    its issue the normal way. Nothing in `docs/` tracks open/closed state.
 3. **Evidence trails are not committed.** Tile reports, prompts, and agent
-   transcripts are attached as a tarball to the audit's tracking issue.
+   transcripts are attached to the audit's tracking issue, either directly
+   or as a release asset pinned to the audited SHA (the 2026-09-09 trail
+   lives at release tag `audit-evidence-2026-09-09`), and are not committed.
 4. **`docs/audits/README.md` is the index**: one row per run — date, SHA,
    scope, report link, tracking issue, status.
 5. **The method stays in `docs/DEEP-AUDIT-PLAYBOOK.md`**, unchanged by this
