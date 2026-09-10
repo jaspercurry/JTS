@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
+from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
+
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
@@ -3696,7 +3698,7 @@ def _active_speaker_baseline_profile_payload(
         issue_count=len(payload.get("issues") or []),
         config=str((payload.get("config") or {}).get("basename")),
     )
-    return payload
+    return {**payload, "tuning_programs": PROGRAM_ENTRIES}
 
 
 async def _active_speaker_baseline_profile_apply_payload(
