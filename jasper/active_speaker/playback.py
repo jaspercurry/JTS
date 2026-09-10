@@ -85,13 +85,6 @@ APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
 # source itself labels SECONDARY. So a stray tone through the ioplug is
 # normally REFUSED, exactly as a raw ALSA `hw` device refuses.
 #
-# PROVENANCE, because the two paragraphs above used to say the opposite:
-# written true in PR #2326 (2026-08-11), when no ring had a writer lock and
-# the epoch takeover admitted a second writer outright; falsified by PR #2389
-# (2026-08-12), which landed that flock beside this comment; reconciled here
-# (#2285/#2624). The FENCE never changed and must not — only this prose was
-# wrong.
-#
 # The fence stays because that refusal has three gaps the C and Rust sources
 # document, and each one ends in an admitted second writer:
 #   - the flock is a C-ioplug-only claim. `jasper_ring::RingWriter` takes no
