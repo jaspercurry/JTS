@@ -39,7 +39,7 @@ import sys
 import time
 
 from . import debug_mode
-from .logging_setup import REDACTING_FILTER, TEMPLATE_ATTR
+from .logging_setup import REDACTING_FILTER
 
 logger = logging.getLogger(__name__)
 
@@ -105,18 +105,15 @@ class RingFlushHandler(logging.Handler):
         context in the next dump.
 
         `log_event` renders every field VALUE into the message, so its
-        records are keyed on `jasper_event` (the event name) instead;
-        `record.msg` there is a different string on every call and would
-        defeat the floor entirely. The redacting filter flattens `record.msg`
-        into the rendered line whenever it changes something, and stashes the
-        template it replaced under `logging_setup.TEMPLATE_ATTR` for the same
-        reason.
+        records are keyed on `jasper_event` (the event name) instead; its
+        `record.msg` is a different string on every call and would defeat the
+        floor entirely. Every other record is keyed on its call site, which is
+        stable however the redacting filter rewrites the message, and keeps
+        message text — the thing that may have carried a secret — out of a
+        key this dict retains for the process lifetime.
         """
-        origin = (
-            getattr(record, "jasper_event", None)
-            or getattr(record, TEMPLATE_ATTR, None)
-            or record.msg
-        )
+        call_site = f"{record.pathname}:{record.lineno}"
+        origin = getattr(record, "jasper_event", None) or call_site
         sig = f"{record.name}:{origin}"
         now = time.monotonic()
         last = self._last_auto_flush.get(sig)
