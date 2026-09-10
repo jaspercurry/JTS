@@ -3056,17 +3056,23 @@ def compact_cloud_status(
     the durable ``tier`` — the gap was that nothing surfaced it, so recovery
     looked like starting from zero rather than resuming a partial group.
     Disclosure only: full invalidation across a new session is unchanged.
-    ``positions_required`` is ``None`` when the tier cannot be resolved (a
-    stale/unknown value) or for a phase this build's plan shape does not size
-    (``PHASE_LATERAL``) — never a fabricated count.
+    ``positions_required`` is ``None`` when the tier is missing or cannot be
+    resolved (a stale/unknown value) or for a phase this build's plan shape
+    does not size (``PHASE_LATERAL``) — never a fabricated count. A missing
+    tier is deliberately NOT resolved to Full here the way
+    :func:`~.crossover_v2.capture_plan.normalize_tier` resolves an absent
+    tier when starting a plan: this projection reports what the durable
+    state actually recorded, and a durable block written before tier
+    tracking existed does not let the household infer Full's counts.
     """
     from .crossover_v2.capture_plan import PlanShapeError, resolve_plan_shape
 
     plan_shape = None
-    try:
-        plan_shape = resolve_plan_shape(tier)
-    except PlanShapeError:
-        plan_shape = None
+    if tier is not None:
+        try:
+            plan_shape = resolve_plan_shape(tier)
+        except PlanShapeError:
+            plan_shape = None
     required_by_phase = (
         {
             PHASE_CLOUD_MEASURE: plan_shape.cloud_measure_positions,

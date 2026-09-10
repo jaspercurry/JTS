@@ -405,6 +405,7 @@ def _blocked_startup_anchor(
     role: str,
     issue: dict[str, str],
     startup_setup: dict[str, Any],
+    extra_issues: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
     return {
         "status": "blocked",
@@ -414,7 +415,7 @@ def _blocked_startup_anchor(
             "status": "blocked",
             "last_action": "startup_anchor_blocked",
             "target": {"speaker_group_id": group, "role": role},
-            "issues": [issue],
+            "issues": [issue, *extra_issues],
         },
     }
 
@@ -477,7 +478,7 @@ async def _ensure_commission_startup_anchor(
         crossover_preview=crossover_preview,
     )
     if stage.get("status") != "staged":
-        # #2184: forward the SPECIFIC stage failure — ~8 distinct causes
+        # #2184: forward the SPECIFIC stage failure(s) — ~8 distinct causes
         # (stale preview, active_playback_device_required,
         # subwoofer_staging_unresolved, passive_main_output_unassigned,
         # software_tweeter_guard_incomplete, staged_config_generation_failed,
@@ -487,6 +488,8 @@ async def _ensure_commission_startup_anchor(
         # only when staging reported no issue at all keeps every existing
         # consumer's "did this stage?" branch working while the failure card
         # names the actual remedy instead of one generic sentence for all ~8.
+        # A stage can report more than one blocker at once; every one of
+        # them is forwarded (headline first) rather than only the first.
         stage_issues = _dict_items(stage.get("issues"))
         issue = (
             stage_issues[0] if stage_issues
@@ -496,6 +499,7 @@ async def _ensure_commission_startup_anchor(
             group=group,
             role=role,
             issue=issue,
+            extra_issues=tuple(stage_issues[1:]),
             startup_setup={"status": "blocked", "stage": stage},
         )
 

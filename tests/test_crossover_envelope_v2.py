@@ -902,27 +902,15 @@ def test_done_makes_no_claim_when_the_store_has_no_floor():
 def test_verdict_copy_switches_once_a_floor_is_adopted_after_a_no_floor_round():
     """#2570's remaining half: the copy-continuity check the issue's own
     2026-08-17 comment named as the cheapest close-out. Round N has no
-    adopted floor and says so; round N+1, after a floor is adopted, must
-    stop saying that -- the sentence dispatch table
-    (``_ATTEMPT_SENTENCE_BY_REASON``) picks a DIFFERENT reason once
-    ``decide_next`` is handed a floor, so this either confirms the pre-
-    existing dispatch already does the right thing (per the issue's own
-    speculation) or catches a dispatch bug -- there was no test either way
-    before this one.
+    adopted floor; round N+1, after a floor is adopted, is graded against
+    it. The sentence dispatch table (``_ATTEMPT_SENTENCE_BY_REASON``) keys
+    off ``decision.reason``, so this pins that the reason itself changes
+    once ``decide_next`` is handed a floor -- the two rendered sentences are
+    already pinned verbatim by
+    ``test_done_makes_no_claim_when_the_store_has_no_floor`` and
+    ``test_first_attempt_sentence_formats_the_kernel_provenance``.
     """
-    no_floor_env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={
-            "last_decision": {
-                "decision": None,
-                "reason": ATTEMPT_REASON_NO_FLOOR,
-                "provenance": PROVENANCE_REALIZED,
-                "floor": None,
-            },
-            "store_count": 1,
-        },
-    ))
-    round_n_sentence = no_floor_env["verdict_text"]
-    assert "no adopted measurement floor" in round_n_sentence
+    round_n_reason = ATTEMPT_REASON_NO_FLOOR
 
     # Round N+1: a floor now exists (adopted between the two rounds), and
     # this is the first attempt graded against it.
@@ -943,17 +931,8 @@ def test_verdict_copy_switches_once_a_floor_is_adopted_after_a_no_floor_round():
         )],
         floor,
     )
-    round_n_plus_1_env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": decision.to_dict()},
-    ))
-    round_n_plus_1_sentence = round_n_plus_1_env["verdict_text"]
 
-    assert round_n_plus_1_sentence != round_n_sentence
-    assert "no adopted measurement floor" not in round_n_plus_1_sentence
-    assert round_n_plus_1_sentence.endswith(
-        "Recorded the first model-graded tracking result; another attempt is "
-        "needed before improvement can be judged."
-    )
+    assert decision.reason != round_n_reason
 
 
 def _cloud_verify_spec(passed: bool):
@@ -2862,6 +2841,18 @@ def test_compact_cloud_status_never_fabricates_a_required_count():
         {PHASE_LATERAL: {"geometry": {}, "pipeline": {}}}, tier="full",
     )
     assert lateral[PHASE_LATERAL]["positions_required"] is None
+
+
+def test_compact_cloud_status_missing_tier_reports_required_as_none():
+    """A missing tier (a durable block written before tier tracking existed)
+    must not be read as Full -- that is :func:`normalize_tier`'s absence
+    rule for STARTING a plan, not this projection's rule for reporting one
+    that may already exist. Reporting Full's counts here would claim
+    knowledge this durable state never recorded."""
+    missing_tier = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier=None,
+    )
+    assert missing_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
 
 
 # --- #1857: every band discloses its own deviation, not just the pointer's ---

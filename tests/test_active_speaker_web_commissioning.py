@@ -527,6 +527,49 @@ def test_startup_anchor_forwards_the_specific_stage_failure_code(monkeypatch):
     assert result["load"]["issues"] == [specific_issue]
 
 
+def test_startup_anchor_forwards_every_stage_blocker_not_only_the_first(monkeypatch):
+    """#2184 follow-up: a stage can fail more than one gate at once. Every
+    blocker must reach the household, headline (first) blocker still first,
+    rather than dropping the rest on the floor."""
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web, "ensure_missing_software_guards", lambda: (topology, False),
+    )
+    first_issue = {
+        "severity": "blocker",
+        "code": "active_playback_device_required",
+        "message": "no active playback device is assigned",
+    }
+    second_issue = {
+        "severity": "blocker",
+        "code": "subwoofer_staging_unresolved",
+        "message": "the subwoofer staging preset could not be resolved",
+    }
+    monkeypatch.setattr(
+        web,
+        "_stage_startup_config",
+        lambda *a, **kw: {
+            "status": "blocked",
+            "issues": [first_issue, second_issue],
+        },
+    )
+
+    result = asyncio.run(
+        web._ensure_commission_startup_anchor(
+            group="mono",
+            role="woofer",
+            staged_config={"status": "blocked"},
+            current_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+            camilla_factory=lambda: object(),
+            preset=object(),
+            crossover_preview=None,
+        )
+    )
+
+    assert result["load"]["issues"] == [first_issue, second_issue]
+
+
 def test_startup_anchor_falls_back_to_the_generic_code_with_no_stage_issue(
     monkeypatch,
 ):
