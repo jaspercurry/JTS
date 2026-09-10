@@ -83,6 +83,7 @@ reach them and reproduced acoustically where it can.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -116,6 +117,8 @@ from jasper.audio_measurement.program_analysis import (
     _stimulus_shape,
     analyze_program_capture,
 )
+
+from tests._log_events import event_fields, event_records
 
 SR = 48_000
 FC_HZ = 1600.0
@@ -234,10 +237,8 @@ def _witness_chosen_for(program) -> str:
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    line = next(r.getMessage() for r in records
-                if "event=program_analysis.anchor" in r.getMessage())
-    return next(tok.split("=", 1)[1] for tok in line.split()
-                if tok.startswith("witness="))
+    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    return fields["witness"]
 
 
 def _sweep_confidence(analysis) -> float:
@@ -487,21 +488,17 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
     prog = _verify_program()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
         _global_offset(prog, _knife_edge(prog), SR)
-    assert "event=program_analysis.anchor" in caplog.text
-    assert "anchor=pilot_summed_hi" in caplog.text
-    assert "witness=sweep_verify" in caplog.text
-    assert "corroborated=true" in caplog.text
-    assert "corrected=true" in caplog.text
+    fields = event_fields(caplog, "program_analysis.anchor")
+    assert fields["anchor"] == "pilot_summed_hi"
+    assert fields["witness"] == "sweep_verify"
+    assert fields["corroborated"] == "true"
+    assert fields["corrected"] == "true"
     # A correction is a WARNING -- a mis-anchor was caught and is worth seeing.
     assert any(r.levelno == logging.WARNING for r in caplog.records)
     # The LOSING interpretation is named too (#2644 review), because a reader
     # triaging an ambiguous anchor otherwise re-derives it from the WAVs. Both
     # shifts share the pre-#2093 baseline, so their difference is the gap
     # between the two candidate timelines -- here one pilot spacing.
-    line = next(r.getMessage() for r in caplog.records
-                if "event=program_analysis.anchor" in r.getMessage())
-    fields = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
-    assert fields["anchor"] == "pilot_summed_hi"
     assert fields["runner_up_anchor"] == "pilot_summed_lo"
     spacing_ms = _pilot_spacing(prog) / SR * 1000.0
     separation = float(fields["shift_ms"]) - float(fields["runner_up_shift_ms"])
@@ -510,9 +507,9 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
         _global_offset(prog, _pristine(prog), SR)
-    assert "event=program_analysis.anchor" in caplog.text
-    assert "anchor=pilot_summed_lo" in caplog.text
-    assert "corrected=false" in caplog.text
+    fields = event_fields(caplog, "program_analysis.anchor")
+    assert fields["anchor"] == "pilot_summed_lo"
+    assert fields["corrected"] == "false"
     # ...and an ordinary capture stays at INFO.
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
@@ -521,7 +518,7 @@ def test_no_anchor_event_when_there_is_nothing_to_arbitrate(caplog):
     prog = _verify_program(with_pilots=False)
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
         _global_offset(prog, _pristine(prog), SR)
-    assert "event=program_analysis.anchor" not in caplog.text
+    assert event_records(caplog, "program_analysis.anchor") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -641,13 +638,11 @@ def _anchor_separation(program, capture) -> float:
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    line = next(r.getMessage() for r in records
-                if "event=program_analysis.anchor" in r.getMessage())
-    tokens = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
-    runner_up = float(tokens["runner_up_presence"])
+    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    runner_up = float(fields["runner_up_presence"])
     if runner_up <= 0.0:
         return float("inf")
-    return float(tokens["presence"]) / runner_up
+    return float(fields["presence"]) / runner_up
 
 
 def test_the_witness_is_confusable_one_gap_LATER_and_only_on_check():
@@ -1247,9 +1242,8 @@ def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    line = next(r.getMessage() for r in records
-                if "event=program_analysis.anchor" in r.getMessage())
-    assert "ambiguous=true" in line
+    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    assert fields["ambiguous"] == "true"
     assert any(r.levelno == logging.WARNING for r in records)
 
 
@@ -1369,9 +1363,7 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     # is graded rather than handed back as a retake.
     assert ambiguous is False
 
-    line = next(r.getMessage() for r in caplog.records
-                if "event=program_analysis.anchor" in r.getMessage())
-    fields = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
+    fields = event_fields(caplog, "program_analysis.anchor")
     assert fields["corrected"] == "false"
     assert float(fields["shift_ms"]) == 0.0
     assert float(fields["presence"]) == pytest.approx(_FIELD_LO[1])
