@@ -9,6 +9,7 @@ import json
 import pytest
 
 from jasper.aec_sweep import (
+    AEC3_LAB_KNOBS,
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
     AEC3_EDGE_COMBO_OVERRIDES,
@@ -20,11 +21,13 @@ from jasper.aec_sweep import (
     USB_AEC3_SWEEP_BASELINE_OVERRIDES,
     aec3_sweep_config_payload,
     config_metadata,
+    knob_default,
     load_aec3_sweep_config,
     normalize_aec3_sweep_source,
     validate_aec3_sweep_config_payload,
     variant_metadata,
     write_aec3_sweep_config,
+    _normalize_knob_value,
 )
 
 
@@ -153,3 +156,24 @@ def test_sweep_source_normalization_and_metadata() -> None:
     assert config_metadata(input_source=AEC3_SWEEP_SOURCE_USB)["input_source"] == (
         AEC3_SWEEP_SOURCE_USB
     )
+
+
+def test_lab_pack_defaults_round_trip_through_their_own_validators() -> None:
+    """Every pack default is a value the pack would accept as an override and
+    a fixed point of its own normaliser, so a typo'd default cannot ship a
+    knob the sweep validator rejects or silently rewrites."""
+    for key, spec in AEC3_LAB_KNOBS.items():
+        normalized = _normalize_knob_value(key, spec.default)
+        assert _normalize_knob_value(key, normalized) == normalized, key
+        if spec.kind == "float":
+            # Floats normalise through `:g`, so "1.0" comes back as "1";
+            # pin the value the engine receives, not its spelling.
+            assert float(normalized) == float(spec.default), key
+        else:
+            assert normalized == spec.default, key
+
+
+def test_unknown_knob_default_names_the_knob() -> None:
+    with pytest.raises(KeyError) as excinfo:
+        knob_default("JASPER_AEC_NOT_A_KNOB")
+    assert "JASPER_AEC_NOT_A_KNOB" in str(excinfo.value)

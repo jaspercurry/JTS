@@ -82,25 +82,25 @@ mod tests {
 
     #[test]
     fn string_values_default_only_when_unset() {
-        with_env("JASPER_ENV_TEST_STRING", None, || {
-            assert_eq!(env_str("JASPER_ENV_TEST_STRING", "fallback"), "fallback");
+        with_env("JTS_ENVCRATE_TEST_STRING", None, || {
+            assert_eq!(env_str("JTS_ENVCRATE_TEST_STRING", "fallback"), "fallback");
         });
-        with_env("JASPER_ENV_TEST_STRING", Some("  "), || {
-            assert_eq!(env_str("JASPER_ENV_TEST_STRING", "fallback"), "  ");
+        with_env("JTS_ENVCRATE_TEST_STRING", Some("  "), || {
+            assert_eq!(env_str("JTS_ENVCRATE_TEST_STRING", "fallback"), "  ");
         });
     }
 
     #[test]
     fn scalar_unset_and_blank_values_use_defaults() {
-        with_env("JASPER_ENV_TEST_U32", None, || {
+        with_env("JTS_ENVCRATE_TEST_U32", None, || {
             assert_eq!(
-                env_parse("JASPER_ENV_TEST_U32", 17_u32, "an integer").unwrap(),
+                env_parse("JTS_ENVCRATE_TEST_U32", 17_u32, "an integer").unwrap(),
                 17
             );
         });
-        with_env("JASPER_ENV_TEST_U32", Some("  "), || {
+        with_env("JTS_ENVCRATE_TEST_U32", Some("  "), || {
             assert_eq!(
-                env_parse("JASPER_ENV_TEST_U32", 17_u32, "an integer").unwrap(),
+                env_parse("JTS_ENVCRATE_TEST_U32", 17_u32, "an integer").unwrap(),
                 17
             );
         });
@@ -108,21 +108,21 @@ mod tests {
 
     #[test]
     fn parse_errors_name_the_key_and_raw_value() {
-        with_env("JASPER_ENV_TEST_U32", Some("oops"), || {
-            let error = env_parse("JASPER_ENV_TEST_U32", 17_u32, "an integer")
+        with_env("JTS_ENVCRATE_TEST_U32", Some("oops"), || {
+            let error = env_parse("JTS_ENVCRATE_TEST_U32", 17_u32, "an integer")
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains("JASPER_ENV_TEST_U32"), "{error}");
+            assert!(error.contains("JTS_ENVCRATE_TEST_U32"), "{error}");
             assert!(error.contains("oops"), "{error}");
         });
     }
 
     #[test]
     fn f32_values_must_be_finite() {
-        with_env("JASPER_ENV_TEST_F32", Some("NaN"), || {
+        with_env("JTS_ENVCRATE_TEST_F32", Some("NaN"), || {
             assert_eq!(
-                env_f32("JASPER_ENV_TEST_F32", 1.0).unwrap_err().to_string(),
-                "JASPER_ENV_TEST_F32 must be finite"
+                env_f32("JTS_ENVCRATE_TEST_F32", 1.0).unwrap_err().to_string(),
+                "JTS_ENVCRATE_TEST_F32 must be finite"
             );
         });
     }

@@ -252,11 +252,6 @@ def _make_spotify_server(target: object) -> object:
     return spotify_setup.make_server(
         target,
         registry_path=spotify_registry_path(),
-        bounce_redirect_uri=os.environ.get("JASPER_SPOTIFY_BOUNCE_REDIRECT_URI"),
-        manual_redirect_uri=os.environ.get(
-            "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
-            spotify_setup.DEFAULT_MANUAL_REDIRECT_URI,
-        ),
     )
 
 

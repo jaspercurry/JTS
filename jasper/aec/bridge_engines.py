@@ -5,9 +5,10 @@
 """AEC engines — the WebRTC AEC3 bindings and the selector in front of them.
 
 Engine configuration arrives as an `overrides` mapping; every knob absent
-from it falls back to the `JASPER_AEC_*` environment variable named at its
-call site, so one process can run the production engine off the environment
-and corpus lanes off explicit overrides at the same time.
+from it falls back to the `JASPER_AEC_*` environment variable of the same
+name, and then to the AEC3 lab pack's default (`jasper.aec_sweep`), so one
+process can run the production engine off the environment and corpus lanes
+off explicit overrides at the same time.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from jasper.aec_sweep import (
     AGC1_TARGET_DBFS_ENV,
     NS_ENABLED_ENV,
     NS_LEVEL_ENV,
+    knob_default,
 )
 from jasper.aec.bridge_telemetry import logger
 
@@ -56,20 +58,24 @@ class EngineSelector(Protocol):
 
 def _cfg_value(
     name: str,
-    default: str,
     overrides: dict[str, str] | None = None,
+    *,
+    default: str | None = None,
 ) -> str:
     if overrides is not None and name in overrides:
         return overrides[name]
-    return os.environ.get(name, default)
+    return os.environ.get(
+        name, knob_default(name) if default is None else default,
+    )
 
 
 def _cfg_bool(
     name: str,
-    default: str,
     overrides: dict[str, str] | None = None,
+    *,
+    default: str | None = None,
 ) -> bool:
-    return _cfg_value(name, default, overrides).strip().lower() in (
+    return _cfg_value(name, overrides, default=default).strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -91,18 +97,16 @@ class Aec3V1Engine:
     ) -> None:
         from jasper_aec3 import Aec3
 
-        ns_enabled = _cfg_bool(NS_ENABLED_ENV, "1", overrides)
-        ns_level = _cfg_value(NS_LEVEL_ENV, "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, "0", overrides)
-        agc1_target_dbfs = int(_cfg_value(
-            AGC1_TARGET_DBFS_ENV, "9", overrides,
-        ))
-        agc1_max_gain_db = int(_cfg_value(
-            AGC1_MAX_GAIN_DB_ENV, "18", overrides,
-        ))
-        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
+        ns_enabled = _cfg_bool(NS_ENABLED_ENV, overrides)
+        ns_level = _cfg_value(NS_LEVEL_ENV, overrides).strip().lower()
+        # The v1 binding's AGC1 stays off by default; the v2 binding turns
+        # it on, so this one default cannot come from the pack.
+        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, overrides, default="0")
+        agc1_target_dbfs = int(_cfg_value(AGC1_TARGET_DBFS_ENV, overrides))
+        agc1_max_gain_db = int(_cfg_value(AGC1_MAX_GAIN_DB_ENV, overrides))
+        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", overrides)
         stream_delay_ms = int(_cfg_value(
-            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
+            "JASPER_AEC_STREAM_DELAY_MS", overrides,
         ))
         self._aec = Aec3(
             stream_delay_ms=stream_delay_ms,
@@ -137,10 +141,10 @@ class Aec3V2Engine:
     """WebRTC AEC3 via the jasper_aec3 v2.1 vendored-static binding.
 
     Exposes the deep EchoCanceller3Config knobs the v1 binding cannot reach.
-    Every default below is the BEST_A canonical config, which is also what
-    the Aec3V2 constructor's own defaults carry (see jasper_aec3 for
-    per-knob rationale); each is individually overridable by the
-    `JASPER_AEC_*` env var named at its call site.
+    Every default comes from the AEC3 lab pack (`jasper.aec_sweep`), which
+    carries the BEST_A canonical config the Aec3V2 constructor's own
+    defaults also carry; each knob is individually overridable by the
+    `JASPER_AEC_*` env var of the same name.
     """
 
     def __init__(
@@ -151,68 +155,58 @@ class Aec3V2Engine:
         from jasper_aec3 import Aec3V2
 
         # Top-level, shared with v1
-        ns_enabled = _cfg_bool(NS_ENABLED_ENV, "1", overrides)
-        ns_level = _cfg_value(NS_LEVEL_ENV, "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, "1", overrides)
-        agc1_target_dbfs = int(_cfg_value(
-            AGC1_TARGET_DBFS_ENV, "9", overrides,
-        ))
-        agc1_max_gain_db = int(_cfg_value(
-            AGC1_MAX_GAIN_DB_ENV, "18", overrides,
-        ))
-        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
+        ns_enabled = _cfg_bool(NS_ENABLED_ENV, overrides)
+        ns_level = _cfg_value(NS_LEVEL_ENV, overrides).strip().lower()
+        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, overrides)
+        agc1_target_dbfs = int(_cfg_value(AGC1_TARGET_DBFS_ENV, overrides))
+        agc1_max_gain_db = int(_cfg_value(AGC1_MAX_GAIN_DB_ENV, overrides))
+        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", overrides)
 
-        # Deep EchoCanceller3Config — defaults from BEST_A
-        filter_length = int(_cfg_value("JASPER_AEC_FILTER_LENGTH", "30", overrides))
-        bounded_erl = _cfg_bool("JASPER_AEC_BOUNDED_ERL", "0", overrides)
-        default_gain = float(_cfg_value("JASPER_AEC_DEFAULT_GAIN", "0.3", overrides))
-        erle_max_l = float(_cfg_value("JASPER_AEC_ERLE_MAX_L", "1.5", overrides))
-        erle_max_h = float(_cfg_value("JASPER_AEC_ERLE_MAX_H", "1.0", overrides))
-        erle_onset = _cfg_bool("JASPER_AEC_ERLE_ONSET", "0", overrides)
-        use_stationarity = _cfg_bool("JASPER_AEC_USE_STATIONARITY", "1", overrides)
-        conservative_hf = _cfg_bool("JASPER_AEC_CONSERVATIVE_HF", "1", overrides)
-        mask_hf_enr_t = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_ENR_T", "0.3", overrides,
-        ))
-        mask_hf_enr_s = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_ENR_S", "0.4", overrides,
-        ))
-        mask_hf_emr_t = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_EMR_T", "0.3", overrides,
-        ))
-        max_dec_lf = float(_cfg_value("JASPER_AEC_MAX_DEC_LF", "0.05", overrides))
+        # Deep EchoCanceller3Config
+        filter_length = int(_cfg_value("JASPER_AEC_FILTER_LENGTH", overrides))
+        bounded_erl = _cfg_bool("JASPER_AEC_BOUNDED_ERL", overrides)
+        default_gain = float(_cfg_value("JASPER_AEC_DEFAULT_GAIN", overrides))
+        erle_max_l = float(_cfg_value("JASPER_AEC_ERLE_MAX_L", overrides))
+        erle_max_h = float(_cfg_value("JASPER_AEC_ERLE_MAX_H", overrides))
+        erle_onset = _cfg_bool("JASPER_AEC_ERLE_ONSET", overrides)
+        use_stationarity = _cfg_bool("JASPER_AEC_USE_STATIONARITY", overrides)
+        conservative_hf = _cfg_bool("JASPER_AEC_CONSERVATIVE_HF", overrides)
+        mask_hf_enr_t = float(_cfg_value("JASPER_AEC_MASK_HF_ENR_T", overrides))
+        mask_hf_enr_s = float(_cfg_value("JASPER_AEC_MASK_HF_ENR_S", overrides))
+        mask_hf_emr_t = float(_cfg_value("JASPER_AEC_MASK_HF_EMR_T", overrides))
+        max_dec_lf = float(_cfg_value("JASPER_AEC_MAX_DEC_LF", overrides))
         nearend_avg_blocks = int(_cfg_value(
-            "JASPER_AEC_NEAREND_AVERAGE_BLOCKS", "4", overrides,
+            "JASPER_AEC_NEAREND_AVERAGE_BLOCKS", overrides,
         ))
         nearend_mask_hf_enr_t = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_ENR_T", "0.1", overrides,
+            "JASPER_AEC_NEAREND_MASK_HF_ENR_T", overrides,
         ))
         nearend_mask_hf_enr_s = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_ENR_S", "0.3", overrides,
+            "JASPER_AEC_NEAREND_MASK_HF_ENR_S", overrides,
         ))
         nearend_mask_hf_emr_t = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_EMR_T", "0.3", overrides,
+            "JASPER_AEC_NEAREND_MASK_HF_EMR_T", overrides,
         ))
         nearend_max_dec_lf = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MAX_DEC_LF", "0.25", overrides,
+            "JASPER_AEC_NEAREND_MAX_DEC_LF", overrides,
         ))
         nearend_max_inc = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MAX_INC", "2.0", overrides,
+            "JASPER_AEC_NEAREND_MAX_INC", overrides,
         ))
         dnd_snr_threshold = float(_cfg_value(
-            "JASPER_AEC_DND_SNR_THRESHOLD", "30", overrides,
+            "JASPER_AEC_DND_SNR_THRESHOLD", overrides,
         ))
         dnd_hold_duration = int(_cfg_value(
-            "JASPER_AEC_DND_HOLD_DURATION", "50", overrides,
+            "JASPER_AEC_DND_HOLD_DURATION", overrides,
         ))
         dnd_enr_threshold = float(_cfg_value(
-            "JASPER_AEC_DND_ENR_THRESHOLD", "0.25", overrides,
+            "JASPER_AEC_DND_ENR_THRESHOLD", overrides,
         ))
         dnd_trigger_threshold = int(_cfg_value(
-            "JASPER_AEC_DND_TRIGGER_THRESHOLD", "12", overrides,
+            "JASPER_AEC_DND_TRIGGER_THRESHOLD", overrides,
         ))
         stream_delay_ms = int(_cfg_value(
-            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
+            "JASPER_AEC_STREAM_DELAY_MS", overrides,
         ))
 
         self._aec = Aec3V2(

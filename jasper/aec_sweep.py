@@ -80,6 +80,7 @@ class Aec3SweepConfig:
 @dataclass(frozen=True)
 class _KnobSpec:
     kind: str
+    default: str
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple[str, ...] = ()
@@ -98,40 +99,61 @@ AGC1_ENABLED_ENV = "JASPER_AEC_AGC1_ENABLED"
 AGC1_TARGET_DBFS_ENV = "JASPER_AEC_AGC1_TARGET_DBFS"
 AGC1_MAX_GAIN_DB_ENV = "JASPER_AEC_AGC1_MAX_GAIN_DB"
 
-_BOOL_SPEC = _KnobSpec("bool")
-_ALLOWED_AEC3_SWEEP_ENV_VARS: dict[str, _KnobSpec] = {
+# The AEC3 lab pack: every `JASPER_AEC_*` tuning knob the bridge engines
+# accept, with its validator and its default. `jasper.aec.bridge_engines` is
+# the only module that turns a knob into engine configuration and it takes
+# the defaults from here; `jasper.voice.wake_telemetry` reads the five
+# seeded toggles through `knob_default` to stamp the wake-event row. A sweep
+# variant overrides them per leg. Defaults are the BEST_A canonical config
+# (see jasper_aec3 for per-knob rationale). Only the top-level toggles are
+# seeded into /etc/jasper/jasper.env; see .env.example "AEC3 lab pack".
+AEC3_LAB_KNOBS: dict[str, _KnobSpec] = {
     # Top-level processing toggles exposed by Aec3V2Engine.
-    NS_ENABLED_ENV: _BOOL_SPEC,
-    NS_LEVEL_ENV: _KnobSpec("enum", choices=("low", "moderate", "high")),
-    AGC1_ENABLED_ENV: _BOOL_SPEC,
-    AGC1_TARGET_DBFS_ENV: _KnobSpec("int", 0, 31),
-    AGC1_MAX_GAIN_DB_ENV: _KnobSpec("int", 0, 60),
-    "JASPER_AEC_AGC2": _BOOL_SPEC,
-    "JASPER_AEC_STREAM_DELAY_MS": _KnobSpec("int", 0, 500),
+    NS_ENABLED_ENV: _KnobSpec("bool", "1"),
+    # Ranges and choices are the bindings' own (jasper_aec3/src/*.cpp):
+    # ns_level rejects anything outside these four; target_level_dbfs is
+    # 0-31 and compression_gain_db 0-90.
+    NS_LEVEL_ENV: _KnobSpec(
+        "enum", "low", choices=("low", "moderate", "high", "very_high"),
+    ),
+    AGC1_ENABLED_ENV: _KnobSpec("bool", "1"),
+    AGC1_TARGET_DBFS_ENV: _KnobSpec("int", "9", 0, 31),
+    AGC1_MAX_GAIN_DB_ENV: _KnobSpec("int", "18", 0, 90),
+    "JASPER_AEC_AGC2": _KnobSpec("bool", "0"),
+    "JASPER_AEC_STREAM_DELAY_MS": _KnobSpec("int", "40", 0, 500),
     # BEST_A / EchoCanceller3Config knobs.
-    "JASPER_AEC_FILTER_LENGTH": _KnobSpec("int", 1, 128),
-    "JASPER_AEC_BOUNDED_ERL": _BOOL_SPEC,
-    "JASPER_AEC_DEFAULT_GAIN": _KnobSpec("float", 0.0, 5.0),
-    "JASPER_AEC_ERLE_MAX_L": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_ERLE_MAX_H": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_ERLE_ONSET": _BOOL_SPEC,
-    "JASPER_AEC_USE_STATIONARITY": _BOOL_SPEC,
-    "JASPER_AEC_CONSERVATIVE_HF": _BOOL_SPEC,
-    "JASPER_AEC_MASK_HF_ENR_T": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_MASK_HF_ENR_S": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_MASK_HF_EMR_T": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_MAX_DEC_LF": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_NEAREND_AVERAGE_BLOCKS": _KnobSpec("int", 1, 64),
-    "JASPER_AEC_NEAREND_MASK_HF_ENR_T": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_NEAREND_MASK_HF_ENR_S": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_NEAREND_MASK_HF_EMR_T": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_NEAREND_MAX_DEC_LF": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_NEAREND_MAX_INC": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_DND_SNR_THRESHOLD": _KnobSpec("float", 0.0, 80.0),
-    "JASPER_AEC_DND_HOLD_DURATION": _KnobSpec("int", 0, 1000),
-    "JASPER_AEC_DND_ENR_THRESHOLD": _KnobSpec("float", 0.0, 10.0),
-    "JASPER_AEC_DND_TRIGGER_THRESHOLD": _KnobSpec("int", 0, 128),
+    "JASPER_AEC_FILTER_LENGTH": _KnobSpec("int", "30", 1, 128),
+    "JASPER_AEC_BOUNDED_ERL": _KnobSpec("bool", "0"),
+    "JASPER_AEC_DEFAULT_GAIN": _KnobSpec("float", "0.3", 0.0, 5.0),
+    "JASPER_AEC_ERLE_MAX_L": _KnobSpec("float", "1.5", 0.0, 10.0),
+    "JASPER_AEC_ERLE_MAX_H": _KnobSpec("float", "1.0", 0.0, 10.0),
+    "JASPER_AEC_ERLE_ONSET": _KnobSpec("bool", "0"),
+    "JASPER_AEC_USE_STATIONARITY": _KnobSpec("bool", "1"),
+    "JASPER_AEC_CONSERVATIVE_HF": _KnobSpec("bool", "1"),
+    "JASPER_AEC_MASK_HF_ENR_T": _KnobSpec("float", "0.3", 0.0, 10.0),
+    "JASPER_AEC_MASK_HF_ENR_S": _KnobSpec("float", "0.4", 0.0, 10.0),
+    "JASPER_AEC_MASK_HF_EMR_T": _KnobSpec("float", "0.3", 0.0, 10.0),
+    "JASPER_AEC_MAX_DEC_LF": _KnobSpec("float", "0.05", 0.0, 10.0),
+    "JASPER_AEC_NEAREND_AVERAGE_BLOCKS": _KnobSpec("int", "4", 1, 64),
+    "JASPER_AEC_NEAREND_MASK_HF_ENR_T": _KnobSpec("float", "0.1", 0.0, 10.0),
+    "JASPER_AEC_NEAREND_MASK_HF_ENR_S": _KnobSpec("float", "0.3", 0.0, 10.0),
+    "JASPER_AEC_NEAREND_MASK_HF_EMR_T": _KnobSpec("float", "0.3", 0.0, 10.0),
+    "JASPER_AEC_NEAREND_MAX_DEC_LF": _KnobSpec("float", "0.25", 0.0, 10.0),
+    "JASPER_AEC_NEAREND_MAX_INC": _KnobSpec("float", "2.0", 0.0, 10.0),
+    "JASPER_AEC_DND_SNR_THRESHOLD": _KnobSpec("float", "30", 0.0, 80.0),
+    "JASPER_AEC_DND_HOLD_DURATION": _KnobSpec("int", "50", 0, 1000),
+    "JASPER_AEC_DND_ENR_THRESHOLD": _KnobSpec("float", "0.25", 0.0, 10.0),
+    "JASPER_AEC_DND_TRIGGER_THRESHOLD": _KnobSpec("int", "12", 0, 128),
 }
+
+
+def knob_default(name: str) -> str:
+    """The lab pack's production default for ``name``."""
+
+    try:
+        return AEC3_LAB_KNOBS[name].default
+    except KeyError:
+        raise KeyError(f"{name} is not an AEC3 lab knob") from None
 
 
 DEFAULT_AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
@@ -249,7 +271,7 @@ def _normalize_bool(key: str, raw: Any) -> str:
 
 
 def _normalize_knob_value(key: str, raw: Any) -> str:
-    spec = _ALLOWED_AEC3_SWEEP_ENV_VARS.get(key)
+    spec = AEC3_LAB_KNOBS.get(key)
     if spec is None:
         raise Aec3SweepConfigError(f"unknown AEC3 sweep knob: {key}")
 
