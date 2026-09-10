@@ -905,16 +905,11 @@ def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
     from jasper.active_speaker import repeat_admission
-    from . import correction_crossover_backend
 
     claims = (
         (
             "correction.crossover_repeat_admission_unavailable",
             repeat_admission.claim_owner,
-        ),
-        (
-            "correction.active_commissioning_run_unavailable",
-            correction_crossover_backend.claim_commissioning_run_owner,
         ),
         (
             "correction.capture_entry_restore_unavailable",

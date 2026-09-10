@@ -16,11 +16,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.active_speaker import web_commissioning
-from jasper.active_speaker.commissioning_run import (
-    CommissioningRunHandle,
-    CommissioningRunStore,
-)
-from jasper.active_speaker.capture_geometry import comparison_set_valid
 from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
 from jasper.active_speaker.crossover_level_run import (
     PHONE_TRANSPORT_GRACE_S,
@@ -795,7 +790,6 @@ _LEVEL_LEASE = CrossoverLevelLease(
     volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH,
     level_run_state_path=_level_run_state_path(),
 )
-_COMMISSIONING_RUN_STORE = CommissioningRunStore()
 
 
 def level_lease() -> CrossoverLevelLease:
@@ -889,201 +883,6 @@ def reset_measurement_journey() -> dict[str, Any]:
     }
 
 
-def claim_commissioning_run_owner() -> CommissioningRunHandle | None:
-    """Retire callbacks owned by a prior correction-web process."""
-
-    return _COMMISSIONING_RUN_STORE.claim_owner()
-
-
-def commissioning_run_status(
-    comparison_set: Mapping[str, Any] | None,
-    *,
-    expected_topology_id: str | None,
-    expected_profile_context_id: str | None,
-) -> dict[str, Any]:
-    """Project durable lifecycle authority without exposing process identity."""
-
-    try:
-        snapshot = _COMMISSIONING_RUN_STORE.snapshot()
-    except (OSError, RuntimeError, ValueError) as exc:
-        return {
-            "status": "unavailable",
-            "reason": "commissioning_run_state_unavailable",
-            "error_type": type(exc).__name__,
-        }
-    current = snapshot.get("current")
-    if not isinstance(current, Mapping):
-        return {
-            "status": "not_started",
-            "reason": "commissioning_run_not_started",
-            "state_fingerprint": snapshot.get("fingerprint"),
-        }
-    comparison_current = bool(
-        isinstance(comparison_set, Mapping)
-        and comparison_set_valid(comparison_set)
-        and isinstance(expected_topology_id, str)
-        and bool(expected_topology_id)
-        and isinstance(expected_profile_context_id, str)
-        and bool(expected_profile_context_id)
-        and comparison_set.get("topology_id") == expected_topology_id
-        and comparison_set.get("profile_context_id")
-        == expected_profile_context_id
-        and current.get("session_id") == comparison_set.get("bundle_session_id")
-        and current.get("session_fingerprint") == comparison_set.get("fingerprint")
-    )
-    journal = current.get("transition_journal")
-    last_transition = journal[-1] if isinstance(journal, list) and journal else None
-    attempts = current.get("attempts")
-    result = {
-        "status": "current" if comparison_current else "stale",
-        "reason": (
-            None if comparison_current else "commissioning_comparison_set_changed"
-        ),
-        "session_id": current.get("session_id"),
-        "run_id": current.get("run_id"),
-        "owner_generation": current.get("owner_generation"),
-        "lifecycle_state": current.get("lifecycle_state"),
-        "attempt_count": len(attempts) if isinstance(attempts, list) else 0,
-        "last_transition": last_transition,
-        "updated_at": current.get("updated_at"),
-        "state_fingerprint": snapshot.get("fingerprint"),
-    }
-    if comparison_current:
-        result["profile_context_id"] = expected_profile_context_id
-        try:
-            from jasper.active_speaker.bundles import sessions_dir
-            from jasper.active_speaker.commissioning_evidence_store import (
-                CommissioningEvidenceStore,
-            )
-            from jasper.active_speaker.commissioning_isolated_producer import (
-                isolated_evidence_status,
-                resume_isolated_evidence,
-            )
-
-            run = _COMMISSIONING_RUN_STORE.current_handle()
-            if run is None:
-                raise ValueError("current commissioning run disappeared")
-            evidence_store = CommissioningEvidenceStore.open(
-                sessions_dir() / run.session_id,
-                expected_session_id=run.session_id,
-            )
-            resume_isolated_evidence(
-                run=run,
-                run_store=_COMMISSIONING_RUN_STORE,
-                evidence_store=evidence_store,
-            )
-            result["isolated_evidence"] = isolated_evidence_status(
-                run=run,
-                run_store=_COMMISSIONING_RUN_STORE,
-                evidence_store=evidence_store,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            result["isolated_evidence"] = {
-                "status": "unavailable",
-                "reason": "isolated_evidence_state_unavailable",
-                "error_type": type(exc).__name__,
-            }
-    return result
-
-
-def _commissioning_authority_snapshot() -> Any:
-    """Load the exact current product state consumed by the Active host."""
-
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
-    from jasper.active_speaker.commissioning_host import (
-        CommissioningHostAuthoritySnapshot,
-    )
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.profile import ActiveSpeakerPreset
-    from jasper.output_topology import load_output_topology
-
-    topology = load_output_topology()
-    applied_profile_raw = load_applied_baseline_profile_state()
-    if not isinstance(applied_profile_raw, Mapping):
-        raise ValueError("the protected applied crossover profile is unavailable")
-    applied_profile = dict(applied_profile_raw)
-    snapshot = applied_profile.get("recomposition_snapshot")
-    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
-    preset_raw = snapshot.get("preset")
-    if not isinstance(preset_raw, Mapping):
-        raise ValueError("the protected applied crossover preset is unavailable")
-    preset = ActiveSpeakerPreset.from_mapping(dict(preset_raw))
-    draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
-    if not isinstance(safety_profile, Mapping):
-        raise ValueError("the confirmed driver safety profile is unavailable")
-    measurements = load_measurement_state(topology)
-    comparison_set = measurements.get("active_comparison_set")
-    if not isinstance(comparison_set, Mapping) or not comparison_set_valid(
-        comparison_set
-    ):
-        raise ValueError("the active crossover comparison set is unavailable")
-    calibration_id = str(comparison_set.get("calibration_id") or "")
-    if not calibration_id:
-        raise ValueError("a calibrated measurement microphone is required")
-    from jasper.audio_measurement.calibration import (
-        CalibrationCurve,
-        load_calibration_record,
-    )
-
-    calibration = load_calibration_record(calibration_id)
-    calibration_curve = calibration.curve
-    if not isinstance(calibration_curve, CalibrationCurve):
-        raise ValueError("the selected microphone calibration is unavailable")
-    return CommissioningHostAuthoritySnapshot(
-        topology=topology,
-        preset=preset,
-        safety_profile=dict(safety_profile),
-        comparison_set=dict(comparison_set),
-        applied_profile=dict(applied_profile),
-        calibration_id=calibration_id,
-        calibration=calibration_curve,
-    )
-
-
-def _commissioning_capture_service() -> Any:
-    from jasper.active_speaker.bundles import sessions_dir
-    from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStore,
-    )
-    from jasper.active_speaker.commissioning_service import (
-        CommissioningCaptureService,
-    )
-
-    run = _COMMISSIONING_RUN_STORE.current_handle()
-    if run is None:
-        raise ValueError("the active crossover commissioning run is not started")
-    evidence_store = CommissioningEvidenceStore.open(
-        sessions_dir() / run.session_id,
-        expected_session_id=run.session_id,
-    )
-    return CommissioningCaptureService(
-        run=run,
-        run_store=_COMMISSIONING_RUN_STORE,
-        evidence_store=evidence_store,
-        load_current_authority=_commissioning_authority_snapshot,
-    )
-
-
-def commissioning_region_status() -> dict[str, Any]:
-    """Project strict summed-region progress from the one Active authority."""
-
-    try:
-        return _commissioning_capture_service().status()
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        code = getattr(exc, "code", "region_commissioning_unavailable")
-        return {
-            "schema_version": 1,
-            "kind": "jts_active_region_commissioning_status",
-            "status": "unavailable",
-            "reason": str(code),
-            "detail": str(exc),
-        }
-
-
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
@@ -1131,25 +930,6 @@ def status_payload() -> dict[str, Any]:
 
     comparison_set = (payload.get("measurements") or {}).get(
         "active_comparison_set"
-    )
-    payload["region_commissioning"] = commissioning_region_status()
-    # A successful Active-owned region projection has already revalidated the
-    # durable comparison against the exact retained apply predecessor.  After
-    # apply, that is the evidence context; the newly installed profile is the
-    # verification subject, not a reason to stale the run that installed it.
-    region_context_id = str(
-        payload["region_commissioning"].get("profile_context_id") or ""
-    )
-    if (
-        isinstance(comparison_set, Mapping)
-        and region_context_id
-        and comparison_set.get("profile_context_id") == region_context_id
-    ):
-        current_context_id = region_context_id
-    payload["commissioning_run"] = commissioning_run_status(
-        comparison_set if isinstance(comparison_set, Mapping) else None,
-        expected_topology_id=(payload.get("topology") or {}).get("topology_id"),
-        expected_profile_context_id=current_context_id,
     )
     try:
         durable_repeats = repeat_admission.snapshot(
