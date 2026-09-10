@@ -375,6 +375,14 @@ def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasureme
     )
 
 
+#: INPUT samples either side of an output sample that `upsample_2x` reads. A
+#: chunk resampled on its own is wrong within this distance of both its edges,
+#: so a caller resampling a stream in chunks has to carry that much context
+#: across every join. `jasper.dsp_numpy` sizes the taps; the value is pinned
+#: against them by tests/test_tts_playout.py.
+UPSAMPLE_2X_CONTEXT = 10
+
+
 def upsample_2x(samples: "Any") -> "Any":
     """Interpolate 24 kHz mono speech to 48 kHz. Returns float64.
 
