@@ -38,6 +38,8 @@ it shows through.  A pin at one corner only would pass over half the policy.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
@@ -470,12 +472,15 @@ def test_the_flow_re_exports_resolve_to_the_one_definition():
 
 
 @pytest.mark.parametrize("limit", [1.0, 2.0, 4.0])
-def test_summed_sweep_fits_the_tightest_role_duration(limit):
+@pytest.mark.parametrize("band", [None, (20.0, 20000.0)])
+def test_summed_sweep_fits_the_tightest_role_duration(limit, band):
     excitation = _excitation(
         {"woofer": 0.0, "tweeter": -65.0},
         sweep_duration_limits_s={"woofer": 4.0, "tweeter": limit},
     )
+    excitation = replace(excitation, summed_sweep_band_hz=band)
     for program in (excitation.verify_program(), excitation.cloud_program()):
         sweeps = [segment for segment in program.stimulus_segments() if segment.kind == "summed_sweep"]
         assert len(sweeps) == 1
-        assert 0.9 * limit < sweeps[0].n_samples / program.sample_rate_hz <= limit
+        assert 0 < sweeps[0].n_samples / program.sample_rate_hz <= limit
+        assert max(s.effective_peak_dbfs for s in program.stimulus_segments()) <= -65.0

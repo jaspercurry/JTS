@@ -247,16 +247,21 @@ def test_measure_takes_one_or_two_drivers_and_needs_every_gain():
 # --------------------------------------------------------------------------- #
 
 
-def test_verify_program_is_mono_full_band():
-    prog = build_verify_program(1600.0, sweep_s=1.0)
+@pytest.mark.parametrize("band", [None, (60.0, 18000.0)])
+def test_verify_program_is_mono_full_band(band):
+    prog = build_verify_program(1600.0, sweep_s=1.0, sweep_band_hz=band)
     assert prog.phase == PROGRAM_PHASE_VERIFY
     assert prog.channels == 1
     sweep = prog.segment("sweep_verify")
     assert sweep.kind == KIND_SUMMED_SWEEP
     assert sweep.channel == 0
-    assert sweep.f2_hz == pytest.approx(20000.0)
-    # Full-band low bound at 150 for a normal Fc; the shoulder is covered.
-    assert sweep.f1_hz == pytest.approx(150.0)
+    assert (sweep.f1_hz, sweep.f2_hz) == pytest.approx(band or (150.0, 20000.0))
+
+
+@pytest.mark.parametrize("band", [(0, 20000), (60, 24000), (150, 60), (math.nan, 20000)])
+def test_verify_rejects_invalid_sweep_band(band):
+    with pytest.raises(ValueError):
+        build_verify_program(1600.0, sweep_band_hz=band)
 
 
 def test_verify_widens_low_bound_for_low_fc():

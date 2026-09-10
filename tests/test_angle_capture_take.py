@@ -689,6 +689,10 @@ def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
 def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     slot, monkeypatch, program_id, coverage, room_candidate,
 ):
+    room_roles = [
+        RoleBand("woofer", 0, FrequencyBand(60.0, 4000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
+    ]
     program = mp.program(program_id, coverage)
     preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
     candidate_ids = ("room-fp",) if room_candidate else ()
@@ -704,7 +708,8 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
         return analyses[-1]
 
     conductor = _conductor(
-        fakes, index_phase_map=index_phases, lateral_prompts=prompts,
+        fakes, roles_bands=room_roles, fc_hz=_FC_HZ,
+        index_phase_map=index_phases, lateral_prompts=prompts,
         lateral_consumer=consumer, lateral_claims=claims,
         measure_specs_by_index=specs,
         seams=replace(
@@ -717,6 +722,27 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     lateral_indexes = [
         index for index, phase in index_phases.items() if phase == PHASE_LATERAL
     ]
+    room_sweep = next(
+        segment for segment in conductor.program_for_phase(PHASE_LATERAL).segments
+        if segment.kind == "summed_sweep"
+    )
+    assert (room_sweep.f1_hz, room_sweep.f2_hz) == (20.0, 20000.0)
+    capture_plan = flow.build_v2_capture_plan(
+        room_roles, _FC_HZ, plan_shape=_hand_shape(),
+        include_cloud_measure=False, include_lateral=True,
+        lateral_prompts=prompts,
+        lateral_candidate_ids=(
+            ("room-fp",) * len(prompts) if room_candidate else None
+        ),
+    )
+    room_duration_ms = (
+        conductor.program_for_phase(PHASE_LATERAL).total_samples * 1000
+        / conductor.program_for_phase(PHASE_LATERAL).sample_rate_hz
+    )
+    assert all(
+        entry.duration_ms >= room_duration_ms
+        for entry in capture_plan.entries if entry.kind_label == "lateral"
+    )
     for index in lateral_indexes:
         assert _run_phase(conductor, index, 1)["accepted"] is True
 
@@ -741,6 +767,25 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     assert [record["candidate_id"] for record in records] == [
         "room-fp" if room_candidate else ""
     ] * len(program.poses)
+    assert {
+        tuple(curve["band_hz"])
+        for record in records for curve in record["curves"]
+    } == {(20.0, 20000.0)}
+
+    speaker_prompts = tuple(
+        replace(prompt, purpose=mp.PURPOSE_SPEAKER) for prompt in prompts
+    )
+    speaker = _conductor(
+        FakeSeams(), roles_bands=room_roles, fc_hz=_FC_HZ,
+        index_phase_map=index_phases, lateral_prompts=speaker_prompts,
+        lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+        measure_specs_by_index=specs,
+    )
+    speaker_sweep = next(
+        segment for segment in speaker.program_for_phase(PHASE_LATERAL).segments
+        if segment.kind == "summed_sweep"
+    )
+    assert speaker_sweep.f1_hz == 150.0
 
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])
