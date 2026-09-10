@@ -19,6 +19,7 @@ from jasper import outputd_failure_reconcile_state as reader
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
+UNPARK_SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-unpark"
 UNIT = ROOT / "deploy" / "systemd" / "jasper-outputd.service"
 
 FAILED = {"active_state": "failed", "result": "exit-code"}
@@ -113,12 +114,17 @@ def test_the_record_path_is_the_one_the_script_writes_and_the_unit_removes():
     """A literal duplicated across a shell writer, a unit file and a Python
     reader is exactly the set that drifts."""
     script = SCRIPT.read_text()
+    unpark_script = UNPARK_SCRIPT.read_text()
     unit = UNIT.read_text()
     assert (
         f'PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
         in script
     )
-    assert f"ExecStartPost=-/bin/rm -f {reader.DEFAULT_RECORD_PATH}" in unit
+    assert (
+        f'PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
+        in unpark_script
+    )
+    assert f"ExecStartPost=-/usr/local/sbin/{UNPARK_SCRIPT.name}" in unit
     assert UNIT.name == reader.UNIT
     assert f"ExecStopPost=-/usr/local/sbin/{SCRIPT.name}" in unit
 
@@ -128,3 +134,39 @@ def test_the_record_lives_outside_the_runtime_directory_systemd_deletes():
     without a restart — which is the very stop this record reports."""
     assert "RuntimeDirectory=jasper-outputd" in UNIT.read_text()
     assert not reader.DEFAULT_RECORD_PATH.startswith("/run/jasper-outputd/")
+
+
+# ------------------------------------------------------- last_park (R15, #4416)
+
+
+def test_last_park_is_none_with_no_last_sibling(tmp_path):
+    snap = reader.snapshot(RUNNING, path=str(tmp_path / "absent.park"))
+    assert snap["last_park"] is None
+
+
+def test_last_park_surfaces_the_retired_record_including_unparked_at(tmp_path):
+    target = str(tmp_path / "failure-reconcile.park")
+    last = Path(f"{target}.last")
+    last.write_text("parked_at=1000\nexit_status=78\nreason=recent\nunparked_at=1200\n")
+    snap = reader.snapshot(RUNNING, path=target)
+    assert snap["last_park"] == {
+        "parked_at": 1000,
+        "exit_status": "78",
+        "park_reason": "recent",
+        "unparked_at": 1200,
+    }
+
+
+def test_last_park_present_alongside_an_active_park(tmp_path):
+    """A currently-live park and a previously-retired one are independent —
+    the reader must not conflate them."""
+    target = _record(tmp_path)
+    Path(f"{target}.last").write_text("parked_at=1\nunparked_at=2\n")
+    snap = reader.snapshot(FAILED, path=target)
+    assert snap["parked"] is True
+    assert snap["last_park"] == {
+        "parked_at": 1,
+        "exit_status": None,
+        "park_reason": None,
+        "unparked_at": 2,
+    }

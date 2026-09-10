@@ -67,11 +67,22 @@ def snapshot(
     * ``unobserved`` — unreadable, or absent with no systemd view. A surface
       this module cannot read must not report a healthy speaker.
     * ``ok`` — no record, outputd running.
+
+    ``last_park`` carries the most recently retired park (R15, #4416):
+    jasper-outputd-unpark copies the record's fields plus ``unparked_at`` to
+    a ``.last`` sibling before removing the live record, so a reader can
+    still answer "was this parked, and for how long" once the park itself
+    is gone. ``None`` when no ``.last`` sibling exists or it is unreadable.
     """
     target = path if path is not None else os.environ.get(
         "JASPER_OUTPUTD_RECONCILE_PARK_STATE", DEFAULT_RECORD_PATH
     )
-    out: dict[str, Any] = {"path": target, "present": False, "parked": False}
+    out: dict[str, Any] = {
+        "path": target,
+        "present": False,
+        "parked": False,
+        "last_park": _last_park(f"{target}.last"),
+    }
     terminal, fields = park_record.read(target)
 
     if terminal is not None:
@@ -107,3 +118,16 @@ def _epoch(raw: str | None) -> int | None:
         return int(str(raw).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _last_park(path: str) -> dict[str, Any] | None:
+    """Fields of the most recently retired park record, or ``None``."""
+    terminal, fields = park_record.read(path)
+    if terminal is not None or not fields:
+        return None
+    return {
+        "parked_at": _epoch(fields.get("parked_at")),
+        "exit_status": fields.get("exit_status"),
+        "park_reason": fields.get("reason"),
+        "unparked_at": _epoch(fields.get("unparked_at")),
+    }

@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 FAILURE_RECONCILE = REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
+UNPARK = REPO / "deploy" / "bin" / "jasper-outputd-unpark"
 
 def _write_executable(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
@@ -239,3 +240,46 @@ def test_outputd_failure_reconcile_skips_an_exec_condition_park(
     assert "event=outputd.failure_reconcile.skip" in result.stderr
     assert "reason=non_retrying_stop" in result.stderr
 
+
+
+# --------------------------------------------------- jasper-outputd-unpark
+
+
+def test_unpark_is_a_noop_with_no_park_record(tmp_path: Path) -> None:
+    park = tmp_path / "failure-reconcile.park"
+    env = os.environ.copy()
+    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
+
+    result = subprocess.run(
+        [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+    )
+
+    assert result.stderr == ""
+    assert not park.exists()
+    assert not Path(str(park) + ".last").exists()
+
+
+def test_unpark_copies_the_record_to_last_with_unparked_at_then_removes_it(
+    tmp_path: Path,
+) -> None:
+    park = tmp_path / "failure-reconcile.park"
+    park.write_text("parked_at=1000\nexit_status=78\nreason=recent\n")
+    env = os.environ.copy()
+    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
+
+    result = subprocess.run(
+        [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+    )
+
+    assert not park.exists()
+    last = tmp_path / "failure-reconcile.park.last"
+    fields = dict(
+        line.split("=", 1)
+        for line in last.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert fields["parked_at"] == "1000"
+    assert fields["exit_status"] == "78"
+    assert fields["reason"] == "recent"
+    assert int(fields["unparked_at"]) > 0
+    assert f"event=outputd.unparked state={last}" in result.stderr

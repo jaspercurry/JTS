@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Retire jasper-outputd-failure-reconcile's park record (ADR-0141). Runs from
+# jasper-outputd.service ExecStartPost=, which only fires once outputd sends
+# READY=1 — the record IS the park, so reaching here is what ends it.
+#
+# Before removing the record, its fields plus `unparked_at` are copied to a
+# `.last` sibling so a reader can answer "was this parked, and for how long"
+# after the park record itself is gone (R15, #4416). Fail-open: always exits
+# 0, so a write/copy failure never turns outputd's own start into a failure.
+
+set -uo pipefail
+
+PARK_RECORD="${JASPER_OUTPUTD_RECONCILE_PARK_STATE:-/run/jasper-outputd-failure-reconcile.park}"
+LAST_RECORD="${PARK_RECORD}.last"
+
+log() {
+    echo "event=outputd.unparked ${*}" >&2
+}
+
+now_sec() {
+    date +%s
+}
+
+if [[ ! -e "$PARK_RECORD" ]]; then
+    exit 0
+fi
+
+tmp="${LAST_RECORD}.tmp.$$"
+{
+    cat "$PARK_RECORD" 2>/dev/null
+    printf 'unparked_at=%s\n' "$(now_sec)"
+} >"$tmp" 2>/dev/null || true
+mv -f "$tmp" "$LAST_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+log state="$LAST_RECORD"
+
+rm -f "$PARK_RECORD" 2>/dev/null || true
+exit 0
