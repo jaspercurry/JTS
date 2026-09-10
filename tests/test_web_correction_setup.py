@@ -609,16 +609,10 @@ def test_public_surface_present():
 
 def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     from jasper.active_speaker import repeat_admission, web_commissioning
-    from jasper.web import correction_crossover_backend
 
     claims = []
     monkeypatch.setattr(
         repeat_admission, "claim_owner", lambda: claims.append("repeat")
-    )
-    monkeypatch.setattr(
-        correction_crossover_backend,
-        "claim_commissioning_run_owner",
-        lambda: claims.append("commissioning"),
     )
 
     # The abandoned-sequence convergence hook: a capture sequence the previous
@@ -642,7 +636,7 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     )
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "commissioning", "capture_entry", "program"]
+    assert claims == ["repeat", "capture_entry", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
@@ -808,7 +802,6 @@ def test_main_configures_root_logging_at_info(wizard_harness):
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
     from unittest.mock import AsyncMock
     from jasper.active_speaker import repeat_admission
-    from jasper.web import correction_crossover_backend
 
     claims = []
 
@@ -817,15 +810,15 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
 
     monkeypatch.setattr(repeat_admission, "claim_owner", fail_repeat)
     monkeypatch.setattr(
-        correction_crossover_backend,
-        "claim_commissioning_run_owner",
-        lambda: claims.append("commissioning"),
+        correction_setup,
+        "_restore_capture_entry",
+        lambda: claims.append("capture_entry"),
     )
     monkeypatch.setattr(correction_setup, "_restore_protected_neutral_program_graph", AsyncMock())
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["commissioning"]
+    assert claims == ["capture_entry"]
 
 
 # ---------------------------------------------------------------------------
