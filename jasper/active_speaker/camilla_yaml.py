@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 import yaml
 
 from jasper.atomic_io import atomic_write_text
+from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph, validated_base_graph
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -40,11 +41,9 @@ from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
-    emit_butterworth_highpass,
     emit_channel_select_mixer,
     emit_gain_filter,
     emit_linkwitz_riley,
-    emit_linkwitz_transform_biquad,
     emit_mixer,
     emit_peaking_biquad,
     fmt,
@@ -61,8 +60,6 @@ from .driver_protection import (
 )
 from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
-    bass_extension_block_valid,
-    filter_param_matches,
     output_hard_muted_and_wired,
     output_highpass_protected,
     pipeline_reference_closure_errors,
@@ -100,7 +97,6 @@ EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR = (
 )
 
 if TYPE_CHECKING:
-    from jasper.bass_extension.profile import BassExtensionProfile
 
     # Type-only: the runtime import stays inside the two functions that need
     # it, so a cut-only emit never pulls numpy (see branch_chain's docstring).
@@ -129,8 +125,6 @@ COMMISSIONING_FILTER_MODE = "protected_startup"
 APPLIED_RESPONSE_FILTER_MODE = "applied_crossover_response"
 BASELINE_HEADROOM_DB = 0.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
-BASS_EXTENSION_LT_FILTER = "bass_ext_lt"
-BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jasper_out",
     # The retired snd-aloop stereo lane by its own name: an old asound.conf can
@@ -514,167 +508,20 @@ def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
     )
 
 
-def _bass_extension_emission(
-    preset: ActiveSpeakerPreset,
-    profile: BassExtensionProfile | None,
-) -> dict[str, Any] | None:
-    """Return the already-evaluated sealed natural block, or no block."""
-
-    if profile is None or profile.status != "accepted":
-        return None
-    adapter_id = str(profile.enclosure["adapter_id"])
-    if adapter_id != "sealed_v1":
-        return None
-    if any(target.subsonic is None for target in profile.targets):
-        raise ActiveSpeakerConfigError(
-            "sealed bass-extension profile requires subsonic protection on every target"
-        )
-    natural = profile.targets[-1]
-    if natural.target_id != "natural" or natural.qp is None:
-        raise ActiveSpeakerConfigError("sealed bass-extension natural target is invalid")
-    owner = profile.bass_owner
-    roles = tuple(str(role) for role in owner["roles"])
-    channels = tuple(int(channel) for channel in owner["channels"])
-    kind = str(owner["kind"])
-    if kind == "woofer_way" and len(roles) == 1:
-        expected = tuple(_channels_for_role(preset, roles[0]))
-    elif kind == "local_sub" and roles == ("subwoofer",):
-        sub = preset.local_subwoofer
-        expected = () if sub is None else (sub.physical_output_index,)
-    else:
-        expected = ()
-    if not expected or channels != expected:
-        raise ActiveSpeakerConfigError(
-            "bass-extension owner does not match the emitted active-speaker graph"
-        )
-    subsonic = dict(natural.subsonic or {})
-    if (
-        subsonic.get("type") != "ButterworthHighpass"
-        or type(subsonic.get("order")) is not int
-    ):
-        raise ActiveSpeakerConfigError("bass-extension subsonic filter is unsupported")
-    return {
-        "kind": kind,
-        "roles": roles,
-        "channels": channels,
-        "natural": natural,
-        "subsonic": subsonic,
-    }
-
-
-def _bass_extension_profile_summary(
-    block: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if block is None:
-        return {"runtime_block_required": False}
-    natural = block["natural"]
-    return {
-        "runtime_block_required": True,
-        "bass_owner_channels": list(block["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": dict(block["subsonic"]),
-        },
-    }
-
-
-def _emit_bass_extension_definitions(block: dict[str, Any] | None) -> list[str]:
-    if block is None:
-        return []
-    natural = block["natural"]
-    subsonic = block["subsonic"]
-    return [
-        *emit_linkwitz_transform_biquad(
-            BASS_EXTENSION_LT_FILTER,
-            freq_act=natural.fp_hz,
-            q_act=natural.qp,
-            freq_target=natural.fp_hz,
-            q_target=natural.qp,
-        ),
-        *emit_butterworth_highpass(
-            BASS_EXTENSION_SUBSONIC_FILTER,
-            freq=float(subsonic["freq"]),
-            order=subsonic["order"],
-        ),
-    ]
-
-
-def _bass_extension_chain_names(
-    block: dict[str, Any] | None,
-    *,
-    role: str | None = None,
-    local_sub: bool = False,
-) -> list[str]:
-    if block is None:
-        return []
-    owns = (
-        block["kind"] == "local_sub"
-        if local_sub
-        else block["kind"] == "woofer_way" and role in block["roles"]
+def _with_dynamic_bass(text: str, preset: ActiveSpeakerPreset, descriptor: Mapping[str, Any] | None) -> str:
+    if not descriptor:
+        return text
+    channels = (
+        (preset.local_subwoofer.physical_output_index,)
+        if preset.local_subwoofer is not None
+        else tuple(_channels_for_role(preset, lowest_driver_role(preset.way_count)))
     )
-    return (
-        [BASS_EXTENSION_LT_FILTER, BASS_EXTENSION_SUBSONIC_FILTER]
-        if owns
-        else []
-    )
-
-
-def _assert_bass_extension_safe(
-    yaml_text: str,
-    preset: ActiveSpeakerPreset,
-    block: dict[str, Any] | None,
-) -> None:
-    view = view_from_emitted_text(yaml_text)
-    evidence = bass_extension_block_valid(
-        view, _bass_extension_profile_summary(block)
-    )
-    limiter_ok = True
-    if block is not None:
-        channels = frozenset(block["channels"])
-        if block["kind"] == "local_sub":
-            limiter_name = _sub_baseline_limiter_name()
-        else:
-            limiter_name = _driver_baseline_limiter_name(block["roles"][0])
-        limiter_ok = filter_param_matches(
-            view,
-            limiter_name,
-            filter_type="Limiter",
-            params={
-                "clip_limit": BASELINE_LIMITER_CLIP_LIMIT_DB,
-                "soft_clip": True,
-            },
-        )
-        owner_steps = [step for step in view.pipeline_steps if step.channels == channels]
-        limiter_ok = limiter_ok and len(owner_steps) == 1
-        if limiter_ok:
-            names = owner_steps[0].names
-            required = (
-                BASS_EXTENSION_LT_FILTER,
-                BASS_EXTENSION_SUBSONIC_FILTER,
-                limiter_name,
-            )
-            limiter_ok = all(name in names for name in required)
-            if limiter_ok:
-                limiter_ok = (
-                    names.index(BASS_EXTENSION_LT_FILTER)
-                    < names.index(BASS_EXTENSION_SUBSONIC_FILTER)
-                    < names.index(limiter_name)
-                )
-    if evidence.valid and limiter_ok:
-        return
-    log_event(
-        logger,
-        "active_speaker.emit_gate",
-        level=logging.ERROR,
-        result="blocked_bass_extension",
-        preset_id=preset.preset_id,
-        reason=evidence.reason or "baseline_limiter_invalid",
-    )
-    raise ActiveSpeakerConfigError(
-        "emitted bass-extension block failed independent safety proof"
-    )
+    base = yaml.safe_load(text)
+    decorated = apply_dynamic_bass_graph(base, descriptor, channels)
+    if validated_base_graph(decorated, descriptor, channels) != base:
+        raise ActiveSpeakerConfigError("dynamic bass changed the static speaker tune")
+    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
+    return header + "\n" + yaml.safe_dump(decorated, sort_keys=False)
 
 
 def _assert_tweeter_crossover_honours_declared_floor(
@@ -1059,7 +906,6 @@ def _bass_management_active(preset: ActiveSpeakerPreset, role: str) -> bool:
 def _driver_baseline_filter_chain(
     preset: ActiveSpeakerPreset,
     role: str,
-    bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     names: list[str] = []
@@ -1078,7 +924,6 @@ def _driver_baseline_filter_chain(
     names.extend(
         _driver_linearization_chain_names(linearization or {}, role)
     )
-    names.extend(_bass_extension_chain_names(bass_extension, role=role))
     names.append(_driver_delay_name(role))
     names.append(_driver_baseline_gain_name(role))
     names.append(_driver_baseline_limiter_name(role))
@@ -1086,13 +931,11 @@ def _driver_baseline_filter_chain(
 
 
 def _sub_baseline_filter_chain(
-    bass_extension: dict[str, Any] | None = None,
 ) -> list[str]:
     """The local-sub baseline lane: band-limit (LR4 low-pass), then the same
     per-driver protection a main gets (non-positive gain + soft-clip limiter)."""
     return [
         _sub_lowpass_name(),
-        *_bass_extension_chain_names(bass_extension, local_sub=True),
         _sub_baseline_gain_name(),
         _sub_baseline_limiter_name(),
     ]
@@ -1573,7 +1416,6 @@ def _emit_baseline_driver_definitions(
     *,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
-    bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     """The driver-domain (Layer A) filter definitions shared by the solo/leader
@@ -1606,7 +1448,6 @@ def _emit_baseline_driver_definitions(
     # of the single sub crossover). Emitted only when a local sub is present.
     sub = preset.local_subwoofer
     lines.extend(_emit_bass_management_hp_definition(preset))
-    lines.extend(_emit_bass_extension_definitions(bass_extension))
     for role in required_driver_roles(preset.way_count):
         delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
         gain_db = _correction_value(corrections, role, "gain_db", 0.0)
@@ -1862,7 +1703,6 @@ def _emit_baseline_filter_definitions(
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
-    bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] = (),
 ) -> str:
@@ -1945,7 +1785,6 @@ def _emit_baseline_filter_definitions(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=corrections,
-        bass_extension=bass_extension,
         linearization=linearization,
     ))
     # Program-domain preference EQ (Layer C) definitions, via the shared
@@ -1988,7 +1827,6 @@ def _emit_baseline_pipeline(
     *,
     room_peq_names: Sequence[str] = (),
     preference_filter_names: Sequence[str] = (),
-    bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
     blend_correction_names: Sequence[str] = (),
 ) -> str:
@@ -2051,7 +1889,7 @@ def _emit_baseline_pipeline(
         channels = _channels_for_role(preset, role)
         chain = ", ".join(
             _driver_baseline_filter_chain(
-                preset, role, bass_extension, linearization,
+                preset, role, linearization,
             )
         )
         lines.extend([
@@ -2059,19 +1897,18 @@ def _emit_baseline_pipeline(
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
-    lines.extend(_sub_baseline_pipeline_lines(preset, bass_extension))
+    lines.extend(_sub_baseline_pipeline_lines(preset))
     return "\n".join(lines)
 
 
 def _sub_baseline_pipeline_lines(
     preset: ActiveSpeakerPreset,
-    bass_extension: dict[str, Any] | None = None,
 ) -> list[str]:
     """The sub's baseline pipeline Filter step (its own output channel), or []."""
     sub = preset.local_subwoofer
     if sub is None:
         return []
-    chain = ", ".join(_sub_baseline_filter_chain(bass_extension))
+    chain = ", ".join(_sub_baseline_filter_chain())
     return [
         "  - type: Filter",
         f"    channels: [{sub.physical_output_index}]",
@@ -2079,11 +1916,7 @@ def _sub_baseline_pipeline_lines(
     ]
 
 
-def _emit_driver_domain_pipeline(
-    preset: ActiveSpeakerPreset,
-    *,
-    bass_extension: dict[str, Any] | None = None,
-) -> str:
+def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
     # Driver-domain-only (follower) pipeline, in order: the inter-speaker
     # channel-select (a 2->2 Mixer picking L/R/mono from the leader's corrected
     # program), the pair-balance trim, the intra-speaker 2->N split, then each
@@ -2106,15 +1939,13 @@ def _emit_driver_domain_pipeline(
         channels = _channels_for_role(preset, role)
         chain = ", ".join(
             _driver_baseline_filter_chain(preset, role)
-            if bass_extension is None
-            else _driver_baseline_filter_chain(preset, role, bass_extension)
         )
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
-    lines.extend(_sub_baseline_pipeline_lines(preset, bass_extension))
+    lines.extend(_sub_baseline_pipeline_lines(preset))
     return "\n".join(lines)
 
 
@@ -3530,7 +3361,7 @@ def emit_active_speaker_baseline_config(
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None = None,
+    bass_extension: Mapping[str, Any] | None = None,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] | None = None,
@@ -3608,7 +3439,6 @@ def emit_active_speaker_baseline_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
-    bass_extension = _bass_extension_emission(preset, bass_extension_profile)
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
 
@@ -3631,7 +3461,6 @@ def emit_active_speaker_baseline_config(
         room_peqs=room_peqs,
         preference_filters=emitted_preference_filters,
         output_trim_db=output_trim_db,
-        bass_extension=bass_extension,
         linearization=safe_linearization,
         blend_correction=safe_blend_correction,
     )
@@ -3643,7 +3472,6 @@ def emit_active_speaker_baseline_config(
         preset,
         room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in emitted_preference_filters],
-        bass_extension=bass_extension,
         linearization=safe_linearization,
         blend_correction_names=[
             _blend_correction_name(i)
@@ -3704,11 +3532,12 @@ pipeline:
     # household plays through, so re-prove every tweeter output carries its
     # crossover / protective high-pass before it can leave the emitter.
     _assert_tweeter_outputs_protected(yaml, preset)
-    _assert_bass_extension_safe(yaml, preset, bass_extension)
     # Reference-closure gate (fail-closed): the baseline assembles its
     # filters/mixer/pipeline from independent helper calls, exactly as the
     # program graph does.
     _assert_pipeline_references_closed(yaml, preset)
+
+    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
 
     if out_path is not None:
         out_path = Path(out_path)
@@ -3761,7 +3590,7 @@ def emit_active_speaker_driver_domain_config(
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None = None,
+    bass_extension: Mapping[str, Any] | None = None,
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.
 
@@ -3823,7 +3652,6 @@ def emit_active_speaker_driver_domain_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
-    bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
@@ -3834,7 +3662,6 @@ def emit_active_speaker_driver_domain_config(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
-        bass_extension=bass_extension,
     )
     filter_lines.extend(
         emit_gain_filter(DRIVER_DOMAIN_PAIR_TRIM_FILTER, -pair_trim_db)
@@ -3849,7 +3676,6 @@ def emit_active_speaker_driver_domain_config(
     ))
     pipeline_yaml = _emit_driver_domain_pipeline(
         preset,
-        bass_extension=bass_extension,
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
@@ -3908,7 +3734,8 @@ pipeline:
     # corrected program, so its tweeter output must still carry the crossover /
     # protective high-pass.
     _assert_tweeter_outputs_protected(yaml, preset)
-    _assert_bass_extension_safe(yaml, preset, bass_extension)
+
+    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
 
     if out_path is not None:
         out_path = Path(out_path)

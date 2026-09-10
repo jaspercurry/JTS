@@ -81,6 +81,7 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MAX,
     ROOM_PEQ_Q_MIN,
 )
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
@@ -94,7 +95,7 @@ from .camilla_yaml import (
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
-from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
+from .graph_safety import unprotected_tweeter_outputs, view_from_yaml_dict
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
     SIDES_BY_LAYOUT,
@@ -136,6 +137,7 @@ _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "exclusion_evidence": dict,
     "blend_correction": list,
     "room_correction": dict,
+    "bass_extension": dict,
 }
 
 _ROOM_CORRECTION_KEYS = frozenset({
@@ -452,6 +454,7 @@ class MeasuredCrossoverCandidate:
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     blend_correction: Sequence[Mapping[str, Any]] = ()
     room_correction: Mapping[str, Any] = field(default_factory=dict)
+    bass_extension: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -529,6 +532,12 @@ class MeasuredCrossoverCandidate:
                 layout_sides=SIDES_BY_LAYOUT[self.source_preset.channel_map.layout],
             ),
         )
+        if self.bass_extension:
+            try:
+                dynamic_bass = validate_dynamic_bass_descriptor(self.bass_extension)
+            except ValueError as exc:
+                _refuse("bass_extension_invalid", str(exc))
+            object.__setattr__(self, "bass_extension", dynamic_bass)
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
@@ -590,6 +599,8 @@ class MeasuredCrossoverCandidate:
             core["blend_correction"] = [dict(f) for f in self.blend_correction]
         if self.room_correction:
             core["room_correction"] = dict(self.room_correction)
+        if self.bass_extension:
+            core["bass_extension"] = dict(self.bass_extension)
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -608,6 +619,7 @@ class MeasuredCrossoverCandidate:
             "exclusion_evidence": dict(self.exclusion_evidence),
             "blend_correction": [dict(f) for f in self.blend_correction],
             "room_correction": dict(self.room_correction),
+            "bass_extension": dict(self.bass_extension),
             "fingerprint": self.fingerprint,
         }
 
@@ -704,6 +716,11 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "room_correction_malformed", "candidate room_correction is malformed"
             )
+        bass_extension_raw = raw.get("bass_extension", {})
+        if not isinstance(bass_extension_raw, Mapping):
+            _refuse(
+                "bass_extension_malformed", "candidate bass_extension is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -721,6 +738,7 @@ class MeasuredCrossoverCandidate:
                 exclusion_evidence=dict(exclusion_evidence_raw),
                 blend_correction=list(blend_correction_raw),
                 room_correction=dict(room_correction_raw),
+                bass_extension=dict(bass_extension_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
@@ -782,6 +800,8 @@ def candidate_room_peqs(
 def candidate_trial_scope(candidate: MeasuredCrossoverCandidate) -> str:
     """The measurement scope that captures the candidate's complete graph."""
 
+    if candidate.bass_extension:
+        return "bass_candidate"
     return "room_candidate" if candidate.room_correction else "candidate"
 
 
@@ -879,6 +899,7 @@ def compile_candidate_config(
         corrections=corrections,
         linearization=linearization,
         blend_correction=list(candidate.blend_correction),
+        bass_extension=candidate.bass_extension,
         **emit_kwargs,
     )
 
@@ -901,7 +922,7 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     )
 
     preset = effective_preset(candidate)
-    view = view_from_emitted_text(yaml_text)
+    view = view_from_yaml_dict(_yaml.safe_load(yaml_text))
     tweeter_channels = {
         output.index
         for output in preset.channel_map.outputs

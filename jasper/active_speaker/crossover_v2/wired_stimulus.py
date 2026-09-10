@@ -33,6 +33,7 @@ from jasper.active_speaker.bundles import (
     CAPTURE_KIND_SEQUENTIAL, capture_artifact_relpath, register_capture,
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
+from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
     WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
@@ -139,6 +140,8 @@ class WiredStimulusCapture:
                 if self.spl_monitor is not None and isinstance(exc, WiredCaptureError):
                     raise _capture_stopped(exc, PlaybackObservation(emission="completed")) from exc
                 raise StimulusCaptureError("the capture could not be placed") from exc
+            if isinstance(program, ExcitationProgram):
+                answer = replace(answer, program=program.to_dict())
             self._pending.append(answer)
             return answer.wav_path
 
@@ -244,6 +247,7 @@ class CapturedRecordStore:
                 **({"capture_setup": answer.setup} if answer.setup else {}),
                 "wav_path": answer.wav_path, "wav_sha256": answer.wav_sha256,
                 "wav_bytes": len(answer.wav),
+                **({"program": answer.program} if getattr(answer, "program", None) else {}),
             })
         record_id = await self.inner.bank(payload)
         if self.after_bank:

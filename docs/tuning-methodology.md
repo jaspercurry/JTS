@@ -278,10 +278,5 @@ or Schroeder estimate is derived.
 
 ## 12. Bass
 
-Bass extension is fitted on the seat-cube median to an extended-corner target
-per rung, with no nearfield rung; protection is declared plant facts, the
-in-room distortion-versus-level ladder and the limiter evidence
-([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md);
-[ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md)).
-`close-reference` stays the on-demand room-gain split. This section is written
-in the wave that lands the bass fit view and the protection ladder.
+The [bass extension plan](HANDOFF-bass-extension-plan.md) owns the dynamic
+bass program and its measurement workflow.

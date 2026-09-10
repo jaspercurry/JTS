@@ -5825,28 +5825,30 @@ def test_verify_with_no_fc_hz_still_yields_a_summed_response():
 
 
 def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
-    """A seat take is the room's own measurement, so its reflections stay in.
-
-    The same capture both ways, so the ONLY difference is the exemption: the
-    response is the ungated arrival window, the block says why, and no
-    validity floor is claimed off a gate that did not run.
-    """
-    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    prog = build_verify_program(FC_HZ, sweep_band_hz=(20, 20000), sweep_s=1.5)
     pcm = render_program_pcm(prog)
-    ir = _band_impulse(200, 150.0, 20000.0, 1.0, n=8192)
-    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    ir = np.zeros(SR // 4)
+    ir[200] = 0.5
+    # The 120 ms reflection is outside the speaker's short arrival window.
+    ir[200 + round(0.120 * SR)] = 0.2
+    mono = fftconvolve(pcm[:, 0], ir)
     cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
-    cap = cap + np.random.default_rng(5).normal(0.0, 1e-4, cap.size)
+    cap += np.random.default_rng(5).normal(0.0, 1e-8, cap.size)
     exempt = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(),
         geometry=MeasurementGeometry(gate_exempt_reason=gating.SEAT_EXEMPT),
     )
     gated = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
 
-    assert exempt.summed_response.gating["applied"] is False
-    assert exempt.summed_response.gating["exempt_reason"] == gating.SEAT_EXEMPT
-    assert exempt.summed_response.validity_floor_hz is None
+    response = exempt.summed_response
+    assert response.gating["applied"] is False
+    assert response.gating["exempt_reason"] == gating.SEAT_EXEMPT
+    assert response.validity_floor_hz is None
     assert gated.summed_response.gating["applied"] is True
+    bass = (response.freqs_hz >= 30) & (response.freqs_hz <= 60)
+    expected = 20 * np.log10(np.abs(0.5 + 0.2 * np.exp(-2j * np.pi * response.freqs_hz[bass] * 0.120)))
+    assert response.magnitude_db[bass] == pytest.approx(expected, abs=0.5)
+    assert np.ptp(response.magnitude_db[bass]) > 5
 
 
 def test_verify_tracking_against_predicted_sum():

@@ -46,7 +46,8 @@ from jasper.active_speaker.candidate_bank import (
 from jasper.active_speaker.baseline_profile import (
     load_applied_baseline_profile_state,
 )
-from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
+from jasper.output_topology import load_output_topology_strict
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.bundles import BundleError
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
@@ -173,7 +174,20 @@ def _cmd_compose(args: argparse.Namespace) -> int:
         )
     root = Path(args.root) if args.root else None
     try:
-        base = find_banked_candidate(args.base, root=root)
+        bass_fields = (
+            {"bass_extension": json.loads(read_source_bytes(args.bass_extension_json))}
+            if args.bass_extension_json else {}
+        )
+        if args.base == "saved":
+            saved = candidate_from_applied_profile(
+                load_output_topology_strict(), load_applied_baseline_profile_state() or {},
+            )
+            try:
+                base = publish_authored_candidate(saved, root=root)
+            except (OSError, BundleError) as exc:
+                return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+        else:
+            base = find_banked_candidate(args.base, root=root)
         # The base's own preset is the layout: a composed child carries it,
         # so its room set must be keyed by the sides that preset declares.
         room_fields, room_sha256 = _composed_room(
@@ -195,6 +209,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
             room_correction=room_fields.get("room_correction"),
             room_prescription_sha256=room_sha256,
             room_measured_basis=room_fields.get("measured_basis"),
+            **bass_fields,
         )
     except RoomPrescriptionRefused as exc:
         return _gate_refusal(exc)
@@ -1653,7 +1668,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     compose = sub.add_parser("compose", help="combine banked candidate parts into an unmeasured candidate")
-    compose.add_argument("--base", required=True, metavar="FINGERPRINT")
+    compose.add_argument("--base", required=True, metavar="FINGERPRINT|saved", help="banked candidate or the applied speaker tune")
+    compose.add_argument("--bass-extension-json", metavar="FILE", help="dynamic bass descriptor; an empty object removes extension")
     compose.add_argument("--role", action="append", default=[], metavar="ROLE=FINGERPRINT")
     compose.add_argument("--alignment", metavar="FINGERPRINT", help="alignment source; defaults to base")
     compose.add_argument("--blend", metavar="FINGERPRINT", help="blend source; defaults to base")

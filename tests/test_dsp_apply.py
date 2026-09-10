@@ -16,7 +16,6 @@ import pytest
 import jasper.dsp_apply as dsp_apply_module
 
 from jasper.dsp_apply import (
-    BassExtensionApplyPending,
     CANONICAL_DSP_WRITER_LOCK_PATH,
     CamillaConfigValidationResult,
     DSP_PROOF_ANCHOR_MISSING,
@@ -31,7 +30,6 @@ from jasper.dsp_apply import (
     config_file_sha256,
     same_config_file,
     _DSP_LOCK_OWNERSHIP,
-    _dsp_apply_lock,
     _default_apply_lock_path,
     dsp_apply_lock_path,
     dsp_write_epoch,
@@ -282,72 +280,6 @@ async def test_dsp_writer_lock_acquires_after_contention_before_deadline(
     await holder
     await contender
     assert acquired.is_set()
-
-
-async def test_private_admission_refuses_pending_bass_intent_for_any_source(
-    tmp_path: Path,
-) -> None:
-    intent = tmp_path / "bass-intent.json"
-    intent.write_text("{}\n", encoding="utf-8")
-
-    with pytest.raises(BassExtensionApplyPending):
-        async with _dsp_apply_lock(
-            tmp_path / ".dsp_apply.lock",
-            source="bass_extension.recovery",
-            bass_extension_intent_path=intent,
-        ):
-            pytest.fail("a source label granted recovery permission")
-
-
-async def test_reentrant_admission_refuses_pending_bass_intent(
-    tmp_path: Path,
-) -> None:
-    intent = tmp_path / "bass-intent.json"
-    lock_path = dsp_apply_lock_path(tmp_path)
-
-    async with _dsp_apply_lock(
-        lock_path, source="outer", bass_extension_intent_path=intent
-    ):
-        intent.write_text("{}\n", encoding="utf-8")
-        with pytest.raises(BassExtensionApplyPending):
-            async with _dsp_apply_lock(
-                lock_path, source="nested", bass_extension_intent_path=intent
-            ):
-                pytest.fail("lock reentry ignored the pending intent")
-
-
-async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    intent = tmp_path / "bass-intent.json"
-    intent.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
-        intent,
-    )
-    candidate = tmp_path / "candidate.yml"
-    candidate.write_text("---\ndevices:\n  volume_limit: 0.0\n", encoding="utf-8")
-    loaded: list[str] = []
-
-    async def load(path: str) -> bool:
-        loaded.append(path)
-        return True
-
-    with pytest.raises(BassExtensionApplyPending):
-        await apply_dsp_config(
-            source="ordinary_apply",
-            candidate_path=candidate,
-            load_config=load,
-            validate=lambda path: CamillaConfigValidationResult(
-                status=ValidationStatus.VALID,
-                path=str(path),
-            ),
-            state_path=tmp_path / "state.json",
-        )
-
-    assert loaded == []
-
 
 def test_apply_lock_is_fixed_in_production_with_explicit_pytest_temp_injection(
     tmp_path: Path,

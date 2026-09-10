@@ -45,6 +45,7 @@ from jasper.audio_measurement.bundles import (
     write_json_artifact,
 )
 from jasper.audio_measurement.excitation_artifacts import (
+    ADMISSION_DIRECTORY_MODE as BUNDLE_DIR_MODE,
     AdmissionArtifactError,
     AdmissionAuthority,
     create_admission_authority,
@@ -88,10 +89,7 @@ SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
 DEFAULT_SESSIONS_MAX_BUNDLES = 12
 SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 
-# Mirrors web_measurement.CAPTURE_FILE_MODE. Bundle directories and capture
-# subdirectories are explicitly chmod'd 0o750 (umask-proof; group keeps
-# traverse/read under the /var/lib/jasper group model) in open_bundle() and
-# _copy_wav_into_bundle(). Files stay at this mode.
+# Mirrors web_measurement.CAPTURE_FILE_MODE.
 BUNDLE_FILE_MODE = 0o640
 
 #: One capture entry's kind: ``driver`` is one driver alone, ``summed`` every
@@ -465,7 +463,7 @@ def open_bundle(
         "rollback_target": None,
         "verification": None,
     }
-    os.chmod(bundle_dir, 0o750)
+    os.chmod(bundle_dir, BUNDLE_DIR_MODE)
     _write_info(bundle_dir, info)
     result = {**info, "bundle_dir": str(bundle_dir)}
     enforce_retention(root)
@@ -624,7 +622,7 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
 
     dest = bundle_dir / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(dest.parent, 0o750)
+    os.chmod(dest.parent, BUNDLE_DIR_MODE)
     tmp = dest.with_name(f".{dest.name}.tmp")
     try:
         shutil.copy2(source, tmp)

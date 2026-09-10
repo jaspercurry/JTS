@@ -37,9 +37,6 @@ REASON_SOUND_PROFILE_UNREADABLE = "sound_profile_unreadable"
 REASON_SOUND_PROFILE_NOT_ACTIVE = "sound_profile_not_active"
 
 REASON_BASS_EXTENSION_NOT_COMMISSIONED = "bass_extension_not_commissioned"
-REASON_BASS_EXTENSION_MALFORMED = "bass_extension_malformed"
-REASON_BASS_EXTENSION_STALE = "bass_extension_stale"
-REASON_BASS_EXTENSION_BYPASSED = "bass_extension_bypassed"
 
 REASON_DSP_APPLY_NONE = "dsp_apply_none"
 REASON_DSP_APPLY_ROLLBACK_FAILED = "dsp_apply_rollback_failed"
@@ -169,16 +166,12 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         )
     from ...active_speaker.state_paths import baseline_profile_state_path
     from ...active_speaker.staging import staged_metadata_path
-    from ...bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-    from ...bass_extension.profile import DEFAULT_PROFILE_PATH
 
     graph = classify_bass_extension_graph(
         topology,
         evidence_source="persisted_boot",
         statefile_path=Path(statefile),
         applied_baseline_path=baseline_profile_state_path(),
-        profile_path=DEFAULT_PROFILE_PATH,
-        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
         staged_metadata_path=staged_metadata_path(),
     )
     if graph.allowed and active_graph_is_parked(graph.config_path):
@@ -303,45 +296,18 @@ def check_sound_profile() -> CheckResult:
 @doctor_check()
 def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
+        applied_bass_extension,
     )
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
-
-    evaluation = evaluate_bass_extension_profile(
-        topology=evidence.output_topology(),
-        applied_baseline_state=load_applied_baseline_profile_state(),
-    )
-    if evaluation.status == "missing":
+    bass = applied_bass_extension()
+    if not bass:
         return CheckResult(
             "bass extension profile", "ok", "bass extension: not commissioned",
             reason=REASON_BASS_EXTENSION_NOT_COMMISSIONED,
         )
-    if evaluation.status == "malformed":
-        return CheckResult(
-            "bass extension profile",
-            "fail",
-            f"bass extension profile is malformed: {evaluation.detail}",
-            reason=REASON_BASS_EXTENSION_MALFORMED,
-        )
-    if evaluation.status == "stale":
-        refusals = ",".join(refusal.value for refusal in evaluation.refusals)
-        return CheckResult(
-            "bass extension profile",
-            "warn",
-            f"bass extension profile is stale [{refusals}]: {evaluation.detail}",
-            reason=REASON_BASS_EXTENSION_STALE,
-        )
-    if evaluation.status == "bypassed":
-        return CheckResult(
-            "bass extension profile", "ok", "bass extension profile is bypassed",
-            reason=REASON_BASS_EXTENSION_BYPASSED,
-        )
-    assert evaluation.profile is not None
     return CheckResult(
         "bass extension profile",
         "ok",
-        f"accepted; deepest={evaluation.profile.targets[0].fp_hz:g}Hz "
-        f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
+        f"active; boost={bass['low_boost_db']:g}dB",
     )
 
 @doctor_check()

@@ -60,6 +60,7 @@ def _candidate(
     trim_decision: dict | None = None,
     exclusion_evidence: dict | None = None,
     room_correction: dict | None = None,
+    bass_extension: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -76,6 +77,8 @@ def _candidate(
         kwargs["exclusion_evidence"] = exclusion_evidence
     if room_correction is not None:
         kwargs["room_correction"] = room_correction
+    if bass_extension is not None:
+        kwargs["bass_extension"] = bass_extension
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -656,6 +659,40 @@ def test_every_optional_field_is_setdefaulted_in_the_reopen_comparison():
         raw = {k: v for k, v in full.items() if k != key}
         reopened = MeasuredCrossoverCandidate.from_mapping(raw)
         assert reopened.fingerprint == full["fingerprint"], key
+
+
+def test_bass_extension_is_fingerprinted_and_reopened():
+    bass = {
+        "low_boost_db": 3.0,
+        "reference_level_db": -35.0,
+        "detector_lowpass_hz": 80.0,
+        "compressor_threshold_dbfs": -12.0,
+    }
+    candidate = _candidate(bass_extension=bass)
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+
+    assert reopened.bass_extension == {
+        **bass,
+        "compressor_factor": 10.0,
+        "compressor_attack_s": 0.01,
+        "compressor_release_s": 0.25,
+        "delta_highpass_hz": None,
+    }
+    tampered = candidate.to_dict()
+    tampered["bass_extension"] = {**reopened.bass_extension, "low_boost_db": 2.0}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(tampered)
+    assert excinfo.value.code == "candidate_tampered"
+
+
+def test_from_mapping_rejects_non_mapping_bass_extension():
+    raw = {**_candidate().to_dict(), "bass_extension": []}
+
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+
+    assert excinfo.value.code == "bass_extension_malformed"
 
 
 def test_exclusion_evidence_tampering_trips_the_tamper_check():

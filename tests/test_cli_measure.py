@@ -81,6 +81,13 @@ class FakeCam:
     async def get_active_config_raw(self, best_effort: bool = True) -> str:
         return self.loaded[-1]
 
+    async def get_loudness_volume_db(self, best_effort: bool = True) -> float:
+        return getattr(self, "loudness_db", self.volume_db)
+
+    async def set_loudness_volume_db(self, db: float, *, best_effort: bool = True, immediate: bool = False) -> bool:
+        self.loudness_db = db
+        return True
+
     async def get_volume_db(self, best_effort: bool = True) -> float:
         return self.volume_db
 
@@ -1084,3 +1091,21 @@ def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, av
         }}
     else:
         assert setup is None
+
+
+@pytest.mark.parametrize("volume", [-30, -12, 1, -101, float("nan")])
+def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys, volume):
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE, f"--volume-db={volume}"])
+    result = json.loads(capsys.readouterr().out)
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+    if volume in (-30, -12):
+        assert code == EXIT_OK
+        assert speaker["cam"].loudness_db == pytest.approx(HOUSEHOLD_DB)
+        assert result["measurement_volume_db"] == volume
+        assert result["measurement_loudness_volume_db"] == volume
+        record = json.loads((Path(result["bundle_dir"]) / ARTIFACTS / result["record_ids"][0]).read_text())
+        assert record["level_db"] == volume
+    else:
+        assert code == EXIT_REFUSED
+        assert result["reason"] == "measurement_volume_invalid"
+        assert not speaker["played"]

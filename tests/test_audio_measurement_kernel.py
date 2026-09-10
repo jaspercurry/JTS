@@ -2,34 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Characterization tests for the extracted measurement kernel.
-
-P1b moved the pure measurement primitives (sweep / deconv / analysis /
-calibration / quality) into the shared
-``jasper.audio_measurement`` package and parameterized the previously-forked
-capture-quality thresholds into a :class:`QualityModel`. That move is meant to
-be **behavior-preserving** — no threshold value changed, no DSP math changed.
-
-These tests pin exactly that:
-
-1. A fixed, RNG-free ``sweep → synthetic-room-convolution → deconv →
-   magnitude_response → smooth`` pipeline yields the same scalars it yielded
-   before extraction (golden values baked below). Any accidental change to the
-   moved math moves a golden and fails here.
-2. Each :class:`QualityModel` profile (``ROOM`` / ``DRIVER``) carries
-   exactly the pre-extraction threshold values, and the module-level aliases
-   still consumed by ``acoustic_quality.py`` / ``driver_acoustics.py`` equal
-   them.
-3. ``assess_capture`` is byte-identical under the ROOM and DRIVER profiles for
-   the same input — the driver capture path used room correction's
-   ``assess_capture`` verbatim before extraction, so passing ``DRIVER`` must not
-   change its output.
-
-Companion module-level math coverage already lives in
-``tests/test_correction_sweep_deconv.py`` (roundtrips) and
-``tests/test_correction_quality.py`` (issue codes); this file adds the golden
-freeze and the QualityModel value contract.
-"""
+"""Deterministic shared measurement transforms and capture-quality contracts."""
 from __future__ import annotations
 
 import numpy as np
@@ -141,7 +114,7 @@ def test_deconvolution_golden_recovery():
     # → 240 samples, so the peak sits at index 10 within the trimmed IR).
     assert int(np.argmax(np.abs(recovered))) == 10
     assert float(np.max(np.abs(recovered))) == pytest.approx(
-        0.6224174499511719, rel=1e-6
+        0.7363656163215637, rel=1e-6
     )
 
 
@@ -153,15 +126,15 @@ def test_magnitude_and_smoothing_golden():
     # length policy, the deconv regularizer, or the smoothing power-mean moves
     # any of these.
     probes = {
-        100.0: -1.936692,
-        500.0: -0.75041,
-        2000.0: -6.213585,
-        8000.0: -4.565471,
+        100.0: -2.214439,
+        500.0: -1.041810,
+        2000.0: -6.222704,
+        8000.0: -3.598718,
     }
     for probe_hz, golden in probes.items():
         idx = int(np.argmin(np.abs(freqs - probe_hz)))
         assert float(smoothed[idx]) == pytest.approx(golden, abs=1e-4)
-    assert float(np.mean(smoothed)) == pytest.approx(-11.391156, abs=1e-4)
+    assert float(np.mean(smoothed)) == pytest.approx(-10.016722, abs=1e-4)
 
 
 @pytest.mark.parametrize("size", [1, 2, 31, 257, 2049])

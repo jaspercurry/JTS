@@ -23,10 +23,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 import yaml as yaml_parser
 
 from jasper.atomic_io import atomic_write_text
-from jasper.bass_extension.profile import (
-    BassExtensionProfile,
-    evaluate_bass_extension_profile,
-)
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
@@ -92,6 +89,7 @@ from .level_trim import (
     attenuation_from_group_deltas,
 )
 from .measured_crossover_candidate import (
+    MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
     candidate_room_peqs,
     room_peqs_from_correction,
@@ -111,7 +109,6 @@ from .staging import build_passive_mains_preset, compile_preset_from_crossover_p
 
 if TYPE_CHECKING:
     from .measured_candidate import MeasuredElectricalCandidate
-    from .measured_crossover_candidate import MeasuredCrossoverCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +116,6 @@ SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
-_DEFAULT_PERSISTED_BASS_PROFILE = object()
 
 # Sensitivity deltas below this magnitude (dB) are treated as level-matched and
 # get no derived trim, so the least-sensitive (reference) driver and any ties
@@ -193,32 +189,11 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
 }
 
 
-def _bass_extension_graph_summary(
-    profile: BassExtensionProfile | None,
-) -> dict[str, Any]:
-    """Freeze authority evidence beside one just-emitted composition."""
-
-    if (
-        profile is None
-        or profile.status != "accepted"
-        or profile.enclosure["adapter_id"] != "sealed_v1"
-    ):
-        return {"authority_valid": True, "runtime_block_required": False}
-    natural = profile.targets[-1]
-    protected = all(target.subsonic is not None for target in profile.targets)
-    return {
-        "authority_valid": protected,
-        "runtime_block_required": True,
-        "bass_owner_channels": list(profile.bass_owner["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": (
-                dict(natural.subsonic) if natural.subsonic is not None else None
-            ),
-        },
-    }
+def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    source = load_applied_baseline_profile_state() if profile is None else profile
+    snapshot = (source or {}).get("recomposition_snapshot") or {}
+    raw = snapshot.get("bass_extension") or {}
+    return validate_dynamic_bass_descriptor(raw) if raw else {}
 
 
 def baseline_config_path(path: str | Path | None = None) -> Path:
@@ -387,39 +362,10 @@ def _source_payload(
     measured_candidate_fingerprint: str | None = None,
     driver_protection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
+    """Fingerprint source inputs, not emitted bytes.
 
-    ``build_baseline_profile_candidate`` names every solo candidate
-    ``<stem>_candidate_<fingerprint12><suffix>`` from the ``fingerprint`` below,
-    so this payload decides that filename (it also gates the ``write=False``
-    cache hit there, which separately compares ``candidate_graph_context``).
-    What it covers is exactly what it is handed: the topology's config
-    fingerprint, the design draft's and crossover preview's identities, the
-    measurement summary's identity, and — when the caller has one — the measured
-    candidate's own fingerprint.
-
-    **It is a source fingerprint, not a content hash of the emitted graph.**
-    ``bass_extension_profile`` goes straight into
-    ``emit_active_speaker_baseline_config`` and never reaches here, and neither
-    do ``candidate_graph_context``'s graph fields — resolved playback device,
-    capture device and format, domain, program channel, pair trim — since that
-    dict is assembled after this call returns (only its
-    ``measured_candidate_fingerprint`` is also a keyword argument here). Two
-    candidates differing only in one of those land on the SAME filename
-    carrying DIFFERENT bytes.
-
-    **So a candidate's path must never be read as its graph identity.** PR
-    #2311's adversarial gate refuted a double-load guard that made exactly that
-    inference — same filename as the live config, therefore skip the CamillaDSP
-    load. It reproduced the unsafe direction (household disables bass boost, the
-    UI reports the apply applied, the speaker keeps running the boosted graph)
-    and the guard was dropped. If a "skip the redundant load" optimization is
-    ever wanted again, its oracle has to be the LIVE graph —
-    :meth:`jasper.camilla.CamillaController.get_active_config_raw` normalized —
-    never the path. That method's own docstring says the same thing for a second
-    reason: ``set_active_config_raw`` deliberately leaves the persisted
-    ``config_file_path`` unchanged, so after any audition the path reports the
-    durable anchor rather than what is running.
+    Graph context can change while this fingerprint and path remain fixed.
+    Confirm the live normalized graph; a matching path is not proof of content.
     """
     measurement_summary = (
         measurements.get("summary")
@@ -2031,6 +1977,7 @@ def build_baseline_profile_candidate(
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
     write: bool = False,
+    compile_config: bool = False,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     playback_device: str | None = None,
@@ -2048,7 +1995,6 @@ def build_baseline_profile_candidate(
         validate_camilla_config
     ),
     created_at: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> dict[str, Any]:
     """Build or write a baseline candidate from current accepted evidence.
 
@@ -2665,6 +2611,7 @@ def build_baseline_profile_candidate(
     # ``candidate_room_peqs``. ``getattr`` with a default for the same eras as
     # its neighbours above; the helper needs the candidate's layout, so it only
     # runs once the field is known to be there.
+    bass_extension = dict(getattr(measured_candidate, "bass_extension", None) or {})
     room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
     room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
     if preserved_applied_profile is not None:
@@ -2766,17 +2713,12 @@ def build_baseline_profile_candidate(
             str(automatic_candidate["detail"]),
         ))
     provisional = bool(correction_meta.get("provisional"))
-    if driver_domain and bass_extension_profile is None:
-        applied_bass_anchor = load_applied_baseline_profile_state()
-        evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=applied_bass_anchor,
-        )
-        if evaluation.status == "accepted":
-            bass_extension_profile = evaluation.profile
+    if driver_domain and not bass_extension:
+        bass_extension = applied_bass_extension()
     validation = {"status": "skipped", "reason": "not_written"}
-    if write:
-        config_target.parent.mkdir(parents=True, exist_ok=True)
+    if write or compile_config:
+        if write:
+            config_target.parent.mkdir(parents=True, exist_ok=True)
         if driver_domain:
             # v2 measured candidates (measured_crossover_candidate) are not
             # routed through the driver_domain (wireless-follower) emit today
@@ -2800,9 +2742,9 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target,
+                out_path=config_target if write else None,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-                bass_extension_profile=bass_extension_profile,
+                bass_extension=bass_extension,
             )
         else:
             yaml = emit_active_speaker_baseline_config(
@@ -2816,9 +2758,9 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target,
+                out_path=config_target if write else None,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-                bass_extension_profile=bass_extension_profile,
+                bass_extension=bass_extension,
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
@@ -2860,24 +2802,28 @@ def build_baseline_profile_candidate(
                         "measured_candidate_alignment_proof_failed",
                         str(exc),
                     ))
-        validation = validate(config_target).to_dict()
-        if not validation.get("ok_to_apply") and validation.get("status") not in {
-            "valid",
-            "missing",
-        }:
-            issues.append(_issue(
-                "blocker",
-                "baseline_config_validation_failed",
-                "generated active profile did not pass CamillaDSP validation",
-            ))
+        if write:
+            validation = validate(config_target).to_dict()
+            if not validation.get("ok_to_apply") and validation.get("status") not in {
+                "valid",
+                "missing",
+            }:
+                issues.append(_issue(
+                    "blocker",
+                    "baseline_config_validation_failed",
+                    "generated active profile did not pass CamillaDSP validation",
+                ))
         config_sha256 = hashlib.sha256(yaml.encode("utf-8")).hexdigest()
-        status = "ready_to_apply" if not any(
-            issue["severity"] == "blocker" for issue in issues
-        ) else "blocked"
-        handoff_issue = _apply_handoff_issue(playback_device_source)
-        if status == "ready_to_apply" and handoff_issue:
-            issues.append(handoff_issue)
-            status = "compiled_apply_blocked"
+        if write:
+            status = "ready_to_apply" if not any(
+                issue["severity"] == "blocker" for issue in issues
+            ) else "blocked"
+            handoff_issue = _apply_handoff_issue(playback_device_source)
+            if status == "ready_to_apply" and handoff_issue:
+                issues.append(handoff_issue)
+                status = "compiled_apply_blocked"
+        else:
+            status = "ready_to_compile"
     else:
         config_sha256 = None
         status = "ready_to_compile"
@@ -3028,16 +2974,10 @@ def build_baseline_profile_candidate(
             # correction on the next preference-EQ save.
             "blend_correction": blend_correction,
             **({"room_correction": room_correction} if room_correction else {}),
+            **({"bass_extension": bass_extension} if bass_extension else {}),
             **candidate_graph_context,
         },
     }
-    if driver_domain:
-        # The bond precheck consumes this immutable sidecar in the independent
-        # whole-graph verifier. It comes from the already-evaluated profile
-        # passed to the emitter, never from filter-name inference or caller I/O.
-        payload["bass_extension_profile_summary"] = (
-            _bass_extension_graph_summary(bass_extension_profile)
-        )
     payload = finalize(payload)
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
@@ -3127,10 +3067,8 @@ def recompose_applied_baseline_yaml(
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     playback_device: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None | object = (
-        _DEFAULT_PERSISTED_BASS_PROFILE
-    ),
     drop_measured_correction: bool = False,
+    bass_extension: Mapping[str, Any] | None = None,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
@@ -3173,14 +3111,6 @@ def recompose_applied_baseline_yaml(
     )
     if snapshot is None:
         return None, hardware_issues
-    if bass_extension_profile is _DEFAULT_PERSISTED_BASS_PROFILE:
-        evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=applied_profile,
-        )
-        bass_extension_profile = (
-            evaluation.profile if evaluation.status == "accepted" else None
-        )
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
@@ -3323,11 +3253,7 @@ def recompose_applied_baseline_yaml(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
-        bass_extension_profile=(
-            bass_extension_profile
-            if isinstance(bass_extension_profile, BassExtensionProfile)
-            else None
-        ),
+        bass_extension=(applied_bass_extension(applied_profile) if bass_extension is None else bass_extension),
         linearization=linearization,
         blend_correction=blend_correction,
         protection_sections_by_role=(
@@ -3835,6 +3761,7 @@ async def apply_baseline_profile(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
+    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
@@ -3860,6 +3787,9 @@ async def apply_baseline_profile(
     through this same atomic apply-with-rollback transaction (see
     ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
     candidate that carries optional delay/polarity).
+
+    ``expected_tuning_graph_fingerprint`` binds the complete measured graph,
+    including its Room and bass layers, before the locked DSP transaction.
     """
 
     async with dsp_writer_lock(
@@ -3885,6 +3815,7 @@ async def apply_baseline_profile(
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
+            expected_tuning_graph_fingerprint=expected_tuning_graph_fingerprint,
             on_candidate_verified=on_candidate_verified,
             measured_candidate=measured_candidate,
             validate=validate,
@@ -3909,6 +3840,7 @@ async def _apply_baseline_profile_locked(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
+    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
@@ -3936,6 +3868,9 @@ async def _apply_baseline_profile_locked(
     ``measured_candidate`` forwards unchanged to
     :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
     every existing caller byte-identical.
+
+    ``expected_tuning_graph_fingerprint`` includes every layer played during
+    the tuning capture; no unmeasured bass layer is added after this proof.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -3943,7 +3878,7 @@ async def _apply_baseline_profile_locked(
     def build_candidate(
         *,
         write: bool,
-        bass_extension_profile: BassExtensionProfile | None = None,
+        compile_config: bool = False,
     ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
@@ -3951,6 +3886,7 @@ async def _apply_baseline_profile_locked(
             crossover_preview=crossover_preview,
             measurements=measurements,
             write=write,
+            compile_config=compile_config,
             state_path=state_target,
             config_path=config_path,
             capture_device=capture_device,
@@ -3962,7 +3898,6 @@ async def _apply_baseline_profile_locked(
             preserved_applied_profile=preserved_applied_profile,
             measured_candidate=measured_candidate,
             validate=validate,
-            bass_extension_profile=bass_extension_profile,
         )
 
     def matches_expected(candidate: Mapping[str, Any]) -> bool:
@@ -3995,26 +3930,45 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
-    reviewed_candidate = build_candidate(write=False)
-    candidate_bass_emission_profile = None
-    candidate_bass_proof_profile = None
-    if not driver_domain:
-        bass_evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=reviewed_candidate,
+    reviewed_candidate = build_candidate(
+        write=False,
+        compile_config=expected_tuning_graph_fingerprint is not None,
+    )
+    graph_issue = None
+    if isinstance(measured_candidate, MeasuredCrossoverCandidate) and (
+        measured_candidate.room_correction or measured_candidate.bass_extension
+    ):
+        from .measurement_emit import (  # lazy: measurement emission consumes baseline recomposition
+            MeasurementGraphRefused,
+            candidate_upstream_snapshot,
         )
-        candidate_bass_proof_profile = bass_evaluation.profile
-        if bass_evaluation.status == "accepted":
-            candidate_bass_emission_profile = bass_evaluation.profile
+        try:
+            candidate_upstream_snapshot(
+                measured_candidate, topology=topology,
+                applied_profile=load_applied_baseline_profile_state(state_target) or {},
+            )
+        except MeasurementGraphRefused as exc:
+            graph_issue = _issue("blocker", exc.reason, str(exc))
+    if expected_tuning_graph_fingerprint is not None and str(
+        (reviewed_candidate.get("config") or {}).get("sha256") or ""
+    )[:16] != expected_tuning_graph_fingerprint:
+        graph_issue = _issue(
+            "blocker", "candidate_trial_graph_mismatch",
+            "the captured tuning graph does not match the compiled graph",
+        )
+    if graph_issue is not None:
+        reviewed_candidate["permissions"]["may_apply"] = False
+        reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]
+        return {
+            "status": "blocked", "profile": reviewed_candidate,
+            "apply": None, "issues": reviewed_candidate["issues"],
+        }
 
     if expected_candidate_fingerprint is not None:
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
 
-    candidate = build_candidate(
-        write=True,
-        bass_extension_profile=candidate_bass_emission_profile,
-    )
+    candidate = build_candidate(write=True)
     if expected_candidate_fingerprint is not None and not matches_expected(candidate):
         return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
@@ -4062,7 +4016,6 @@ async def _apply_baseline_profile_locked(
                 evidence_source="desired",
                 graph_text=candidate_graph_text,
                 applied_baseline_state=candidate,
-                desired_profile=candidate_bass_proof_profile,
             )
             proof_detail = (
                 graph_proof.issues[0].get("message")

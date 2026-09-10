@@ -56,8 +56,8 @@ from jasper.active_speaker.runtime_contract import (
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology
-from tests.test_bass_extension_profile import _applied_baseline, _profile
+from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -324,32 +324,20 @@ def test_linearization_multiple_peaks_number_in_fit_order():
 
 
 def test_linearization_coexists_with_bass_extension_in_ruled_order():
-    """The two addons compose: linearization then bass-extension, both
-    between the crossover and the delay/gain/limiter tail."""
-    topology = _active_topology("mono", "active_2_way")
-    applied = _applied_baseline()
-    from dataclasses import replace
-
-    profile = replace(
-        _profile(topology=topology, applied_baseline=applied),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
     preset = _preset()
-    text = emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM,
-        linearization={"woofer": [_peak(900.0, -1.0)]},
-        bass_extension_profile=profile,
-    )
-    names = _pipeline_names(text, channel=0)
-    assert names == [
-        "as_woofer_woofer_tweeter_lp",
-        driver_linearization_peak_name("woofer", 1),
-        "bass_ext_lt",
-        "bass_ext_subsonic",
-        "as_woofer_delay",
-        "as_woofer_baseline_gain",
-        "as_woofer_baseline_limiter",
+    descriptor = _dynamic_bass_descriptor()
+    kwargs = {"playback_device": ACTIVE_PCM, "linearization": {"woofer": [_peak(900.0, -1.0)]}}
+    base = yaml.safe_load(emit_active_speaker_baseline_config(preset, **kwargs))
+    graph = yaml.safe_load(emit_active_speaker_baseline_config(preset, bass_extension=descriptor, **kwargs))
+    assert validated_base_graph(graph, descriptor, (0,)) == base
+    before = next(step for step in graph["pipeline"] if driver_linearization_peak_name("woofer", 1) in step.get("names", []))
+    assert before["names"] == [
+        "as_woofer_woofer_tweeter_lp", driver_linearization_peak_name("woofer", 1),
+        "as_woofer_delay", "as_woofer_baseline_gain",
     ]
+    index = graph["pipeline"].index(before)
+    assert graph["pipeline"][index + 1] == {"type": "Mixer", "name": f"{PREFIX}_expand"}
+    assert next(step for step in graph["pipeline"][index + 1:] if step.get("channels") == [0])["names"] == ["as_woofer_baseline_limiter"]
 
 
 # --------------------------------------------------------------------------- #

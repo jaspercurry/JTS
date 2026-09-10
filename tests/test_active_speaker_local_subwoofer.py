@@ -39,7 +39,8 @@ from jasper.active_speaker.runtime_contract import (
     classify_output_contract,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from tests.test_bass_extension_profile import _applied_baseline, _profile
+from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor
+from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -49,64 +50,29 @@ def classify_camilla_graph(*args, **kwargs):
     return _classify_camilla_graph(*args, **kwargs)
 
 
-def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
+def test_local_sub_owns_dynamic_bass_and_preserves_mains():
     topology = _active_2way_sub_topology()
-    applied = _applied_baseline()
-    profile = replace(
-        _profile(topology=topology, applied_baseline=applied),
-        bass_owner={
-            "kind": "local_sub",
-            "roles": ["subwoofer"],
-            "channels": [4],
-        },
-    )
-    text = emit_active_speaker_baseline_config(
-        _active_2way_sub_preset(),
-        playback_device=ACTIVE_PCM,
-        bass_extension_profile=profile,
-    )
+    descriptor = _dynamic_bass_descriptor()
+    applied = {"recomposition_snapshot": {"bass_extension": descriptor}}
+    preset = _active_2way_sub_preset()
+    base = yaml.safe_load(emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM))
+    text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, bass_extension=descriptor)
     payload = yaml.safe_load(text)
-
-    owner_steps = [
-        step for step in payload["pipeline"]
-        if step.get("channels") == [4]
-    ]
-    assert len(owner_steps) == 1
-    assert owner_steps[0]["names"] == [
-        "as_sub_lowpass",
-        "bass_ext_lt",
-        "bass_ext_subsonic",
-        "as_sub_baseline_gain",
-        "as_sub_baseline_limiter",
-    ]
+    assert validated_base_graph(payload, descriptor, (4,)) == base
+    assert set(payload["processors"]) == {f"{PREFIX}_compress_4"}
     proof = classify_bass_extension_graph(
-        topology,
-        evidence_source="desired",
-        graph_text=text,
-        applied_baseline_state=applied,
-        desired_profile=profile,
+        topology, evidence_source="desired", graph_text=text, applied_baseline_state=applied,
     )
-    assert proof.allowed is True
-    assert proof.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-
-    limiter = payload["filters"]["as_sub_baseline_limiter"]["parameters"]
-    assert limiter["clip_limit"] == -1.0
-    limiter["clip_limit"] = -2.0
-    source = next(
-        line for line in text.splitlines() if line.startswith("# Source:")
-    )
+    assert proof.allowed and proof.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert proof.details["bass_output_channels"] == [4]
+    payload["filters"]["as_sub_baseline_limiter"]["parameters"]["clip_limit"] = 0.0
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
     tampered = classify_bass_extension_graph(
-        topology,
-        evidence_source="desired",
-        graph_text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+        topology, evidence_source="desired", graph_text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
         applied_baseline_state=applied,
-        desired_profile=profile,
     )
-
-    assert tampered.allowed is False
-    assert "active_output_driver_chain_unrecognized" in {
-        issue["code"] for issue in tampered.issues
-    }
+    assert not tampered.allowed
+    assert "active_baseline_sub_guard_missing" in {issue["code"] for issue in tampered.issues}
 
 
 # --------------------------------------------------------------------------- #

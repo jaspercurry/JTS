@@ -26,6 +26,9 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.distortion import (
+    preceding_silence_s, required_pre_guard_s, segment_sweep_meta,
+)
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     BASE_STIMULUS_PEAK_DBFS,
@@ -256,6 +259,29 @@ def test_verify_program_is_mono_full_band(band):
     assert sweep.kind == KIND_SUMMED_SWEEP
     assert sweep.channel == 0
     assert (sweep.f1_hz, sweep.f2_hz) == pytest.approx(band or (150.0, 20000.0))
+
+
+@pytest.mark.parametrize("band", [(20.0, 200.0), (20.0, 20000.0)])
+@pytest.mark.parametrize("duration,pilots,courtesy", [
+    (1.0, None, False),
+    (4.0, (-24.0, -14.0), False),
+    (6.0, None, True),
+    (4.0, (-24.0, -14.0), True),
+])
+def test_explicit_verify_band_adds_only_missing_harmonic_quiet_time(band, duration, pilots, courtesy):
+    options = dict(sweep_s=duration, leading_pilot_gains_db=pilots, courtesy_prelude=courtesy)
+    original = build_verify_program(1600.0, **options)
+    program = build_verify_program(1600.0, sweep_band_hz=band, **options)
+    sweep = program.segment("sweep_verify")
+    original_sweep = original.segment("sweep_verify")
+    required = math.ceil(required_pre_guard_s(segment_sweep_meta(sweep)) * PROGRAM_SAMPLE_RATE_HZ)
+    original_quiet = round(preceding_silence_s(original, original_sweep) * PROGRAM_SAMPLE_RATE_HZ)
+    quiet = round(preceding_silence_s(program, sweep) * PROGRAM_SAMPLE_RATE_HZ)
+    assert quiet == max(original_quiet, required)
+    assert program.total_samples - sweep.n_samples == (
+        original.total_samples - original_sweep.n_samples + max(0, required - original_quiet)
+    )
+    assert ExcitationProgram.from_dict(program.to_dict()) == program
 
 
 @pytest.mark.parametrize("band", [(0, 20000), (60, 24000), (150, 60), (math.nan, 20000)])

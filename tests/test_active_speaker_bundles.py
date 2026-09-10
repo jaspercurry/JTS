@@ -174,9 +174,7 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     on_disk = bundles._read_info(Path(info["bundle_dir"]))
     assert on_disk["session_id"] == info["session_id"]
 
-    # Umask-proof: the bundle dir is explicitly chmod'd 0o750, not left at
-    # whatever mode the writing daemon's umask happens to yield.
-    assert Path(info["bundle_dir"]).stat().st_mode & 0o777 == 0o750
+    assert Path(info["bundle_dir"]).stat().st_mode & 0o7777 == 0o2750
 
 
 def test_open_bundle_info_json_is_a_manifest_artifact(tmp_path: Path) -> None:
@@ -373,8 +371,7 @@ def test_append_capture_records_wav_and_json_with_dependencies(
     json_path = bundle_dir / entry["capture_json_path"]
     assert json_path.is_file()
 
-    # Umask-proof: the captures/ subdir is explicitly chmod'd 0o750.
-    assert wav_path.parent.stat().st_mode & 0o777 == 0o750
+    assert wav_path.parent.stat().st_mode & 0o7777 == 0o2750
 
     manifest = read_artifact_manifest(bundle_dir)
     assert manifest["bundle_schema_version"] == bundles.BUNDLE_SCHEMA_VERSION
