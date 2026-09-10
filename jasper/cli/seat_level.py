@@ -540,15 +540,26 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     cam = primary_controller()
     meter = WiredLevelMeter(mic.pcm, channels=args.mic_channels)
     player: Any = None
+    # #2938: `exec_correction_play` is itself the only await between "nothing
+    # is running" and "the process exists" -- there is no earlier moment to
+    # bind `player` to. A cancel arriving in that window must not be lost, so
+    # it is captured here and honored the instant the handle lands instead of
+    # being a silent no-op against an already-spawned stimulus.
+    cancel_requested = False
 
     async def _play() -> None:
         nonlocal player
         player = await exec_correction_play(
             stimulus, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        await player.wait()
+        if cancel_requested:
+            player.terminate()
+        else:
+            await player.wait()
 
     def _cancel() -> None:
+        nonlocal cancel_requested
+        cancel_requested = True
         if player is not None and player.returncode is None:
             player.terminate()
 
