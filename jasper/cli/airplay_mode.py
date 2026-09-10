@@ -29,6 +29,7 @@ import sys
 from jasper.airplay_mode import (
     ENV_VAR,
     MODE_ENV_FILE,
+    MODE_ENV_OWNER,
     mode_from_env,
 )
 from jasper.env_file import parse_env_mapping, write_env_file
@@ -58,7 +59,7 @@ def _write_mode(mode: str) -> None:
         raise ValueError(f"unknown mode {mode!r}")
     write_env_file(
         MODE_ENV_FILE, {ENV_VAR: value}, mode=0o644,
-        owner="JTS AirPlay mode control",
+        owner=MODE_ENV_OWNER,
     )
 
 

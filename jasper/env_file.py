@@ -213,8 +213,8 @@ def write_env_file(
     systemd would read as a second assignment.
 
     ``owner``, when given, is the operator-facing writer name AGENTS.md's Map
-    section requires in a ``/var/lib/jasper/*.env`` file's header (e.g. "the
-    /sound AirPlay wizard"); omit it for a file outside that invariant.
+    section requires in a ``/var/lib/jasper/*.env`` file's header (e.g.
+    "JTS /airplay mode control"); omit it for a file outside that invariant.
     """
     # lazy: import cost — env_file is a leaf every parse-only reader imports,
     # and this pulls in tempfile/fcntl for the writers alone (ADR-0226).

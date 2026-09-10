@@ -48,7 +48,6 @@ def test_raw_port_overridable_via_env(monkeypatch):
     config = BridgeConfig.from_env()
 
     assert config.out_port_raw == 19877
-    # Default AEC port unaffected; compatibility constant remains canonical.
     assert config.out_port == 9876
     assert bridge_config.leg_default_port("off") == 9877
 

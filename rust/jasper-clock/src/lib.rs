@@ -210,8 +210,6 @@ pub struct Dll {
     locked: bool,
     updates: u64,
     updates_since_retune: u64,
-    lock_count: u64,
-    unlock_count: u64,
     resync_count: u64,
 }
 
@@ -236,17 +234,15 @@ impl Dll {
             locked: false,
             updates: 0,
             updates_since_retune: 0,
-            lock_count: 0,
-            unlock_count: 0,
             resync_count: 0,
         }
     }
 
     /// Re-initialise the loop, discarding integrator and statistics state but
-    /// keeping the configuration and the lifetime counters (`lock_count`,
-    /// `resync_count`, …). This is `spa_dll_init` + a bandwidth reset — call it
-    /// on a hard discontinuity (xrun recovery, device re-open) so the loop
-    /// re-locks from scratch instead of slewing from a stale operating point.
+    /// keeping the configuration and the lifetime counter (`resync_count`).
+    /// This is `spa_dll_init` + a bandwidth reset — call it on a hard
+    /// discontinuity (xrun recovery, device re-open) so the loop re-locks
+    /// from scratch instead of slewing from a stale operating point.
     pub fn reset(&mut self) {
         let initial_bw = clamp_bw(self.config.initial_bw);
         self.dll = SpaDll::new();
@@ -257,10 +253,7 @@ impl Dll {
         self.err_var = 0.0;
         self.ratio = 1.0;
         self.bandwidth = initial_bw;
-        if self.locked {
-            self.locked = false;
-            self.unlock_count += 1;
-        }
+        self.locked = false;
         self.updates = 0;
         self.updates_since_retune = 0;
     }
@@ -343,9 +336,8 @@ impl Dll {
     }
 
     /// Lock verdict: acquired (past warmup) AND the recent error is small
-    /// relative to the period. Edge-triggers the lock/unlock counters.
+    /// relative to the period.
     fn update_lock(&mut self) {
-        let was_locked = self.locked;
         // "Small" = within ~0.1% of a period of residual error. The DLL drives
         // the *steady-state* error to zero, so a locked loop sits well inside
         // this; an acquiring or disturbed loop does not.
@@ -354,11 +346,6 @@ impl Dll {
         let low_error =
             self.err_avg.abs() < lock_threshold && self.err_var.max(0.0).sqrt() < lock_threshold;
         self.locked = acquired && low_error;
-        if self.locked && !was_locked {
-            self.lock_count += 1;
-        } else if !self.locked && was_locked {
-            self.unlock_count += 1;
-        }
     }
 
     /// Current correction ratio (1.0 = no correction).
@@ -395,16 +382,6 @@ impl Dll {
     /// Times a `max_resync` hard-jump re-initialised the loop.
     pub fn resync_count(&self) -> u64 {
         self.resync_count
-    }
-
-    /// Times the loop crossed unlocked → locked.
-    pub fn lock_count(&self) -> u64 {
-        self.lock_count
-    }
-
-    /// Total error samples fed since construction / last reset.
-    pub fn updates(&self) -> u64 {
-        self.updates
     }
 }
 
@@ -687,12 +664,11 @@ mod tests {
             dll.update(1.0);
         }
         let ratio_before = dll.ratio();
-        let updates_before = dll.updates();
+        let updates_before = dll.updates;
         let r = dll.update(f64::NAN);
         assert_eq!(r, ratio_before, "NaN returns the prior ratio unchanged");
         assert_eq!(
-            dll.updates(),
-            updates_before,
+            dll.updates, updates_before,
             "NaN does not count as an update"
         );
         let r = dll.update(f64::INFINITY);

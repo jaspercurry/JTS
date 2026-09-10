@@ -67,7 +67,7 @@ def set_enabled(enabled: bool) -> dict:
     if enabled:
         write_env_file(
             str(path), {"JASPER_USB_GADGET_FORENSICS": "1"}, mode=0o640,
-            owner="jasper-control's USB gadget forensics toggle",
+            owner="JTS /system USB gadget forensics control",
         )
     else:
         path.unlink(missing_ok=True)

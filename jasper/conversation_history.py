@@ -436,7 +436,7 @@ def write_settings(
 
     env_file.write_env_file(
         settings_path, values, mode=SETTINGS_FILE_MODE,
-        owner="the /assistant/chat wizard",
+        owner="JTS /assistant/chat wizard",
     )
     return read_settings(path=settings_path, environ=base_env)
 

@@ -542,6 +542,24 @@ def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
     assert path.read_bytes() == original
 
 
+def test_locked_update_env_file_owner_header_is_written_once(tmp_path):
+    # jasper/env_file.py's write_env_file docstring points racing writers at
+    # this helper; it must keep the same header a bare write_env_file call
+    # would produce, and a second update must not duplicate it.
+    from jasper.atomic_io import locked_update_env_file
+
+    path = tmp_path / "source_intent.env"
+    locked_update_env_file(path, {"A_KEY": "abc"}, owner="the /example wizard")
+    text = path.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# Written by the /example wizard."
+    assert text.count("# Written by") == 1
+
+    locked_update_env_file(path, {"B_KEY": "def"}, owner="the /example wizard")
+    text = path.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# Written by the /example wizard."
+    assert text.count("# Written by") == 1
+
+
 def test_default_mode_is_0644(tmp_path):
     path = tmp_path / "plain.env"
     atomic_write_text(path, "x")
