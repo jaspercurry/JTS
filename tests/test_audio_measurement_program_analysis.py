@@ -2110,6 +2110,44 @@ def test_snap_recovers_physical_delay_through_drift_and_noise():
     assert res.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
 
 
+def _fractional_band_impulse(
+    delay: float, f_lo: float, f_hi: float, amp: float, n: int = 4096
+) -> np.ndarray:
+    """`_band_impulse` at a FRACTIONAL delay, built as a linear-phase ramp."""
+    freqs = np.fft.rfftfreq(n, 1.0 / SR)
+    spectrum = amp * np.exp(-2j * np.pi * freqs * delay / SR)
+    spectrum[(freqs < f_lo) | (freqs > f_hi)] = 0.0
+    return np.fft.irfft(spectrum, n)
+
+
+@pytest.mark.parametrize("frac", [0.0, 0.2, 0.35, 0.5, 0.6, 0.8])
+def test_alignment_anchor_resolves_below_one_sample(frac):
+    """The inter-driver anchor is sub-sample, not integer-argmax (#1869).
+
+    A bare argmax quantises the anchor to 20.83 us at 48 kHz, enough to flip
+    ``delay_role`` between sessions on one speaker. Two synthetic band-limited
+    impulses a known FRACTIONAL distance apart: the argmax gap is wrong by up
+    to half a sample by construction, the shipped estimator is not.
+    """
+    lo, hi = 800.0, 3200.0
+    true_gap = 9.0 + frac
+    woofer_ir = _fractional_band_impulse(400.0, lo, hi, 1.0)
+    tweeter_ir = _fractional_band_impulse(400.0 + true_gap, lo, hi, 0.8)
+
+    argmax_gap = float(
+        int(np.argmax(np.abs(tweeter_ir))) - int(np.argmax(np.abs(woofer_ir)))
+    )
+    assert argmax_gap.is_integer(), "premise: the bare argmax gap IS quantised"
+
+    refined = (
+        program_analysis.response._envelope_peak_sample(tweeter_ir)
+        - program_analysis.response._envelope_peak_sample(woofer_ir)
+    )
+    # 0.05 samples is 1.04 us at 48 kHz — a twentieth of the argmax quantum.
+    assert refined == pytest.approx(true_gap, abs=0.05)
+    assert abs(refined - true_gap) <= abs(argmax_gap - true_gap)
+
+
 def test_gcc_local_peak_snap_stays_near_anchor_despite_taller_far_peak():
     """Wrong-peak regression (methodology §10, 2026-07-22): a TALLER correlation
     peak planted ~200 µs from the anchor must NOT steer the selector — the
@@ -3885,8 +3923,8 @@ def test_snap_production_path_preserves_parallax_contract(
         epsilon=epsilon,
     )
     measured_peak_gap_us = (
-        int(np.argmax(np.abs(tweeter_full_ir)))
-        - int(np.argmax(np.abs(woofer_full_ir)))
+        program_analysis.response._envelope_peak_sample(tweeter_full_ir)
+        - program_analysis.response._envelope_peak_sample(woofer_full_ir)
     ) / SR * 1e6
     inter_sweep_drift_us = (
         epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6
@@ -3907,9 +3945,9 @@ def test_snap_production_path_preserves_parallax_contract(
         1.0,
         physical_seed_us,
     )
-    # The band-limited synthetic IR's spectral truncation shifts its argmax by
-    # a fraction of a sample relative to the impulse placement. The production
-    # selector operates in that measured argmax frame, so allow that expected
+    # The band-limited synthetic IR's spectral truncation shifts its peak by a
+    # fraction of a sample relative to the impulse placement. The production
+    # selector operates in that measured peak frame, so allow that expected
     # analysis granularity in addition to the sub-sample snap.
     assert result.alignment.delay_us == pytest.approx(
         expected_delay_us, abs=8.0,
