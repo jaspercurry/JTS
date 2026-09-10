@@ -137,6 +137,15 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
 
 
+def test_runtime_state_units_are_queryable_on_the_doctor_roster():
+    """#2802 item 3: `evidence.unit_states()` queries only
+    `service_units.DOCTOR_UNIT_ROSTER`, so a unit in `_RUNTIME_STATE_UNITS`
+    but missing from the roster never appears in the batch and this check
+    silently no-ops on it (the bug that motivated tracking these two)."""
+    for unit in _shared._RUNTIME_STATE_UNITS:
+        assert unit in service_units.DOCTOR_UNIT_ROSTER, unit
+
+
 def test_a_failed_camilla_is_exactly_one_fail_row(monkeypatch):
     """One fact, one row: this check no longer tracks the units
     `_shared._service_state_failure` already owns, so the failed camilla is

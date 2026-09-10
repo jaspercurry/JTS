@@ -133,16 +133,10 @@ while [ "$attempt" -lt 3 ]; do
         # merely waiting the animation out leaves the speaker muted for two
         # seconds after content is already flowing (a session teardown's -144
         # left it at 0 %). So restore audio first, at the level the owner last
-        # listened at, and only then hold the animation: wait for 8 unchanged
-        # 50 ms reads (400 ms total, same margin as before) and adopt the
-        # level it settles on. Polled at 50 ms rather than the burst's own
-        # 200 ms spacing on purpose — the two clocks aliasing 1:1 let a
-        # not-yet-updated rung read as "settled" while the burst was still
-        # animating (#4334; a shorter window that only matched the burst's
-        # OWN ~220-270 ms real-world write gaps reproduced the same false
-        # settle at a finer grain — measured, not assumed). Normally the
-        # settled value is the same as the restore, and the settled post is
-        # skipped as already delivered.
+        # listened at, and only then hold the animation: wait for two
+        # unchanged passes (400 ms, two message intervals) and adopt the level
+        # it settles on. Normally the two are the same value and the settled
+        # post is skipped as already delivered.
         # `rm` succeeds only for the process that actually removes the marker,
         # so consuming it IS the claim on this session start. Both of a
         # session's posts carry `observation_initial`, which makes the
@@ -155,15 +149,10 @@ while [ "$attempt" -lt 3 ]; do
             if [ -n "$restore" ] && [ "$restore" != "$last" ]; then
                 post "$restore" "$initial"
             fi
-            # Own bounded counter, not `passes`: it ticks 4x/sec, and
-            # charging the outer 25-pass (5 s) ceiling at that rate would
-            # time it out mid-animation (a ~2 s connect fade-up needs ~40
-            # ticks, not 25) well before the burst could ever finish.
             settled=0
-            settle_ticks=0
-            while [ "$settled" -lt 8 ] && [ "$settle_ticks" -lt 100 ]; do
-                sleep 0.05
-                settle_ticks=$((settle_ticks + 1))
+            while [ "$settled" -lt 2 ] && [ "$passes" -lt 25 ]; do
+                sleep 0.2
+                passes=$((passes + 1))
                 probe="$(cat "$state" 2>/dev/null)" || break
                 if [ "$probe" = "$pct" ]; then
                     settled=$((settled + 1))

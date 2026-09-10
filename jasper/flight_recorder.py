@@ -76,11 +76,6 @@ class RingFlushHandler(logging.Handler):
     def __init__(self, capacity: int, dump_stream) -> None:
         super().__init__(level=logging.DEBUG)
         self.buffer: collections.deque = collections.deque(maxlen=capacity)
-        # Parallel, same-maxlen deque of the sequence number each buffered
-        # line was appended at — the high-water cursor below filters against
-        # this without changing what `buffer` stores (plain strings).
-        self._seqs: collections.deque = collections.deque(maxlen=capacity)
-        self._seq = 0
         self.dump_stream = dump_stream
         self.setFormatter(logging.Formatter(_FLIGHTREC_FORMAT))
         # Redacts at capture, independently of configure_logging: the ring
@@ -89,10 +84,6 @@ class RingFlushHandler(logging.Handler):
         self._dumping = False
         # Monotonic time of the last auto-flush per WARNING+ signature.
         self._last_auto_flush: dict[str, float] = {}
-        # Sequence number of the last line THAT signature's own auto-flush
-        # already emitted — a repeat flush of the same signature emits only
-        # what was appended after it, not the whole ring (#4122).
-        self._last_flush_seq: dict[str, int] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         if self._dumping:
@@ -101,17 +92,17 @@ class RingFlushHandler(logging.Handler):
             line = self.format(record)  # store the formatted string, not the record
         except Exception:  # noqa: BLE001  # pragma: no cover - defensive; never crash the caller
             return
-        self._seq += 1
         self.buffer.append(line)
-        self._seqs.append(self._seq)
-        if record.levelno >= FLUSH_LEVEL:
-            sig = self._signature(record)
-            if self._auto_flush_due(sig):
-                self.flush_buffer("auto:" + record.levelname.lower(), signature=sig)
+        if record.levelno >= FLUSH_LEVEL and self._auto_flush_due(record):
+            self.flush_buffer("auto:" + record.levelname.lower())
 
-    @staticmethod
-    def _signature(record: logging.LogRecord) -> str:
-        """The WARNING+ signature `_auto_flush_due` floors on.
+    def _auto_flush_due(self, record: logging.LogRecord) -> bool:
+        """Whether this WARNING+ record may trigger an automatic dump.
+
+        Keyed on the record's origin, so one chronic warning cannot
+        starve every other one of its first dump. The ring keeps
+        buffering either way — a suppressed signature still appears as
+        context in the next dump.
 
         `log_event` renders every field VALUE into the message, so its
         records are keyed on `jasper_event` (the event name) instead;
@@ -126,16 +117,7 @@ class RingFlushHandler(logging.Handler):
             or getattr(record, TEMPLATE_ATTR, None)
             or record.msg
         )
-        return f"{record.name}:{origin}"
-
-    def _auto_flush_due(self, sig: str) -> bool:
-        """Whether this signature may trigger an automatic dump now.
-
-        Keyed on the record's origin (see :meth:`_signature`), so one
-        chronic warning cannot starve every other one of its first dump.
-        The ring keeps buffering either way — a suppressed signature still
-        appears as context in the next dump.
-        """
+        sig = f"{record.name}:{origin}"
         now = time.monotonic()
         last = self._last_auto_flush.get(sig)
         if last is not None and now - last < AUTO_FLUSH_MIN_INTERVAL_SEC:
@@ -145,49 +127,26 @@ class RingFlushHandler(logging.Handler):
             self._last_auto_flush = {
                 k: v for k, v in self._last_auto_flush.items() if v >= cutoff
             }
-            self._last_flush_seq = {
-                k: v for k, v in self._last_flush_seq.items()
-                if k in self._last_auto_flush
-            }
             if len(self._last_auto_flush) >= _AUTO_FLUSH_SIG_MAX:
                 # Nothing aged out: a daemon is producing signatures
                 # faster than the floor retires them. Start over rather
                 # than rebuild an oversized dict on every record.
                 self._last_auto_flush.clear()
-                self._last_flush_seq.clear()
         self._last_auto_flush[sig] = now
         return True
 
-    def flush_buffer(self, reason: str, *, signature: str | None = None) -> int:
-        """Write buffered lines to the dump stream. Returns the number of
-        lines dumped. Best-effort — a dump must never crash the daemon it's
-        recording.
-
-        ``signature=None`` (an explicit dump: ``dump()``, SIGUSR1, "flag
-        that") writes and clears the WHOLE current ring, as before. A
-        signature-scoped automatic flush instead writes only the lines
-        appended since THAT signature's own previous flush (the #4122
-        high-water cursor) and leaves the ring itself untouched, so a
-        different signature's next flush still sees full context.
-        """
+    def flush_buffer(self, reason: str) -> int:
+        """Write the buffered lines to the dump stream and clear the ring.
+        Returns the number of lines dumped. Best-effort — a dump must never
+        crash the daemon it's recording."""
         self.acquire()
         try:
             if self._dumping:
                 return 0
-            if signature is None:
-                lines = list(self.buffer)
-                self.buffer.clear()
-                self._seqs.clear()
-            else:
-                floor = self._last_flush_seq.get(signature, 0)
-                lines = [
-                    line for seq, line in zip(self._seqs, self.buffer)
-                    if seq > floor
-                ]
+            lines = list(self.buffer)
+            self.buffer.clear()
             if not lines:
                 return 0
-            if signature is not None:
-                self._last_flush_seq[signature] = self._seqs[-1]
             self._dumping = True
             n = len(lines)
             try:
