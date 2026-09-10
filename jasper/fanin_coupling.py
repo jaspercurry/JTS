@@ -204,7 +204,7 @@ RING_PLAYBACK_DEVICE = "jts_ring_playback"
 # active lane is also 2 channels, so no channel-count test can tell it apart
 # from Ring B's stereo program.
 #
-# THE SPELLING IS LOAD-BEARING. ``_forbidden_playback_token``
+# THE SPELLING IS LOAD-BEARING. ``forbidden_playback_token``
 # (:mod:`jasper.active_speaker.camilla_yaml`) is a case-insensitive SUBSTRING
 # test over ``FORBIDDEN_ACTIVE_PLAYBACK_TOKENS``, which carries Ring B's name.
 # ``"jts_ring_playback" in "jts_ring_active_playback"`` is False, so this

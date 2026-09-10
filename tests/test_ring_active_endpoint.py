@@ -334,7 +334,7 @@ def _mono_two_way_preset():
 def test_the_active_ring_name_does_not_contain_the_stereo_rings_name():
     """The spelling that makes the whole design work, pinned in both directions.
 
-    ``_forbidden_playback_token`` is a case-insensitive SUBSTRING test and the
+    ``forbidden_playback_token`` is a case-insensitive SUBSTRING test and the
     STEREO ring is a forbidden active-playback token. This name was chosen so
     that test separates the two rings: had it been spelled
     ``jts_ring_playback_active`` — the equally natural word order — every active
@@ -343,14 +343,14 @@ def test_the_active_ring_name_does_not_contain_the_stereo_rings_name():
     assert RING_PLAYBACK_DEVICE not in RING_ACTIVE_PLAYBACK_DEVICE
     # And the near-miss that WOULD have self-blocked, so the reason is visible.
     assert RING_PLAYBACK_DEVICE in "jts_ring_playback_active"
-    assert active_camilla_yaml._forbidden_playback_token(
+    assert active_camilla_yaml.forbidden_playback_token(
         RING_ACTIVE_PLAYBACK_DEVICE
     ) is None
-    assert active_camilla_yaml._forbidden_playback_token(RING_PLAYBACK_DEVICE) == (
+    assert active_camilla_yaml.forbidden_playback_token(RING_PLAYBACK_DEVICE) == (
         RING_PLAYBACK_DEVICE
     )
     assert (
-        active_camilla_yaml._forbidden_playback_token("jts_ring_playback_active")
+        active_camilla_yaml.forbidden_playback_token("jts_ring_playback_active")
         == RING_PLAYBACK_DEVICE
     )
 
@@ -380,7 +380,7 @@ def test_forbidden_active_playback_tokens_is_a_walking_class_guard():
                 f"active device {device!r} — every active emit onto it would be "
                 "refused"
             )
-        assert active_camilla_yaml._forbidden_playback_token(device) is None
+        assert active_camilla_yaml.forbidden_playback_token(device) is None
 
 
 def test_the_stereo_ring_is_a_forbidden_active_playback_target():

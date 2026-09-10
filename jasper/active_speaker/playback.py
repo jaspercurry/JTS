@@ -35,7 +35,7 @@ from jasper.audio_lab import (
 )
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 
-from .camilla_yaml import _forbidden_playback_token
+from .camilla_yaml import forbidden_playback_token
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_LEGACY_PROTECTION_FILTER,
@@ -211,7 +211,7 @@ def _forbidden_test_pcm_token(pcm: str) -> str | None:
     for token in FORBIDDEN_TEST_PCM_TOKENS:
         if token.lower() in lowered:
             return token
-    return _forbidden_playback_token(str(pcm or ""))
+    return forbidden_playback_token(str(pcm or ""))
 
 
 def tone_backend_status(

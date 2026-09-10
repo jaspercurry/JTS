@@ -33,6 +33,7 @@ from .camilla_yaml import (
     ACTIVE_PARKED_SOURCE,
     ACTIVE_PROGRAM_BAKE_SOURCE,
     FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
+    forbidden_playback_token,
 )
 from .path_safety import evaluate_path_safety_evidence
 from .profile import ActiveSpeakerConfigError
@@ -261,16 +262,6 @@ def _source_marker(text: str) -> str | None:
     return match.group("source") if match else None
 
 
-def _forbidden_playback_token(playback_device: str | None) -> str | None:
-    if not playback_device:
-        return None
-    lowered = playback_device.lower()
-    for token in FORBIDDEN_ACTIVE_PLAYBACK_TOKENS:
-        if token.lower() in lowered:
-            return token
-    return None
-
-
 def _active_split_summary(text: str) -> dict[str, Any]:
     split = _ACTIVE_SPLIT_RE.search(text)
     mixer_output_channels: int | None = None
@@ -378,7 +369,7 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
             )
         )
 
-    forbidden = _forbidden_playback_token(playback_device)
+    forbidden = forbidden_playback_token(playback_device)
     if classification == "active_startup_candidate" and forbidden:
         issues.append(
             _issue(
