@@ -23,7 +23,12 @@ from jasper.cues.generator import (
     dynamic_text_path,
 )
 from jasper.cues import manager as manager_mod
-from jasper.cues.registry import CueDef, find
+from jasper.cues.registry import (
+    VOICE_ASSETS_MISSING_CUE_SLUG,
+    VOICE_NOT_SET_UP_CUE_SLUG,
+    CueDef,
+    find,
+)
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields
 
@@ -708,21 +713,37 @@ def test_speak_text_cache_keyed_on_backend_model(tmp_path):
     assert backend_b.calls == [text]  # re-synthesised under the new model
 
 
-def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(tmp_path):
+@pytest.mark.parametrize(
+    ("slug", "fallback"),
+    [
+        ("provider_out_of_credit", "cant_connect"),
+        (VOICE_ASSETS_MISSING_CUE_SLUG, VOICE_NOT_SET_UP_CUE_SLUG),
+    ],
+    ids=("provider-outage", "assets-missing"),
+)
+def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(
+    slug, fallback, tmp_path,
+):
     """A remedy cue is baked through the provider whose outage it announces,
-    so until it exists the wake path must still say something."""
+    so until it exists the wake path must still say something.
+
+    The assets-missing row is the boot park: deploy/install.sh bakes cues in
+    its LAST full-profile step, so an install that aborted while staging
+    assets leaves the very cue that fault plays with no WAV. Without the
+    fallback that park is silent (non-negotiable 6)."""
     tts = _FakeTtsPlayout()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=tts,
     )
-    mgr.regenerate(slug="cant_connect")
-    assert asyncio.run(mgr.play("provider_out_of_credit")) is True
+    assert find(slug).fallback == fallback
+    mgr.regenerate(slug=fallback)
+    assert asyncio.run(mgr.play(slug)) is True
     assert len(tts.writes) == 1
 
     # One user-visible attempt, one record: the delegated cue is not
     # counted a second time as "delivered".
-    _assert_outcome(mgr, "fallback", "ok", slug="provider_out_of_credit")
+    _assert_outcome(mgr, "fallback", "ok", slug=slug)
     assert mgr.snapshot()["counts"]["delivered"] == 0
 
 

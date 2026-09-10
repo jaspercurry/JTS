@@ -25,7 +25,7 @@ from ..camilla import (
     CamillaController,
     set_canonical_target_db_provider,
 )
-from ..config import Config, VoiceProviderNotConfigured
+from ..config import Config, VoiceConfigError, VoiceProviderNotConfigured
 from ..conversation_history import (
     ConversationStore,
     read_settings as read_conversation_settings,
@@ -269,11 +269,11 @@ def _wake_detection_supported() -> bool:
 
     ``read_install_profile()`` raises ``ValueError`` on an unparseable
     marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
-    ``VoiceProviderNotConfigured`` and ``SpeechVADSetupError`` — anything
-    else would traceback out, exit 1, and climb ``Restart=on-failure`` to
-    ``StartLimitAction=reboot``. Fail OPEN (today's pre-ADR-0217 behaviour:
-    wake detection supported, legs planned as always) rather than reboot a
-    speaker over a corrupt marker file. Mirrors
+    ``VoiceConfigError`` (``VoiceProviderNotConfigured`` included) and
+    ``SpeechVADSetupError`` — anything else would traceback out, exit 1, and
+    climb ``Restart=on-failure`` to ``StartLimitAction=reboot``. Fail OPEN
+    (today's pre-ADR-0217 behaviour: wake detection supported, legs planned
+    as always) rather than reboot a speaker over a corrupt marker file. Mirrors
     ``jasper.control.server._control_install_profile``, which fails the
     opposite way because its stakes are a route allowlist, not a daemon
     crash.
@@ -607,8 +607,8 @@ def _release(
 
     `AsyncExitStack` REPLACES the body's exception with any callback's
     exception (demoting the original to `__context__`), so one unlucky
-    teardown turns the `InputDeviceUnavailable` / `VoiceProviderNotConfigured`
-    park raised inside the body into a plain crash: no cue, exit 1, and a
+    teardown turns ANY park exception `main()` handles — the list is in
+    `main()`, and it grows — into a plain crash: no cue, exit 1, and a
     systemd restart loop instead of a park (NN-6; ADR-0239). Every release
     in `run()` goes through here or `_arelease`. `CancelledError` is a
     `BaseException`, so cancellation still propagates.
@@ -936,6 +936,15 @@ async def run() -> None:
         timer_scheduler.set_pre_render(_prerender_timer)
 
         startup_fire_and_forget: set[asyncio.Task] = set()
+        # Scheduled HERE, above the mic open and the SpeechVAD construction
+        # below: those raise the 66/78 parks, and `_announce_park_at_boot`
+        # can only play a cue that already has a baked WAV. `regenerate`
+        # needs the TTS backend only — the playout is not open yet and is
+        # not used, and it writes each WAV atomically, so a park that
+        # overtakes it reads a whole file or none. The set's cancellation is
+        # registered after the playout opens (see below), which is what a
+        # sibling task in the set speaks through.
+        _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         stop_event = asyncio.Event()
 
         def _shutdown(*_):
@@ -1144,8 +1153,9 @@ async def run() -> None:
         # After the playout: the duck verb rides that connection.
         ducker = FanInDucker(tts)
         cues_manager.attach_tts(tts)
-        _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
+        # Registered after the playout: the loudness seed in this set writes
+        # through it, so the set must be cancelled before it closes.
         _arelease(
             stack, "startup_tasks", cancel_tracked_tasks,
             startup_fire_and_forget,
@@ -1260,6 +1270,17 @@ def main() -> None:
         print(str(e), file=sys.stderr)
         _announce_park_at_boot(VOICE_NOT_SET_UP_CUE_SLUG)
         sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
+    except VoiceConfigError as e:
+        configure_logging()
+        log_event(
+            logger,
+            "voice.config_invalid",
+            reason=str(e),
+            level=logging.ERROR,
+        )
+        print(str(e), file=sys.stderr)
+        _announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)
+        sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
     except SpeechVADSetupError as e:
         configure_logging()
         log_event(

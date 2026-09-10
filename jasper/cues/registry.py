@@ -180,14 +180,15 @@ CUES: tuple[CueDef, ...] = (
         ),
         description=(
             "Played once before a 78 park: jasper/voice/daemon_main.py:main() "
-            "on VOICE_PROVIDER_NOT_CONFIGURED_EXIT, and jasper-aec-bridge on "
-            "each of its config faults. Either way no wake would be answered "
+            "on VOICE_PROVIDER_NOT_CONFIGURED_EXIT. No wake would be answered "
             "and RestartPreventExitStatus keeps the unit down until someone "
             "acts. Names the remedy, not the "
             "cause: the household can act on 'pick a voice service', not on "
             "'JASPER_VOICE_PROVIDER unset'. A box that was NEVER configured "
             "has no baked WAV for this cue — nothing has run `jasper-cues "
-            "regenerate` with a key yet — so its first park stays silent."
+            "regenerate` with a key yet — so its first park stays silent. "
+            "Also the fallback for voice_assets_missing: on a box upgraded "
+            "into that newer slug this one is already baked."
         ),
     ),
     CueDef(
@@ -197,14 +198,23 @@ CUES: tuple[CueDef, ...] = (
             "open System, and run diagnostics."
         ),
         description=(
-            "Played once before the same 78 park as voice_not_set_up, but "
-            "for a speech-VAD asset that will not load "
-            "(jasper/voice/daemon_main.py:main() on SpeechVADSetupError). "
-            "Separate from voice_not_set_up because the remedy differs: "
-            "picking a voice service cannot restore a missing or corrupt "
-            "silero_vad.onnx, so sending the household to that wizard would "
-            "waste the one thing the speaker gets to say."
+            "The generic 'a fault the voice wizard cannot fix' park cue. "
+            "Played once before a 78 park by "
+            "jasper/voice/daemon_main.py:main() on SpeechVADSetupError (a "
+            "speech-VAD asset that will not load) and on VoiceConfigError (a "
+            "config value the daemon cannot start on), and by "
+            "jasper-aec-bridge on every EX_CONFIG fault. Separate from "
+            "voice_not_set_up because the remedy differs: picking a voice "
+            "service cannot restore a missing silero_vad.onnx or fix a "
+            "malformed env value, so sending the household to that wizard "
+            "would waste the one thing the speaker gets to say."
         ),
+        # The install step that bakes cues (deploy/install.sh `audio_cues`)
+        # runs near the end, so the very failure this cue announces — assets
+        # that did not stage — can be the reason it has no WAV of its own.
+        # Speaking the older, already-baked cue beats parking in silence
+        # (non-negotiable 6), even though it names a narrower remedy.
+        fallback=VOICE_NOT_SET_UP_CUE_SLUG,
     ),
     CueDef(
         slug="audition_reduced_graph",

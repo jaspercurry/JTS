@@ -44,14 +44,38 @@ from .wake_events import (
 )
 
 
-class VoiceProviderNotConfigured(RuntimeError):
+# jasper-voice.service lists 78 in RestartPreventExitStatus, so a parked unit
+# stays down: editing the env file is only half the remedy.
+_RESTART_HINT = (
+    " Nothing restarts a parked jasper-voice on its own — run "
+    "`sudo systemctl restart jasper-voice` once the value is fixed."
+)
+
+
+class VoiceConfigError(RuntimeError):
+    """A config value the daemon cannot start on.
+
+    The type is the routing: `daemon_main.main()` catches this, speaks the
+    park cue and exits 78, which jasper-voice.service holds the unit down on.
+    A bare RuntimeError tracebacks to exit 1 instead and climbs
+    Restart=on-failure into StartLimitAction=reboot with nothing spoken
+    (AGENTS.md non-negotiable 6).
+    """
+
+    def __str__(self) -> str:
+        # Appended here, not at each of the ~20 raise sites: the park, and so
+        # the remedy's last step, is a property of the type, not of the value.
+        return super().__str__() + _RESTART_HINT
+
+
+class VoiceProviderNotConfigured(VoiceConfigError):
     """Raised when first-time setup has not selected a voice provider."""
 
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
     val = os.environ.get(name, default)
     if required and not val:
-        raise RuntimeError(f"missing required env var: {name}")
+        raise VoiceProviderNotConfigured(f"missing required env var: {name}")
     return val or ""
 
 
@@ -62,7 +86,7 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError as e:
-        raise RuntimeError(f"{name} must be a number") from e
+        raise VoiceConfigError(f"{name} must be a number") from e
 
 
 def _env_optional_float(name: str) -> float | None:
@@ -72,7 +96,7 @@ def _env_optional_float(name: str) -> float | None:
     try:
         return float(raw)
     except ValueError as e:
-        raise RuntimeError(f"{name} must be a number") from e
+        raise VoiceConfigError(f"{name} must be a number") from e
 
 
 def _env_int(name: str, default: int) -> int:
@@ -82,7 +106,7 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError as e:
-        raise RuntimeError(f"{name} must be a number") from e
+        raise VoiceConfigError(f"{name} must be a number") from e
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -140,25 +164,30 @@ def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
         key = key.strip()
         value = value.strip()
         if not sep or not key or not value:
-            raise RuntimeError(
+            raise VoiceConfigError(
                 f"{name} entries must be source_id=device, separated by commas"
             )
         if any(ch.isspace() for ch in key):
-            raise RuntimeError(f"{name} source ids must not contain whitespace")
+            raise VoiceConfigError(f"{name} source ids must not contain whitespace")
         if key in result:
-            raise RuntimeError(f"{name} contains duplicate source id {key!r}")
+            raise VoiceConfigError(f"{name} contains duplicate source id {key!r}")
         result[key] = value
     return MappingProxyType(result)
 
 
 def _validate(cfg: "Config") -> "Config":
     if not 0.0 <= cfg.wake_threshold <= 1.0:
-        raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
+        raise VoiceConfigError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
-        raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+        raise VoiceConfigError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
     if cfg.response_stall_timeout_sec <= 0:
-        raise RuntimeError("JASPER_RESPONSE_STALL_TIMEOUT_SEC must be > 0")
-    validate_openai_noise_reduction(cfg.openai_noise_reduction)
+        raise VoiceConfigError("JASPER_RESPONSE_STALL_TIMEOUT_SEC must be > 0")
+    try:
+        validate_openai_noise_reduction(cfg.openai_noise_reduction)
+    except RuntimeError as e:
+        # jasper.voice.input_policy is imported by this module, so it cannot
+        # name VoiceConfigError without a cycle; retyped so the park is cued.
+        raise VoiceConfigError(str(e)) from e
     for name, value in [
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
@@ -169,45 +198,45 @@ def _validate(cfg: "Config") -> "Config":
         ("JASPER_GROK_PROACTIVE_BUFFER_SEC", cfg.grok_proactive_buffer_sec),
     ]:
         if value < 0:
-            raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
+            raise VoiceConfigError(f"{name} must be >= 0 (0 = disabled)")
     if cfg.daily_spend_cap_usd < 0:
-        raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+        raise VoiceConfigError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
     if cfg.daily_spend_cap_safety_multiplier < 1.0:
-        raise RuntimeError(
+        raise VoiceConfigError(
             "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER must be >= 1.0 "
             "(1.0 = no padding; >1.0 = more conservative). A value below "
             "1.0 would weaken the cap; disable the cap with "
             "JASPER_DAILY_SPEND_CAP_USD=0 instead."
         )
     if (cfg.weather_default_lat is None) != (cfg.weather_default_lon is None):
-        raise RuntimeError(
+        raise VoiceConfigError(
             "JASPER_WEATHER_LAT and JASPER_WEATHER_LON must be set together"
         )
     if cfg.weather_default_lat is not None and not -90 <= cfg.weather_default_lat <= 90:
-        raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
+        raise VoiceConfigError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
-        raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
+        raise VoiceConfigError("JASPER_WEATHER_LON must be between -180 and 180")
     if cfg.volume_regress_after_sec <= 0:
-        raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
+        raise VoiceConfigError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
     for name, value in [
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", cfg.volume_regress_safe_low_pct),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", cfg.volume_regress_safe_high_pct),
         ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", cfg.volume_first_boot_default_pct),
     ]:
         if not 0 <= value <= 100:
-            raise RuntimeError(f"{name} must be between 0 and 100 (got {value})")
+            raise VoiceConfigError(f"{name} must be between 0 and 100 (got {value})")
     if cfg.volume_regress_safe_low_pct >= cfg.volume_regress_safe_high_pct:
-        raise RuntimeError(
+        raise VoiceConfigError(
             "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT must be < SAFE_HIGH_PCT"
         )
     if cfg.research_max_runtime_sec <= 0:
-        raise RuntimeError("JASPER_RESEARCH_MAX_RUNTIME_SEC must be > 0")
+        raise VoiceConfigError("JASPER_RESEARCH_MAX_RUNTIME_SEC must be > 0")
     if cfg.research_concurrency <= 0:
-        raise RuntimeError("JASPER_RESEARCH_CONCURRENCY must be > 0")
+        raise VoiceConfigError("JASPER_RESEARCH_CONCURRENCY must be > 0")
     if cfg.research_max_result_chars <= 0:
-        raise RuntimeError("JASPER_RESEARCH_MAX_RESULT_CHARS must be > 0")
+        raise VoiceConfigError("JASPER_RESEARCH_MAX_RESULT_CHARS must be > 0")
     if cfg.research_retention < 0:
-        raise RuntimeError("JASPER_RESEARCH_RETENTION must be >= 0")
+        raise VoiceConfigError("JASPER_RESEARCH_RETENTION must be >= 0")
     return cfg
 
 
@@ -437,9 +466,8 @@ class Config:
             raise VoiceProviderNotConfigured(
                 "JASPER_VOICE_PROVIDER is not set — visit "
                 "http://jts.local/assistant/voice/ (or your speaker's "
-                "hostname) and pick a provider. The wizard will write "
-                "/var/lib/jasper/voice_provider.env and restart "
-                "jasper-voice.",
+                "hostname) and pick a provider. The wizard writes "
+                "/var/lib/jasper/voice_provider.env for you.",
             )
         if provider not in VALID_PROVIDER_IDS:
             raise VoiceProviderNotConfigured(

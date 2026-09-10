@@ -317,10 +317,15 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
         return hb
 
     patch("Heartbeat", _heartbeat)
+    # The cue bake is scheduled far above the release registration, so it is
+    # a point marker, not the set's entry; the loudness seed is the call
+    # adjacent to the registration and stands in for it.
     patch("_schedule_cue_regen", lambda *a, **k: trace.append(
+        ("cue_regen", "run"),
+    ))
+    patch("_schedule_assistant_loudness_seed", lambda *a, **k: trace.append(
         ("startup_tasks", "enter"),
     ))
-    patch("_schedule_assistant_loudness_seed", lambda *a, **k: None)
 
     async def cancel_tracked_tasks(_tasks) -> None:
         trace.append(("startup_tasks", "exit"))
@@ -404,6 +409,26 @@ async def test_control_socket_closes_before_the_wake_loop_it_dispatches_into(
     assert (
         teardown_trace.index_of("control_socket", "exit")
         < teardown_trace.index_of("wake_loop", "exit")
+    )
+
+
+async def test_the_cue_bake_is_scheduled_before_the_checks_that_park(
+    teardown_trace,
+) -> None:
+    """NN-6: `main()` can only speak a park cue that already has a baked WAV.
+
+    Every boot park is raised at or after the mic open — the mic itself, the
+    SpeechVAD built beside it, `_require_usable_input` — and deploy/install.sh
+    bakes cues in its LAST full-profile step, so an install that aborted
+    part-way leaves the daemon to bake them. Scheduling that after the checks
+    (where it used to sit, beside the playout) means the park it announces has
+    already happened.
+    """
+    await _run_daemon_once(teardown_trace)
+
+    assert (
+        teardown_trace.index_of("cue_regen", "run")
+        < teardown_trace.index_of("mic", "enter")
     )
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.config import Config, VoiceProviderNotConfigured
+from jasper.config import Config, VoiceConfigError, VoiceProviderNotConfigured
 from jasper.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice import catalog
 
@@ -200,26 +200,32 @@ def test_invalid_openai_noise_reduction_env_rejected(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_OPENAI_NOISE_REDUCTION", "potato")
 
-    with pytest.raises(RuntimeError, match="JASPER_OPENAI_NOISE_REDUCTION"):
+    with pytest.raises(VoiceConfigError, match="JASPER_OPENAI_NOISE_REDUCTION"):
         Config.from_env()
 
 
 @pytest.mark.parametrize(
-    "provider", [None, "gemeni"], ids=("unset", "typo"),
+    ("provider", "key"),
+    [(None, "test-key"), ("gemeni", "test-key"), ("gemini", "")],
+    ids=("unset", "typo", "key-missing"),
 )
 def test_an_unusable_voice_provider_raises_the_setup_exception(
-    provider, monkeypatch,
+    provider, key, monkeypatch,
 ):
     """The type is the routing: `daemon_main.main()` catches
-    VoiceProviderNotConfigured, cues the park and exits 78. A bare
-    RuntimeError for either shape would traceback to exit 1 instead, and
-    jasper-voice.service climbs Restart=on-failure to
-    StartLimitAction=reboot with nothing spoken (non-negotiable 6)."""
+    VoiceProviderNotConfigured, cues the voice-wizard park and exits 78. A
+    bare RuntimeError for any of these shapes would traceback to exit 1
+    instead, and jasper-voice.service climbs Restart=on-failure to
+    StartLimitAction=reboot with nothing spoken (non-negotiable 6).
+
+    A provider chosen with its key left blank is the same fact as no
+    provider — first-time setup did not finish — so it takes the wizard cue
+    rather than the generic diagnostics one."""
     if provider is None:
         monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
     else:
         monkeypatch.setenv("JASPER_VOICE_PROVIDER", provider)
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", key)
 
     with pytest.raises(VoiceProviderNotConfigured):
         Config.from_env()
@@ -354,10 +360,15 @@ def test_google_setup_url_defaults_to_hostname(monkeypatch):
     ],
 )
 def test_invalid_env_values_raise(monkeypatch, name, value, expected):
+    """VoiceConfigError, not a bare RuntimeError: the type is what routes
+    `daemon_main.main()` to a cued 78 park instead of a traceback to exit 1
+    and StartLimitAction=reboot in silence (non-negotiable 6)."""
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv(name, value)
-    with pytest.raises(RuntimeError, match=expected):
+    with pytest.raises(VoiceConfigError, match=expected) as raised:
         Config.from_env()
+    # Nothing unparks 78 on its own, so the message must name the last step.
+    assert "systemctl restart jasper-voice" in str(raised.value)
 
 
 def test_tts_outputd_socket_env(monkeypatch):

@@ -38,7 +38,6 @@ import pytest
 
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.mic_capture import InputDeviceUnavailable
-from jasper.config import VoiceProviderNotConfigured
 from jasper.env_load import ENV_FILES
 from jasper.mic_presence import (
     MIC_ABSENT_CHIP_AEC_VALIDATING,
@@ -54,6 +53,7 @@ from jasper.cues.registry import (
     VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
+from jasper.config import VoiceConfigError, VoiceProviderNotConfigured
 from jasper.vad import SpeechVADSetupError
 from jasper.voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
@@ -390,8 +390,14 @@ def _parking_daemon(
             VOICE_ASSETS_MISSING_CUE_SLUG,
             "voice.vad_setup_failed",
         ),
+        (
+            VoiceConfigError("JASPER_IDLE_TIMEOUT_SEC must be a number"),
+            VOICE_STARTUP_CONFIG_ERROR_EXIT,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
+            "voice.config_invalid",
+        ),
     ],
-    ids=("mic-unavailable", "not-set-up", "vad-setup-failed"),
+    ids=("mic-unavailable", "not-set-up", "vad-setup-failed", "config-invalid"),
 )
 def test_a_boot_park_is_announced_before_main_exits(
     exc: Exception, code: int, slug: str, event: str, monkeypatch, caplog,
@@ -403,10 +409,11 @@ def test_a_boot_park_is_announced_before_main_exits(
     in which the speaker goes deaf with nothing spoken (non-negotiable 6).
     The slugs differ because the remedies do: the mic path reuses the cue
     ADR-0239 speaks for the same fact at shutdown, an unusable provider sends
-    the household to the voice wizard, and a VAD asset that will not load
-    sends them to System → Run diagnostics, the only page that can show it.
+    the household to the voice wizard, and the faults that wizard cannot fix
+    — a VAD asset that will not load, a rejected config value — send them to
+    System → Run diagnostics, the only page that can show either.
 
-    The event name is the other half: these three park silently as far as a
+    The event name is the other half: these park silently as far as a
     support read is concerned unless the journal names which check refused,
     and each name is what a `journalctl` filter is written against."""
     daemon_main, spy = _parking_daemon(exc, monkeypatch)

@@ -196,6 +196,8 @@ def test_every_config_fault_parks_on_the_code_the_unit_calls_clean():
     above. Only the constants' VALUE ties the two halves together — a
     daemon that parked on any other code would restart-loop into
     StartLimitAction=reboot instead."""
+    # lazy: import cost — jasper.voice_daemon pulls numpy/onnx, and every
+    # other test in this file reads unit files only.
     from jasper.voice_daemon import (
         VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
         VOICE_STARTUP_CONFIG_ERROR_EXIT,

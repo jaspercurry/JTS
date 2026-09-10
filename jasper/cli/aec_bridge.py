@@ -1028,7 +1028,11 @@ def _park(code: int, reason: str, detail: str) -> int:
     of spending the StartLimitAction=reboot budget ADR-0146 sized for
     transients. Same split as jasper-voice.service: 78 is "the configuration
     asks for something this box cannot do", 66 is "the primary microphone
-    would not open", and each speaks the cue that code already means.
+    would not open", and each speaks the cue that code already means. None of
+    the 78s here is a missing voice provider — a stale reference source, an
+    unvalidated beam plan, a mis-set chip-reference flag or an absent corpus
+    mic are all faults the /voice wizard cannot touch — so they speak the
+    diagnostics cue, not voice_not_set_up.
 
     Every park here stops the UDP mic feed jasper-voice's wake legs read, so
     the box goes deaf until someone acts — non-negotiable 6 owes a cue. The
@@ -1053,11 +1057,11 @@ def _park(code: int, reason: str, detail: str) -> int:
     from ..cues.park import play_park_cue
     from ..cues.registry import (
         NO_ROOM_MIC_CUE_SLUG,
-        VOICE_NOT_SET_UP_CUE_SLUG,
+        VOICE_ASSETS_MISSING_CUE_SLUG,
     )
     slug = (
         NO_ROOM_MIC_CUE_SLUG if code == os.EX_NOINPUT
-        else VOICE_NOT_SET_UP_CUE_SLUG
+        else VOICE_ASSETS_MISSING_CUE_SLUG
     )
     result = play_park_cue(slug, logger=logger)
     log_event(
