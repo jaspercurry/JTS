@@ -562,6 +562,54 @@ def test_commission_ramp_step_sigterm_remutes_once_and_exits_128_plus_signum(
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
 
 
+def test_commission_ramp_step_second_sigterm_during_remute_does_not_kill(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """MUST-FIX 2: the handlers stay live through the re-mute, not just the cancel.
+
+    They used to come down in a ``finally`` BEFORE ``remute_stepped_driver`` was
+    awaited, so a second signal landing mid-re-mute fell back to the OS default
+    (terminate) and could kill the process with the graph still unmuted. If
+    that regressed, this test would not finish -- the second ``os.kill`` below
+    would end the process before these assertions ran.
+    """
+    controller, env, _ = _arm_woofer(monkeypatch, tmp_path, capsys)
+    remute_calls: list[str] = []
+    real_remute = active_speaker_cli.remute_stepped_driver
+
+    async def _remute_with_second_signal(**kwargs):
+        remute_calls.append("start")
+        os.kill(os.getpid(), signal.SIGTERM)
+        result = await real_remute(**kwargs)
+        remute_calls.append("end")
+        return result
+
+    async def _killed_step(*_args, **_kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(30)
+        raise AssertionError("the handler must cancel the step")
+
+    monkeypatch.setattr(
+        active_speaker_cli, "remute_stepped_driver", _remute_with_second_signal
+    )
+    monkeypatch.setattr(active_speaker_cli, "ramp_audible_step", _killed_step)
+
+    code = main([
+        "commission-ramp", "step", "--group", "mono", "--role", "woofer", "--json"
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 128 + int(signal.SIGTERM)
+    assert payload["status"] == "stopped"
+    assert payload["remute"]["status"] == "remuted"
+    assert remute_calls == ["start", "end"]
+    # The running graph is back on the all-muted staged anchor.
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
 def test_commission_ramp_tweeter_blocked_before_woofer_cli(
     monkeypatch, tmp_path: Path, capsys
 ):

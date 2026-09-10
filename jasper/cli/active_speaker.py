@@ -889,24 +889,38 @@ async def _stoppable_ramp_step(
         except (NotImplementedError, RuntimeError, ValueError):
             continue
         installed.append(sig)
+
+    def _uninstall() -> None:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(sig)
+
+    # Handlers stay installed across the re-mute below: removing them early
+    # would restore the OS default (terminate) for a second signal and kill
+    # the process while the driver is still unmuted.
     stopped_by: int
     try:
-        return await task, 0
+        result = await task, 0
     except asyncio.CancelledError:
         if stopped is None:
+            _uninstall()
             raise
         stopped_by = stopped
     except KeyboardInterrupt:
         # Reached only where no handler could be installed (a loop that is not
         # the main thread's): the interpreter raises inside the step instead.
         stopped_by = int(signal.SIGINT)
-    finally:
-        for sig in installed:
-            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
-                loop.remove_signal_handler(sig)
+    except BaseException:
+        _uninstall()
+        raise
+    else:
+        _uninstall()
+        return result
+
     remute = await remute_stepped_driver(
         load_config=load_config, reason=f"cli_signal_{stopped_by}"
     )
+    _uninstall()
     return (
         {"status": "stopped", "signal": stopped_by, "remute": remute},
         SIGNAL_EXIT_BASE + stopped_by,
