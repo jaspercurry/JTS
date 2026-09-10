@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.bass_extension.bench import render
+from jasper.active_speaker.bench import render
 
 
 class _FakeCompleted:

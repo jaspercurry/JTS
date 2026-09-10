@@ -316,7 +316,7 @@ def test_soft_clip_gain_is_zero_at_silence_and_refuses_a_positive_limit() -> Non
 def test_the_bounds_disclosed_optimism_is_the_measured_one() -> None:
     """The docstring says "computed"; this is the computation, simulated.
 
-    Driven through :func:`jasper.bass_extension.bench.render.reference_soft_clip`
+    Driven through :func:`jasper.active_speaker.bench.render.reference_soft_clip`
     — the repo's own line-for-line port of the pinned implementation — rather
     than through this module's algebra, so the disclosed figures cannot agree
     with a mistake in the derivation they describe. (They once did: the first
@@ -325,7 +325,7 @@ def test_the_bounds_disclosed_optimism_is_the_measured_one() -> None:
     and understated the shortfall by a third.)
     """
 
-    from jasper.bass_extension.bench.render import reference_soft_clip
+    from jasper.active_speaker.bench.render import reference_soft_clip
 
     clip_dbfs = -1.0
     clip = 10.0 ** (clip_dbfs / 20.0)

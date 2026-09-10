@@ -32,7 +32,6 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from jasper.bass_extension.bench.derivation import ALLOWED_FILTER_TYPES
 from jasper.json_fields import finite_float
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
@@ -51,11 +50,8 @@ _OVERLAP_SAMPLES = 8192
 # this many frames.
 MAX_STIMULUS_SAMPLES = 48_000 * 60
 
-# CamillaDSP filter types this module models EXACTLY; anything else refuses. DERIVED
-# from the offline-render allowlist. ``Conv`` is the one subtraction: the bench path can
-# convolve a shipped FIR; this module models from config text alone, with no
-# coefficients to read.
-_MODELLED_FILTER_TYPES = ALLOWED_FILTER_TYPES - {"Conv"}
+# Types modelled from configuration alone; FIR convolution needs external data.
+_MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Delay", "Gain", "Limiter"})
 
 # Biquad shapes the shared RBJ evaluator implements; anything outside falls through to
 # that evaluator's `Peaking` default, so it refuses instead.

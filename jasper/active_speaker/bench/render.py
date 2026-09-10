@@ -83,10 +83,7 @@ _VERSION_SUBSTRING = "4.1.3"
 # build (`deny_unknown_fields`). See derivation.py's module docstring for
 # the full citation chain.
 DEPLOYED_PROCESSING_PRECISION = "F64_LE"
-# `derive_truncated_config`'s algorithm identity — bump when its truncation,
-# device-swap, or allowlist LOGIC changes (not on comment-only edits), so a
-# `tap_implementation_id` recomputation is forced whenever the derivation
-# behavior it fingerprints actually changes.
+# Increment when offline derivation changes the transform or device geometry.
 DERIVATION_FUNCTION_VERSION = "1"
 
 _DEFAULT_UNIT_NAME = "jasper-camilla.service"
@@ -118,7 +115,7 @@ class RenderError(RuntimeError):
     lands as "a graded branch did not match" — a finding reported for a run
     that never rendered a sample. Anything added here that touches the
     filesystem or spawns a child converts too;
-    ``tests/test_bass_extension_bench_render.py`` pins the sites.
+    ``tests/test_active_speaker_bench_render.py`` pins the sites.
     """
 
 
@@ -399,7 +396,7 @@ def render_config(
         # MUST stay ahead of the SubprocessError arm below — TimeoutExpired
         # SUBCLASSES SubprocessError, so swapping these two silently relabels
         # every genuine render timeout as a bounds-setup failure. A swap is
-        # caught by tests/test_bass_extension_bench_render.py::
+        # caught by tests/test_active_speaker_bench_render.py::
         # test_render_config_refuses_on_timeout, but ONLY because its match is
         # ANCHORED at "^render timed out after". Do not relax that anchor: the
         # bounds message below interpolates the exception, and TimeoutExpired
@@ -480,9 +477,7 @@ def _declared_playback_destination(config_text: str, *, config_path: Path) -> st
     A render's destination is **not** a command-line argument.
     :func:`render_config` builds argv as exactly
     ``[binary_path, "--gain=<db>", <config_path>]``; the binary writes
-    wherever this one field says — the field
-    :func:`~jasper.bass_extension.bench.derivation.derive_truncated_config`'s
-    R3 device swap emits for the derived ``type: File`` playback device.
+    wherever this field points in the derived ``type: File`` playback device.
     Everything :func:`render_config` does with an ``output_path`` (unlink a
     stale file, assert one appeared, hash it) is watching, never directing.
     """
@@ -707,20 +702,7 @@ def estimate_render_bytes(sample_rate_hz: int, channels: int, duration_s: float)
 def check_free_space(
     bundle_dir: Path, *, per_render_estimate_bytes: int, renders_outstanding: int
 ) -> None:
-    """R9: refuse before a render if free space is below the campaign estimate.
-
-    Checked before EACH render against renders still outstanding for the
-    WHOLE campaign, not just the current target — unconditionally: S-4's
-    ``renders_outstanding <= 0: return`` early-out is deleted. The seeded
-    estimate (:func:`~jasper.bass_extension.bench.executor.
-    estimate_campaign_render_count`'s ``targets * 8``) assumes exactly one
-    evaluated candidate per target, so it can genuinely run out before a
-    real multi-candidate campaign's renders do; once the caller's counter
-    reaches 0 that must NOT silently disable the guard for the rest of the
-    campaign — it floors at 1 render's worth instead, so a real
-    out-of-space condition still refuses with a clear ``RenderError``
-    rather than an opaque OS-level disk-full failure from the subprocess.
-    """
+    """Require space for outstanding renders, with a minimum of one render."""
 
     required = per_render_estimate_bytes * max(1, renders_outstanding)
     try:

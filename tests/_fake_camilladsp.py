@@ -8,7 +8,7 @@ Accepts the exact argv the real render invocation uses
 (``[binary, --gain=<db>, <config>]``, plus ``--version``), reads the derived
 config's ``WavFile`` capture, applies the config's own pipeline, and writes the
 ``File`` playback output as interleaved little-endian float64 — the same
-contract :mod:`jasper.bass_extension.bench.render` expects of the real binary.
+contract :mod:`jasper.active_speaker.bench.render` expects of the real binary.
 
 **It deliberately imports nothing from ``jasper``.** Its biquad coefficients are
 written straight from the RBJ Audio EQ Cookbook here, so a test that renders
