@@ -118,17 +118,31 @@ End-to-end acceptance remains: ordinary measurement requests acquire fresh level
 
 ## Sources
 
-[^1]: REW. [Check Levels](https://www.roomeqwizard.com/help/help_en-GB/html/measurementlevel.html). Undated official help. Calibration procedure and input/output distinction.
-[^2]: REW. [Making Measurements](https://mail.roomeqwizard.com/help/help_en-GB/html/makingmeasurements.html). Undated official help, “Check Levels,” Sweep Level and measurement-length sections. Published three-second check and fixed-level comparisons. Longer sweeps may improve SNR but separate capture/playback clocks require care; that trade-off must be measured on the Pi.
-[^3]: Genelec. [How does the Standard Loudness SPL Calibration in GLM actually work?](https://support.genelec.com/hc/en-us/articles/21060845571090-How-does-the-Standard-Loudness-SPL-Calibration-in-GLM-actually-work). Updated 2024-11-26. Internal noise calibration and source-level dependence.
-[^4]: Audyssey. [MultEQ-X User Guide, v1.0](https://audyssey.com/MultEQ-X%20User%20Guide.pdf). 2021, printed pp.17 and 20. Subwoofer display/acquisition and noise/SNR error behavior. Historical version; not assumed current.
-[^5]: miniDSP. [Tide16: Configure Dirac Live](https://docs.minidsp.com/product-manuals/tide16/dirac-live/configure-dirac-live.html). Undated official product manual. Mic/output setup and background-noise guidance.
-[^6]: miniDSP. [SHD AutoEQ: First steps](https://docs.minidsp.com/product-manuals/shd/autoeq/first-steps.html). Undated official product manual. Manual gain setup and shared noise/sweep frequency selection.
-[^7]: Lyngdorf Audio. [RoomPerfect support](https://lyngdorf.steinwaylyngdorf.com/support-roomperfect/). Undated manufacturer documentation. Dedicated low/high-frequency signals and spatial method.
-[^8]: REW. [Signal Generator](https://mail.roomeqwizard.com/betahelp/help/html/siggen.html). Undated official beta help, pink-noise and periodic-noise sections. Signal bands, spectral/crest-factor design and synchronization constraints.
-[^9]: Angelo Farina. [Simultaneous Measurement of Impulse Response and Distortion with a Swept-Sine Technique](https://aes.org/publications/elibrary-page/?id=10211). AES 108th Convention, 2000, paper 5093. Accessible abstract; full text was not used.
-[^10]: Guy-Bart Stan, Jean-Jacques Embrechts and Dominique Archambeau. [Comparison of Different Impulse Response Measurement Techniques](https://orbi.uliege.be/handle/2268/34825). JAES 50(4), 2002, pp.249–262; [author manuscript](https://orbi.uliege.be/bitstream/2268/34825/2/Stan_Embrechts_Archambeau_JAES_2002.pdf). Noise/nonlinearity dependence of measurement methods.
-[^11]: ALSA project. [PCM interface](https://www.alsa-project.org/alsa-doc/alsa-lib/group___p_c_m.html), `snd_pcm_delay`; [PCM overview](https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html). Undated official library documentation. ADC/DAC delay and buffer/period semantics.
-[^12]: REW. [SPL Meter](https://www.roomeqwizard.com/help/help_en-GB/html/splmeter.html). Undated official help. Integrating level, time weighting, frequency weighting and microphone calibration.
-[^13]: miniDSP. [UMIK-2 User Manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf). Official manufacturer manual. Calibration, input gain and orientation. This does not establish that JTS3 has a UMIK-2.
-[^14]: Dirac. [What microphone is required/recommended for Dirac Live?](https://helpdesk.dirac.com/en/faq/What-microphone-is-required-recommended-for-Dirac-Live-9a3b). Official support. Calibrated omnidirectional measurement microphone requirements; no JTS3 device inference.
+[^1]:
+    REW. [Check Levels](https://www.roomeqwizard.com/help/help_en-GB/html/measurementlevel.html). Undated official help. Calibration procedure and input/output distinction.
+[^2]:
+    REW. [Making Measurements](https://mail.roomeqwizard.com/help/help_en-GB/html/makingmeasurements.html). Undated official help, “Check Levels,” Sweep Level and measurement-length sections. Published three-second check and fixed-level comparisons. Longer sweeps may improve SNR but separate capture/playback clocks require care; that trade-off must be measured on the Pi.
+[^3]:
+    Genelec. [How does the Standard Loudness SPL Calibration in GLM actually work?](https://support.genelec.com/hc/en-us/articles/21060845571090-How-does-the-Standard-Loudness-SPL-Calibration-in-GLM-actually-work). Updated 2024-11-26. Internal noise calibration and source-level dependence.
+[^4]:
+    Audyssey. [MultEQ-X User Guide, v1.0](https://audyssey.com/MultEQ-X%20User%20Guide.pdf). 2021, printed pp.17 and 20. Subwoofer display/acquisition and noise/SNR error behavior. Historical version; not assumed current.
+[^5]:
+    miniDSP. [Tide16: Configure Dirac Live](https://docs.minidsp.com/product-manuals/tide16/dirac-live/configure-dirac-live.html). Undated official product manual. Mic/output setup and background-noise guidance.
+[^6]:
+    miniDSP. [SHD AutoEQ: First steps](https://docs.minidsp.com/product-manuals/shd/autoeq/first-steps.html). Undated official product manual. Manual gain setup and shared noise/sweep frequency selection.
+[^7]:
+    Lyngdorf Audio. [RoomPerfect support](https://lyngdorf.steinwaylyngdorf.com/support-roomperfect/). Undated manufacturer documentation. Dedicated low/high-frequency signals and spatial method.
+[^8]:
+    REW. [Signal Generator](https://mail.roomeqwizard.com/betahelp/help/html/siggen.html). Undated official beta help, pink-noise and periodic-noise sections. Signal bands, spectral/crest-factor design and synchronization constraints.
+[^9]:
+    Angelo Farina. [Simultaneous Measurement of Impulse Response and Distortion with a Swept-Sine Technique](https://aes.org/publications/elibrary-page/?id=10211). AES 108th Convention, 2000, paper 5093. Accessible abstract; full text was not used.
+[^10]:
+    Guy-Bart Stan, Jean-Jacques Embrechts and Dominique Archambeau. [Comparison of Different Impulse Response Measurement Techniques](https://orbi.uliege.be/handle/2268/34825). JAES 50(4), 2002, pp.249–262; [author manuscript](https://orbi.uliege.be/bitstream/2268/34825/2/Stan_Embrechts_Archambeau_JAES_2002.pdf). Noise/nonlinearity dependence of measurement methods.
+[^11]:
+    ALSA project. [PCM interface](https://www.alsa-project.org/alsa-doc/alsa-lib/group___p_c_m.html), `snd_pcm_delay`; [PCM overview](https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html). Undated official library documentation. ADC/DAC delay and buffer/period semantics.
+[^12]:
+    REW. [SPL Meter](https://www.roomeqwizard.com/help/help_en-GB/html/splmeter.html). Undated official help. Integrating level, time weighting, frequency weighting and microphone calibration.
+[^13]:
+    miniDSP. [UMIK-2 User Manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf). Official manufacturer manual. Calibration, input gain and orientation. This does not establish that JTS3 has a UMIK-2.
+[^14]:
+    Dirac. [What microphone is required/recommended for Dirac Live?](https://helpdesk.dirac.com/en/faq/What-microphone-is-required-recommended-for-Dirac-Live-9a3b). Official support. Calibrated omnidirectional measurement microphone requirements; no JTS3 device inference.
