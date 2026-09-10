@@ -172,7 +172,7 @@ def test_authority_is_new_exclusive_canonical_and_private(tmp_path: Path) -> Non
     authority = _authority(tmp_path)
     marker_path = authority.directory / ADMISSION_AUTHORITY_MARKER
 
-    assert authority.directory.stat().st_mode & 0o777 == 0o750
+    assert authority.directory.stat().st_mode & 0o7777 == 0o2750
     assert marker_path.stat().st_mode & 0o777 == 0o640
     assert marker_path.read_bytes() == canonical_marker_bytes(authority)
     assert (
@@ -262,17 +262,23 @@ def test_authority_directory_creation_failure_is_typed(
 def test_authority_and_role_directories_have_stable_modes_under_strict_umask(
     tmp_path: Path,
 ) -> None:
+    shared_gid = next((gid for gid in os.getgroups() if gid != os.getegid()), os.getegid())
+    os.chown(tmp_path, -1, shared_gid)
+    tmp_path.chmod(0o2750)
     previous = os.umask(0o077)
     try:
         authority, generation = _generation(tmp_path)
     finally:
         os.umask(previous)
 
-    assert authority.directory.stat().st_mode & 0o777 == 0o750
     artifact_path = authority.directory / generation.artifact.relative_path
-    for relative in ("admission", "admission/v1", GENERATION_PATH_PREFIX):
-        assert (authority.directory / relative).stat().st_mode & 0o777 == 0o750
+    for relative in ("", "admission", "admission/v1", GENERATION_PATH_PREFIX):
+        directory = authority.directory / relative
+        assert directory.stat().st_mode & 0o7777 == 0o2750
+        assert directory.stat().st_gid == shared_gid
+    assert artifact_path.stat().st_gid == shared_gid
     assert artifact_path.stat().st_mode & 0o777 == 0o640
+    assert read_generation_admission(authority, generation.artifact) == generation
 
 
 def test_persistence_accepts_a_resolved_alias_in_an_authority_ancestor(
