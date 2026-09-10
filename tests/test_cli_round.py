@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round``: the four round verbs, driven from the speaker.
+"""``jasper-round``: the five round verbs, driven from the speaker.
 
 Every request is served by a fake opener -- :class:`WizardClient`'s own
 transport seam -- so these pin what the CLI SENDS, what it ANSWERS on stdout

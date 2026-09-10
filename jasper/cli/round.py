@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Open, wait, apply a named candidate, or bank a round through existing owners.
+"""Open, wait, apply a named candidate, bank a round through existing owners, or plan one.
 
 Apply republishes a banked selection only when it differs from the live slot;
 the existing wizard apply path owns graph admission, installation and restore.
+``plan`` sequences nothing either: it writes a measurement plan document that
+no other verb here reads yet.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from ._refusal import (
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
     read_json_source,
 )
+from ._report import write_report
 
 PROG = "jasper-round"
 REPUBLISH_PATH = "/sound/speaker/crossover/v2/republish"
@@ -266,6 +269,88 @@ def _cmd_bank(args: argparse.Namespace) -> int:
     )
 
 
+def _hz_band(value: str) -> tuple[float, float]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("--band must be LOW,HIGH in Hz")
+    try:
+        return (float(parts[0]), float(parts[1]))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--band must be numeric LOW,HIGH in Hz, got {value!r}"
+        ) from exc
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    """Write a measurement plan document. Reaches no wizard; stages nothing.
+
+    The plan model pulls in ``angle_capture``'s mover vocabulary, which costs
+    numpy on import, so every name it needs is resolved here rather than at
+    module scope -- an ordinary ``open``/``wait``/``apply``/``bank`` must not
+    pay for a door it is not carrying (ADR-0226).
+    """
+    from jasper.active_speaker.candidate_bank import (
+        CandidateBankRefusal,
+        find_banked_candidate,
+    )
+    from jasper.active_speaker.crossover_v2.measurement_plan import (
+        LevelPolicy,
+        PlanRefusal,
+        plan_for_program,
+    )
+    from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
+
+    candidates = tuple(
+        field.strip() for field in args.candidates.split(",") if field.strip()
+    )
+    root = Path(args.root) if args.root else None
+    candidate_scopes: dict[str, Any] = {}
+    try:
+        for candidate in candidates:
+            if candidate == "base":
+                continue
+            banked = find_banked_candidate(candidate, root=root)
+            candidate_scopes[candidate] = candidate_trial_scope(banked.candidate)
+    except CandidateBankRefusal as exc:
+        return failed(EXIT_REFUSED, exc.code, exc.detail)
+
+    level = LevelPolicy(
+        mode=args.level_mode, main_volume_series_db=tuple(args.level_series or ())
+    )
+    try:
+        plan = plan_for_program(
+            args.program, args.size,
+            candidates=candidates, candidate_scopes=candidate_scopes,
+            purpose=args.purpose, mover=args.mover,
+            sweep_band_hz=args.band, sweep_s=args.sweep_s,
+            level=level, ceiling_db_spl=args.ceiling_db_spl,
+        )
+        plan.validate()
+    except PlanRefusal as exc:
+        return failed(EXIT_REFUSED, exc.code, str(exc))
+    except ValueError as exc:
+        return failed(EXIT_REFUSED, "plan_refused", str(exc))
+
+    try:
+        written = write_report(plan.to_dict(), args.out, Path(args.out))
+    except OSError as exc:
+        return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
+    if written is None:
+        # --out - already put the plan itself on stdout (ADR-0237); a second
+        # document over it would break "exactly one".
+        return EXIT_OK
+    return _answer(
+        "plan",
+        f"{written} fingerprint={plan.fingerprint} "
+        f"poses={len(plan.poses)} takes={len(plan.takes)}",
+        out=str(written),
+        fingerprint=plan.fingerprint,
+        cost=plan.cost().to_dict(),
+        poses=len(plan.poses),
+        takes=len(plan.takes),
+    )
+
+
 def _connection_args(parser: argparse.ArgumentParser) -> None:
     """The wizard verbs' shared arguments; ``bank`` reaches no wizard."""
     parser.set_defaults(wizard=True)
@@ -301,6 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "EXAMPLE\n"
             "  ssh pi@jts3.local\n"
+            "  /opt/jasper/.venv/bin/jasper-round plan --program room "
+            "--candidates base\n"
             "  /opt/jasper/.venv/bin/jasper-round open --tier express\n"
             "  /opt/jasper/.venv/bin/jasper-round wait --timeout-s 1200\n"
             "  /opt/jasper/.venv/bin/jasper-round apply "
@@ -311,6 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  - it does not stage an angle walk or run the arm (both are\n"
             "    jasper-angle-capture); each is its own tool and this one\n"
             "    sequences none of them\n"
+            "  - `plan` writes a measurement plan document; no verb here\n"
+            "    reads it yet, so it stages no walk and opens no session\n"
             "  - `wait` polls the session the wizard is publishing NOW, so\n"
             "    run it after `open`, not against yesterday's round\n"
             "  - `bank` files a round on this box only -- the same tree is\n"
@@ -318,20 +407,23 @@ def build_parser() -> argparse.ArgumentParser:
             "    evicts nothing: the campaign home is operator-pruned\n"
             "\n"
             "EXIT CODES\n"
-            "  0  the verb did what it says -- the wizard answered, or\n"
-            "     the round was banked and its directory is on stdout\n"
+            "  0  the verb did what it says -- the wizard answered, the\n"
+            "     round was banked and its directory is on stdout, or the\n"
+            "     plan was written and its summary is on stdout\n"
             "  1  EXIT_REFUSED -- the wizard's refusal, this tool's own\n"
-            "     pre-flight fingerprint refusal, or a session `bank` will\n"
-            "     not bank (not a bundle, unfinished, or already banked --\n"
-            "     a banked round is never overwritten). Nothing was applied\n"
+            "     pre-flight fingerprint or plan refusal, or a session\n"
+            "     `bank` will not bank (not a bundle, unfinished, or\n"
+            "     already banked -- a banked round is never overwritten).\n"
+            "     Nothing was applied\n"
             "  2  EXIT_UNREADABLE -- no answer to read. The receipt's\n"
             "     `reason` says which: `answer_lost` (the daemon is down, a\n"
             "     wrong --hostname, a dropped connection) or `wait_timeout`\n"
             "     (the deadline passed with the session still running --\n"
             "     nothing was cancelled, the round is still going). A lost\n"
             "     answer to the apply POST does NOT mean the apply failed\n"
-            "  3  EXIT_WRITE_FAILED -- `bank` could not write the copy: a\n"
-            "     filesystem problem, not a request problem"
+            "  3  EXIT_WRITE_FAILED -- `bank` could not write the copy, or\n"
+            "     `plan` could not write its document: a filesystem\n"
+            "     problem, not a request problem"
         ),
     )
     parser.set_defaults(wizard=False)
@@ -413,6 +505,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="where banked rounds live (default: the on-box campaign home)",
     )
     banker.set_defaults(func=_cmd_bank)
+
+    planner = sub.add_parser(
+        "plan", help="write a measurement plan document; stages and runs nothing"
+    )
+    planner.add_argument("--program", required=True, help="measurement program id, e.g. room")
+    planner.add_argument(
+        "--size", default=None,
+        help="program size; the program's own default when omitted",
+    )
+    planner.add_argument(
+        "--candidates", required=True,
+        help=(
+            "comma-separated take list: 'base' and/or a banked candidate "
+            "fingerprint, e.g. base,<fingerprint>"
+        ),
+    )
+    planner.add_argument(
+        "--purpose", default=None,
+        help="capture purpose; the program's own default when omitted",
+    )
+    planner.add_argument(
+        # Literal choices, not MOVER_HUMAN/MOVER_ARM: importing .angle_capture
+        # here would tax every verb's startup, not just plan's (ADR-0226).
+        "--mover", default="human", choices=("human", "arm"),
+        help="who advances the mic between poses (default: %(default)s)",
+    )
+    planner.add_argument(
+        "--sweep-s", type=float, default=None,
+        help="summed sweep duration for every take, in seconds",
+    )
+    planner.add_argument(
+        "--band", type=_hz_band, default=None, metavar="LOW,HIGH",
+        help="sweep band bounds in Hz for every take",
+    )
+    planner.add_argument(
+        "--ceiling-db-spl", type=float, default=None,
+        help="one SPL ceiling for every take",
+    )
+    planner.add_argument(
+        # Literal default, not LEVEL_HOLD_REFERENCE: same import-cost reason
+        # as --mover above; a bad value comes back as `unknown_level_mode`.
+        "--level-mode", default="hold_reference",
+        help="how the executor holds main volume across takes (default: %(default)s)",
+    )
+    planner.add_argument(
+        # Repeatable, not a comma list: argparse reads a lone "-20,-30" as an
+        # unrecognized option (the embedded comma defeats its negative-number
+        # exemption), the same reason measure.py's --level-dbfs repeats too.
+        "--level-series", type=float, action="append", default=None, metavar="DB",
+        help=(
+            "one main-volume rung for --level-mode series, repeatable "
+            "(e.g. --level-series -20 --level-series -30)"
+        ),
+    )
+    planner.add_argument(
+        "--out", default="measurement_plan.json",
+        help="where the plan document is written (default: %(default)s)",
+    )
+    planner.add_argument(
+        "--root", default=None,
+        help="the candidate bank root, when it is not the on-box default",
+    )
+    planner.set_defaults(func=_cmd_plan)
     return parser
 
 
