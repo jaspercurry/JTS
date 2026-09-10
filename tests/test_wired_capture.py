@@ -294,18 +294,21 @@ def test_start_confirms_audio_before_returning():
     recorder.abort()
 
 
-def test_spl_ceiling_checks_first_block_before_playback_can_start():
-    loud = 2 ** 30
+@pytest.mark.parametrize("stop", ["spl", "budget"])
+def test_guarded_recorder_failure_is_visible_before_playback_can_start(stop):
+    loud = 2 ** (30 if stop == "spl" else 20)
     monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
     recorder = WiredRecorder(
-        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS, max_capture_s=1.0,
+        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS,
+        max_capture_s=1.0 if stop == "spl" else 32 / RATE,
         pcm_factory=lambda: FakePcm([(32, [(loud, loud)] * 32)]),
         spl_monitor=monitor,
     )
-    with pytest.raises(WiredSplCeilingExceeded):
+    error = WiredSplCeilingExceeded if stop == "spl" else WiredCaptureError
+    with pytest.raises(error) as caught:
         recorder.start()
-    assert monitor.exceeded.is_set()
-    assert monitor.max_window_db_spl > 80.0
+    assert recorder.failure is caught.value
+    assert monitor.exceeded.is_set() == (stop == "spl")
 
 
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
