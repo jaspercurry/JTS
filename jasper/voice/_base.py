@@ -102,6 +102,8 @@ class BaseLiveTurn:
     the daemon; this only implements the provider-independent half.
     """
 
+    owns_interruption = False
+
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()

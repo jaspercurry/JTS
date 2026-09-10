@@ -34,7 +34,12 @@ import numpy as np
 import pytest
 
 import jasper.tts_playout as tts_mod
-from jasper.assistant_loudness import AssistantLoudnessProfile, LoudnessMeasurement
+from jasper.assistant_loudness import (
+    UPSAMPLE_2X_CONTEXT,
+    AssistantLoudnessProfile,
+    LoudnessMeasurement,
+    upsample_2x,
+)
 from jasper.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
@@ -373,6 +378,74 @@ async def test_write_segment_reports_transport_acceptance(monkeypatch, state):
     assert len(observed) == int(accepted)
     if observed:
         assert observed[0] > 0
+
+
+def _speech_like_24k(chunks: int, chunk_samples: int) -> np.ndarray:
+    """A band-limited 24 kHz signal long enough to hold `chunks` joins."""
+    t = np.arange(chunks * chunk_samples) / TtsPlayout.INPUT_RATE
+    tone = (
+        8000.0 * np.sin(2 * np.pi * 440.0 * t)
+        + 4000.0 * np.sin(2 * np.pi * 1970.0 * t)
+        + 1500.0 * np.sin(2 * np.pi * 5000.0 * t)
+    )
+    return tone.astype(np.int16)
+
+
+def _played_mono(stream) -> np.ndarray:
+    """The mono 48 kHz signal behind a capture stream's stereo writes."""
+    return np.frombuffer(b"".join(stream.writes), dtype=np.int16)[::2]
+
+
+def _playout_with_capture_stream():
+    p = TtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        gain_db=0.0,
+        drain_tail_sec=0.0,
+        # The comparisons below are in i16 sample units.
+        wire_wide=False,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+    return p, stream
+
+
+async def test_chunked_upsample_matches_the_whole_signal_at_every_join():
+    """Provider audio arrives as ~95 ms deltas and each was resampled on its
+    own, so both edges of every chunk were interpolated against silence — a
+    tick at ~10 joins a second. Chunked playout now reproduces the
+    whole-signal resample, delayed by the context it carries, and still emits
+    exactly two output samples per input sample.
+    """
+    chunk = int(TtsPlayout.INPUT_RATE * 0.095)
+    source = _speech_like_24k(10, chunk)
+    p, stream = _playout_with_capture_stream()
+
+    for start in range(0, source.size, chunk):
+        await p.write(source[start:start + chunk].tobytes())
+
+    played = _played_mono(stream).astype(np.float64)
+    assert played.size == 2 * source.size
+    reference = upsample_2x(source.astype(np.float64))
+    delay = 2 * UPSAMPLE_2X_CONTEXT
+    error = np.max(np.abs(played[delay:] - reference[: played.size - delay]))
+    peak = np.max(np.abs(reference))
+    assert 20 * np.log10(max(error, 1e-9) / peak) <= -60.0
+
+
+@pytest.mark.parametrize("boundary", ["flush", "end_segment"])
+async def test_a_finished_segment_starts_the_upsampler_from_silence(boundary):
+    """A flush cuts the lane off mid-reply and end_segment closes a reply:
+    either way the next segment is different audio, so none of the last one
+    may bleed into its leading interpolation."""
+    chunk = int(TtsPlayout.INPUT_RATE * 0.095)
+    p, stream = _playout_with_capture_stream()
+
+    await p.write(_speech_like_24k(1, chunk).tobytes())
+    await getattr(p, boundary)()
+    stream.writes.clear()
+    await p.write(np.zeros(chunk, dtype=np.int16).tobytes())
+
+    assert not _played_mono(stream).any()
 
 
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):

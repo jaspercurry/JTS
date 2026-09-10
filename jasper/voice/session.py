@@ -100,6 +100,15 @@ class Interruptible(Protocol):
     See ADR-0115.
     """
 
+    # True when the provider stops generating on the user's own voice, so the
+    # host must never issue its own barge-in flush for this turn: the local
+    # detector scores the assistant's echo as well as the user, and flushing
+    # the fan-in lane on that chops the reply mid-word. The host still
+    # forwards mic audio and still honours conversation end.
+    # `_base.BaseLiveTurn` carries the default; an adapter whose provider owns
+    # acoustic interruption overrides it.
+    owns_interruption: bool
+
     def request_local_interrupt(self) -> None:
         """Locally signal a user barge-in WITHOUT telling the provider.
 
