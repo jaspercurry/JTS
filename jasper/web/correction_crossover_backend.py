@@ -379,17 +379,13 @@ class CrossoverLevelLease:
         # Room measurement, so it uses that domain's reviewed cap. Near-field
         # retains the quieter shared default. Both still pass through the 0 dB
         # hard ceiling and live clip abort.
-        return MeasurementRamp(
-            allow_bounded_low_level=True,
-            **(
-                {
-                    "cap_bump_db": LISTENING_POSITION_CAP_BUMP_DB,
-                    "cap_ceil_db": LISTENING_POSITION_CAP_CEIL_DB,
-                }
-                if capture_geometry == "reference_axis"
-                else {}
-            ),
-        )
+        if capture_geometry == "reference_axis":
+            return MeasurementRamp(
+                allow_bounded_low_level=True,
+                cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
+                cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
+            )
+        return MeasurementRamp(allow_bounded_low_level=True)
 
     def phone_hard_timeout_ms(self, geometry: str) -> int:
         """The phone's hard capture deadline for this geometry, in ms.
