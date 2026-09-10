@@ -1276,6 +1276,11 @@ def main() -> None:
             logger,
             "voice.config_invalid",
             reason=str(e),
+            # Nothing restarts a parked unit on its own (jasper-voice.service
+            # RestartPreventExitStatus=78) — a structured field, not prose
+            # glued onto reason=, so a reader/log-shipper can act on it
+            # without parsing English.
+            remedy="restart_unit",
             level=logging.ERROR,
         )
         print(str(e), file=sys.stderr)

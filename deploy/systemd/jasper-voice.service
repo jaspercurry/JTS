@@ -195,6 +195,8 @@ Restart=on-failure
 #   78 (EX_CONFIG)  — the daemon cannot start on its configuration: an unset
 #                     or invalid JASPER_VOICE_PROVIDER, any other rejected
 #                     JASPER_* value, or a wake/VAD asset that will not load.
+#                     Nothing restarts this automatically once parked — fix
+#                     the value, then `sudo systemctl restart jasper-voice`.
 #   66 (EX_NOINPUT) — primary microphone could not be opened at startup
 #                     (VOICE_MIC_UNAVAILABLE_EXIT). The ConditionPathExists
 #                     marker above pre-empts the common no-mic case; this is

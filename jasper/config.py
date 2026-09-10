@@ -44,14 +44,6 @@ from .wake_events import (
 )
 
 
-# jasper-voice.service lists 78 in RestartPreventExitStatus, so a parked unit
-# stays down: editing the env file is only half the remedy.
-_RESTART_HINT = (
-    " Nothing restarts a parked jasper-voice on its own — run "
-    "`sudo systemctl restart jasper-voice` once the value is fixed."
-)
-
-
 class VoiceConfigError(RuntimeError):
     """A config value the daemon cannot start on.
 
@@ -59,13 +51,10 @@ class VoiceConfigError(RuntimeError):
     park cue and exits 78, which jasper-voice.service holds the unit down on.
     A bare RuntimeError tracebacks to exit 1 instead and climbs
     Restart=on-failure into StartLimitAction=reboot with nothing spoken
-    (AGENTS.md non-negotiable 6).
+    (AGENTS.md non-negotiable 6). The restart remedy lives as a structured
+    field at the park site (daemon_main.py), not here: str(exc) stays the
+    bare message so the accessory-mic parser can mirror it verbatim.
     """
-
-    def __str__(self) -> str:
-        # Appended here, not at each of the ~20 raise sites: the park, and so
-        # the remedy's last step, is a property of the type, not of the value.
-        return super().__str__() + _RESTART_HINT
 
 
 class VoiceProviderNotConfigured(VoiceConfigError):
