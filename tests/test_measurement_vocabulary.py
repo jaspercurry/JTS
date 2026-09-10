@@ -116,14 +116,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
 # wizard's page template is ONE multi-kilobyte literal — exempting the literal
 # would exempt the page. The value is the reason the fragment is not copy.
 
-ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
-    # --- Wire / protocol vocabulary. Renaming these is a wire protocol change,
-    # not a copy change, and both sides of the transport already agree on them.
-    "phone_never_armed": "canonical snake_case refusal code",
-    "cancelled_before_phone_armed": "canonical snake_case refusal code",
-    "phone_aborted": "abort reason the capture page posts",
-    "phone never armed": "raw ramp error string",
-}
+ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {}
 
 
 # Whole-literal exemptions, matched by EQUALITY rather than by substring. A bare
@@ -142,9 +135,7 @@ ALLOWED_PHONE_LITERALS: dict[str, str] = {
 # fragment is meant to excuse ONE string; anything broader is how an exemption
 # quietly grows into a licence. Only entries listed here may exempt more than
 # one, and the count is pinned so growth has to be deliberate.
-FRAGMENT_REACH_EXCEPTIONS: dict[str, int] = {
-    "phone never armed": 2,
-}
+FRAGMENT_REACH_EXCEPTIONS: dict[str, int] = {}
 
 
 # --- Literal extraction -------------------------------------------------------

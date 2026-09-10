@@ -507,21 +507,6 @@ def test_the_climb_bite_is_deliberately_not_the_calibration_step_limit():
     )
 
 
-def test_the_kernel_jump_is_the_same_policy():
-    """The browser capture kernel's settled jump computes the shared step too.
-
-    ``RampController._apply_jump`` aims at the window midpoint from a settled
-    read; that is ``capped_gap_step_db`` with no cap. Pinned so a future edit
-    cannot quietly fork a second arithmetic for the same question.
-    """
-    import inspect
-
-    from jasper.audio_measurement.ramp import RampController
-
-    source = inspect.getsource(RampController._apply_jump)
-    assert "capped_gap_step_db(" in source
-
-
 # --- the window conversion, the ceiling, and the start ----------------------
 
 

@@ -44,7 +44,6 @@ CamillaFactory = Callable[[], Any]
 
 
 if TYPE_CHECKING:
-    from jasper.audio_measurement.level_match import LevelMatchOutcome, LevelMatchSession
     from jasper.audio_measurement.ramp import MeasurementRamp
 
 
@@ -124,12 +123,12 @@ def _write_volume_safety_state(path: Path | None, payload: Mapping[str, Any]) ->
 class CrossoverLevelLease:
     """Geometry-keyed gain lease and durable restore intent for Layer A.
 
-    The shared :class:`LevelMatchSession` owns ramp math and feed semantics;
-    this thin domain owner supplies only single-flight lifetime, observability,
-    and the target/original pair. The process-global production lease injects a
-    durable state path; ordinary test instances stay in-memory unless they opt
-    into one. The target is asserted only inside a sweep window and restored in
-    that window's ``finally``. It deliberately owns no CamillaDSP client.
+    A thin domain owner: single-flight lifetime, observability, the
+    target/original pair, and the per-geometry :class:`LevelLockStore`. The
+    process-global production lease injects a durable state path; ordinary
+    test instances stay in-memory unless they opt into one. The target is
+    asserted only inside a sweep window and restored in that window's
+    ``finally``. It deliberately owns no CamillaDSP client.
     """
 
     def __init__(
@@ -143,10 +142,10 @@ class CrossoverLevelLease:
 
         self.session_id = "active-crossover"
         self.level_lock_store = LevelLockStore()
-        self._running: LevelMatchSession | None = None
-        self._last: LevelMatchOutcome | None = None
-        self._active_outcome: LevelMatchOutcome | None = None
-        self._outcomes: dict[str, LevelMatchOutcome] = {}
+        self._running: Any | None = None
+        self._last: Any | None = None
+        self._active_outcome: Any | None = None
+        self._outcomes: dict[str, Any] = {}
         self._level_result_lock = threading.RLock()
         self._targets: dict[str, dict[str, Any]] = {}
         self._restore_lock = asyncio.Lock()
