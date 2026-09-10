@@ -168,7 +168,7 @@ impl DrainStats {
 /// this is a small state machine: `Present` while the capture is open and
 /// reading, `Absent` while the device is unplugged/held-by-the-bridge with a
 /// bounded reopen retry counted in periods. No wall clock in the hot loop —
-/// the retry cadence is measured in render periods like the auto-trim latch.
+/// the retry cadence is measured in render periods.
 pub(super) enum DirectCapture {
     /// The gadget capture is open; the lane reads it every period.
     Present(PCM),

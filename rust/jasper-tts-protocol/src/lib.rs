@@ -279,7 +279,6 @@ pub enum TtsCommand {
     /// resolves to `S32_LE`; see [`TtsWireWidth`].
     AudioWide(Vec<i32>),
     SegmentEnd,
-    Flush,
     FlushSync,
     Close,
 }
@@ -339,7 +338,6 @@ pub fn command_name(command: &TtsCommand) -> &'static str {
         TtsCommand::Audio(_) => "audio",
         TtsCommand::AudioWide(_) => "audio32",
         TtsCommand::SegmentEnd => "segment_end",
-        TtsCommand::Flush => "flush",
         TtsCommand::FlushSync => "flush_sync",
         TtsCommand::Close => "close",
     }
@@ -362,7 +360,6 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
     }
     let line = line.trim_end_matches(['\r', '\n']);
     match line {
-        "FLUSH" => return Ok(Some(TtsCommand::Flush)),
         "FLUSH_SYNC" => return Ok(Some(TtsCommand::FlushSync)),
         "PROGRAM_DUCK_ON" => return Ok(Some(TtsCommand::ProgramDuckOn)),
         "PROGRAM_DUCK_OFF" => return Ok(Some(TtsCommand::ProgramDuckOff)),
@@ -926,25 +923,25 @@ pub struct TtsCommandSink {
 /// Read one admitted client until it closes, stalls mid-frame, breaks the
 /// protocol, or loses its consumer — the loop both TTS servers run.
 ///
-/// Only the flush verbs differ between them (the ack and its bookkeeping
-/// belong to whichever daemon owns the consumer), so `flush` performs one,
-/// returning false to close the connection. `on_command` is the daemon's own
-/// tally of accepted commands, kept where a daemon publishes one.
+/// Only `FLUSH_SYNC` differs between them (the ack and its bookkeeping belong
+/// to whichever daemon owns the consumer), so `flush` performs one, returning
+/// false to close the connection. `on_command` is the daemon's own tally of
+/// accepted commands, kept where a daemon publishes one.
 pub fn serve_client(
     sink: &TtsCommandSink,
     stream: UnixStream,
     frame_deadline: Duration,
     log: impl Fn(String),
     on_command: impl Fn(),
-    flush: impl Fn(&mut BufReader<UnixStream>, bool) -> bool,
+    flush: impl Fn(&mut BufReader<UnixStream>) -> bool,
 ) {
     let daemon = sink.daemon;
     let mut reader = BufReader::new(stream);
     loop {
         match read_command_deadlined(&mut reader, frame_deadline) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(verb @ (TtsCommand::Flush | TtsCommand::FlushSync))) => {
-                if !flush(&mut reader, verb == TtsCommand::FlushSync) {
+            Ok(Some(TtsCommand::FlushSync)) => {
+                if !flush(&mut reader) {
                     return;
                 }
             }
@@ -981,7 +978,7 @@ pub fn serve_client(
 ///
 /// AUDIO that finds the queue full is DROPPED and counted — late speech is
 /// worse than lost speech, and a reader thread parked on a send cannot read
-/// the FLUSH that ends the turn. Every other verb waits instead: losing a
+/// the `FLUSH_SYNC` that ends the turn. Every other verb waits instead: losing a
 /// `SEGMENT_END` or a `PROGRAM_DUCK_OFF` corrupts consumer state that no
 /// later command repairs. Only the hand-off rule lives here; the queue's
 /// capacity and any pending-frame budget stay with the daemon that owns the
@@ -1397,7 +1394,7 @@ mod tests {
         for command in [
             TtsCommand::ProgramDuckOn,
             TtsCommand::SegmentEnd,
-            TtsCommand::Flush,
+            TtsCommand::FlushSync,
             TtsCommand::GainDb(-12.0),
         ] {
             assert!(!command.is_audio(), "{command:?} must not read as audio");
@@ -1489,13 +1486,13 @@ mod tests {
         let mut reader = BufReader::new(server);
         let writer = thread::spawn(move || {
             thread::sleep(TEST_DEADLINE * 3);
-            (&client).write_all(b"FLUSH\n").unwrap();
+            (&client).write_all(b"FLUSH_SYNC\n").unwrap();
             client
         });
 
         let command = read_command_deadlined(&mut reader, TEST_DEADLINE).unwrap();
 
-        assert_eq!(command, Some(TtsCommand::Flush));
+        assert_eq!(command, Some(TtsCommand::FlushSync));
         drop(writer.join().unwrap());
     }
 
@@ -1565,7 +1562,7 @@ mod tests {
                 Duration::from_millis(20),
                 |_| {},
                 || {},
-                |_, _| true,
+                |_| true,
             );
         });
 
@@ -1653,7 +1650,7 @@ mod tests {
     /// The hand-off rule both daemons share: a full queue SHEDS audio at
     /// either wire width, counts the command and its frames together, and
     /// leaves the connection alive. Blocking here would stall the reader
-    /// thread that has to read the FLUSH ending the turn.
+    /// thread that has to read the `FLUSH_SYNC` ending the turn.
     #[test]
     fn a_full_queue_sheds_audio_and_counts_it() {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);

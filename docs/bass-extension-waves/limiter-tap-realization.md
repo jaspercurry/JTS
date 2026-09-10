@@ -284,7 +284,7 @@ per-lane mute: other lanes legitimately remain `muted:false` and MUST NOT be
 required muted.
 
 (ii) **Lane state.** The measurement lane reports `muted:false`, no
-`resampler` block present (or `resampler.armed:false`), `trim.pending:false`,
+`resampler` block present (or `resampler.armed:false`),
 and its `xrun_count` / `catchup_resync_frames` / `catchup_events` unchanged
 between the pass-start and pass-end reads.
 
@@ -619,7 +619,7 @@ supervised bench session remains the only path to an accepted bundle.
   insufficient lead-in and lead-out including the Conv-impulse-length case.
 - R6a ingress transparency: isolation (mux STATUS `test_source`/
   `active_source`/`test_owner`), lane state (`muted`, `resampler.armed`,
-  `trim.pending`, `xrun_count`/`catchup_resync_frames`/`catchup_events`
+  `xrun_count`/`catchup_resync_frames`/`catchup_events`
   unchanged), no foreign audio at the mix (fan-in STATUS
   `tts.program_duck_active`/`tts.pending_frames` at start and end,
   `tts.flushed_frames`/`tts.dropped_audio_frames` unchanged), and
@@ -963,7 +963,7 @@ the plan table becomes the sole status surface.
   replaced entirely: isolation is mux's selected-input gate
   (`_measurement_gate_held` on `test_source`/`active_source`/`test_owner`),
   not per-lane mutes; four proof elements (isolation; lane state incl.
-  `resampler.armed`/`trim.pending`/xrun-and-catchup counters; no-duck via
+  `resampler.armed`/xrun-and-catchup counters; no-duck via
   `program_duck_active` plus the held `MEASURE_PAUSE` lease; S16
   bit-width/geometry); no assertable per-lane gain (fan-in exposes none).
   R10 replaced entirely: cross-check gated on the owner-channel index being

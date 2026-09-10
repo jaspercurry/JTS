@@ -209,13 +209,6 @@ pub struct Config {
     /// [`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`] clamped into that range. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
-    /// DEFAULT-OFF one-shot AUTO-TRIM. When `true`, the mixer schedules ONE
-    /// `TRIM` per armed resampler lane a couple of seconds after that lane goes
-    /// active, dropping the accumulated standing head-start (the cursor-relative
-    /// fill excess above the held target). Manual `TRIM` over the control socket
-    /// works regardless of this flag. Env: `JASPER_FANIN_AUTO_TRIM` (only the
-    /// literal `enabled` arms it).
-    pub auto_trim_enabled: bool,
 
     /// DEFAULT-OFF USB DIRECT capture. When `true`, the lane labelled
     /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
@@ -520,8 +513,6 @@ impl Config {
                 cushion_decay_ceiling,
             );
         }
-        let auto_trim_enabled = env_enabled("JASPER_FANIN_AUTO_TRIM");
-
         let usb_direct_enabled = env_enabled("JASPER_FANIN_USB_DIRECT");
         let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
         // Range 32..=1024: below 32 the period IRQ storms the mixer thread, above
@@ -753,7 +744,6 @@ impl Config {
             input_resampler_ring_frames,
             input_resampler_cushion_decay_enabled,
             input_resampler_cushion_decay_floor_frames,
-            auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
             usb_direct_period_frames,
@@ -964,7 +954,6 @@ mod tests {
                     cfg.input_resampler_cushion_decay_floor_frames,
                     DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
                 );
-                assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
                 assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
                 assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
             },
@@ -1056,25 +1045,6 @@ mod tests {
                 "a non-numeric period_frames must still fail loud, not fall back"
             );
         });
-    }
-
-    #[test]
-    fn auto_trim_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(cfg.auto_trim_enabled, "{raw:?} should arm auto-trim");
-            });
-        }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.auto_trim_enabled,
-                    "{raw:?} must NOT arm auto-trim (only `enabled` does)"
-                );
-            });
-        }
     }
 
     #[test]

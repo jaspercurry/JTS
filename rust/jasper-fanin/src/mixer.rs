@@ -339,119 +339,7 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
     pcm.status().ok().map(|s| s.get_state())
 }
 
-/// Delay, in whole seconds, from a lane's idle→active transition to its
-/// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
-/// standing fill before the trim drops it — trimming at t=0 (before the fill
-/// has accumulated) would be a no-op. Converted to a `frames_read` budget at
-/// the live sample rate (`sample_rate × seconds`) so the wall-clock delay is
-/// stable across period geometries. Only consulted when
-/// `JASPER_FANIN_AUTO_TRIM=enabled`.
-const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
-
 const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
-
-/// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
-/// thread — which OWNS the `LaneResampler` and performs the actual ring trim —
-/// and the state-server thread, which only requests trims and reads the
-/// counters for STATUS. The control endpoint cannot touch the mixer-owned
-/// resampler directly, so it sets `pending` and the work loop does the trim at
-/// its next period boundary.
-#[derive(Debug)]
-pub struct TrimControl {
-    /// Set by a `TRIM` control command; consumed (cleared) by the work loop at
-    /// the next period boundary. Idempotent — a second `TRIM` before the loop
-    /// consumed the first just re-sets the same flag (one trim results).
-    pub pending: AtomicBool,
-    /// Set by a `DECAY_SNAP` control command; consumed by the work loop the same
-    /// way. The ONLY lever that opens a cushion-refill window on demand — a
-    /// still-locked snap-back otherwise needs a real ladder demotion, so the
-    /// hold this repo ships (ADR-0214) is unprovable on hardware without it.
-    pub decay_snap_pending: AtomicBool,
-    /// Cumulative TRIM operations that actually dropped ≥1 frame on this lane.
-    pub trims: AtomicU64,
-    /// Cumulative frames dropped by TRIM from this lane's resampler ring. Paired
-    /// with `trims` so STATUS shows both how often and how much.
-    pub trimmed_frames: AtomicU64,
-    /// AUTO-TRIM one-shot latch: `true` once the auto-trim has fired for the
-    /// current active session, so it fires exactly once per idle→active→…→idle
-    /// cycle. Re-armed when the lane goes idle. Only used when auto-trim is on.
-    pub auto_fired: AtomicBool,
-}
-
-impl TrimControl {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            pending: AtomicBool::new(false),
-            decay_snap_pending: AtomicBool::new(false),
-            trims: AtomicU64::new(0),
-            trimmed_frames: AtomicU64::new(0),
-            auto_fired: AtomicBool::new(false),
-        })
-    }
-
-    /// Construct a `TrimControl` seeded with explicit counter values, for the
-    /// state-server STATUS/command tests. Not compiled into the daemon.
-    #[cfg(test)]
-    pub fn test_fixture(trims: u64, trimmed_frames: u64, pending: bool) -> Self {
-        Self {
-            pending: AtomicBool::new(pending),
-            decay_snap_pending: AtomicBool::new(false),
-            trims: AtomicU64::new(trims),
-            trimmed_frames: AtomicU64::new(trimmed_frames),
-            auto_fired: AtomicBool::new(false),
-        }
-    }
-}
-
-/// The outcome of the pure AUTO-TRIM latch update for one lane in one period.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoTrimDecision {
-    /// The lane's updated latch state to store back.
-    next: AutoTrimLaneState,
-    /// `true` iff this lane's one-shot auto-trim should fire THIS period.
-    fire: bool,
-}
-
-/// Pure AUTO-TRIM latch update for one lane. Given the lane's cumulative
-/// `frames_read` now, its previous latch `state`, and the post-activation
-/// `delay_frames`, decide whether the one-shot trim fires and produce the next
-/// latch state. No ALSA, no clock, no atomics — unit-testable on any host.
-///
-/// This reports `fire` on EVERY period past the delay; ONE-SHOT is the caller's
-/// `TrimControl::auto_fired` latch, which encodes "already fired this session"
-/// as an atomic this pure function cannot see.
-fn auto_trim_decision(
-    frames_read: u64,
-    state: AutoTrimLaneState,
-    delay_frames: u64,
-) -> AutoTrimDecision {
-    let active_this_period = frames_read > state.last_frames_read;
-    let mut next = AutoTrimLaneState {
-        last_frames_read: frames_read,
-        active_since: state.active_since,
-    };
-    if active_this_period {
-        match state.active_since {
-            None => {
-                // idle→active: arm the delay from here; never fire on the
-                // activation period itself (the standing fill has not
-                // accumulated yet).
-                next.active_since = Some(frames_read);
-                AutoTrimDecision { next, fire: false }
-            }
-            Some(since) => {
-                let elapsed = frames_read.saturating_sub(since);
-                let fire = elapsed >= delay_frames;
-                AutoTrimDecision { next, fire }
-            }
-        }
-    } else {
-        // No read this period. If the lane was active, it just went idle —
-        // re-arm for the next activation. An already-idle lane stays idle.
-        next.active_since = None;
-        AutoTrimDecision { next, fire: false }
-    }
-}
 
 /// How far SHORT of one nominal period the pacer aims, in percent — i.e. how
 /// far fan-in may RUN AHEAD of real time while nothing downstream blocks.
@@ -671,21 +559,6 @@ pub struct Mixer {
     /// Ring A's shared counters and attached-header echo, cloned for the STATUS
     /// endpoint.
     pub ring_observability: RingObservability,
-    /// DEFAULT-OFF one-shot AUTO-TRIM (`JASPER_FANIN_AUTO_TRIM=enabled`). When
-    /// set, the work loop schedules ONE trim per lane ~`AUTO_TRIM_DELAY_SECONDS`
-    /// after that lane transitions idle→active, latched via
-    /// `TrimControl::auto_fired`. Manual `TRIM` works regardless of this flag.
-    auto_trim_enabled: bool,
-    /// Frames-active gate for the AUTO-TRIM delay: a lane must have read this
-    /// many real frames since going active before its one-shot auto-trim fires
-    /// (`AUTO_TRIM_DELAY_SECONDS` worth at the live sample rate). Derived once at
-    /// construction so the work loop compares against a plain integer.
-    auto_trim_delay_frames: u64,
-    /// Per-lane AUTO-TRIM latch state, indexed parallel to `inputs`. Only
-    /// maintained when `auto_trim_enabled`. Uses cumulative `frames_read` deltas
-    /// (no wall clock in the hot loop) to detect idle↔active transitions and to
-    /// measure the post-activation delay.
-    auto_trim_lane_state: Vec<AutoTrimLaneState>,
     /// The impulse tap over the USB DIRECT capture ingress. Runs inline in
     /// `read_direct_and_render`, before `push_input`, over its own S16 view of
     /// the read (the marker detector is an S16 contract; the audio path is not
@@ -700,20 +573,6 @@ pub struct Mixer {
     host_clock_ladder_l0: Arc<AtomicBool>,
     usb_connection_epoch: Arc<AtomicU64>,
     host_clock_timing_failed: Arc<AtomicBool>,
-}
-
-/// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
-/// seen last period (to detect this-period activity) and the value at the most
-/// recent idle→active transition (to measure the post-activation delay).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct AutoTrimLaneState {
-    /// `frames_read` observed at the previous `maybe_trim` call. The lane read
-    /// audio this period iff the current value exceeds this.
-    last_frames_read: u64,
-    /// `frames_read` at the lane's most recent idle→active transition. The
-    /// one-shot trim fires once `frames_read - active_since >= delay_frames`.
-    /// `None` while the lane is idle (nothing active to delay from).
-    active_since: Option<u64>,
 }
 
 /// The live SPSC ring counters the mixer step updates each period (from the
@@ -1157,10 +1016,6 @@ pub struct Input {
     /// this lane is rate-reconciled to the DAC clock (drop-free) instead of
     /// catch-up-drained.
     resampler: Option<LaneResampler>,
-    /// Per-lane TRIM control + counters, shared with the state-server thread.
-    /// The control endpoint sets `pending`; the work loop trims the resampler
-    /// ring at the next period boundary (see `maybe_trim` / `trim_input`).
-    trim: Arc<TrimControl>,
     /// Per-lane MIX MUTE, shared with the state-server thread. The control
     /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
     /// the SUM stage (`lane_mix_contributes`) and takes this lane's contribution
@@ -1321,15 +1176,6 @@ impl Mixer {
             stall: RingStallTracker::new(),
         };
 
-        let input_count = inputs.len();
-        // AUTO-TRIM delay in frames: `AUTO_TRIM_DELAY_SECONDS` at the live rate.
-        let auto_trim_delay_frames = (config.sample_rate as u64) * AUTO_TRIM_DELAY_SECONDS;
-        if config.auto_trim_enabled {
-            info!(
-                "event=fanin.auto_trim.armed delay_seconds={} delay_frames={}",
-                AUTO_TRIM_DELAY_SECONDS, auto_trim_delay_frames,
-            );
-        }
         if config.usb_direct_enabled {
             info!(
                 "event=fanin.usb_direct.armed lane={} device={} (bridge hop + aloop cable removed on this lane)",
@@ -1368,9 +1214,6 @@ impl Mixer {
                 config.sample_rate,
             ),
             ring_observability,
-            auto_trim_enabled: config.auto_trim_enabled,
-            auto_trim_delay_frames,
-            auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
             direct_tap,
             direct_tap_receiver: Some(tap_receiver),
             // Init to the inert state (not-l0, 0 ppm) so decay never leaves the
@@ -1399,10 +1242,7 @@ impl Mixer {
     /// holds only these `Arc` atomics; it never touches the mixer.
     ///
     /// The signals ride atomics the mixer already publishes for STATUS, so this
-    /// adds no hot-path work. `input_frames` is passed RAW: the host-clock
-    /// adapter must NOT trim-compensate it — a `trim_ring` moves only the read
-    /// cursor, so the `capture − playback` divergence the ladder differences is
-    /// already trim-invariant.
+    /// adds no hot-path work.
     pub fn host_clock_signals(&self) -> Option<crate::host_clock::HostClockSignals> {
         let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
         let resampler = direct.resampler_observability()?;
@@ -1522,10 +1362,7 @@ impl Mixer {
             }
         }
 
-        // Service TRIM at the period boundary, BEFORE the read loop, so the
-        // render below sees the trimmed ring.
         let period_frames = self.period_frames as usize;
-        self.maybe_trim();
 
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
         let connection_epoch = self.usb_connection_epoch.load(Ordering::Relaxed);
@@ -1587,12 +1424,6 @@ impl Mixer {
             // held target is a property of the lane's clock reconciliation, not
             // of which source is passed to the sum.
             if let Some(r) = input.resampler.as_mut() {
-                // The DECAY_SNAP lever, consumed on the thread that OWNS the
-                // resampler (the control thread cannot touch it), before the
-                // tick so the window is open by the time the gauges publish.
-                if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
-                    r.force_decay_snap_back();
-                }
                 r.tick_decay(decay_l0);
             }
             // Selection AND mute gate, applied at the SUM only: the per-lane
@@ -1671,63 +1502,6 @@ impl Mixer {
         self.frames_written
             .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())
-    }
-
-    /// Service TRIM at the period boundary, before the render loop. Two
-    /// triggers, both funnelling through the single `trim_input` path: a
-    /// control-endpoint `TRIM` that set the lane's `pending` flag, and the
-    /// one-shot AUTO latch ~`AUTO_TRIM_DELAY_SECONDS` after a lane goes active.
-    ///
-    /// The common no-request period is one `pending` load per lane (plus, when
-    /// auto-trim is enabled, one pure latch update) and nothing else.
-    fn maybe_trim(&mut self) {
-        for (idx, input) in self.inputs.iter_mut().enumerate() {
-            // `Acquire` pairs with the control thread's `Release` store so the
-            // request is observed and handled exactly once even if two `TRIM`s
-            // raced in. The counters stay Relaxed — staleness across the STATUS
-            // read is fine, as for every other fan-in counter.
-            let manual = input.trim.pending.swap(false, Ordering::Acquire);
-            if manual {
-                trim_input(input);
-                // A manual trim also satisfies this session's auto-trim latch —
-                // no point double-trimming a lane the operator just trimmed.
-                if self.auto_trim_enabled {
-                    input.trim.auto_fired.store(true, Ordering::Relaxed);
-                }
-                // Fall through: the auto latch below still advances its
-                // frames_read bookkeeping so a later idle→active re-arms.
-            }
-
-            if !self.auto_trim_enabled {
-                continue;
-            }
-
-            let frames_read = input.frames_read.load(Ordering::Relaxed);
-            let decision = auto_trim_decision(
-                frames_read,
-                self.auto_trim_lane_state[idx],
-                self.auto_trim_delay_frames,
-            );
-            self.auto_trim_lane_state[idx] = decision.next;
-
-            // Re-arm the one-shot guard when the lane returns to idle
-            // (`active_since == None` after the update) so the next activation
-            // can fire again.
-            if decision.next.active_since.is_none() {
-                input.trim.auto_fired.store(false, Ordering::Relaxed);
-                continue;
-            }
-
-            // Fire exactly once per active session.
-            if decision.fire && !input.trim.auto_fired.swap(true, Ordering::Relaxed) {
-                let dropped = trim_input(input);
-                info!(
-                    "event=fanin.auto_trim.fired label={} dropped_frames={} \
-                     delay_frames={}",
-                    input.label, dropped, self.auto_trim_delay_frames,
-                );
-            }
-        }
     }
 }
 
@@ -1907,12 +1681,6 @@ impl Input {
             (None, Some(_)) => LaneSource::Lane,
             (None, None) => LaneSource::Disabled,
         }
-    }
-
-    /// The lane's shared TRIM control + counters, cloned for the state-server
-    /// thread, which may set `pending` but never touches the resampler itself.
-    pub fn trim_control(&self) -> Arc<TrimControl> {
-        Arc::clone(&self.trim)
     }
 
     /// The lane's shared MIX-MUTE flag, cloned for the state-server thread. The
@@ -2226,55 +1994,6 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
     }
 }
 
-/// Perform ONE lock-preserving TRIM on `input`: drop the lane's standing
-/// latency down to the resampler's held target by discarding the OLDEST
-/// buffered input, keeping the newest and keeping lock. Returns the number of
-/// frames dropped (0 when the lane has no armed resampler, is unlocked, or is
-/// already at/below its held target — never panics, never blocks, never does
-/// ALSA I/O).
-///
-/// The standing head-start does NOT live in the ALSA readable backlog on an
-/// armed lane: `drain_direct_capture` already drains every frame ALSA reports
-/// ready each period, so the kernel ring is held shallow by design. The
-/// reservoir is the resampler's CURSOR-RELATIVE fill (`write_frame -
-/// next_input_frame`) — observed on-device at ~1919 frames against a 512-frame
-/// held target with lock churn. This trim drops THAT in place via
-/// [`LaneResampler::trim_ring`]: the cursor skips forward over the oldest
-/// buffered frames (one discontinuity at the skip) while lock and the DLL loop
-/// state survive, so it costs no unlock/reprime churn.
-///
-/// An UNARMED lane has no such userspace reservoir — its standing fill would be
-/// the ALSA backlog, which the catch-up drain already bounds — so TRIM there is
-/// a 0-frame no-op. It still clears its `pending` flag so the control command
-/// completes cleanly.
-///
-/// RT-safety: pure host-memory work inside the resampler (one fill compute, one
-/// cursor advance, one `drop_before`), no syscalls, no allocation, no blocking.
-/// Runs on the WORK thread, which OWNS the mixer's `LaneResampler` — never on
-/// the state-server thread.
-fn trim_input(input: &mut Input) -> u64 {
-    let dropped = match input.resampler.as_mut() {
-        Some(r) => r.trim_ring(),
-        // No resampler on this lane: no standing-fill reservoir to trim.
-        None => 0,
-    };
-    if dropped == 0 {
-        return 0;
-    }
-    let trims = input.trim.trims.fetch_add(1, Ordering::Relaxed) + 1;
-    let total = input
-        .trim
-        .trimmed_frames
-        .fetch_add(dropped, Ordering::Relaxed)
-        + dropped;
-    // Trims are operator/auto events, not per-period, so this needs no spam gate.
-    info!(
-        "event=fanin.trim label={} dropped_ring_frames={} trims={} total_trimmed_frames={}",
-        input.label, dropped, trims, total,
-    );
-    dropped
-}
-
 /// The mixer-thread side of the impulse tap. Holds the shared [`TapState`]
 /// (armed + detector knobs, read lock-free), the last-armed [`TapConfig`] (read
 /// only on an arm-generation change), the bounded channel to the
@@ -2486,7 +2205,7 @@ mod tests {
     use super::*;
 
     // Lane gates, drain and PCM error classification, the ring publish path,
-    // stall, pacing and trim. The pure mix math has its tests in dsp.rs and the
+    // stall and pacing. The pure mix math has its tests in dsp.rs and the
     // ALSA open helpers theirs in pcm_open.rs.
     //
     // The per-lane RMS level helper (`rms_dbfs_i16` / `RMS_DBFS_FLOOR`) is now
@@ -3406,9 +3125,6 @@ mod tests {
             program_duck_attack_step: duck_step_per_frame(20, 48_000),
             program_duck_release_step: duck_step_per_frame(200, 48_000),
             ring_observability,
-            auto_trim_enabled: false,
-            auto_trim_delay_frames: 0,
-            auto_trim_lane_state: Vec::new(),
             direct_tap: DirectTapHook::new(
                 Arc::new(TapState::default()),
                 Arc::new(Mutex::new(TapConfig::default())),
@@ -3851,74 +3567,6 @@ mod tests {
         assert!(ring.counters.stall_active.load(Ordering::Relaxed));
         assert!(ring.counters.last_stall_ms.load(Ordering::Relaxed) >= 1000);
         cleanup_ring(&path);
-    }
-
-    // ---- AUTO-TRIM: one-shot latch decision (pure) ------------------------
-
-    const TEST_DELAY: u64 = 96_000; // 2 s @ 48 kHz
-
-    #[test]
-    fn auto_trim_activation_period_never_fires() {
-        // idle (default) -> reads audio this period: arm the delay, never fire
-        // on the activation period itself (the standing fill hasn't accumulated).
-        let d = auto_trim_decision(128, AutoTrimLaneState::default(), TEST_DELAY);
-        assert!(!d.fire);
-        assert_eq!(d.next.active_since, Some(128));
-        assert_eq!(d.next.last_frames_read, 128);
-    }
-
-    #[test]
-    fn auto_trim_fires_once_delay_elapsed() {
-        // active_since=128; fires the first period frames_read - since >= delay.
-        let state = AutoTrimLaneState {
-            last_frames_read: 95_000,
-            active_since: Some(128),
-        };
-        let d = auto_trim_decision(96_128, state, TEST_DELAY); // 96000 elapsed
-        assert!(d.fire);
-        assert_eq!(d.next.active_since, Some(128));
-    }
-
-    #[test]
-    fn auto_trim_does_not_fire_before_delay() {
-        let state = AutoTrimLaneState {
-            last_frames_read: 1000,
-            active_since: Some(128),
-        };
-        let d = auto_trim_decision(5000, state, TEST_DELAY); // only ~4872 elapsed
-        assert!(!d.fire);
-    }
-
-    #[test]
-    fn auto_trim_rearms_on_idle() {
-        // Active then no read this period => active_since cleared (re-armed) so
-        // the NEXT idle->active session fires again.
-        let state = AutoTrimLaneState {
-            last_frames_read: 5000,
-            active_since: Some(128),
-        };
-        let d = auto_trim_decision(5000, state, TEST_DELAY); // no advance => idle
-        assert!(!d.fire);
-        assert_eq!(d.next.active_since, None);
-        let d2 = auto_trim_decision(5128, d.next, TEST_DELAY); // fresh activation
-        assert!(!d2.fire);
-        assert_eq!(d2.next.active_since, Some(5128));
-    }
-
-    #[test]
-    fn auto_trim_delay_measured_from_activation_not_stream_start() {
-        // A lane already deep into playback when auto-trim arms: active_since
-        // captures the CURRENT frames_read, so the delay is relative to
-        // activation, not to the absolute frame count.
-        let state = AutoTrimLaneState {
-            last_frames_read: 1_000_000,
-            active_since: None,
-        };
-        let d = auto_trim_decision(1_000_128, state, TEST_DELAY);
-        assert_eq!(d.next.active_since, Some(1_000_128));
-        assert!(!d.fire);
-        let d2 = auto_trim_decision(1_096_128, d.next, TEST_DELAY);
-        assert!(d2.fire);
     }
 
     // ---- U2 / #2223: the widened DIRECT lane, end of the route -------------

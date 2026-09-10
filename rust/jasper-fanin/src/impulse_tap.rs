@@ -22,6 +22,10 @@
 //! The retired bridge has no tap; this JSONL under
 //! `/run/jasper-fanin/` is the only ingress evidence for the direct route.
 //!
+//! This is a LAB TOOL for the route-latency harness (`TAP_ARM` / `TAP_DISARM`
+//! from `jasper/route_latency/tap_client.py`), not a production audio path:
+//! nothing in normal operation arms it.
+//!
 //! # Cost model (COAH resilience)
 //!
 //! - **Disarmed: one relaxed atomic load per period, nothing else.** The audio

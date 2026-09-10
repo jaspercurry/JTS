@@ -18,7 +18,7 @@
 //! (whose own header states the match is intentional "so Python can keep
 //! one playout implementation"): newline-framed text commands (GAIN /
 //! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
-//! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
+//! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `tts_playout.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer (command vocabulary +
@@ -257,7 +257,7 @@ fn handle_tts_client(
         || {
             metrics.requests.fetch_add(1, Ordering::Relaxed);
         },
-        |reader, sync| queue_flush(reader, flush_tx, &sink.epoch, metrics, sync),
+        |reader| queue_flush(reader, flush_tx, &sink.epoch, metrics),
     );
 }
 
@@ -266,33 +266,24 @@ fn queue_flush(
     flush_tx: &SyncSender<QueuedFlush>,
     epoch: &AtomicU64,
     metrics: &TtsMetrics,
-    sync: bool,
 ) -> bool {
     metrics.flush_requests.fetch_add(1, Ordering::Relaxed);
     let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    if sync {
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        if flush_tx
-            .send(QueuedFlush {
-                epoch: next_epoch,
-                ack: Some(ack_tx),
-            })
-            .is_err()
-        {
-            return false;
-        }
-        let response = match ack_rx.recv_timeout(FLUSH_ACK_TIMEOUT) {
-            Ok(summary) => summary.to_json_line(),
-            Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-        };
-        return reader.get_mut().write_all(response.as_bytes()).is_ok();
-    }
-    flush_tx
+    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+    if flush_tx
         .send(QueuedFlush {
             epoch: next_epoch,
-            ack: None,
+            ack: Some(ack_tx),
         })
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    let response = match ack_rx.recv_timeout(FLUSH_ACK_TIMEOUT) {
+        Ok(summary) => summary.to_json_line(),
+        Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
+    };
+    reader.get_mut().write_all(response.as_bytes()).is_ok()
 }
 
 // ---------------------------------------------------------------------
@@ -528,7 +519,7 @@ impl TtsBridge {
                 }
                 TtsCommand::SegmentEnd => self.close_open_segment(core),
                 // Handled in the client/flush threads; never enqueued.
-                TtsCommand::Flush | TtsCommand::FlushSync | TtsCommand::Close => {}
+                TtsCommand::FlushSync | TtsCommand::Close => {}
             }
         }
     }
