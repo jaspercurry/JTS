@@ -548,21 +548,37 @@ class RecordModelError(Protocol):
 
 
 @dataclass(frozen=True)
+class V2RecordPublishers:
+    """The durable-write seams, one field, discriminated by kind (ADR-0227 §12).
+
+    Each still funnels through
+    :class:`~.crossover_v2.record_store.BankedRecordStore`; this is
+    :class:`V2FlowSeams`'s single point of contact with it, replacing the five
+    top-level seams the ruling found still separate.
+    """
+
+    check: PublishCheck
+    candidate: PublishCandidate
+    # Cloud honesty bundle publisher, once per CLOSED group: ``(phase, result)``.
+    cloud: Callable[[str, Mapping[str, Any]], None] | None = None
+    # #1866: the banked level-frame disagreement, at most once per session and
+    # AFTER ``candidate``, so the artifact it cites already exists.
+    findings: Callable[[Mapping[str, Any]], None] | None = None
+    # #2291: publish the round receipt, returning its artifact fingerprint. A raise
+    # or a ``None`` is "no receipt written"; a receipt is never a gate.
+    round_receipt: Callable[[Mapping[str, Any]], str] | None = None
+
+
+@dataclass(frozen=True)
 class V2FlowSeams:
     """The session's injected I/O boundary (all side effects)."""
 
     analyze: AnalyzeCapture
-    publish_check: PublishCheck
-    publish_candidate: PublishCandidate
+    records: V2RecordPublishers
     apply_complete: ApplyGate
     apply_failed: ApplyFailureGate
     # Called once per ACCEPTED capture of every retained kind. Fail-soft.
     bank_take: BankTake = _no_bank_take
-    # Cloud honesty bundle publisher, once per CLOSED group: ``(phase, result)``.
-    publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
-    # #1866: the banked level-frame disagreement, at most once per session and
-    # AFTER ``publish_candidate``, so the artifact it cites already exists.
-    publish_findings: Callable[[Mapping[str, Any]], None] | None = None
     # Undo the applied correction; True when the previous profile was
     # restored. Absent, the session still classifies and refuses.
     rollback: Callable[[str], bool] | None = None
@@ -582,9 +598,6 @@ class V2FlowSeams:
     rollback_available: Callable[[], bool] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Absence answers "boosted".
     applied_boosts: Callable[[], bool] | None = None
-    # #2291: publish the round receipt, returning its artifact fingerprint. A raise
-    # or a ``None`` is "no receipt written"; a receipt is never a gate.
-    publish_round_receipt: Callable[[Mapping[str, Any]], str] | None = None
 
 
 V2ConductorSnapshot = _durable_state.V2ConductorSnapshot
@@ -2364,7 +2377,7 @@ class CrossoverV2Session:
             dict(analysis.ambient_report) if analysis.ambient_report else None
         )
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
-        self._seams.publish_check(gain_plan, analysis.ambient_report or {})
+        self._seams.records.check(gain_plan, analysis.ambient_report or {})
         return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
 
     def _consume_measure(
@@ -3184,7 +3197,7 @@ class CrossoverV2Session:
         """Fit and accountability-gate one candidate. Commits NOTHING.
 
         Three things make a candidate REAL and none happen here: ``self._candidate`` is
-        not written, ``publish_candidate`` does not fire, and the retained MEASURE
+        not written, ``records.candidate`` does not fire, and the retained MEASURE
         analysis is not released — so a build a retake moots can be dropped.
         """
         if candidate_sections is None and source_preset is None:
@@ -3325,7 +3338,7 @@ class CrossoverV2Session:
         Covers the three state writes, the proposal assembly and the two irreversible
         seam fires; it does NOT cover ``_measure_predicted_spec_report`` or the
         ``candidate_built`` disclosure. Every attribute write completes before
-        ``publish_candidate``. Assembly cannot fail this commit (#2392).
+        ``records.candidate``. Assembly cannot fail this commit (#2392).
         """
         from jasper.active_speaker.crossover_v2.contracts import InterventionProposal
         from jasper.active_speaker.crossover_v2.proposal import (
@@ -3366,7 +3379,7 @@ class CrossoverV2Session:
             if isinstance(analysis_evidence, Mapping)
             else ""
         )
-        self._seams.publish_candidate(candidate)
+        self._seams.records.candidate(candidate)
         self._publish_accountability_finding(accountability_finding)
 
     def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
@@ -3417,16 +3430,16 @@ class CrossoverV2Session:
     ) -> None:
         """Persist the banked accountability finding, or say why it was not.
 
-        Called AFTER ``publish_candidate``, inside :meth:`_commit_measure_candidate`,
+        Called AFTER ``records.candidate``, inside :meth:`_commit_measure_candidate`,
         which buys three things: once per session behind the ``_candidate`` guard (the
         finding store is write-once), never for a candidate that does not exist, and a
         citation that resolves. Fail-soft: plan §3.4 makes findings optional.
         """
 
-        if record is None or self._seams.publish_findings is None:
+        if record is None or self._seams.records.findings is None:
             return
         try:
-            self._seams.publish_findings(record)
+            self._seams.records.findings(record)
         except (OSError, RuntimeError, TypeError, ValueError):
             # ``…_publish_failed`` rather than ``…_finding_failed``: the
             # method persists a RECORD, and "finding" is the deleted
@@ -3704,9 +3717,9 @@ class CrossoverV2Session:
                 logger, "correction.crossover_v2_cloud_publish_skipped",
                 session_id=self.session_id, phase=phase,
             )
-        elif self._seams.publish_cloud is not None:
+        elif self._seams.records.cloud is not None:
             try:
-                self._seams.publish_cloud(
+                self._seams.records.cloud(
                     phase, self._group_cloud_result[phase]
                 )
             except (OSError, RuntimeError, TypeError, ValueError):
@@ -3838,7 +3851,7 @@ class CrossoverV2Session:
             rollback_available=self._seams.rollback_available,
             applied_boosts=self._seams.applied_boosts,
             entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
-            publish_round_receipt=self._seams.publish_round_receipt,
+            publish_round_receipt=self._seams.records.round_receipt,
         )
 
     def _applied_candidate_id(self) -> str:
@@ -4560,6 +4573,7 @@ __all__ = [
     "build_v2_verify_session_spec",
     "V2ConductorSnapshot",
     "V2FlowSeams",
+    "V2RecordPublishers",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
     "ATTEMPT_REASON_NO_FLOOR",
     "attempt_history_from_state",

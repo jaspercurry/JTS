@@ -117,6 +117,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CrossoverV2Session,
     V2FlowSeams,
+    V2RecordPublishers,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -369,8 +370,10 @@ def _conductor() -> CrossoverV2Session:
     """
     seams = V2FlowSeams(
         analyze=lambda *a, **k: None,
-        publish_check=lambda plan, ambient: None,
-        publish_candidate=lambda candidate: None,
+        records=V2RecordPublishers(
+            check=lambda plan, ambient: None,
+            candidate=lambda candidate: None,
+        ),
         apply_complete=lambda: False,
         apply_failed=lambda: "",
     )

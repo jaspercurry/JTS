@@ -52,6 +52,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     CrossoverV2Session,
     V2FlowSeams,
+    V2RecordPublishers,
     build_v2_cloud_index_phase_map,
     build_v2_verify_index_phase_map,
     resolve_plan_shape,
@@ -446,6 +447,13 @@ def bank_into(
     return bank_take
 
 
+def with_records(seams: V2FlowSeams, **overrides: Any) -> V2FlowSeams:
+    """``seams`` with one or more of the five ``records`` publishers swapped."""
+    return dataclasses.replace(
+        seams, records=dataclasses.replace(seams.records, **overrides),
+    )
+
+
 @dataclass
 class FakeSeams:
     """Recorder seams; per-phase analysis factories are swappable mid-test."""
@@ -479,8 +487,8 @@ class FakeSeams:
     rollback_available: Any = None
     # #1866: every level-frame finding the conductor banks, in order. Bound by
     # default (unlike ``rollback``) because "no findings seam" is the degraded
-    # case here, not the normal one — a test that wants it unbound passes
-    # ``publish_findings=None`` through ``dataclasses.replace``.
+    # case here, not the normal one — a test that wants it unbound replaces
+    # ``seams().records`` with ``findings=None``.
     banked_findings: list = field(default_factory=list)
     # #2291/#2318: does the APPLIED graph boost? Bound by default and FALSE,
     # because these fixtures grade rounds whose subject is something else and
@@ -528,8 +536,11 @@ class FakeSeams:
 
         return V2FlowSeams(
             analyze=analyze,
-            publish_check=lambda plan, ambient: self.published_checks.append(plan),
-            publish_candidate=self.published_candidates.append,
+            records=V2RecordPublishers(
+                check=lambda plan, ambient: self.published_checks.append(plan),
+                candidate=self.published_candidates.append,
+                findings=self.banked_findings.append,
+            ),
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
@@ -543,7 +554,6 @@ class FakeSeams:
             ),
             applied_boosts=lambda: self.applied_boosts,
             applied_profile=self.applied_profile,
-            publish_findings=self.banked_findings.append,
         )
 
 

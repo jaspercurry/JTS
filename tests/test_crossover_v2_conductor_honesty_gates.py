@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import math
 import types
@@ -77,6 +76,7 @@ from tests.crossover_v2_fixtures import (
     _walk,
     _walk_measure_cloud_to_accept,
     _walk_measure_cloud_to_close,
+    with_records,
 )
 
 
@@ -463,10 +463,10 @@ def test_check_with_no_ambient_evidence_refuses_before_publishing_check_json():
     def _must_not_publish(plan, ambient):
         raise AssertionError(
             "check.json was published for a CHECK the conductor refuses: "
-            "the snr_floor gate must sit ABOVE publish_check"
+            "the snr_floor gate must sit ABOVE records.check"
         )
 
-    c._seams = dataclasses.replace(c._seams, publish_check=_must_not_publish)
+    c._seams = with_records(c._seams, check=_must_not_publish)
 
     verdict = _run_phase(c, 1, 1)
     assert verdict["code"] == "snr_floor"
@@ -1344,7 +1344,7 @@ def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(ca
         raise RuntimeError("synthetic publish-seam failure")
 
     c = _cloud_conductor(fakes)
-    c._seams = replace(c._seams, publish_candidate=_boom)
+    c._seams = with_records(c._seams, candidate=_boom)
     attempt = _walk(c, (1, 2), 1)
     attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
 
@@ -1401,7 +1401,7 @@ def test_a_cloud_pipeline_exception_never_costs_the_group_its_accept(monkeypatch
     """S4 review finding (2026-07-26): the honest-instrument pipeline is
     diagnostic/disclosure machinery layered on TOP of an ALREADY-DECIDED
     accept — a bug in ``assemble_cloud_group_result`` (or the
-    ``publish_cloud`` seam) must never flip that decision.
+    ``records.cloud`` seam) must never flip that decision.
     ``_close_cloud_group``'s own wrap around ``_run_cloud_pipeline`` is the
     structural guarantee; this proves it holds even for a raise OUTSIDE
     ``assemble_cloud_group_result``'s own try/except (a genuinely unexpected

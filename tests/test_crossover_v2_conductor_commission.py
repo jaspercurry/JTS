@@ -107,6 +107,7 @@ from tests.crossover_v2_fixtures import (
     _verify_analysis,
     _walk,
     _walk_measure_cloud_to_close,
+    with_records,
 )
 
 
@@ -628,11 +629,9 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
-        seams=replace(
+        seams=with_records(
             fakes.seams(),
-            publish_cloud=lambda phase, result: published.append(
-                (phase, dict(result))
-            ),
+            cloud=lambda phase, result: published.append((phase, dict(result))),
         ),
         driver_spacing_m=0.15,
         index_phase_map=CLOUD_MAP,
@@ -756,7 +755,7 @@ def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
         if calls["n"] == 1:
             raise OSError("synthetic full disk")
 
-    c._seams = replace(c._seams, publish_cloud=_flaky_publish)
+    c._seams = with_records(c._seams, cloud=_flaky_publish)
 
     # First close's publish attempt fails — fail-soft (the capture is still
     # accepted), and NOT marked published.

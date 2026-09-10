@@ -711,11 +711,17 @@ def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
 
     conductor._seams = dataclasses.replace(
         bound,
+        records=dataclasses.replace(
+            bound.records,
+            round_receipt=_recorded(
+                "publish_round_receipt", bound.records.round_receipt,
+            ),
+        ),
         **{
             name: _recorded(name, getattr(bound, name))
             for name in (
                 "rollback", "rollback_available", "applied_boosts",
-                "entry_graph_fingerprint", "publish_round_receipt",
+                "entry_graph_fingerprint",
             )
         },
     )
@@ -1144,6 +1150,8 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     the host actually binds, so a future caller that grades twice or hands the
     seam a re-serialized copy fails here.
     """
+    from tests.crossover_v2_fixtures import with_records
+
     written: list[dict[str, Any]] = []
     real_publish = None
 
@@ -1152,14 +1160,14 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
-    real_publish = _flow_seams(conductor).publish_round_receipt
+    real_publish = _flow_seams(conductor).records.round_receipt
 
     def _recording_publish(receipt: dict[str, Any]) -> str:
         written.append(dict(receipt))
         return real_publish(receipt)
 
-    conductor._seams = dataclasses.replace(
-        _flow_seams(conductor), publish_round_receipt=_recording_publish,
+    conductor._seams = with_records(
+        _flow_seams(conductor), round_receipt=_recording_publish,
     )
 
     _consume_verify(conductor, _post_apply_analysis(conductor))
@@ -1193,12 +1201,12 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
+    from tests.crossover_v2_fixtures import with_records
+
     def _explode(_receipt):
         raise OSError("no space left on device")
 
-    conductor._seams = dataclasses.replace(
-        _flow_seams(conductor), publish_round_receipt=_explode,
-    )
+    conductor._seams = with_records(_flow_seams(conductor), round_receipt=_explode)
 
     with caplog.at_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow"):
         verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
