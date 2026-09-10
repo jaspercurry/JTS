@@ -1201,125 +1201,14 @@ startup available until conservative rollback. Non-baseline flat/
 program-pipe and guarded/all-muted classes keep their independent
 proof, but are never runtime-armed and cannot complete the transaction.
 
-### 8.6 Apply / bypass / fallback
+### 8.6 Apply / bypass / fallback (retired under ADR-0259 §3/§5)
 
-Profile accept, replacement, and bypass recompose only from
-`recompose_applied_baseline_yaml`'s immutable applied snapshot plus
-the currently persisted program-layer overlays. They never call
-mutable-candidate `apply_baseline_profile` and never consume current
-design drafts, crossover previews, or measurement stores.
-`baseline_candidate_fingerprint` remains the bass-independent Layer-A
-binding stored by the profile; adding/removing the bass overlay must
-not change it. The applied baseline JSON remains immutable
-recomposition/provenance: its compiled-candidate `config.path/sha256`
-is not current composite-graph authority. The canonical resolver locates
-that authority only through the explicit outputd statefile, and an
-ordinary baseline reapply still rebuilds its generated cache before
-validation.
-
-`apply_bass_extension(desired_profile)` is the only production commit
-owner for profile and graph; bypass delegates to it. Wave 4 constructs
-desired state and supplies the existing `measurement_window()`, but
-never saves profile bytes or loads a bass graph itself.
-
-That owner refuses apply, replacement, and bypass before any mutation
-while a bonded program-bake or driver-domain carrier is active, leaving
-the profile and every Camilla graph byte-for-byte unchanged. Bond entry
-may compile and re-prove an already-accepted/current sealed profile's
-natural pair on the existing local driver-domain graph, but Wave 3 does
-not grow a two-Camilla transaction or overwrite that carrier with a
-solo recompose. Profile changes require leaving the bond first.
-
-Inside that audio-isolated window and the existing DSP writer lock,
-first recover any older intent. Reload and prove the currently
-persisted predecessor's canonical natural graph, deliberately
-discarding any ephemeral Wave 5 target; no profile or graph semantics
-change in this pre-intent step, and interruption converges safe. Snapshot that
-normalized graph, exact profile bytes/absence, the current config
-path's exact readable bytes/mode/fingerprint, and the existing outputd
-statefile's `config_path`. Refuse before mutation if the live path and
-durable selector differ or if that graph file is outside the correction
-service's existing writable paths or cannot be durably restored.
-Recompose and prove the desired graph. Before intent publication,
-atomically rewrite the same
-predecessor bytes/mode with `durable=True`, fsync the parent, and
-re-read/re-prove them; interruption leaves old-or-identical safe bytes.
-Recompose and prove the desired natural graph in memory, use an
-operation-unique unreferenced scratch file under the existing Camilla
-config directory for the existing syntax preflight, fingerprint the
-exact desired bytes, and unlink the scratch. Only then
-atomically persist and directory-fsync one immutable intent containing
-both profile byte sets, the natural predecessor
-`ExactDspStateIdentity`, both predecessor/desired byte identities for
-the same selected graph path, the unchanged boot selector, and both
-normalized fingerprints. Intent existence always means rollback; there
-are no phases. A crash-left scratch file is not authority.
-
-Atomically replace that same selected path with the desired bytes using
-`durable=True`, fsync its parent, invoke guarded
-`CamillaController.reload()` without calling `set_config_file_path` or
-editing the outputd statefile, and prove boot selector + active path +
-active graph + on-disk bytes first. Publish and fsync the desired
-profile and its parent directory second; resolve and prove the complete
-persisted authority; clear/directory-fsync the intent last.
-Wave 4 transitions its session from review to accepted only after this
-returns. Any exception restores and re-proves **both** exact
-predecessors: durably restore the recorded graph-file bytes/mode and
-parent directory, guarded-reload/prove its unchanged boot selector,
-path, and active graph, then durably
-restore or remove the profile and prove the whole authority.
-Cancellation drains a shielded rollback before
-propagating. A process kill or power loss leaves the intent and only
-one of its two pre-proved natural graphs; recovery always restores the
-predecessor, never completes forward.
-
-The existing root `jasper-correction-web` process is the lifecycle and
-permission owner. Its current
-`_claim_crossover_state_owners()` hook synchronously attempts
-measurement-isolated recovery before `_systemd.notify_ready()`; every
-bass POST repeats the guard before mutation. No GET handler recovers,
-there is no recovery route/task/daemon, and the existing unit already
-has both required write paths. Failure to isolate or prove retains the
-intent, reports `apply_recovery_required`, and blocks forward bass POSTs while
-read-only/non-DSP correction routes and natural music remain available. The
-never-409 red Stop may retire session state but cannot clear the intent
-or start forward work. After
-a power cycle the intent may wait for the next socket activation, but
-startup/fallback accepts only the two exact natural fingerprints and
-Wave 5 stays no-arm until the owner repairs it.
-
-Global mutation admission is the existing DSP writer lock carried
-task-locally for reentrant controller calls. The private lock path used
-by `apply_dsp_config` and all four `CamillaController` graph mutations
-(`set_config_file_path`, `set_active_config_raw`, `patch_config`,
-`reload`) enter
-the same canonical production path,
-`/var/lib/camilladsp/configs/.dsp_apply.lock`; test-path injection is
-allowed, but no production env/per-candidate lock is. A direct caller
-therefore cannot bypass it. Under a
-pending intent every ordinary graph mutation refuses; only this Wave 3
-commit/recovery owner carries explicit recovery permission. If another
-mutation acquired the lock first it completes before intent
-publication; if the intent was published first, the later mutation is
-refused. This prevents sound, startup, capture-entry, correction,
-commissioning, or multiroom graph changes from overtaking rollback
-without adding a daemon, service, or second lock.
-
-Ported/PR acceptance retains `status="accepted"` and its evidence but
-the same owner is predecessor-aware: sealed→deferred first loads and
-proves the ordinary no-block baseline, while an already no-block
-predecessor may skip the redundant DSP load. Bypass follows the same
-rule. Missing/stale/invalid/deferred profiles never arm the scheduler
-and keep ordinary applied-baseline behavior. Stable states are coherent
-by construction: accepted/current sealed has the natural pair, while
-deferred/bypassed/stale/missing has no block. Any failed state
-transition restores both predecessor authorities before returning.
-
-Wave 4 constructs the desired accepted profile in memory and hands it
-to this transaction; it never calls `save_bass_extension_profile`
-first. The transaction entry point owns predecessor-aware ported/PR
-publication too, so the commissioning backend has one commit boundary
-for every adapter and cannot strand a sealed block.
+`apply_bass_extension`, `bypass_bass_extension`, and
+`recover_pending_bass_extension_apply` — the dormant, never-production-called
+transaction this section used to describe in full — were deleted, deadness
+tests included, by commit `7ef2adbef` in the ADR-0259 retire wave. The
+engine's candidate apply is the production commit owner now. See ADR-0259 §5
+for the ruling and §3 for what else retired alongside it.
 
 ---
 
