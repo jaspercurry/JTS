@@ -1141,6 +1141,71 @@ async def abort_ramp(
     }
 
 
+async def remute_stepped_driver(
+    *,
+    load_config: PathLoader,
+    reason: str,
+    ramp_state_path_override: str | Path | None = None,
+    commission_load_state_path: str | Path | None = None,
+    safe_playback_state_path: str | Path | None = None,
+    validate: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Re-mute a driver an audible step left un-muted. Idempotent, never raises.
+
+    The one seam every unplanned stop shares -- the CLI's signal handlers. A
+    call made once the commissioning load is no longer armed touches the
+    graph not at all, so two stops racing each other cannot re-apply the
+    anchor twice; a re-mute that fails is published as
+    ``result=remute_failed`` rather than raised, because a signal path has
+    nowhere to raise to.
+    """
+
+    try:
+        commission = load_commission_load_state(state_path=commission_load_state_path)
+        if commission.get("status") != "loaded":
+            return {"status": "already_remuted", "reason": reason, "rollback": None}
+        aborted = await abort_ramp(
+            load_config=load_config,
+            ramp_state_path_override=ramp_state_path_override,
+            commission_load_state_path=commission_load_state_path,
+            safe_playback_state_path=safe_playback_state_path,
+            validate=validate,
+        )
+    except Exception as exc:  # noqa: BLE001 - the caller may be a signal path.
+        log_event(
+            logger,
+            "active_speaker.stage5_ramp",
+            level=logging.ERROR,
+            result="remute_failed",
+            reason=reason,
+            error=type(exc).__name__,
+        )
+        return {
+            "status": "remute_failed",
+            "reason": reason,
+            "error": type(exc).__name__,
+            "rollback": None,
+        }
+
+    rollback = aborted.get("rollback") or {}
+    remuted = rollback.get("status") == "rolled_back"
+    log_event(
+        logger,
+        "active_speaker.stage5_ramp",
+        level=logging.INFO if remuted else logging.ERROR,
+        result="remuted" if remuted else "remute_failed",
+        reason=reason,
+        rollback=str(rollback.get("status")),
+    )
+    return {
+        "status": "remuted" if remuted else "remute_failed",
+        "reason": reason,
+        "rollback": rollback,
+        "ramp": aborted.get("ramp"),
+        "safe_playback": aborted.get("safe_playback"),
+    }
+
+
 # --- helpers -----------------------------------------------------------------
 
 

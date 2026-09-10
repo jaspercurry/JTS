@@ -1073,3 +1073,62 @@ def test_clear_pending_ramp_step_bare_keeps_group_and_ordering_memory(tmp_path):
     assert cleared["speaker_group_id"] == "left"
     assert cleared["confirmed_roles"] == ["woofer"]
     assert load_ramp_state(state_path=path)["confirmed_roles"] == ["woofer"]
+
+
+# --- re-mute a stepped driver (#2912 gap 2) -----------------------------
+
+
+def test_remute_stepped_driver_is_idempotent(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    def _remute():
+        return asyncio.run(
+            commission_ramp_mod.remute_stepped_driver(
+                load_config=cam.apply_running_config,
+                reason="test",
+                ramp_state_path_override=tmp_path / "ramp.json",
+                commission_load_state_path=state_path,
+                safe_playback_state_path=tmp_path / "safe.json",
+                validate=_valid_config,
+            )
+        )
+
+    first = _remute()
+    applied = list(cam.loaded_paths)
+    second = _remute()
+
+    assert first["status"] == "remuted"
+    assert first["rollback"]["status"] == "rolled_back"
+    assert second["status"] == "already_remuted"
+    assert second["rollback"] is None
+    assert cam.loaded_paths == applied  # the second stop touches no graph
+
+
+def test_remute_stepped_driver_publishes_a_failed_stop_instead_of_raising(
+    monkeypatch, tmp_path
+):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    async def _refusing_load(_path):
+        raise RuntimeError("CamillaDSP rejected the config")
+
+    out = asyncio.run(
+        commission_ramp_mod.remute_stepped_driver(
+            load_config=_refusing_load,
+            reason="test",
+            ramp_state_path_override=tmp_path / "ramp.json",
+            commission_load_state_path=state_path,
+            safe_playback_state_path=tmp_path / "safe.json",
+            validate=_valid_config,
+        )
+    )
+
+    assert out["status"] == "remute_failed"
+    assert out["rollback"]["status"] == "rollback_failed"
+    assert load_commission_load_state(state_path=state_path)["status"] != "rolled_back"
