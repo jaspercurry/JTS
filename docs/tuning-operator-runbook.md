@@ -300,6 +300,19 @@ Edit a layout to change the number of positions; counts follow that list.
 Optional pose `headline` and `detail` replace the derived screen text.
 Capture purpose controls playback and analysis; the mover only controls placement.
 
+`--program bass` uses the same cloud and quick positions, with the accepted
+Speaker and Room layers playing and extension off. `--candidates` runs each
+choice at a held position before asking for the next move. A repeated take
+does not add a position to the analysis count.
+
+For a focused batch at one held pose, `jasper-measure --specs <json>` accepts
+an ordered list of `MeasureSpec` objects. Use `sweep_band_hz`, `sweep_s`, and
+`level_ladder_dbfs` for the band, duration and stimulus levels; repeat a level
+to check variation. Declared driver limits still cap duration and level.
+The normal program retains a quiet prelude for noise analysis. Keep canonical
+volume fixed for demand tests; use separate `--volume-db` runs with a fixed
+stimulus for volume tests. Each invocation restores the prior playback state.
+
 These views do not authorize correction above the current ceiling.
 If the speaker's trusted floor exceeds that ceiling, the gap remains ungraded;
 use a longer valid gate or another suitable measurement to assess it.

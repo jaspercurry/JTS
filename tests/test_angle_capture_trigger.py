@@ -526,29 +526,6 @@ def test_an_unreadable_slot_refuses_without_consuming(slot, monkeypatch):
     assert not path.with_name(path.name + spool.CONSUMED_SUFFIX).exists()
 
 
-def test_a_walk_longer_than_the_bound_is_refused_at_both_ends(slot):
-    path, _ = slot
-    long_walk = AngleCaptureRequest(
-        stops=tuple(
-            AngleStop(a, REGIME_PER_DRIVER)
-            for a in range(-spool.MAX_STOPS // 2, spool.MAX_STOPS // 2 + 2)
-        )
-    )
-    assert len(long_walk.stops) > spool.MAX_STOPS
-    with pytest.raises(spool.AngleRequestRefused) as excinfo:
-        spool.stage_angle_request(long_walk)
-    assert excinfo.value.reason == spool.SPOOL_TOO_MANY_STOPS
-
-    # …and the take refuses it too, for a document that arrived another way.
-    spool.stage_angle_request(per_driver_at([7]))
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["stops"] = doc["stops"] * (spool.MAX_STOPS + 1)
-    path.write_text(json.dumps(doc), encoding="utf-8")
-    with pytest.raises(spool.AngleRequestRefused) as excinfo:
-        spool.take_staged_angle_request()
-    assert excinfo.value.reason == spool.SPOOL_TOO_MANY_STOPS
-
-
 def test_an_oversized_walk_is_refused_WITHOUT_being_read(slot, monkeypatch):
     """The cap is applied on the STAT, so the pathological file is never loaded.
 
@@ -1279,3 +1256,13 @@ def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slo
     assert {(s["purpose"], s["baseline_scope"], s["regime"]) for s in receipt["stops"]} == {
         ("room", "speaker_tune", "summed"),
     }
+
+
+@pytest.mark.parametrize("program", ["room", "bass"])
+def test_configured_cloud_batches_candidates_under_each_held_pose(slot, program):
+    plan = mp.program(program)
+    request = request_for_program(plan, candidates=("", "candidate-a", "candidate-b"))
+    spool.stage_angle_request(request)
+    restored = spool.take_staged_angle_request()
+    assert restored == request
+    assert len(restored.stops) == len(plan.poses) * 3

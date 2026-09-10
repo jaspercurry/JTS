@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import Any
 
 from .crossover_v2.record_index import played_graph_fingerprint
+from .crossover_v2.round_captures import doc_pose_key
 from .frequency_reference import band_limited_curve, share_run_reference
 from .frequency_view import (
     FrequencyRun,
@@ -87,12 +88,15 @@ def frequency_run_from_documents(
     phases: set[str] = set()
     graphs: set[str] = set()
     takes: set[str] = set()
+    poses: set[str] = set()
 
     for document_index, document in enumerate(documents):
         take_id = str(document.get("take_id") or document.get("id") or "")
         source_id = take_id or f"document_{document_index + 1}"
         if take_id:
             takes.add(take_id)
+        if document.get("position_deg") is not None or document.get("seat_offset_m") is not None:
+            poses.add(doc_pose_key(document))
         degrees = _whole_degrees(document.get("position_deg"))
         if degrees is not None:
             angles.add(degrees)
@@ -163,7 +167,7 @@ def frequency_run_from_documents(
         state=state,
         series=normalized,
         metadata={
-            "position_count": len(takes),
+            "position_count": len(poses), "take_count": len(takes),
             "angles_deg": sorted(angles),
             "phases": sorted(phases),
             "graph_fingerprints": sorted(graphs),

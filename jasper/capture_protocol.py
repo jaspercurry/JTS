@@ -24,15 +24,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-# Hard sanity ceiling on a capture plan's attempt budget (entries plus
-# retakes). ``CapturePlan.max_attempts`` validation
-# (``jasper.active_speaker.crossover_v2.sweep_spec``,
-# ``jasper.active_speaker.angle_capture``) enforces it at build time, so a
-# plan asking for more is refused before any tone plays. 32 covers the
-# worst-case cloud-plan shape with headroom to spare — see
-# ``jasper.active_speaker.crossover_v2.capture_plan``'s
-# ``MAX_CLOUD_MEASURE_POSITIONS`` for the derivation.
-MAX_CAPTURE_PLAN_ATTEMPTS = 32
+# Metadata/index budget; WAVs are stored per take. Supports 11 poses × 3 candidates × 3 levels.
+MAX_CAPTURE_PLAN_ATTEMPTS = 128
 
 # Sanity ceiling for a capture-session timeout budget — the longest a
 # session should reasonably run. Used as the upper clamp for

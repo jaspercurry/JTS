@@ -170,6 +170,7 @@ class MeasureSpec:
     inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
     sweep_band_hz: tuple[float, float] | tuple[()] = ()
+    sweep_s: float | None = None
     spl_ceiling_db_spl: float | None = None
     candidate_id: str = ""
     #: R-1's delay coordinate: which branch carries it, and how much. The pair
@@ -199,6 +200,11 @@ class MeasureSpec:
                 0 < self.sweep_band_hz[0] < self.sweep_band_hz[1] < 24_000
             ):
                 raise ValueError("sweep_band_hz must be two ascending values below Nyquist")
+        if self.sweep_s is not None:
+            if self.graph_scope == GRAPH_SCOPE_DRIVERS:
+                raise ValueError("sweep_s requires a summed graph_scope")
+            if isinstance(self.sweep_s, bool) or not math.isfinite(self.sweep_s) or self.sweep_s <= 0:
+                raise ValueError("sweep_s must be finite and positive")
         if self.spl_ceiling_db_spl is not None and (
             not math.isfinite(self.spl_ceiling_db_spl) or self.spl_ceiling_db_spl <= 0
         ):

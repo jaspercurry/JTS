@@ -2149,16 +2149,12 @@ def _take_staged_angle_walk(
         prompts, request.stops,
     ):
         if stop.regime in (REGIME_SUMMED, REGIME_BRANCHES):
-            through_tune = baseline_scope(stop.purpose) == "speaker_tune" and not stop.candidate_id
+            scope = candidate_scopes[stop.candidate_id] if stop.candidate_id else baseline_scope(stop.purpose)
             specs_by_index[index] = MeasureSpec(
-                kind=MEASURE_KIND_VERIFY if through_tune else MEASURE_KIND_CANDIDATE,
+                kind=MEASURE_KIND_VERIFY if not stop.candidate_id and scope != "base" else MEASURE_KIND_CANDIDATE,
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
                 pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
-                graph_scope=(
-                    "candidate_branches" if stop.regime == REGIME_BRANCHES
-                    else candidate_scopes[stop.candidate_id] if stop.candidate_id
-                    else "speaker_tune" if through_tune else "base"
-                ),
+                graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
             )
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")

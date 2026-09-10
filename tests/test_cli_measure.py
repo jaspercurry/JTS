@@ -104,9 +104,11 @@ def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
     spec = spec_from_args(_args(
         "--graph-scope", "speaker_tune",
         "--sweep-band-hz", "20", "20000",
+        "--sweep-s", "1.5",
         "--spl-ceiling-db-spl", "80",
     ))
     assert spec.sweep_band_hz == (20.0, 20_000.0)
+    assert spec.sweep_s == 1.5
     assert spec.spl_ceiling_db_spl == 80.0
 
 

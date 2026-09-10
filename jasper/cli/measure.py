@@ -332,6 +332,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             inverted_role=args.inverted_role,
             level_ladder_dbfs=tuple(args.level_dbfs),
             sweep_band_hz=tuple(args.sweep_band_hz),
+            sweep_s=args.sweep_s,
             spl_ceiling_db_spl=args.spl_ceiling_db_spl,
             candidate_id=args.candidate_id.strip(),
             delayed_role=args.delayed_role,
@@ -350,7 +351,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
 #: entry may omit.
 _PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
                    "delayed_role", "delay_us", "level_matched", "level_dbfs",
-                   "sweep_band_hz", "candidate_id")
+                   "sweep_band_hz", "sweep_s", "candidate_id")
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -539,7 +540,7 @@ def _bind_compose(
         if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         summed = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-        return summed.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
+        return summed.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak, sweep_s=spec.sweep_s)
 
     async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
@@ -1067,6 +1068,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="summed-sweep bounds in Hz; protected graph admission still applies",
     )
     parser.add_argument("--spl-ceiling-db-spl", type=float, default=None)
+    parser.add_argument("--sweep-s", type=float, help="summed sweep duration; still bounded by declared driver duration caps")
     parser.add_argument("--mic-serial", default=None)
     parser.add_argument(
         "--candidate-id",

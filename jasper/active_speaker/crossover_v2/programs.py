@@ -232,11 +232,12 @@ class SessionExcitation:
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
         )
 
-    def verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
+    def verify_program(self, *, extra_backoff_db: float = 0.0, sweep_s: float | None = None) -> ExcitationProgram:
         """The mono summed sweep, bounded by every driven role's cap and duration."""
         return self._summed_sweep(
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
             extra_backoff_db=extra_backoff_db,
+            sweep_s=sweep_s,
         )
 
     def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
@@ -247,7 +248,7 @@ class SessionExcitation:
         )
 
     def _summed_sweep(
-        self, *, courtesy_prelude: bool, extra_backoff_db: float,
+        self, *, courtesy_prelude: bool, extra_backoff_db: float, sweep_s: float | None = None,
     ) -> ExcitationProgram:
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
@@ -265,6 +266,7 @@ class SessionExcitation:
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain),
             courtesy_prelude=courtesy_prelude,
+            **({"sweep_s": sweep_s} if sweep_s is not None else {}),
         )
 
 
