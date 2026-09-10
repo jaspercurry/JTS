@@ -166,7 +166,7 @@ class MeasureSpec:
     polarity: str = POLARITY_NORMAL
     inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
-    sweep_band_hz: tuple[float, float] = ()
+    sweep_band_hz: tuple[float, float] | tuple[()] = ()
     spl_ceiling_db_spl: float | None = None
     candidate_id: str = ""
     #: R-1's delay coordinate: which branch carries it, and how much. The pair

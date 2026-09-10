@@ -205,7 +205,7 @@ class WiredStimulusCapture:
         )
         if self.spl_monitor is not None:
             answer = replace(answer, capture_integrity={
-                **answer.capture_integrity,
+                **(answer.capture_integrity or {}),
                 "spl": {
                     "weighting": "Z",
                     "max_window_db_spl": round(self.spl_monitor.max_window_db_spl, 2),
