@@ -15,11 +15,9 @@ def _topology():
 
 
 def _locked_outcome(*, original: float, locked: float):
-    from jasper.audio_measurement.ramp import RampState
-
     return SimpleNamespace(
         ramp=SimpleNamespace(
-            state=RampState.LOCKED,
+            state="locked",
             original_main_volume_db=original,
             locked_main_volume_db=locked,
             restored=True,
