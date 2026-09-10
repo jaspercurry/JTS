@@ -1382,20 +1382,52 @@ mod tests {
 
     #[test]
     fn host_probe_distinguishes_compliance_after_a_stalled_start() {
-        for (prefill, compliant, short_periods, offset, bursty, output_stall, retries) in [
-            (1024, true, 4, 50.0, false, false, 0),
-            (1500, false, 4, 50.0, false, false, 2),
-            (2560, true, 4, -250.0, false, false, 1),
-            (2560, true, 0, 250.0, false, false, 0),
-            (2560, true, 0, 50.0, false, false, 0),
-            (2560, false, 0, -250.0, false, false, 2),
-            (2560, false, 0, 250.0, false, false, 2),
-            (2560, true, 0, 0.0, true, false, 0),
-            (2560, true, 0, 50.0, false, true, 0),
+        // `first_low_max` (seconds): the AwaitLock settle gate now waits for
+        // the fill's own motion to genuinely stop (#4659's `fill_ready`, not
+        // the old lock-only gate), so a short_periods>0 row's lock — and so
+        // `first_low`, which cannot precede it (decay only ticks while
+        // `Ladder::L0Locked`) — moves with the deficit's real payoff time
+        // instead of a fixed ~2 s. Derived from `jasper-host-clock`'s own
+        // `RealLane` harness at this file's exact PERIOD/RATE/MAX_PPM
+        // geometry (same deficit = 128×short_periods frames, same crystal
+        // offset), plus this suite's existing ~13 s lock→first_low decay
+        // cushion (35 − 22, the unaffected short_periods=0 rows' bound minus
+        // their measured lock second): offset=50 locks at ~61 s (bound 90,
+        // comfortably inside the 90 s `paused` window below); offset=-250's
+        // smaller effective differential during recovery (250 ppm vs
+        // 550 ppm) locks at ~99 s (bound 150) — past the `paused` window's
+        // start, so that row's first attempt likely gets interrupted by the
+        // pause; because the underlying deficit is already resolved by
+        // then, a restarted attempt should relock quickly and still reach
+        // `ProbeResult::Pass`, but `resumed_at_low`/`decay.resumes()==1`
+        // assume decay reaches its floor BEFORE the pause and are UNVERIFIED
+        // for this one row — this crate needs `alsa`/Linux to run at all
+        // (macOS cannot), so this is desk-checked, not measured; flag for
+        // the first real run. short_periods=0 rows are unaffected (no
+        // deficit ⇒ unchanged ~22 s lock) and keep 35.
+        for (
+            prefill,
+            compliant,
+            short_periods,
+            offset,
+            bursty,
+            output_stall,
+            retries,
+            first_low_max,
+        ) in [
+            (1024, true, 4, 50.0, false, false, 0, 90),
+            (1500, false, 4, 50.0, false, false, 2, 0),
+            (2560, true, 4, -250.0, false, false, 1, 150),
+            (2560, true, 0, 250.0, false, false, 0, 35),
+            (2560, true, 0, 50.0, false, false, 0, 35),
+            (2560, false, 0, -250.0, false, false, 2, 0),
+            (2560, false, 0, 250.0, false, false, 2, 0),
+            (2560, true, 0, 0.0, true, false, 0, 35),
+            (2560, true, 0, 50.0, false, true, 0, 35),
             // #4659: a startup deficit (128 fewer frames in each of the
             // first two periods) must not let the recovery transient alias a
             // compliant response.
-            (2560, false, 2, 50.0, false, false, 2),
+            (2560, false, 2, 50.0, false, false, 2, 0),
         ] {
             let params = DecayParams {
                 enabled: true,
@@ -1517,7 +1549,7 @@ mod tests {
             assert_eq!(r.decay.backoffs(), 0);
             if compliant {
                 assert!(
-                    first_low.unwrap() < if short_periods > 0 { 40 } else { 35 },
+                    first_low.unwrap() < first_low_max,
                     "prefill={prefill} offset={offset} bursty={bursty} first_low={first_low:?}"
                 );
                 assert!(resumed_at_low);
