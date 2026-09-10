@@ -607,6 +607,7 @@ def _check_screen(analysis, *, honour_ambiguity: bool = True) -> str | None:
     return _dispatch.check_screens(_dispatch.CheckScreens(
         stimulus_located=_stimulus_locate_ok(analysis),
         anchor_ambiguous=analysis.anchor_ambiguous and honour_ambiguity,
+        delta_implausible=analysis.delta_implausible and honour_ambiguity,
         channel_map_ok=analysis.channel_map_ok,
         pilot_snr_ok=analysis.pilot_snr_ok,
         linearity_ok=analysis.linearity_ok,
@@ -796,6 +797,48 @@ def test_the_near_tie_guard_alone_turns_that_verdict_into_a_retake(monkeypatch):
     assert analysis.anchor_ambiguous is True
     assert analysis.channel_map_ok is False, "the guard must not repair the map"
     assert _check_screen(analysis) == "anchor_ambiguous"
+
+
+def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch):
+    """The deferred half of #2644 (#2647), in isolation from the near-tie guard.
+
+    Same incident, same mis-lock, but the near-tie guard is forced OFF
+    (``anchor_ambiguous=False``) so only the OTHER signal is on trial: the
+    captured pilot delta itself. +10 dB commanded against a captured delta
+    under -50 dB (`test_the_shipped_analyzer_called_this_capture_a_wiring_fault`
+    pins the exact numbers) is a gap no real wiring can produce
+    (`DELTA_IMPLAUSIBLE_GAP_DB`), so CHECK must still retake rather than send
+    the household to check its wiring, even when the anchor's own correlation
+    was confident -- not just near-tied.
+    """
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
+        _full_band_locate,
+    )
+    prog = _incident_program()
+    analysis = analyze_program_capture(
+        prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR
+    )
+    assert analysis.delta_implausible is True
+    assert analysis.channel_map_ok is False, "the guard must not repair the map"
+
+    from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (
+        _stimulus_locate_ok,
+    )
+
+    plan = analysis.gain_plan
+    kind = _dispatch.check_screens(_dispatch.CheckScreens(
+        stimulus_located=_stimulus_locate_ok(analysis),
+        anchor_ambiguous=False,  # isolate: the near-tie guard did NOT fire
+        delta_implausible=analysis.delta_implausible,
+        channel_map_ok=analysis.channel_map_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok,
+        linearity_ok=analysis.linearity_ok,
+        gain_plan_present=plan is not None,
+        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
+    ))
+    assert kind == _dispatch.SCREEN_ANCHOR_AMBIGUOUS
 
 
 def test_the_band_limited_locate_puts_the_whole_timeline_back():

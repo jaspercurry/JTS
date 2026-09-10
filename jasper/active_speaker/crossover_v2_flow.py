@@ -2336,6 +2336,7 @@ class CrossoverV2Session:
             _dispatch.CheckScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
                 anchor_ambiguous=analysis.anchor_ambiguous,
+                delta_implausible=analysis.delta_implausible,
                 channel_map_ok=analysis.channel_map_ok,
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,

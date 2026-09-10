@@ -29,6 +29,7 @@ from .model import (
     CHANNEL_MAP_MIN_ISOLATION_DB,
     CHANNEL_MAP_TARGET_RISE_DB,
     DBFS_FLOOR,
+    DELTA_IMPLAUSIBLE_GAP_DB,
     DRIVER_SNR_ALIGNMENT_KEY,
     DriverResponse,
     GAIN_BOUND_CAPTURE_FLOOR,
@@ -260,6 +261,13 @@ def _pilot_observations(
     ABSOLUTELY, so an ambient-subtracted level would shift that reference
     by however much power was subtracted (measured 13-17 dB on real
     captures).
+
+    ``delta_implausible`` (#2647) flags a captured/programmed gap no real
+    wiring can produce -- CHECK's ladder reads that as mis-anchoring
+    evidence rather than a `channel_map_mismatch` wiring finding, belt to
+    the near-tie guard's suspenders (`anchor_ambiguous`). Deliberately NOT
+    gated on `snr_valid`: the 2026-08-16 incident's own low-SNR reading was
+    itself an artifact of the wrong window being read.
     """
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
@@ -310,6 +318,16 @@ def _pilot_observations(
             None if not snr_valid
             else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
         )
+        # A gap this large is not evidence about wiring at all (#2647) --
+        # see `DELTA_IMPLAUSIBLE_GAP_DB`'s derivation. UNGATED by `snr_valid`,
+        # unlike `linearity_ok`: a gap of this size means one of the two
+        # readings floored (fell at/below ambient) while the other did not,
+        # which is either a mis-anchored window or a room too noisy to trust
+        # either way -- both route to the same retriable finding, never the
+        # wiring hard stop. The 2026-08-16 incident's own low-SNR reading
+        # (10.6 dB, itself an artifact of the wrong window) is why this must
+        # not wait on the SNR gate the way `linearity_ok` does.
+        delta_implausible = abs(captured_delta - programmed_delta) > DELTA_IMPLAUSIBLE_GAP_DB
 
         # Gain-solve reference: full-band peak, NOT the ambient-subtracted level.
         peak_lo = _peak_dbfs(lo_samples)
@@ -341,6 +359,7 @@ def _pilot_observations(
             channel_map_target_rise_db=channel_target_rise_db,
             channel_map_cross_rise_db=channel_cross_rise_db,
             programmed_hi_gain_db=hi_seg.gain_db,
+            delta_implausible=delta_implausible,
         ))
     return out
 
