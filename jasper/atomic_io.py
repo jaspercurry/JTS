@@ -82,6 +82,7 @@ __all__ = [
     "atomic_write_text",
     "env_key_action",
     "env_lock_path",
+    "flock_held",
     "format_env_text",
     "fsync_directory",
     "locked_transform_env_file",
@@ -189,6 +190,45 @@ SHARED_LOCK_MODE = 0o660
 # Per-request web paths wait on these locks, so a bounded wait retries at this
 # cadence rather than a coarser sleep that would round every handoff up.
 _LOCK_POLL_SECONDS = 0.01
+
+
+def flock_held(
+    path: str | os.PathLike,
+    *,
+    missing: bool | None,
+    nofollow: bool = False,
+) -> bool | None:
+    """Is a writer holding an exclusive advisory lock on ``path`` right now?
+
+    ``None`` means "cannot say". Read-only and creating NOTHING, which is
+    load-bearing rather than tidy: a probe under ``ProtectSystem=strict`` may
+    not hold the lock directory writable, and a probe that created the file
+    would answer for a lock nobody has ever taken. SHARED and non-blocking, so
+    two probes never exclude each other and the share is dropped by the close
+    before this returns; it does conflict with a holder's ``LOCK_EX``, so a
+    writer whose non-blocking acquire lands inside a probe's window retries.
+
+    ``missing`` is the answer for a file that is not there — ``False`` where an
+    absent lock proves no writer, ``None`` where the caller cannot read that
+    much into it. ``nofollow`` refuses a symlinked lock path (answering
+    ``None``).
+    """
+    flags = os.O_RDONLY | (getattr(os, "O_NOFOLLOW", 0) if nofollow else 0)
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except FileNotFoundError:
+        return missing
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return False
 
 
 @contextmanager

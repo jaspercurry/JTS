@@ -42,6 +42,7 @@ from typing import IO
 from jasper.atomic_io import (
     CONFIG_FILE_MODE,
     env_key_action,
+    flock_held,
     locked_upsert_env_file,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
@@ -1635,27 +1636,11 @@ def reconcile_in_progress() -> bool | None:
     probe shape as
     :meth:`jasper.camilla.CamillaController.graph_mutation_in_progress`.
 
-    NO ``O_CREAT``, unlike the acquire: a probe must never create the lock file.
-    A missing file therefore answers ``None``, not ``False``.
-
-    SHARED, so two probes never exclude each other, and released inside this
-    call. It does conflict with the acquire's ``LOCK_EX``, but that acquire is
-    ``LOCK_NB`` inside a bounded retry loop, so a pass starting inside a probe's
-    window retries a poll interval later instead of failing.
+    ``missing=None``, unlike the graph-mutation probe: this lock file is
+    provisioned by the install, so its absence says the box is unprovisioned,
+    not that no pass is running.
     """
-    try:
-        fd = os.open(ENTRY_LOCK_PATH, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
-        return None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-    return False
+    return flock_held(ENTRY_LOCK_PATH, missing=None, nofollow=True)
 
 
 def main(argv: "list[str] | None" = None) -> int:
