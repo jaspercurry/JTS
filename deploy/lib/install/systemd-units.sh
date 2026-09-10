@@ -955,6 +955,19 @@ restart_core_camilla_after_dsp_reconcile() {
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
 }
 
+restart_headphone_monitor_after_deploy() {
+    # jasper-headphone-monitor is Restart=always: once running, it keeps
+    # executing the OLD deploy/bin/jasper-headphone-monitor in memory until
+    # something restarts it, unlike a oneshot/ExecStartPre helper that
+    # re-execs fresh on its owner's next start. try-restart is the same
+    # no-op-when-inactive primitive used above for jasper-camilla: a no-op
+    # on the streambox profile (unit disabled/never started there) and a
+    # restart in place wherever jasper-audio-hardware-reconcile has it
+    # running. Deploy-time only — the reconcile pass itself must never call
+    # this (would burn StartLimitBurst on every udev/reconcile pass).
+    systemctl try-restart jasper-headphone-monitor.service 2>/dev/null || true
+}
+
 # The two always-on core-graph units the install path RESTARTS in place (never
 # parked, because they ARE the graph being restarted). Both carry a
 # StartLimitBurst guard; jasper-fanin escalates to StartLimitAction=reboot.
@@ -1400,6 +1413,7 @@ start_streambox_runtime_units() {
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
+    restart_headphone_monitor_after_deploy
 
     # Hardware-gated USB management network (composite gadget +
     # device-activated DHCP). Skips cleanly when the resolved role cannot
@@ -1739,6 +1753,7 @@ install_systemd_units() {
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
+    restart_headphone_monitor_after_deploy
 
     # Mux is core arbitration infrastructure, not a selectable source. Start it
     # on a fresh install as well as enabling boot; its role ExecCondition skips

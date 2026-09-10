@@ -1426,6 +1426,60 @@ def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
     assert reset == masked
 
 
+def test_restart_headphone_monitor_after_deploy_try_restarts(tmp_path):
+    """New deploy/bin/jasper-headphone-monitor code must replace the running
+    Restart=always poll loop, not wait for a manual restart (2026-09-10
+    finding: deploy installed the binary but left the old loop running).
+    try-restart is the no-op-when-inactive primitive already used for
+    jasper-camilla, so a disabled/never-started unit (streambox profile,
+    no Apple dongle) is untouched even when systemctl itself errors on it."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "systemctl.log"
+    stub = bindir / "systemctl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH={shlex.quote(str(bindir))}:$PATH && "
+            f"source {_SYSTEMD_UNITS_LIB} >/dev/null 2>&1 && "
+            "restart_headphone_monitor_after_deploy",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "try-restart jasper-headphone-monitor.service"
+    ]
+
+
+def test_headphone_monitor_restart_is_wired_into_both_install_tails():
+    """The full-box and streambox install tails must each call the restart
+    helper once, after the DSP reconcile has decided the unit's enablement
+    (jasper-audio-hardware-reconcile owns enable/disable/start; this only
+    ever needs to run try-restart, never install a second restart path)."""
+    text = _SYSTEMD_UNITS_LIB.read_text(encoding="utf-8")
+    for func in ("install_systemd_units", "start_streambox_runtime_units"):
+        match = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
+        assert match, f"{func} not found"
+        body = match.group(1)
+        assert body.count("restart_headphone_monitor_after_deploy") == 1
+        assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
+            "restart_headphone_monitor_after_deploy"
+        )
+
+
 def _run_tune_nginx_worker_processes(conf: Path) -> None:
     result = subprocess.run(
         [
