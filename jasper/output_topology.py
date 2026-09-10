@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
+from .log_event import log_event
 from .transition_log import TransitionLog
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -2072,23 +2073,102 @@ def read_topology_fingerprint_stamp(path: str | Path) -> str | None:
 
 
 def write_topology_fingerprint_stamp(path: str | Path, fingerprint: str) -> bool:
-    """Publish one stamp atomically. False when it could not be written."""
+    """Publish one stamp atomically. False when it could not be written.
+
+    A failed write is logged, not raised — every caller is on the boot path —
+    and the line is the ONLY place that fact exists: a stamp nobody could write
+    leaves the gate reading unknown, which allows.
+    """
 
     try:
         atomic_write_text(Path(path), fingerprint + "\n", mode=0o644)
-    except OSError:
+    except OSError as exc:
+        log_event(
+            logger,
+            "camilla_topology_stamp.write_failed",
+            path=str(path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
         return False
     return True
 
 
-def clear_topology_fingerprint_stamp(path: str | Path) -> None:
-    """Retire one stamp. A stamp that cannot be removed is left to the gate,
-    which refuses — the safe direction for a proof nobody could retire."""
+def clear_topology_fingerprint_stamp(path: str | Path) -> bool:
+    """Retire one stamp. False when it is still on disk.
+
+    An unremovable stamp does NOT make the gate refuse: the unproved stamp left
+    behind carries the same fingerprint the proof stamp just took, so the two
+    compare EQUAL and the start is allowed. What is lost is the NEXT pass's
+    evidence, not this boot's — hence the event.
+    """
 
     try:
         Path(path).unlink()
-    except OSError:
-        pass
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        log_event(
+            logger,
+            "camilla_topology_stamp.clear_failed",
+            path=str(path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    return True
+
+
+def stamp_statefile_topology(
+    statefile_path: str | Path, topology: OutputTopology | None
+) -> None:
+    """Record which topology a WRITTEN statefile was PROVED against.
+
+    Stamped after every apply that reached the statefile, not only when the
+    pointer moves: the statefile may already name the right config while the
+    stamp is missing (a box upgraded from a build before the stamp existed) or
+    stale (a topology change that resolved to the same config).
+    ``jasper-camilla-topology-gate`` compares it with the unproved sibling
+    :func:`stamp_statefile_convergence` writes.
+
+    Best effort: a stamp that cannot be written leaves the gate reading unknown,
+    which allows. Never raises — this is on the boot path.
+    """
+
+    if topology is None:
+        return
+    write_topology_fingerprint_stamp(
+        statefile_topology_stamp_path(statefile_path),
+        topology_config_fingerprint(topology),
+    )
+
+
+def stamp_statefile_convergence(
+    statefile_path: str | Path, topology: OutputTopology, *, proved: bool
+) -> None:
+    """Open, or close, one attempt to prove this topology's boot graph.
+
+    ``proved=False`` at the TOP of the pass, as soon as the saved topology is
+    read and before any decision is taken; ``proved=True`` only once a statefile
+    write has succeeded. What is left behind names the topology whose graph
+    nobody proved — a pass that refused, a pass that took some other early
+    exit, and a pass killed mid-flight (the OOM killer included) at any point
+    AFTER this stamp landed. A pass that died BEFORE it landed leaves nothing,
+    and nothing is unknown, which allows.
+
+    ``jasper-camilla-topology-gate`` refuses a CamillaDSP start when this stamp
+    and the proof stamp are both present and DIFFERENT: the statefile then names
+    a graph belonging to some other topology than the one a convergence was
+    working on. Equal means the statefile already holds the right graph and the
+    pass failed over something else, so the start goes ahead.
+
+    Best effort, never raises: on the boot path, and a stamp nobody could write
+    leaves the gate reading unknown, which allows.
+    """
+
+    stamp = statefile_unproved_stamp_path(statefile_path)
+    if proved:
+        clear_topology_fingerprint_stamp(stamp)
+        return
+    write_topology_fingerprint_stamp(stamp, topology_config_fingerprint(topology))
 
 
 @dataclass(frozen=True)

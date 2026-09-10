@@ -191,9 +191,42 @@ def _restart_unit(
         no_block=no_block,
         timeout=timeout,
     )
-    if resp.get("ok"):
+    if not resp.get("ok"):
+        return False, str(resp.get("error") or f"rc={resp.get('rc')}")
+    if unit == CAMILLA_UNIT and verb in _START_BUDGET_VERBS and not no_block:
+        return _camilla_up_or_gate_refusal()
+    return True, ""
+
+
+def _camilla_up_or_gate_refusal() -> tuple[bool, str]:
+    """A jasper-camilla start that returned 0 is not proof CamillaDSP is up.
+
+    The unit declares an ``ExecCondition=`` (ADR-0283). A condition that refuses
+    SKIPS the unit and the start job still SUCCEEDS, so the broker answers ok
+    while the speaker stays silent. Read the unit back and, when it is not
+    active, name the gate's own record instead of reporting a start that worked.
+
+    Unknown is not failure: no systemctl answer leaves the ok verdict alone,
+    the same fail-soft rule :func:`jasper.service_units.read_unit_states` sets.
+    """
+    from jasper.service_units import read_unit_states, unit_active
+
+    records = read_unit_states((CAMILLA_UNIT,))
+    if records is None or unit_active(records.get(CAMILLA_UNIT)):
         return True, ""
-    return False, str(resp.get("error") or f"rc={resp.get('rc')}")
+    # lazy: the control package is optional here for the same reason the broker
+    # import above is — a broken install degrades to a reported failure.
+    try:
+        from jasper.control import camilla_topology_gate_state
+    except ImportError:  # pragma: no cover - control pkg always present in prod
+        return False, "camilla_inactive_after_start"
+    state = camilla_topology_gate_state.snapshot()
+    if not state.get("refused"):
+        return False, "camilla_inactive_after_start"
+    return False, (
+        "camilla_topology_gate_refused"
+        f" unproved={state.get('unproved')} proved={state.get('proved')}"
+    )
 
 
 def _restart_fanin(reason: str) -> tuple[bool, str]:

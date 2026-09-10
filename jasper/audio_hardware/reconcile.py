@@ -1358,6 +1358,25 @@ class Pass:
             topology=self.output_topology_path,
         )
 
+    def open_runtime_graph_attempt(self) -> None:
+        """Stamp "this pass is working on THIS topology, unproved" before it acts.
+
+        :meth:`converge_runtime_graph` closes the stamp when it writes, so what
+        survives a pass names the topology whose boot graph nobody proved. It is
+        opened HERE, at the top of the pass, rather than inside the convergence,
+        because the exits between the two — the rejected outputd candidate, an
+        i2s apply error, an OOM kill — are equally passes that never proved a
+        graph, and the gate must see them.
+        """
+        topology = self.saved_topology()
+        if topology is None:
+            return
+        # lazy: import cost — the stamp writers live beside the topology, and
+        # the --print-env path returns before this point (ADR-0226).
+        from jasper.output_topology import stamp_statefile_convergence
+
+        stamp_statefile_convergence(self.camilla_statefile, topology, proved=False)
+
     def converge_runtime_graph(self) -> bool:
         """Seed the proved boot statefile for the saved topology.
 
@@ -1663,6 +1682,7 @@ class Pass:
             return 74
         self.apply_observed_single_policy()
         self.apply_observed_composite_policy()
+        self.open_runtime_graph_attempt()
 
         env_changed = 0
         # dac_env_changed tracks ONLY a DAC-identity/card move — the class of

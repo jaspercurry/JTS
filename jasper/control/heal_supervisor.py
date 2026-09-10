@@ -4,10 +4,11 @@
 
 """Heal supervisor — the silences every unit state calls healthy: a speaker
 emitting nothing with its audio path up, a reachable voice daemon that has
-heard no wake word in a day, and a CamillaDSP whose start job was cancelled or
-gated and that no `Restart=` will ever re-try. Facts come from jasper-control's
-own memory; the answer is an action the /system dashboard already offers. It
-observes only — nothing here reaches an actuator. See ADR-0271.
+heard no wake word in a day, and a CamillaDSP whose start its own
+`ExecCondition=` gated and that no `Restart=` will ever re-try. Facts come from
+jasper-control's own memory; the answer is an action the /system dashboard
+already offers. It observes only — nothing here reaches an actuator. See
+ADR-0271 and ADR-0283.
 """
 from __future__ import annotations
 
@@ -67,12 +68,6 @@ SILENT_CODES = frozenset({
     "path_stalled",
 })
 
-#: The one `Result` an inactive daemon can carry that systemd will not retry:
-#: a start job cancelled because a dependency failed leaves no restart
-#: machinery behind it, unlike `exit-code`/`signal`/`start-limit-hit`, which
-#: are systemd's and jasper-camilla-recover's to answer (ADR-0271).
-CAMILLA_STOPPED_RESULTS = frozenset({"dependency"})
-
 TICK_INTERVAL_SEC = 600.0  # seconds
 TICK_JITTER_SEC = 30.0  # seconds
 COLD_START_SEC = 300.0  # seconds; longer than any boot-time audio settle
@@ -110,33 +105,30 @@ def camilla_stopped_reason(
 ) -> str | None:
     """Why CamillaDSP is down with nothing left to bring it back, or None.
 
-    The narrow pair systemd cannot see, both of which end with a silent speaker
-    that no `Restart=always` re-tries:
+    The one posture systemd cannot see: `topology_gate`, the ExecCondition
+    refusing the start because the saved graph was proved against a different
+    topology (#4416 R8). A condition skip is a SUCCESS, so no unit reads failed
+    anywhere and no `Restart=always` will ever re-try it.
 
-    * `topology_gate` — the ExecCondition refused the start because the saved
-      graph was proved against a different topology (#4416 R8). A condition
-      skip is a SUCCESS, so no unit reads failed anywhere.
-    * `dependency_cancelled` — the start job was cancelled by a failed
-      requirement dependency.
-
-    Both require the hardware reconciler to be healthy again: while it is
+    It requires the hardware reconciler to be healthy again: while that is
     failed the fault is one systemd and its own recovery own, and heal stands
     down. Every other inactive posture — an operator stop, a crash, an
     exhausted burst, a start still in flight — answers None.
+
+    REMOVE WHEN the gate is removed (ADR-0283): its refusal is the only fact
+    this case reads.
     """
     # lazy: audio_health owns the roster and costs ~3k lines of imports.
     from .audio_health import CAMILLA_UNIT_FULL
 
+    if not gate_refused:
+        return None
     camilla = (units or {}).get(CAMILLA_UNIT_FULL)
     if not unit_loaded(camilla) or unit_active(camilla) or unit_unstable(camilla):
         return None
     if unit_failed((units or {}).get(AUDIO_HARDWARE_RECONCILE_UNIT)):
         return None
-    if gate_refused:
-        return "topology_gate"
-    if str((camilla or {}).get("result") or "") in CAMILLA_STOPPED_RESULTS:
-        return "dependency_cancelled"
-    return None
+    return "topology_gate"
 
 
 def decide(

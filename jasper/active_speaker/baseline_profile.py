@@ -4023,6 +4023,7 @@ async def _apply_baseline_profile_locked(
         expected_topology_fingerprint=str(
             (candidate.get("source") or {}).get("topology_fingerprint") or ""
         ),
+        topology=topology,
         expected_domain="driver" if driver_domain else "full",
         require_applied=False,
     )

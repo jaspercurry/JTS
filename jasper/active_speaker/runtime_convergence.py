@@ -26,12 +26,12 @@ from jasper.active_speaker.runtime_contract import (
     materialise_safe_graph_decision,
     parked_safe_graph_decision,
     safe_graph_for_current_topology,
-    stamp_statefile_convergence,
 )
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
+    stamp_statefile_convergence,
 )
 
 OUTPUTD_UNIT = "jasper-outputd.service"
@@ -104,6 +104,13 @@ def converge_boot_statefile(
 
     if topology is None:
         topology = load_output_topology_strict(topology_path)
+    if write_statefile:
+        # Opened as soon as the topology is READ and closed only by a statefile
+        # write: what is left behind names the topology whose boot graph nobody
+        # proved, which is what jasper-camilla's ExecCondition gate refuses to
+        # start on (#4416 R8). Opening it after graph selection, or after the
+        # `decision.ok` test, would miss every failure before that point.
+        stamp_statefile_convergence(statefile_path, topology, proved=False)
     kwargs: dict[str, Any] = {
         "statefile_path": statefile_path,
         "current_config_path": current_config_path,
@@ -114,14 +121,7 @@ def converge_boot_statefile(
     if flat_config_path is not None:
         kwargs["flat_config_path"] = flat_config_path
     decision = safe_graph_for_current_topology(topology, **kwargs)
-    if not write_statefile:
-        return StatefileConvergenceResult(decision, topology, False)
-    # Opened BEFORE the attempt and closed only by a write: what is left behind
-    # names the topology whose boot graph nobody proved, which is what
-    # jasper-camilla's startup gate refuses to start on (#4416 R8). Opening it
-    # after the `decision.ok` test would miss the commonest refusal of all.
-    stamp_statefile_convergence(statefile_path, topology, proved=False)
-    if not decision.ok:
+    if not (write_statefile and decision.ok):
         return StatefileConvergenceResult(decision, topology, False)
     try:
         decision = compose_selected_flat_graph(decision, topology=topology)

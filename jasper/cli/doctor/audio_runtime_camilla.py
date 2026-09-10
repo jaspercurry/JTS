@@ -84,6 +84,7 @@ REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH = "camilla_statefile_topology_mismatch"
 REASON_CAMILLA_TOPOLOGY_GATE_UNREADABLE = "camilla_topology_gate_unreadable"
 REASON_CAMILLA_TOPOLOGY_GATE_UNINTELLIGIBLE = "camilla_topology_gate_unintelligible"
+REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING = "camilla_topology_stamps_missing"
 
 
 @doctor_check(core=True)
@@ -674,9 +675,7 @@ def check_camilla_topology_gate() -> CheckResult:
     status = state.get("status")
 
     if status == "absent":
-        return CheckResult(
-            label, "ok", "no topology-gate refusal this boot"
-        )
+        return _topology_gate_allowed_result(label)
 
     if status == "unreadable":
         return CheckResult(
@@ -719,4 +718,35 @@ def check_camilla_topology_gate() -> CheckResult:
         "fail",
         ". ".join(parts),
         reason=REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH,
+    )
+
+
+def _topology_gate_allowed_result(label: str) -> CheckResult:
+    """No refusal this boot — but say whether the gate could have refused.
+
+    The gate allows on UNKNOWN, so "no refusal" alone cannot tell a working
+    speaker from a blind gate. The proof stamp beside the statefile is what
+    makes the comparison possible at all, so its absence on a box running this
+    build is the warning: either no convergence has written a statefile since
+    the deploy, or the stamp writes are failing (they log
+    `event=camilla_topology_stamp.write_failed`).
+    """
+    from ...active_speaker.environment import camilla_statefile_path
+    from ...output_topology import (
+        read_topology_fingerprint_stamp,
+        statefile_topology_stamp_path,
+    )
+
+    statefile = camilla_statefile_path()
+    if read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile)):
+        return CheckResult(label, "ok", "no topology-gate refusal this boot")
+    return CheckResult(
+        label,
+        "warn",
+        "no topology-gate refusal this boot, but no proof stamp beside "
+        f"{statefile} either, so the gate cannot tell this graph's topology "
+        "from any other. Run the hardware reconciler "
+        "(systemctl start jasper-audio-hardware-reconcile.service) and check "
+        "the journal for event=camilla_topology_stamp.write_failed.",
+        reason=REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING,
     )

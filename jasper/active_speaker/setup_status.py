@@ -211,6 +211,7 @@ def _acoustic_commissioning_status(
         expected_topology_fingerprint=str(
             current_source.get("topology_fingerprint") or ""
         ) or None,
+        topology=topology,
     )
     tuning_owner = str(applied_state.get("owner") or "")
     applied_measured = (
@@ -487,6 +488,7 @@ def _derive_commissioning_summary(
         expected_topology_fingerprint=(
             str(current_source.get("topology_fingerprint") or "") or None
         ),
+        topology=topology,
     )
 
     return {
@@ -1103,6 +1105,7 @@ def read_active_speaker_setup_status(
         expected_topology_fingerprint=str(
             current_source.get("topology_fingerprint") or ""
         ) or None,
+        topology=topology,
     )
     layer_a_binding = _applied_layer_a_binding(
         topology,
