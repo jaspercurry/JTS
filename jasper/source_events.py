@@ -53,6 +53,11 @@ _PRODUCER_BUS_NAMES = {
 }
 _RETRY_INITIAL_SEC = 1.0
 _RETRY_MAX_SEC = 30.0
+# A wedged system D-Bus daemon can accept the socket without ever answering
+# Hello, hanging this adapter's only retry loop forever. Its own constant, not
+# jasper.bluetooth.adapter's: dbus_next is optional here (see the lazy import
+# below), and that module imports it at module scope.
+_BUS_CONNECT_TIMEOUT_SEC = 5.0
 
 
 def classify_source_signal(
@@ -216,6 +221,8 @@ async def watch_dbus_sources(notify: Notify) -> None:
     while True:
         bus = None
         try:
+            # lazy: optional dependency — a box without dbus_next retries
+            # below instead of failing every source-event task at import.
             from dbus_next import BusType, Message, MessageType  # type: ignore
             from dbus_next.aio import MessageBus  # type: ignore
             from dbus_next.errors import AuthError, DBusError  # type: ignore
@@ -235,7 +242,9 @@ async def watch_dbus_sources(notify: Notify) -> None:
             continue
 
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            bus = MessageBus(bus_type=BusType.SYSTEM)
+            async with asyncio.timeout(_BUS_CONNECT_TIMEOUT_SEC):
+                await bus.connect()
             rules = (
                 "type='signal',interface='org.freedesktop.DBus.Properties',"
                 "member='PropertiesChanged',path='/org/mpris/MediaPlayer2'",
@@ -289,7 +298,8 @@ async def watch_dbus_sources(notify: Notify) -> None:
                 level=level,
                 adapter="dbus",
                 retry_sec=delay,
-                detail=exc,
+                # A bare TimeoutError() renders as an empty detail=.
+                detail=f"{type(exc).__name__}: {exc}",
             )
             warned = True
             await asyncio.sleep(delay)

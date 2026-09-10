@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
+import pytest
 
 from jasper.bluetooth import scan
 from jasper.bluetooth.models import (
@@ -236,6 +238,80 @@ def test_battery_percent_from_read_value_rejects_invalid_values() -> None:
     assert _battery_percent_from_read_value([]) is None
     assert _battery_percent_from_read_value([101]) is None
     assert _battery_percent_from_read_value(["not-a-byte"]) is None
+
+
+async def test_device_observer_start_bounds_a_hung_connect(monkeypatch) -> None:
+    class _HangingBus:
+        def __init__(self) -> None:
+            self.journal: list[str] = []
+
+        async def connect(self):
+            await asyncio.Event().wait()
+
+        def disconnect(self) -> None:
+            self.journal.append("bus_disconnect")
+
+    bus = _HangingBus()
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: bus)
+    monkeypatch.setattr(scan, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    observer = DeviceObserver()
+    with pytest.raises(TimeoutError):
+        await observer.start()
+
+    assert observer._bus is None
+    assert bus.journal == ["bus_disconnect"]
+
+
+async def test_device_observer_start_bounds_a_silent_bluez(monkeypatch) -> None:
+    """A bluetoothd that owns org.bluez but never answers must not hang start().
+
+    dbus-next proxy calls carry no timeout, so an unbounded snapshot blocks the
+    daemon past DefaultTimeoutStartSec and systemd SIGTERMs it into the restart
+    loop. The failed start must also unwind, or the retry finds `_bus` set and
+    self-no-ops forever.
+    """
+
+    class _SilentObjectManager:
+        async def call_get_managed_objects(self):
+            await asyncio.Event().wait()
+
+    class _SilentBus(_FakeBus):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.om = _SilentObjectManager()
+
+    bus = _SilentBus()
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: bus)
+    monkeypatch.setattr(scan, "BLUEZ_CALL_TIMEOUT_SEC", 0.01)
+
+    observer = DeviceObserver()
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await observer.start()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5, f"start() took {elapsed:g}s, expected ~0.01s bound"
+    assert observer.started is False
+    assert observer._bus is None
+    assert bus.disconnected is True
+
+
+async def test_device_observer_start_is_idempotent_on_completed_init(
+    monkeypatch,
+) -> None:
+    buses = [_FakeBus({}), _FakeBus({})]
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: buses[0])
+
+    observer = DeviceObserver()
+    await observer.start()
+    assert observer.started is True
+
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: buses[1])
+    await observer.start()
+
+    assert observer._bus is buses[0]
+    assert buses[1].disconnected is False
 
 
 async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
