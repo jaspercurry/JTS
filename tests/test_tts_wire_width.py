@@ -321,16 +321,23 @@ def test_an_unreadable_declaration_resolves_to_the_default_and_says_so(
     the daemon that plays the failure cues, so the fault is logged loudly and
     the width falls back to what the resolver itself answers for a box that
     declares nothing — anything else puts this process on a width no box has.
+
+    The expectation is DERIVED from the resolver, not written out as a literal:
+    a moved default must move this answer with it, and a pin that spelled the
+    current default would pass while the two disagreed.
     """
     import jasper.fanin_coupling as fc
 
     def _boom():
         raise ValueError("JASPER_FANIN_RING_WIRE_FORMAT='S24_3LE' unsupported")
 
+    undeclared = fc.assistant_wire_is_wide(
+        wire_format=fc.resolve_ring_wire_format(None)
+    )
     _clear_cache()
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _boom)
     with caplog.at_level("WARNING"):
-        assert tts_wire_is_wide() is True
+        assert tts_wire_is_wide() is undeclared
     assert "tts_wire.declaration_unreadable" in caplog.text
     _clear_cache()
 
