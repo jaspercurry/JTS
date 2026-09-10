@@ -367,6 +367,41 @@ def _rig(**mic_kwargs) -> tuple[Volume, BlockingTone, Mic]:
     return volume, tone, Mic(volume, tone, **mic_kwargs)
 
 
+@pytest.mark.parametrize("at_start_spl", [40.0, 77.5, 90.0])
+@pytest.mark.asyncio
+async def test_level_receipt_discloses_timing_and_meter_scope(tmp_path, at_start_spl):
+    volume, tone, mic = _rig(gain_db=gain_for_seat_spl(
+        at_start_spl, at_volume_db=slr.SEAT_LEVEL_START_DB,
+    ))
+    result = await _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    receipt = result.to_dict()["ramp"]
+    assert result.restored is True
+    assert volume.value == HOUSEHOLD_VOLUME_DB
+    assert receipt["operation_elapsed_s"] >= receipt["decision_after_play_request_s"]
+    assert receipt["playback_start_requests"] == 1
+    assert receipt["level_metric"] == {
+        "statistic": "median_of_block_rms_dbfs",
+        "weighting": "unweighted",
+        "frequency_response_correction_applied": False,
+        "capture_gain_verified": False,
+        "window_s": slr.MIC_WINDOW_S,
+        "probe_band_hz": None,
+        "scope": "microphone_input_including_background",
+    }
+    assert receipt["meter_excess_over_target_high_db"] == pytest.approx(
+        max(0.0, receipt["max_meter_rms_db_spl"] - TARGET.high_db_spl),
+    )
+    if result.converged:
+        assert receipt["verified_after_play_request_s"] == receipt["decision_after_play_request_s"]
+        assert receipt["target_error_db"] == pytest.approx(result.measured_db_spl - TARGET.target_db_spl)
+        times = [row["completed_after_play_request_s"] for row in receipt["steps"]]
+        assert times == sorted(times)
+        assert all(row["observation_elapsed_s"] >= 2 * slr.MIC_WINDOW_S for row in receipt["steps"])
+    else:
+        assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+        assert "verified_after_play_request_s" not in receipt
+
+
 # --- the conversion ---------------------------------------------------------
 
 
@@ -2687,6 +2722,7 @@ def test_a_reading_below_the_floor_re_measures_the_room_in_silence(tmp_path):
     # Both windows are published; neither overwrites the other.
     assert ramp["ambient_db_spl"] == pytest.approx(RUN87_AMBIENT_DB_SPL, abs=0.01)
     assert ramp["ambient_remeasured"] is True
+    assert ramp["playback_start_requests"] == 2
     assert ramp["ambient_remeasured_db_spl"] == pytest.approx(
         RUN87_TRUE_ROOM_DB_SPL, abs=0.01
     )

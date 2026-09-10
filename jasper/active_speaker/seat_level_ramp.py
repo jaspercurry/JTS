@@ -849,6 +849,7 @@ async def run_seat_level_ramp(
     every lease self-expires. Persists a reference only on a reading that rose clear of
     a floor THIS PASS MEASURED IN SILENCE.
     """
+    operation_started = clock()
     window_low_dbfs, window_high_dbfs = validate_seat_level_window(
         target=target, sensitivity=sensitivity
     )
@@ -1085,7 +1086,10 @@ async def run_seat_level_ramp(
 
     def _stamped(result: SeatLevelResult) -> SeatLevelResult:
         """Publish the restore outcome the teardown recorded."""
-        return replace(result, restored=restored["ok"])
+        return replace(result, restored=restored["ok"], ramp={
+            **result.ramp,
+            "operation_elapsed_s": round(clock() - operation_started, 3),
+        })
 
     leveled: SeatLevelResult | None = None
     try:
@@ -1250,6 +1254,24 @@ async def _walk_to_the_band(
     reference_state_path: str | Path | None,
 ) -> SeatLevelResult:
     """Play the stimulus and step toward the band, one measured gap at a time."""
+    play_requested_at = clock()
+    playback_starts = 1
+    maximum_meter_db_spl: float | None = None
+    sample_source = next_samples
+
+    async def observed_samples() -> list[LevelSample]:
+        nonlocal maximum_meter_db_spl
+        samples = await sample_source()
+        for sample in samples:
+            if math.isfinite(sample.rms_dbfs):
+                level = sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
+                maximum_meter_db_spl = (
+                    level if maximum_meter_db_spl is None
+                    else max(maximum_meter_db_spl, level)
+                )
+        return samples
+
+    next_samples = observed_samples
     # The climb's INTENT: the volume the walk believes it is measuring at. A
     # fade leg must never move it.
     volume_db = start_db
@@ -1300,6 +1322,22 @@ async def _walk_to_the_band(
         final_volume_db: float, *, window: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            "decision_after_play_request_s": round(clock() - play_requested_at, 3),
+            "playback_start_requests": playback_starts,
+            "max_meter_rms_db_spl": maximum_meter_db_spl,
+            "meter_excess_over_target_high_db": (
+                None if maximum_meter_db_spl is None
+                else max(0.0, maximum_meter_db_spl - target.high_db_spl)
+            ),
+            "level_metric": {
+                "statistic": "median_of_block_rms_dbfs",
+                "weighting": "unweighted",
+                "frequency_response_correction_applied": False,
+                "capture_gain_verified": False,
+                "window_s": MIC_WINDOW_S,
+                "probe_band_hz": None if stimulus is None else stimulus.to_dict()["band_hz"],
+                "scope": "microphone_input_including_background",
+            },
             "start_db": round(start_db, 2),
             "ceiling_db": round(ceiling_db, 2),
             "bite_db": round(bite, 2),
@@ -1402,6 +1440,7 @@ async def _walk_to_the_band(
     tone: asyncio.Future[Any] = asyncio.ensure_future(play_continuous_tone())
     try:
         for _ in range(max_readings):
+            reading_started = clock()
             reading = await _settle_reading(
                 next_samples,
                 sensitivity=sensitivity,
@@ -1413,6 +1452,7 @@ async def _walk_to_the_band(
                 agree_db=agree_db,
                 timeout_s=settle_timeout_s,
             )
+            reading_completed = clock()
             if reading.rms_dbfs is None:
                 return refuse(
                     reading.refusal or REFUSE_MIC_FEED_LOST,
@@ -1426,6 +1466,7 @@ async def _walk_to_the_band(
             # is playing, so it cannot be quieter than the room): measure the
             # silence again rather than believe the reading.
             if remeasured_dbfs is None and reading.rms_dbfs < floor_dbfs:
+                prior_tone = tone
                 silent, tone = await _remeasure_silence(
                     tone=tone,
                     volume_db=volume_db,
@@ -1443,6 +1484,7 @@ async def _walk_to_the_band(
                     agree_db=agree_db,
                     settle_timeout_s=settle_timeout_s,
                 )
+                playback_starts += int(tone is not prior_tone)
                 if silent.rms_dbfs is None:
                     return refuse(
                         silent.refusal or REFUSE_MIC_FEED_LOST,
@@ -1484,6 +1526,8 @@ async def _walk_to_the_band(
                     slope_db_per_db = (observed_db_spl - previous[1]) / delta_volume
             previous = (volume_db, observed_db_spl)
             steps.append({
+                "completed_after_play_request_s": round(reading_completed - play_requested_at, 3),
+                "observation_elapsed_s": round(reading_completed - reading_started, 3),
                 "volume_db": round(volume_db, 2),
                 "observed_dbfs": round(reading.rms_dbfs, 2),
                 "observed_db_spl": round(observed_db_spl, 2),
@@ -1748,5 +1792,9 @@ def _bank(
         status="converged",
         reference_volume_db=reference_volume_db,
         measured_db_spl=measured_db_spl,
-        ramp=telemetry,
+        ramp={
+            **telemetry,
+            "verified_after_play_request_s": telemetry["decision_after_play_request_s"],
+            "target_error_db": measured_db_spl - target.target_db_spl,
+        },
     )

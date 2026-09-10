@@ -46,6 +46,23 @@ def test_capture_quality_fails_on_clipping():
         raise quality.CaptureQualityError(report)
 
 
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_capture_is_an_integrity_failure_not_a_quiet_measurement(invalid):
+    captured = np.full(48000, 0.1, dtype=np.float32)
+    captured[123] = invalid
+    report = quality.assess_capture(
+        captured, sample_rate=48000, expected_sample_rate=48000,
+        sweep_n_samples=24000, has_mic_calibration=True,
+    ).to_dict()
+    assert report["failed"] is True
+    issues = {issue["code"]: issue for issue in report["issues"]}
+    assert issues["capture_nonfinite"]["details"] == {"nonfinite_samples": 1}
+    assert "capture_peak_low" not in issues
+    assert "capture_rms_low" not in issues
+    assert "capture_near_clip" not in issues
+    assert "capture_clipped" not in issues
+
+
 def test_capture_quality_surfaces_browser_processing_flags():
     captured = np.full(48000, 0.1, dtype=np.float32)
     report = quality.assess_capture(

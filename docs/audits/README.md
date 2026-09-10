@@ -19,6 +19,7 @@ the tracking issue for anything current.
 | 2026-09-05 | `2d571e6b8` | whole-repo quality review, ~65 subagents | [2026-09-05-codebase-quality-review.md](2026-09-05-codebase-quality-review.md) | #4786–#4812 (15 individual rows + 12 theme umbrellas) | `docs/codebase-quality-review-2026-09-05/`, deleted in a follow-up PR | superseded |
 | 2026-09-05 (voice) | `8777cff19` | voice loop (wake→turn→TTS) audit | ledger deleted in #4784 | #4777–#4783 (its open rows) | not committed | superseded |
 | 2026-09-09 | `53a883808` | whole-repo deep audit, 114 agents | [2026-09-09-deep-audit.md](2026-09-09-deep-audit.md) | #4775 | release tag [`audit-evidence-2026-09-09`](https://github.com/jaspercurry/JTS/releases/tag/audit-evidence-2026-09-09) | current baseline |
+| 2026-09-10 | `5fc22ba4` | shared leveling and measurement quality | [2026-09-10-measurement-quality-review.md](2026-09-10-measurement-quality-review.md) | [#4868](https://github.com/jaspercurry/JTS/issues/4868) | tracking issue | current scoped baseline |
 
 ## How to run the next one
 
