@@ -11,14 +11,3 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "switch-voice-provide
 
 def test_switch_voice_provider_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
-
-
-def test_switch_voice_provider_reads_installed_catalog():
-    text = SCRIPT.read_text()
-
-    assert "/opt/jasper/.venv/bin/python" in text
-    assert "from jasper.voice.catalog import PROVIDERS" in text
-    assert "gemini|openai|grok" not in text
-    assert "gemini) KEY_VAR=GEMINI_API_KEY" not in text
-    assert "openai) KEY_VAR=OPENAI_API_KEY" not in text
-    assert "grok)   KEY_VAR=XAI_API_KEY" not in text

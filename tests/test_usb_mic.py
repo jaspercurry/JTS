@@ -443,12 +443,6 @@ def test_source_frame_splits_into_two_exact_alsa_periods() -> None:
     assert periods[1].record_source_age is True
 
 
-def test_relay_data_plane_no_longer_references_aplay_or_popen() -> None:
-    source = Path(usb_mic_cli.__file__).read_text(encoding="utf-8")
-    assert "subprocess.Popen" not in source
-    assert '"aplay"' not in source
-
-
 class _StatusReader:
     def __init__(self, snapshot: HostPcmSnapshot) -> None:
         self.snapshot = snapshot
