@@ -83,13 +83,20 @@ def test_predecessor_requires_nonempty_canonical_json_state(state):
         DspPredecessor(state=state)
 
 
+def _fine_grid(spec):
+    return tuple(
+        spec.fine_grid_coordinate(index)
+        for index in range(spec.fine_grid_index_min, spec.fine_grid_index_max + 1)
+    )
+
+
 def test_geometry_bound_is_half_one_crossover_period_and_grid_contains_seed():
     spec = _spec(fc=1600.0, seed=250.0)
 
     assert spec.half_period_us == pytest.approx(312.5)
     assert spec.lower_bound_us == pytest.approx(-62.5)
     assert spec.upper_bound_us == pytest.approx(562.5)
-    assert spec.candidate_delays_us() == (
+    assert _fine_grid(spec) == (
         -50.0,
         50.0,
         150.0,
@@ -231,40 +238,27 @@ def test_candidate_refuses_two_db_or_greater_null_depth_spread(last_depth):
     assert "repeatability_low" in {issue["code"] for issue in out["issues"]}
 
 
-def test_candidate_budget_is_preflighted_arithmetically_at_exact_boundary():
-    exact_25 = _spec(fc=400.0)
-    refused_27 = _spec(fc=370.0)
-
-    assert exact_25.candidate_count == 25
-    assert len(exact_25.candidate_delays_us()) == 25
-    assert refused_27.candidate_count == 27
-    with pytest.raises(NullWalkError, match="candidate budget"):
-        refused_27.candidate_delays_us()
-
-
 def test_walk_refuses_before_dsp_when_any_candidate_exceeds_delay_ceiling():
     spec = _spec(fc=5000.0, seed=20_000.0)
 
     with pytest.raises(NullWalkError, match="20 ms delay ceiling"):
-        spec.candidate_delays_us()
+        _fine_grid(spec)
 
 
 def test_divisible_half_period_includes_bounds_and_fragment_does_not():
     divisible = _spec(fc=5000.0)
     fragment = _spec(fc=4000.0)
 
-    assert divisible.candidate_delays_us() == (-100.0, 0.0, 100.0)
+    assert _fine_grid(divisible) == (-100.0, 0.0, 100.0)
     assert fragment.lower_bound_us == -125.0
     assert fragment.upper_bound_us == 125.0
-    assert fragment.candidate_delays_us() == (-100.0, 0.0, 100.0)
+    assert _fine_grid(fragment) == (-100.0, 0.0, 100.0)
 
 
 def test_350_hz_schedule_is_bounded_symmetric_deterministic_and_locally_refined():
     spec = _spec(fc=350.0, seed=37.5)
 
     assert spec.candidate_count == 29
-    with pytest.raises(NullWalkError, match="candidate budget"):
-        spec.candidate_delays_us()
 
     first_coarse = spec.coarse_candidate_delays_us()
     second_coarse = spec.coarse_candidate_delays_us()

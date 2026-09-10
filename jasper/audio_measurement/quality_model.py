@@ -4,12 +4,12 @@
 
 """Parameterized capture-quality thresholds shared across tuning layers.
 
-A :class:`QualityModel` holds one layer's gate as data; three profiles ship —
-:data:`ROOM` (listening-position), :data:`DRIVER` (per-driver / summed
-near-field) and :data:`RAMP` (level match). All three carry equal values today:
-the driver capture path already used room correction's ``assess_capture``
-verbatim, and the driver-verdict fields coincide with the dataclass defaults.
-The ramp's live control-loop tuning is NOT here — it lives on
+A :class:`QualityModel` holds one layer's gate as data; two profiles ship —
+:data:`ROOM` (listening-position) and :data:`DRIVER` (per-driver / summed
+near-field). Both carry equal values today: the driver capture path already
+used room correction's ``assess_capture`` verbatim, and the driver-verdict
+fields coincide with the dataclass defaults.
+The level ramp's live control-loop tuning is NOT here — it lives on
 :class:`~jasper.audio_measurement.ramp.MeasurementRamp`, because those are not
 gates ``assess_capture`` reads.
 
@@ -130,7 +130,3 @@ DRIVER = QualityModel(
     null_threshold_db=6.0,
     overlap_min_bins=4,
 )
-
-# Level ramp. Reuses ROOM's values; the ramp's own tuning lives on
-# MeasurementRamp — see the module docstring.
-RAMP = QualityModel()
