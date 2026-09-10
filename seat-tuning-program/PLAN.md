@@ -41,13 +41,46 @@ existing runner, position-ready contract and bank remain shared. Optional
 pose text reaches the existing screen. Each distinct physical position needs
 a fresh start; candidate trials at that held position share it.
 
-**Next:** run the owner's three-position `room/quick` arm smoke test: fixed
-speaker, microphone at 0°, −20° and +20°, baseline through the accepted
-speaker tune, then the same positions through a room candidate. Grade the
-supported band, including ordinary bass correction; no extra bass extension.
-This precedes the full listening-area proof in rows 1.6/2.4 and is not a
-substitute for it. Stereo rows 2.8–2.10, upper-band research and
-volume-dependent bass protection remain open.
+**JTS3 smoke test, 2026-09-09:** measured baseline and three Room settings
+at 0°, −20° and +20° (bundle `caf7ce97b429`), then tested the selected full
+candidate against the baseline at all three poses (`b665e586f2fe`).
+[#4684](https://github.com/jaspercurry/JTS/pull/4684) separates the 20 Hz Room
+sweep from the gated speaker floor; [#4685](https://github.com/jaspercurry/JTS/pull/4685)
+keeps UMIK-2 on one channel. Both merged after green CI and were deployed.
+
+Selected candidate `312259a0e71069ad7e051326101789560e6b35d8eb5f7aba43f64a4dc5a7e0d3`:
+60 Hz Q1 +3 dB, 105 Hz Q3 −6 dB, 245 Hz Q4 −2 dB. With the measured 3 dB
+headroom cost removed for comparison, 60 Hz gains 2.3 dB, the 105 Hz peak
+falls 4.0 dB, and the 245 Hz bump falls 1.6 dB. The 120–145 Hz trough deepens,
+but combined 90–145 Hz RMS error improves 4.1→2.8 dB against a flat reference.
+The stronger +5 dB bass trial did not earn its extra headroom cost.
+
+Full-range captures extend to 20 kHz. Above 350 Hz, the final pair differs
+by only 0.13 dB RMS after level alignment. Short-window checks of the saved
+tune also contain the upper-treble fall, with little change across windows;
+this does not support compensating it as a room effect. The windows are not
+certified reflection-free, and the full-range flat goal remains unmet.
+
+[#4700](https://github.com/jaspercurry/JTS/pull/4700) is deployed on JTS3
+(`84ed269ad`; PR open). Room adoption now ends with its exact measured-trial
+proof, without entering speaker VERIFY. The selected correction is applied;
+the saved and running graphs match the trial (`1a5facbf5a2f7fb9`). Speaker EQ,
+crossover, timing and protection are unchanged. Normal volume is restored,
+the arm is at 0°, and correction diagnostics report no failures or warnings.
+
+**Bass target:** the owner now chooses to retain HP40 and aim for useful
+linearity down to 40 Hz. That target was not achieved. The 40–50 Hz response
+is weak and inconsistent. Raw-audio inspection puts the 40 Hz band only
+about 2–7 dB above the preceding background, so it does not establish the
+driver's bass limit. Improve LF measurement contrast and diagnose the installed
+system before boosting it. The saved 40 Hz setting has no cited source;
+Dayton specifies Fs=40 Hz, not a recommended HP40. Do not label it a verified
+manufacturer limit. This is basic bass setup, separate from optional extension.
+
+**Next:** finish capture-only Room measurements (2.7b), then diagnose the
+low-bass response and complete the full listening-area proof (1.6/2.4).
+Three arm positions are a smoke test, not that proof. Stereo 2.8–2.10,
+upper-band research and volume-dependent bass protection remain open.
 
 ## How to resume from a fresh session
 
@@ -125,6 +158,10 @@ separate optional entry into those same tools; subjective voicing stays separate
 
 The owner wants Room to consider useful mid/treble correction, informed by the
 saved gated and off-axis speaker measurements as well as the seat cloud.
+The current goal is a flat, smooth response across the usable spectrum,
+including bass down to the owner's 40 Hz target. Assess the whole measured
+range; do not silently substitute a downward target slope or call a bass-only
+improvement full-range completion.
 Dirac is a research reference, not a promised implementation match.
 This resumes the question in `docs/room-correction-regime-plan.md` D2; its old
 1 kHz proposal and numeric bounds are not newly accepted policy.
@@ -138,12 +175,12 @@ magnitude median. Missing compatibility removes the attribution claim, not the
 ability to take another useful measurement.
 
 Research broad, spatially stable trends and bounded filters first, using the
-speaker's direct-sound and off-axis evidence to interpret them. A flat gated
-target is not automatically the right in-room target. Narrow moving dips do
+speaker's direct-sound and off-axis evidence to interpret them. Test the flat
+in-room objective against the direct-sound response. Narrow moving dips do
 not establish a correctable defect. Compare prediction, room measurements,
 direct-sound effects and listening at matched levels; report each separately.
 Uncertain benefit is a disclosure, not a safety stop. Exact filter bounds,
-upper frequency, target and any phase correction remain to be decided from
+upper correction frequency and any phase correction remain to be decided from
 the research and experiments; this plan changes no runtime ceiling or clamp.
 
 Source basis: [Toole, JAES 2015](https://aes.org/publications/elibrary-page/?id=17839)
@@ -322,6 +359,7 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 | 2.6 | **LANDED — #4662 and #4678.** One room summary per side and compatible measured set. Uses the canonical record reader, unique physical poses and common valid frequency coverage. New captures retain the resolved calibration curve identity and the accepted speaker source from the profile used to compile playback. Room composition preserves that basis and discloses match, difference or unknown; legacy missing facts stay unknown. | V | Separate candidates do not mix; retakes do not add positions. Narrow coverage still checks filter tails against the full room policy band. |
 | 2.7 | **LANDED — PR #4663, `b4e4ddda4`.** Registers the 11-position default (§1a) once; old `seat/cube` and `seat/express` identities retain their coordinates. Prompts/counts come from the registry; the runbook and generated menu agree. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Fixture preview and staged records agree on 11 mono sweeps. No hardware walk yet; stereo reaches 22 only after 2.8. No duplicated product pose list. |
 | 2.7a | **LANDED — PR #4683; ADR-0278.** Configurable layouts and defaults, explicit capture purpose/regime, and optional pose text use the existing flow. Full pose identity controls position batches. Room views accept tagged arm measurements with their true geometry. | P | Config edits work with five positions; 11/default and 3/quick preview, staging, analysis and evidence pins; packaged config loads from the wheel. |
+| 2.7b | **OPEN — capture-only cleanup; adoption deployed in #4700.** Give summed Room/reference walks a capture-only plan: CHECK, staged poses, then a completed evidence bundle. Include baseline and candidate trials. Reuse the recorder, graph admission, level checks, analysis and bank; omit speaker fitting and its entry/apply reference. Preserve the prior speaker review state. Room adoption already consumes its exact measured graph and ends in its own terminal state. | P | Three-position and 11-position room runs finish without per-driver MEASURE retries or a new speaker candidate; paired trials retain exact graph/calibration identity. Coordinate the plan/host seam with the speaker owner. |
 | 2.8 | Side-solo capture through each cabinet's accepted speaker tune, left then right at a held pose. Extend shared scope/routing with the speaker owner; account for side-specific level/trim and protection. | P | **NN**: actual graph mutes the other side and preserves all driver protection; receipt identifies the side; one Start per pose batch. |
 | 2.9 | **Moved from 6.1.** Per-side room emission and extraction, converged with `room_peqs_right`. Keep every side's evidence and filters separate; use a common target only over supported coverage. Extend the existing budget, apply and restore owners. | E | **NN**: distinct left/right filters survive candidate fingerprint, emission, readback, trial, apply and restore; mono behavior preserved. Remove the stereo refusal only once this path exists. |
 | 2.10 | Small Room entry/resume page (§1b), generated tool entry and optional method pointers. Use existing session, plots and human placement screen. | P | Fresh and resumed sessions identify the same saved tune/round; copied instructions refer to current tool contracts; no second state owner. |
@@ -373,8 +411,9 @@ until its experiment scope is settled. Shared files have one assigned writer.
 1. Refresh the affected briefs against this plan and current refs. Keep the
    existing speaker owner in charge of its engine; agree the side-solo and
    evidence contracts before editing shared capture/emitter files.
-2. Room: 2.7a is landed; run the three-position arm smoke test. Rows 1.6 → 2.4
-   remain the full listening-area mono proof. Finish the
+2. Room: 2.7a is landed; the three-position arm smoke test is complete.
+   Finish capture-only cleanup in 2.7b. Rows 1.6 → 2.4 remain the full
+   listening-area mono proof. Finish the
    side/trim decision in 2.5 and build 2.8/2.9 with the shared owner, plus
    2.10 at the UI boundary, then 2.12 for stereo.
    Neither room proof waits for bass extension, cardioid or upper-band EQ.
