@@ -37,7 +37,7 @@
 //! and rounds with [`clamp_i32`]. The narrow round trip is bit-transparent —
 //! [`SPINE_SCALE_F64`] explains why, `spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly`
 //! pins the arithmetic, and the END-TO-END proof is jasper-fanin's
-//! `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`, which
+//! `the_direct_route_is_byte_identical_to_its_committed_golden`, which
 //! asserts a whole period of the shipping route exactly.
 //!
 //! # The capture-follower ratio convention
@@ -1130,7 +1130,7 @@ mod tests {
     /// clamp_i16(acc)`) across the interesting magnitudes, INCLUDING the
     /// half-step values where a rounding-mode difference would show, and both
     /// saturation rails. The end-to-end half of the same claim is jasper-fanin's
-    /// `the_narrow_direct_route_is_byte_identical_to_its_committed_golden` —
+    /// `the_direct_route_is_byte_identical_to_its_committed_golden` —
     /// exact, whole-period, and on the shipping route.
     #[test]
     fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
