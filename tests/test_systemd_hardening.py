@@ -1293,13 +1293,16 @@ def test_single_statedirectory_owner():
 # doctor/drift.py's _UNIT_DIRECTIVES["StartLimitAction"] keys below: an
 # added/removed reboot-ladder member that forgets the doctor drift table
 # (or vice versa) is exactly the recurrence this guard exists for.
+#
+# StartLimitAction itself is NOT duplicated here — doctor/drift.py's
+# _UNIT_DIRECTIVES["StartLimitAction"] is the one owner of its expected
+# values; test_restart_policy_matches_the_shipped_unit_file reads from it.
 RESTART_POLICY: dict[str, dict[str, object]] = {
     "jasper-outputd": {
         "Restart": "on-failure",
         "RestartSec": "5",
         "StartLimitIntervalSec": "300",
         "StartLimitBurst": "5",
-        "StartLimitAction": "reboot",
         "SuccessExitStatus": (),
         "RestartPreventExitStatus": ("78",),
         "TimeoutStopSec": "5s",
@@ -1309,7 +1312,6 @@ RESTART_POLICY: dict[str, dict[str, object]] = {
         "RestartSec": "2",
         "StartLimitIntervalSec": "60",
         "StartLimitBurst": "5",
-        "StartLimitAction": "none",
         "SuccessExitStatus": (),
         "RestartPreventExitStatus": (),
         "TimeoutStopSec": None,
@@ -1319,7 +1321,6 @@ RESTART_POLICY: dict[str, dict[str, object]] = {
         "RestartSec": "5",
         "StartLimitIntervalSec": "300",
         "StartLimitBurst": "4",
-        "StartLimitAction": "reboot",
         "SuccessExitStatus": ("66", "78"),
         "RestartPreventExitStatus": ("66", "78"),
         "TimeoutStopSec": "5s",
@@ -1329,7 +1330,6 @@ RESTART_POLICY: dict[str, dict[str, object]] = {
         "RestartSec": "5",
         "StartLimitIntervalSec": "300",
         "StartLimitBurst": "20",
-        "StartLimitAction": "reboot",
         "SuccessExitStatus": ("66", "78"),
         "RestartPreventExitStatus": ("66", "78"),
         "TimeoutStopSec": "14s",
@@ -1339,7 +1339,6 @@ RESTART_POLICY: dict[str, dict[str, object]] = {
         "RestartSec": "5",
         "StartLimitIntervalSec": "300",
         "StartLimitBurst": "4",
-        "StartLimitAction": "reboot",
         "SuccessExitStatus": ("78",),
         "RestartPreventExitStatus": ("78",),
         "TimeoutStopSec": "10s",
@@ -1349,7 +1348,6 @@ RESTART_POLICY: dict[str, dict[str, object]] = {
         "RestartSec": "5",
         "StartLimitIntervalSec": "300",
         "StartLimitBurst": "5",
-        "StartLimitAction": "reboot",
         "SuccessExitStatus": (),
         "RestartPreventExitStatus": ("78",),
         "TimeoutStopSec": "5s",
@@ -1361,7 +1359,6 @@ _RESTART_POLICY_SCALAR_DIRECTIVES = (
     "RestartSec",
     "StartLimitIntervalSec",
     "StartLimitBurst",
-    "StartLimitAction",
     "TimeoutStopSec",
 )
 _RESTART_POLICY_LIST_DIRECTIVES = ("SuccessExitStatus", "RestartPreventExitStatus")
@@ -1392,3 +1389,9 @@ def test_restart_policy_matches_the_shipped_unit_file(unit_name):
         assert values_for(unit, directive) == expected[directive], (
             unit_name, directive, expected[directive],
         )
+    expected_start_limit_action = doctor_drift._UNIT_DIRECTIVES["StartLimitAction"][
+        unit_name
+    ]
+    assert value_for(unit, "StartLimitAction") == expected_start_limit_action, (
+        unit_name, "StartLimitAction", expected_start_limit_action,
+    )

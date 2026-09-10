@@ -1411,8 +1411,12 @@ class AirPlayHealthSampler:
         audio path, unrelated to whether an AirPlay session is in sight.
         """
         is_camilla = unit == CAMILLA_UNIT
-        last_scan_at = self._last_camilla_scan_at if is_camilla else self._last_shairport_scan_at
-        since = self._camilla_journal_since if is_camilla else self._shairport_journal_since
+        if is_camilla:
+            last_scan_at = self._last_camilla_scan_at
+            since = self._camilla_journal_since
+        else:
+            last_scan_at = self._last_shairport_scan_at
+            since = self._shairport_journal_since
         scan_window = now - last_scan_at if last_scan_at else 0.0
         material_short_reads = 0
         try:
