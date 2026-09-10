@@ -1744,9 +1744,19 @@ def test_s0_replay_unknown_class_pins_the_undeclared_regime(s0_replay):
     exists, and the 12 k / 16 k octave summaries stay
     ``LIMITED_BY_CLASS_PRIOR`` even with the mask composed in. The 8.7 kHz
     rung is where the two regimes differ: ``compression_horn`` (``full_to``
-    10 kHz) has 22.80 dB of real authority there and the exclusion is what
-    removes it, while ``unknown`` has 13.99 dB from the prior alone. This is
-    why every 8-16 kHz statement about these terms has to name its class.
+    10 kHz) has ``ENVELOPE_CEILING_SENTINEL_DB`` (24.00 dB) of real authority
+    there and the exclusion is what removes it, while ``unknown`` has 13.99 dB
+    from the prior alone. This is why every 8-16 kHz statement about these
+    terms has to name its class.
+
+    Re-measured after #3297 widened the reference tier's mic-trust taper
+    (``_MIC_TRUST_TABLE_HZ["reference"]``'s full-trust shelf, 8 kHz -> 12 kHz,
+    owner ruling 2026-08-29): 8.7 kHz used to sit just past the old shelf, in
+    the taper, at 22.80 dB; it now sits inside the widened shelf, where
+    ``compression_horn``'s class prior no longer trims it either, so both
+    terms read the flat sentinel. ``unknown``'s 13.99 dB is untouched -- its
+    own class prior tapers well below 8.7 kHz regardless of the mic-trust
+    table.
     """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     first_interval = s0_replay.registry.excluded_bands_hz[0]
@@ -1764,7 +1774,7 @@ def test_s0_replay_unknown_class_pins_the_undeclared_regime(s0_replay):
 
     # The 8.7 kHz rung, the two class regimes side by side.
     assert float(bare_horn.allowed_depth_db[first].max()) == pytest.approx(
-        22.80, abs=0.02
+        ENVELOPE_CEILING_SENTINEL_DB, abs=0.02
     )
     assert float(bare_unknown.allowed_depth_db[first].max()) == pytest.approx(
         13.99, abs=0.02
