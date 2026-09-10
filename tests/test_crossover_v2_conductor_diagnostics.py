@@ -25,6 +25,10 @@ from jasper.active_speaker.crossover_v2_flow import (
     _analysis_json,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.active_speaker.calibration_level import (
+    MIC_USABLE_MAX_DBFS,
+    MIC_USABLE_MIN_DBFS,
+)
 from jasper.audio_measurement.program import (
     RoleBand,
     BASE_STIMULUS_PEAK_DBFS,
@@ -384,6 +388,55 @@ def test_check_diag_logs_full_numbers_on_accept(caplog):
     # what the CROSS verdict is now decided on.
     assert fields["woofer_channel_map_isolation_db"] == "17.0"
     assert fields["tweeter_channel_map_isolation_db"] == "20.0"
+
+
+def test_check_emits_a_named_row_per_driver_with_its_absolute_level(caplog):
+    """#1922: the CHECK verdict reduces every per-driver fact to one boolean.
+
+    So a ``channel_map_mismatch`` cannot say WHICH driver was silent, though
+    the system knows. One row per role restores the attribution, and carries
+    the fact the whole gate chain never asks: an ABSOLUTE level. Every shipped
+    rung is relative (rise above ambient, ratio within a pilot pair, SNR
+    floor), so a 12 dB rise in a very quiet room passes arbitrarily quiet and
+    nothing bounds the top at all.
+
+    Advisory, and pinned as such: the verdict is unchanged by the level window
+    (#1894 — adjudication explores inside the declared fence, never moves it).
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        ambient_report={"bands": [{"level_dbfs": -70.0}]},
+        pilots=(
+            _pilot_obs("woofer", peak_hi_dbfs=-24.0),
+            # Present, correct, and far under the usable window's floor: the
+            # exact shape every relative rung passes.
+            _pilot_obs("tweeter", peak_hi_dbfs=-72.0),
+        ),
+        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -11.0, "tweeter": -13.0},
+            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    # ADVISORY: the quiet driver does not refuse the phase.
+    assert verdict["accepted"] is True
+
+    rows = event_field_maps(caplog, "correction.crossover_v2_check_pilot")
+    assert [row["role"] for row in rows] == ["woofer", "tweeter"]
+    assert rows[0]["level_sanity"] == "usable"
+    assert rows[1]["level_sanity"] in {"low", "too_quiet"}
+    # The window travels with the reading, so an old row stays readable after
+    # the constants move.
+    assert rows[1]["level_usable_min_dbfs"] == str(MIC_USABLE_MIN_DBFS)
+    assert rows[1]["level_usable_max_dbfs"] == str(MIC_USABLE_MAX_DBFS)
+    # The per-driver verdicts the aggregate collapsed, named.
+    assert rows[1]["channel_map_ok"] == "true"
+    assert rows[1]["peak_hi_dbfs"] == "-72.0"
 
 
 def test_check_diag_names_the_isolation_ratio_and_its_bound_on_a_refusal(caplog):

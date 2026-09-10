@@ -19,6 +19,11 @@ import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
 
+from jasper.active_speaker.calibration_level import (
+    MIC_USABLE_MAX_DBFS,
+    MIC_USABLE_MIN_DBFS,
+    classify_mic_meter,
+)
 from jasper.active_speaker.crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
 )
@@ -271,7 +276,45 @@ def _log_check_diag(
         channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
         channel_map_cross_judged_above_db=CHANNEL_MAP_TARGET_RISE_DB,
     )
+    _log_check_pilot_rows(logger, analysis, session_id=session_id)
     _log_measure_level_solve(logger, analysis, session_id=session_id)
+
+
+def _log_check_pilot_rows(
+    logger: logging.Logger, analysis: ProgramAnalysis, *, session_id: str,
+) -> None:
+    """One event per driver present: which one failed, and how loud it was (#1922).
+
+    The CHECK verdict reduces every per-driver fact to one aggregate boolean, so a
+    ``channel_map_mismatch`` cannot say WHICH driver was silent even though the
+    system knows. A row per role restores that attribution without widening the
+    fixed woofer/tweeter diag line above.
+
+    ``level_sanity`` is the fact CHECK's gate chain never asks: every rung is
+    RELATIVE (rise above ambient, ratio within a pilot pair, SNR floor), so a
+    12 dB rise in a very quiet room passes at an absurdly low absolute level and
+    nothing bounds the top at all. Graded against the shipped microphone window
+    (:func:`~jasper.active_speaker.calibration_level.classify_mic_meter`) rather
+    than a number invented here. ADVISORY: it decides nothing, raises no declared
+    ceiling (#1894), and the refusal wiring is not built.
+    """
+    for pilot in analysis.pilots:
+        log_event(
+            logger, "correction.crossover_v2_check_pilot",
+            session_id=session_id,
+            role=pilot.role,
+            channel_map_ok=pilot.channel_map_ok,
+            snr_valid=pilot.snr_valid,
+            linearity_ok=pilot.linearity_ok,
+            # The gain-solve reference level, NOT the ambient-subtracted one:
+            # `PilotObservation` forbids the latter reaching an ABSOLUTE consumer.
+            peak_hi_dbfs=round(float(pilot.peak_hi_dbfs), 2),
+            level_sanity=classify_mic_meter(
+                observed_dbfs=float(pilot.peak_hi_dbfs)
+            )["status"],
+            level_usable_min_dbfs=MIC_USABLE_MIN_DBFS,
+            level_usable_max_dbfs=MIC_USABLE_MAX_DBFS,
+        )
 
 
 def _log_measure_level_solve(
