@@ -242,9 +242,9 @@ class ProgramPlaybackTransaction:
         except ProgramPlaybackRefused:
             stage, incident = STAGE_READY, STIMULUS_ADMISSION_REFUSED
             observation = PlaybackObservation(emission="not_started")
-        except StimulusCaptureError:
+        except StimulusCaptureError as exc:
             stage = STAGE_RESTORE if played else STAGE_READY
-            incident = STIMULUS_NOT_CAPTURED
+            incident = str(getattr(exc, "code", STIMULUS_NOT_CAPTURED))
         except ProgramPlaybackError:
             stage, incident = STAGE_LOCK, STIMULUS_PLAY_FAILED
         except PlaybackError as exc:
