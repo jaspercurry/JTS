@@ -28,8 +28,9 @@ States (one PeerState enum):
               end, send END and return to IDLE.
   SUPPRESSED  a foreign peer is active (we saw their CLAIM or
               SESSION_HEARTBEAT). Local wakes below the break
-              threshold are ignored. Returns to IDLE when the
-              foreign session ends or the heartbeat times out.
+              threshold stand voice down instead of opening a
+              session. Returns to IDLE when the foreign session
+              ends or the heartbeat times out.
 
 Design notes:
 
@@ -282,12 +283,13 @@ class PeeringStateMachine:
 
     def _on_local_wake(self, ev: LocalWake) -> list[Action]:
         # In SUPPRESSED, only a strong wake breaks the suppression.
-        # Below the break threshold, swallow silently (the user can
-        # walk to the active speaker or wait for the session to end).
+        # Below the break threshold, stand voice down so its pending
+        # ARBITRATE resolves (the user can walk to the active speaker
+        # or wait for the session to end).
         if self._state is PeerState.SUPPRESSED:
             if ev.score < self._p.break_threshold:
                 logger.debug(
-                    "local wake (score=%.2f) ignored: suppressed by peer %s",
+                    "local wake (score=%.2f) declined: suppressed by peer %s",
                     ev.score, self._foreign_peer,
                 )
                 return [StandDown()]
@@ -304,12 +306,11 @@ class PeeringStateMachine:
         if self._state in (PeerState.IDLE, PeerState.SUPPRESSED):
             return self._begin_candidate(ev)
 
-        # CANDIDATE (already arbitrating a previous wake): drop the
-        # spurious second wake from voice. The detector's own
-        # refractory period should prevent this in practice; this is
-        # belt-and-braces.
-        # WINNER / ACTIVE: also drop — we're already handling a
-        # session.
+        # CANDIDATE: an arbitration is already in flight for this
+        # utterance — most often one adopted from a peer's WAKE that
+        # our own detector then confirms locally. WINNER / ACTIVE: we
+        # are already handling a session. Stand voice down in every
+        # case rather than leave its ARBITRATE hanging.
         return [StandDown()]
 
     def _on_peer_wake(self, ev: PeerWake) -> list[Action]:
@@ -402,10 +403,16 @@ class PeeringStateMachine:
             actions.append(CancelTimer(timer_id=TIMER_HEARTBEAT_SEND))
             self._reset_epoch()
 
-        # Cancel any pending arb-window timer + tell voice to stand
+        # Same-epoch CLAIM: the peer won the round we are bidding in.
+        # Cancel the pending arb-window timer + tell voice to stand
         # down. Without the StandDown, the pending ARBITRATE RPC would
         # hang until its hard timeout.
         if self._state is PeerState.CANDIDATE:
+            if not (self._epoch and self._epoch.epoch == ev.epoch):
+                # Different epoch — an unrelated wake elsewhere in the
+                # house (DA-0021, candidate side). Keep arbitrating: if
+                # we conceded here nobody would answer the local user.
+                return []
             actions.append(StandDown())
             actions.append(CancelTimer(timer_id=TIMER_ARB_WINDOW))
             self._reset_epoch()

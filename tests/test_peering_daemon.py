@@ -19,6 +19,7 @@ import pytest_asyncio
 from jasper.peering import daemon as daemon_mod
 from jasper.peering.config import PeeringConfig, PeeringMode
 from jasper.peering.rank import WakeReport
+from jasper.peering.state import PeerState
 from jasper.peering.transport import (
     IncomingClaim,
     IncomingWake,
@@ -100,6 +101,20 @@ async def _await_pending_epoch(d, timeout: float = 2.0) -> None:
     async def _poll() -> None:
         while d._pending_epoch is None:
             await asyncio.sleep(0)
+
+    await asyncio.wait_for(_poll(), timeout)
+
+
+async def _await_state(d, want, timeout: float = 2.0) -> None:
+    """Block until the state machine reaches `want`.
+
+    The arb-window decision lands independently of the ARBITRATE RPC
+    (which can fail open first), so arming a state means waiting for
+    the machine, not for the RPC reply.
+    """
+    async def _poll() -> None:
+        while d._sm.state is not want:
+            await asyncio.sleep(0.001)
 
     await asyncio.wait_for(_poll(), timeout)
 
@@ -398,24 +413,36 @@ async def _arm_already_winner(d, transport):
         "score": 0.9, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
     })
     assert first["result"] == "WIN"
+    await _await_state(d, PeerState.WINNER)
 
 
-async def _claim_for_another_epoch(d, transport):
-    """A peer CLAIMs an epoch that is not ours while we arbitrate."""
+async def _arm_active(d, transport):
+    """Voice confirmed the turn, so a second wake arrives in ACTIVE."""
+    await _arm_already_winner(d, transport)
+    await d._handle_session_started(d._pending_epoch)
+    await _await_state(d, PeerState.ACTIVE)
+
+
+async def _claim_for_our_epoch(d, transport):
+    """A peer CLAIMs the very epoch we are bidding in — it won."""
     await _await_pending_epoch(d)
-    await transport.inject(IncomingClaim(epoch="ep-other", peer_id="bob-uuid", ts_ns=0))
+    await transport.inject(
+        IncomingClaim(epoch=d._pending_epoch, peer_id="bob-uuid", ts_ns=0),
+    )
 
 
-@pytest.mark.parametrize(("arm", "during"), (
-    (_arm_suppressed, None),
-    (_arm_already_winner, None),
-    (None, _claim_for_another_epoch),
+@pytest.mark.parametrize(("arm", "during", "end_state", "broadcasts"), (
+    (_arm_suppressed, None, PeerState.SUPPRESSED, False),
+    (_arm_already_winner, None, PeerState.WINNER, False),
+    (_arm_active, None, PeerState.ACTIVE, False),
+    (None, _claim_for_our_epoch, PeerState.SUPPRESSED, True),
 ))
 async def test_terminal_wake_paths_resolve_arbitrate_as_lose(
-    daemon_setup, arm, during,
+    monkeypatch, daemon_setup, arm, during, end_state, broadcasts,
 ):
     """Every wake path that declines to arbitrate must still resolve
-    the ARBITRATE RPC as LOSE.
+    the ARBITRATE RPC as LOSE, without leaking a WAKE for a round we
+    are not bidding in.
 
     Leaving the future unresolved fails open to WIN once
     ARBITRATE_RPC_TIMEOUT_SEC elapses, so the speaker that should have
@@ -424,10 +451,15 @@ async def test_terminal_wake_paths_resolve_arbitrate_as_lose(
     d, transport = daemon_setup
     if arm is not None:
         await arm(d, transport)
+    await asyncio.sleep(0)  # let the arm's own sends land before we clear
+    transport.sent.clear()
+    # Well under the 80 ms arb window: these paths must decide without
+    # it, so a regression fails fast instead of failing open.
+    monkeypatch.setattr(daemon_mod, "ARBITRATE_RPC_TIMEOUT_SEC", 0.02)
 
     rpc = asyncio.ensure_future(d._handle_arbitrate({
         # Under break_threshold=0.85, which the SUPPRESSED path keys
-        # off; the other two paths never look at the score.
+        # off; the other paths never look at the score.
         "score": 0.60, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
     }))
     if during is not None:
@@ -437,6 +469,30 @@ async def test_terminal_wake_paths_resolve_arbitrate_as_lose(
     # "WIN", not as a hung test.
     result = await asyncio.wait_for(rpc, timeout=daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC * 2)
     assert result["result"] == "LOSE"
+    assert d._sm.state is end_state
+    await asyncio.sleep(0)
+    assert bool(transport.sent) is broadcasts
+
+
+async def test_foreign_claim_for_another_epoch_leaves_us_arbitrating(daemon_setup):
+    """DA-0021, candidate side: a CLAIM belonging to an unrelated wake
+    elsewhere in the house must not cancel our round. Conceding to it
+    stands voice down with no cue, so nobody answers the local user."""
+    d, transport = daemon_setup
+
+    rpc = asyncio.ensure_future(d._handle_arbitrate({
+        "score": 0.90, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
+    }))
+    await _await_pending_epoch(d)
+    await transport.inject(
+        IncomingClaim(epoch="ep-other", peer_id="bob-uuid", ts_ns=0),
+    )
+
+    result = await asyncio.wait_for(rpc, timeout=daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC * 2)
+    assert result["result"] == "WIN"
+    # WINNER, not CANDIDATE: the arb window closed and decided, so this
+    # is a real WIN rather than the RPC failing open.
+    assert d._sm.state is PeerState.WINNER
 
 
 # ---------- timeout fail-open ----------
