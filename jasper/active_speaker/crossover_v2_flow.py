@@ -3202,8 +3202,8 @@ class CrossoverV2Session:
             else analysis.predicted_sum
         )
         # The last GRADING before a candidate can be proposed. It refuses
-        # nothing; what it returns is the level-frame record the publish banks.
-        level_frame_finding = self._assert_accountable(
+        # nothing; what it returns is the accountability record the publish banks.
+        accountability_finding = self._assert_accountable(
             predicted_sum, analysis.predicted_sum, linearization=linearization,
             # Read off the CANDIDATE rather than ``self._prescribed_driver``: the
             # bar below is about the graph this apply would emit.
@@ -3214,7 +3214,7 @@ class CrossoverV2Session:
             predicted_sum=predicted_sum,
             analysis=analysis,
             cloud=cloud,
-            level_frame_finding=level_frame_finding,
+            accountability_finding=accountability_finding,
             linearization=linearization,
         )
 
@@ -3314,7 +3314,7 @@ class CrossoverV2Session:
         *,
         predicted_sum: Any,
         commanded_delta: Any,
-        level_frame_finding: Mapping[str, Any] | None,
+        accountability_finding: Mapping[str, Any] | None,
         realized_branch_level: Mapping[str, Any] | None = None,
         declared_transfer: Any = None,
         linearization: _LinearizationState | None = None,
@@ -3342,7 +3342,7 @@ class CrossoverV2Session:
             session_id=self.session_id,
             predicted_response_after=predicted_sum,
             commanded_delta=commanded_delta,
-            accountability=level_frame_finding,
+            accountability=accountability_finding,
             realized_branch_level=realized_branch_level,
             evidence_identities={
                 "session_id": self.session_id,
@@ -3366,7 +3366,7 @@ class CrossoverV2Session:
             else ""
         )
         self._seams.publish_candidate(candidate)
-        self._publish_level_frame_finding(level_frame_finding)
+        self._publish_accountability_finding(accountability_finding)
 
     def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
         """Make a built candidate REAL: stash it, publish it, disclose it."""
@@ -3383,7 +3383,7 @@ class CrossoverV2Session:
                 analysis, predicted_sum, self._fc_hz,
             ),
             declared_transfer=self._declared_transfer_for(analysis, predicted_sum),
-            level_frame_finding=built.level_frame_finding,
+            accountability_finding=built.accountability_finding,
             # Read off this build's own state (#2392).
             realized_branch_level=_contracts.realized_branch_level(
                 built.linearization.realized_branch_level,
@@ -3411,10 +3411,10 @@ class CrossoverV2Session:
             "headroom_cost_db": self._candidate_headroom_cost_db(),
         }
 
-    def _publish_level_frame_finding(
+    def _publish_accountability_finding(
         self, record: Mapping[str, Any] | None,
     ) -> None:
-        """Persist the banked frame disagreement, or say why it was not.
+        """Persist the banked accountability finding, or say why it was not.
 
         Called AFTER ``publish_candidate``, inside :meth:`_commit_measure_candidate`,
         which buys three things: once per session behind the ``_candidate`` guard (the

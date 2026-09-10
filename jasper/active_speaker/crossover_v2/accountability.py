@@ -36,7 +36,7 @@ __all__ = [
     "AccountabilityDecision",
     "GateRecord",
     "assess_accountability",
-    "level_frame_record",
+    "accountability_record",
 ]
 
 #: A journal name is a grep contract — tests and the field runbooks both match
@@ -93,10 +93,10 @@ class AccountabilityDecision:
     spec_report: dict[str, Any] | None = None
 
 
-def level_frame_record(
+def accountability_record(
     state: LinearizationState,
 ) -> Mapping[str, Any] | None:
-    """This session's banked level-frame reservation, as flat evidence.
+    """This session's banked accountability reservation, as flat evidence.
 
     Built when EITHER level check has something to report, from the plan this
     candidate's own build returned; no measurement and no second verdict. Flat,
@@ -293,7 +293,7 @@ def assess_accountability(
             level=logging.WARNING,
         ))
     # Built from the state, so it covers whichever of the two checks fired.
-    finding = level_frame_record(state)
+    finding = accountability_record(state)
 
     # --- item 2: spec-grade the prediction ---------------------------
     #

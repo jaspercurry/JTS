@@ -1154,7 +1154,7 @@ def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
         ),
         predicted_sum=None,
         commanded_delta=None,
-        level_frame_finding=None,
+        accountability_finding=None,
     )
     assert conductor.measure_alignment_objective == "explicit_prescription_committed"
 

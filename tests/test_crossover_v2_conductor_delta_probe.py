@@ -1472,7 +1472,7 @@ def test_an_ordinary_session_banks_no_estimator_finding():
 
     Pinned because "banks a finding" is a side effect
     (:func:`~jasper.active_speaker.crossover_v2.accountability.
-    level_frame_record`) and the cheapest way for it to go wrong is
+    accountability_record`) and the cheapest way for it to go wrong is
     to fire unconditionally — which would put a diagnosis in front of every
     household regardless of evidence.
 

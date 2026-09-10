@@ -690,7 +690,7 @@ def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
 
 def _level_frame_record(**overrides: object) -> dict:
     """A banked record in the shape
-    ``crossover_v2.accountability.level_frame_record`` emits.
+    ``crossover_v2.accountability.accountability_record`` emits.
 
     Numbers are the conductor fixture's own, measured in
     ``tests/test_crossover_v2_conductor.py`` on a woofer carrying an extra
@@ -740,7 +740,7 @@ def _level_frame_finding(**overrides: object):
 
 
 def _realized_only_record(**overrides: object) -> dict:
-    """The record ``level_frame_record`` builds when ONLY the realized check
+    """The record ``accountability_record`` builds when ONLY the realized check
     fires — the shape the realized-level demotion (doctrine deviation (i))
     made reachable, and the one that used to be a refusal instead.
 

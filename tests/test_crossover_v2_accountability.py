@@ -198,7 +198,7 @@ def test_a_realized_disclosure_survives_a_fit_that_produced_no_core_bands():
     """The record is the DURABLE half of the disclosure, so it must not vanish
     on the one input the realized check does not need.
 
-    ``level_frame_record`` takes the finding's band from the per-role CORE
+    ``accountability_record`` takes the finding's band from the per-role CORE
     spans — the bands the fit's two medians were computed over. When the fit
     produced none, that used to drop the whole record and leave the journal
     line as the only trace. Harmless while the realized check REFUSED (the

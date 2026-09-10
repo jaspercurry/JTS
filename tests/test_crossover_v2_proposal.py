@@ -463,7 +463,7 @@ def test_the_commit_seam_stashes_the_proposal_and_its_durable_identity():
         candidate,
         predicted_sum=None,
         commanded_delta=None,
-        level_frame_finding=None,
+        accountability_finding=None,
         realized_branch_level={"difference_db": -1.6},
     )
 
@@ -499,7 +499,7 @@ def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit(
         candidate,
         predicted_sum=None,
         commanded_delta=None,
-        level_frame_finding=None,
+        accountability_finding=None,
     )
 
     # The commit completed, whole.
@@ -548,7 +548,7 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
             predicted_sum=None, driver_responses=(), alignment=None,
         ),
         cloud=None,
-        level_frame_finding=None,
+        accountability_finding=None,
         linearization=LinearizationState(
             outcome="fitted",
             realized_level_match=_FakeRealizedMatch(_REALIZED),
