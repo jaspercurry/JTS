@@ -36,6 +36,7 @@ from tests.install_surface import installer_shell_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
+BUILD_SANDBOX = ROOT / "deploy" / "lib" / "install" / "build-sandbox.sh"
 _REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
 
 # Every destination the install table should attempt, regardless of mid-loop
@@ -466,55 +467,79 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     )
 
 
-def _abort_after_park_harness(tmp_path: Path) -> str:
-    """install.sh's shape around the core-graph park: the EXIT trap that
-    replays the park record, the park itself, then a restart-tail command that
-    aborts under `set -euo pipefail`. `systemctl` is shimmed with real
-    stop/start state so `is-active` answers truthfully across the park."""
+def _stateful_systemctl(tmp_path: Path) -> str:
+    """A `systemctl` that keeps real active/inactive state under
+    `<tmp_path>/down`, so `is-active` answers truthfully across a park and
+    `try-restart` stays the no-op it is on an inactive unit. Every argv is
+    appended to one ordered call log."""
+    return f"""
+mkdir -p "{tmp_path}/down"
+systemctl() {{
+  local verb="${{1:-}}" arg now=0
+  local -a units=()
+  echo "systemctl $*" >> "{tmp_path}/calls.log"
+  shift || true
+  for arg in ${{1+"$@"}}; do
+    case "$arg" in
+      --now) now=1 ;;
+      -*) ;;
+      *) units+=("$arg") ;;
+    esac
+  done
+  (( ${{#units[@]}} )) || return 0
+  case "${{verb}}:${{now}}" in
+    is-active:*)
+      if [[ -e "{tmp_path}/down/${{units[0]}}" ]]; then return 1; fi ;;
+    is-enabled:*) echo enabled ;;
+    stop:*) for arg in "${{units[@]}}"; do : > "{tmp_path}/down/$arg"; done ;;
+    start:*|restart:*|enable:1)
+      for arg in "${{units[@]}}"; do rm -f "{tmp_path}/down/$arg"; done ;;
+  esac
+  return 0
+}}
+"""
+
+
+def _abort_mid_tail_harness(tmp_path: Path) -> str:
+    """install.sh's shape around the core-graph park: the REAL EXIT trap entry
+    (`install_exit_cleanup`, which reaches the unpark through
+    `_call_if_defined`), the park, then the first restart-tail command made to
+    fail under `set -euo pipefail`."""
     return f"""
 set -euo pipefail
 REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path}/systemd"
-mkdir -p "$SYSTEMD_DIR" "{tmp_path}/stopped"
-systemctl() {{
-  local verb="${{1:-}}" unit
-  case "$verb" in
-    is-active) unit="${{3:-}}"; [[ -e "{tmp_path}/stopped/$unit" ]] && return 1; return 0 ;;
-    is-enabled) echo enabled; return 0 ;;
-    stop) unit="${{2:-}}"; : > "{tmp_path}/stopped/$unit" ;;
-    start) unit="${{2:-}}"; rm -f "{tmp_path}/stopped/$unit" ;;
-  esac
-  echo "systemctl $*" >> "{tmp_path}/calls.log"
-  return 0
-}}
-_build_sandbox_log() {{ :; }}
+STATE_DIR="{tmp_path}/state"
+mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
+{_stateful_systemctl(tmp_path)}
+source "{FRAGMENT}"
+source "{BUILD_SANDBOX}"
 # install.sh's first unguarded restart-tail command, made to fail.
 ensure_outputd_camilla_statefile() {{ return 1; }}
-source "{FRAGMENT}"
-trap 'unpark_low_memory_build_units || true' EXIT
+trap install_exit_cleanup EXIT
 park_audio_clients_for_core_graph_restart
 ensure_outputd_camilla_statefile
 """
 
 
-def test_an_abort_after_the_park_unparks_every_stopped_client(tmp_path):
+def test_an_abort_mid_tail_leaves_no_parked_core_graph_unit_stopped(tmp_path):
     """F-S2-1: `park_audio_clients_for_core_graph_restart` stops voice, the
     output owner, mux and every renderer, and the restart tail below it runs
     unguarded under `set -e`. An abort there must not leave a silent speaker:
-    the EXIT trap has to start back exactly what the park stopped."""
+    once the trap has run, nothing the park stopped is still stopped."""
     r = subprocess.run(
-        ["bash", "-c", _abort_after_park_harness(tmp_path)],
+        ["bash", "-c", _abort_mid_tail_harness(tmp_path)],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert r.returncode != 0, r.stdout
     calls = (tmp_path / "calls.log").read_text().splitlines()
-    stopped = [c.split()[2] for c in calls if c.startswith("systemctl stop ")]
-    started = [c.split()[2] for c in calls if c.startswith("systemctl start ")]
-    assert "jasper-voice.service" in stopped, calls
-    assert len(started) == len(set(started)), f"unparked twice: {started}"
-    assert set(started) == set(stopped), f"unparked {started} != parked {stopped}"
+    stopped = {c.split()[2] for c in calls if c.startswith("systemctl stop ")}
+    # Not vacuous: the park has to have taken the speaker down first.
+    assert {"jasper-voice.service", "jasper-outputd.service"} <= stopped, calls
+    still_down = {p.name for p in (tmp_path / "down").iterdir()}
+    assert not still_down, f"left stopped after the trap: {sorted(still_down)}"
 
 
 def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
@@ -549,11 +574,19 @@ mktemp() {{ local d; d="{tmp_path}/txn"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
 
 
 def _profile_runtime_harness(
-    tmp_path: Path, function: str, keep: tuple[str, ...] = ()
+    tmp_path: Path,
+    function: str,
+    keep: tuple[str, ...] = (),
+    *,
+    extra_shims: str = "",
+    epilogue: str = "",
 ) -> str:
     """Run one profile's unit-install function with every fragment-defined
     helper stubbed into a recorder, so the systemctl argv it issues is
-    observable off-box. `keep` names further fragment functions to leave real."""
+    observable off-box. `keep` names further fragment functions to leave real.
+    `extra_shims` replaces recorder stubs with scenario-specific behaviour (it
+    is emitted last, so it wins); `epilogue` runs after the profile returns and
+    is where a test sources libraries the stub loop must not have seen."""
     # The stub loop never replaces the recorder's own shims, so the two can be
     # emitted in either order.
     real = " ".join(
@@ -569,8 +602,138 @@ for _stub in $(declare -F | awk '{{print $3}}'); do
     eval "${{_stub}}() {{ echo \\"fn ${{_stub}}\\" >> \\"$LOG\\"; return 0; }}"
 done
 {_transaction_recorder(tmp_path)}
+{extra_shims}
 {function}
+{epilogue}
 """
+
+
+# The park/record/unpark chain, left real inside the profile harness so the
+# trap sees the record the profile's own park built.
+_PARK_RECORD_CHAIN = (
+    "park_audio_clients_for_core_graph_restart",
+    "forget_core_graph_park_record",
+    "unpark_low_memory_build_units",
+    "_record_low_memory_parked_unit",
+    "_unpark_one_low_memory_unit",
+    "_jasper_unit_in_list",
+    "_jasper_unit_was_off_at_park",
+)
+
+# Units the restart tail deliberately leaves stopped in the scenario below.
+_LEFT_OFF_BY_THE_TAIL = frozenset(
+    {
+        "jasper-outputd.service",
+        "jasper-voice.service",
+        "jasper-snapclient.service",
+        "jasper-snapserver.service",
+    }
+)
+
+# The reconcilers own the core-graph units once the tail has run.
+# jasper-audio-hardware-reconcile is an absolute-path binary this harness
+# cannot shim, so require_outputd_ready — the fragment seam immediately behind
+# it — stands in for a park_output_audio that refused to validate the DAC lane.
+# reconcile_grouping_state genuinely stops snapclient/snapserver: both ship
+# disabled and are reconciler-started, so they are in OFF_AT_PARK and the
+# unpark's "left off on purpose" skip can never protect them.
+_TAIL_RECONCILER_SHIMS = """
+require_outputd_ready() {
+    systemctl stop jasper-outputd.service jasper-voice.service
+    return 0
+}
+reconcile_grouping_state() {
+    systemctl stop jasper-snapclient.service jasper-snapserver.service
+}
+"""
+
+
+def _run_green_tail(
+    tmp_path: Path, function: str, *, low_memory: bool = False
+) -> tuple[list[str], list[str]]:
+    """Run one profile's whole restart tail with the park/record/unpark chain
+    real, a stateful systemctl and reconcilers that leave
+    `_LEFT_OFF_BY_THE_TAIL` stopped, then enter the installer's REAL EXIT trap
+    entry. Returns the call log split at the sentinel: what the tail did, then
+    what the trap did."""
+    shims = _stateful_systemctl(tmp_path) + _TAIL_RECONCILER_SHIMS
+    if low_memory:
+        # build_swap_required lives in build-sandbox.sh, which the stub loop
+        # must not have seen; force the constrained-build park on.
+        shims += (
+            "build_swap_required() { return 0; }\npark_low_memory_build_units\n"
+        )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _profile_runtime_harness(
+                tmp_path,
+                function,
+                keep=(*_PARK_RECORD_CHAIN, "park_low_memory_build_units"),
+                extra_shims=shims,
+                epilogue=(
+                    f'echo TAIL_DONE >> "{tmp_path}/calls.log"\n'
+                    f'source "{BUILD_SANDBOX}"\n'
+                    "install_exit_cleanup\n"
+                ),
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert "TAIL_DONE" in calls, calls
+    cut = calls.index("TAIL_DONE")
+    return calls[:cut], calls[cut + 1:]
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_the_exit_trap_starts_nothing_after_a_green_restart_tail(
+    tmp_path, function
+):
+    """The park record exists for an abort, not for a success. Once the
+    restart tail has run, its reconcilers own every parked core-graph unit and
+    one they left stopped is stopped ON PURPOSE — an output lane the hardware
+    reconciler refused to validate, a follower's snapserver. Replaying the
+    record then would start a renderer against a rejected lane, and would start
+    a second snapserver on a leader. After a green tail the trap must start
+    nothing."""
+    tail, trap = _run_green_tail(tmp_path, function)
+
+    # Not vacuous: the park must have recorded these (the shim reports every
+    # unit active until it is stopped) and the tail must have left them down.
+    parked = {c.split()[2] for c in tail if c.startswith("systemctl stop ")}
+    assert _LEFT_OFF_BY_THE_TAIL <= parked, tail
+    still_down = {p.name for p in (tmp_path / "down").iterdir()}
+    assert _LEFT_OFF_BY_THE_TAIL <= still_down, sorted(still_down)
+
+    started = [
+        call
+        for call in trap
+        if re.match(r"systemctl (start|restart|try-restart) ", call)
+        or call.startswith("systemctl enable --now ")
+    ]
+    assert not started, f"the trap replayed the park after a green tail: {started}"
+
+
+def test_a_green_tail_keeps_the_low_memory_build_park_restorable(tmp_path):
+    """The other half of the same record. `park_low_memory_build_units` runs
+    before the Rust builds and stops a phase the restart tail does NOT put
+    back: bt-agent is reached only by a `try-restart`, a no-op while it is
+    stopped. Dropping the core-graph entries at the end of the tail must not
+    take that phase with them — the trap is still its only restore."""
+    _, trap = _run_green_tail(tmp_path, "install_systemd_units", low_memory=True)
+    started = {
+        call.split()[2] for call in trap if call.startswith("systemctl start ")
+    }
+    assert "bt-agent.service" in started, trap
+    assert not (_LEFT_OFF_BY_THE_TAIL & started), sorted(started)
 
 
 @pytest.mark.parametrize(

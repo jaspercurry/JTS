@@ -881,12 +881,53 @@ park_audio_clients_for_core_graph_restart() {
     # JASPER_CORE_GRAPH_PARK_UNITS sourced at the top of this file.
     # Those restore steps run unguarded under `set -e`, so record each unit
     # before stopping it: the record is what install.sh's EXIT trap replays.
+    # forget_core_graph_park_record() drops the record again once they finish.
     local unit
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
         _record_low_memory_parked_unit "${unit}"
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
+}
+
+forget_core_graph_park_record() {
+    # Closes the window park_audio_clients_for_core_graph_restart opened. Once
+    # the restart tail has run, the reconcilers it invokes (audio-hardware,
+    # source-intent, AEC, grouping) OWN every JASPER_CORE_GRAPH_PARK_UNITS
+    # entry, and one they left stopped is stopped on purpose: an output lane
+    # the hardware reconciler refused to validate, a follower's snapserver.
+    # Replaying the park record over that would start units against a graph
+    # the reconciler rejected, so drop those entries — the trap then replays
+    # the park only when the install died BEFORE the tail converged.
+    #
+    # Only those entries. JASPER_LOW_MEMORY_BUILD_PARK_UNITS is disjoint from
+    # the core-graph list, its park happens far earlier (before the Rust
+    # builds), and the tail does not restart all of it — bt-agent is reached
+    # only by a `try-restart`, a no-op while it is stopped. The trap remains
+    # the sole restore for that phase, so its entries stay recorded.
+    local unit
+    local -a parked=() off_at_park=()
+    if (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )); then
+        for unit in "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; do
+            _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
+            parked+=("${unit}")
+        done
+    fi
+    if (( ${#JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]} )); then
+        for unit in "${JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]}"; do
+            _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
+            off_at_park+=("${unit}")
+        done
+    fi
+    JASPER_LOW_MEMORY_PARK_RECORD=()
+    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+    # Re-assign guarded: bash 3.2 under `set -u` rejects "${empty[@]}".
+    if (( ${#parked[@]} )); then
+        JASPER_LOW_MEMORY_PARK_RECORD=("${parked[@]}")
+    fi
+    if (( ${#off_at_park[@]} )); then
+        JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=("${off_at_park[@]}")
+    fi
 }
 
 restart_core_camilla_after_dsp_reconcile() {
@@ -955,7 +996,8 @@ JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
 # Units this install actually STOPPED — the core-graph park on every box, plus
 # the extra phase a constrained build window adds — so an aborted install can
 # put back exactly what it took away: no more (a unit the profile deliberately
-# keeps parked must stay parked) and no less.
+# keeps parked must stay parked) and no less. The core-graph half leaves again
+# through forget_core_graph_park_record once the restart tail has converged.
 JASPER_LOW_MEMORY_PARK_RECORD=()
 
 # The subset of the record that was ALREADY `disabled`/`masked` when it was
@@ -1350,6 +1392,8 @@ start_streambox_runtime_units() {
     # per-box ring evidence as any other box, and the independent USB decision
     # still arms DIRECT capture from canonical source intent either way.
     resolve_fanin_coupling_default
+    # Last step that can leave a core-graph unit deliberately stopped.
+    forget_core_graph_park_record
     systemctl enable jasper-wifi-guardian.service
     systemctl enable --now jasper-wifi-recover.timer
     systemctl enable jasper-bootloop-guard.service
@@ -1698,6 +1742,8 @@ install_systemd_units() {
     # sees the settled active-leader state. A no-op on an already-converged box
     # (confirm path, no daemon bounce).
     resolve_fanin_coupling_default
+    # Last step that can leave a core-graph unit deliberately stopped.
+    forget_core_graph_park_record
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
     # on fresh installs because the unit silently no-ops until the
