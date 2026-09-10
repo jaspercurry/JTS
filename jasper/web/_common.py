@@ -354,6 +354,19 @@ def restart_voice_daemon() -> RestartOutcome:
     return restart_systemd_units("jasper-voice")
 
 
+# The one sentence every saver appends about the daemon, so two buttons
+# cannot describe the same outcome differently. A deliberate skip is
+# neither a restart nor a failure, so it adds no clause at all.
+RESTART_CLAUSE = {
+    RestartOutcome.RAN: " Voice daemon restarting.",
+    RestartOutcome.SKIPPED: "",
+    RestartOutcome.REFUSED: (
+        " The voice daemon did not restart, so it is still running the old "
+        "settings — save again, or check System."
+    ),
+}
+
+
 def terminate_process(
     proc: subprocess.Popen[Any] | None,
     *,

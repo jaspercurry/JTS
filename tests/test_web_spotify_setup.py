@@ -25,8 +25,10 @@ import urllib.parse
 from email.message import Message
 from io import BytesIO
 
+import pytest
 
 from jasper.web import spotify_setup
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 from ._web_test_helpers import assert_canonical_page
 
@@ -328,7 +330,9 @@ def test_post_reset_credentials_flashes_via_cookie_not_query_param(monkeypatch):
     token = "y" * 64
     monkeypatch.setattr(spotify_setup, "_delete_creds_file", lambda: None)
     monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
-    monkeypatch.setattr(spotify_setup, "_restart_spotify_consumers", lambda: None)
+    monkeypatch.setattr(
+        spotify_setup, "_restart_spotify_consumers", lambda: RestartOutcome.RAN,
+    )
 
     body = ("csrf_token=" + token).encode()
     h = _Request(_handler_cls(), "/reset-credentials", body=body,
@@ -341,6 +345,29 @@ def test_post_reset_credentials_flashes_via_cookie_not_query_param(monkeypatch):
     assert "msg=" not in location
     cookies = h.header_values("Set-Cookie")
     assert any("jts_flash=Credentials%20cleared." in c for c in cookies)
+
+
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_reset_credentials_describes_the_restart_it_actually_got(
+    monkeypatch, outcome,
+):
+    token = "y" * 64
+    monkeypatch.setattr(spotify_setup, "_delete_creds_file", lambda: None)
+    monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
+    monkeypatch.setattr(
+        spotify_setup, "_restart_spotify_consumers", lambda: outcome,
+    )
+
+    body = ("csrf_token=" + token).encode()
+    h = _Request(_handler_cls(), "/reset-credentials", body=body,
+                 cookies="jts_csrf=" + token)
+    h.do_POST()
+
+    flash = urllib.parse.unquote(
+        next(c for c in h.header_values("Set-Cookie") if "jts_flash=" in c)
+        .split("jts_flash=", 1)[1].split(";", 1)[0],
+    )
+    assert flash == "Credentials cleared." + RESTART_CLAUSE[outcome]
 
 
 def test_get_root_unconfigured_renders_setup_wizard():
@@ -413,7 +440,7 @@ def test_post_setup_credentials_saves_and_restarts(monkeypatch):
     )
     monkeypatch.setattr(
         spotify_setup, "_restart_spotify_consumers",
-        lambda: calls["restart"].append(True),
+        lambda: calls["restart"].append(True) or RestartOutcome.RAN,
     )
     monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
 

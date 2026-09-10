@@ -39,6 +39,7 @@ from jasper.tool_state import (
     write_tool_state,
 )
 from jasper.web import tools_setup
+from jasper.web._common import RestartOutcome
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -796,6 +797,22 @@ def test_post_apply_bonded_follower_does_not_restart(tmp_path, monkeypatch):
     assert payload["restarted"] is False
     assert payload["reason"] == "bonded"
     assert restarted["n"] == 0
+
+
+def test_post_apply_reports_a_refused_restart_honestly(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("spotify_play")])
+    monkeypatch.setattr(
+        tools_setup, "restart_voice_daemon", lambda: RestartOutcome.REFUSED,
+    )
+    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
+    h.do_POST()
+    assert h.status == 200
+    payload = json.loads(h.wfile.getvalue().decode())
+    assert payload["restarted"] is False
+    assert payload["reason"] == "refused"
 
 
 def test_post_apply_is_rate_limited(tmp_path, monkeypatch):

@@ -66,6 +66,7 @@ from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
     JsonBodyError,
+    RestartOutcome,
     begin_request,
     bonded_follower_active,
     dispatch_get,
@@ -806,8 +807,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _write_apply_ts(cfg["apply_ts_path"], now)
         log_event(logger, "tools.apply", client=handler.address_string())
         # jasper-voice re-filters the registry against tool_state.env on
-        # restart (and re-writes the catalog JSON).
-        restart_voice_daemon()
+        # restart (and re-writes the catalog JSON). The gates above already
+        # cover both SKIPPED cases, so the only outcomes here are RAN/REFUSED.
+        if restart_voice_daemon() is RestartOutcome.REFUSED:
+            send_proxy_json(handler, json.dumps({
+                "restarted": False, "reason": "refused",
+                "message": "Saved, but the assistant did not restart — "
+                           "save again, or check System.",
+            }).encode(), status=200)
+            return
         send_proxy_json(handler, json.dumps({
             "restarted": True,
             "message": "Restarting the assistant to apply your changes…",

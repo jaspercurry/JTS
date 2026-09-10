@@ -37,6 +37,7 @@ from ..transit import geocode as geocode_mod
 from ..log_event import log_event
 from ..env_file import read_env_file
 from ._common import (
+    RESTART_CLAUSE,
     begin_request,
     csrf_field_html,
     form_guarded,
@@ -438,10 +439,10 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write weather.env")
             send_rejected_form(handler, page, flash=f"Could not save: {e}")
             return
-        restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         # No coords in the log — they're the household's home location.
         log_event(logger, "weather.save", client=handler.address_string())
-        send_see_other(handler, "./", flash="Saved. Voice daemon restarting.")
+        send_see_other(handler, "./", flash=f"Saved.{clause}")
 
     @form_guarded
     def _post_clear(
@@ -468,11 +469,11 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not clear weather.env")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
-        restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         log_event(logger, "weather.clear", client=handler.address_string())
         send_see_other(
             handler, "./",
-            flash="Cleared weather default. Voice restarting.",
+            flash=f"Cleared weather default.{clause}",
         )
 
     _GET_ROUTES = {"/": _get_index}

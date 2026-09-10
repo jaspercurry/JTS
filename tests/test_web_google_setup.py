@@ -268,7 +268,10 @@ def patched_common():
          mock.patch.object(google_setup, "send_html_response") as shr, \
          mock.patch.object(google_setup, "send_see_other", send_see_other), \
          mock.patch.object(web_common, "send_see_other", send_see_other), \
-         mock.patch.object(google_setup, "restart_voice_daemon") as rvd:
+         mock.patch.object(
+             google_setup, "restart_voice_daemon",
+             return_value=web_common.RestartOutcome.RAN,
+         ) as rvd:
         yield SimpleNamespace(
             begin_request=br, send_html_response=shr,
             send_see_other=send_see_other, restart_voice_daemon=rvd,
@@ -412,7 +415,22 @@ def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
     location = patched_common.send_see_other.call_args.args[1]
     assert location == "./"
     assert "msg=" not in location
-    assert patched_common.send_see_other.call_args.kwargs["flash"] == "Credentials cleared."
+    assert patched_common.send_see_other.call_args.kwargs["flash"] == (
+        "Credentials cleared." + web_common.RESTART_CLAUSE[web_common.RestartOutcome.RAN]
+    )
+
+
+@pytest.mark.parametrize("outcome", list(web_common.RestartOutcome))
+def test_reset_credentials_describes_the_restart_it_actually_got(
+    patched_common, tmp_path, outcome,
+):
+    patched_common.restart_voice_daemon.return_value = outcome
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
+    fake = _post_handler(cfg, "/reset-credentials")
+    with mock.patch.object(google_setup, "_delete_creds_file"):
+        fake.do_POST()
+    flash = patched_common.send_see_other.call_args.kwargs["flash"]
+    assert flash == "Credentials cleared." + web_common.RESTART_CLAUSE[outcome]
 
 
 def test_setup_credentials_failure_flashes_instead_of_raising(patched_common, tmp_path):
