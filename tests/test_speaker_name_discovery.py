@@ -100,7 +100,7 @@ async def test_find_bluetooth_conflicts_bounds_a_wedged_bus(
 
     assert result == []  # fail-open, same contract as every other scan failure here
     assert elapsed < 1.0
-    fields = event_fields(caplog, "speaker_name.bluetooth_scan_timeout")
+    fields = event_fields(caplog, "identity.bluetooth_scan_timeout")
     assert fields["timeout_sec"] == "0.05"
     # Even a connect() cancelled mid-flight must not leak the opened transport.
     assert [bus.disconnects for bus in buses] == [1]

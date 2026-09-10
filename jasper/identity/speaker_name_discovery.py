@@ -218,7 +218,7 @@ async def find_bluetooth_conflicts(
             return sorted(conflicts.values(), key=lambda c: c.name)
     except TimeoutError as e:
         log_event(
-            logger, "speaker_name.bluetooth_scan_timeout",
+            logger, "identity.bluetooth_scan_timeout",
             level=logging.WARNING, timeout_sec=timeout, error=str(e),
         )
         return []
