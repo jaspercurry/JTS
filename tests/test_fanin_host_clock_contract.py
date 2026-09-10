@@ -14,8 +14,8 @@ invariant *the daemon that owns the gadget capture owns the pitch ctl* it drives
 the host-clock ladder. The ladder/probe/servo itself is the SHARED
 ``rust/jasper-host-clock`` crate (byte-identical to solo mode); this file pins
 the ``JASPER_FANIN_HOST_CLOCK*`` env-key names + defaults + ranges (Rust-
-daemon-local, so ``tests/test_env_vars_codified.py``'s ``jasper/**`` scanner
-can't see them — this is the dedicated pin).
+daemon-local, outside any Python-side scanner's reach — this is the
+dedicated pin).
 
 The Rust-source grep-pins ``pytest.skip()`` if the fan-in sources are not
 present yet, mirroring the usbsink twin's idiom so the Python side never blocks
