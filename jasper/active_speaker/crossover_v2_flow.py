@@ -3427,10 +3427,11 @@ class CrossoverV2Session:
         try:
             self._seams.publish_findings(record)
         except (OSError, RuntimeError, TypeError, ValueError):
-            # ``…_publish_failed`` and not ``…_finding_failed``, because
-            # ``…_level_frame_finding`` is a RETIRED name (#2609).
+            # ``…_publish_failed`` rather than ``…_finding_failed``: the
+            # method persists a RECORD, and "finding" is the deleted
+            # level-frame mechanism's own vocabulary (#2609, #2653).
             log_event(
-                logger, "correction.crossover_v2_level_frame_publish_failed",
+                logger, "correction.crossover_v2_accountability_publish_failed",
                 level=logging.WARNING, session_id=self.session_id, exc_info=True,
             )
 
