@@ -50,6 +50,18 @@ def _prompt_of(screen: dict[str, Any]) -> dict[str, str]:
     return {name: str(screen.get(name) or "") for name in ("progress", "title", "body")}
 
 
+def _granted(
+    index: int, attempt: int, screen: dict[str, Any], batch: tuple[int, int, int],
+) -> dict[str, Any]:
+    """The entry a grant is about to record: the only fact that moves while a pose
+    batch's configs 2..N play under the first config's release."""
+    batch_start, batch_size, config = batch
+    return {
+        "index": index, "attempt": attempt, "prompt": _prompt_of(screen),
+        "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
+    }
+
+
 class PositionGate:
     """Thread-safe capture admission shared by human and external movers.
 
@@ -88,25 +100,11 @@ class PositionGate:
         if not 1 <= config <= batch_size or batch_start + config - 1 != index:
             raise CaptureBeginRefused(POSITION_TARGET_MISSING_CODE, "Invalid pose batch identity.")
         batch = (batch_start, batch_size, target, vertical)
-
-        # What a granted begin is about to record. Configs 2..N of a pose batch
-        # are granted without a hold of their own, so this is the only thing
-        # that moves while the microphone stays where it is. Called only where
-        # it is published: the deferred-hold path retries this every 1.5 s.
-        def granted() -> dict[str, Any]:
-            return {
-                "index": index, "attempt": attempt, "prompt": _prompt_of(screen),
-                "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
-            }
-
         now = self._clock()
         with self._lock:
             if key in self._released:
-                # ``_pending`` and ``_current`` are never both set: a reader
-                # pairing a live hold with an executing entry would describe a
-                # state the gate does not hold.
                 if self._pending is None:
-                    self._current = granted()
+                    self._current = _granted(index, attempt, screen, (batch_start, batch_size, config))
                 return
             opened = self._opened_at
             waited = 0.0 if opened is None else now - opened
@@ -132,7 +130,7 @@ class PositionGate:
             if self._last == (index - 1, attempt - 1, batch) and self._pending is None:
                 self._released.add(key)
                 self._last = (index, attempt, batch)
-                self._current = granted()
+                self._current = _granted(index, attempt, screen, (batch_start, batch_size, config))
                 return
             if self._pending is None:
                 self._opened_at = now
@@ -169,9 +167,9 @@ class PositionGate:
     def published(self) -> dict[str, dict[str, Any] | None]:
         """The hold awaiting a release and the entry a grant is executing.
 
-        One acquisition for both: read separately, a runner re-entering its
-        grant between them pairs a stale hold with a fresh executing entry, a
-        state the gate itself never holds.
+        Never both set, and read under one acquisition: read separately, a
+        runner re-entering its grant between them pairs a stale hold with a
+        fresh executing entry, a state the gate itself never holds.
         """
         with self._lock:
             return {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}

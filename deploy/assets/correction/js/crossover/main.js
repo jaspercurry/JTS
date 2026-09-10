@@ -733,16 +733,15 @@ function renderWalk(capture, {active, yielded}) {
   // The entry the gate is EXECUTING, and the only thing that moves during a
   // pose batch: configs 2..N are granted under the first config's release, so
   // no second hold is published and the retained prompt would otherwise freeze
-  // the progress line for the whole batch. An open hold outranks it — the gate
-  // never publishes both, so a `current` beside one is a stale leftover, and
-  // letting it through would re-key the release button under a live finger.
+  // the progress line for the whole batch. An open hold outranks it: the gate
+  // never publishes both, so a `current` beside one is a stale leftover.
   const current = walking && !pending ? capture.position_current : null;
   if (pending && pending.prompt) walkPrompt = pending.prompt;
   if (pending) walkGeometry = {degrees: pending.degrees, vertical_deg: pending.vertical_deg};
   if (!walking) { walkPrompt = null; walkGeometry = null; }
   const show = Boolean(walking && walkPrompt && !yielded);
   const progress = show
-    ? ((current && current.prompt && current.prompt.progress) || walkPrompt.progress || '')
+    ? ((current && current.prompt.progress) || walkPrompt.progress || '')
     : '';
   const key = walkKey(show ? walkPrompt : null, show ? pending : null, yielded, progress);
   if (key === lastWalkKey) return;

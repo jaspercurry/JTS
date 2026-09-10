@@ -15,14 +15,13 @@ import { crossoverMainModule } from "./_dom.mjs";
 // The reported count is DERIVED, never typed: a hand-bumped literal drifts from
 // what ran, and the Python bridge only checks it is >= 1.
 let passed = 0;
-const counted = (fn) => (...args) => { const out = fn(...args); passed += 1; return out; };
-const assert = new Proxy(strict, {
-  apply: (target, _this, args) => counted(target)(...args),
-  get: (target, prop) => {
-    const value = Reflect.get(target, prop);
-    return typeof value === "function" ? counted(value.bind(target)) : value;
-  },
-});
+const counted = (fn) => (...args) => { fn(...args); passed += 1; };
+const assert = {
+  equal: counted(strict.equal),
+  notEqual: counted(strict.notEqual),
+  deepEqual: counted(strict.deepEqual),
+  ok: counted(strict.ok),
+};
 
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
