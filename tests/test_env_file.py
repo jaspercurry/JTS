@@ -129,6 +129,19 @@ def test_write_env_file_round_trips_at_the_default_secret_mode(tmp_path):
     assert env_file.read_env_file(str(path)) == {"A_KEY": "abc", "PROVIDER": "acme"}
 
 
+def test_write_env_file_owner_header_is_a_comment_line_readers_skip(tmp_path):
+    # AGENTS.md: a /var/lib/jasper/*.env file's header names its writer.
+    # The header must not become a parsed key/value pair for either reader.
+    path = tmp_path / "v.env"
+    env_file.write_env_file(
+        str(path), {"A_KEY": "abc"}, owner="the /example wizard",
+    )
+    text = path.read_text()
+    assert text.splitlines()[0] == "# Written by the /example wizard."
+    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc"}
+    assert env_file.parse_env_mapping(text) == {"A_KEY": "abc"}
+
+
 def test_write_env_file_rejects_a_newline_value_leaving_the_file_intact(tmp_path):
     # systemd's parser neither quotes nor escapes, so a newline would land a
     # bogus second assignment. Rejecting mid-write must publish nothing.

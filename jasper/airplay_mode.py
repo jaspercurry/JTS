@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 MODE_ENV_FILE = "/var/lib/jasper/airplay_mode.env"
+MODE_ENV_OWNER = "JTS /airplay mode control"
 ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 MODE_FREE_RUNNING = "free-running"
 MODE_SYNCED = "synced"

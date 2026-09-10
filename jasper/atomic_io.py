@@ -513,14 +513,19 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return out
 
 
-def format_env_text(values: Mapping[str, str]) -> str:
+def format_env_text(values: Mapping[str, str], *, owner: str | None = None) -> str:
     """Render ``values`` as systemd ``EnvironmentFile`` text, one line per key.
 
     Unquoted ``KEY=value``, matching systemd's own parsing. Raises
     ``ValueError`` for a value carrying a newline rather than emitting a line
-    that would split into a bogus second assignment.
+    that would split into a bogus second assignment. ``owner``, when given,
+    prepends a ``# Written by {owner}.`` header line — a systemd
+    ``EnvironmentFile=`` parser and :func:`jasper.env_file.parse_env_lines`
+    both skip ``#`` lines, so this never changes the parsed values.
     """
     lines: list[str] = []
+    if owner is not None:
+        lines.append(f"# Written by {owner}.\n")
     for key, value in values.items():
         if "\n" in value or "\r" in value:
             raise ValueError(f"env value for {key} contains newline")
@@ -619,6 +624,7 @@ def locked_update_env_file(
     updates: Mapping[str, str],
     *,
     mode: int = 0o644,
+    owner: str | None = None,
     group_from_parent: bool = True,
     lock_mode: int = SHARED_LOCK_MODE,
     max_bytes: int | None = None,
@@ -631,7 +637,9 @@ def locked_update_env_file(
     then publish whole-file replacements. This helper holds an advisory flock
     across the read, update, and atomic replace so cooperating writers preserve
     each other's keys. ``lock_mode`` is the lock's own mode; see
-    :data:`SHARED_LOCK_MODE`.
+    :data:`SHARED_LOCK_MODE`. ``owner``, when given, is forwarded to
+    :func:`format_env_text` so a racing writer keeps the same header a
+    :func:`jasper.env_file.write_env_file` caller would get.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -648,7 +656,7 @@ def locked_update_env_file(
         except FileNotFoundError:
             state = {}
         state.update(dict(updates))
-        text = format_env_text(state)
+        text = format_env_text(state, owner=owner)
         atomic_write_text(
             fspath, text, mode=mode, group_from_parent=group_from_parent
         )
@@ -660,6 +668,7 @@ def locked_transform_env_file(
     transform: Callable[[dict[str, str]], "dict[str, str] | None"],
     *,
     mode: int = 0o644,
+    owner: str | None = None,
     group_from_parent: bool = True,
     lock_mode: int = SHARED_LOCK_MODE,
     max_bytes: int | None = None,
@@ -676,8 +685,9 @@ def locked_transform_env_file(
     check-then-act race). Holds the SAME advisory flock as
     ``locked_update_env_file`` on the same path, so both helpers mutually
     exclude writers of one file. ``lock_mode`` is the lock's own mode; see
-    :data:`SHARED_LOCK_MODE`. Returns the written dict, or ``None`` when the
-    file was deleted or left absent.
+    :data:`SHARED_LOCK_MODE`. ``owner``, when given, is forwarded to
+    :func:`format_env_text` for the written (non-delete) case. Returns the
+    written dict, or ``None`` when the file was deleted or left absent.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
@@ -700,7 +710,7 @@ def locked_transform_env_file(
             except FileNotFoundError:
                 pass
             return None
-        text = format_env_text(new_state)
+        text = format_env_text(new_state, owner=owner)
         atomic_write_text(
             fspath, text, mode=mode, group_from_parent=group_from_parent
         )

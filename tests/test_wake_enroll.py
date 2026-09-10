@@ -320,8 +320,8 @@ def test_session_stats_dtln_optional_in_record() -> None:
     s.record(0.5, 0.5)
     s.record(0.5, 0.5)
     assert "DTLN" not in s.summary()
-    assert s.peaks_on == [0.5, 0.5]
-    assert s.peaks_off == [0.5, 0.5]
+    assert s.peaks_per_leg["on"] == [0.5, 0.5]
+    assert s.peaks_per_leg["off"] == [0.5, 0.5]
 
 
 async def test_collect_for_empty_when_no_frames() -> None:
