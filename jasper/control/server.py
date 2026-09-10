@@ -53,6 +53,7 @@ from . import (
     debug_control,
     grouping_supervisor,
     heal_supervisor,
+    measurement_hold,
     shairport_supervisor,
     system_supervisor,
 )
@@ -830,6 +831,11 @@ def _make_handler(
             so a temporary mute reports 0 while ``restore_percent`` preserves
             its separate restore target — a client reading only ``percent``
             stays correct, and no client has to infer mute.
+
+            ``measurement`` is measurement_hold's own snapshot (the 409
+            body's shape; see ``_refuse_authoritative_write``) so every
+            volume response — not just the refused write — tells a poller
+            whether a measurement still owns the fader.
             """
             percent = int(state.effective_percent)
             return {
@@ -837,6 +843,7 @@ def _make_handler(
                 "percent": percent,
                 "muted": bool(state.muted),
                 "restore_percent": state.restore_percent,
+                "measurement": measurement_hold.snapshot(),
             }
 
         # --- routes ---
