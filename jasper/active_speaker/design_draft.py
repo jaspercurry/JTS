@@ -26,12 +26,13 @@ from ._common import (
     ACTIVE_CROSSOVER_ROLE_PAIRS,
     DRIVER_CLASSES,
     LEGACY_DROPPED_DRIVER_FIELDS,
+    MANUAL_DRIVER_FIELDS,
+    MANUAL_SETTINGS_FIELDS,
     issue as _issue,
 )
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    MANUAL_SETTINGS_FIELDS as _MANUAL_SETTINGS_FIELDS,
     DriverSafetyProfileError,
     build_driver_safety_profile,
     driver_protection_policy_view,
@@ -43,6 +44,7 @@ from .driver_safety import (
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
+from .installation import normalise_installation
 from .profile import SUPPORTED_POLARITY
 
 SCHEMA_VERSION = 1
@@ -65,36 +67,6 @@ _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
 
-_MANUAL_DRIVER_FIELDS = {
-    "target_id",
-    "role",
-    "model",
-    "manufacturer",
-    "nominal_impedance_ohm",
-    "sensitivity_db_2v83_1m",
-    "usable_frequency_range_hz",
-    "recommended_highpass_hz",
-    "recommended_highpass_slope_db_per_octave",
-    "recommended_lowpass_hz",
-    "do_not_test_below_hz",
-    "gain_offset_db",
-    "gain_offset_db_provenance",
-    "notes",
-    "sources",
-    "hard_excitation_band_hz",
-    "required_protection_filters",
-    "measurement_band_hz",
-    "level_duration_limits",
-    "cabinet",
-    "source",
-    # #1665 component entry. driver_class/radiating_diameter_mm are
-    # AI-researchable (see driver_safety's research prompt); pad is
-    # deliberately NOT researched -- the operator is the only one who knows
-    # what resistors they actually wired in.
-    "driver_class",
-    "radiating_diameter_mm",
-    "pad",
-}
 _CANDIDATE_FIELDS = {
     "between_roles",
     "frequency_hz",
@@ -472,7 +444,7 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     _reject_unknown_keys(
         raw,
         "manual_settings.driver",
-        _MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+        MANUAL_DRIVER_FIELDS | {"sources"} | LEGACY_DROPPED_DRIVER_FIELDS,
     )
     driver = _normalise_driver_common(
         raw,
@@ -489,6 +461,12 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     )
     if target_id:
         driver["target_id"] = target_id
+    try:
+        installation = normalise_installation(raw.get("installation"))
+    except ValueError as exc:
+        raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+    if installation:
+        driver["installation"] = installation
     return driver
 
 
@@ -669,7 +647,7 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "manual_settings")
-    _reject_unknown_keys(raw, "manual_settings", _MANUAL_SETTINGS_FIELDS)
+    _reject_unknown_keys(raw, "manual_settings", MANUAL_SETTINGS_FIELDS)
     driver_spacing_mm = _positive_float(
         raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
     )

@@ -29,7 +29,7 @@ const runner = buildFunction(
     { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
-      "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",
+      "eq-curve.js", "topology.js", "driver-model.js", "installation.js", "driver-fields.js",
       "seat-level.js",
     ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
@@ -8579,6 +8579,41 @@ async function testTuningHandoffCardMintsAndGoesStale() {
 }
 
 
+async function testInstallationUsesTheExistingDraftSaveAndReload() {
+  const posts = [];
+  const installation = {fields: {
+    amplifier_model: {label: 'Amplifier model', type: 'text'},
+    supply_voltage_v: {label: 'Power supply (V)', type: 'number'},
+    passive_radiator_added_mass_g: {label: 'Added weight (g)', type: 'number', allow_zero: true, enclosure: 'passive_radiator'},
+  }, drivers: []};
+  const harness = setupHarness(baseFetch({
+    './active-speaker/design-draft': (_path, options = {}) => {
+      const body = options.method === 'POST' ? JSON.parse(options.body) : {};
+      if (options.method === 'POST') posts.push(body);
+      return Promise.resolve(response({status: 'ready_for_review', revision: 1, summary: {},
+        operator_inputs: body.operator_inputs || {}, manual_settings: body.manual_settings,
+        installation}));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({'data-driver-target': 'main:full_range'}, 'Example FR8');
+  harness.dispatchChange({'data-manual-driver': 'main:full_range', 'data-manual-field': 'enclosure_kind'}, 'passive_radiator');
+  for (const [key, value] of Object.entries({amplifier_model: '<TPA3255>', supply_voltage_v: '36', passive_radiator_added_mass_g: '0'})) {
+    harness.dispatchInput({'data-manual-driver': 'main:full_range', 'data-manual-field': 'installation_' + key}, value);
+  }
+  harness.dispatchClick({'data-act': 'save-driver-design'});
+  for (let i = 0; i < 5; i++) await harness.flush();
+  const saved = posts[0]?.manual_settings?.drivers?.[0]?.installation;
+  if (JSON.stringify(saved) !== JSON.stringify({amplifier_model: '<TPA3255>', supply_voltage_v: 36, passive_radiator_added_mass_g: 0})) {
+    fail('Optional installation inputs must save through the draft, including explicit zero mass', {posts});
+  }
+  const html = harness.elements.get('view-body').innerHTML;
+  if (!html.includes('value="&lt;TPA3255&gt;"') || !html.includes('data-manual-field="installation_supply_voltage_v" value="36"')) {
+    fail('Saved installation inputs must reload and escape text', {html});
+  }
+  return {installationUsesTheExistingDraftSaveAndReload: true};
+}
+
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
@@ -9056,5 +9091,6 @@ results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
 results.push(await testTuningHandoffCardMintsAndGoesStale());
+results.push(await testInstallationUsesTheExistingDraftSaveAndReload());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));

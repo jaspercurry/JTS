@@ -8,6 +8,7 @@
 // enclosure and class fields, manual crossover rows and the echo-back panel.
 
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { renderInstallation } from "/assets/sound-profile/js/installation.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -332,6 +333,7 @@ function renderComponentSettings(topology) {
         tweeterProtectionHintHtml(target) +
       '</div>' +
       renderDriverPadSettings(targetId, setting) +
+      (role === 'tweeter' ? '' : renderInstallation(targetId, setting)) +
     '</section>';
   }).join('') + '</div>';
 }

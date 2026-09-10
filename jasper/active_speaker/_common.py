@@ -66,6 +66,33 @@ LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "crossover_search_band_hz",
 })
 
+MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
+MANUAL_DRIVER_FIELDS = {
+    "target_id",
+    "role",
+    "model",
+    "manufacturer",
+    "nominal_impedance_ohm",
+    "sensitivity_db_2v83_1m",
+    "usable_frequency_range_hz",
+    "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
+    "recommended_lowpass_hz",
+    "do_not_test_below_hz",
+    "gain_offset_db",
+    "gain_offset_db_provenance",
+    "notes",
+    "hard_excitation_band_hz",
+    "required_protection_filters",
+    "measurement_band_hz",
+    "level_duration_limits",
+    "cabinet",
+    "source",
+    "driver_class",
+    "radiating_diameter_mm",
+    "pad",
+    "installation",
+}
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 

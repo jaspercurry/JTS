@@ -73,6 +73,7 @@ from .feature_classification import (
     FeatureVerdict,
     read_feature_verdicts,
 )
+from ..installation import installation_evidence
 from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
@@ -2907,6 +2908,7 @@ def build_crossover_evidence_packet(
         # this one block is what a human typed, and it carries its own kind so
         # it can be lifted whole rather than read as another evidence field.
         "operator_notes": operator_notes,
+        "installation": installation_evidence(_mapping(draft_raw)),
         "feature_classification": classification,
         # The third offline reading of the same captures, beside the other two.
         # Per (capture, role) rather than per driver: a MEASURE capture is one

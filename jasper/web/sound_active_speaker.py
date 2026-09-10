@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
+from jasper.active_speaker.installation import installation_view
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
 
 from jasper.audio_measurement.correction_lane import (
@@ -1133,7 +1134,7 @@ def _active_speaker_design_draft_payload() -> dict[str, Any]:
             (payload.get("summary") or {}).get("crossover_candidate_count")
         ),
     )
-    return payload
+    return installation_view(payload)
 
 
 def _active_speaker_driver_research_request_payload(
@@ -1264,7 +1265,7 @@ def _active_speaker_design_draft_save_payload(
         ),
         issues=len(payload.get("issues") or []),
     )
-    return payload
+    return installation_view(payload)
 
 
 def apply_measured_crossover_geometry(
