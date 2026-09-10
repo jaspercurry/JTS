@@ -575,6 +575,14 @@ impl TtsMixer {
         }
     }
 
+    /// Whether the content loudness meter is PAUSED (a measurement or
+    /// commissioning run owns the speaker). The mixer reads it to skip
+    /// narrowing a period the meter would discard — the same gate
+    /// `jasper-outputd`'s core applies before its own narrow.
+    pub fn content_meter_paused(&self) -> bool {
+        self.content_meter_paused
+    }
+
     pub fn observe_content_period(&mut self, samples: &[i16]) {
         if !self.content_meter_paused {
             self.loudness.observe_content_period(samples);

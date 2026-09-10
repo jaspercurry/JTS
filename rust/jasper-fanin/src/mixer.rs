@@ -1494,8 +1494,12 @@ impl Mixer {
             mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
         if let Some(tts) = self.tts.as_mut() {
-            saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
-            tts.observe_content_period(&self.content_meter_buf);
+            // Skip the whole-period narrow while the meter is paused — it would
+            // only be discarded inside `observe_content_period`.
+            if !tts.content_meter_paused() {
+                saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
+                tts.observe_content_period(&self.content_meter_buf);
+            }
         }
         // Apply the program-lane duck as a per-sample ramp toward the period
         // target, so a ~25 dB duck engages/releases smoothly rather than stepping
