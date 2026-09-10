@@ -769,6 +769,90 @@ def _render_block_field(
     )
 
 
+# An snd-aloop write alias is a block whose slave names a PLAYBACK substream of
+# the Loopback card; the capture sides (,1,) are jasper-fanin's, not a renderer's.
+# Structural, so the alias set stays the asoundrc's to declare.
+_ALOOP_PLAYBACK_SLAVE_RE = re.compile(r'pcm[^\S\n]+"hw:Loopback,0,\d+"')
+_ASOUND_PCM_BLOCK_OPEN_RE = re.compile(
+    r"(?m)^[^\S\n]*pcm\.(?P<name>[A-Za-z0-9_]+)[^\S\n]*\{"
+)
+
+
+def _aloop_alias_names(text: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for match in _ASOUND_PCM_BLOCK_OPEN_RE.finditer(text):
+        name = match.group("name")
+        body = conf_block_body(text, name)
+        if body is not None and _ALOOP_PLAYBACK_SLAVE_RE.search(body):
+            names.append(name)
+    return tuple(names)
+
+
+def render_aloop_alias_wire(path: str, sample_format: str) -> str:
+    """SUBSTITUTE ``format`` in every snd-aloop write alias of one asound template.
+
+    The renderer end of the lane ingress (#3580): the renderer writes an alias
+    declared here, jasper-fanin captures the other half of the same snd-aloop
+    cable at the wire :func:`~jasper.fanin_coupling.resolve_ring_wire` resolves,
+    and snd-aloop pins both halves to one format — so a box that pins the narrow
+    wire must move both or the renderer's ``snd_pcm_open`` is refused.
+
+    Called on the CANDIDATE template ``jasper-audio-hardware-reconcile`` renders
+    from the shipped (wide) source, before that candidate is compared with the
+    live one: the reconcile is the sole writer of both the template and the
+    ``asound.conf`` derived from it, so narrowing the candidate first is what
+    keeps a narrow box's pass idempotent instead of re-rendering and restarting
+    audio every time.
+
+    SUBSTITUTE ONLY: every shipped alias declares ``format`` explicitly, and an
+    omitted key means whatever ``plug`` negotiates — not something this renderer
+    may invent a wire for. Verdicts:
+
+    - ``"rendered"`` — every alias declares the key and at least one moved;
+    - ``"unchanged"`` — every alias declares it and all were already on the wire;
+    - ``"absent"`` — unreadable, no alias at all, or an alias without the key;
+    - ``"failed"`` — readable, but the write was refused.
+
+    Never raises; jasper-doctor's ``check_fanin_asound_wiring`` FAILs a box the
+    render never reached.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return "absent"
+    names = _aloop_alias_names(text)
+    rendered = text
+    changed = False
+    undeclared = not names
+    for name in names:
+        # Re-find the span each pass: rewriting one alias can move the next.
+        span = _ring_conf_block_body_span(rendered, name)
+        if span is None:
+            undeclared = True
+            continue
+        start, end = span
+        was = rendered[start:end]
+        body, hits = _RING_CONF_FORMAT_RE.subn(
+            lambda m: f"{m.group('indent')}format {sample_format}", was
+        )
+        if hits == 0:
+            undeclared = True
+            continue
+        changed = changed or body != was
+        rendered = rendered[:start] + body + rendered[end:]
+    verdict = "absent" if undeclared else "rendered" if changed else "unchanged"
+    if rendered == text:
+        return verdict
+    from jasper.atomic_io import atomic_write_text  # lazy: renderer-only cost
+
+    try:
+        atomic_write_text(path, rendered, preserve_target_stat=True)
+    except OSError:
+        return "failed"
+    return verdict
+
+
 def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
     """Unreadable topology keeps the shipped stereo wire; arm preflights reject it."""
     from jasper.output_topology import (  # lazy: keep ring asset readers import-cheap

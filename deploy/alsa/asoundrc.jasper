@@ -84,10 +84,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # below and jasper-fanin's capture opens must name the same one. That width is
 # not this file's to choose — it is the wire an undeclared box resolves
 # (`JASPER_FANIN_RING_WIRE_FORMAT` defaults to S32_LE), which
-# `mixer::lane_capture_format` resolves on the reader side. This file ships
-# rather than rendering per box, so pinning the narrow rollback means deploying
-# a narrowed source; jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared
-# box by name until then.
+# `mixer::lane_capture_format` resolves on the reader side. On a box that
+# declares the narrow wire these four `format` lines are REWRITTEN in place by
+# `jasper.ring_assets.render_aloop_alias_wire`, which
+# jasper-audio-hardware-reconcile applies to the template it renders from this
+# file — before comparing it with the live one, so a narrowed box's pass stays a
+# no-op. jasper-doctor's `check_fanin_asound_wiring` FAILs a box the render
+# never reached.
 
 # Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
 # substream allocation and the reasoning behind it (8 pairs per card, pinned
@@ -103,8 +106,8 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   5-7 — no alias here. The owner records why they stay reserved.
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
-# gets converted to the substream's 48 kHz S32_LE via the configured
-# libsamplerate converter.
+# gets converted to the substream's 48 kHz and the resolved wire (the WIDTH
+# note above) via the configured libsamplerate converter.
 pcm.librespot_substream {
     type plug
     slave {

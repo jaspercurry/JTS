@@ -2938,6 +2938,130 @@ def test_render_success_still_writes_template(tmp_path: Path):
     )
 
 
+ALOOP_ALIASES = (
+    "librespot_substream",
+    "shairport_substream",
+    "bluealsa_substream",
+    "correction_substream",
+)
+
+
+def _declare_narrow_wire(tmp_path: Path, monkeypatch) -> None:
+    """This box declares the narrow ring wire, hermetically."""
+    from jasper import env_load
+
+    fanin_env = tmp_path / "declared-fanin.env"
+    fanin_env.write_text("JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n", encoding="utf-8")
+    monkeypatch.setattr(env_load, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(env_load, "BASE_ENV_PATH", str(tmp_path / "absent.env"))
+
+
+def _shipped_asound_source(tmp_path: Path, *, undeclare: str = "") -> dict[str, str]:
+    """The SHIPPED asound source as this pass's template source.
+
+    ``undeclare`` drops one alias's ``format`` line, which is how a candidate
+    the alias render cannot narrow is staged: the renderer substitutes and never
+    invents a key, because an omitted one means whatever ``plug`` negotiates.
+    """
+    text = (ROOT / "deploy" / "alsa" / "asoundrc.jasper").read_text(encoding="utf-8")
+    if undeclare:
+        body = _pcm_block(text, undeclare)
+        text = text.replace(body, re.sub(r"\n[^\S\n]*format[^\n]*", "", body), 1)
+    source = tmp_path / "shipped-asoundrc.jasper.source"
+    source.write_text(text, encoding="utf-8")
+    return {"JASPER_ASOUND_SOURCE_TEMPLATE": str(source)}
+
+
+def _pcm_block(text: str, alias: str) -> str:
+    from jasper.ring_assets import conf_block_body
+
+    body = conf_block_body(text, alias)
+    assert body is not None, alias
+    return body
+
+
+def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#3580: the shipped source declares the WIDE snd-aloop aliases, so the
+    candidate must be narrowed to this box's resolved wire BEFORE it is compared
+    with the live template. Compared wide, it differed from a narrowed box's
+    live template on EVERY pass — `render_changed=1`, and `restart_audio` stops
+    jasper-voice once per reconcile on a box that changed nothing.
+    """
+    _declare_narrow_wire(tmp_path, monkeypatch)
+    shipped_source = _shipped_asound_source(tmp_path)
+
+    first = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "first",
+        extra_env=shipped_source,
+    )
+    assert first.returncode == 0, first.stderr
+    rendered = stderr_event(first.stderr, "audio_hardware_reconcile.asound_rendered")
+    assert rendered["aloop_alias_wire"] == "rendered"
+    first_complete = stderr_event(first.stderr, "audio_hardware_reconcile.complete")
+    assert first_complete["render_changed"] == "1"
+    # The narrowing is what the second pass has to agree with. Per BLOCK, not a
+    # count: a total says nothing about WHICH alias got the width.
+    template = _template(tmp_path)
+    for alias in ALOOP_ALIASES:
+        assert _pcm_block(template, alias).count("format S16_LE") == 1, alias
+    after_first = _systemctl_log(tmp_path)
+
+    second = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "second",
+        extra_env=shipped_source,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert not stderr_events(second.stderr, "audio_hardware_reconcile.asound_rendered")
+    second_complete = stderr_event(second.stderr, "audio_hardware_reconcile.complete")
+    assert second_complete["render_changed"] == "0"
+    assert _template(tmp_path) == template
+    _assert_omits(
+        _systemctl_log(tmp_path)[len(after_first) :], "stop jasper-voice.service"
+    )
+    # One render of the live asound.conf, not one per pass.
+    assert _render_log(tmp_path) == "render\n"
+
+
+def test_a_candidate_the_alias_render_cannot_narrow_is_never_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#3580: publishing a candidate that still carries the WIDE aliases over a
+    narrow box would leave its renderers unable to open their lanes, and — since
+    the live template never converges — stop jasper-voice on every pass. Same
+    posture as a rejected candidate: keep what the box runs."""
+    _declare_narrow_wire(tmp_path, monkeypatch)
+
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_shipped_asound_source(tmp_path, undeclare="librespot_substream"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    failed = stderr_event(result.stderr, "audio_hardware_reconcile.asound_render_failed")
+    assert failed["stage"] == "aloop_alias_wire"
+    assert failed["result"] == "absent"
+    assert failed["sample_format"] == "S16_LE"
+    assert not stderr_events(result.stderr, "audio_hardware_reconcile.asound_rendered")
+    assert not (tmp_path / "asoundrc.jasper.template").exists()
+    assert _render_log(tmp_path) == ""
+    # The render flag is what carries an asound change into the audio restart,
+    # so a refused candidate contributes no restart of its own.
+    complete = stderr_event(result.stderr, "audio_hardware_reconcile.complete")
+    assert complete["render_changed"] == "0"
+
+
 def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: Path):
     """A nonzero jasper-render-asound-conf may not pass as a rendered asound."""
     live_conf = tmp_path / "asound.conf"

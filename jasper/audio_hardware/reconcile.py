@@ -1236,6 +1236,27 @@ class Pass:
                 preserved_existing=1,
             )
             return False
+        # BEFORE the byte-compare, or a narrow-wire box never converges: the
+        # source ships the wide snd-aloop aliases, so a candidate compared wide
+        # differs from the narrowed live template on EVERY pass and stops
+        # jasper-voice with it (#3580).
+        alias_render, narrow_wire = self.render_aloop_alias_wire_candidate(tmp)
+        if narrow_wire and alias_render not in ("rendered", "unchanged"):
+            os.unlink(tmp)
+            # Publishing here would write the WIDE aliases over a narrowed live
+            # template — a renderer that cannot open its lane, plus a restart of
+            # jasper-voice on every pass. Same posture as a rejected candidate:
+            # keep what the box runs. Scoped to a box that positively declared
+            # the narrow wire, so an unresolvable wire still publishes rather
+            # than leaving a fresh box with no asound.conf at all.
+            self.log(
+                "asound_render_failed",
+                stage="aloop_alias_wire",
+                result=alias_render,
+                sample_format=narrow_wire,
+                preserved_existing=1,
+            )
+            return False
         os.chmod(tmp, 0o644)
         if destination.is_file() and destination.read_bytes() == Path(tmp).read_bytes():
             os.unlink(tmp)
@@ -1275,8 +1296,39 @@ class Pass:
             output_dac_card=self.output_dac_card,
             outputd_active_mode=int(self.outputd_active_mode),
             outputd_active_channels=_log_token(self.outputd_active_channels),
+            aloop_alias_wire=alias_render,
         )
         return True
+
+    def render_aloop_alias_wire_candidate(self, candidate: str) -> tuple[str, str]:
+        """Narrow the candidate template's snd-aloop aliases to this box's
+        resolved ring wire (#3580).
+
+        Returns the render verdict and the NARROW wire this box declared —
+        empty when it resolves the shipped wide wire, and empty when the wire
+        did not resolve at all. The caller refuses to publish a candidate that
+        carries neither, so "" is what keeps an unresolvable wire on the old
+        best-effort path instead of leaving a fresh box with no asound.conf.
+        """
+        from jasper.fanin_coupling import (  # lazy: ADR-0226
+            RING_WIRE_FORMAT_WIDE,
+            resolve_ring_wire,
+        )
+        from jasper.ring_assets import render_aloop_alias_wire  # lazy: ADR-0226
+
+        narrow = ""
+        try:
+            wire = resolve_ring_wire(self.saved_topology()).sample_format
+            narrow = "" if wire == RING_WIRE_FORMAT_WIDE else wire
+            return render_aloop_alias_wire(candidate, wire), narrow
+        # noqa reason: same posture as the ring conf.d render — a failure leaves
+        # the shipped wire in place and must not abort a hardware reconcile.
+        except Exception as exc:  # noqa: BLE001
+            self.log(
+                "aloop_alias_wire_failed",
+                detail=_log_token(f"{type(exc).__name__}: {exc}"),
+            )
+            return "failed", narrow
 
     def render_ring_conf_if_needed(self) -> None:
         """Render the shm-ring conf.d slot period from the ACTIVE DAC's
