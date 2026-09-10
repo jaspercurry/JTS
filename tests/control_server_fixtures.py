@@ -28,8 +28,15 @@ def _recording_popen(calls: list[list[str]]):
     """Build the minimal Popen double used by command-dispatch route tests."""
 
     class RecordingPopen:
+        returncode = 0
+
         def __init__(self, cmd, **_kwargs):
             calls.append(cmd)
+
+        def communicate(self) -> tuple[str, str]:
+            """The child already exited cleanly with nothing on stderr — the
+            restart broker reaps every detached spawn to journal a denial."""
+            return "", ""
 
     return RecordingPopen
 
