@@ -39,14 +39,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.crossover_v2.capture_plan import format_position_distance
+
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")
+_UNITS_JS = _JS_DIR.parent.parent / "deploy/assets/correction/js/crossover/units.js"
 
 _HARNESSES = sorted(path.name for path in _JS_DIR.glob("crossover_*_test.mjs"))
 # A broken glob (wrong directory, typo'd pattern) must fail collection loudly
@@ -83,3 +87,28 @@ def test_crossover_wizard_harness(harness: str):
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ok"] is True, out
     assert out["passed"] >= 1, out
+
+
+def test_units_js_distance_regex_tracks_format_position_distance():
+    """units.js:DISTANCE_RE re-parses the exact prose
+    format_position_distance (capture_plan.py) emits, to reorder the two
+    units under the metric preference -- nothing else ties the two together,
+    so a wording change on either side can silently break the reorder with
+    no test noticing (see tests/test_multiroom_airplay_latency.py's
+    test_probe_script_frame_math_tracks_the_python_constants for the same
+    shape: read the OTHER file's literal pattern out of its source and run
+    it against this module's own output, rather than hand-copying the
+    pattern here where it could drift unnoticed)."""
+    text = _UNITS_JS.read_text(encoding="utf-8")
+    m = re.search(r"DISTANCE_RE = /(.+)/(\w*);", text)
+    assert m is not None, "expected units.js's DISTANCE_RE regex literal"
+    js_pattern = m.group(1)
+
+    sample = format_position_distance(18.0)
+    match = re.search(js_pattern, sample)
+    assert match is not None, (
+        f"units.js's DISTANCE_RE must match format_position_distance's own "
+        f"output, got {sample!r}"
+    )
+    assert match.group(1) == "7", "inches capture group must be the inches figure"
+    assert match.group(2) == "18", "cm capture group must be the cm figure"

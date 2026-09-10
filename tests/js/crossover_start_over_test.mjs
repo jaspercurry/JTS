@@ -11,10 +11,8 @@
 //      "cleared" must not paint the status line green (adversarial-review N1).
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { CROSSOVER_IDS, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
-const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
@@ -29,41 +27,22 @@ const baseEnvelope = {
 
 let confirmMessages = [];
 let confirmAnswer = false;
-globalThis.__jtsConfirm = async (message) => {
-  confirmMessages.push(message);
-  return confirmAnswer;
-};
 let postResponse = { ...baseEnvelope };
-globalThis.__getJSON = async () => ({ ...baseEnvelope });
-globalThis.__postJSON = async () => postResponse;
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
 // harness — it only pins Start-over — so a no-op stands in, same shape as
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
-
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
-const { render, startOver } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "jtsConfirm", "renderCloud", "redrawCloudChart",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render", "startOver"],
+const { elements, render, startOver } = await crossoverMainModule({
+  extraStubs: {
+    getJSON: async () => ({ ...baseEnvelope }),
+    postJSON: async () => postResponse,
+    jtsConfirm: async (message) => {
+      confirmMessages.push(message);
+      return confirmAnswer;
+    },
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
   },
-);
+  exportNames: ["render", "startOver"],
+});
 
 const statusEl = elements.get("capture-status");
 

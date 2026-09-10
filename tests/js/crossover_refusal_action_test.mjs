@@ -20,8 +20,7 @@
 //      button), and a later plain setStatus clears the stale link.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { elementWithLiveText as element, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule, elementWithLiveText as element } from "./_dom.mjs";
 
 const ids = [
   "crossover-verdict",
@@ -56,12 +55,6 @@ const ids = [
   "crossover-capture-stop",
   "capture-status",
 ];
-const elements = installFixedDocument(ids, {
-  factory: element,
-  // setStatus builds `[textNode, anchor]`, so the harness needs real text
-  // nodes rather than the element stub.
-  createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
-});
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 globalThis.window = { addEventListener() {} };
@@ -75,40 +68,27 @@ const baseEnvelope = {
   alternate_actions: [],
 };
 
-globalThis.__getJSON = async () => ({ ...baseEnvelope });
-globalThis.__jtsConfirm = async () => true;
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
-
 let postRejection = null;
-globalThis.__postJSON = async () => {
-  if (postRejection) throw postRejection;
-  return { ...baseEnvelope };
-};
-
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
-const { render, runAction, setStatus } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "jtsConfirm", "renderCloud", "redrawCloudChart",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render", "runAction", "setStatus"],
+const { elements, render, runAction, setStatus } = await crossoverMainModule({
+  ids,
+  documentOptions: {
+    factory: element,
+    // setStatus builds `[textNode, anchor]`, so the harness needs real text
+    // nodes rather than the element stub.
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
   },
-);
+  extraStubs: {
+    getJSON: async () => ({ ...baseEnvelope }),
+    jtsConfirm: async () => true,
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
+    postJSON: async () => {
+      if (postRejection) throw postRejection;
+      return { ...baseEnvelope };
+    },
+  },
+  exportNames: ["render", "runAction", "setStatus"],
+});
 
 const statusEl = elements.get("capture-status");
 

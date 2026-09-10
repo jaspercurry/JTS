@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
+
 // Shared DOM stubs for tests/js. The crossover_*_test.mjs harnesses each
 // hand-rolled the same fixed-id element map + document shim; this is that
 // shape, generalized enough to cover every variant seen across them (an
@@ -47,6 +49,51 @@ export const CROSSOVER_IDS = [
   "crossover-capture-stop",
   "capture-status",
 ];
+
+// #3629: crossover/main.js wires the walk's per-position picture and units
+// toggle unconditionally at load time (setUnitsButtons(currentUnits()) etc.
+// run inside the module's own `if (typeof document !== 'undefined')` block),
+// so EVERY crossover_*_test.mjs harness that loads main.js needs these 7
+// globals stubbed and aliased through, not just the walk/units-specific
+// ones — position-diagram.js and units.js have their own real-implementation
+// pins in crossover_position_diagram_test.mjs and crossover_units_test.mjs.
+const POSITION_UNITS_STUBS = {
+  positionDiagram: () => ({ tag: "svg" }),
+  positionCaption: () => "",
+  UNIT_IMPERIAL: "imperial",
+  UNIT_METRIC: "metric",
+  currentUnits: () => "imperial",
+  setUnits: () => {},
+  formatDistances: (text) => text,
+};
+
+// Installs a fixed-id document (default CROSSOVER_IDS) and loads main.js
+// with `extraStubs` (the harness's own getJSON/postJSON/renderCloud/...
+// globals — see POSITION_UNITS_STUBS above for the ones every harness needs
+// regardless of scenario) aliased alongside them. Returns the installed
+// `elements` map merged with main.js's requested `exportNames`.
+export async function crossoverMainModule({
+  ids = CROSSOVER_IDS,
+  documentOptions = {},
+  extraStubs = {},
+  exportNames = ["render"],
+} = {}) {
+  const elements = installFixedDocument(ids, documentOptions);
+  const stubs = { ...extraStubs, ...POSITION_UNITS_STUBS };
+  for (const [name, value] of Object.entries(stubs)) {
+    globalThis[`__${name}`] = value;
+  }
+  const loaded = await loadEsm(
+    repoPath("deploy/assets/correction/js/crossover/main.js"),
+    {
+      rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+      prelude: aliasGlobals(Object.keys(stubs)),
+      truncateBefore: "\nrefresh().catch((error) => {",
+      exportNames,
+    },
+  );
+  return { elements, ...loaded };
+}
 
 // The plain-field element stub: classList (real add/remove/contains/toggle
 // semantics over a Set), a tracked-listener addEventListener + click() that

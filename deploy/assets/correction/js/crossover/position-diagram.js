@@ -28,6 +28,10 @@ const MAX_DEG = 30;
 const SPREAD_PX = 55;
 const RISE_PX = 26;
 const ARROWHEAD_PX = 6;
+// The mic target's y baseline (at vertical_deg 0) sits above the mark's own
+// y, so an on-axis target still reads as a distinct dot rather than
+// overlapping the mark.
+const BASE_RISE_PX = 20;
 
 function clampDeg(deg) {
   const n = Number(deg) || 0;
@@ -41,7 +45,7 @@ function arrowheadPoints(x1, y1, x2, y2) {
   const p1y = y2 + ARROWHEAD_PX * Math.sin(angle + spread);
   const p2x = x2 + ARROWHEAD_PX * Math.cos(angle - spread);
   const p2y = y2 + ARROWHEAD_PX * Math.sin(angle - spread);
-  return `${x2},${y2} ${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)}`;
+  return `${x2.toFixed(1)},${y2.toFixed(1)} ${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)}`;
 }
 
 // The picture's own short caption -- distinct from the full prompt sentence
@@ -63,7 +67,7 @@ export function positionDiagram(degrees, verticalDeg) {
   const deg = clampDeg(degrees);
   const vDeg = clampDeg(verticalDeg);
   const targetX = ORIGIN_X + (deg / MAX_DEG) * SPREAD_PX;
-  const targetY = ORIGIN_Y - 20 - (vDeg / MAX_DEG) * RISE_PX;
+  const targetY = ORIGIN_Y - BASE_RISE_PX - (vDeg / MAX_DEG) * RISE_PX;
   const moved = deg !== 0 || vDeg !== 0;
 
   const root = svg("svg.position-diagram", {

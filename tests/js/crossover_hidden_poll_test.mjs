@@ -9,8 +9,7 @@
 // listener must re-apply (not discard) the caller's last requested cadence.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
 const ids = [
   "crossover-verdict",
@@ -32,11 +31,6 @@ const ids = [
 ];
 
 const visibilityListeners = [];
-installFixedDocument(ids, {
-  addEventListener(name, fn) {
-    if (name === "visibilitychange") visibilityListeners.push(fn);
-  },
-});
 
 // A real timer registry (not a no-op stub) so delay values are observable.
 const timers = [];
@@ -51,31 +45,19 @@ globalThis.clearTimeout = (id) => {
   if (idx !== -1) timers.splice(idx, 1);
 };
 
-globalThis.__getJSON = async () => ({});
-globalThis.__postJSON = async () => ({});
-
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
-const { schedulePoll } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals(["getJSON", "postJSON",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["schedulePoll"],
+const { schedulePoll } = await crossoverMainModule({
+  ids,
+  documentOptions: {
+    addEventListener(name, fn) {
+      if (name === "visibilitychange") visibilityListeners.push(fn);
+    },
   },
-);
+  extraStubs: {
+    getJSON: async () => ({}),
+    postJSON: async () => ({}),
+  },
+  exportNames: ["schedulePoll"],
+});
 
 // --- visible: schedules at the caller's requested cadence -------------------
 schedulePoll(1500);

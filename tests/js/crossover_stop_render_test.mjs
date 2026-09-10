@@ -7,10 +7,8 @@
 // clears rather than remaining disabled until a page reload.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { CROSSOVER_IDS, element, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule, element } from "./_dom.mjs";
 
-const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
@@ -34,41 +32,21 @@ let postError = null;
 // Lets a test hold a postJSON call pending so it can inspect render() state
 // while that request is still in flight, then release it explicitly.
 let postGate = null;
-globalThis.__getJSON = async () => nextEnvelope;
-globalThis.__postJSON = async () => {
-  if (postGate) await postGate;
-  if (postError) throw postError;
-  return postResponse;
-};
-
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
 // harness — it only pins the Stop-measurement flow — so a no-op stands in.
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
-
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
-const { render, runAction, stopCapture } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render", "runAction", "stopCapture"],
+const { elements, render, runAction, stopCapture } = await crossoverMainModule({
+  extraStubs: {
+    getJSON: async () => nextEnvelope,
+    postJSON: async () => {
+      if (postGate) await postGate;
+      if (postError) throw postError;
+      return postResponse;
+    },
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
   },
-);
+  exportNames: ["render", "runAction", "stopCapture"],
+});
 
 render({
   ...terminalEnvelope,
