@@ -135,38 +135,6 @@
 //! across that change. The reader half of that (bump + wake) is out of scope
 //! for the prototype — outputd's reader is the pacer's slave and does not need
 //! to wake anyone.
-//!
-//! ## The eight questions (design answers)
-//!
-//! 1. **What breaks if the writer dies?** `write_seq` stops advancing; the
-//!    reader sees [`SlotRead::Empty`] every period and emits silence
-//!    (`empty_reads++`). `writer_pid`/`writer_heartbeat_ns` go stale so
-//!    `/state` reports `writer_alive:false`. No crash, no wedge.
-//! 2. **What breaks if the reader dies?** `read_seq` stops advancing; the
-//!    writer's space check fails and — because `reader_heartbeat_ns` is stale —
-//!    it free-runs and drops frames instead of blocking (writer side). The ring
-//!    file survives (tmpfs, not RuntimeDirectory), so a restarted reader
-//!    reattaches and resyncs `read_seq = write_seq`.
-//! 3. **What's the steady-state latency?** `<= n_slots * period_frames` frames
-//!    of buffering (2*128 = 256 frames ~= 5.3 ms at 48 kHz).
-//! 4. **How is it observable?** [`RingMetrics`] -> outputd `/state.shm_ring`:
-//!    occupancy, empty_reads (startup vs steady split), epoch_resets,
-//!    reader_resyncs, writer_alive, frames_read.
-//! 5. **How does it fail closed?** Geometry/version/format mismatch on attach
-//!    is a hard error: a fatal attach failure out of the field-by-field header
-//!    compare, surfaced to the caller as an `io::Error`. This crate's contract
-//!    ends there — each daemon owns how it maps that error to an exit code, and
-//!    each unit owns what that exit code does. A magic-invalid owned file is
-//!    unlinked and recreated. A transient empty ring is silence, never a crash.
-//! 6. **Is it default-off?** Yes — no caller exists unless the flag is set.
-//! 7. **What's the memory-ordering argument?** Acquire/Release on the two seqs
-//!    (documented per step above); C11 `atomic_*_explicit` and Rust
-//!    `AtomicU64` both lower to aarch64 `ldar`/`stlr`. Golden-layout test pins
-//!    the offsets so both sides read the same bytes.
-//! 8. **What's the productization delta?** The writer's poll becomes a futex
-//!    wait (reserved word already in the header); the reader gains a
-//!    wake-after-advance; the lab asound drop-in becomes a reconciler-owned
-//!    device. No header change.
 
 use std::io;
 use std::os::fd::RawFd;

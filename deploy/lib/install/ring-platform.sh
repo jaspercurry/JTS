@@ -371,71 +371,19 @@ install_jts_ring_conf_assets() {
 install_jts_ring_platform() {
     build_install_jts_ring_ioplug
     install_jts_ring_conf_assets
-    # Ring files are tmpfs transport state, never user data. Delete every file
-    # named below before install_systemd_units can restart fan-in/outputd: an
-    # existing 8-slot mmap from an older default would be a fatal attach
-    # mismatch after the new 2-slot default lands. CamillaDSP keeps reading its
-    # old unlinked fd until the later DSP reconcile reloads it onto the freshly-
-    # created ring, which is inside the normal deploy audio bounce.
+    # Delete these tmpfs ring files before install_systemd_units restarts
+    # fan-in/outputd: a stale-geometry ring is a fatal attach for those units
+    # (StartLimitAction=reboot), so leaving one behind reboots the box
+    # mid-install. Both ends create-or-attach (O_CREAT|O_EXCL), so a missing
+    # file is a no-op, not a fault. Never delete the sibling `.writer.lock` /
+    # `.open.lock` files — that opens a torn-inode window between holders.
+    # Pinned by tests/test_install_ring_platform_sequencing.py
+    # (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
     #
-    # The ACTIVE ring joined the set here rather than at the arm path, because
-    # the arm path's own deleter (`_delete_stale_ring_files`, inside
-    # `_converge_ring`) is bypassed on exactly the boxes that have this file:
-    # an operator-pinned box short-circuits before `reconcile_coupling`, and
-    # every armed fleet box is pinned. The installer needs no roleful
-    # knowledge to own it — on a box that has no ACTIVE ring the file does not
-    # exist and `rm -f` is a no-op.
-    #
-    # Safe because nothing needs the header to SURVIVE a deploy: the ring is
-    # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and
-    # outputd's `RingReader::create_or_attach` each do O_CREAT|O_EXCL then
-    # ftruncate), every doctor/reconciler reader treats absence as "nothing to
-    # judge" rather than a fault, and the only geometry the header carries is
-    # re-derived each deploy from the saved topology into the conf.d and
-    # outputd.env. The ACTIVE ring's writer is CamillaDSP through the same
-    # ioplug that writes content.ring, restarted by the same in-deploy bounce.
-    #
-    # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
-    # unlinking a lock opens a silent inode-tear window between two holders.
-    #
-    # `dac-content.ring` — a bonded dumb member's round-trip return,
-    # pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS the set,
-    # on the reboot side of the asymmetry below: its READER is jasper-outputd,
-    # whose unit carries the same StartLimitBurst=5 + StartLimitAction=reboot as
-    # jasper-fanin, and its geometry is DERIVED from the box's ring slot
-    # (RING_SLOT_FRAMES), so a deploy that moves that number leaves a
-    # stale-geometry file whose fatal attach reboots the household. Unlinking it
-    # is mandatory for the same reason unlinking the three above is.
-    #
-    # `grouping.ring` — the bonded endpoint's snapcast ingress,
-    # pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is deliberately
-    # absent, and stays absent when its consumers arrive.
-    #
-    # The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
-    # not a difference in which daemon is running at this instant:
-    #   - A stale-geometry ring on the coupling path is a FATAL attach for
-    #     jasper-fanin, whose unit carries StartLimitBurst=5 and
-    #     StartLimitAction=reboot. It burns the burst and REBOOTS the box
-    #     mid-install, before write_build_manifest can stamp the manifest —
-    #     the trap documented in tests/test_install_ring_platform_sequencing.py
-    #     (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
-    #     Unlinking those three is MANDATORY: not unlinking them costs a
-    #     reboot loop.
-    #   - jasper-snapclient.service carries StartLimitBurst=6 and NO
-    #     StartLimitAction, by explicit design — its own unit comment says
-    #     "follower degrades, visible; never reboots the household." A stale
-    #     grouping.ring therefore costs six retries and one `failed` unit,
-    #     surfaced on /state and by jasper-doctor. Unlinking buys nothing
-    #     against an outcome that is already bounded and already visible.
-    #
-    # Do NOT re-derive this from install ORDER. Order is real and is pinned by
-    # test_install_ring_platform_sequencing, but it does not separate the two
-    # cases: the three rings above also have live writers at this instant, and
-    # the park set that stops snapclient has a third call site
-    # (park_low_memory_build_units, gated on a low-memory box) that runs before
-    # this step, so no statement about who is parked here holds on every box.
-    # The escalation asymmetry holds in every ordering, which is why it is the
-    # reason recorded. Grouping-ring design §3.4.
+    # `grouping.ring` (jasper-snapclient's ingress) is deliberately excluded:
+    # that unit has StartLimitBurst=6 and NO StartLimitAction, so a stale
+    # ring there costs bounded, visible retries rather than a reboot loop —
+    # not worth the extra unlink.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring

@@ -831,21 +831,6 @@ ensure_crossover_camilla_statefile() {
     # ever DID start on the parked pointer it would emit silence, where the
     # flat pointer would send full range to a tweeter.
     #
-    # SEAM FLAGGED FOR THE RECONCILER PR: on an explicit valid passive box
-    # the contract returns flat, so this would seed flat into a file named
-    # crossover-statefile.yml. That is BENIGN today because camilla#2 is
-    # INERT there (the unit is never enabled), so the flat seed is never
-    # loaded. The crossover guard does NOT convert a flat statefile —
-    # it acts only on a dead bonded pipe — so the driver-domain guarantee
-    # for an ARMED camilla#2 rests on the reconciler seeding it at arm time,
-    # not on the guard. The later
-    # reconciler PR — which knows when the box is actually an active
-    # leader — should refine this to seed the EXACT driver-domain baseline
-    # (not whatever runtime-safe-graph returns for a passive topology)
-    # at the moment it arms the unit. We do NOT author that here: emitting
-    # a precise driver-domain baseline is jasper/active_speaker/* code,
-    # outside this unit's scope fence.
-    #
     # We never restart the unit (it is not enabled), so there is no
     # JASPER_RESTART_* knob here — only the seed write.
     local output
