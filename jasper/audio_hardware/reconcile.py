@@ -1363,10 +1363,12 @@ class Pass:
 
         :meth:`converge_runtime_graph` closes the stamp when it writes, so what
         survives a pass names the topology whose boot graph nobody proved. It is
-        opened HERE, at the top of the pass, rather than inside the convergence,
-        because the exits between the two — the rejected outputd candidate, an
-        i2s apply error, an OOM kill — are equally passes that never proved a
-        graph, and the gate must see them.
+        opened HERE, before the pass mutates anything, rather than inside the
+        convergence: EVERY exit from this point on — an i2s apply error, the
+        rejected outputd candidate, an OOM kill — is equally a pass that proved
+        no graph, and the gate has to see them. (The unreadable-asound abort
+        above is deliberately outside: it precedes every mutation, so the box is
+        exactly as the previous pass left it.)
         """
         topology = self.saved_topology()
         if topology is None:
@@ -1674,6 +1676,7 @@ class Pass:
             self.apply_observed_composite_policy()
             self.print_role_env()
             return 0
+        self.open_runtime_graph_attempt()
         self.reconcile_i2s_hat_boot()
         self.observe_output_hardware_state(write=True)
         self.sync_i2s_hat_reboot_marker()
@@ -1682,7 +1685,6 @@ class Pass:
             return 74
         self.apply_observed_single_policy()
         self.apply_observed_composite_policy()
-        self.open_runtime_graph_attempt()
 
         env_changed = 0
         # dac_env_changed tracks ONLY a DAC-identity/card move — the class of

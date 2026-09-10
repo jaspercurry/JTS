@@ -84,6 +84,13 @@ row (fail, `camilla_statefile_topology_mismatch`), and
 `camilla_topology_stamps_missing`, so a gate that has gone blind is visible
 rather than merely permissive.
 
+A second, smaller residual: the gate takes its logger and its statefile default
+from `deploy/lib/jasper-camilla-guard-common.sh`, so a library it cannot read
+blinds it (it allows and logs `reason=common_lib_unavailable`) rather than
+making it refuse. That is the same "unknown allows" rule as everywhere else
+here, and the library is installed transactionally BEFORE the gate — a library
+that will not install fails the deploy.
+
 Rejected: keeping `Requires=` and widening the reconciler's success definition —
 it leaves every unrelated reconciler failure a silent stop. Rejected: a Python
 `ExecCondition=` that re-derives the topology — an interpreter on every
