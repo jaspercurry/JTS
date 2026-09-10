@@ -40,6 +40,7 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     solve_branch_trims,
 )
+from tests._log_events import event_fields, event_records, parse_event
 from tests.crossover_v2_fixtures import (
     CAPS,
     bank_into,
@@ -179,8 +180,9 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
 
-    assert "verify_gate_window_ms=8.0" in caplog.text
-    assert f"verify_gate_floor_source={gating.FLOOR_SEARCH_BOUND}" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
+    assert fields["verify_gate_window_ms"] == "8.0"
+    assert fields["verify_gate_floor_source"] == gating.FLOOR_SEARCH_BOUND
     # The two states must remain distinguishable values, not two spellings of
     # the same one — that indistinguishability IS the defect.
     assert gating.FLOOR_SEARCH_BOUND != gating.FLOOR_MEASURED
@@ -320,8 +322,9 @@ def test_measure_diag_names_the_binding_gate_and_its_floor_source(caplog):
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
 
-    assert "gate_window_ms=5.0" in caplog.text
-    assert f"gate_floor_source={gating.FLOOR_SEARCH_BOUND}" in caplog.text, (
+    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
+    assert fields["gate_window_ms"] == "5.0"
+    assert fields["gate_floor_source"] == gating.FLOOR_SEARCH_BOUND, (
         "the reported floor source must belong to the response whose window "
         "was reported, not to whichever response happened to be first"
     )
@@ -521,16 +524,13 @@ def test_boost_exclusions_come_from_the_blind_span_below_the_registry_floor(capl
     # Every offered band sits inside the span the registry could not reach:
     # above the cloud's own validity floor, below the registry's lower edge.
     assert all(1200.0 <= lo < hi <= floor_hz for lo, hi in bands), (bands, floor_hz)
-    assert "event=correction.crossover_v2_boost_evidence" in caplog.text
-    assert "registry_reason=no_corroborating_arrivals" in caplog.text
-    assert f'unadjudicated_span_hz="[1200.0, {floor_hz}]"' in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_boost_evidence")
+    assert fields["registry_reason"] == "no_corroborating_arrivals"
+    assert fields["unadjudicated_span_hz"] == f"[1200.0, {floor_hz}]"
     # A withhold is WARNING, not INFO: it silently narrows a correction, so it
     # has to reach a journal a household's operator actually reads.
-    withheld = [
-        r for r in caplog.records
-        if "crossover_v2_boost_evidence" in r.getMessage()
-    ]
-    assert withheld and all(r.levelno == logging.WARNING for r in withheld)
+    (withheld,) = event_records(caplog, "correction.crossover_v2_boost_evidence")
+    assert withheld.levelno == logging.WARNING
 
 
 def test_a_cloud_whose_positions_agree_loses_no_boost(caplog):
@@ -549,18 +549,16 @@ def test_a_cloud_whose_positions_agree_loses_no_boost(caplog):
     )
 
     assert bands == ()
-    assert "event=correction.crossover_v2_boost_evidence" in caplog.text
-    assert "boost_excluded_bands_hz=[]" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_boost_evidence")
+    assert fields["boost_excluded_bands_hz"] == "[]"
     # The dip WAS seen — it just did not contradict a boost. A reader must be
     # able to tell that from "nothing was measured".
-    assert "n_dips=1 n_position_dependent=0" in caplog.text
+    assert fields["n_dips"] == "1"
+    assert fields["n_position_dependent"] == "0"
     # ...and withholding nothing is INFO. Only a narrowed correction earns a
     # WARNING, or the level stops carrying information.
-    kept = [
-        r for r in caplog.records
-        if "crossover_v2_boost_evidence" in r.getMessage()
-    ]
-    assert kept and all(r.levelno == logging.INFO for r in kept)
+    (kept,) = event_records(caplog, "correction.crossover_v2_boost_evidence")
+    assert kept.levelno == logging.INFO
 
 
 def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):
@@ -576,7 +574,9 @@ def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):
     assert c._boost_excluded_bands_hz(
         combined, {"validity_floor_hz": 9000.0, "null_registry": {}},
     ) == ()
-    assert "variance_reason=no_blind_span" in caplog.text
+    assert event_fields(caplog, "correction.crossover_v2_boost_evidence")[
+        "variance_reason"
+    ] == "no_blind_span"
 
     # And an unexpected failure inside the check is caught, disclosed at
     # WARNING, and leaves the permission where it was.
@@ -589,8 +589,10 @@ def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):
 
         mp.setattr(nulls, "classify_dip_position_variance", _boom)
         assert c._boost_excluded_bands_hz(combined, _BLIND_SPAN_RESULT) == ()
-    assert "event=correction.crossover_v2_boost_variance_failed" in caplog.text
-    assert "variance_reason=variance_check_failed" in caplog.text
+    event_fields(caplog, "correction.crossover_v2_boost_variance_failed")
+    assert event_fields(caplog, "correction.crossover_v2_boost_evidence")[
+        "variance_reason"
+    ] == "variance_check_failed"
 
 
 def test_the_boost_evidence_disclosure_is_reached_by_an_ordinary_walk(caplog):
@@ -609,15 +611,12 @@ def test_the_boost_evidence_disclosure_is_reached_by_an_ordinary_walk(caplog):
     c = _cloud_conductor(fakes)
     _walk_measure_cloud_to_close(c)
 
-    disclosures = [
-        r for r in caplog.records
-        if "event=correction.crossover_v2_boost_evidence" in r.getMessage()
-    ]
-    assert len(disclosures) == 1, [r.getMessage()[:80] for r in disclosures]
-    message = disclosures[0].getMessage()
+    fields = event_fields(caplog, "correction.crossover_v2_boost_evidence")
     # The span it reports is the real one: this cloud's own validity floor up
     # to the registry band's real lower edge, not a placeholder.
-    assert f'unadjudicated_span_hz="[100.0, {c._cloud_echo_band.band_hz[0]}]"' in message
+    assert fields["unadjudicated_span_hz"] == (
+        f"[100.0, {c._cloud_echo_band.band_hz[0]}]"
+    )
 
 
 def test_per_filter_boost_verdicts_are_disclosed_by_the_conductor(caplog):
@@ -640,16 +639,16 @@ def test_per_filter_boost_verdicts_are_disclosed_by_the_conductor(caplog):
         c = _cloud_conductor(fakes)
         _walk_measure_cloud_to_close(c)
 
-    verdicts = [
-        r for r in caplog.records
-        if "event=correction.crossover_v2_boost_excluded_verdicts" in r.getMessage()
-    ]
+    verdicts = event_records(caplog, "correction.crossover_v2_boost_excluded_verdicts")
     assert verdicts, "the per-filter verdicts never reached the journal"
-    dropped = [r for r in verdicts if "realized_in_band_db" in r.getMessage()]
+    dropped = [
+        r for r in verdicts
+        if "realized_in_band_db" in parse_event(r.getMessage())[1]["dropped"]
+    ]
     assert dropped
     # A drop narrows a correction, so it is a WARNING.
     assert all(r.levelno == logging.WARNING for r in dropped)
-    assert "band_hz" in dropped[0].getMessage()
+    assert "band_hz" in parse_event(dropped[0].getMessage())[1]["dropped"]
 
 
 def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
@@ -1033,12 +1032,6 @@ def _walk_a_session_whose_filters_reach_the_blind_zone(caplog):
     return c
 
 
-def _records(caplog, event: str):
-    return [
-        r for r in caplog.records if f"event={event}" in r.getMessage()
-    ]
-
-
 def test_blind_zone_placements_reach_the_journal(caplog):
     """#2599 SF1. ``linearization_fit`` owns no logger, so a verdict it makes
     is only a verdict if this loop says it out loud.
@@ -1051,15 +1044,14 @@ def test_blind_zone_placements_reach_the_journal(caplog):
     """
     c = _walk_a_session_whose_filters_reach_the_blind_zone(caplog)
 
-    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    records = event_records(caplog, "correction.crossover_v2_blind_zone_placements")
     assert records, "the blind-zone placements never reached the journal"
-    message = records[0].getMessage()
+    _, fields = parse_event(records[0].getMessage())
     # Self-contained: what was placed, and the hole it was placed in, so a
     # reader needs no second journal line to interpret it.
-    assert "role=" in message
-    assert "placed=" in message
-    assert "measured_excess_db" in message
-    assert "freq_hz" in message
+    assert "role" in fields
+    assert "measured_excess_db" in fields["placed"]
+    assert "freq_hz" in fields["placed"]
     # The TOP-LEVEL ``blind_bands_hz`` must carry the session's holes, and
     # this is asserted on that field's own rendered value rather than on the
     # message as a whole. Every hole's edges also appear inside each
@@ -1067,7 +1059,7 @@ def test_blind_zone_placements_reach_the_journal(caplog):
     # top-level field emptied -- it is the one field that makes the record
     # self-contained (and that lists holes no filter landed in), so it needs
     # its own assertion.
-    field = message.split("blind_bands_hz=", 1)[1].strip().strip('"')
+    field = fields["blind_bands_hz"]
     assert field not in ("[]", ""), f"blind_bands_hz carried nothing: {field!r}"
     holes = {
         tuple(placement["blind_band_hz"])
@@ -1089,7 +1081,7 @@ def test_the_blind_zone_emit_severity_tracks_whether_level_was_added(caplog):
     """
     c = _walk_a_session_whose_filters_reach_the_blind_zone(caplog)
 
-    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    records = event_records(caplog, "correction.crossover_v2_blind_zone_placements")
     assert records
     # Re-derive the expectation from the CANDIDATE rather than by parsing the
     # log line, so this pins the emit's rule and not its formatting.
@@ -1101,12 +1093,11 @@ def test_the_blind_zone_emit_severity_tracks_whether_level_was_added(caplog):
     assert by_role, "the candidate carried no placements to emit"
     assert len(records) == len(by_role)
     for record in records:
-        message = record.getMessage()
-        role = next(r for r in by_role if f"role={r}" in message)
-        added_level = any(p["gain_db"] > 0.0 for p in by_role[role])
+        _, fields = parse_event(record.getMessage())
+        added_level = any(p["gain_db"] > 0.0 for p in by_role[fields["role"]])
         assert record.levelno == (
             logging.WARNING if added_level else logging.INFO
-        ), message[:200]
+        ), record.getMessage()[:200]
 
 
 def test_a_refused_boost_reaches_the_journal_as_a_warning(caplog):
@@ -1151,22 +1142,22 @@ def test_a_refused_boost_reaches_the_journal_as_a_warning(caplog):
         c = _cloud_conductor(fakes)
         _walk_measure_cloud_to_close(c)
 
-    records = _records(
+    records = event_records(
         caplog, "correction.crossover_v2_boost_measured_target_verdicts"
     )
     assert records, "a refused boost never reached the journal"
     assert len(records) == len(c.candidate.linearization)
     for record in records:
-        message = record.getMessage()
+        _, fields = parse_event(record.getMessage())
         # A refusal narrows a correction, so it is always a WARNING -- unlike
         # the #1967 block, this event has no accepted-remainder case.
         assert record.levelno == logging.WARNING
         # The arithmetic that caused it, so a reader re-derives rather than
         # trusts: which filter, over what span, against what evidence.
-        assert "434.0167" in message
-        assert "action_band_hz" in message
-        assert "measured_excess_db" in message
-        assert "boost_above_measured_target" in message
+        assert "434.0167" in fields["dropped"]
+        assert "action_band_hz" in fields["dropped"]
+        assert "measured_excess_db" in fields["dropped"]
+        assert fields["lift_suppressed_reason"] == "boost_above_measured_target"
 
 
 def test_the_new_verdict_events_stay_silent_on_an_ordinary_session(caplog):
@@ -1194,7 +1185,7 @@ def test_the_new_verdict_events_stay_silent_on_an_ordinary_session(caplog):
             role for role, fit in c.candidate.linearization.items()
             if fit.get(field)
         ]
-        assert len(_records(caplog, event)) == len(populated), field
+        assert len(event_records(caplog, event)) == len(populated), field
 
 
 def test_a_hole_centred_BOOST_makes_the_blind_zone_emit_a_warning(caplog):
@@ -1239,12 +1230,12 @@ def test_a_hole_centred_BOOST_makes_the_blind_zone_emit_a_warning(caplog):
         c = _cloud_conductor(fakes)
         _walk_measure_cloud_to_close(c)
 
-    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    records = event_records(caplog, "correction.crossover_v2_blind_zone_placements")
     assert records, "a hole-centred boost never reached the journal"
     assert len(records) == len(c.candidate.linearization)
     for record in records:
         assert record.levelno == logging.WARNING, record.getMessage()[:200]
-        assert "1404.4032" in record.getMessage()
+        assert "1404.4032" in parse_event(record.getMessage())[1]["placed"]
 
 
 def test_a_correctly_levelled_pair_clears_the_improvement_floor(
@@ -1319,22 +1310,25 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     # Leg 1 — WHY it ships: the committed pair lands EXACTLY level. This is the
     # band-matched give-back's invariant showing up end-to-end in the planner,
     # not just in its unit test.
-    assert "event=correction.crossover_v2_realized_level_match" in caplog.text
-    assert "matched=true" in caplog.text
-    assert "difference_db=0.0" in caplog.text
+    match_fields = event_fields(caplog, "correction.crossover_v2_realized_level_match")
+    assert match_fields["matched"] == "true"
+    assert match_fields["difference_db"] == "0.0"
 
     # Leg 2 — the two give-backs, side by side, showing the 0.918 dB this
     # fixture's bands disagree by. The old anchor spent the core-band pair and
     # committed the tweeter at -2.691; the level-band pair commits -0.856.
-    assert (
-        'level_band_giveback_db="{\'woofer\': 1.147, \'tweeter\': 2.064}"'
-        in caplog.text
+    giveback_fields = event_fields(
+        caplog, "correction.crossover_v2_linearization_giveback"
     )
-    assert (
-        'core_band_giveback_db="{\'woofer\': 2.104, \'tweeter\': 1.186}"'
-        in caplog.text
+    assert giveback_fields["level_band_giveback_db"] == (
+        "{'woofer': 1.147, 'tweeter': 2.064}"
     )
-    assert 'anchored_trim_db="{\'woofer\': 0.0, \'tweeter\': -0.856}"' in caplog.text
+    assert giveback_fields["core_band_giveback_db"] == (
+        "{'woofer': 2.104, 'tweeter': 1.186}"
+    )
+    assert giveback_fields["anchored_trim_db"] == (
+        "{'woofer': 0.0, 'tweeter': -0.856}"
+    )
     # The precondition's instrumentation, on the ORDINARY path: this fixture's
     # base IS the band-average solve, so the polish delta is zero and the
     # invariant holds exactly. Pinned here for the zero case only — a literal
@@ -1342,14 +1336,18 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     # value assertion that kills that mutation lives where a NON-zero delta can
     # be driven (``test_the_journal_reports_the_polish_delta_it_measured`` in
     # test_crossover_v2_intervention_dual_run.py, mutation-verified).
-    assert (
-        'band_average_trim_db="{\'woofer\': 0.0, \'tweeter\': -1.773}"' in caplog.text
+    assert giveback_fields["band_average_trim_db"] == (
+        "{'woofer': 0.0, 'tweeter': -1.773}"
     )
-    assert 'polish_delta_db="{\'woofer\': 0.0, \'tweeter\': 0.0}"' in caplog.text
+    assert giveback_fields["polish_delta_db"] == "{'woofer': 0.0, 'tweeter': 0.0}"
 
     # Leg 3 — the prediction gate ran and passed on its own terms.
-    assert "event=correction.crossover_v2_prediction_gate" in caplog.text
-    assert "after_passed=true" in caplog.text
+    assert (
+        event_fields(caplog, "correction.crossover_v2_prediction_gate")[
+            "after_passed"
+        ]
+        == "true"
+    )
 
 
 @dataclasses.dataclass(frozen=True)

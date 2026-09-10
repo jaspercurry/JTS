@@ -23,6 +23,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement import household_mic as hm
+from tests._log_events import event_fields, event_records
 
 SAMPLE_CAL = "20 -1\n100 0\n1000 1\n20000 2\n"
 
@@ -90,7 +91,7 @@ def test_read_household_mic_treats_malformed_json_as_absent(tmp_path: Path, capl
     caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
 
     assert hm.read_household_mic(path=path) is None
-    assert "event=correction.household_mic_invalid" in caplog.text
+    assert event_records(caplog, "correction.household_mic_invalid")
 
 
 def test_read_household_mic_treats_wrong_schema_as_absent(tmp_path: Path, caplog):
@@ -99,7 +100,7 @@ def test_read_household_mic_treats_wrong_schema_as_absent(tmp_path: Path, caplog
     caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
 
     assert hm.read_household_mic(path=path) is None
-    assert "event=correction.household_mic_invalid" in caplog.text
+    assert event_records(caplog, "correction.household_mic_invalid")
 
 
 def test_read_household_mic_treats_missing_fields_as_absent(tmp_path: Path):
@@ -274,9 +275,9 @@ def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, capl
     record = hm.read_household_mic(path=household_path)
     assert record is not None
     assert record.model_key == "dayton_imm6"  # replaced, not merged or refused
-    assert "event=correction.household_mic_replaced" in caplog.text
-    assert "old_model=other" in caplog.text
-    assert "new_model=dayton_imm6" in caplog.text
+    fields = event_fields(caplog, "correction.household_mic_replaced")
+    assert fields["old_model"] == "other"
+    assert fields["new_model"] == "dayton_imm6"
 
 
 def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, caplog):
@@ -305,8 +306,8 @@ def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, cap
     stored = hm.read_household_mic(path=household_path)
     assert stored is not None
     assert stored.serial_hash == calibration.serial_hash("810-2222")
-    assert "event=correction.household_mic_replaced" in caplog.text
-    assert "changed=serial" in caplog.text
+    fields = event_fields(caplog, "correction.household_mic_replaced")
+    assert fields["changed"] == "serial"
     # Hashes never ride the event line.
     assert calibration.serial_hash("810-1111") not in caplog.text
     assert calibration.serial_hash("810-2222") not in caplog.text
@@ -331,8 +332,8 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
     hm.save_household_mic(_store(tmp_path, root=tmp_path / "cal"))
 
     assert not household_path.exists()
-    assert "event=correction.household_mic_write_failed" in caplog.text
-    assert "reason=OSError" in caplog.text
+    fields = event_fields(caplog, "correction.household_mic_write_failed")
+    assert fields["reason"] == "OSError"
 
 
 def test_an_unusable_stored_calibration_is_journalled_not_silent(
@@ -351,6 +352,6 @@ def test_an_unusable_stored_calibration_is_journalled_not_silent(
     )
 
     assert resolved is None
-    assert "event=correction.calibration_unresolvable" in caplog.text
-    assert f"reason={json.JSONDecodeError.__name__}" in caplog.text
-    assert f"path={root}" in caplog.text
+    fields = event_fields(caplog, "correction.calibration_unresolvable")
+    assert fields["reason"] == json.JSONDecodeError.__name__
+    assert fields["path"] == str(root)
