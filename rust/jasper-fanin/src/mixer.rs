@@ -1015,6 +1015,11 @@ pub struct Input {
     /// scale). Reused as the discard scratch by the catch-up drain — no
     /// per-period allocation.
     read_buf: Vec<i32>,
+    /// The DIRECT drain's chunk-read scratch ([`direct_narrow_scratch_samples`]
+    /// i32 samples), allocated once at open so the SCHED_FIFO render thread
+    /// neither allocates nor zero-fills it per period. Empty on every lane that
+    /// has no `direct` capture.
+    direct_scratch: Vec<i32>,
     pub xrun_count: Arc<AtomicU64>,
     /// `CLOCK_MONOTONIC` milliseconds of this lane's last xrun, or
     /// [`jasper_daemon::json::NEVER_MS`] until the first one. Bumped with `xrun_count` by
