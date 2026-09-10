@@ -83,7 +83,6 @@ reach them and reproduced acoustically where it can.
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -118,7 +117,7 @@ from jasper.audio_measurement.program_analysis import (
     analyze_program_capture,
 )
 
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_fields_in, event_records
 
 SR = 48_000
 FC_HZ = 1600.0
@@ -225,7 +224,7 @@ def _located_arrival(program, capture) -> int:
 def _witness_chosen_for(program) -> str:
     """The witness ``_resolve_anchor`` actually selected, read off its event
     line on a pristine capture of ``program``."""
-    records: list[str] = []
+    records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append
     log = logging.getLogger(_ANALYSIS_LOGGER)
@@ -237,7 +236,7 @@ def _witness_chosen_for(program) -> str:
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    fields = event_fields_in(records, "program_analysis.anchor")
     return fields["witness"]
 
 
@@ -638,7 +637,7 @@ def _anchor_separation(program, capture) -> float:
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    fields = event_fields_in(records, "program_analysis.anchor")
     runner_up = float(fields["runner_up_presence"])
     if runner_up <= 0.0:
         return float("inf")
@@ -1242,7 +1241,7 @@ def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
-    fields = event_fields(SimpleNamespace(records=records), "program_analysis.anchor")
+    fields = event_fields_in(records, "program_analysis.anchor")
     assert fields["ambiguous"] == "true"
     assert any(r.levelno == logging.WARNING for r in records)
 
