@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -31,3 +32,25 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry")
     parser.add_argument("--out", help="artifact destination (- for stdout)")
     parser.set_defaults(func=_cmd_bass)
+    compare = sub.add_parser("bass-compare", help="compare two exact takes on common qualified bass bins")
+    compare.add_argument("before", type=Path)
+    compare.add_argument("after", type=Path)
+    compare.add_argument("--before-take", required=True)
+    compare.add_argument("--after-take", required=True)
+    compare.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
+    compare.add_argument("--out")
+    compare.set_defaults(func=_cmd_compare)
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take  # lazy: laptop array analysis
+
+    def compare():
+        before = json.loads(args.before.read_text())
+        after = json.loads(args.after.read_text())
+        return {**compare_bass_takes(selected_take(before, args.before_take), selected_take(after, args.after_take), change=args.change),
+                "source_views": [str(args.before), str(args.after)]}
+    payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, compare)
+    written = _write(payload, args.out, args.after.parent / ARTIFACT_BY_VIEW[args.command].artifact)
+    return answer(args.command, out=written, available=payload["available"], context=payload["context"],
+                  bands=payload["bands"], line=f"bass-compare -> {written}")

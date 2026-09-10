@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+from jasper.active_speaker.bass_comparison import compare_bass_takes
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -846,3 +848,39 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
         assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
         assert harmonic['received_db_spl'] is None
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('change,main_delta,stimulus_delta', [('candidate', 0, 0), ('volume', 3, 0), ('demand', 0, 3)])
+def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta):
+    before = {
+        'record_path': 'before.json',
+        'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'bass_candidate',
+                   'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
+                   'position_deg': 0, 'vertical_deg': 0},
+        'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
+        'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
+        'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
+        'harmonics': {'3': {'freqs_hz': [50, 60, 70], 'relative_db': [-30, -5, None], 'qualified': [True, False, False]}},
+    }
+    after = copy.deepcopy(before)
+    after['record_path'] = 'after.json'
+    after['record']['level_db'] += main_delta
+    after['record']['stimulus_dbfs'] += stimulus_delta
+    if change == 'candidate':
+        after['record'].update(candidate_id='b', graph_fingerprint='graph-b')
+    after['fundamental_db'] = [-20 + 1 - stimulus_delta] * 7
+    result = compare_bass_takes(before, after, change=change)
+    assert result['available']
+    assert 60 not in result['freqs_hz']
+    band = next(b for b in result['bands'] if b['band_hz'] == [50, 63])
+    assert band['qualified_bins'] == 1
+    assert band['fundamental_output_change_db'] == pytest.approx(1)
+    assert band['combined_compression_db'] == (None if change == 'candidate' else 2)
+    assert band['harmonics']['3']['qualified_bins'] == 1
+    assert band['harmonics']['3']['change_db'] == 0
+    assert result['context']['unknown_fields']
+    after['record']['position_deg'] = 20
+    assert not compare_bass_takes(before, after, change=change)['available']
+    diagnostic = compare_bass_takes(before, after, change='diagnostic')
+    assert diagnostic['available']
+    assert 'pose_key' in diagnostic['context']['incompatible_fields']

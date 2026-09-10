@@ -280,6 +280,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
     "bass": _NO_CAPTURES,
+    "bass-compare": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,
