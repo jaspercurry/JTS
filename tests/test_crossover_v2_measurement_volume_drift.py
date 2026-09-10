@@ -42,6 +42,8 @@ from jasper.audio_measurement.program import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 
+from tests._log_events import event_field_maps, event_fields, event_records
+
 LATCH_LOGGER = "jasper.active_speaker.volume_latch"
 
 #: The campaign's own numbers, so a reader can line the fixtures up with the
@@ -133,11 +135,13 @@ def test_a_drifted_fader_is_disclosed_and_then_refused_without_a_write(caplog):
             )
     assert fader.state["writes"] == []
     assert fader.state["value"] == HOUSEHOLD_DB  # untouched, not dragged down
-    assert "result=disagreed" in caplog.text
     # Both values named, not just the delta — a forensic reader needs to know
     # WHICH of the two is the surprise.
-    assert f"observed_db={HOUSEHOLD_DB:.6f}" in caplog.text
-    assert f"expected_db={DECLARED_DB:.6f}" in caplog.text
+    (fields,) = event_field_maps(
+        caplog, "active_speaker.measurement_fader_drift", result="disagreed"
+    )
+    assert fields["observed_db"] == f"{HOUSEHOLD_DB:.6f}"
+    assert fields["expected_db"] == f"{DECLARED_DB:.6f}"
 
 
 @pytest.mark.parametrize(
@@ -187,12 +191,7 @@ def _refusal_fields(caplog, fader) -> dict[str, str]:
     with caplog.at_level(logging.ERROR, logger=LATCH_LOGGER):
         with pytest.raises(MeasurementFaderDrift):
             asyncio.run(hold_fader_at(DECLARED_DB, fader.get))
-    line = next(
-        rec.getMessage()
-        for rec in caplog.records
-        if "result=refused" in rec.getMessage()
-    )
-    return dict(token.split("=", 1) for token in line.split() if "=" in token)
+    return event_fields(caplog, "active_speaker.measurement_fader_drift")
 
 
 def test_an_empty_observed_db_means_unreadable_and_nothing_else(caplog):
@@ -204,7 +203,7 @@ def test_an_empty_observed_db_means_unreadable_and_nothing_else(caplog):
     wrong = _refusal_fields(caplog, _fader(value=HOUSEHOLD_DB))
     unreadable = _refusal_fields(caplog, _fader(value=None))
 
-    assert unreadable["observed_db"] == '""'
+    assert unreadable["observed_db"] == ""
     assert wrong["observed_db"] == f"{HOUSEHOLD_DB:.6f}"
 
 
@@ -473,7 +472,7 @@ def test_a_drain_that_confirmed_but_could_not_persist_still_holds_nothing(
 
     assert result is plan_mod.SessionVolumeRestoreResult.EMERGENCY_ATTENUATED
     assert drain.state["value"] == float(floor)  # speaker IS at the floor
-    assert "session_volume_persist_failed" in caplog.text
+    assert event_records(caplog, "correction.session_volume_persist_failed")
 
     # ...and the plan must now own nothing, so the next capture's hold cannot
     # command the declared volume back onto it.
@@ -704,9 +703,10 @@ def test_the_two_capture_paths_share_one_fader_hold(
 
     assert played, "the capture must still play once the fader is proven"
     assert cam.volume_writes == []
-    held = [r for r in caplog.records if "result=held" in r.getMessage()]
-    assert len(held) == 1, "this path must run the hold exactly once"
-    assert f"context=capture:{phase}" in held[0].getMessage()
+    (fields,) = event_field_maps(
+        caplog, "active_speaker.measurement_fader_drift", result="held"
+    )
+    assert fields["context"] == f"capture:{phase}"
 
 
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
@@ -872,7 +872,7 @@ def test_the_in_tolerance_hold_leaves_a_positive_liveness_line(tmp_path, caplog)
         ) == DECLARED_DB
 
     assert fader.state["writes"] == []  # still zero writes
-    held = [r for r in caplog.records if "result=held" in r.getMessage()]
-    assert len(held) == 1, "the in-tolerance hold must prove it ran"
-    assert "context=capture:check" in held[0].getMessage()
-    assert "event=active_speaker.measurement_fader_drift" in held[0].getMessage()
+    (fields,) = event_field_maps(
+        caplog, "active_speaker.measurement_fader_drift", result="held"
+    )
+    assert fields["context"] == "capture:check"
