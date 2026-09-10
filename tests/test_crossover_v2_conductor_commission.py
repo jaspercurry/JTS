@@ -407,18 +407,18 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
         "express": _verdict(tier=TIER_EXPRESS),
         "generic": _verdict(
             tier=TIER_FULL,
-            cloud={PHASE_CLOUD_VERIFY: {"overall_passed": True}},
+            cloud={PHASE_CLOUD_VERIFY: {"overall_within_target": True}},
         ),
         "spec_fail": _verdict(
             tier=TIER_FULL,
-            cloud={PHASE_CLOUD_VERIFY: {"overall_passed": False}},
+            cloud={PHASE_CLOUD_VERIFY: {"overall_within_target": False}},
         ),
         # R19/#2160: a group that closed and could not grade anything is a
         # third thing, and used to render as the miss above.
         "spec_unmeasurable": _verdict(
             tier=TIER_FULL,
             cloud={PHASE_CLOUD_VERIFY: {
-                "overall_passed": False, "flatness": {"evaluable": False},
+                "overall_within_target": False, "flatness": {"evaluable": False},
             }},
         ),
         # R19/#2098: Full verified at the mark and never closed its group.

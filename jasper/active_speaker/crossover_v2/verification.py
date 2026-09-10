@@ -623,7 +623,7 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     Classifies; it does not re-grade. Nothing here recomputes a deviation, a
     band membership, or a tolerance.
 
-    ``overall_passed`` is ``False`` both for a band that measured out of
+    ``overall_within_target`` is ``False`` both for a band that measured out of
     tolerance and for a band nothing could be measured in, so the split is
     three-way:
 
@@ -645,9 +645,9 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     evidence["bands"] = spec_band_rows(report)
     evidence["graded_band_hz"] = list(report.graded_band_hz)
     evidence["trusted_ceiling_hz"] = report.trusted_ceiling_hz
-    if report.overall_passed:
+    if report.overall_within_target:
         return Verdict(SpecStatus.PASSED, SPEC_IN_TOLERANCE, evidence)
-    if any(band.evaluable and band.passed is False for band in report.bands):
+    if any(band.evaluable and band.within_target is False for band in report.bands):
         return Verdict(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE, evidence)
     if any(band.evaluable for band in report.bands):
         return Verdict(SpecStatus.UNEVALUABLE, SPEC_PARTIAL_COVERAGE, evidence)
@@ -1099,7 +1099,7 @@ def spec_band_rows(report: FlatSpecReport | None) -> list[dict[str, Any]]:
                 None if band.graded_hi_hz is None else float(band.graded_hi_hz)
             ),
             "tolerance_db": float(band.tolerance_db),
-            "passed": band.passed,
+            "within_target": band.within_target,
             "max_deviation_db": (
                 None if band.max_deviation_db is None
                 else float(band.max_deviation_db)
@@ -1116,7 +1116,7 @@ def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
     """:func:`spec_band_rows` filtered to the bands that measured out of
     tolerance — the quality axis's evidence, which names only the misses."""
 
-    return [row for row in spec_band_rows(report) if row["passed"] is False]
+    return [row for row in spec_band_rows(report) if row["within_target"] is False]
 
 
 # --------------------------------------------------------------------------
@@ -1513,15 +1513,15 @@ def _per_band_flatness_log_field(bands: Any) -> str:
         if not isinstance(band, Mapping) or not band.get("evaluable"):
             continue
         lo, hi = band.get("f_lo_hz"), band.get("f_hi_hz")
-        deviation_db, passed = band.get("max_deviation_db"), band.get("passed")
+        deviation_db, within_target = band.get("max_deviation_db"), band.get("within_target")
         if (
             not isinstance(lo, (int, float)) or not isinstance(hi, (int, float))
             or not isinstance(deviation_db, (int, float))
-            or isinstance(deviation_db, bool) or not isinstance(passed, bool)
+            or isinstance(deviation_db, bool) or not isinstance(within_target, bool)
         ):
             continue
         parts.append(
-            f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if passed else 'fail'}"
+            f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if within_target else 'fail'}"
         )
     return ";".join(parts)
 

@@ -19,7 +19,7 @@ Two vocabulary points the assertions lean on throughout:
 * `max_deviation_db` is **signed** -- the deviation at the largest-absolute
   bin, with its sign kept, plus `max_deviation_hz` naming that bin.
 * A band with zero non-excluded bins is **unevaluable** (`evaluable=False`,
-  `passed=None`, `None` metrics), not an exception and not a pass. Only the
+  `within_target=None`, `None` metrics), not an exception and not a pass. Only the
   reference band still raises, because without a reference level nothing
   anywhere is computable.
 """
@@ -202,8 +202,8 @@ def test_flat_curve_passes_all_bands():
         assert band.max_deviation_hz is not None
         assert band.f_lo_hz <= band.max_deviation_hz < band.f_hi_hz
         assert band.n_excluded == 0
-        assert band.passed is True
-    assert report.overall_passed is True
+        assert band.within_target is True
+    assert report.overall_within_target is True
     assert report.excluded_intervals == ()
 
 
@@ -231,17 +231,17 @@ def test_bump_confined_to_band1_fails_only_that_band():
     band1, band2, band3 = report.bands
     assert band1.max_deviation_db == pytest.approx(expected_band1_max, abs=1e-9)
     assert band1.rms_deviation_db == pytest.approx(expected_band1_rms, abs=1e-9)
-    assert band1.passed is False  # +2.6 dB exceeds band1's +/-1.5 dB tolerance
+    assert band1.within_target is False  # +2.6 dB exceeds band1's +/-1.5 dB tolerance
     # The +2.6 dB bump is a LOUD excursion, and the report says so and names
     # where -- the sign and the frequency are the actionable half of "this
     # band failed".
     assert band1.max_deviation_db > 0.0
     assert band1.max_deviation_hz == 1500.0
     assert band2.max_deviation_db == pytest.approx(expected_band2_max, abs=1e-9)
-    assert band2.passed is True
+    assert band2.within_target is True
     assert band3.max_deviation_db == pytest.approx(expected_band3_max, abs=1e-9)
-    assert band3.passed is True
-    assert report.overall_passed is False
+    assert band3.within_target is True
+    assert report.overall_within_target is False
 
 
 def test_max_deviation_keeps_the_sign_of_a_dip():
@@ -262,8 +262,8 @@ def test_max_deviation_keeps_the_sign_of_a_dip():
     assert quiet_band1.max_deviation_hz == 600.0
     assert loud_band1.max_deviation_hz == 600.0
     # Both fail -- the tolerance is symmetric, only the reported sign differs.
-    assert quiet_band1.passed is False
-    assert loud_band1.passed is False
+    assert quiet_band1.within_target is False
+    assert loud_band1.within_target is False
 
 
 def test_dip_confined_to_band2_fails_only_that_band():
@@ -294,10 +294,10 @@ def test_dip_confined_to_band2_fails_only_that_band():
     assert band2.max_deviation_db == pytest.approx(expected_band2_max, abs=1e-9)
     assert band2.max_deviation_db < 0.0  # a dip, and the report says so
     assert band2.max_deviation_hz == 5000.0
-    assert band1.passed is True
-    assert band2.passed is False  # -3.5 dB clears the +/-2.0 dB band2 tolerance
-    assert band3.passed is True
-    assert report.overall_passed is False
+    assert band1.within_target is True
+    assert band2.within_target is False  # -3.5 dB clears the +/-2.0 dB band2 tolerance
+    assert band3.within_target is True
+    assert report.overall_within_target is False
 
 
 # --------------------------------------------------------------------------- #
@@ -332,10 +332,10 @@ def test_boundary_bin_at_2000hz_lands_in_second_band():
     # never touches the reference: band1's own bins read exactly 0 dB,
     # undisturbed.
     assert abs(band1.max_deviation_db) < 1.5
-    assert band1.passed is True
+    assert band1.within_target is True
     assert band2.max_deviation_db > 2.0
     assert band2.max_deviation_hz == 2000.0
-    assert band2.passed is False
+    assert band2.within_target is False
 
 
 def test_boundary_bin_at_8000hz_lands_in_third_band():
@@ -353,9 +353,9 @@ def test_boundary_bin_at_8000hz_lands_in_third_band():
     assert report.reference_db == 0.0  # 8000 Hz is outside REFERENCE_BAND_HZ
     assert band1.max_deviation_db == 0.0
     assert band2.max_deviation_db == 0.0
-    assert band2.passed is True
+    assert band2.within_target is True
     assert band3.max_deviation_db == 5.0
-    assert band3.passed is False  # 5.0 dB exceeds band3's +/-2.5 dB tolerance
+    assert band3.within_target is False  # 5.0 dB exceeds band3's +/-2.5 dB tolerance
 
 
 # --------------------------------------------------------------------------- #
@@ -384,8 +384,8 @@ def test_deep_dip_inside_excluded_bin_does_not_fail_band_or_appear_in_max_deviat
     assert band2.max_deviation_db == 0.0
     assert band2.rms_deviation_db == 0.0
     assert band2.max_deviation_hz != 5000.0
-    assert band2.passed is True
-    assert report.overall_passed is True
+    assert band2.within_target is True
+    assert report.overall_within_target is True
 
 
 def test_excluded_intervals_merge_contiguous_runs():
@@ -423,7 +423,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
     assert set(d.keys()) == {
         "reference_db",
         "bands",
-        "overall_passed",
+        "overall_within_target",
         "excluded_intervals",
         "best_effort_above_hz",
         "smoothing_fraction",
@@ -444,7 +444,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
         "gate_sweep_frame",
     }
     assert type(d["reference_db"]) is float
-    assert type(d["overall_passed"]) is bool
+    assert type(d["overall_within_target"]) is bool
     assert type(d["best_effort_above_hz"]) is float
     assert d["best_effort_above_hz"] == 16000.0
     assert type(d["smoothing_fraction"]) is int
@@ -479,7 +479,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "n_bins",
             "n_excluded",
             "evaluable",
-            "passed",
+            "within_target",
             # The #1857 attribution split -- disclosure beside the graded
             # numbers, never an input to them. See
             # tests/test_flat_spec_attribution.py.
@@ -533,7 +533,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
         for key in ("n_bins", "n_excluded"):
             assert type(band_dict[key]) is int, key
         assert type(band_dict["evaluable"]) is bool
-        assert type(band_dict["passed"]) is bool
+        assert type(band_dict["within_target"]) is bool
         # A real `bool`, not `np.bool_` -- the latter passes `isinstance` and
         # then breaks `json.dumps`, which is the trap this whole block exists
         # for. No floor was supplied to this report, so every band is
@@ -582,7 +582,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     band = BandResult(
         f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
         max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
-        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+        n_bins=10, n_excluded=1, evaluable=True, within_target=False,
         level_deviation_db=0.5, max_ripple_db=-1.5, max_ripple_hz=160.0,
         graded_lo_hz=110.0, graded_hi_hz=190.0, max_at_graded_edge=True,
         room_entangled_below_hz=150.0,
@@ -593,7 +593,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         gate_window_verdict_reasons=("sigma_growth", "depth_delta"),
     )
     report = FlatSpecReport(
-        reference_db=-20.0, bands=(band,), overall_passed=False,
+        reference_db=-20.0, bands=(band,), overall_within_target=False,
         excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
         smoothing_fraction=6, trusted_floor_hz=142.86,
         reference_band_hz=(250.0, 8000.0),
@@ -611,10 +611,10 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     bare_band = BandResult(
         f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
         max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
-        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+        n_bins=10, n_excluded=1, evaluable=True, within_target=False,
     )
     bare_report = FlatSpecReport(
-        reference_db=-20.0, bands=(bare_band,), overall_passed=False,
+        reference_db=-20.0, bands=(bare_band,), overall_within_target=False,
         excluded_intervals=(), best_effort_above_hz=16000.0, smoothing_fraction=3,
     )
     assert FlatSpecReport.from_dict(bare_report.to_dict()) == bare_report
@@ -626,17 +626,17 @@ def test_from_dict_raises_on_a_document_missing_an_original_vintage_field():
     original-vintage (#1741) field silently rehydrated a plausible-looking
     default instead of raising -- ``excluded_intervals`` defaulted to ``()``
     (reads as "nothing was excluded" when the truth is "the field was
-    lost"), and ``BandResult.passed`` defaulted to ``None`` (reads as
+    lost"), and ``BandResult.within_target`` defaulted to ``None`` (reads as
     "unevaluable" when the truth is the same). Both must now raise
     ``KeyError``, not rehydrate.
     """
     band = BandResult(
         f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
         max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
-        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+        n_bins=10, n_excluded=1, evaluable=True, within_target=False,
     )
     report = FlatSpecReport(
-        reference_db=-20.0, bands=(band,), overall_passed=False,
+        reference_db=-20.0, bands=(band,), overall_within_target=False,
         excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
         smoothing_fraction=3,
     )
@@ -649,8 +649,8 @@ def test_from_dict_raises_on_a_document_missing_an_original_vintage_field():
         FlatSpecReport.from_dict(corrupted)
 
     band_raw = dict(raw["bands"][0])
-    del band_raw["passed"]
-    with pytest.raises(KeyError, match="passed"):
+    del band_raw["within_target"]
+    with pytest.raises(KeyError, match="within_target"):
         BandResult.from_dict(band_raw)
 
 
@@ -690,10 +690,10 @@ def test_band_with_no_frequency_coverage_is_unevaluable_not_fatal():
     band1, band2, band3 = report.bands
     assert (band3.n_bins, band3.n_excluded) == (0, 0)
     assert band3.evaluable is False
-    assert band3.passed is None
-    assert band1.evaluable is True and band1.passed is True
-    assert band2.evaluable is True and band2.passed is True
-    assert report.overall_passed is False
+    assert band3.within_target is None
+    assert band1.evaluable is True and band1.within_target is True
+    assert band2.evaluable is True and band2.within_target is True
+    assert report.overall_within_target is False
 
 
 def test_fully_excluded_band_is_unevaluable_and_never_silently_passes():
@@ -706,7 +706,7 @@ def test_fully_excluded_band_is_unevaluable_and_never_silently_passes():
     would then be a way to make any band disappear from pass/fail).
 
     The band is reported as unevaluable with ``None`` metrics, the other two
-    bands are untouched, and ``overall_passed`` is False -- an unmeasured
+    bands are untouched, and ``overall_within_target`` is False -- an unmeasured
     band is never a clean one.
     """
     exclusion_mask = np.zeros(_FREQS_HZ.shape, dtype=bool)
@@ -718,7 +718,7 @@ def test_fully_excluded_band_is_unevaluable_and_never_silently_passes():
 
     band1, band2, band3 = report.bands
     assert band3.evaluable is False
-    assert band3.passed is None
+    assert band3.within_target is None
     assert band3.max_deviation_db is None
     assert band3.max_deviation_hz is None
     assert band3.rms_deviation_db is None
@@ -729,18 +729,18 @@ def test_fully_excluded_band_is_unevaluable_and_never_silently_passes():
     assert report.reference_db == 0.0
     for band in (band1, band2):
         assert band.evaluable is True
-        assert band.passed is True
+        assert band.within_target is True
         assert band.max_deviation_db == 0.0
         assert band.rms_deviation_db == 0.0
 
-    assert report.overall_passed is False, (
+    assert report.overall_within_target is False, (
         "an unevaluable band must never read as a clean bill of health"
     )
     assert report.excluded_intervals == ((8000.0, 15000.0),)
 
     # JSON-safe, with the Nones rendering as null.
     d = report.to_dict()
-    assert d["bands"][2]["passed"] is None
+    assert d["bands"][2]["within_target"] is None
     assert d["bands"][2]["max_deviation_db"] is None
     assert d["bands"][2]["evaluable"] is False
     assert json.loads(json.dumps(d))["bands"][2]["rms_deviation_db"] is None
@@ -766,8 +766,8 @@ def test_the_most_bands_that_can_be_unevaluable_at_once_is_two():
     report = evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0), exclusion_mask)
 
     assert [band.evaluable for band in report.bands] == [True, False, False]
-    assert [band.passed for band in report.bands] == [True, None, None]
-    assert report.overall_passed is False
+    assert [band.within_target for band in report.bands] == [True, None, None]
+    assert report.overall_within_target is False
 
     # Take that last bin away and there is no reference at all -- raise.
     exclusion_mask[0] = True
@@ -822,7 +822,7 @@ def test_smoothing_fraction_is_recorded_verbatim_as_caller_attestation():
         band.to_dict() for band in default.bands
     ]
     assert attested.reference_db == default.reference_db
-    assert attested.overall_passed == default.overall_passed
+    assert attested.overall_within_target == default.overall_within_target
 
 
 def test_merged_interval_rule_has_exactly_one_owner():
@@ -903,7 +903,7 @@ def test_the_trusted_floor_raises_every_bands_lower_edge():
     # The 20 dB spike is below the floor, so it cannot be the worst bin and
     # cannot fail the band.
     assert low.max_deviation_hz >= 700.0
-    assert low.passed is True
+    assert low.within_target is True
 
     # Bands entirely above the floor keep their nominal edge, unmoved.
     for band in report.bands[1:]:
@@ -963,13 +963,13 @@ def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
     assert top.graded_hi_hz == 8000.0
     assert top.graded_lo_hz is not None and top.graded_lo_hz >= top.graded_hi_hz
     assert top.evaluable is False
-    assert top.passed is None          # never False
+    assert top.within_target is None          # never False
     assert top.max_deviation_db is None
     assert top.rms_deviation_db is None
     assert top.n_bins == 0
     assert top.n_excluded == 0
     # ...and an unevaluable band still cannot be mistaken for a clean one.
-    assert report.overall_passed is False
+    assert report.overall_within_target is False
     assert all(b.evaluable for b in report.bands[:2])
 
     # Contrast: no-coverage-on-the-axis reports the NOMINAL edges, because
@@ -982,7 +982,7 @@ def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
 
 def test_a_band_failing_above_the_trusted_floor_still_fails():
     """The clamp must not become a way to stop failing. A band entirely above
-    the floor and genuinely out of tolerance keeps ``passed=False``;
+    the floor and genuinely out of tolerance keeps ``within_target=False``;
     ``evaluable=False`` is reserved for absent evidence and is never borrowed
     to soften a verdict."""
     db = _flat_db(0.0)
@@ -992,9 +992,9 @@ def test_a_band_failing_above_the_trusted_floor_still_fails():
     top = report.bands[2]
     assert top.graded_lo_hz == top.f_lo_hz
     assert top.evaluable is True
-    assert top.passed is False
+    assert top.within_target is False
     assert abs(top.max_deviation_db) > top.tolerance_db
-    assert report.overall_passed is False
+    assert report.overall_within_target is False
 
 
 def test_no_floor_or_an_unusable_floor_clamps_nothing():
@@ -1104,7 +1104,7 @@ def test_the_reference_cannot_be_moved_by_a_band_above_it():
         [0.0, 1.0, 0.0], abs=1e-12
     )
     # ...and the elevation does not push an untouched band out of tolerance.
-    assert [b.passed for b in hot_report.bands] == [True, True, True]
+    assert [b.within_target for b in hot_report.bands] == [True, True, True]
 
 
 # --------------------------------------------------------------------------- #
@@ -1206,12 +1206,12 @@ def test_convergence_residual_with_no_evaluable_band_is_none_not_zero():
     empty_band = BandResult(
         f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
         max_deviation_db=None, max_deviation_hz=None, rms_deviation_db=None,
-        n_bins=7, n_excluded=7, evaluable=False, passed=None,
+        n_bins=7, n_excluded=7, evaluable=False, within_target=None,
     )
     report = FlatSpecReport(
         reference_db=-30.0,
         bands=(empty_band,),
-        overall_passed=False,
+        overall_within_target=False,
         excluded_intervals=(),
         best_effort_above_hz=BEST_EFFORT_ABOVE_HZ,
         smoothing_fraction=3,
@@ -1389,7 +1389,7 @@ def test_an_extremum_on_the_graded_edge_is_disclosed():
     below = _EDGE_FREQS_HZ < low.graded_lo_hz
     assert float(np.max(_rising_into_the_floor_db()[below])) > low.max_deviation_db
     # Disclosure only -- the verdict is untouched.
-    assert low.passed is (abs(low.max_deviation_db) <= low.tolerance_db)
+    assert low.within_target is (abs(low.max_deviation_db) <= low.tolerance_db)
     assert report.to_dict()["bands"][0]["max_at_graded_edge"] is True
 
 
@@ -1502,7 +1502,7 @@ def test_the_entanglement_floor_moves_no_graded_number():
         entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_DECLARED,
     )
     assert marked.bands[0].room_entangled_below_hz == 1000.0
-    assert marked.overall_passed == plain.overall_passed
+    assert marked.overall_within_target == plain.overall_within_target
     assert marked.reference_db == plain.reference_db
     assert tuple(
         dataclasses.replace(band, room_entangled_below_hz=None)
@@ -1555,7 +1555,7 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
     assert older.entanglement_floor_hz is None
     assert older.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
     assert all(band.room_entangled_below_hz is None for band in older.bands)
-    assert older.overall_passed == report.overall_passed
+    assert older.overall_within_target == report.overall_within_target
 
 
 def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
@@ -1585,7 +1585,7 @@ def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
     assert all(band.gate_sensitivity_note is None for band in older.bands)
     assert all(band.gate_window_verdict is None for band in older.bands)
     assert all(band.gate_window_verdict_reasons is None for band in older.bands)
-    assert older.overall_passed == report.overall_passed
+    assert older.overall_within_target == report.overall_within_target
 
 
 @pytest.mark.parametrize("stored", [7.0, "a frame", ["rungs_ms"], True])

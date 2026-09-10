@@ -510,7 +510,7 @@ def _stage_2(monkeypatch, *, camilla_factory: Any = None) -> tuple[Any, dict[str
 # pass by actually carrying THIS number across.
 _PILOT_AT = 1_760_000_000.0
 _GATE_WINDOW_MS = 6.5
-_PREDICTED_SPEC = {"overall_passed": True, "bands": [{"f_lo_hz": 1000.0, "passed": True}]}
+_PREDICTED_SPEC = {"overall_within_target": True, "bands": [{"f_lo_hz": 1000.0, "within_target": True}]}
 
 # A commanded delta shaped like one the fit really emits — a rising shelf, with
 # a quiet skirt at the bottom. Ten of its thirteen bins clear

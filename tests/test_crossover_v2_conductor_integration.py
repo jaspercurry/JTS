@@ -1208,7 +1208,7 @@ def test_predicted_spec_report_is_graded_on_the_shared_analysis_grid():
     graded_bins = sum(band.n_bins for band in report.bands)
     assert 0 < graded_bins <= MAX_ANALYSIS_BINS
     # A flat curve is flat at any grid density.
-    assert report.overall_passed is True
+    assert report.overall_within_target is True
 
 
 def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
@@ -1522,7 +1522,7 @@ def test_the_gates_ledger_and_the_stashed_verdict_never_disagree(caplog):
     assert report.to_dict() == stashed
     # ``log_event`` renders booleans JSON-style, so compare in its vocabulary
     # rather than Python's.
-    assert fields["after_passed"] == ("true" if report.overall_passed else "false")
+    assert fields["after_passed"] == ("true" if report.overall_within_target else "false")
     rms_db = round(float(spec_convergence_residual(report).rms_db), 3)
     assert fields["after_rms_db"] == str(rms_db)
 

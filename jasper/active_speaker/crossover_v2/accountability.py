@@ -357,7 +357,7 @@ def assess_accountability(
                 "before_rms_db": _rms(before),
                 "after_rms_db": _rms(after),
                 "after_passed": (
-                    after.overall_passed if after is not None else None
+                    after.overall_within_target if after is not None else None
                 ),
                 "improvement_db": rounded,
                 "required_db": material_improvement_db,
@@ -379,7 +379,7 @@ def assess_accountability(
         return _settle(LEDGER_NO_LINEARIZATION)
     if after is None:
         return _settle(LEDGER_PREDICTION_UNGRADEABLE)
-    if after.overall_passed:
+    if after.overall_within_target:
         # A prediction that meets the spec needs no improvement argument, and
         # judging an in-spec result on improvement reads flat speakers worst.
         return _settle(LEDGER_PREDICTED_IN_SPEC)

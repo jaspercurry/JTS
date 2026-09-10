@@ -802,7 +802,7 @@ def summarise_spec(block: Mapping[str, Any], trail: Trail) -> None:
         print(
             f"  {_render(band.get('graded_lo_hz'))}-"
             f"{_render(band.get('graded_hi_hz'))} Hz"
-            f"  passed={band.get('passed')}"
+            f"  within_target={band.get('within_target')}"
             f"  max={_render(band.get('max_deviation_db'))} dB"
             f" @ {_render(band.get('max_deviation_hz'))} Hz"
             f"  tol=+/-{_render(band.get('tolerance_db'))} dB"

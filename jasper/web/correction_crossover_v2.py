@@ -1401,7 +1401,7 @@ GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
 
-#: The post-apply SPATIAL grade's own state (#2160). ``overall_passed`` is a
+#: The post-apply SPATIAL grade's own state (#2160). ``overall_within_target`` is a
 #: bool and therefore cannot distinguish "graded and failed" from "could not be
 #: graded at all" — :attr:`~jasper.active_speaker.flat_spec.SpecFlatness.passed`
 #: is ``False`` for an unmeasurable spectrum too, by its own "will not report a
@@ -1416,15 +1416,15 @@ GRADE_SPATIAL_UNMEASURABLE = "unmeasurable"
 def _spatial_grade(post_apply: Any) -> str:
     """One post-apply cloud entry reduced to its SPATIAL grade state.
 
-    ``overall_passed`` — projected by
+    ``overall_within_target`` — projected by
     :func:`~jasper.active_speaker.crossover_envelope_v2.compact_cloud_status`
     from the
     spec report — stays THE consumed verdict key: every existing verdict path
     reads it, and ``flatness.passed`` is the same value under another name, so
     this deliberately does not become a second reader of it.
     ``flatness.evaluable`` is consulted for exactly one thing, the distinction
-    ``overall_passed`` cannot carry: a spectrum where no band survived to be
-    measured reports ``passed=False`` and is NOT a failure.
+    ``overall_within_target`` cannot carry: a spectrum where no band survived to be
+    measured reports ``within_target=False`` and is NOT a failure.
 
     Unmeasurable is claimed only on POSITIVE evidence (``evaluable`` present
     and ``False``). A durable state whose entry carries no ``flatness`` at all
@@ -1435,13 +1435,13 @@ def _spatial_grade(post_apply: Any) -> str:
     """
     if not isinstance(post_apply, Mapping):
         return GRADE_SPATIAL_ABSENT
-    passed = post_apply.get("overall_passed")
-    if not isinstance(passed, bool):
+    within_target = post_apply.get("overall_within_target")
+    if not isinstance(within_target, bool):
         # No verdict — the group never closed, or its pipeline never became
         # available. Never a failing grade; see ``_spec_verdict``'s own
         # "absence of a verdict is not a failing one" rule.
         return GRADE_SPATIAL_ABSENT
-    if passed:
+    if within_target:
         return GRADE_SPATIAL_PASSED
     flatness = post_apply.get("flatness")
     if isinstance(flatness, Mapping) and flatness.get("evaluable") is False:
@@ -1488,7 +1488,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     * a Full session whose post-apply group never closed reaches
       ``mark_verified`` — a true local result, and NOT the claim Full
       promised. It rendered as "applied and graded".
-    * a post-apply group that closed with ``overall_passed=False`` reaches
+    * a post-apply group that closed with ``overall_within_target=False`` reaches
       ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
       rendered as "applied and graded" — measured on jts3 2026-08-07, a
       −4.63 dB spatial miss under a green tick.
@@ -1653,7 +1653,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     cloud = block.get("cloud")
     post_apply = cloud.get(PHASE_CLOUD_VERIFY) if isinstance(cloud, Mapping) else None
     cloud_verdict = (
-        post_apply.get("overall_passed") if isinstance(post_apply, Mapping) else None
+        post_apply.get("overall_within_target") if isinstance(post_apply, Mapping) else None
     )
     # **A failed mark-VERIFY caps this badge whatever the group says** (#2464,
     # ruled 2026-08-19). ``cloud_verdict`` was tested FIRST, so a closed group

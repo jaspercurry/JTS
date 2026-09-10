@@ -50,8 +50,8 @@ class BandResult:
     """One :data:`SPEC_BANDS` entry's evaluation outcome.
 
     A band with zero non-excluded bins is ``evaluable=False``,
-    ``passed=None`` — no evidence, treated as not-passed by
-    :attr:`FlatSpecReport.overall_passed`. Per bin,
+    ``within_target=None`` — no evidence, treated as not-within-target by
+    :attr:`FlatSpecReport.overall_within_target`. Per bin,
     ``deviation_i = ripple_i + level_deviation_db``: level is what a
     different band's own level can move, ripple structurally cannot.
     ``max_deviation_db`` and ``max_ripple_db`` are taken at different bins
@@ -94,7 +94,7 @@ class BandResult:
     n_bins: int
     n_excluded: int
     evaluable: bool
-    passed: bool | None
+    within_target: bool | None
     # Defaulted: a report can be hand-built or rehydrated without these.
     level_deviation_db: float | None = None
     max_ripple_db: float | None = None
@@ -124,7 +124,7 @@ class BandResult:
             "n_bins": self.n_bins,
             "n_excluded": self.n_excluded,
             "evaluable": self.evaluable,
-            "passed": self.passed,
+            "within_target": self.within_target,
             "level_deviation_db": self.level_deviation_db,
             "max_ripple_db": self.max_ripple_db,
             "max_ripple_hz": self.max_ripple_hz,
@@ -147,7 +147,7 @@ class BandResult:
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "BandResult":
         """The exact inverse of :meth:`to_dict` — a rehydration, never a
-        re-derivation. ``f_lo_hz`` through ``passed`` are read with hard
+        re-derivation. ``f_lo_hz`` through ``within_target`` are read with hard
         indexing (a document missing one is CORRUPT and raises); only the
         dataclass-defaulted fields use :meth:`dict.get`.
         """
@@ -162,7 +162,7 @@ class BandResult:
             n_bins=int(raw["n_bins"]),
             n_excluded=int(raw["n_excluded"]),
             evaluable=bool(raw["evaluable"]),
-            passed=raw["passed"],
+            within_target=raw["within_target"],
             level_deviation_db=raw.get("level_deviation_db"),
             max_ripple_db=raw.get("max_ripple_db"),
             max_ripple_hz=raw.get("max_ripple_hz"),
@@ -186,8 +186,8 @@ class FlatSpecReport:
 
     ``excluded_intervals`` collapses contiguous exclusion-mask runs into
     merged ``(f_lo_hz, f_hi_hz)`` tuples — disclosure only, pass/fail reads
-    the mask directly. ``overall_passed`` is True only when every band is
-    both evaluable and passing. ``smoothing_fraction`` is caller
+    the mask directly. ``overall_within_target`` is True only when every band is
+    both evaluable and within target. ``smoothing_fraction`` is caller
     attestation, not a measurement. ``trusted_floor_hz``/
     ``trusted_ceiling_hz`` are the clamps this evaluation was intersected
     at (``None`` means "not stated", never "zero"). ``reference_band_hz``
@@ -202,7 +202,7 @@ class FlatSpecReport:
 
     reference_db: float
     bands: tuple[BandResult, ...]
-    overall_passed: bool
+    overall_within_target: bool
     excluded_intervals: tuple[tuple[float, float], ...]
     best_effort_above_hz: float
     smoothing_fraction: int
@@ -235,7 +235,7 @@ class FlatSpecReport:
         return {
             "reference_db": self.reference_db,
             "bands": [band.to_dict() for band in self.bands],
-            "overall_passed": self.overall_passed,
+            "overall_within_target": self.overall_within_target,
             "excluded_intervals": [list(interval) for interval in self.excluded_intervals],
             "best_effort_above_hz": self.best_effort_above_hz,
             "smoothing_fraction": self.smoothing_fraction,
@@ -274,7 +274,7 @@ class FlatSpecReport:
         return cls(
             reference_db=float(raw["reference_db"]),
             bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
-            overall_passed=bool(raw["overall_passed"]),
+            overall_within_target=bool(raw["overall_within_target"]),
             excluded_intervals=tuple(
                 (float(lo), float(hi)) for lo, hi in raw["excluded_intervals"]
             ),
@@ -489,7 +489,7 @@ def evaluate_flat_spec(
                     n_bins=n_bins,
                     n_excluded=n_excluded,
                     evaluable=False,
-                    passed=None,
+                    within_target=None,
                     graded_lo_hz=f_lo_hz,
                     graded_hi_hz=f_hi_hz,
                     room_entangled_below_hz=room_entangled_below_hz,
@@ -506,7 +506,7 @@ def evaluate_flat_spec(
             f_lo_hz > nominal_lo_hz and worst == int(band_indices[0])
         )
         rms_deviation_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
-        # The attribution split. Nothing below feeds `passed`.
+        # The attribution split. Nothing below feeds `within_target`.
         band_level_db = _power_mean_db(spec_smoothed_db[band_indices])
         band_ripple_db = spec_smoothed_db[band_indices] - band_level_db
         worst_ripple = int(band_indices[np.argmax(np.abs(band_ripple_db))])
@@ -521,7 +521,7 @@ def evaluate_flat_spec(
                 n_bins=n_bins,
                 n_excluded=n_excluded,
                 evaluable=True,
-                passed=bool(abs(max_deviation_db) <= tolerance_db),
+                within_target=bool(abs(max_deviation_db) <= tolerance_db),
                 level_deviation_db=float(band_level_db - reference_db),
                 max_ripple_db=float(spec_smoothed_db[worst_ripple] - band_level_db),
                 max_ripple_hz=float(freqs_hz[worst_ripple]),
@@ -532,7 +532,9 @@ def evaluate_flat_spec(
             )
         )
 
-    overall_passed = all(band.evaluable and band.passed for band in band_results)
+    overall_within_target = all(
+        band.evaluable and band.within_target for band in band_results
+    )
     excluded_intervals = merged_true_intervals(freqs_hz, resolved_exclusion_mask)
     # Where grading stops, and SPEC_BANDS[-1]'s own upper edge, are one number
     # by construction — so this is that edge, not a second reading of it.
@@ -541,7 +543,7 @@ def evaluate_flat_spec(
     return FlatSpecReport(
         reference_db=reference_db,
         bands=tuple(band_results),
-        overall_passed=overall_passed,
+        overall_within_target=overall_within_target,
         excluded_intervals=excluded_intervals,
         best_effort_above_hz=graded_top_hz,
         smoothing_fraction=int(smoothing_fraction),
@@ -790,7 +792,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
             n_bins=residual.n_bins,
             n_excluded=residual.n_excluded,
             evaluable=False,
-            passed=report.overall_passed,
+            passed=report.overall_within_target,
             reference_band_hz=report.reference_band_hz,
             tilt=tilt,
         )
@@ -803,7 +805,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
         n_bins=residual.n_bins,
         n_excluded=residual.n_excluded,
         evaluable=True,
-        passed=report.overall_passed,
+        passed=report.overall_within_target,
         # The frame that was USED, read off the report, not the module
         # constant: a clamped reference band re-centres every number above.
         reference_band_hz=report.reference_band_hz,

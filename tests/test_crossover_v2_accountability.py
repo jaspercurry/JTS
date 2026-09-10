@@ -34,7 +34,7 @@ def _report(passed, *, rms_db=1.0):
     """A REAL :class:`FlatSpecReport`, not a stub.
 
     The gate hands whatever the evaluator returned to
-    ``spec_convergence_residual``, so a stub carrying only ``overall_passed``
+    ``spec_convergence_residual``, so a stub carrying only ``overall_within_target``
     would make the ledger's ``before_rms_db``/``after_rms_db`` unreachable —
     a suite green over a code path production takes on every session. Only the
     evaluator ITSELF is injected, which is the system boundary.
@@ -46,10 +46,10 @@ def _report(passed, *, rms_db=1.0):
                 f_lo_hz=200.0, f_hi_hz=2000.0, tolerance_db=3.0,
                 max_deviation_db=rms_db, max_deviation_hz=1000.0,
                 rms_deviation_db=rms_db, n_bins=100, n_excluded=0,
-                evaluable=True, passed=passed,
+                evaluable=True, within_target=passed,
             ),
         ),
-        overall_passed=passed,
+        overall_within_target=passed,
         excluded_intervals=(),
         best_effort_above_hz=10000.0,
         smoothing_fraction=6,

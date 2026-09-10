@@ -3185,8 +3185,8 @@ def test_a_held_round_clears_the_accountability_prediction_gate():
     shipped_report = spec_report_for_predicted_sum(shipped)
     combed_report = spec_report_for_predicted_sum(combed)
     assert shipped_report is not None and combed_report is not None
-    assert shipped_report.overall_passed
-    assert not combed_report.overall_passed
+    assert shipped_report.overall_within_target
+    assert not combed_report.overall_within_target
 
 
 def test_verify_tracking_passes_a_held_round_and_still_fails_a_real_comb():
