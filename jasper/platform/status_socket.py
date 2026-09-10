@@ -99,6 +99,7 @@ def read_status_socket_or_none(
     path: str,
     *,
     timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS,
+    max_bytes: int = _RESPONSE_MAX_BYTES,
     event: str = "route_latency.status_socket_unavailable",
 ) -> dict[str, Any] | None:
     """Fail-soft wrapper around :func:`read_status_socket`.
@@ -110,7 +111,7 @@ def read_status_socket_or_none(
     """
 
     try:
-        return read_status_socket(path, timeout=timeout)
+        return read_status_socket(path, timeout=timeout, max_bytes=max_bytes)
     except (OSError, ValueError) as e:
         log_event(
             logger,

@@ -1093,7 +1093,7 @@ class AirPlayHealthSampler:
                 "health": direct.get("health") if direct is not None else None,
                 "direct": (
                     {
-                        key: copy.deepcopy(direct.get(key))
+                        key: direct.get(key)
                         for key in (
                             "present",
                             "health",
@@ -1114,7 +1114,7 @@ class AirPlayHealthSampler:
                 ),
                 "resampler": (
                     {
-                        key: copy.deepcopy(resampler.get(key))
+                        key: resampler.get(key)
                         for key in (
                             "health",
                             "locked",
@@ -1141,7 +1141,7 @@ class AirPlayHealthSampler:
                 ),
                 "ring": (
                     {
-                        key: copy.deepcopy(ring.get(key))
+                        key: ring.get(key)
                         for key in (
                             "attached",
                             "detach_reason",
@@ -1165,7 +1165,7 @@ class AirPlayHealthSampler:
         ring_observation: dict[str, Any] | None = None
         if output_ring is not None:
             ring_observation = {
-                key: copy.deepcopy(output_ring.get(key))
+                key: output_ring.get(key)
                 for key in (
                     "occupancy",
                     "slots",

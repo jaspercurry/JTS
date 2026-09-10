@@ -4,21 +4,10 @@
 
 """jasper-doctor checks for jasper-outputd, the final output owner.
 
-Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
-module may not import from ``audio_runtime_ring``.
-
-Closed vocabulary for this module's `CheckResult.reason`: one snake_case
-constant per distinct decision branch of the checks below, its value unique
-across the doctor and prefixed by the check that emits it. `detail` stays the
-human sentence (free to reword); `reason` is what tests and self-healing
-consumers pin instead (ADR-0233 rule 3).
-
-A branch that formed NO verdict — subsystem not installed, not applicable to
-this box, or the evidence source unreachable so nothing was observed — is
-`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
-consumer would branch on (a feature the box turned off, a floor that is
-deliberately not renderable).
+One-way audio-runtime import chain ``audio_runtime_camilla`` -> ``_fanin`` ->
+``_outputd`` -> ``_ring``: this module may not import from
+``audio_runtime_ring``. `CheckResult.reason` vocabulary and the skipped-vs-ok
+rule: ADR-0233 rule 3.
 """
 from __future__ import annotations
 
@@ -36,7 +25,6 @@ from ._shared import (
 )
 from .audio_runtime_fanin import (
     _ASOUND_CONF_PATH,
-    _asound_non_comment_text,
     _asound_pcm_block,
     _assistant_gain_fault,
 )
@@ -922,16 +910,15 @@ def check_outputd_dac_render() -> CheckResult:
             f"backend={backend!r}, dac_pcm={dac_pcm!r}",
             reason=REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
         )
-    try:
-        text = _ASOUND_CONF_PATH.read_text()
-    except OSError as e:
+    active = evidence.asound_conf_text(_ASOUND_CONF_PATH)
+    if active is None:
         return CheckResult(
             label,
             "skipped",
-            f"can't read {_ASOUND_CONF_PATH}: {e}",
+            f"can't read {_ASOUND_CONF_PATH}",
             reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
         )
-    block = _asound_pcm_block(_asound_non_comment_text(text), dac_pcm)
+    block = _asound_pcm_block(active, dac_pcm)
     rendered = _ASOUND_BLOCK_TYPE_RE.search(block) if block is not None else None
     if rendered is None:
         return CheckResult(

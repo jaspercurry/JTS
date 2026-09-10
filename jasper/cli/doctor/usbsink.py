@@ -36,7 +36,10 @@ from jasper.audio_hardware.usb_port_role import (
 )
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
 from jasper.audio_validation_route import route_live_state_issues
-from jasper.fanin.status import fanin_usbsink_lane_is_direct
+from jasper.fanin.status import (
+    fanin_usbsink_input,
+    fanin_usbsink_lane_is_direct,
+)
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET
@@ -569,15 +572,8 @@ def check_usbsink_low_latency_contract() -> CheckResult:
             reason=REASON_LOW_LATENCY_LIVE_MISMATCH,
         )
 
-    lane = next(
-        (
-            item
-            for item in fanin_status.get("inputs", [])
-            if isinstance(item, dict) and item.get("label") == "usbsink"
-        ),
-        {},
-    )
-    direct = lane.get("direct") if isinstance(lane, dict) else {}
+    lane = fanin_usbsink_input(fanin_status) or {}
+    direct = lane.get("direct")
 
     missing: list[str] = []
     mismatched: list[str] = []

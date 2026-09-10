@@ -556,17 +556,15 @@ fn drain_direct_capture(
         return DirectDrainOutcome::Ok;
     };
     let channels = CHANNELS as usize;
-    // Preallocated i32 scratch (256×2) — no allocation in the hot path. Same
-    // length as `narrow_scratch` below: the i32 read fills `scratch[..samples]`
-    // and the narrow fills `narrow_scratch[..got]` with `got == samples`.
-    let mut scratch = [0i32; direct_narrow_scratch_samples()];
-    // Dedicated i16 narrowing scratch for the ARMED tap, sized to match the i32
-    // scratch. MUST NOT reuse `input.read_buf` (sized `period_frames ×
-    // CHANNELS`) — see `direct_narrow_scratch_samples` for the
-    // OOB-on-small-period hazard. A single chunk read is capped at
-    // DIRECT_PERIOD_FRAMES frames (`to_read` below), so this fixed size always
-    // bounds `got`.
-    let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
+    // Both chunk scratches — the i32 read (`input.direct_scratch`) and the armed
+    // tap's S16 narrowing (`input.direct_narrow_scratch`) — are allocated once at
+    // lane open (`direct_narrow_scratch_samples()` samples each). This runs on
+    // the SCHED_FIFO render thread once per period and reads several chunks per
+    // call, so neither an allocation nor a zero-fill belongs here. A single chunk
+    // read is capped at DIRECT_PERIOD_FRAMES frames (`to_read` below), so that
+    // fixed length always bounds `samples`; MUST NOT be `input.read_buf` (sized
+    // `period_frames × CHANNELS`) — see `direct_narrow_scratch_samples` for the
+    // OOB-on-small-period hazard.
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     let armed = tap.state.armed();
@@ -643,7 +641,7 @@ fn drain_direct_capture(
                     Ok(io) => io,
                     Err(_) => return DirectDrainOutcome::DeviceLost,
                 };
-                io.readi(&mut scratch[..samples])
+                io.readi(&mut input.direct_scratch[..samples])
             };
             match read_result {
                 Ok(0) => {
@@ -656,18 +654,25 @@ fn drain_direct_capture(
                     // diagnostic branch OFF the audio path, computed only while
                     // armed so a disarmed lane pays for no conversion at all.
                     if armed {
-                        let converted = &mut narrow_scratch[..got];
-                        let _ = jasper_resampler::convert_s32_to_s16(&scratch[..got], converted);
+                        let _ = jasper_resampler::convert_s32_to_s16(
+                            &input.direct_scratch[..got],
+                            &mut input.direct_narrow_scratch[..got],
+                        );
                         // read_ns is taken immediately after readi returned above.
                         let read_ns = monotonic_ns();
-                        tap.tap_over_read(&narrow_scratch[..got], n, read_ns, ring_fill_before);
+                        tap.tap_over_read(
+                            &input.direct_narrow_scratch[..got],
+                            n,
+                            read_ns,
+                            ring_fill_before,
+                        );
                     }
                     tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
                     input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
                     if let Some(r) = input.resampler.as_mut() {
                         // No `>> 16` anywhere on this route (#2223), so a hi-res
                         // host's low bits reach the sum.
-                        r.push_input(&scratch[..got]);
+                        r.push_input(&input.direct_scratch[..got]);
                     }
                     remaining = remaining.saturating_sub(n);
                     read_budget_remaining = read_budget_remaining.saturating_sub(n);

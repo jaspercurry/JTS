@@ -110,6 +110,19 @@ def _loopback_substreams() -> dict[int, str]:
     return out
 
 
+def _read_asound_conf_text(path: Path) -> str | None:
+    """One ALSA config's text with its comment lines dropped, or None when it
+    could not be read. A commented-out block is not one the box resolves, so
+    every reader wants the same stripped view."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _read_env_mapping(path: str) -> dict[str, str] | None:
     """One env file's parsed mapping, or None when it could not be read
     (missing or unreadable)."""
@@ -265,6 +278,12 @@ class Evidence:
             return None
         current = metrics.get("current")
         return current if isinstance(current, dict) else None
+
+    def asound_conf_text(self, path: Path) -> str | None:
+        """``path``'s non-comment text, read once per run however many checks
+        ask for it. None when the file is missing or unreadable — a caller
+        that must tell those two apart tests ``path.exists()`` itself."""
+        return self.get(f"asound_conf:{path}", lambda: _read_asound_conf_text(path))
 
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)

@@ -4,21 +4,9 @@
 
 """jasper-doctor checks for the loaded CamillaDSP graph and the runtime plan.
 
-Import direction across the audio-runtime check modules runs one way —
-``audio_runtime_camilla`` -> ``_fanin`` -> ``_outputd`` -> ``_ring``, so this
-module may not import from any of the three.
-
-Closed vocabulary for this module's `CheckResult.reason`: one snake_case
-constant per distinct decision branch of the checks below, its value unique
-across the doctor and prefixed by the check that emits it. `detail` stays the
-human sentence (free to reword); `reason` is what tests and self-healing
-consumers pin instead (ADR-0233 rule 3).
-
-A branch that formed NO verdict — subsystem not installed, not applicable to
-this box, or the evidence source unreachable so nothing was observed — is
-`skipped` with a reason, never `ok`. An `ok` reason means an actual verdict a
-consumer would branch on (a feature the box turned off, a floor that is
-deliberately not renderable).
+One-way audio-runtime import chain ``audio_runtime_camilla`` -> ``_fanin`` ->
+``_outputd`` -> ``_ring``: this module may not import from any of the three.
+`CheckResult.reason` vocabulary and the skipped-vs-ok rule: ADR-0233 rule 3.
 """
 from __future__ import annotations
 

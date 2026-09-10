@@ -249,7 +249,11 @@ def _yaml_string(value: str, field_name: str) -> str:
     return out
 
 
-def _forbidden_playback_token(playback_device: str) -> str | None:
+def forbidden_playback_token(playback_device: str | None) -> str | None:
+    """The FORBIDDEN_ACTIVE_PLAYBACK_TOKENS entry ``playback_device`` names, or
+    None. Case-insensitive substring, and ``None``/empty is not forbidden."""
+    if not playback_device:
+        return None
     lowered = playback_device.lower()
     for token in FORBIDDEN_ACTIVE_PLAYBACK_TOKENS:
         if token.lower() in lowered:
@@ -1983,7 +1987,7 @@ def emit_active_speaker_startup_config(
 
     preset.validate()
     playback_device = _yaml_string(playback_device, "playback_device")
-    forbidden_token = _forbidden_playback_token(playback_device)
+    forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker templates require an explicit active playback "
@@ -2523,7 +2527,7 @@ def emit_active_speaker_commissioning_config(
             f"unsupported commissioning filter mode: {filter_mode!r}"
         )
     playback_device = _yaml_string(playback_device, "playback_device")
-    forbidden_token = _forbidden_playback_token(playback_device)
+    forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker templates require an explicit active playback "
@@ -3130,7 +3134,7 @@ def emit_active_speaker_program_config(
         )
     role_channels = _validate_program_role_channels(preset, role_channels)
     playback_device = _yaml_string(playback_device, "playback_device")
-    forbidden_token = _forbidden_playback_token(playback_device)
+    forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker templates require an explicit active playback "
@@ -3410,7 +3414,7 @@ def emit_active_speaker_baseline_config(
     _assert_tweeter_crossover_honours_declared_floor(preset)
     linearization = linearization or {}
     playback_device = _yaml_string(playback_device, "playback_device")
-    forbidden_token = _forbidden_playback_token(playback_device)
+    forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker baselines require an explicit active playback "
@@ -3619,7 +3623,7 @@ def emit_active_speaker_driver_domain_config(
     # runs the identical protective chain on the identical drivers.
     _assert_tweeter_crossover_honours_declared_floor(preset)
     playback_device = _yaml_string(playback_device, "playback_device")
-    forbidden_token = _forbidden_playback_token(playback_device)
+    forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker baselines require an explicit active playback "

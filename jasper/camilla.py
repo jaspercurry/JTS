@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import logging
 import math
 import os
@@ -16,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
+from .atomic_io import flock_held
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT, DEFAULT_VOLUME_LIMIT_DB
 from .log_event import log_event
 
@@ -780,33 +780,14 @@ class CamillaController:
         (:func:`jasper.dsp_apply.camilla_graph_mutation`); ``None`` means
         "cannot say". See ADR-0213.
 
-        Read-only and creating nothing, which is load-bearing rather than
-        tidy: jasper-voice runs under ``ProtectSystem=strict`` with
-        ``/var/lib/camilladsp`` outside its ``ReadWritePaths``, so the
+        A missing lock file means no writer has ever taken it, hence
+        ``missing=False``. The read-only, create-nothing probe shape is
+        load-bearing here: jasper-voice runs under ``ProtectSystem=strict``
+        with ``/var/lib/camilladsp`` outside its ``ReadWritePaths``, so the
         writers' own ``O_RDWR|O_CREAT`` open would raise there and every
-        probe would answer "cannot say". ``flock`` needs no write access, and
-        a missing lock file means no writer has ever taken it. Shared rather
-        than exclusive so two probes never exclude each other; the close
-        drops it again within the same call. It does conflict with a writer's
-        ``LOCK_EX``, so a writer whose first non-blocking acquire lands in
-        that window logs one spurious ``result=waiting`` and retries a poll
-        interval later.
+        probe would answer "cannot say".
         """
-        try:
-            fd = os.open(self._graph_mutation_lock_path, os.O_RDONLY)
-        except FileNotFoundError:
-            return False
-        except OSError:
-            return None
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        except OSError:
-            return None
-        finally:
-            os.close(fd)
-        return False
+        return flock_held(self._graph_mutation_lock_path, missing=False)
 
     @contextlib.asynccontextmanager
     async def _graph_mutation(self, source: str, *, duck: bool = True):

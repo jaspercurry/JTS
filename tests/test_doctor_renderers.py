@@ -33,6 +33,16 @@ def _seed_unit_states(**by_unit):
     _evidence.evidence.seed("units", states)
 
 
+def _seed_unit_environment(monkeypatch, **by_unit):
+    """Answer the batched ``systemctl show -p Environment`` the renderer
+    checks read through the evidence cache, without spawning systemctl."""
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_property",
+        lambda prop, units, *, timeout: [by_unit.get(u, "") for u in units],
+    )
+
+
 @pytest.mark.parametrize(
     "fact,status,reason",
     [
@@ -646,6 +656,44 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
     assert bool(probed) is (load_state == "loaded")
 
 
+def test_one_unparseable_block_does_not_widen_into_a_roster_wide_none(monkeypatch):
+    """A batched `User` reply the parser cannot split must not cost the OTHER
+    units their user.
+
+    `read_unit_property` answers None for the whole batch when the block count
+    does not match the units asked for, so one unit's malformed block would
+    otherwise make every renderer probe run as the doctor's own user instead of
+    the unit's `User=` — the exact substitution AGENTS.md non-negotiable 5
+    forbids. The per-unit re-read is what keeps the failure to the one unit."""
+    _seed_unit_states(**{
+        unit: {"load_state": "loaded"} for unit in renderers._RENDERER_UNITS
+    })
+    per_unit = {
+        "shairport-sync.service": "shairport-sync",
+        "librespot.service": "pi",
+        "bluealsa-aplay.service": "",  # genuinely root
+    }
+    batched: list[tuple[str, ...]] = []
+
+    def fake_read(prop, units, *, timeout):
+        batched.append(tuple(units))
+        if len(units) > 1:
+            return None  # wrong block count: one unit's reply did not parse
+        return [per_unit[units[0]]]
+
+    monkeypatch.setattr(_evidence, "read_unit_property", fake_read)
+    assert [
+        renderers._systemd_unit_user(unit) for unit in renderers._RENDERER_UNITS
+    ] == [
+        ("shairport-sync", "loaded"),
+        ("pi", "loaded"),
+        (None, "loaded"),
+    ]
+    # The batch stays the fast path: it is attempted once (memoized), and only
+    # its failure costs one call per unit.
+    assert batched.count(renderers._RENDERER_UNITS) == 1
+
+
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     """The exact bug PR #223 fixes: configs look right, services look
     active, but shairport-sync's runtime user can't open the device.
@@ -1183,15 +1231,10 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch):
     """The running daemon's own `/proc/<MainPID>/environ` is the most
     authoritative surface — the arm.sh precedent — and it beats
     `systemctl show`."""
-
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
-
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_environment(
+        monkeypatch,
+        **{"librespot.service": "JASPER_LIBRESPOT_DEVICE=librespot_substream"},
+    )
     monkeypatch.setattr(
         renderers,
         "_unit_runtime_environ",
@@ -1209,15 +1252,10 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch):
 def test_no_override_resolves_to_the_shipped_aloop_device(monkeypatch):
     """No override — the in-unit default is what the renderer writes and what
     the probe must open."""
-
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
-
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_environment(
+        monkeypatch,
+        **{"librespot.service": "JASPER_LIBRESPOT_DEVICE=librespot_substream"},
+    )
     monkeypatch.setattr(renderers, "_unit_runtime_environ", lambda unit: {})
 
     assert (
@@ -1242,13 +1280,7 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
         b"EMPTY=\x00NOEQUALS\x00LANG=C.UTF-8\x00"
     )
 
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "4242\n"
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_states(**{"librespot.service": {"main_pid": 4242}})
     real_path = renderers.Path
     monkeypatch.setattr(
         renderers, "Path",
@@ -1262,17 +1294,12 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
     assert "NOEQUALS" not in env, "a malformed entry is dropped, not crashed on"
 
 
-def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
+def test_unit_runtime_environ_returns_empty_for_a_parked_unit():
     """MainPID 0 means stopped/parked/failed. There is no environ to read, and
     guessing one would be worse than deferring to the next tier."""
-    for mainpid in ("0", "", "not-a-pid"):
-        def fake_run(cmd, _v=mainpid, **kwargs):
-            class R:
-                returncode = 0
-                stdout = _v
-            return R()
-
-        monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    for mainpid in (0, None):
+        _evidence.evidence.reset()
+        _seed_unit_states(**{"librespot.service": {"main_pid": mainpid}})
         assert renderers._unit_runtime_environ("librespot.service") == {}, mainpid
 
 

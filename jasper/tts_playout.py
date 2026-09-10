@@ -26,7 +26,7 @@ from .assistant_loudness import (
     upsample_2x,
 )
 from .assistant_volume import EffectiveVolumeContext
-from .fanin_coupling import assistant_wire_is_wide
+from .fanin_coupling import assistant_wire_is_wide, resolve_ring_wire_format
 from .log_event import log_event
 from .platform import wire
 from .tts_routing import FANIN_TTS_SOCKET
@@ -167,9 +167,14 @@ def tts_wire_is_wide() -> bool:
     file-fresh: ``jasper-voice`` never loaded ``fanin.env``, so ``os.environ``
     would be stale.
 
-    A bad token resolves NARROW rather than raising: ``jasper-fanin`` already
-    parks at exit 78 on an unrecognized value and the doctor surfaces it, while
-    raising here would take down the daemon that plays the failure cues.
+    An unreadable or unrecognized declaration resolves to the RESOLVER'S OWN
+    DEFAULT rather than raising: ``jasper-fanin`` already parks at exit 78 on
+    an unrecognized value and the doctor surfaces it, while raising here would
+    take down the daemon that plays the failure cues. That default is DERIVED,
+    not restated — ``resolve_ring_wire_format(None)`` is the same expression
+    :func:`~jasper.fanin_coupling.read_declared_ring_wire_format` falls back to
+    for an absent declaration, so this process cannot land on a width no
+    undeclared box has.
 
     CACHED so the process has exactly ONE answer — the playout (quantizing
     provider TTS) and the daemon (baking earcons) must not disagree. Two of the
@@ -194,12 +199,11 @@ def tts_wire_is_wide() -> bool:
         log_event(
             logger,
             "tts_wire.declaration_unreadable",
-            resolved="S16_LE",
             exc_type=type(e).__name__,
             err=str(e),
             level=logging.WARNING,
         )
-        return False
+        return assistant_wire_is_wide(wire_format=resolve_ring_wire_format(None))
 
 
 async def _outputd_io(stream, method: str, *args, on_accepted=None, **kwargs):

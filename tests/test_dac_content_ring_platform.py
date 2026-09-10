@@ -554,28 +554,3 @@ def test_the_outputd_reader_unit_escalates_to_reboot():
         "jasper-outputd no longer reboots on a start-limit burst — re-decide "
         "whether dac-content.ring still belongs in the deploy's rm -f list"
     )
-
-
-def test_nothing_consumes_the_dac_content_ring_yet():
-    """PR-1 is INERT BY CONSTRUCTION, and that is a contract, not a happenstance.
-
-    The identity ships ahead of its transport so a geometry that fails on metal
-    costs one file. If a consumer lands without this pin moving, the "inert"
-    claim in the module docstring, the conf.d header and the installer comment
-    all become false at once, silently.
-
-    Scoped to the PCM NAME, which is what an opener must spell: the module's
-    constants may be imported by whatever lands next (that is what they are
-    for), but until the transport PR the string reaches nothing that opens it.
-    Delete this test in the PR that wires the first consumer.
-    """
-    hits = sorted(
-        path.relative_to(_REPO).as_posix()
-        for path in (_REPO / "jasper").rglob("*.py")
-        if DAC_CONTENT_RING_PCM in path.read_text(encoding="utf-8")
-    )
-    assert hits == ["jasper/multiroom/dac_content_ring.py"], (
-        f"pcm.{DAC_CONTENT_RING_PCM} is named outside its identity module: "
-        f"{hits}. A consumer landed — move it behind the hardware gate, and "
-        "delete this pin in the PR that wires it."
-    )

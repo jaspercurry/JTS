@@ -95,6 +95,8 @@ pub(super) fn lane_input(
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i32; period_samples],
+        direct_scratch: Vec::new(),
+        direct_narrow_scratch: Vec::new(),
         xrun_count: Arc::new(AtomicU64::new(0)),
         last_xrun_ms: Arc::new(AtomicU64::new(jasper_daemon::json::NEVER_MS)),
         frames_read: Arc::new(AtomicU64::new(0)),
@@ -190,6 +192,8 @@ pub(super) fn open_direct_input(
         direct: Some(direct),
         direct_opener,
         direct_obs: Some(obs),
+        direct_scratch: vec![0i32; direct_narrow_scratch_samples()],
+        direct_narrow_scratch: vec![0i16; direct_narrow_scratch_samples()],
         ..base
     }
 }

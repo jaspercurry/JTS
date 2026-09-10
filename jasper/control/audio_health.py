@@ -32,7 +32,8 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
-    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
+    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET,
+    read_status_socket_or_none,
 )
 from ..service_units import (
     FANIN_SERVICE,
@@ -48,6 +49,7 @@ from .airplay_health import (
     AirPlayHealthSampler,
     SAMPLE_INTERVAL_SEC,
 )
+from ._health_fields import _duration_label, _finite_number, _mapping
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
@@ -249,20 +251,18 @@ def _nonnegative_counter(value: Any) -> int | None:
     return value
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _read_local_status(
     socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
     max_bytes: int = MAX_STATUS_BYTES,
 ) -> dict[str, Any] | None:
     """Read one local daemon STATUS response, byte/time bounded and fail-soft."""
-    try:
-        return read_status_socket(socket_path, timeout=timeout_sec, max_bytes=max_bytes)
-    except (OSError, ValueError):
-        return None
+    return read_status_socket_or_none(
+        socket_path,
+        timeout=timeout_sec,
+        max_bytes=max_bytes,
+        event="audio_health.local_status_unavailable",
+    )
 
 
 def _read_mux_status(
@@ -527,18 +527,6 @@ def _issue(
         "title": title,
         "detail": detail,
     }
-
-
-def _finite_number(value: Any) -> int | float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (OverflowError, ValueError):
-        return None
-    if number != number or number in {float("inf"), float("-inf")}:
-        return None
-    return value
 
 def _selected_source(airplay: Mapping[str, Any]) -> str | None:
     current = _mapping(airplay.get("current"))
@@ -1635,20 +1623,6 @@ def _source_cards(
 
 def _detail(label: str, value: Any) -> dict[str, str]:
     return {"label": label, "value": str(value)}
-
-
-def _duration_label(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    if seconds < 1.0:
-        return f"{round(seconds * 1000):d} ms"
-    if seconds < 60.0:
-        return f"{round(seconds):d} sec"
-    minutes = int(seconds // 60)
-    remainder = int(seconds % 60)
-    if minutes < 60:
-        return f"{minutes}m {remainder}s" if remainder else f"{minutes} min"
-    hours = int(minutes // 60)
-    return f"{hours}h {minutes % 60}m"
 
 
 def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
