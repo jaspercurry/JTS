@@ -46,9 +46,35 @@ pub(super) fn open_input(
     // blocking forever in the PREPARED state.
     pcm.start()
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
+    Ok(lane_input(Some(pcm), pcm_name, label, config, resampler))
+}
+
+/// Build the USB lane with NO capture device: `JASPER_FANIN_USB_DIRECT` is off,
+/// so there is no gadget capture to read, and the aloop substream that used to
+/// stand in for it has had no writer since the usbsink bridge was deleted.
+/// `read_input` renders a `pcm: None` lane as silence, so the lane keeps its
+/// roster slot (mux addresses lanes by label) at the cost of one memset.
+pub(super) fn disabled_input(
+    label: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
+    lane_input(None, "", label, config, resampler)
+}
+
+/// The per-lane `Input` every lane is built from; the DIRECT lane overrides the
+/// few fields that differ. `pcm_name` is what STATUS reports as this lane's
+/// device — empty when the lane opens none.
+fn lane_input(
+    pcm: Option<PCM>,
+    pcm_name: &str,
+    label: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    Ok(Input {
-        pcm: Some(pcm),
+    Input {
+        pcm,
         direct: None,
         direct_opener: None,
         label: label.to_string(),
@@ -65,18 +91,18 @@ pub(super) fn open_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         lane_fade: LaneFade::for_lane(label, config.sample_rate),
-    })
+    }
 }
 
 /// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
 /// proven envelope; on failure the lane starts `Absent` and renders silence with
-/// a bounded reopen retry, so a gadget-absent box never fails the daemon. The
-/// aloop substream is NOT opened (`pcm: None`): this lane's audio comes only
-/// from the gadget capture. Never returns `Err` — the fail-hard "every input
-/// required" contract is exempted for this lane alone.
+/// a bounded reopen retry, so a gadget-absent box never fails the daemon. This
+/// lane has no aloop substream at all (`pcm: None`): its audio comes only from
+/// the gadget capture, which is also what STATUS reports as its `pcm`. Never
+/// returns `Err` — the fail-hard "every input required" contract is exempted for
+/// this lane alone.
 pub(super) fn open_direct_input(
     label: &str,
-    pcm_name: &str,
     config: &Config,
     resampler: Option<LaneResampler>,
 ) -> Input {
@@ -120,7 +146,6 @@ pub(super) fn open_direct_input(
             }
         }
     };
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
     // The deferred device-open channel (#2533). Spawned at construction, before
     // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
     // failure leaves the lane WITHOUT self-heal rather than restoring an inline
@@ -138,24 +163,12 @@ pub(super) fn open_direct_input(
             None
         }
     };
+    // The direct lane has no aloop substream — its only source is the gadget
+    // capture in `direct`, so that device is also its reported `pcm`.
+    let base = lane_input(None, &device, label, config, resampler);
     Input {
-        // The direct lane does NOT open its aloop substream — its only source
-        // is the gadget capture in `direct`.
-        pcm: None,
         direct: Some(direct),
         direct_opener,
-        label: label.to_string(),
-        pcm_name: pcm_name.to_string(),
-        read_buf: vec![0i32; period_samples],
-        xrun_count: Arc::new(AtomicU64::new(0)),
-        last_xrun_ms: Arc::new(AtomicU64::new(jasper_daemon::json::NEVER_MS)),
-        frames_read: Arc::new(AtomicU64::new(0)),
-        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-        catchup_events: Arc::new(AtomicU64::new(0)),
-        resampler,
-        trim: TrimControl::new(),
-        muted: Arc::new(AtomicBool::new(false)),
         direct_obs: Some(DirectObservability {
             device,
             period_frames: open_period,
@@ -176,7 +189,7 @@ pub(super) fn open_direct_input(
             card_gen_reopens: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
-        lane_fade: LaneFade::for_lane(label, config.sample_rate),
+        ..base
     }
 }
 

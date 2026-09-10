@@ -70,9 +70,8 @@ def test_asoundrc_has_no_legacy_renderer_dmix():
 def test_asoundrc_declares_the_private_renderer_substreams():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     # No usbsink_substream: USB audio is DIRECT-captured by jasper-fanin from
-    # hw:UAC2Gadget (the aloop solo write lane hw:Loopback,0,3 was removed
-    # 2026-07-10). Pair 3's capture side is still read by fan-in as the usbsink
-    # lane's idle fallback, but nothing writes the alias.
+    # hw:UAC2Gadget. Pair 3 has neither a write alias nor a fan-in reader — with
+    # USB Audio Input off the usbsink lane is absent and renders silence.
     aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",

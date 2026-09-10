@@ -51,7 +51,7 @@ use dsp::{
     saturate_to_i16, BYTES_PER_SAMPLE,
 };
 use lane_fade::LaneFade;
-use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input};
+use pcm_open::{disabled_input, errno_of, open_direct_capture, open_direct_input, open_input};
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -1061,15 +1061,21 @@ fn format_ring_stall_event(event: &RingStallEvent) -> String {
 /// Which transport a fan-in lane's audio arrives over — the vocabulary STATUS
 /// publishes as each input's `source`, and the ONE place those tokens are spelled.
 ///
-/// The two are alternatives, not layers: exactly one applies to a lane, and the
-/// lane's read path, its `pcm` field's emptiness, and this token all follow from
-/// the same `Option` (see [`Input::lane_source`]).
+/// The three are alternatives, not layers: exactly one applies to a lane, and
+/// the lane's read path, its `pcm`/`direct` fields' emptiness, and this token
+/// all follow from the same `Option`s (see [`Input::lane_source`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneSource {
     /// An snd-aloop capture substream — the shipped default for every renderer.
     Lane,
     /// The USB gadget capture, read directly (`hw:UAC2Gadget`).
     Direct,
+    /// No transport at all: the lane opens nothing and renders silence. The USB
+    /// lane with `JASPER_FANIN_USB_DIRECT` off — it keeps its roster label (mux
+    /// still addresses it by SELECT/MUTE) but has no device to read. Distinct
+    /// from an armed direct lane whose gadget is unplugged
+    /// (`direct.present=false`).
+    Disabled,
 }
 
 impl LaneSource {
@@ -1077,20 +1083,40 @@ impl LaneSource {
         match self {
             Self::Lane => "lane",
             Self::Direct => "direct",
+            Self::Disabled => "disabled",
         }
     }
 }
 
+/// The transport a lane will be built with, decided BEFORE anything is opened.
+/// The USB lane reads the gadget capture when DIRECT is armed and nothing at all
+/// otherwise: its aloop substream has had no writer since the usbsink bridge was
+/// deleted, so opening it would only sum silence from a lane that can never
+/// carry audio. Every other lane reads its aloop substream and is required.
+/// [`Input::lane_source`] re-derives the same token from what was actually
+/// opened, so STATUS cannot disagree with this plan.
+pub(crate) fn planned_lane_source(config: &Config, label: &str) -> LaneSource {
+    if config.lane_wants_resampler(label) {
+        // "USB lane AND direct armed" is spelled once, by the same predicate
+        // that arms this lane's resampler.
+        LaneSource::Direct
+    } else if config.input_resampler_lane_label == label {
+        LaneSource::Disabled
+    } else {
+        LaneSource::Lane
+    }
+}
+
 pub struct Input {
-    /// The aloop capture PCM for this lane. `None` on the one lane source that
-    /// does not read an aloop substream at all: the USB DIRECT lane
-    /// (`direct.is_some()`), whose audio comes from the `hw:UAC2Gadget` capture
-    /// in `direct`. Every other lane has `Some`.
+    /// The aloop capture PCM for this lane. `None` on the one lane that reads no
+    /// aloop substream at all: the USB lane, whose audio comes from the
+    /// `hw:UAC2Gadget` capture in `direct` — or from nowhere, when direct is
+    /// off. Every other lane has `Some`.
     pcm: Option<PCM>,
     /// DEFAULT-OFF USB DIRECT capture. `Some` only on the usbsink lane when
-    /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`
-    /// directly instead of its aloop substream. `None` (and `pcm.is_some()`) on
-    /// every other lane and on this lane when the flag is off.
+    /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`.
+    /// `None` on every other lane (which have `pcm.is_some()`) and on this lane
+    /// when the flag is off, where BOTH are `None` and the lane renders silence.
     direct: Option<DirectCapture>,
     /// The DIRECT lane's deferred device-open channel (#2533). `Some` alongside
     /// `direct`; `None` if the opener thread could not be spawned. The render
@@ -1127,9 +1153,9 @@ pub struct Input {
     /// STATUS shows both how often and how much.
     pub catchup_events: Arc<AtomicU64>,
     /// OPTIONAL per-input adaptive resampler (DEFAULT-OFF). `Some` only on the
-    /// configured clock-crossing lane when `JASPER_FANIN_INPUT_RESAMPLER` is
-    /// `enabled`. When `Some`, this lane is rate-reconciled to the DAC clock
-    /// (drop-free) instead of catch-up-drained.
+    /// USB DIRECT lane (see [`Config::lane_wants_resampler`]). When `Some`,
+    /// this lane is rate-reconciled to the DAC clock (drop-free) instead of
+    /// catch-up-drained.
     resampler: Option<LaneResampler>,
     /// Per-lane TRIM control + counters, shared with the state-server thread.
     /// The control endpoint sets `pending`; the work loop trims the resampler
@@ -1158,52 +1184,60 @@ pub struct Input {
 }
 
 impl Mixer {
-    /// Open all configured inputs and the output. Every configured input
-    /// is required: a missing lane means one renderer silently drops out
-    /// of the summed music reference.
+    /// Open all configured inputs and the output. Every aloop lane is required:
+    /// a missing lane means one renderer silently drops out of the summed music
+    /// reference. The USB lane is the sole exception (see
+    /// [`planned_lane_source`]).
     pub fn new(config: &Config, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
 
-        let mut inputs = Vec::with_capacity(config.input_pcms.len());
-        for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
-            // Build a per-input resampler on the configured clock-crossing lane
-            // when EITHER the input resampler OR USB DIRECT is enabled: both
-            // steer this lane to the DAC clock, and direct has no aloop catch-up
-            // fallback so it MUST own a resampler. A construction failure
-            // degrades to `None` with a warning rather than failing the daemon.
+        let mut inputs = Vec::with_capacity(config.input_renderers.len());
+        // The USB lane takes no aloop PCM (config pins the list one shorter), so
+        // the remaining labels consume `input_pcms` in order.
+        let mut aloop_pcms = config.input_pcms.iter();
+        for label in &config.input_renderers {
+            // The USB lane is the only clock-crossing lane, and it owns a
+            // resampler whenever it has a device to read: direct capture has no
+            // aloop catch-up fallback. A construction failure degrades to `None`
+            // with a warning rather than failing the daemon.
             let resampler = if config.lane_wants_resampler(label) {
                 build_lane_resampler(label, config)
             } else {
                 None
             };
-            // USB DIRECT: this lane reads hw:UAC2Gadget directly instead of its
-            // aloop substream. The open is best-effort — a gadget-absent lane
-            // starts Absent and renders silence with a bounded reopen retry. The
-            // fail-hard "every input required" contract is exempted ONLY here.
-            let is_direct =
-                config.usb_direct_enabled && label == &config.input_resampler_lane_label;
-            let input = if is_direct {
-                open_direct_input(label, pcm_name, config, resampler)
-            } else {
-                match open_input(pcm_name, label, config, resampler) {
-                    Ok(input) => input,
-                    Err(e) => {
+            let input = match planned_lane_source(config, label) {
+                // USB DIRECT: reads hw:UAC2Gadget. Best-effort — a gadget-absent
+                // lane starts `DirectCapture::Absent` and renders silence with a
+                // bounded reopen retry. The fail-hard "every input required" contract is
+                // exempted ONLY here.
+                LaneSource::Direct => open_direct_input(label, config, resampler),
+                LaneSource::Disabled => disabled_input(label, config, resampler),
+                LaneSource::Lane => {
+                    let Some(pcm_name) = aloop_pcms.next() else {
                         anyhow::bail!(
-                            "required fan-in input '{}' ({}) failed to open: {:#}",
+                            "fan-in input '{}' has no JASPER_FANIN_INPUT_PCMS entry",
                             label,
-                            pcm_name,
-                            e,
                         );
+                    };
+                    match open_input(pcm_name, label, config, resampler) {
+                        Ok(input) => input,
+                        Err(e) => {
+                            anyhow::bail!(
+                                "required fan-in input '{}' ({}) failed to open: {:#}",
+                                label,
+                                pcm_name,
+                                e,
+                            );
+                        }
                     }
                 }
             };
             info!(
-                "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} direct={} source={}",
+                "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} source={}",
                 label,
                 input.pcm_name,
                 config.period_frames,
                 config.input_buffer_frames,
-                is_direct,
                 input.lane_source().as_str(),
             );
             inputs.push(input);
@@ -1222,7 +1256,7 @@ impl Mixer {
         // no live input, the feature silently no-ops. Warn ONCE with the
         // available labels so an operator can see why they observed no effect.
         if let Some(available) = resampler_lane_not_found(
-            config.input_resampler_enabled || config.usb_direct_enabled,
+            config.usb_direct_enabled,
             &config.input_resampler_lane_label,
             &config.input_renderers,
         ) {
@@ -1507,13 +1541,6 @@ impl Mixer {
                 // substream is never touched (`pcm` is None). The tap runs inline
                 // over its own narrowed view inside this call.
                 read_direct_and_render(input, period_frames, &mut self.direct_tap)
-            } else if input.resampler.is_some() {
-                // ARMED clock-crossing lane. The resampler OWNS rate
-                // reconciliation: read ALL available frames into it (DLL-steered
-                // to the DAC clock) and render exactly one DAC-paced period. The
-                // catch-up drain is bypassed on purpose — the resampler holds the
-                // ring at a small fixed fill, with no sawtooth.
-                read_into_resampler_and_render(input, period_frames)?
             } else {
                 // Bounded catch-up resync BEFORE the period read, for EVERY lane
                 // regardless of selection. A free-running lane (the USB host-clock
@@ -1875,10 +1902,10 @@ impl Input {
     /// does `/state` say it takes" cannot disagree — `step()` matches on the
     /// same `Option`.
     pub fn lane_source(&self) -> LaneSource {
-        if self.direct.is_some() {
-            LaneSource::Direct
-        } else {
-            LaneSource::Lane
+        match (&self.direct, &self.pcm) {
+            (Some(_), _) => LaneSource::Direct,
+            (None, Some(_)) => LaneSource::Lane,
+            (None, None) => LaneSource::Disabled,
         }
     }
 
@@ -2153,8 +2180,9 @@ fn discard_periods<S: Copy>(io: &IO<'_, S>, scratch: &mut [S], periods: i64) -> 
 /// capped per call (`CATCHUP_MAX_DRAIN_PERIODS`), and the log is count-gated, so
 /// the common no-resync path touches no clock and emits nothing.
 fn drain_input_excess(input: &mut Input, period_frames: usize) {
-    // Non-direct lanes always have Some(pcm); the direct lane never reaches
-    // this path (it routes to read_direct_and_render). Guard defensively.
+    // `None` on the DISABLED USB lane (direct off), which takes this arm every
+    // period with nothing to drain. Every aloop lane has Some(pcm), and the
+    // direct lane routes to read_direct_and_render instead.
     let Some(pcm) = input.pcm.as_ref() else {
         return;
     };
@@ -2206,8 +2234,8 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
 /// ALSA I/O).
 ///
 /// The standing head-start does NOT live in the ALSA readable backlog on an
-/// armed lane: `read_into_resampler_and_render` already drains every frame ALSA
-/// reports ready each period, so the kernel ring is held shallow by design. The
+/// armed lane: `drain_direct_capture` already drains every frame ALSA reports
+/// ready each period, so the kernel ring is held shallow by design. The
 /// reservoir is the resampler's CURSOR-RELATIVE fill (`write_frame -
 /// next_input_frame`) — observed on-device at ~1919 frames against a 512-frame
 /// held target with lock churn. This trim drops THAT in place via
@@ -2383,8 +2411,9 @@ pub(crate) fn event_stamp_ms() -> u64 {
 /// problem (PCM closed, driver fault) that the daemon can't handle
 /// at this layer.
 fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
-    // Non-direct lanes always have Some(pcm); the direct lane never reaches
-    // this path. A None here means a silent lane — render silence.
+    // `None` on the DISABLED USB lane (direct off), which takes this arm every
+    // period and renders silence. Every aloop lane has Some(pcm), and the
+    // direct lane never reaches this path.
     let Some(pcm) = input.pcm.as_ref() else {
         input.read_buf.fill(0);
         return Ok(0);
@@ -2434,183 +2463,22 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
     }
 }
 
-/// Cap on period-equivalent work for the ARMED lane drain in one `step()` call.
+/// Cap on period-equivalent work for the DIRECT lane drain in one `step()` call.
 /// Like `CATCHUP_MAX_DRAIN_PERIODS`, this bounds syscall work per period so a
 /// pathological `avail` (driver fault) cannot spin the hot loop. Frames beyond
 /// the cap stay in the kernel ring and are read next period — the resampler's
 /// own ring is the rate buffer, so leaving a little behind is harmless.
 const RESAMPLER_MAX_READ_PERIODS: i64 = 64;
 
-/// Return the bounded number of currently readable frames that the armed-lane
+/// Return the bounded number of currently readable frames that the direct-lane
 /// drain should pull into the resampler this period. Pure helper for the
-/// real-time cap math; ALSA I/O happens in `read_into_resampler_and_render`.
+/// real-time cap math; ALSA I/O happens in `drain_direct_capture`.
 fn resampler_read_budget_frames(avail: Frames, period_frames: usize) -> usize {
     if avail <= 0 {
         return 0;
     }
     let max_frames = period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     (avail as usize).min(max_frames)
-}
-
-fn recover_resampler_input_xrun(
-    input: &mut Input,
-    error: alsa::Error,
-    operation: &str,
-) -> Result<()> {
-    let count = input.note_xrun();
-    warn!(
-        "event=fanin.xrun source=input label={} count={} op={} (resampler lane)",
-        input.label, count, operation,
-    );
-    // The aloop resampler lane always has Some(pcm); only the direct lane is
-    // None, and it uses recover_direct_xrun instead.
-    let Some(pcm) = input.pcm.as_ref() else {
-        input.read_buf.fill(0);
-        return Ok(());
-    };
-    pcm.try_recover(error, true)
-        .context("recovering resampler input xrun")?;
-    // `try_recover` can leave a capture PCM in PREPARED. The ordinary read_input
-    // path kicks that forward with its next readi(), but the resampler path
-    // polls avail_update() before reading; without an explicit restart it can
-    // sit at avail=0 forever after a startup xrun.
-    if pcm.state() != State::Running {
-        pcm.start()
-            .with_context(|| format!("restarting resampler input {} after xrun", input.label))?;
-    }
-    if let Some(r) = input.resampler.as_mut() {
-        r.reset();
-    }
-    input.read_buf.fill(0);
-    Ok(())
-}
-
-/// Read all currently-available frames from an ARMED lane into its resampler,
-/// then render exactly one DAC-paced period into `read_buf`. Returns the number
-/// of real (non-silence) frames the render produced — `period_frames` when the
-/// resampler is locked, `0` while it is priming or underfilled, which renders
-/// the lane silent exactly as an idle renderer's substream does.
-///
-/// Rate reconciliation lives in the resampler (DLL-steered to the DAC clock),
-/// so the catch-up drain is intentionally bypassed on this path.
-///
-/// RT-safety: bounded syscalls (`avail_update` probes plus reads of frames
-/// already reported ready, capped at `RESAMPLER_MAX_READ_PERIODS` periods
-/// total), no allocation (reads into the existing `read_buf` scratch, pushes
-/// into the resampler's pre-sized ring), no blocking (non-blocking capture). An
-/// `EPIPE`/`ESTRPIPE` overrun recovers + resets the resampler (a discontinuity)
-/// and renders silence for this period.
-fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Result<usize> {
-    // The aloop resampler lane always has Some(pcm); the direct lane routes to
-    // read_direct_and_render and never reaches here.
-    if input.pcm.is_none() {
-        input.read_buf.fill(0);
-        return Ok(0);
-    }
-    let mut read_budget_remaining =
-        period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
-    if read_budget_remaining > 0 {
-        // Drain every frame ALSA reports ready, including final partial periods,
-        // re-checking after each snapshot so frames arriving during this step do
-        // not sit in the kernel ring for a full extra render period. The total
-        // work stays bounded by `read_budget_remaining`.
-        let mut stop_drain = false;
-        while read_budget_remaining > 0 && !stop_drain {
-            let avail = match input
-                .pcm
-                .as_ref()
-                // PANIC-AUDITED: an aloop resampler lane always opens Some(pcm)
-                .expect("aloop resampler lane always has Some(pcm)")
-                .avail_update()
-            {
-                Ok(avail) => avail,
-                Err(e) => match classify_pcm_errno(e.errno()) {
-                    PcmIoFate::WouldBlock => break,
-                    PcmIoFate::Xrun => {
-                        recover_resampler_input_xrun(input, e, "avail_update")?;
-                        break;
-                    }
-                    PcmIoFate::Fatal => {
-                        return Err(e).context(format!(
-                            "querying resampler input {} ({})",
-                            input.label, input.pcm_name
-                        ));
-                    }
-                },
-            };
-            let mut frames_remaining =
-                resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
-            if frames_remaining == 0 {
-                break;
-            }
-            while frames_remaining > 0 {
-                let frames_to_read = frames_remaining.min(period_frames);
-                let samples_to_read = frames_to_read * (CHANNELS as usize);
-                let read_result = {
-                    let pcm = input
-                        .pcm
-                        .as_ref()
-                        // PANIC-AUDITED: an aloop resampler lane always opens Some(pcm)
-                        .expect("aloop resampler lane always has Some(pcm)");
-                    let io = pcm
-                        .io_i32()
-                        .context("getting i32 IO handle for resampler input")?;
-                    io.readi(&mut input.read_buf[..samples_to_read])
-                };
-                match read_result {
-                    Ok(0) => {
-                        stop_drain = true;
-                        break;
-                    }
-                    Ok(n) => {
-                        input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
-                        let samples = n * (CHANNELS as usize);
-                        if let Some(r) = input.resampler.as_mut() {
-                            r.push_input(&input.read_buf[..samples]);
-                        }
-                        frames_remaining = frames_remaining.saturating_sub(n);
-                        read_budget_remaining = read_budget_remaining.saturating_sub(n);
-                        // Short read means the ring emptied earlier than
-                        // `avail_update` claimed; stop rather than spin.
-                        if n < frames_to_read {
-                            stop_drain = true;
-                            break;
-                        }
-                    }
-                    Err(e) => match classify_pcm_errno(e.errno()) {
-                        PcmIoFate::WouldBlock => {
-                            stop_drain = true;
-                            break;
-                        }
-                        PcmIoFate::Xrun => {
-                            // A discontinuity: reset the resampler so it re-primes
-                            // from fresh input rather than interpolating across
-                            // the gap.
-                            recover_resampler_input_xrun(input, e, "readi")?;
-                            stop_drain = true;
-                            break;
-                        }
-                        PcmIoFate::Fatal => {
-                            return Err(e).context(format!(
-                                "reading from resampler input {} ({})",
-                                input.label, input.pcm_name
-                            ));
-                        }
-                    },
-                }
-            }
-        }
-    }
-
-    let real_frames = match input.resampler.as_mut() {
-        Some(r) => r.render_period(&mut input.read_buf),
-        None => {
-            // Unreachable: only called when resampler.is_some().
-            input.read_buf.fill(0);
-            0
-        }
-    };
-    Ok(real_frames)
 }
 
 #[cfg(test)]
@@ -2626,6 +2494,17 @@ mod tests {
     // suite. The combo-gate integration behaviour is still asserted here (and in
     // tests/test_usbsink_playing_rms_contract.py) via the level plumbed onto the
     // lane and the STATUS surface.
+
+    // ---- Lane transport tokens -------------------------------------------
+
+    #[test]
+    fn lane_source_tokens_are_the_status_vocabulary() {
+        // Read cross-language (jasper/fanin/status.py), so the spellings are
+        // the contract; which lane gets which is pinned in config.rs.
+        assert_eq!(LaneSource::Lane.as_str(), "lane");
+        assert_eq!(LaneSource::Direct.as_str(), "direct");
+        assert_eq!(LaneSource::Disabled.as_str(), "disabled");
+    }
 
     // ---- Per-lane mix gate: selection + mute -----------------------------
 

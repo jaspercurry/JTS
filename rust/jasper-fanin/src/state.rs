@@ -703,9 +703,10 @@ impl StateServer {
             buf.push(',');
             // source: this lane's TRANSPORT — "direct" on the USB DIRECT lane
             // (reads hw:UAC2Gadget directly), "lane" on every aloop-reading
-            // lane. Always present, additive (the TRIM-block precedent) — C7.
-            // The token set is owned by `crate::mixer::LaneSource`, so this
-            // serializer cannot invent a spelling the mixer does not use.
+            // lane, "disabled" on a lane with no device at all. Always
+            // present, additive (the TRIM-block precedent) — C7. The token set
+            // is owned by `crate::mixer::LaneSource`, so this serializer cannot
+            // invent a spelling the mixer does not use.
             push_kv_str(buf, "source", input.source.as_str());
             buf.push(',');
             // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
@@ -1306,10 +1307,10 @@ mod tests {
                 },
                 InputSnapshotSource {
                     // A USB DIRECT lane fixture (source:"direct" + a direct{}
-                    // block). Its audio comes from hw:UAC2Gadget, not an aloop
-                    // substream (pcm name kept for parity with the label).
+                    // block). Its audio comes from hw:UAC2Gadget, which is also
+                    // the device it reports: this lane has no aloop substream.
                     label: "usbsink".to_string(),
-                    pcm_name: "hw:Loopback,1,3".to_string(),
+                    pcm_name: "hw:UAC2Gadget".to_string(),
                     source: LaneSource::Direct,
                     direct: Some(DirectObservability {
                         device: "hw:UAC2Gadget".to_string(),

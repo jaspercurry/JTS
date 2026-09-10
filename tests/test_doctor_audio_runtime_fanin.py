@@ -581,15 +581,17 @@ def proc_root(monkeypatch, tmp_path):
 #: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
 #: it too, so nothing fails. A literal is what makes a source-constant
 #: deletion detectable.
-_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4)
+_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 4)
 
 #: The pairs whose owners are GONE, and which must therefore read as offenders.
-#: Pair 5 lost its PCM definitions; pairs 6 and 7 lost theirs to
-#: ADR-0100, which moved outputd's passive content lane and fan-in's summed
-#: music output onto SHM rings. deploy/alsa/asoundrc.jasper declares none of the
-#: three, and deploy/modprobe.d/snd-aloop.conf records them as
-#: reserved-not-reclaimed so no surviving pair renumbers.
-_RETIRED_PAIRS = (5, 6, 7)
+#: Pair 3 lost its writer with the usbsink bridge and its last reader when the
+#: USB lane stopped taking an aloop substream; pair 5 lost its PCM definitions;
+#: pairs 6 and 7 lost theirs to ADR-0100, which moved outputd's passive content
+#: lane and fan-in's summed music output onto SHM rings.
+#: deploy/alsa/asoundrc.jasper declares none of the four, and
+#: deploy/modprobe.d/snd-aloop.conf records them as reserved-not-reclaimed so no
+#: surviving pair renumbers.
+_RETIRED_PAIRS = (3, 5, 6, 7)
 
 
 # --------------------------------------------------------------------------
@@ -613,20 +615,6 @@ def test_all_closed_is_ok(proc_root, tmp_path):
     assert result.reason == ""
 
 
-def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
-    """THE FALSE-POSITIVE REGRESSION GUARD.
-
-    Observed on jts4, 2026-08-14: /proc/asound/Loopback/pcm1c/sub3 in
-    `state: RUNNING`, owner cgroup jasper-fanin.service — the usbsink lane's
-    idle-read fallback documented in deploy/modprobe.d/snd-aloop.conf. That
-    box is HEALTHY. If this check ever fails it, the check is wrong.
-    """
-    proc_root(_make_card(tmp_path, {"pcm1c": [3]}))
-    result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "ok"
-    assert result.reason == ""
-
-
 @pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
 @pytest.mark.parametrize("pair", _RETIRED_PAIRS)
 def test_positive_control_foreign_substream_warns(
@@ -634,12 +622,13 @@ def test_positive_control_foreign_substream_warns(
 ):
     """POSITIVE CONTROL — a deliberately-opened foreign substream trips it.
 
-    Pairs 5, 6 and 7 are the foreign ones: pair 5's PCM definitions are gone
-    and ADR-0100 deleted pairs 6 and 7's when the passive content
-    lane and the summed music output both moved to SHM rings. A holder on any
-    of them has resurrected a deleted lane — a rolled-back binary or a stale
-    asoundrc — which is the regression this guard exists to catch, and which
-    read as `ok` for as long as pairs 6 and 7 stayed in the registered set.
+    Pairs 3, 5, 6 and 7 are the foreign ones: pair 3 has neither a writer nor
+    a reader since the USB lane went direct-or-nothing, pair 5's PCM
+    definitions are gone, and ADR-0100 deleted pairs 6 and 7's when the passive
+    content lane and the summed music output both moved to SHM rings. A holder
+    on any of them has resurrected a deleted lane — a rolled-back binary or a
+    stale asoundrc — which is the regression this guard exists to catch, and
+    which read as `ok` for as long as those pairs stayed in the registered set.
     Parametrised across all four PCM directions so a walker that only scanned
     the playback side would fail this.
     """
