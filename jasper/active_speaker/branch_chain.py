@@ -143,15 +143,14 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
     """
     out: list[float] = []
     for entry in filters:
-        if str(entry.get("biquad_type") or "") not in _SHELF_BIQUAD_TYPES:
-            continue
+        kind = str(entry.get("biquad_type") or "")
         freq = float(entry.get("freq") or 0.0)
-        if not (freq > 0.0):
+        if kind not in _SHELF_BIQUAD_TYPES or not freq > 0.0:
             continue
-        if str(entry["biquad_type"]) == "Lowshelf":
-            out.append(freq / _SHELF_ASYMPTOTE_RATIO)
-        else:
-            out.append(min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ))
+        out.append(
+            freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
+            else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
+        )
     return out
 
 
