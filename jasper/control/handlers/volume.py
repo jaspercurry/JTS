@@ -109,21 +109,7 @@ class VolumeRoutes(ControlHandlerMixin):
     def _measurement_hold_decline(
         self, *, source: str, **fields: Any
     ) -> str | None:
-        """Count one declined fader write against the live hold, and log it.
-
-        Returns the incumbent's name, or ``None`` when nothing is held. ONE
-        locked read answers "is it held?", "by whom?" and "is this the first
-        decline?" together, so the line cannot name an owner that lapsed
-        between two reads or mis-rank itself against a stale count.
-
-        The TRANSITION is the signal and the repetition is not: the USB bridge
-        re-presents the host slider on its backoff schedule for as long as the
-        decline lasts (~720/hour at its 5 s ceiling, ~360 lines in one
-        30-minute measurement — this feature's ORDINARY case), so INFO on every
-        one would re-create the exact journal spam #2791 removed one commit
-        earlier. The suppressed count is reported once by
-        event=measurement.hold_released / _expired as declined_observations.
-        """
+        """Count one declined source-observed write, and log it. Owner or None."""
         declined = measurement_hold.record_declined_observation()
         if declined is None:
             return None
@@ -139,15 +125,36 @@ class VolumeRoutes(ControlHandlerMixin):
         )
         return hold_owner
 
-    def _send_measurement_hold_409(self, hold_owner: str) -> None:
-        """Refuse an authoritative fader write the measurement owns."""
+    def _refuse_authoritative_raise(self, *, kind: str, **fields: Any) -> bool:
+        """Refuse a fader RAISE the measurement owns; True once the 409 is sent.
+
+        Its own event and its own per-hold counter: `volume.observation_declined`
+        and `declined_observations` are the source-observed vocabulary. The
+        first line per hold is INFO and the rest DEBUG for the same reason that
+        one is — a slider drag and a spun HID knob repeat.
+        """
+        refused = measurement_hold.record_refused_write()
+        if refused is None:
+            return False
+        hold_owner, first_refusal = refused
+        log_event(
+            logger,
+            "volume.write_refused_measurement_hold",
+            kind=kind,
+            owner=hold_owner,
+            client=self.address_string(),
+            level=logging.INFO if first_refusal else logging.DEBUG,
+            **fields,
+        )
         self._send_json(
             {
                 "error": f"a measurement is in progress (owner={hold_owner})",
-                "measurement_hold": {"owner": hold_owner},
+                "owner": hold_owner,
+                "measurement": measurement_hold.snapshot(),
             },
             status=409,
         )
+        return True
 
     def _post_volume_adjust(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
@@ -177,11 +184,11 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        hold_owner = self._measurement_hold_decline(
-            source="authoritative", delta_pct=delta_pct,
-        )
-        if hold_owner is not None:
-            self._send_measurement_hold_409(hold_owner)
+        # Only a RAISE is refused while a measurement holds the fader; see
+        # _post_volume_set. A bump down cannot take a driver past its cap.
+        if delta_pct > 0 and self._refuse_authoritative_raise(
+            kind="adjust", delta_pct=delta_pct,
+        ):
             return
         try:
             state = asyncio.run(self._adjust_op(delta_pct))
@@ -253,27 +260,19 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        # A live measurement owns the fader — every write is declined while the
-        # hold is up. A host slider or a HID knob mid-sweep would otherwise walk
-        # the very level the measurement is holding, which is both the writer
-        # war seat-level hit on jts3 (journal:
-        # `event=volume.reconciled source=idle drift_db=+9.35`, once a second)
-        # and a driver taken above its declared cap for the playing stimulus.
-        # This runs BEFORE _observe_op/_set_op so no coordinator is built and
-        # nothing touches Camilla.
+        # A live measurement owns the fader. A host slider or a HID knob
+        # mid-sweep would otherwise walk the very level the measurement is
+        # holding, which is both the writer war seat-level hit on jts3
+        # (journal: `event=volume.reconciled source=idle drift_db=+9.35`, once
+        # a second) and a driver taken above its declared cap for the playing
+        # stimulus. Only a RAISE can do the latter, so only a raise is refused
+        # — a human turning it DOWN mid-sweep is never locked out.
         # The two answers differ by contract, not by policy: a SOURCE-OBSERVED
         # write gets the ESTABLISHED `observation_applied: false` 200 that the
         # USB bridge already understands and retries against, while an
-        # AUTHORITATIVE one gets a 409 naming the incumbent, because its caller
-        # is a UI that can say so.
-        hold_owner = self._measurement_hold_decline(
-            source=str(source_name) if source_name else "authoritative",
-            requested_pct=target_pct,
-        )
-        if hold_owner is not None:
-            if not source_name:
-                self._send_measurement_hold_409(hold_owner)
-                return
+        # AUTHORITATIVE one gets /measurement/hold's own 409 envelope, because
+        # its caller is a UI that can name the incumbent.
+        if measurement_hold.held():
             try:
                 state = self._get_op()
             except Exception as e:  # noqa: BLE001
@@ -283,10 +282,19 @@ class VolumeRoutes(ControlHandlerMixin):
                 logger.exception("declined observation state read failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            payload = self._volume_payload(state)
-            payload["observation_applied"] = False
-            self._send_json(payload)
-            return
+            if target_pct > state.effective_percent:
+                if not source_name:
+                    if self._refuse_authoritative_raise(
+                        kind="set", requested_pct=target_pct,
+                    ):
+                        return
+                elif self._measurement_hold_decline(
+                    source=str(source_name), requested_pct=target_pct,
+                ) is not None:
+                    payload = self._volume_payload(state)
+                    payload["observation_applied"] = False
+                    self._send_json(payload)
+                    return
         observation_applied: bool | None = None
         try:
             if source_name:
@@ -351,12 +359,6 @@ class VolumeRoutes(ControlHandlerMixin):
                 {"error": "muted must be a boolean"},
                 status=400,
             )
-            return
-        hold_owner = self._measurement_hold_decline(
-            source="authoritative", explicit=str(explicit),
-        )
-        if hold_owner is not None:
-            self._send_measurement_hold_409(hold_owner)
             return
         try:
             if explicit is None:

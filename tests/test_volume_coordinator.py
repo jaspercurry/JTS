@@ -28,6 +28,7 @@ from jasper import volume_coordinator as vc_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
+from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import (
     BT_VOLUME_MAX,
     ECHO_WINDOW_SEC,
@@ -2161,7 +2162,7 @@ async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gat
         pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust"),
     ],
 )
-async def test_the_level_doors_refuse_while_a_measurement_is_active(tmp_path, door):
+async def test_the_level_doors_refuse_a_raise_while_measuring(tmp_path, door):
     """The voice tools reach these IN-PROCESS, never through jasper-control.
 
     ``jasper.tools.audio`` calls them on this coordinator whenever the box is
@@ -2179,14 +2180,45 @@ async def test_the_level_doors_refuse_while_a_measurement_is_active(tmp_path, do
     assert cam.set_calls == []
 
 
-@pytest.mark.parametrize("asked, applied", [(150, 100), (-5, 0), (60, 60)])
-async def test_set_listening_level_clamps_to_the_percent_range(
-    tmp_path, asked, applied,
-):
-    coord, _, persistence = _real_coord(tmp_path, active={}, level=40)
+@pytest.mark.parametrize(
+    "door, applied",
+    [
+        pytest.param(lambda coord: coord.set_listening_level(25), 25, id="set"),
+        pytest.param(
+            lambda coord: coord.adjust_listening_level(-35), 25, id="adjust",
+        ),
+    ],
+)
+async def test_the_level_doors_still_lower_while_measuring(tmp_path, door, applied):
+    """Only a raise can pass a driver's declared cap. Quieter is never refused."""
+    coord, _, persistence = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
 
-    assert await coord.set_listening_level(asked) == applied
+    assert await door(coord) == applied
     _assert_persisted(persistence, level=applied)
+
+
+async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
+    tmp_path, monkeypatch, caplog,
+):
+    """The voice rollback path can drop note_measurement_active(False).
+
+    Past its aggregate deadline the resume coroutine is closed unawaited and
+    the safety task is already cancelled, so nothing is left to lower the flag.
+    Without the lapse this refuses every "louder" for the life of the process,
+    invisibly to /state.
+    """
+    clock = iter([0.0, MEASUREMENT_AUTOCLEAR_SEC - 1.0, MEASUREMENT_AUTOCLEAR_SEC])
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: next(clock))
+    coord, _, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    with pytest.raises(VolumeClaimRefused):
+        await coord.set_listening_level(95)
+
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        assert await coord.set_listening_level(95) == 95
+    assert _event_fields(caplog, "volume.measurement_flag_expired")
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):

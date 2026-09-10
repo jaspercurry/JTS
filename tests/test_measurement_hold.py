@@ -19,10 +19,10 @@ What must hold, and what would break without it:
   or a healthy long sweep un-gates itself mid-capture;
 * a second owner is **refused, by name** — this is the cross-process mutex the
   window's in-process ``_window_active`` flag structurally cannot be;
-* jasper-control **declines every volume write** while held — source-observed
-  ones on the established ``observation_applied: false`` contract, and
-  authoritative ones (landing slider, HID knob, mute key) with a 409 naming the
-  incumbent;
+* jasper-control **declines every volume write that RAISES the level** while
+  held — source-observed ones on the established ``observation_applied: false``
+  contract, and authoritative ones (landing slider, HID knob) with a 409 naming
+  the incumbent — while quieter, and **mute**, still land;
 * the window **releases on every exit** — normal, raised, and cancelled;
 * an unreachable jasper-control is **fail-soft** (the hazard it guards cannot
   occur while the daemon serving it is down), while a 409 is **fail-closed**.
@@ -482,32 +482,56 @@ def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):
 @pytest.mark.parametrize(
     "route, payload",
     [
-        ("/volume/set", {"percent": 42}),
+        ("/volume/set", {"percent": 91}),
         ("/volume/adjust", {"delta_percent": 25}),
-        ("/volume/mute", {}),
-        ("/volume/mute", {"muted": True}),
     ],
 )
-def test_every_authoritative_write_is_refused_while_held(
+def test_an_authoritative_raise_is_a_409_naming_the_incumbent(
     control_server, route, payload,
 ):
-    """The landing slider, every HID volume key and the mute key, all declined.
+    """The landing slider and the HID knob, turned UP mid-sweep.
 
-    A stimulus is playing at the session volume that IS the driver's cap
-    enforcement; any of these lands the household level on the fader for the
-    duration of that sweep.
+    A stimulus is playing at the session volume that IS the driver's declared
+    cap enforcement; a raise lands the household level on the fader for the
+    rest of that sweep. Same 409 envelope /measurement/hold answers a second
+    owner with.
     """
     base, fake = control_server
     _post(f"{base}/measurement/hold", {"owner": "seat-level"})
 
     status, body = _post(f"{base}{route}", payload)
     assert status == 409
-    assert body["measurement_hold"]["owner"] == "seat-level"
+    assert body["owner"] == "seat-level"
+    assert body["measurement"]["owner"] == "seat-level"
     assert fake._level == 60
-    assert not [
-        kind for kind, _ in fake.calls
-        if kind in {"set", "adjust", "mute", "unmute"}
-    ]
+    assert not [kind for kind, _ in fake.calls if kind in {"set", "adjust"}]
+
+
+@pytest.mark.parametrize(
+    "route, payload, expect_percent",
+    [
+        ("/volume/set", {"percent": 42}, 42),
+        ("/volume/adjust", {"delta_percent": -25}, 35),
+        ("/volume/mute", {}, 0),
+        ("/volume/mute", {"muted": True}, 0),
+        ("/volume/mute", {"muted": False}, 60),
+    ],
+)
+def test_quieter_and_mute_still_land_while_held(
+    control_server, route, payload, expect_percent,
+):
+    """This is isolation, not a lockout: only a RAISE can pass the cap.
+
+    Mute is the one that must never be refused — a human reaching for silence
+    mid-sweep gets it — and no decrease can take a driver above the level the
+    measurement is already holding.
+    """
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    status, body = _post(f"{base}{route}", payload)
+    assert status == 200
+    assert body["percent"] == expect_percent
 
 
 def test_the_observation_applies_once_the_hold_is_released(control_server):
