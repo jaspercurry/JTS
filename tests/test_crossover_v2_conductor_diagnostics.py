@@ -30,7 +30,7 @@ from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
 )
 from jasper.audio_measurement.program_analysis import (
-    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
+    CHANNEL_MAP_TARGET_RISE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     AlignmentEstimate,
     CrossoverCandidate,
@@ -426,8 +426,8 @@ def test_check_diag_names_the_isolation_ratio_and_its_bound_on_a_refusal(caplog)
     # ...and the threshold, without which a sub-bound isolation figure on a
     # QUIET capture would read as the cause of a refusal that never happened:
     # below it the ratio is published but decides nothing.
-    assert fields["channel_map_isolation_judged_above_db"] == str(
-        CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+    assert fields["channel_map_cross_judged_above_db"] == str(
+        CHANNEL_MAP_TARGET_RISE_DB
     )
     # The raws that produced the ratio are still there to attribute it with.
     assert fields["woofer_channel_map_target_rise_db"] == "40.0"

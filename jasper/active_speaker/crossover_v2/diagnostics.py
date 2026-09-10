@@ -49,7 +49,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.crossover_v2.verification import _band_edge
 from jasper.audio_measurement.program import VERIFY_PILOT_ROLE
 from jasper.audio_measurement.program_analysis import (
-    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
+    CHANNEL_MAP_TARGET_RISE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     CaptureIntegrity,
     ProgramAnalysis,
@@ -264,14 +264,12 @@ def _log_check_diag(
         tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
         # The two constants the isolation figures above are GRADED against, on the
         # same line as the numbers. The bound is what the ratio had to clear; the
-        # threshold is the target rise ABOVE WHICH the ratio was judged at all.
-        # Below the threshold an isolation figure decided nothing, so the bound
-        # alone would let a sub-bound number read as the cause of a refusal that
-        # never happened.
+        # threshold is the CROSS rise above which the ratio was judged at all
+        # (#2801). Below the threshold an isolation figure decided nothing, so the
+        # bound alone would let a sub-bound number read as the cause of a refusal
+        # that never happened.
         channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
-        channel_map_isolation_judged_above_db=(
-            CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
-        ),
+        channel_map_cross_judged_above_db=CHANNEL_MAP_TARGET_RISE_DB,
     )
     _log_measure_level_solve(logger, analysis, session_id=session_id)
 

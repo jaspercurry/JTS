@@ -5419,17 +5419,21 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     * a heavy bleed at 10 dB of isolation, an order of magnitude below every
       honest row on record.
 
-    Both are commanded well above `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`, so
-    the ratio is actually judged, and both clear the TARGET floor first — or
-    the refusal would prove nothing about the CROSS half.
+    Both are commanded with a CROSS rise well above `CHANNEL_MAP_TARGET_RISE_DB`,
+    so the ratio is actually judged (#2801), and both clear the TARGET floor
+    first — or the refusal would prove nothing about the CROSS half.
+
+    The third row is what the direct judging condition BUYS: negative isolation
+    at a target rise the retired proxy left unjudged, deferred one phase to the
+    SNR gates instead of refused here.
     """
-    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+    floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
 
     both_bands_ok, both_target, both_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
     assert program_analysis.channel_map_isolation_db(
         both_target, both_cross,
     ) == pytest.approx(0.0, abs=1.0)
-    assert both_target > judged_above, (
+    assert both_cross > floor, (
         "the fixture must clear the judged threshold, or the CROSS half never "
         "looked and this proves nothing"
     )
@@ -5439,8 +5443,16 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     assert program_analysis.channel_map_isolation_db(
         bleed_target, bleed_cross,
     ) == pytest.approx(10.0, abs=1.0)
-    assert bleed_target > judged_above
+    assert bleed_cross > floor
     assert bleed_ok is False
+
+    neg_ok, neg_target, neg_cross = _isolation_case("woofer", 13.5, 38.5, seed=903)
+    assert neg_target == pytest.approx(13.5, abs=0.5)
+    assert neg_cross == pytest.approx(38.5, abs=0.5)
+    assert program_analysis.channel_map_isolation_db(
+        neg_target, neg_cross,
+    ) < 0.0
+    assert neg_ok is False
 
 
 def test_channel_map_cross_test_never_eats_the_target_floor():
@@ -5464,20 +5476,13 @@ def test_channel_map_cross_test_never_eats_the_target_floor():
     ``snr_floor``. A hard stop telling a household to open its speaker, on a
     capture whose only real problem was that it was quiet (#2052/#2644).
 
-    The guard is `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`: below it the TARGET
-    floor governs alone. What that buys, and what this test really pins, is
-    that a CROSS refusal is self-justifying — above the threshold, refusing
-    requires ``cross_rise >= CHANNEL_MAP_TARGET_RISE_DB``, so the WRONG band
-    cleared the very bar we demand of a driver that played. Nothing merely
-    quiet can manufacture that.
+    The guard is the CROSS rise itself (#2801): the ratio is judged only once
+    ``cross_rise >= CHANNEL_MAP_TARGET_RISE_DB``, so a CROSS refusal is
+    self-justifying by construction — the WRONG band cleared the very bar we
+    demand of a driver that played. Nothing merely quiet can manufacture that.
     """
     floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
     bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
-    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
-    assert judged_above == pytest.approx(floor + bound), (
-        "the threshold IS floor+bound; any other value breaks the "
-        "cross_rise >= floor implication this rung's honesty rests on"
-    )
 
     # The regression itself, on the real validator.
     ok, target_rise, cross_rise = _isolation_case("woofer", 13.50, 1.72, seed=904)
@@ -5525,8 +5530,9 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
     ambient = np.full(64, 1.0)
     pilot = np.full(64, 2.0)
     bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
-    # Comfortably above the judged threshold, so the ratio is actually judged.
-    target_rise = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB + 30.0
+    # Scripted cross rises land at ``target_rise - bound``; keep those well
+    # above the TARGET floor so the ratio is actually judged (#2801).
+    target_rise = program_analysis.CHANNEL_MAP_TARGET_RISE_DB + bound + 30.0
 
     def _script(cross_rise: float):
         def _rms(samples, sample_rate, f1, f2):

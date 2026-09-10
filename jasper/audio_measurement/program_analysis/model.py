@@ -362,13 +362,6 @@ CHANNEL_MAP_TARGET_RISE_DB = 12.0
 # degenerate both-bands case. PROVISIONAL.
 CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 
-# The ratio is judged only once target_rise clears FLOOR + this bound (a
-# quiet-but-correct capture below that is not a meaningful ratio and falls
-# through to `snr_floor`/the TARGET floor instead of a `channel_map_mismatch`
-# hard stop).
-CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB = (
-    CHANNEL_MAP_TARGET_RISE_DB + CHANNEL_MAP_MIN_ISOLATION_DB
-)
 
 # VERIFY tracking-error smoothing: 1/6-octave (design §5.2).
 VERIFY_TRACKING_SMOOTHING_FRACTION = 6
