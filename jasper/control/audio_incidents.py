@@ -21,6 +21,7 @@ from typing import Any
 
 from ..atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from ..log_event import log_event
+from ._health_fields import _duration_label, _finite_number, _mapping
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +49,6 @@ _INCIDENT_NUMBER_FIELDS = frozenset({
     "last_occurrence_at",
     "observed_seconds",
 })
-
-
-def _finite_number(value: Any) -> int | float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (OverflowError, ValueError):
-        return None
-    if number != number or number in {float("inf"), float("-inf")}:
-        return None
-    return value
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 # Verdict tokens produced by audio_health._input_attribution — kept in sync
@@ -624,15 +609,3 @@ class SessionRollup:
         }
 
 
-def _duration_label(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    if seconds < 1.0:
-        return f"{round(seconds * 1000):d} ms"
-    if seconds < 60.0:
-        return f"{round(seconds):d} sec"
-    minutes = int(seconds // 60)
-    remainder = int(seconds % 60)
-    if minutes < 60:
-        return f"{minutes}m {remainder}s" if remainder else f"{minutes} min"
-    hours = int(minutes // 60)
-    return f"{hours}h {minutes % 60}m"
