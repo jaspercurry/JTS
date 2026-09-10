@@ -52,6 +52,9 @@ from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
+    LEVEL_HOLD_REFERENCE,
+    LEVEL_MODES,
+    LEVEL_SERIES,
     MOVER_HUMAN,
     MOVER_ARM,
     MOVERS,
@@ -215,7 +218,9 @@ def _declared_on_the_box() -> DeclaredGeometry | None:
 
 
 def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
-    """The walk-level graph statement, which both request paths carry alike."""
+    """The walk-level graph and stimulus/level-policy statement, which both request
+    paths carry alike.
+    """
     return {
         "mover": args.mover,
         "polarity": args.polarity,
@@ -223,6 +228,12 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
         "delayed_role": args.delayed_role,
         "delay_us": args.delay_us,
         "level_matched": args.level_matched,
+        "sweep_band_hz": tuple(args.sweep_band_hz) if args.sweep_band_hz else None,
+        "sweep_s": args.sweep_s,
+        "level_ladder_dbfs": tuple(args.level_dbfs),
+        "level_mode": args.level_mode,
+        "main_volume_series_db": tuple(args.level_series),
+        "ceiling_db_spl": args.ceiling_db_spl,
     }
 
 
@@ -831,6 +842,54 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "form. A flag and not a number: the trims are resolved on the box "
             "from its banked evidence when the session adopts the walk, and a "
             "box with none refuses the walk rather than measuring unmatched"
+        ),
+    )
+    parser.add_argument(
+        "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
+        help=(
+            "summed-sweep bounds in Hz for every stop in this walk (MeasureSpec's "
+            "own field; protected graph admission still applies)"
+        ),
+    )
+    parser.add_argument(
+        "--sweep-s", type=float, default=None,
+        help=(
+            "summed sweep duration in seconds for every stop, still bounded by "
+            "declared driver duration caps (MeasureSpec's own field)"
+        ),
+    )
+    parser.add_argument(
+        "--level-dbfs",
+        type=float,
+        action="append",
+        default=[],
+        metavar="DBFS",
+        help="one stimulus level per ladder rung, repeatable, for every stop in this walk",
+    )
+    parser.add_argument(
+        "--level-mode",
+        default=LEVEL_HOLD_REFERENCE,
+        choices=sorted(LEVEL_MODES),
+        help=(
+            "how main volume behaves across this walk's stops: hold_reference "
+            "leaves the anchor level untouched throughout (the default), "
+            "acquire_at_anchor re-acquires it at each stop, series steps "
+            "through --level-series in turn"
+        ),
+    )
+    parser.add_argument(
+        "--level-series",
+        type=float,
+        action="append",
+        default=[],
+        metavar="DBFS",
+        help=f"--level-mode {LEVEL_SERIES} only: one main-volume rung, repeatable",
+    )
+    parser.add_argument(
+        "--ceiling-db-spl", type=float, default=None,
+        help=(
+            "a walk-level SPL ceiling at the mic, finite and positive; "
+            "validated here, enforced by whatever plays this walk"
         ),
     )
 

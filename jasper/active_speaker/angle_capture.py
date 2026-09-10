@@ -79,6 +79,10 @@ __all__ = [
     "MOVER_ARM",
     "MOVER_HUMAN",
     "MOVERS",
+    "LEVEL_HOLD_REFERENCE",
+    "LEVEL_ACQUIRE_AT_ANCHOR",
+    "LEVEL_SERIES",
+    "LEVEL_MODES",
     "MAX_ANGLE_DEG",
     "MAX_ELEVATION_DEG",
     "ARM_ENVELOPE_DEG",
@@ -100,6 +104,8 @@ __all__ = [
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
+    "WALK_LEVEL_POLICY_INVALID",
+    "WALK_CEILING_NOT_POSITIVE",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
@@ -125,6 +131,16 @@ MOVER_ARM = "arm"
 MOVER_HUMAN = "human"
 
 MOVERS = (MOVER_ARM, MOVER_HUMAN)
+
+#: How the SESSION's main volume behaves across a walk's stops. ``hold_reference``
+#: (the default) leaves the anchor level untouched throughout; ``acquire_at_anchor``
+#: re-acquires it at each stop; ``series`` steps through ``main_volume_series_db``
+#: in turn. Judged here (unlike the stimulus fields) because it is this module's
+#: own walk-level policy, not one ``MeasureSpec`` carries.
+LEVEL_HOLD_REFERENCE = "hold_reference"
+LEVEL_ACQUIRE_AT_ANCHOR = "acquire_at_anchor"
+LEVEL_SERIES = "series"
+LEVEL_MODES = (LEVEL_HOLD_REFERENCE, LEVEL_ACQUIRE_AT_ANCHOR, LEVEL_SERIES)
 
 #: How far off the design axis a stop may be asked for. :func:`pose_at_angle` is a
 #: tangent, so 80 deg already puts the microphone 5.7 m off a 1 m mark -- past any room
@@ -258,6 +274,15 @@ class AngleCaptureRequest:
     Carried, never judged here: :class:`~.crossover_v2.measure_spec.MeasureSpec` already
     refuses every bad combination, including both one-sided forms (ADR-0006); a second
     copy of that rule is a copy that drifts.
+
+    ``sweep_band_hz``/``sweep_s``/``level_ladder_dbfs`` are ``MeasureSpec``'s own
+    stimulus fields, stated request-level so every stop in a batch is matched by
+    construction; not re-validated here -- see ``MeasureSpec.__post_init__``, which
+    judges them when the host adopts the walk. ``level_mode`` is this module's OWN
+    walk-level policy -- how main volume behaves across stops -- with
+    ``main_volume_series_db`` naming the rungs ``level_mode=series`` steps through.
+    ``ceiling_db_spl`` is a walk-level SPL ceiling; checked here since no downstream
+    spec owns it.
     """
 
     stops: tuple[AngleStop, ...]
@@ -268,9 +293,21 @@ class AngleCaptureRequest:
     delay_us: float = 0.0
     level_matched: bool = False
     program: str = ""
+    sweep_band_hz: tuple[float, float] | None = None
+    sweep_s: float | None = None
+    level_ladder_dbfs: tuple[float, ...] = ()
+    level_mode: str = LEVEL_HOLD_REFERENCE
+    main_volume_series_db: tuple[float, ...] = ()
+    ceiling_db_spl: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
+        object.__setattr__(self, "level_ladder_dbfs", tuple(self.level_ladder_dbfs))
+        object.__setattr__(
+            self, "main_volume_series_db", tuple(self.main_volume_series_db)
+        )
+        if self.sweep_band_hz is not None:
+            object.__setattr__(self, "sweep_band_hz", tuple(self.sweep_band_hz))
         if not self.stops:
             raise CrossoverV2FlowError("an angle capture request needs at least one stop")
         if self.mover not in MOVERS:
@@ -293,6 +330,25 @@ class AngleCaptureRequest:
                 WALK_OVER_MOVER_ENVELOPE,
                 f"mover={self.mover!r} turns bearings at the mark, so it cannot "
                 f"reach a {', '.join(unreachable)} pose",
+            )
+        if self.level_mode not in LEVEL_MODES:
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"level_mode must be one of {LEVEL_MODES}, got {self.level_mode!r}",
+            )
+        if self.level_mode == LEVEL_SERIES and not self.main_volume_series_db:
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"level_mode={LEVEL_SERIES!r} needs at least one "
+                "main_volume_series_db rung",
+            )
+        if self.ceiling_db_spl is not None and (
+            not math.isfinite(self.ceiling_db_spl) or self.ceiling_db_spl <= 0
+        ):
+            raise LateralWalkRefused(
+                WALK_CEILING_NOT_POSITIVE,
+                f"ceiling_db_spl must be finite and positive, got "
+                f"{self.ceiling_db_spl!r}",
             )
 
     def _refuse_beyond_reach(
@@ -435,8 +491,19 @@ def request_for_program(
     delayed_role: str = "",
     delay_us: float = 0.0,
     level_matched: bool = False,
+    sweep_band_hz: tuple[float, float] | None = None,
+    sweep_s: float | None = None,
+    level_ladder_dbfs: tuple[float, ...] = (),
+    level_mode: str = LEVEL_HOLD_REFERENCE,
+    main_volume_series_db: tuple[float, ...] = (),
+    ceiling_db_spl: float | None = None,
 ) -> AngleCaptureRequest:
-    """Expand a plan position-first, with adjacent repeats and candidate trials."""
+    """Expand a plan position-first, with adjacent repeats and candidate trials.
+
+    ``sweep_band_hz`` onward are the request-level stimulus/level fields
+    (:class:`AngleCaptureRequest`); forwarded, never judged here, same as the
+    graph fields above them.
+    """
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or not candidates[0]):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
@@ -461,6 +528,12 @@ def request_for_program(
         delayed_role=delayed_role,
         delay_us=delay_us,
         level_matched=level_matched,
+        sweep_band_hz=sweep_band_hz,
+        sweep_s=sweep_s,
+        level_ladder_dbfs=level_ladder_dbfs,
+        level_mode=level_mode,
+        main_volume_series_db=main_volume_series_db,
+        ceiling_db_spl=ceiling_db_spl,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
         program=(
@@ -473,19 +546,33 @@ def request_for_program(
 
 def walk_price(
     request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | float | bool]:
     """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
     SESSION (base entries plus these stops), rounded UP to whole minutes. ``plan_shape``
     is ``None`` for a surface pricing a walk before any tier is chosen.
+
+    ``stimulus_s`` is the STIMULUS time alone (captures times ``sweep_s`` times the
+    level-ladder rung count, or 1 rung for no ladder) -- narrower than ``ceiling_min``,
+    which also prices settle and advance time. ``stimulus_known`` is false, and
+    ``stimulus_s`` is 0, when the walk states no ``sweep_s`` -- a program that has not
+    picked a stimulus duration prices no stimulus time rather than a wrong one.
     """
+    captures = len(request.stops)
+    stimulus_known = request.sweep_s is not None
+    stimulus_s = (
+        captures * request.sweep_s * max(1, len(request.level_ladder_dbfs))
+        if stimulus_known else 0
+    )
     return {
         "mic_moves": len({s.place for s in request.stops}),
-        "captures": len(request.stops),
+        "captures": captures,
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(
                 stage1_base_entries(plan_shape) + len(request.stops)
             ) / 60
         ),
+        "stimulus_s": stimulus_s,
+        "stimulus_known": stimulus_known,
     }
 
 
@@ -608,6 +695,15 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
+#: The walk's ``level_mode`` is not one :data:`LEVEL_MODES` names, or
+#: ``level_mode=series`` states no ``main_volume_series_db`` rung to step
+#: through. Decided by :class:`AngleCaptureRequest` at statement time, like
+#: :data:`WALK_OVER_MOVER_ENVELOPE`.
+WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
+
+#: The walk's ``ceiling_db_spl`` is not finite and positive.
+WALK_CEILING_NOT_POSITIVE = "walk_ceiling_not_positive"
+
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
@@ -641,6 +737,8 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
+    WALK_LEVEL_POLICY_INVALID,
+    WALK_CEILING_NOT_POSITIVE,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,

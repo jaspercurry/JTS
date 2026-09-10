@@ -375,8 +375,12 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
 
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["level_matched"] is True
-    # The document states WHETHER, never the dB.
-    assert not [key for key in doc if key.endswith("_db")]
+    # The document states WHETHER, never a per-driver trim dB: those resolve
+    # on-box. ``main_volume_series_db`` is a different concept (an
+    # operator-stated main-volume ladder), so it is excluded here.
+    assert not [
+        key for key in doc if key.endswith("_db") and key != "main_volume_series_db"
+    ]
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         level_matched=True,
@@ -803,6 +807,8 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
         "mic_moves": express.mic_move_count,
         "captures": express.capture_count,
         "ceiling_min": 46,
+        "stimulus_s": 0,
+        "stimulus_known": False,
     }
     assert body["handoff_url"].startswith("http://")
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
@@ -920,6 +926,8 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(stage1_base_entries() + 2) / 60
         ),
+        "stimulus_s": 0,
+        "stimulus_known": False,
     }
     assert spool.take_staged_angle_request().program == ""
 

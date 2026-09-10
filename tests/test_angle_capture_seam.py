@@ -1256,9 +1256,11 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 8, "ceiling_min": 46}),
+         {"mic_moves": 5, "captures": 8, "ceiling_min": 46,
+          "stimulus_s": 0, "stimulus_known": False}),
         (("", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
-         {"mic_moves": 5, "captures": 16, "ceiling_min": 60}),
+         {"mic_moves": 5, "captures": 16, "ceiling_min": 60,
+          "stimulus_s": 0, "stimulus_known": False}),
     ],
     ids=["no-cycle", "two-candidates"],
 )
@@ -1404,3 +1406,169 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
         assert entry.screen["auto_advance"] == (flow.AUTO_ADVANCE_TAP if offset % 2 == 0 else flow.AUTO_ADVANCE_COUNTDOWN)
     assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count
+
+
+# --------------------------------------------------------------------------- #
+# 9. the stimulus/level-policy fields: request-level, matched by construction
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("program_id", "size", "candidates", "sweep_s", "level_ladder_dbfs"),
+    [
+        ("tournament", "express", (), None, ()),
+        ("tournament", "express", ("fp-a", "fp-b"), 2.0, ()),
+        ("room", "quick", ("", "room-fp"), 1.5, (-20.0, -14.0, -8.0)),
+        ("room", "cloud", (), None, ()),
+    ],
+    ids=[
+        "tournament-express-no-cand-no-sweep",
+        "tournament-express-two-cand-sweep",
+        "room-quick-two-cand-ladder",
+        "room-cloud-no-cand-no-sweep",
+    ],
+)
+def test_walk_price_reports_stimulus_seconds_for_named_programs(
+    program_id: str, size: str, candidates: tuple[str, ...],
+    sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
+) -> None:
+    """``stimulus_s``/``stimulus_known`` are derived from the program's own counts,
+    the same rule :func:`test_a_program_becomes_its_own_walk_in_table_order` pins
+    for everything else ``walk_price`` reports -- so this cannot drift from the
+    table either.
+    """
+    program = mp.program(program_id, size)
+    request = ac.request_for_program(
+        program, candidates=candidates, sweep_s=sweep_s,
+        level_ladder_dbfs=level_ladder_dbfs,
+    )
+    cycle = candidates or ("",)
+    price = ac.walk_price(request)
+
+    assert price["mic_moves"] == program.mic_move_count
+    assert price["captures"] == program.capture_count * len(cycle)
+    assert price["stimulus_known"] == (sweep_s is not None)
+    if sweep_s is None:
+        assert price["stimulus_s"] == 0
+    else:
+        assert price["stimulus_s"] == pytest.approx(
+            price["captures"] * sweep_s * max(1, len(level_ladder_dbfs))
+        )
+
+
+def test_every_stimulus_field_stages_and_reads_back_whole(spool_slot) -> None:
+    """Request-level, so every stop in the batch is matched by construction: the
+    whole set round-trips through the spool document together.
+    """
+    request = ac.AngleCaptureRequest(
+        stops=(
+            ac.AngleStop(0, ac.REGIME_PER_DRIVER),
+            ac.AngleStop(7, ac.REGIME_PER_DRIVER),
+        ),
+        sweep_band_hz=(200.0, 3000.0),
+        sweep_s=2.5,
+        level_ladder_dbfs=(-20.0, -14.0),
+        level_mode=ac.LEVEL_SERIES,
+        main_volume_series_db=(-20.0, -14.0),
+        ceiling_db_spl=100.0,
+    )
+    spool.stage_angle_request(request)
+    assert spool.peek_staged_angle_request() == request
+    assert spool.take_staged_angle_request() == request
+
+
+def test_a_walk_staged_before_the_stimulus_fields_existed_reads_back_as_stated(
+    spool_slot,
+) -> None:
+    """Additive, like R-1's delay/polarity pair: a document staged before these keys
+    existed still reads back, as a ``hold_reference`` walk stating no stimulus.
+    """
+    spool.stage_angle_request(
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
+    )
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text())
+    for key in (
+        "sweep_band_hz", "sweep_s", "level_ladder_dbfs", "level_mode",
+        "main_volume_series_db", "ceiling_db_spl",
+    ):
+        doc.pop(key)
+    path.write_text(json.dumps(doc))
+
+    restored = spool.take_staged_angle_request()
+    assert restored.sweep_band_hz is None
+    assert restored.sweep_s is None
+    assert restored.level_ladder_dbfs == ()
+    assert restored.level_mode == ac.LEVEL_HOLD_REFERENCE
+    assert restored.main_volume_series_db == ()
+    assert restored.ceiling_db_spl is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"level_mode": "loud"},
+        {"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": ()},
+    ],
+    ids=["unknown-mode", "series-with-no-rungs"],
+)
+def test_a_bad_level_policy_refuses_at_statement_time(fields: dict) -> None:
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **fields)
+    assert excinfo.value.reason == ac.WALK_LEVEL_POLICY_INVALID
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, math.nan, math.inf])
+def test_a_non_positive_ceiling_refuses_at_statement_time(bad: float) -> None:
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), ceiling_db_spl=bad,
+        )
+    assert excinfo.value.reason == ac.WALK_CEILING_NOT_POSITIVE
+
+
+def test_cli_stimulus_flags_reach_the_staged_request(spool_slot) -> None:
+    """Every new flag, through the CLI's own request builder, staged and read back --
+    the spool round trip is pinned separately above, so this pins the CLI WIRING.
+    """
+    argv = [
+        "stage", "--angles", "0",
+        "--sweep-band-hz", "200", "3000",
+        "--sweep-s", "2.5",
+        "--level-dbfs", "-20", "--level-dbfs", "-14",
+        "--level-mode", "series",
+        "--level-series", "-20", "--level-series", "-14",
+        "--ceiling-db-spl", "100",
+    ]
+    request = cli._build_request(cli.build_parser().parse_args(argv))
+    assert request.sweep_band_hz == (200.0, 3000.0)
+    assert request.sweep_s == 2.5
+    assert request.level_ladder_dbfs == (-20.0, -14.0)
+    assert request.level_mode == ac.LEVEL_SERIES
+    assert request.main_volume_series_db == (-20.0, -14.0)
+    assert request.ceiling_db_spl == 100.0
+
+    spool.stage_angle_request(request)
+    assert spool.take_staged_angle_request() == request
+
+
+def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:
+    """``plan`` gates on nothing a bare box lacks (unlike ``stage``, which refuses
+    with no banked seat-level anchor), so this drives the real verb and reads its
+    actual stdout document -- the one JSON document ADR-0237 promises -- rather
+    than re-deriving ``price`` by calling ``walk_price`` beside it.
+    """
+    argv = [
+        "plan", "--program", "tournament", "--size", "express",
+        "--sweep-s", "2.0",
+        "--level-dbfs", "-20", "--level-dbfs", "-14", "--level-dbfs", "-8",
+    ]
+    args = cli.build_parser().parse_args(argv)
+    args.invocation = argv
+
+    assert cli._cmd_plan(args) == cli.EXIT_OK
+    document = json.loads(capsys.readouterr().out)
+
+    price = document["price"]
+    assert price["stimulus_known"] is True
+    assert price["stimulus_s"] == pytest.approx(price["captures"] * 2.0 * 3)

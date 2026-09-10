@@ -37,7 +37,7 @@ from typing import Any, Mapping, NoReturn
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
-from .angle_capture import AngleCaptureRequest, AngleStop
+from .angle_capture import AngleCaptureRequest, AngleStop, LEVEL_HOLD_REFERENCE
 from .measurement_programs import POSE_KIND_BEARING
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2_flow import CrossoverV2FlowError
@@ -180,6 +180,18 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
+        # Stimulus/level-policy fields, additive the same way the pair above
+        # is: written unconditionally, read back with a default, so a
+        # document staged before these keys existed still reads as a
+        # hold_reference walk with no stimulus stated.
+        "sweep_band_hz": (
+            list(request.sweep_band_hz) if request.sweep_band_hz is not None else None
+        ),
+        "sweep_s": request.sweep_s,
+        "level_ladder_dbfs": list(request.level_ladder_dbfs),
+        "level_mode": request.level_mode,
+        "main_volume_series_db": list(request.main_volume_series_db),
+        "ceiling_db_spl": request.ceiling_db_spl,
         "program": request.program,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
@@ -371,6 +383,12 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     through ``float``, refusing as :data:`SPOOL_MALFORMED` rather than a bare
     ``ValueError`` (the page's price peek catches only ``CrossoverV2FlowError``).
     ``level_matched`` is a BOOLEAN, never numbers.
+
+    The stimulus/level-policy fields (``sweep_band_hz`` onward) are additive and
+    defaulted the same way, uncoerced like the angle fields: ``sweep_band_hz``,
+    ``sweep_s`` and ``level_ladder_dbfs`` are judged by ``MeasureSpec`` when the host
+    adopts the walk; ``level_mode`` and ``ceiling_db_spl`` are judged by
+    ``AngleCaptureRequest`` itself, right here, on reconstruction.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -413,6 +431,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
                 seat_offset_m=tuple(offset) if isinstance(offset, list) else None,  # type: ignore[arg-type]
             )
         )
+    sweep_band_raw = doc.get("sweep_band_hz")
     return AngleCaptureRequest(
         stops=tuple(stops),
         mover=str(doc.get("mover")),
@@ -421,6 +440,14 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         delayed_role=str(doc.get("delayed_role") or ""),
         delay_us=_coerced_delay_us(doc.get("delay_us")),
         level_matched=bool(doc.get("level_matched")),
+        sweep_band_hz=(
+            tuple(sweep_band_raw) if isinstance(sweep_band_raw, list) else None
+        ),
+        sweep_s=doc.get("sweep_s"),
+        level_ladder_dbfs=tuple(doc.get("level_ladder_dbfs") or ()),
+        level_mode=str(doc.get("level_mode") or LEVEL_HOLD_REFERENCE),
+        main_volume_series_db=tuple(doc.get("main_volume_series_db") or ()),
+        ceiling_db_spl=doc.get("ceiling_db_spl"),
         program=str(doc.get("program") or ""),
     )
 
