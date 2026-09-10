@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_INTERVAL_SEC = 5.0
 JOURNAL_INTERVAL_SEC = 30.0
+# R21 (#4416): one journalctl fork per scanned unit per scan (JOURNAL_UNITS
+# below) adds up on an idle box with no AirPlay session in sight. Once no
+# session has been active for JOURNAL_IDLE_THRESHOLD_SEC, scans widen to
+# JOURNAL_IDLE_INTERVAL_SEC; the connect-grace re-arm on the next
+# idle->active transition (_tick) puts the 30 s cadence right back for the
+# session that follows.
+JOURNAL_IDLE_THRESHOLD_SEC = 5 * 60.0
+JOURNAL_IDLE_INTERVAL_SEC = 120.0
 MPRIS_INTERVAL_SEC = 30.0
 CAMILLA_INTERVAL_SEC = 30.0
 BUCKET_SECONDS = 10.0
@@ -611,6 +619,8 @@ class AirPlayHealthSampler:
         self,
         *,
         journal_interval_sec: float = JOURNAL_INTERVAL_SEC,
+        journal_idle_threshold_sec: float = JOURNAL_IDLE_THRESHOLD_SEC,
+        journal_idle_interval_sec: float = JOURNAL_IDLE_INTERVAL_SEC,
         mpris_interval_sec: float = MPRIS_INTERVAL_SEC,
         camilla_interval_sec: float = CAMILLA_INTERVAL_SEC,
         bucket_seconds: float = BUCKET_SECONDS,
@@ -640,6 +650,8 @@ class AirPlayHealthSampler:
         time_fn: Callable[[], float] = time.time,
     ) -> None:
         self._journal_interval = journal_interval_sec
+        self._journal_idle_threshold = journal_idle_threshold_sec
+        self._journal_idle_interval = journal_idle_interval_sec
         self._mpris_interval = mpris_interval_sec
         self._camilla_interval = camilla_interval_sec
         self._bucket_seconds = bucket_seconds
@@ -660,6 +672,9 @@ class AirPlayHealthSampler:
         self._started_at = time_fn()
         self._connect_grace_until: float | None = None
         self._airplay_active = False
+        # Idle-widen clock for the journal scan (R21, #4416): starts at
+        # construction so a box that never sees a session widens too.
+        self._last_airplay_active_at = self._started_at
         self._warmup_active = warmup_sec > 0.0
         self._suppressed_reason: str | None = None
 
@@ -788,6 +803,8 @@ class AirPlayHealthSampler:
         active = self._airplay_active_now()
         if active and not self._airplay_active:
             self._connect_grace_until = now + self._connect_grace_sec
+        if active:
+            self._last_airplay_active_at = now
         self._airplay_active = active
         in_connect_grace = (
             self._connect_grace_until is not None
@@ -795,9 +812,17 @@ class AirPlayHealthSampler:
         )
         suppress_events = suppress_base or in_connect_grace
 
+        # R21 (#4416): no session in sight for a while widens the scan
+        # cadence — the next idle->active transition re-arms the connect
+        # grace above, which covers the 30 s cadence resuming for it.
+        journal_interval = (
+            self._journal_idle_interval
+            if now - self._last_airplay_active_at >= self._journal_idle_threshold
+            else self._journal_interval
+        )
         if suppress_events:
             self._advance_journal_cursor(now)
-        elif now - self._last_journal_scan_at >= self._journal_interval:
+        elif now - self._last_journal_scan_at >= journal_interval:
             self._scan_journals(now)
 
         if suppress_until is not None:

@@ -10,6 +10,7 @@ from jasper import source_intent
 from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
+from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
     never_stays_complete,
     pulled_ordered_dependencies,
@@ -604,3 +605,21 @@ def test_rapid_source_transactions_are_not_rate_limited() -> None:
         assert "Restart=" not in "\n".join(
             line for line in text.splitlines() if not line.lstrip().startswith("#")
         ), path
+
+
+def test_bluetooth_adapter_udev_rule_re_triggers_source_intent_reconcile() -> None:
+    """R15 (#4416): bluetooth-source availability can change (adapter
+    hot-plug, an `rfkill unblock bluetooth` re-arm) without touching any
+    sound card, so the reconcile also needs a Bluetooth-specific trigger."""
+    rule_path = ROOT / "deploy/udev/99-jasper-bluetooth-adapter.rules"
+    rule = rule_path.read_text(encoding="utf-8")
+    run_line = next(
+        line
+        for line in rule.splitlines()
+        if "SYSTEMD_WANTS" in line and not line.lstrip().startswith("#")
+    )
+    assert 'ACTION=="add"' in run_line
+    assert 'SUBSYSTEM=="bluetooth"' in run_line
+    assert 'DEVTYPE=="host"' in run_line
+    assert 'ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"' in run_line
+    assert "99-jasper-bluetooth-adapter.rules" in installer_text()

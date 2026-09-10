@@ -1,0 +1,13 @@
+# Re-run the persisted /sources intent reconcile whenever a Bluetooth
+# adapter registers: boot, a hot-plugged USB adapter, or an
+# `rfkill unblock bluetooth` that re-arms a previously soft-blocked
+# controller. Bluetooth-source availability can change on its own, without
+# touching any sound card, so the sound-control-node triggers above do not
+# cover it.
+#
+# DEVTYPE=="host" matches the controller node itself (hci0), not the
+# per-connection "link" device bluetoothd creates for each paired peer —
+# keyed generically so any adapter's arrival re-derives intent, not a
+# specific USB id.
+
+ACTION=="add", SUBSYSTEM=="bluetooth", DEVTYPE=="host", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"

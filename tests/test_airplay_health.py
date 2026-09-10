@@ -358,6 +358,81 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     assert journal_calls[0][1] == 1005.0
 
 
+def test_journal_scan_widens_after_no_airplay_session_for_5_minutes() -> None:
+    """R21 (#4416): an idle box forks journalctl every JOURNAL_INTERVAL_SEC
+    forever. Once no session has been seen for JOURNAL_IDLE_THRESHOLD_SEC,
+    the scan cadence widens to JOURNAL_IDLE_INTERVAL_SEC."""
+    now = [1000.0]
+    journal_calls: list[float] = []
+
+    def journal(units, since, until) -> list[tuple[str, str]]:
+        journal_calls.append(now[0])
+        return []
+
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: _fanin_status(),
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=0.0,
+        connect_grace_sec=0.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()  # t=1000, idle_for=0: default 30 s cadence, scans.
+    assert len(journal_calls) == 1
+
+    now[0] += 305.0  # t=1305, idle_for=305 >= the 300 s threshold: widened.
+    sampler._tick()  # 305 >= 120 s widened interval -> scans.
+    assert len(journal_calls) == 2
+
+    now[0] += 100.0  # t=1405, only 100 s since the last scan.
+    sampler._tick()  # 100 < 120 s widened interval -> no scan.
+    assert len(journal_calls) == 2
+
+    now[0] += 30.0  # t=1435, 130 s since the last scan.
+    sampler._tick()  # 130 >= 120 s widened interval -> scans.
+    assert len(journal_calls) == 3
+
+
+def test_journal_scan_returns_to_default_cadence_once_a_session_starts() -> None:
+    """The idle->active transition resets the idle clock, so the next scan
+    after a session starts is back on the 30 s cadence, not still widened."""
+    now = [1000.0]
+    journal_calls: list[float] = []
+    mpris = {"playing": False}
+
+    def journal(units, since, until) -> list[tuple[str, str]]:
+        journal_calls.append(now[0])
+        return []
+
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: _fanin_status(),
+        journal_reader=journal,
+        mpris_probe=lambda: dict(mpris),
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=0.0,
+        connect_grace_sec=0.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()  # t=1000, scans.
+    now[0] += 305.0  # t=1305, idle -> widened cadence.
+    sampler._tick()  # 305 >= 120 -> scans.
+    assert len(journal_calls) == 2
+
+    mpris["playing"] = True
+    now[0] += 30.0  # t=1335: the MPRIS resample (30 s interval) sees the
+    sampler._tick()  # session start; idle_for resets to 0, still 30 >= 30.
+    assert len(journal_calls) == 3
+
+    now[0] += 35.0  # t=1370, 35 s since the last scan.
+    sampler._tick()  # 35 >= the DEFAULT 30 s (not still 120 s) -> scans.
+    assert len(journal_calls) == 4
+
+
 def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
     # While AirPlay IS streaming, recoverable Camilla short reads are a
     # non-fatal warning (watch), not a hard issue.

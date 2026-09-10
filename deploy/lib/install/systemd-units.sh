@@ -831,6 +831,9 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-bluetooth-adapter.rules" \
+        /etc/udev/rules.d/99-jasper-bluetooth-adapter.rules
 }
 
 pin_attached_apple_dongle_power_control() {
