@@ -1847,43 +1847,14 @@ def test_s0_replay_unknown_class_pins_the_undeclared_regime(s0_replay):
 def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     """Predicted-sum ripple, compared on the SAME bins with both fits.
 
-    **NOT RE-PINNED -- confirmed real regression, left red (#2568).**
-    At HEAD with commit ``4300a546d`` (Tikhonov floor ``|X|**2 + eps`` ->
-    ``max(|X|**2, eps)``), BOTH of this test's bounds fail, not just its
-    pinned point values:
-
-    - ``compression_horn`` ripple delta is **+0.0670 dB** (window widened
-      61 -> 69 bins), which breaches the test's own explicit regression
-      bound, ``masked_rms <= bare_rms + 0.05``: 0.0670 > 0.05.
-    - The single-bin target-level shift this test's docstring already
-      attributes to the null's rasterized edge is now **-0.2733 dB** (was
-      -0.038 dB), and the resulting per-filter gain shift is **0.2733 dB**
-      max, which breaches the test's other explicit bound,
-      ``max(abs(gain_diff)) < 0.05``: 0.2733 > 0.05.
-
-    Both numbers are reproducible and traced: the interference-null
-    registry's edges move under ``4300a546d`` (see
-    ``test_s0_replay_fit_places_no_gain_inside_identified_nulls``), and the
-    masked fit's target-level computation is far more sensitive to that
-    edge movement than the envelope-grid-level effects the other three
-    tests in this module show -- it reads a finer, native-resolution mask
-    boundary where a few-Hz edge shift crosses a steep region of the
-    measured curve. Unlike the other three S0-corpus failures in this PR,
-    this one violates a BOUND the test states is a deliberate regression
-    guard (see its docstring below), not just a pinned descriptive number,
-    so it is reported here rather than re-pinned. Needs its own
-    investigation into whether the target-level computation's sensitivity
-    to null-edge placement is itself intended, before any new numbers here
-    can be trusted.
-
-    **The masked fit is very slightly worse, not equal** -- +0.0059 dB on
-    ``compression_horn`` -- so this test asserts a BOUND (0.05 dB) and the
-    exact measured difference, rather than the "no regression" the plan's
-    acceptance line asks for in prose. The name says bound for that reason.
+    **The masked fit is slightly worse, not equal** -- +0.0670 dB on
+    ``compression_horn`` -- so this test asserts the exact measured
+    difference, which IS the bound, rather than the "no regression" the
+    plan's acceptance line asks for in prose.
 
     The comparison window is the BARE fit's band minus every masked bin --
     one window for both fits, which is what makes the two RMS figures
-    comparable -- 61 bins on the ``compression_horn`` regime, 55 on
+    comparable -- 69 bins on the ``compression_horn`` regime, 56 on
     ``unknown``. The metric is the RMS deviation of the predicted sum about
     its own median. **Its absolute value is not a ripple figure**: it is
     dominated by the tweeter's own uncorrected top-octave rolloff, because
@@ -1892,33 +1863,60 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     the difference between the two fits, on identical bins, is being read
     here.
 
-    Re-measured after #1752 hardened a term's exact zero into a hard
-    boundary: **+0.0059 dB** on ``compression_horn`` (1.6887 -> 1.6947) and
-    **exactly 0.0** on ``unknown``, where the two fits are filter-for-filter
-    identical. The non-zero one traces to a single bin: 7949.3 Hz, the
-    conservatively-rasterized outer edge of the first null's interval, sits
-    inside the fit's core band, so excluding it moves the target level by
-    0.038 dB and both peaking cuts shrink by ~0.03 dB.
+    Why the honesty mask now costs 0.2733 dB of level, not 0.0382
+    ------------------------------------------------------------
+
+    The masked arm's cost is set by how much of an identified null the BARE
+    arm's core level mask reaches over: ``target_level_db`` is the median of
+    ``smoothed_db`` on that mask, so dropping null bins can only raise it.
+    #3297 widened reference-tier mic trust to 12k-20k, which extends the
+    core level mask 2020-7949.3 Hz -> 2020-9941.9 Hz. The old mask poked ONE
+    bin into the first identified null (7949.3 Hz, -28.68 dB, that
+    interval's conservatively-rasterized outer edge) and the median moved
+    0.0382 dB. The new mask contains all **seven** of that null's bins
+    (7949.3-9401.2 Hz, -28.68 to -30.29 dB) and the median moves **0.2733
+    dB**, both cuts shrinking with it.
+
+    ``4300a546d``'s deconvolution floor (``|X|**2 + eps`` ->
+    ``max(|X|**2, eps)``) stacks on top of that; it is not the cause.
+    Measured on this corpus as a 2x2 (floor form x mic-trust table), on
+    ``compression_horn``, as (bins, ripple delta, level shift)::
+
+        add + old (the era these were pinned in)  61  +0.0059  -0.0382
+        add + new                                 68  +0.0351  -0.1548
+        max + old                                 62  +0.0050  -0.0425
+        max + new (HEAD)                          69  +0.0670  -0.2733
+
+    The floor change ALONE moves the level shift 0.0382 -> 0.0425 dB, inside
+    the old budget. It is also a fix rather than drift: ``eps = 1e-3 *
+    peak|X|**2`` against a log sweep whose ``|X(f)|**2`` falls as 1/f leaves
+    ``|X|**2/eps`` at only ~6 by 19 kHz, so the additive form shrinks the
+    recovered magnitude by ``|X|**2/(|X|**2 + eps)`` -- -0.045 dB at 500 Hz
+    but -1.32 dB at 19 kHz. Deconvolving a synthetic known-flat system (a
+    pure delay, driven by this corpus's own 6.0 s verify sweep) recovers
+    0.7987 dB RMS error and a -1.2607 dB 500 Hz -> 19 kHz tilt under
+    ``|X|**2 + eps``, against 0.0135 dB RMS and -0.0152 dB under
+    ``max(|X|**2, eps)``. That tilt was reaching the emitted filters.
+
+    The two 0.05 dB budgets this test used to carry are therefore gone
+    rather than re-scaled: they were sized to an era when the two arms'
+    level masks differed by one bin, and any replacement near 0.3 dB would
+    be a number with no derivation. What replaces them is the DIRECTION the
+    mechanism above guarantees -- dropping null bins raises a median, so on
+    a cut-only arm the mask can only make a cut shallower, never deeper and
+    never a boost -- carried alongside the exact pins.
 
     **The two fits no longer share a band on ``unknown``, and that is the
     hardening showing through.** ``class_prior_limit`` for ``unknown`` is
     exactly 0 from 12 kHz up, so the composed envelope now ends there
     instead of carrying blurred depth past it; the second identified null
-    (10841-12351 Hz) then reaches that zero with nothing correctable left
+    (10829-12339 Hz) then reaches that zero with nothing correctable left
     between them, and the masked band stops at 10513.6 Hz rather than
     punching a hole and continuing. On ``compression_horn`` -- whose class
     prior does not zero until 20 kHz -- the exclusion still punches holes
     inside a shared band, exactly as before. Filters are identical either
-    way **on this cut-only arm**, so here the change is in the band the fit
-    REPORTS, not in what the speaker plays. That scoping is load-bearing and
-    does NOT generalize: on the reachable BOOST arm (``allow_boost``, no
-    cloud exclusions) the narrowed envelope DOES move the emitted filters --
-    it adds a +4.6785 dB Peaking boost at 10223.7 Hz (a +4.6506 dB branch-
-    chain peak once neighbours sum). That is safe by the existing headroom
-    contract, not by luck: ``branch_headroom_db`` rises 0.0000 -> 5.6506 dB
-    and the emitter subtracts it pre-split, so the bin lands -1.0000 dB re
-    unity -- exactly ``HEADROOM_MARGIN_DB``, since the charge IS peak plus
-    that margin. The runtime contract re-proves it downstream.
+    way on ``unknown``, so there the change is in the band the fit REPORTS,
+    not in what the speaker plays.
     """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     measured_db = np.interp(
@@ -1929,8 +1927,8 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         excluded |= (grid >= f_lo) & (grid <= f_hi)
 
     for driver_class, n_bins, expected_delta_db, bands_agree in (
-        (_S0_TWEETER_CLASS, 61, 0.0059, True),
-        ("unknown", 55, 0.0, False),
+        (_S0_TWEETER_CLASS, 69, 0.0670, True),
+        ("unknown", 56, 0.0, False),
     ):
         bare_fit = fit_driver_linearization(
             s0_replay.primary, _s0_envelope(s0_replay, driver_class, cloud=False)
@@ -1955,9 +1953,9 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
             )
         bare_rms, masked_rms = ripples
         assert masked_rms - bare_rms == pytest.approx(expected_delta_db, abs=0.002)
-        assert masked_rms <= bare_rms + 0.05
+        assert masked_rms >= bare_rms
 
-    # The single-bin cause named above.
+    # The seven-bin cause named above.
     horn_bare = fit_driver_linearization(
         s0_replay.primary, _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=False)
     )
@@ -1965,12 +1963,19 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         s0_replay.primary, _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=True)
     )
     assert horn_bare.target_level_db - horn_masked.target_level_db == pytest.approx(
-        -0.038, abs=0.002
+        -0.2733, abs=0.002
     )
     assert [f.freq for f in horn_bare.filters] == [f.freq for f in horn_masked.filters]
+    # Direction, not a budget: the mask drops null bins from the level mask,
+    # which can only raise the median it is taken over, so every cut gets
+    # shallower and none crosses into gain.
+    assert all(
+        b.gain >= a.gain and b.gain <= 0.0
+        for a, b in zip(horn_bare.filters, horn_masked.filters)
+    )
     assert max(
         abs(a.gain - b.gain) for a, b in zip(horn_bare.filters, horn_masked.filters)
-    ) < 0.05
+    ) == pytest.approx(0.2734, abs=0.002)
 
 
 @requires_s0_curves
