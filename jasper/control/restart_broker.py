@@ -74,6 +74,7 @@ newline-delimited JSON request, a single newline-delimited JSON response.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -348,9 +349,25 @@ def _journal_detached_result(
     ignoring: Interactive authentication required." on stderr and exits 0 —
     the grant covers login1.reboot, not login1.set-wall-message — so gating
     on stderr would journal a WARNING on every healthy reboot.
+
+    Bounded by the broker's own ordinary ceiling
+    (:data:`_EXEC_TIMEOUT_CEILING_SEC`) -- this thread is daemon=True and the
+    broker never blocks on it, but a child wedged forever (rather than merely
+    failing) would otherwise leak the thread silently instead of leaving a
+    journal line.
     """
     try:
-        _, err = proc.communicate()
+        _, err = proc.communicate(timeout=_EXEC_TIMEOUT_CEILING_SEC)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+            proc.communicate()
+        log_event(
+            logger, "restart_broker.deferred_reap_timeout", verb=verb,
+            units=units_label, timeout=_EXEC_TIMEOUT_CEILING_SEC,
+            level=logging.WARNING,
+        )
+        return
     except (OSError, ValueError, subprocess.SubprocessError):
         return
     if proc.returncode == 0:

@@ -49,17 +49,9 @@ def test_unit_file_exists():
         # Matches the project-wide Tier 2 cadence (camilla, aec-bridge, voice,
         # control all use this value).
         pytest.param("WatchdogSec", "30s", id="watchdog_sec_set"),
-        # A daemon with blocked I/O sits on SIGTERM for systemd's default 90s
-        # and corrupts kernel ALSA state before SIGKILL fires. 5s escalates fast.
-        pytest.param("TimeoutStopSec", "5s", id="timeout_stop_sec_short"),
-        # Covers exit-nonzero + signal + watchdog timeout without restarting on
-        # a clean signal-shutdown (Restart=always would).
-        pytest.param("Restart", "on-failure", id="restart_on_failure"),
-        # T5.1 escalation on repeated wedges. Not reboot-force — clean reboot
-        # lets zram dirty pages sync on a 1 GB Pi.
-        pytest.param(
-            "StartLimitAction", "reboot", id="start_limit_action_reboot"
-        ),
+        # TimeoutStopSec=5s, Restart=on-failure and StartLimitAction=reboot are
+        # pinned, with the rest of the restart ladder, by
+        # tests/test_systemd_hardening.py's RESTART_POLICY table (R22, #4416).
         # -800 sits between Camilla (-900, silence-critical) and the AEC
         # bridge (-700, capture-critical) on the OOM kill ladder.
         pytest.param(
@@ -80,42 +72,13 @@ def test_unit_field_value(key, expected):
     )
 
 
-def test_ring_config_class_failures_park_instead_of_rebooting():
-    """A config-class ring failure must PARK the unit, not climb the restart
-    burst into `StartLimitAction=reboot` above.
+# The config-class ring failure -> park (not StartLimitAction=reboot)
+# contract (jasper-outputd took the same treatment after the jts3 2026-06-11
+# reboot-loop incident) is pinned, with the rest of the restart ladder, by
+# tests/test_systemd_hardening.py's RESTART_POLICY table (R22, #4416). Rust
+# unit tests cover the mapping from concrete error classes to exit 78; the
+# unit file's own comment above RestartPreventExitStatus= carries the why.
 
-    fan-in's Ring A geometry declaration has ways to be wrong that no RESTART
-    can fix, in two shapes:
-
-    1. A rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` /
-       slot-shearing period. Re-read from the env file on every start, so it is
-       identical across restarts AND across reboots.
-    2. A ring file on disk whose header geometry differs from the one the
-       daemon builds (a stale ring surviving a deploy, or a conf.d and daemon
-       that disagree about the wire). `/dev/shm` is tmpfs, so this one DOES
-       clear on a reboot — but not on a restart, which is the loop that
-       matters here.
-
-    Before `RestartPreventExitStatus=78` both exited non-zero like any other
-    fault, so five starts in five minutes escalated to
-    `StartLimitAction=reboot`. jasper-outputd took the same treatment for the
-    same reason (jts3, 2026-06-11: a guard-rejected env combination
-    crash-looped it into three Pi reboots).
-
-    Rust unit tests cover the mapping from concrete error classes to exit 78.
-    """
-    unit = _read_unit()
-    assert "78" in _values_for(unit, "RestartPreventExitStatus"), (
-        "jasper-fanin.service must declare RestartPreventExitStatus=78 so a "
-        "config-class ring failure parks instead of escalating to "
-        "StartLimitAction=reboot"
-    )
-    # Mirrors jasper-outputd: no SuccessExitStatus for 78, so the park is
-    # visible as `failed` on /state + doctor rather than a quiet inactive unit.
-    assert "78" not in _values_for(unit, "SuccessExitStatus"), (
-        "an exit-78 park must stay FAILED (visible on /state + doctor), "
-        "matching jasper-outputd's precedent"
-    )
 
 def test_sched_fifo_and_mlockall_settings():
     """Real-time scheduling: SCHED_FIFO at priority 30 +

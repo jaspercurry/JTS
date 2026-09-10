@@ -95,6 +95,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
     "0755 deploy/bin/jasper-outputd-failure-reconcile /usr/local/sbin/jasper-outputd-failure-reconcile"
+    "0755 deploy/bin/jasper-outputd-unpark /usr/local/sbin/jasper-outputd-unpark"
     "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
     "0755 deploy/bin/jasper-camilla-recover /usr/local/sbin/jasper-camilla-recover"
     "0755 deploy/bin/jasper-camilla-crossover-guard /usr/local/sbin/jasper-camilla-crossover-guard"
@@ -830,6 +831,9 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-bluetooth-adapter.rules" \
+        /etc/udev/rules.d/99-jasper-bluetooth-adapter.rules
 }
 
 pin_attached_apple_dongle_power_control() {

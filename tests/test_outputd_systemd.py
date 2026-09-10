@@ -40,14 +40,15 @@ def test_outputd_unit_is_notify_and_watchdog_managed():
     unit = _read_unit()
     assert _value_for(unit, "Type") == "notify"
     assert _value_for(unit, "WatchdogSec") == "30s"
-    assert _value_for(unit, "TimeoutStopSec") == "5s"
-    assert _value_for(unit, "Restart") == "on-failure"
+    # TimeoutStopSec=5s and Restart=on-failure are pinned, with the rest of
+    # the restart ladder, by tests/test_systemd_hardening.py's
+    # RESTART_POLICY table (R22, #4416).
 
 
 def test_outputd_unit_is_mainline_default_not_flag_gated():
     unit = _read_unit()
     assert _values_for(unit, "ConditionPathExists") == ()
-    assert _value_for(unit, "StartLimitAction") == "reboot"
+    # StartLimitAction=reboot is pinned by RESTART_POLICY (R22, #4416).
 
 
 def test_outputd_starts_before_camilla_for_local_pipe_reader():
@@ -184,15 +185,10 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
 
 
-def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
-    unit = VOICE_UNIT_PATH.read_text()
-    assert _value_for(unit, "StartLimitAction") == "reboot"
-    # 78 (provider unconfigured) parks cleanly. 66 (no usable mic) parks
-    # the same way and now shares these lists — the exact "66 78" set is
-    # pinned by tests/test_voice_input_gate.py; here we only assert this
-    # test's own concern, that 78 stays a clean-park code.
-    assert "78" in _values_for(unit, "SuccessExitStatus")
-    assert "78" in _values_for(unit, "RestartPreventExitStatus")
+# StartLimitAction=reboot and the exact "66 78" SuccessExitStatus /
+# RestartPreventExitStatus set for jasper-voice are pinned, with the rest of
+# the restart ladder, by tests/test_systemd_hardening.py's RESTART_POLICY
+# table (R22, #4416).
 
 
 def test_voice_daemon_maps_unconfigured_provider_to_ex_config():

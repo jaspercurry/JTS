@@ -12,6 +12,11 @@ Description=Reconcile persisted local-source intent
 # oneshot does not pull optional source dependencies or own the core graph.
 After=systemd-rfkill.service hciuart.service network.target network-online.target sound.target avahi-daemon.service jasper-control.service jasper-audio-hardware-reconcile.service jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-usbgadget.service
 Wants=jasper-audio-hardware-reconcile.service
+# R16 (#4416) added a udev trigger (a Bluetooth adapter add) that can start
+# this ExecStart=/opt/jasper/... oneshot mid-install, against a half-synced
+# tree — the same #4123 exposure jasper-audio-hardware-reconcile.service
+# already gates.
+ConditionPathExists=!/run/jasper-install/in_progress
 # No automatic Restart= loop exists below. Disable start-rate limiting because
 # a request may perform one bounded retry after joining a stale/non-exact
 # activation and several rows may be exercised quickly; the request lock

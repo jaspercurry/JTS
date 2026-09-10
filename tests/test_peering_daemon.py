@@ -24,6 +24,7 @@ from jasper.peering.transport import (
     IncomingClaim,
     IncomingWake,
 )
+from tests._async_wait import wait_signalled
 from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 
@@ -182,6 +183,78 @@ async def test_start_failure_unwinds_exactly_what_it_acquired(
     await d.stop()
     assert transport.stopped is transport_torn_down
     assert avahi_uninstalls == [1]
+
+
+# ---------- R18 (#4416): bind retry / cancel-safety ----------
+
+
+async def test_retry_does_not_rerender_avahi_advert(monkeypatch):
+    """A failed multicast bind is retried by re-calling start() (see
+    jasper.control.handlers.peering's supervisor tick); the Avahi advert
+    render/install (a systemctl reload fork) must happen once per daemon
+    lifetime, not once per retry."""
+    render_calls: list[int] = []
+    monkeypatch.setattr(
+        daemon_mod.avahi, "render_and_install",
+        lambda **kw: render_calls.append(1) or True,
+    )
+    monkeypatch.setattr(daemon_mod.avahi, "uninstall", lambda **kw: None)
+
+    failing_transport = _FakeTransport(raise_on_start=OSError("address in use"))
+    monkeypatch.setattr(daemon_mod, "MulticastTransport", lambda **kw: failing_transport)
+
+    d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
+    with pytest.raises(OSError):
+        await d.start()
+    assert render_calls == [1]
+
+    ok_transport = _FakeTransport()
+    monkeypatch.setattr(daemon_mod, "MulticastTransport", lambda **kw: ok_transport)
+    await d.start()  # the retry
+    assert render_calls == [1]  # not re-rendered
+
+    await d.stop()
+
+
+async def test_cancel_during_uds_bind_still_lets_stop_close_the_socket(
+    monkeypatch,
+):
+    """A cancellation landing while the UDS bind is in flight must not
+    discard the server it bound: stop() has to be able to find and close
+    it, not leak a live listening socket start() lost track of."""
+    monkeypatch.setattr(daemon_mod, "MulticastTransport", lambda **kw: _FakeTransport())
+
+    bind_started = asyncio.Event()
+    release_bind = asyncio.Event()
+    closed = asyncio.Event()
+
+    class _FakeServer:
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            closed.set()
+
+    async def fake_serve(**kw):
+        bind_started.set()
+        await release_bind.wait()
+        return _FakeServer()
+
+    monkeypatch.setattr(daemon_mod.uds, "serve", fake_serve)
+
+    d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
+    start_task = asyncio.create_task(d.start())
+    await wait_signalled(bind_started, "bind_started", producer=start_task)
+    start_task.cancel()
+    release_bind.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    assert d._uds_server is not None
+
+    await d.stop()
+    assert closed.is_set()
 
 
 # ---------- mode=OFF: nothing happens ----------

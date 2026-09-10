@@ -27,6 +27,7 @@ import pytest
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
+from jasper.cli.doctor import drift as doctor_drift
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
 from tests.systemd_unit_helpers import (
@@ -1278,4 +1279,119 @@ def test_single_statedirectory_owner():
     assert "/var/lib/camilladsp/configs" not in mux_rwp, (
         "mux no longer live-swaps CamillaDSP configs (lean lane deleted); drop "
         "/var/lib/camilladsp/configs from its ReadWritePaths."
+    )
+
+
+
+# ----------------------------------------------------------------------
+# 7 — one RESTART_POLICY table over the reboot-ladder unit set (R22, #4416)
+# ----------------------------------------------------------------------
+
+# The set test_bootloop_guard_script.py's own grep derives (every shipped
+# unit carrying a StartLimitAction= line, reboot or not — jasper-camilla is
+# the one deliberate exception, StartLimitAction=none). Kept equal to
+# doctor/drift.py's _UNIT_DIRECTIVES["StartLimitAction"] keys below: an
+# added/removed reboot-ladder member that forgets the doctor drift table
+# (or vice versa) is exactly the recurrence this guard exists for.
+#
+# StartLimitAction itself is NOT duplicated here — doctor/drift.py's
+# _UNIT_DIRECTIVES["StartLimitAction"] is the one owner of its expected
+# values; test_restart_policy_matches_the_shipped_unit_file reads from it.
+RESTART_POLICY: dict[str, dict[str, object]] = {
+    "jasper-outputd": {
+        "Restart": "on-failure",
+        "RestartSec": "5",
+        "StartLimitIntervalSec": "300",
+        "StartLimitBurst": "5",
+        "SuccessExitStatus": (),
+        "RestartPreventExitStatus": ("78",),
+        "TimeoutStopSec": "5s",
+    },
+    "jasper-camilla": {
+        "Restart": "always",
+        "RestartSec": "2",
+        "StartLimitIntervalSec": "60",
+        "StartLimitBurst": "5",
+        "SuccessExitStatus": (),
+        "RestartPreventExitStatus": (),
+        "TimeoutStopSec": None,
+    },
+    "jasper-aec-bridge": {
+        "Restart": "on-failure",
+        "RestartSec": "5",
+        "StartLimitIntervalSec": "300",
+        "StartLimitBurst": "4",
+        "SuccessExitStatus": ("66", "78"),
+        "RestartPreventExitStatus": ("66", "78"),
+        "TimeoutStopSec": "5s",
+    },
+    "jasper-voice": {
+        "Restart": "on-failure",
+        "RestartSec": "5",
+        "StartLimitIntervalSec": "300",
+        "StartLimitBurst": "20",
+        "SuccessExitStatus": ("66", "78"),
+        "RestartPreventExitStatus": ("66", "78"),
+        "TimeoutStopSec": "14s",
+    },
+    "jasper-control": {
+        "Restart": "on-failure",
+        "RestartSec": "5",
+        "StartLimitIntervalSec": "300",
+        "StartLimitBurst": "4",
+        "SuccessExitStatus": ("78",),
+        "RestartPreventExitStatus": ("78",),
+        "TimeoutStopSec": "10s",
+    },
+    "jasper-fanin": {
+        "Restart": "on-failure",
+        "RestartSec": "5",
+        "StartLimitIntervalSec": "300",
+        "StartLimitBurst": "5",
+        "SuccessExitStatus": (),
+        "RestartPreventExitStatus": ("78",),
+        "TimeoutStopSec": "5s",
+    },
+}
+
+_RESTART_POLICY_SCALAR_DIRECTIVES = (
+    "Restart",
+    "RestartSec",
+    "StartLimitIntervalSec",
+    "StartLimitBurst",
+    "TimeoutStopSec",
+)
+_RESTART_POLICY_LIST_DIRECTIVES = ("SuccessExitStatus", "RestartPreventExitStatus")
+
+
+def test_restart_policy_covers_exactly_the_doctor_drift_table():
+    """A unit added to (or dropped from) the reboot ladder without updating
+    doctor/drift.py's StartLimitAction row would otherwise silently stop (or
+    wrongly start) being drift-checked."""
+    assert set(RESTART_POLICY) == set(
+        doctor_drift._UNIT_DIRECTIVES["StartLimitAction"]
+    )
+
+
+@pytest.mark.parametrize("unit_name", sorted(RESTART_POLICY))
+def test_restart_policy_matches_the_shipped_unit_file(unit_name):
+    """Pins Restart=/RestartSec=/the StartLimit* triad/the exit-status pair/
+    TimeoutStopSec= for every reboot-ladder unit (plus jasper-camilla, its
+    deliberate off-ladder sibling) in one table, replacing the same checks
+    scattered one-off across each unit's own systemd test file."""
+    expected = RESTART_POLICY[unit_name]
+    unit = (SYSTEMD_UNIT_DIR / f"{unit_name}.service").read_text(encoding="utf-8")
+    for directive in _RESTART_POLICY_SCALAR_DIRECTIVES:
+        assert value_for(unit, directive) == expected[directive], (
+            unit_name, directive, expected[directive],
+        )
+    for directive in _RESTART_POLICY_LIST_DIRECTIVES:
+        assert values_for(unit, directive) == expected[directive], (
+            unit_name, directive, expected[directive],
+        )
+    expected_start_limit_action = doctor_drift._UNIT_DIRECTIVES["StartLimitAction"][
+        unit_name
+    ]
+    assert value_for(unit, "StartLimitAction") == expected_start_limit_action, (
+        unit_name, "StartLimitAction", expected_start_limit_action,
     )
