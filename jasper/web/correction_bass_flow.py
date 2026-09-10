@@ -89,19 +89,10 @@ def status_payload() -> dict[str, Any]:
         "configured": corner_hz is not None,
     }
 
-    # Bass Extension is a separate,
-    # not-yet-household-launched feature that also lives on this tab. Its own
-    # summary is already fail-soft (never raises), but guard the import + call
-    # here too so a future change to that module can never take this
-    # long-shipped bass-management page down with it — a broken read just
-    # means "not shown," not "the whole tab 500s." Same narrow exception
-    # tuple as the other bass_extension_state_summary() caller
-    # (jasper.control.state_aggregate) rather than a blind except, so this
-    # doesn't add to the frozen BLE001 suppression ratchet.
     try:
-        from jasper.bass_extension.profile import bass_extension_state_summary
+        from jasper.active_speaker.baseline_profile import applied_bass_extension
 
-        payload["bass_extension"] = bass_extension_state_summary()
+        payload["bass_extension"] = applied_bass_extension() or None
     except (
         ImportError,
         OSError,

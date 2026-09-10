@@ -492,8 +492,6 @@ async def _prove_live_bass_extension_graph(
         classify_active_bass_extension_graph,
     )
     from jasper.active_speaker.staging import staged_metadata_path
-    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
     from jasper.output_topology import load_output_topology_strict
 
     deadline = asyncio.get_running_loop().time() + settle_timeout_s
@@ -506,8 +504,6 @@ async def _prove_live_bass_extension_graph(
                 raw, best_effort=False
             ),
             applied_baseline_path=baseline_profile_state_path(),
-            profile_path=DEFAULT_PROFILE_PATH,
-            intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
             staged_metadata_path=staged_metadata_path(),
         )
         if (

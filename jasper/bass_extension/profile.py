@@ -6,18 +6,12 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import math
-import os
-from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
-from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     json_fingerprint,
@@ -29,8 +23,6 @@ from jasper.bass_extension.adapters import (
     SealedPlantFit,
 )
 
-logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:
     from jasper.bass_extension.adapters.base import TargetSpec
     from jasper.bass_extension.targets import AnchorPoint
@@ -38,8 +30,6 @@ if TYPE_CHECKING:
 BASS_EXTENSION_PROFILE_KIND = "jts_bass_extension_profile"
 BASS_EXTENSION_SCHEMA_VERSION = 1
 BASS_EXTENSION_ALGORITHM_VERSION = "bass_extension_v1"
-DEFAULT_PROFILE_PATH = Path("/var/lib/jasper/bass_extension_profile.json")
-PROFILE_PATH_ENV = "JASPER_BASS_EXTENSION_PROFILE_STATE"
 
 
 class BassExtensionRefusal(StrEnum):
@@ -405,228 +395,3 @@ class BassExtensionProfile:
         if raw["profile_id"] != profile.profile_id:
             raise ValueError("bass extension profile_id does not match content")
         return profile
-
-
-@dataclass(frozen=True)
-class BassExtensionEvaluation:
-    status: str
-    refusals: tuple[BassExtensionRefusal, ...]
-    profile: BassExtensionProfile | None
-    detail: str
-
-
-def _profile_path(path: str | Path | None) -> Path:
-    return Path(path or os.environ.get(PROFILE_PATH_ENV) or DEFAULT_PROFILE_PATH)
-
-
-def _read_profile(path: str | Path | None) -> BassExtensionEvaluation:
-    target = _profile_path(path)
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-        profile = BassExtensionProfile.from_dict(raw)
-    except FileNotFoundError:
-        return BassExtensionEvaluation("missing", (), None, "profile is absent")
-    except (
-        OSError,
-        UnicodeError,
-        ValueError,
-        TypeError,
-        AttributeError,
-        KeyError,
-        IndexError,
-    ) as exc:
-        return BassExtensionEvaluation("malformed", (), None, str(exc))
-    return BassExtensionEvaluation(profile.status, (), profile, "profile parsed")
-
-
-def save_bass_extension_profile(
-    profile: BassExtensionProfile,
-    path: str | Path | None = None,
-) -> None:
-    if not isinstance(profile, BassExtensionProfile):
-        raise ValueError("profile must be a BassExtensionProfile")
-    atomic_write_text(
-        _profile_path(path),
-        json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-        durable=True,
-    )
-
-
-def load_bass_extension_profile(
-    path: str | Path | None = None,
-) -> BassExtensionProfile | None:
-    return _read_profile(path).profile
-
-
-def evaluate_bass_extension_profile(
-    *,
-    path: str | Path | None = None,
-    topology: Any,
-    applied_baseline_state: Mapping[str, Any] | None,
-) -> BassExtensionEvaluation:
-    parsed = _read_profile(path)
-    if parsed.profile is None:
-        return parsed
-
-    return evaluate_loaded_bass_extension_profile(
-        parsed.profile,
-        topology=topology,
-        applied_baseline_state=applied_baseline_state,
-    )
-
-
-def evaluate_loaded_bass_extension_profile(
-    profile: BassExtensionProfile,
-    *,
-    topology: Any,
-    applied_baseline_state: Mapping[str, Any] | None,
-) -> BassExtensionEvaluation:
-    """Evaluate one already-parsed immutable profile without disk I/O."""
-
-    from jasper.active_speaker.baseline_profile import (
-        baseline_candidate_fingerprint,
-        topology_config_fingerprint,
-    )
-
-    refusals: list[BassExtensionRefusal] = []
-    mismatches: list[str] = []
-
-    baseline_fingerprint = (
-        baseline_candidate_fingerprint(applied_baseline_state)
-        if isinstance(applied_baseline_state, Mapping)
-        else None
-    )
-    if baseline_fingerprint != profile.baseline_fingerprint:
-        refusals.append(BassExtensionRefusal.BASELINE_NOT_APPLIED)
-        mismatches.append("baseline fingerprint mismatch")
-    if (
-        getattr(topology, "topology_id", None) != profile.topology_id
-        or topology_config_fingerprint(topology) != profile.topology_fingerprint
-    ):
-        refusals.append(BassExtensionRefusal.TOPOLOGY_MISMATCH)
-        mismatches.append("topology id/fingerprint mismatch")
-    adapter = ADAPTERS.get(str(profile.enclosure["adapter_id"]))
-    if adapter is None or profile.enclosure["adapter_version"] != adapter.adapter_version:
-        refusals.append(BassExtensionRefusal.ENCLOSURE_UNSUPPORTED)
-        mismatches.append("enclosure adapter version mismatch")
-    if profile.algorithm_version != BASS_EXTENSION_ALGORITHM_VERSION:
-        refusals.append(BassExtensionRefusal.PROFILE_STALE)
-        mismatches.append("algorithm version mismatch")
-    if refusals:
-        return BassExtensionEvaluation(
-            "stale", tuple(refusals), profile, "; ".join(mismatches)
-        )
-    if profile.status == "bypassed":
-        return BassExtensionEvaluation("bypassed", (), profile, "profile is bypassed")
-    return BassExtensionEvaluation("accepted", (), profile, "profile is accepted")
-
-
-def bass_extension_state_summary(
-    path: str | Path | None = None,
-    *,
-    intent_path: str | Path | None = None,
-) -> dict[str, Any] | None:
-    from jasper.bass_extension import (
-        BASS_EXTENSION_APPLY_INTENT_PATH,
-        BASS_EXTENSION_RUNTIME_ADAPTER_IDS,
-    )
-
-    recovery_required = Path(
-        intent_path or BASS_EXTENSION_APPLY_INTENT_PATH
-    ).exists()
-    with suppress(Exception):
-        profile = load_bass_extension_profile(path)
-        if profile is None:
-            if not recovery_required:
-                return None
-            return {
-                "commissioned": False,
-                "status": None,
-                "profile_id": None,
-                "adapter_id": None,
-                "runtime_eligible": False,
-                "runtime_deferred_reason": None,
-                "apply_recovery_required": True,
-                "contract_status": None,
-                "contract_refusals": [],
-                "contract_detail": None,
-            }
-        adapter_id = str(profile.enclosure["adapter_id"])
-        runtime_eligible = adapter_id in BASS_EXTENSION_RUNTIME_ADAPTER_IDS
-
-        # The file's own `status` field is a raw, unverified claim: it stays
-        # "accepted" even when the CONTRACT that
-        # evaluate_loaded_bass_extension_profile enforces — baseline
-        # fingerprint, topology, adapter version, algorithm version — would
-        # now refuse the profile. Re-run that same evaluation here against
-        # the profile object already parsed above — the "already-parsed
-        # immutable profile without disk I/O" variant, so this costs no
-        # second read of the file — loading current topology/baseline state
-        # the same way the doctor's check_bass_extension_profile does, so a
-        # caller of this summary (state_aggregate, the bass tab) can tell
-        # "the file says accepted" from "the contract still honors it."
-        # Because this only ever evaluates an already-successfully-parsed
-        # profile, it can only report "stale", "bypassed", or "accepted" —
-        # never "missing"/"malformed" (those are disk-read outcomes the two
-        # branches above this one already handle). The evaluation runs under
-        # its own suppress(Exception) with a narrow, logged except nested
-        # inside for the expected failure classes — so ANY failure here,
-        # expected-and-logged or genuinely unexpected-and-silent, degrades
-        # these three keys to null/[]/null without affecting the rest of the
-        # summary (an unexpected type must not escape to the outer wrapper,
-        # where it would cost the whole summary); the tuple-unpack
-        # assignment computes all three from one evaluation object so a
-        # failure partway through can never leave them partially updated.
-        contract_status: str | None = None
-        contract_refusals: list[str] = []
-        contract_detail: str | None = None
-        with suppress(Exception):
-            try:
-                from jasper.active_speaker.baseline_profile import (
-                    load_applied_baseline_profile_state,
-                )
-                from jasper.output_topology import load_output_topology
-
-                evaluation = evaluate_loaded_bass_extension_profile(
-                    profile,
-                    topology=load_output_topology(),
-                    applied_baseline_state=load_applied_baseline_profile_state(),
-                )
-                contract_status, contract_refusals, contract_detail = (
-                    evaluation.status,
-                    [refusal.value for refusal in evaluation.refusals],
-                    evaluation.detail,
-                )
-            except (
-                ImportError,
-                OSError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-                KeyError,
-                AttributeError,
-            ):
-                logger.debug(
-                    "bass extension contract re-evaluation failed", exc_info=True
-                )
-
-        return {
-            "commissioned": True,
-            "status": profile.status,
-            "profile_id": profile.profile_id,
-            "adapter_id": adapter_id,
-            "runtime_eligible": runtime_eligible,
-            "runtime_deferred_reason": (
-                None if runtime_eligible else "fixed_graph_not_defined"
-            ),
-            "apply_recovery_required": recovery_required,
-            "deepest_hz": profile.targets[0].fp_hz,
-            "natural_hz": profile.targets[-1].fp_hz,
-            "margin": profile.margin,
-            "anchors": [_anchor_to_dict(anchor) for anchor in profile.anchors],
-            "contract_status": contract_status,
-            "contract_refusals": contract_refusals,
-            "contract_detail": contract_detail,
-        }
-    return None

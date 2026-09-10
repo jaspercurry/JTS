@@ -517,6 +517,7 @@ def _recompose_active_baseline_with_eq(
     the recomposer, which is byte-identical to the pre-fix behaviour.
     """
     from jasper.active_speaker.baseline_profile import (
+        applied_bass_extension,
         load_applied_baseline_profile_state,
         recompose_applied_baseline_yaml,
     )
@@ -526,22 +527,12 @@ def _recompose_active_baseline_with_eq(
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
     )
-    from jasper.bass_extension.profile import evaluate_bass_extension_profile
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filter_slots
 
     topology = load_output_topology()
     applied_profile = load_applied_baseline_profile_state() or {}
-    bass_evaluation = evaluate_bass_extension_profile(
-        topology=topology,
-        applied_baseline_state=applied_profile,
-    )
-    bass_emission_profile = (
-        bass_evaluation.profile
-        if bass_evaluation.status == "accepted"
-        else None
-    )
-    bass_proof_profile = bass_evaluation.profile
+    bass_extension = applied_bass_extension(applied_profile)
     preference_filters = build_sound_filter_slots(profile)
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     # The L0 emit gates inside emit_active_speaker_baseline_config raise
@@ -568,7 +559,7 @@ def _recompose_active_baseline_with_eq(
             output_trim_db=output_trim_db,
             out_path=None,
             playback_device=live_endpoint,
-            bass_extension_profile=bass_emission_profile,
+            bass_extension=bass_extension,
         )
     except ActiveSpeakerConfigError as exc:
         raise CarrierCannotHostEq(
@@ -590,7 +581,6 @@ def _recompose_active_baseline_with_eq(
         evidence_source="desired",
         graph_text=yaml,
         applied_baseline_state=applied_profile,
-        desired_profile=bass_proof_profile,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         detail = (
