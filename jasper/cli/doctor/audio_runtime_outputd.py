@@ -25,7 +25,6 @@ from ._shared import (
 )
 from .audio_runtime_fanin import (
     _ASOUND_CONF_PATH,
-    _asound_non_comment_text,
     _asound_pcm_block,
     _assistant_gain_fault,
 )
@@ -910,16 +909,15 @@ def check_outputd_dac_render() -> CheckResult:
             f"backend={backend!r}, dac_pcm={dac_pcm!r}",
             reason=REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
         )
-    try:
-        text = _ASOUND_CONF_PATH.read_text()
-    except OSError as e:
+    active = evidence.asound_conf_text(_ASOUND_CONF_PATH)
+    if active is None:
         return CheckResult(
             label,
             "skipped",
-            f"can't read {_ASOUND_CONF_PATH}: {e}",
+            f"can't read {_ASOUND_CONF_PATH}",
             reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
         )
-    block = _asound_pcm_block(_asound_non_comment_text(text), dac_pcm)
+    block = _asound_pcm_block(active, dac_pcm)
     rendered = _ASOUND_BLOCK_TYPE_RE.search(block) if block is not None else None
     if rendered is None:
         return CheckResult(

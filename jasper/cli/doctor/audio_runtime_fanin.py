@@ -131,12 +131,6 @@ def check_fanin_binary_installed() -> CheckResult:
 _ASOUND_CONF_PATH = Path("/etc/asound.conf")
 
 
-def _asound_non_comment_text(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines()
-        if not line.lstrip().startswith("#")
-    )
-
 def _asound_pcm_block(text: str, name: str) -> str | None:
     """Return a top-level pcm.NAME block body from an asoundrc.
 
@@ -238,17 +232,15 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"{path} missing — re-run install.sh",
             reason=REASON_ASOUND_CONF_MISSING,
         )
-    try:
-        text = path.read_text()
-    except OSError as e:
+    active = evidence.asound_conf_text(path)
+    if active is None:
         return CheckResult(
             label,
             "fail",
-            f"can't read {path}: {e}",
+            f"can't read {path}",
             reason=REASON_ASOUND_CONF_UNREADABLE,
         )
 
-    active = _asound_non_comment_text(text)
     legacy_blocks = [
         name for name in ("jasper_renderer_mix", "jasper_renderer_in")
         if re.search(rf"^pcm\.{name}\s*\{{", active, re.MULTILINE)
