@@ -527,7 +527,8 @@ class VolumeCoordinator:
         A pure predicate: it must not clear ``_measurement_active``, or a
         volume write arriving after the lapse would also un-pause the 1 Hz
         reconciler — which reads the raw flag — in the middle of a window that
-        is merely renewing late.
+        is merely renewing late. The reconciler clears it on its own tick
+        instead (:meth:`_lapse_stranded_measurement_flag`).
 
         The lapse itself exists because ``note_measurement_active(False)`` is
         best-effort on the voice daemon's rollback path: past its aggregate
@@ -552,6 +553,20 @@ class VolumeCoordinator:
                 level=logging.WARNING,
             )
         return False
+
+    def _lapse_stranded_measurement_flag(self) -> None:
+        """Clear a stranded flag on the reconciler's OWN tick.
+
+        ``_measurement_holds_fader`` may not clear it — a volume write is the
+        wrong clock (see there). This 1 Hz tick is the right one: it runs on
+        the same schedule the flag pauses, so applying the same
+        MEASUREMENT_AUTOCLEAR_SEC bound here bounds a stranded flag's effect on
+        drift reconciliation to one window instead of the life of the process.
+        No await between the read and the write, so a window renewing
+        concurrently cannot have its fresh flag cleared.
+        """
+        if self._measurement_active and not self._measurement_holds_fader():
+            self._measurement_active = False
 
     def _refuse_level_write_while_measuring(self) -> None:
         """Refuse a level write while a measurement holds the fader.
@@ -1884,6 +1899,7 @@ class VolumeCoordinator:
         # a tick that returns before reaching one ends it and the next unowned
         # duck opens a new episode.
         reported, self._deep_quiet_skipped = self._deep_quiet_skipped, False
+        self._lapse_stranded_measurement_flag()
         if self._voice_session_active or self._measurement_active:
             return
         try:

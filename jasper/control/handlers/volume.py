@@ -186,7 +186,9 @@ class VolumeRoutes(ControlHandlerMixin):
             return
         # Either direction is refused while a measurement holds the fader; see
         # _post_volume_set.
-        if self._refuse_authoritative_write(kind="adjust", delta_pct=delta_pct):
+        if measurement_hold.held() and self._refuse_authoritative_write(
+            kind="adjust", delta_pct=delta_pct,
+        ):
             return
         try:
             state = asyncio.run(self._adjust_op(delta_pct))
@@ -368,13 +370,16 @@ class VolumeRoutes(ControlHandlerMixin):
             if explicit is None:
                 try:
                     state = self._get_op()
-                except Exception as e:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
+                    # An unreadable latch must not close the emergency door:
+                    # the toggle proceeds as a MUTE, and toggle_mute's own
+                    # read under the coordinator's lock decides the direction.
                     logger.exception("mute toggle state read failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                # The same latch toggle_mute itself branches on, so the
-                # refusal cannot disagree with what the toggle would do.
-                resolves_unmuted = state.restore_percent is not None
+                    resolves_unmuted = False
+                else:
+                    # The same latch toggle_mute itself branches on, so the
+                    # refusal cannot disagree with what the toggle would do.
+                    resolves_unmuted = state.restore_percent is not None
             if resolves_unmuted and self._refuse_authoritative_write(
                 kind="unmute", explicit=str(explicit),
             ):

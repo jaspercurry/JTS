@@ -2236,9 +2236,8 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
     Past its aggregate deadline the resume coroutine is closed unawaited and
     the safety task is already cancelled, so nothing is left to lower the flag.
     Without the lapse this refuses every level write for the life of the
-    process, invisibly to /state. The lapse is a PREDICATE, not a clear: the
-    1 Hz reconciler reads the raw flag, and a volume write is not evidence
-    that a merely-late-renewing window has ended.
+    process, invisibly to /state. The bound is per WINDOW, not per process: a
+    later window that strands its own flag lapses, and says so, again.
     """
     now = [0.0]
     monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
@@ -2255,18 +2254,49 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
     with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
         assert await coord.set_listening_level(20) == 20
         assert await coord.adjust_listening_level(-5) == 15
-    # _event_fields asserts exactly one: once per lapse, not once per write.
+        # _event_fields asserts exactly one: once per lapse, not once per write.
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+        # A second window strands its flag too. The once-per-lapse latch is
+        # reset by note_measurement_active(True), so this one is announced.
+        caplog.clear()
+        await coord.note_measurement_active(True)
+        with pytest.raises(VolumeClaimRefused):
+            await coord.set_listening_level(30)
+        now[0] += MEASUREMENT_AUTOCLEAR_SEC
+        assert await coord.set_listening_level(30) == 30
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+
+async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
+    tmp_path, monkeypatch, caplog,
+):
+    """Same bound, applied on the tick's OWN clock.
+
+    The write doors only bound their own refusal; the 1 Hz reconciler reads the
+    raw flag, so a flag the voice rollback path stranded would pause drift
+    correction for the life of the process. A tick is not a volume write — it
+    IS the clock the pause runs on — so it may clear what it finds lapsed.
+    """
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
+    await coord.note_measurement_active(True)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
+    await coord.note_measurement_active(True)  # the window renews
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC + 1.0   # past the FIRST window's bound
+    cam._db = 0.0
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == [], "a renewing window must stay paused"
+
+    now[0] += MEASUREMENT_AUTOCLEAR_SEC
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        await coord.maybe_reconcile_camilla()
+    assert cam.set_calls, "a stranded flag must not pause drift correction"
     assert _event_fields(caplog, "volume.measurement_flag_expired")
-
-    cam.set_calls.clear()
-    cam._db = 0.0
-    await coord.maybe_reconcile_camilla()
-    assert cam.set_calls == [], "the lapsed write must not un-pause reconciliation"
-
-    await coord.note_measurement_active(False)
-    cam._db = 0.0
-    await coord.maybe_reconcile_camilla()
-    assert cam.set_calls, "control: this drift IS one the reconciler corrects"
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
