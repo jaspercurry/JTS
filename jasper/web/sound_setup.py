@@ -52,10 +52,10 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
-    guard_mutating_request,
+    dispatch_post,
     guard_read_request,
     read_json_object,
-    reject_csrf,
+    route_path,
     send_html_response,
     send_json_response,
     send_route_failure,
@@ -563,69 +563,11 @@ def _make_handler(
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
+            dispatch_post(self, _POST_ROUTES, guard="header", run=_run_post_route)
+
+        def _dispatch_post_route(self) -> None:
             self._json_response_started = False
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path not in {
-                "/apply",
-                "/audition",
-                "/live-draft",
-                "/preview",
-                "/settings",
-                "/volume-floor/audition",
-                "/volume-floor/stop",
-                "/active-speaker/design-draft",
-                "/active-speaker/driver-research-request",
-                "/active-speaker/crossover-preview",
-                "/active-speaker/stop",
-                "/active-speaker/calibration-level",
-                "/active-speaker/channel-identity",
-                "/active-speaker/channel-protection",
-                "/active-speaker/stage-config",
-                "/active-speaker/check-path-safety",
-                "/active-speaker/load-startup-config",
-                "/active-speaker/rollback-startup-config",
-                "/active-speaker/commission-load",
-                "/active-speaker/commission-rollback",
-                "/active-speaker/commission-ramp-step",
-                "/active-speaker/commission-ramp-ack",
-                "/active-speaker/commission-ramp-abort",
-                "/active-speaker/driver-measurement",
-                "/active-speaker/summed-test",
-                "/active-speaker/summed-test/level",
-                "/active-speaker/summed-test/stop",
-                "/active-speaker/summed-validation",
-                "/active-speaker/baseline-profile",
-                "/active-speaker/baseline-profile/apply",
-                "/active-speaker/baseline-profile/save-and-apply",
-                "/output-topology",
-                "/output-topology/reset",
-                "/output-topology/repin",
-                "/profiles/save",
-                "/profiles/rename",
-                "/profiles/delete",
-                "/i2s-hat",
-            }:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            if path in _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS and bonded_follower_active():
-                log_event(
-                    logger,
-                    "sound.follower_content_dsp_blocked",
-                    path=path,
-                )
-                self._send_json(
-                    {
-                        "error": (
-                            "sound profile is controlled on the pair leader "
-                            "while this speaker is a follower"
-                        ),
-                    },
-                    status=HTTPStatus.CONFLICT,
-                )
-                return
+            path = route_path(self.path)
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
                 if path == "/i2s-hat":
@@ -1195,6 +1137,75 @@ def _make_handler(
                 self._send_json({"error": str(e)}, status=502)
                 return
             self._send_json(payload)
+
+    def _run_post_route(
+        handler: Any, route: Callable[[Any], None], path: str,
+    ) -> None:
+        """The seam's guarded-call hook (`run=`). Content-DSP POSTs are the
+        pair leader's while this speaker is a bonded follower."""
+        if path in _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS and bonded_follower_active():
+            log_event(
+                logger,
+                "sound.follower_content_dsp_blocked",
+                path=path,
+            )
+            handler._send_json(
+                {
+                    "error": (
+                        "sound profile is controlled on the pair leader "
+                        "while this speaker is a follower"
+                    ),
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+            return
+        route(handler)
+
+    # Mutating routes this handler accepts. Membership drives the 404 via
+    # dispatch_post's route-table lookup; deleting an entry here 404s the
+    # path instead of silently orphaning a branch above. A dict literal (not
+    # a comprehension) on purpose: test_web_wizard_conventions.py's
+    # `_tabled_wizards()` finds this table by its AST shape.
+    _POST_ROUTES = {
+        "/apply": Handler._dispatch_post_route,
+        "/audition": Handler._dispatch_post_route,
+        "/live-draft": Handler._dispatch_post_route,
+        "/preview": Handler._dispatch_post_route,
+        "/settings": Handler._dispatch_post_route,
+        "/volume-floor/audition": Handler._dispatch_post_route,
+        "/volume-floor/stop": Handler._dispatch_post_route,
+        "/active-speaker/design-draft": Handler._dispatch_post_route,
+        "/active-speaker/driver-research-request": Handler._dispatch_post_route,
+        "/active-speaker/crossover-preview": Handler._dispatch_post_route,
+        "/active-speaker/stop": Handler._dispatch_post_route,
+        "/active-speaker/calibration-level": Handler._dispatch_post_route,
+        "/active-speaker/channel-identity": Handler._dispatch_post_route,
+        "/active-speaker/channel-protection": Handler._dispatch_post_route,
+        "/active-speaker/stage-config": Handler._dispatch_post_route,
+        "/active-speaker/check-path-safety": Handler._dispatch_post_route,
+        "/active-speaker/load-startup-config": Handler._dispatch_post_route,
+        "/active-speaker/rollback-startup-config": Handler._dispatch_post_route,
+        "/active-speaker/commission-load": Handler._dispatch_post_route,
+        "/active-speaker/commission-rollback": Handler._dispatch_post_route,
+        "/active-speaker/commission-ramp-step": Handler._dispatch_post_route,
+        "/active-speaker/commission-ramp-ack": Handler._dispatch_post_route,
+        "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,
+        "/active-speaker/driver-measurement": Handler._dispatch_post_route,
+        "/active-speaker/summed-test": Handler._dispatch_post_route,
+        "/active-speaker/summed-test/level": Handler._dispatch_post_route,
+        "/active-speaker/summed-test/stop": Handler._dispatch_post_route,
+        "/active-speaker/summed-validation": Handler._dispatch_post_route,
+        "/active-speaker/baseline-profile": Handler._dispatch_post_route,
+        "/active-speaker/baseline-profile/apply": Handler._dispatch_post_route,
+        "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
+        "/output-topology": Handler._dispatch_post_route,
+        "/output-topology/reset": Handler._dispatch_post_route,
+        "/output-topology/repin": Handler._dispatch_post_route,
+        "/profiles/save": Handler._dispatch_post_route,
+        "/profiles/rename": Handler._dispatch_post_route,
+        "/profiles/delete": Handler._dispatch_post_route,
+        "/i2s-hat": Handler._dispatch_post_route,
+    }
 
     return Handler
 
