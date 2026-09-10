@@ -46,6 +46,7 @@ from jasper.audio_measurement.program_analysis import (
     SegmentLocation,
 )
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
+from tests._log_events import event_fields, event_records
 from tests.crossover_v2_fixtures import (
     CAPS,
     CLOUD_MAP,
@@ -1351,7 +1352,7 @@ def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(ca
     with pytest.raises(RuntimeError, match="synthetic publish-seam failure"):
         c.confirm_cloud_measure_group()
 
-    assert "event=correction.crossover_v2_cloud_group_complete" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_cloud_group_complete")
     assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
     # The WALK completed and is recorded as such; only the fit failed.
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
@@ -1392,8 +1393,8 @@ def test_a_failed_cloud_pipeline_fits_without_cloud_terms_and_says_so(
     assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate is not None
     assert c.candidate.exclusion_evidence == {}
-    assert "event=correction.crossover_v2_fit_without_cloud" in caplog.text
-    assert "reason=pipeline_failed" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_fit_without_cloud")
+    assert fields["reason"] == "pipeline_failed"
 
 
 def test_a_cloud_pipeline_exception_never_costs_the_group_its_accept(monkeypatch):
@@ -1677,13 +1678,9 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
         "diagnosis": locate_failed_diagnosis(True),
     }
     assert verdict["attempts"]["left"] == 0
-    spent = [
-        record.getMessage() for record in caplog.records
-        if "crossover_v2_position_attempts_spent" in record.getMessage()
-    ]
-    assert len(spent) == 1
-    assert "pilot_heard=true" in spent[0]
-    assert "observed=locate_failed" in spent[0]
+    fields = event_fields(caplog, "correction.crossover_v2_position_attempts_spent")
+    assert fields["pilot_heard"] == "true"
+    assert fields["observed"] == "locate_failed"
     # Nothing was retained for it — an unresolved position is not evidence.
     assert index not in {
         int(pid.rsplit("_", 1)[1])
