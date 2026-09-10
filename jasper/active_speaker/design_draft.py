@@ -31,6 +31,7 @@ from ._common import (
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
+    MANUAL_SETTINGS_FIELDS as _MANUAL_SETTINGS_FIELDS,
     DriverSafetyProfileError,
     build_driver_safety_profile,
     driver_protection_policy_view,
@@ -64,7 +65,6 @@ _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
 
-_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
 _MANUAL_DRIVER_FIELDS = {
     "target_id",
     "role",
@@ -670,6 +670,9 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         return None
     raw = _mapping(raw, "manual_settings")
     _reject_unknown_keys(raw, "manual_settings", _MANUAL_SETTINGS_FIELDS)
+    driver_spacing_mm = _positive_float(
+        raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
+    )
     drivers = [
         _normalise_manual_driver(item)
         for item in _sequence(
@@ -703,12 +706,39 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         for candidate in candidates
         if candidate.get("frequency_hz") is not None
     ]
-    if not drivers and not candidates:
+    if not drivers and not candidates and driver_spacing_mm is None:
         return None
     return {
         "drivers": drivers,
         "crossover_candidates": candidates,
+        "driver_spacing_mm": driver_spacing_mm,
     }
+
+
+def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
+    """The declared woofer<->tweeter acoustic-center spacing, in metres (#1864).
+
+    ``manual_settings.driver_spacing_mm`` is the ONE owner of this physical
+    fact -- the same declaration surface ``driver_class``/``radiating_diameter_mm``
+    use (#1665/#1675), never a second config surface. ``None`` means
+    undeclared; callers must not substitute a nominal distance -- the crossover
+    v2 parallax correction (``MeasurementGeometry.parallax_us``) already treats
+    an undeclared/zero spacing as "no correction", which is the same as today's
+    behaviour before this spacing was threaded through.
+    """
+
+    if not isinstance(draft, Mapping):
+        return None
+    manual = draft.get("manual_settings")
+    if not isinstance(manual, Mapping):
+        return None
+    value = manual.get("driver_spacing_mm")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    millimetres = float(value)
+    if not math.isfinite(millimetres) or millimetres <= 0.0:
+        return None
+    return millimetres / 1000.0
 
 
 def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, float]:

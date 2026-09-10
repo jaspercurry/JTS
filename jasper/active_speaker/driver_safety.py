@@ -71,7 +71,14 @@ MAX_PROVENANCE_SOURCES = 8
 #: datasheet URL and any URL the list accepts must be promotable here verbatim.
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
-_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
+#: Single owning definition of manual_settings' allowed top-level keys,
+#: consumed by design_draft's own manual-settings gate. #1864:
+#: driver_spacing_mm is the declared woofer<->tweeter acoustic-center
+#: distance -- the ONE owner of physical driver spacing, alongside
+#: radiating_diameter_mm/driver_class (#1665/#1675) on the same
+#: manual_settings surface. Absent means undeclared, never a default: see
+#: design_draft.declared_driver_spacing_m.
+MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
 _MANUAL_DRIVER_FIELDS = {
     "target_id",
     "role",
@@ -1510,7 +1517,7 @@ def _normalise_profile_manual_settings(
     _reject_unknown_keys(
         manual_settings,
         "manual_settings",
-        _MANUAL_SETTINGS_FIELDS,
+        MANUAL_SETTINGS_FIELDS,
     )
     drivers: list[dict[str, Any]] = []
     for index, raw in enumerate(
@@ -1567,6 +1574,8 @@ def _normalise_profile_manual_settings(
             _MANUAL_CANDIDATE_FIELDS,
         )
         _reject_bool_tree(raw_candidate, field_name)
+    # driver_spacing_mm is allowlisted above but not a safety-builder input:
+    # this function only canonicalizes drivers/crossover_candidates.
     normalised = {"drivers": drivers, "crossover_candidates": []}
     validate_manual_target_bindings(topology, normalised)
     return normalised

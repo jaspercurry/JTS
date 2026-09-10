@@ -88,7 +88,17 @@ class V2ConductorContext:
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
     session_volume_db: float
-    driver_spacing_m: float
+    #: The declared woofer<->tweeter acoustic-center spacing, in metres,
+    #: or ``None`` when undeclared -- see ``design_draft.declared_driver_spacing_m``,
+    #: the ONE owner of this fact. ``MeasurementGeometry.parallax_us`` treats
+    #: ``None``/``0.0`` identically (no correction), so this is never a gate.
+    driver_spacing_m: float | None
+    #: "declared" when :attr:`driver_spacing_m` came from the operator's own
+    #: ``manual_settings.driver_spacing_mm``, "unknown" when the geometry
+    #: folds an absent declaration into 0.0 (no correction). Disclosure only:
+    #: nothing branches on it, it exists so "unknown" survives past the
+    #: ``0.0`` fold instead of reading as a declared zero spacing.
+    driver_spacing_source: str
     topology: Any
     playback_device: str
     role_channels: dict[str, int]
@@ -321,6 +331,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.design_draft import (
+        declared_driver_spacing_m,
         declared_effective_driver_sensitivities,
         load_design_draft,
     )
@@ -501,6 +512,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         raise CrossoverV2Refused(
             "the active output device is not declared; finish speaker setup"
         )
+    driver_spacing_m = declared_driver_spacing_m(draft)
     return V2ConductorContext(
         preset=preset,
         roles_bands=tuple(roles_bands),
@@ -510,20 +522,21 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         role_targets=role_targets,
         safety_profile=safety_profile,
         session_volume_db=session_volume_db,
-        # driver_spacing_m stays 0.0 until a declared
-        # woofer↔tweeter spacing input exists (topology/preset carry none
-        # today), so the §3.2 parallax correction is INERT — the analysis
-        # subtracts nothing. Do not assume VERIFY covers this: a missing
-        # parallax correction is SELF-CANCELLING at the mic position (the
-        # same geometric excess is baked into both MEASURE and VERIFY), so
-        # VERIFY passes while the LISTENING POSITION carries the full error
-        # (~23° at 2 kHz for 15 cm spacing measured at 1 m).
+        # #1864: threaded from the declaration (design_draft.py), never a
+        # default. ``None`` when undeclared -- a missing parallax correction
+        # is SELF-CANCELLING at the mic position (the same geometric excess is
+        # baked into both MEASURE and VERIFY), so VERIFY passes while the
+        # LISTENING POSITION still carries the full error (~23° at 2 kHz for
+        # 15 cm spacing measured at 1 m). The correction only ever claims the
+        # on-axis-tweeter §5.2 aim assumption -- it is not a toe-in or
+        # vertical-offset model.
         # A deliberate household volume
         # action mid-session (remote / voice "louder" / :8780 HTTP) still moves
         # the CamillaDSP main volume — the session measurement pause holds off
         # the idle reconciler, not VolumeCoordinator writes. Validation
         # runs hands-off; a session-long volume guard is a follow-up.
-        driver_spacing_m=0.0,
+        driver_spacing_m=driver_spacing_m,
+        driver_spacing_source="unknown" if driver_spacing_m is None else "declared",
         topology=topology,
         playback_device=playback_device,
         role_channels={role: channel for channel, role in enumerate(roles)},

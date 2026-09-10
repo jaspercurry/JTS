@@ -8555,6 +8555,7 @@ def _pinnable_context(roles_bands=None) -> V2ConductorContext:
         driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 6.0},
         session_volume_db=SESSION_VOLUME_DB,
         driver_spacing_m=0.0,
+        driver_spacing_source="unknown",
         topology=SimpleNamespace(topology_id="t-pin"),
         playback_device="hw:Test",
         role_channels={"woofer": 0, "tweeter": 1},
