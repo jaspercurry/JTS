@@ -1412,7 +1412,12 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     Fix: when the function_calls branch of ``_handle_response_done``
     runs, advance the turn's ``_last_activity_at`` so the watchdog's
     pre-response timer restarts from the tool dispatch, not from turn
-    start."""
+    start.
+
+    Driven through ``_handle_response_done`` rather than the wire: the
+    receive loop resets the anchor on any progress event, so feeding
+    this as a frame would move the anchor whatever the tool round did
+    and the milestone would stop being pinned."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
 
@@ -1432,33 +1437,29 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
         # Park briefly so the loop clock advances measurably.
         await asyncio.sleep(0.05)
 
-        # Server sends the function_call response.done.
-        sess.feed({
-            "type": "response.done",
-            "response": {
-                "id": "resp_1",
-                "usage": {"input_tokens": 100, "output_tokens": 8},
-                "output": [
-                    {
-                        "type": "function_call",
-                        "call_id": "call_1",
-                        "name": "get_weather",
-                        "arguments": "{}",
-                    },
-                ],
-            },
-        })
-        # Wait for the dispatch + response.create to land.
-        await _wait_until(
-            lambda: any(e.get("type") == "response.create" for e in sess.sent),
-            timeout=2.0,
-        )
-        await asyncio.sleep(0.05)
+        await conn._handle_response_done({
+            "id": "resp_1",
+            "status": "completed",
+            "usage": {"input_tokens": 100, "output_tokens": 8},
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+            ],
+        }, turn)
 
         anchor_after = turn.last_activity_at()
         assert anchor_after > anchor_before, (
             "tool round must advance last_activity_at so the pre-response "
             "idle watchdog doesn't fire while waiting for response 2"
+        )
+        # The round still runs to completion off that same milestone.
+        await _wait_until(
+            lambda: any(e.get("type") == "response.create" for e in sess.sent),
+            timeout=2.0,
         )
 
         await turn.release()
@@ -3121,25 +3122,32 @@ async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending
         await conn.stop()
 
 
-@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
-@pytest.mark.parametrize("event", [
-    {"type": "response.created", "response": {"id": "resp_9"}},
-    {"type": "response.output_item.added", "response_id": "resp_1",
-     "item": {"id": "msg_9"}},
-    {"type": "response.content_part.added", "response_id": "resp_1",
-     "item_id": "msg_1"},
-    {"type": "session.updated", "session": {}},
-    {"type": "error", "error": {"message": "transient"}},
+@pytest.mark.parametrize("event, advances", [
+    # Progress: the model is working, whatever this dispatcher then does
+    # with the event. A slow generation emitting these must not be reaped.
+    ({"type": "response.created", "response": {"id": "resp_9"}}, True),
+    ({"type": "response.output_item.added", "response_id": "resp_1",
+      "item": {"id": "msg_9"}}, True),
+    ({"type": "response.content_part.added", "response_id": "resp_1",
+      "item_id": "msg_1"}, True),
+    ({"type": "conversation.item.input_audio_transcription.completed",
+      "item_id": "other", "transcript": "hi"}, True),
+    ({"type": "input_audio_buffer.committed", "item_id": "item_9"}, True),
+    # Liveness only: the socket is open, the turn is not moving. Counting
+    # these would unbound the pre-response phase.
+    ({"type": "session.updated", "session": {}}, False),
+    ({"type": "rate_limits.updated", "rate_limits": []}, False),
+    ({"type": "error", "error": {"message": "transient"}}, False),
 ])
-async def test_any_inbound_event_advances_the_idle_anchor(conn_cls, event):
-    """#4532: the pre-response idle timer must mean "socket open but
-    server silent", not "no audio yet".
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+async def test_only_progress_events_advance_the_idle_anchor(conn_cls, event, advances):
+    """#4532: the pre-response idle timer must mean "this turn is not
+    moving", not "no audio yet" and not "the socket went quiet".
 
-    Every event the server sends between ``response.create`` and the
-    first audio delta proves the session is alive, so each one moves
-    ``last_activity_at()`` — including the ones this dispatcher then
-    drops on the floor. Without that, a slow generation trips a tight
-    timeout mid-flight while its events are still arriving."""
+    Anything the server sends between ``response.create`` and the first
+    audio delta that shows work happening moves ``last_activity_at()``;
+    bookkeeping and error frames do not, so a session that chatters
+    without ever answering still reaches the watchdog."""
     factory = _FakeConnectFactory()
     conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
     await conn.start(ToolRegistry(), "")
@@ -3152,7 +3160,7 @@ async def test_any_inbound_event_advances_the_idle_anchor(conn_cls, event):
 
         await conn._dispatch_event(event["type"], event)
 
-        assert turn.last_activity_at() > stale
+        assert (turn.last_activity_at() > stale) is advances
         assert turn.chunks_received() == 0
         assert turn.server_turn_complete() is False
     finally:

@@ -197,7 +197,7 @@ async def idle_watchdog(
         await asyncio.sleep(_WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
-            return
+            return None
         now = time.monotonic()
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
@@ -222,21 +222,20 @@ async def idle_watchdog(
                     stalled_s=round(stalled_for, 2),
                     level=logging.WARNING,
                 )
-                return
+                return None
             if tts.expected_drain_at() > now:
                 continue
-            return
+            return None
         any_chunk_received = turn.last_chunk_at() > 0
         if not any_chunk_received and idle_for > timeout:
             logger.info(
                 "idle timeout (pre-response phase, %.1fs); no chunks, ending turn",
                 float(timeout),
             )
-            return
-        end_input_at = turn.end_input_at()
+            return None
         if (
             not any_chunk_received
-            and end_input_at > 0
+            and (end_input_at := turn.end_input_at()) > 0
             and now - end_input_at > response_stall_timeout
         ):
             # The anchor above advances on tool calls and transcript
@@ -264,4 +263,4 @@ async def idle_watchdog(
                     "no turn_complete, ending turn",
                     stalled_for,
                 )
-                return
+                return None

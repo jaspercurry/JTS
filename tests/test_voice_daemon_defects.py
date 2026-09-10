@@ -13,6 +13,7 @@ import weakref
 import pytest
 
 from jasper.mic_capture import InputDeviceUnavailable
+from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON
 from jasper.voice_daemon import State, idle_watchdog
 
 from ._log_events import event_fields
@@ -158,6 +159,9 @@ class _StalledTurn:
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
 
+    def end_input_at(self) -> float:
+        return 0.0
+
     def audio_chunks_pending(self) -> int:
         return 0
 
@@ -199,6 +203,9 @@ class _CompletedTurn:
         return True
 
     def last_chunk_at(self) -> float:
+        return 0.0
+
+    def end_input_at(self) -> float:
         return 0.0
 
     def audio_chunks_pending(self) -> int:
@@ -524,17 +531,24 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
         await wl._cancel_fire_and_forget_tasks()
 
 
-class _ChatteringTurn:
-    """A server that keeps sending non-audio messages: the activity anchor
-    advances on every poll (issue #4532 makes any inbound message move it),
-    yet no audio chunk and no turn_complete ever arrive — the recorded
-    no-audio-after-a-tool-call shape of issue #4534."""
+class _WorkingTurn:
+    """A turn that keeps making progress — the activity anchor is always
+    `silent_for` seconds old, so the silence timer can never expire — yet
+    no audio chunk and no turn_complete ever arrive: the recorded
+    no-audio-after-a-tool-call shape of issue #4534. `since_end_input`
+    None means the user is still speaking."""
+
+    def __init__(self, *, silent_for: float, since_end_input: float | None) -> None:
+        self._silent_for = silent_for
+        self._end_input_at = (
+            0.0 if since_end_input is None else time.monotonic() - since_end_input
+        )
 
     def turn_lost(self) -> bool:
         return False
 
     def last_activity_at(self) -> float:
-        return time.monotonic()
+        return time.monotonic() - self._silent_for
 
     def server_turn_complete(self) -> bool:
         return False
@@ -542,26 +556,67 @@ class _ChatteringTurn:
     def last_chunk_at(self) -> float:
         return 0.0
 
+    def end_input_at(self) -> float:
+        return self._end_input_at
+
     def audio_chunks_pending(self) -> int:
         return 0
 
 
-async def test_idle_watchdog_caps_a_pre_response_phase_that_never_goes_silent(caplog):
-    """The silence timer alone cannot release the duck here, so the
-    absolute cap from turn open must. Without it the wake loop stays in
-    SESSION and the music stays attenuated for as long as the server
-    keeps talking."""
+async def test_idle_watchdog_caps_a_turn_that_progresses_but_never_answers(caplog):
+    """The silence timer alone cannot release the duck here, so the cap
+    from end-of-input must. Without it the wake loop stays in SESSION and
+    the music stays attenuated for as long as the model keeps working.
+
+    The two logged durations come from different anchors, and the fake
+    clock pins which: `waited_s` from end-of-input, `silent_s` from the
+    last progress event."""
+    turn = _WorkingTurn(silent_for=0.5, since_end_input=8.0)
+
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await asyncio.wait_for(
+        reason = await asyncio.wait_for(
             idle_watchdog(
-                _ChatteringTurn(),
-                _DrainedTts(),
-                timeout=999.0,
-                response_stall_timeout=0.01,
+                turn, _DrainedTts(), timeout=999.0, response_stall_timeout=5.0,
             ),
             timeout=1.0,
         )
 
+    assert reason == PRE_RESPONSE_CAPPED_REASON
     fields = event_fields(caplog, "turn.pre_response_capped")
-    assert float(fields["silent_s"]) < 999.0
-    assert float(fields["waited_s"]) > 0.0
+    assert float(fields["waited_s"]) == pytest.approx(8.0, abs=0.4)
+    assert float(fields["silent_s"]) == pytest.approx(0.5, abs=0.4)
+
+
+@pytest.mark.parametrize("result, expected", [
+    (PRE_RESPONSE_CAPPED_REASON, PRE_RESPONSE_CAPPED_REASON),
+    (None, "ended"),
+])
+async def test_a_background_task_names_the_end_reason_it_chose(result, expected):
+    """`idle_watchdog` returns the `_end_turn` reason when it picked one,
+    so a capped turn is not torn down as a generic "ended". The ordinary
+    paths and `play_responses` return None and keep the generic reason."""
+    wl = wake_loop_for_tests()
+
+    async def _finished() -> str | None:
+        return result
+
+    task = asyncio.create_task(_finished())
+    await task
+    wl._bg_tasks = {task}
+
+    assert wl._turn_background_end_reason() == expected
+
+
+async def test_the_pre_response_cap_waits_for_end_of_input():
+    """A long utterance must not spend the model's budget. While input is
+    open there is no end-of-input anchor, so the cap cannot fire however
+    far past `response_stall_timeout` the turn has run."""
+    turn = _WorkingTurn(silent_for=0.5, since_end_input=None)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            idle_watchdog(
+                turn, _DrainedTts(), timeout=999.0, response_stall_timeout=0.01,
+            ),
+            timeout=0.8,
+        )
