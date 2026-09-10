@@ -220,6 +220,14 @@ set_monitor_mode() {
     echo "event=apple_dongle.headphone_monitor.mode mode=${mode} reason=${reason}"
 }
 
+# The monitor proved itself connected -- a full quiet read window or a real
+# event both count -- so whatever backoff an earlier retry grew has proven
+# itself unneeded.
+mark_monitor_connected() {
+    set_monitor_mode monitor
+    MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+}
+
 stop_monitor() {
     [[ -n "$MONITOR_PGID" ]] || return 0
     kill "$MONITOR_PGID" 2>/dev/null
@@ -416,11 +424,7 @@ while true; do
         sweep_due=1
         sleep "$MONITOR_POLL_SEC"
     elif ! read -r -t "$MONITOR_POLL_SEC" -u 3; then
-        # A full read window elapsed with the monitor still connected and
-        # nothing to report: whatever backoff an earlier retry grew has
-        # proven itself unneeded.
-        set_monitor_mode monitor
-        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+        mark_monitor_connected
     elif [[ "$REPLY" == "$MONITOR_GONE" ]]; then
         # alsactl exits when a card it holds is removed, or failed to open
         # its control device at all. This generation already having reached
@@ -439,8 +443,7 @@ while true; do
         (( MONITOR_BACKOFF > MONITOR_BACKOFF_CAP_SEC )) &&
             MONITOR_BACKOFF="$MONITOR_BACKOFF_CAP_SEC"
     else
-        set_monitor_mode monitor
-        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+        mark_monitor_connected
         sweep_due=1
     fi
 done
