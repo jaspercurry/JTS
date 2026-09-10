@@ -6,7 +6,7 @@
 ## Context
 
 The 2026-08-25 whole-codebase deep audit
-([docs/DEEP-AUDIT-2026-08-25.md](../DEEP-AUDIT-2026-08-25.md), SHA `9fcda9e`)
+([docs/audits/2026-08-25-deep-audit.md](../audits/2026-08-25-deep-audit.md), SHA `9fcda9e`)
 graded the repo **B− engineering quality / C− proportionality**: 1.42M tracked
 lines for a solo-owner hobbyist speaker, a test suite larger than the product
 (617K vs ~490K lines), a 0.50 comment-to-code ratio inside `jasper/`, 65

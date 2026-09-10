@@ -24,13 +24,14 @@ session_artifacts = [
   # docs/dumb-endpoint-bringup.md (see docs/doc-map.toml's multiroom-grouping
   # subsystem). Tracked by #1852.
   "docs/multiroom-pairing-reliability-plan.md",
-  # Whole-codebase quality review (frozen snapshot; evidence in
-  # docs/codebase-quality-review-2026-09-05/). Disposition lives in the
-  # steward issues, not here.
-  "docs/CODEBASE-QUALITY-REVIEW-2026-09-05.md",
-  # Frozen finding snapshot; its live items became ADRs and issues. Readable,
-  # not a scan target.
-  "docs/DEEP-AUDIT-2026-08-25.md",
+  # docs/audits/ is the archive of frozen whole-repo audit and
+  # quality-review snapshots (see docs/audits/README.md). Each report is
+  # pinned to its audited SHA and never edited; disposition lives in
+  # GitHub issues, not here. Evidence trails for the 2026-09-05 review
+  # remain at docs/codebase-quality-review-2026-09-05/.
+  "docs/audits/2026-08-25-deep-audit.md",
+  "docs/audits/2026-09-05-codebase-quality-review.md",
+  "docs/audits/2026-09-09-deep-audit.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
