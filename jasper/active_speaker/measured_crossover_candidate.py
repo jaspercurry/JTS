@@ -5,15 +5,10 @@
 """v2 measured-crossover apply extension — trims + optional delay/polarity.
 
 Wave 4 of the crossover-measurement v2 redesign
-(``docs/historical/crossover-measurement-productization-design.md`` §5.8). This is a
-**new, standalone candidate model** — it does not extend or reuse
-:class:`jasper.active_speaker.measured_candidate.MeasuredElectricalCandidate`,
-the null-walk/evidence-store candidate built for the v1 flow (§5.9 of the
-design doc retires that flow's near-field pass and null-walk delay source).
-Building on top of machinery slated for deletion would be wasted work; this
-module instead defines the small, self-contained shape Wave 5's new
-check→measure→review/apply→verify flow will construct once Wave 1's
-single-capture analysis exists.
+(``docs/historical/crossover-measurement-productization-design.md`` §5.8). The
+small, self-contained candidate shape the check→measure→review/apply→verify
+flow constructs; the v1 null-walk/evidence-store candidate it replaced is
+deleted.
 
 **The apply mechanism reuses everything, invents nothing new:**
 
@@ -26,9 +21,7 @@ single-capture analysis exists.
   ``{role: {gain_db, delay_ms, inverted}}`` mapping from that preset via
   ``camilla_yaml._role_polarity`` — the exact shared reduction
   ``jasper.active_speaker.baseline_profile._derive_corrections`` already
-  uses (the legacy ``MeasuredElectricalCandidate.driver_corrections``
-  inlines its own equivalent region walk), so this module adds no new
-  polarity-to-inversion translation.
+  uses, so this module adds no new polarity-to-inversion translation.
 - :func:`compile_candidate_config` calls
   ``emit_active_speaker_baseline_config`` directly — the one Layer-A emitter,
   unchanged. Polarity rides the per-driver Gain filter (``inverted=...``), not
@@ -47,8 +40,7 @@ Absent alignment (``delay_us``/``delay_role``/``polarity`` all ``None``) is
 byte-for-byte today's trims-only apply: :func:`effective_preset` returns the
 source preset unchanged and :func:`driver_corrections` emits an all-zero delay
 with each role's *existing* region polarity — exactly what
-``MeasuredElectricalCandidate`` and ``_derive_corrections`` already produce for
-a plain trims candidate.
+``_derive_corrections`` already produces for a plain trims candidate.
 """
 
 from __future__ import annotations

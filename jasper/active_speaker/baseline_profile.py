@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 import yaml as yaml_parser
 
@@ -106,9 +106,6 @@ from .revalidation import applied_profile_revalidation_satisfies_driver_target_p
 from .startup_hold import release_staged_startup_hold
 from .state_paths import baseline_profile_state_path
 from .staging import build_passive_mains_preset, compile_preset_from_crossover_preview
-
-if TYPE_CHECKING:
-    from .measured_candidate import MeasuredElectricalCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -1788,14 +1785,8 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
     the reasons nothing in the verification chain objected to a 10 dB-dark
     speaker. This asks the candidate what it is holding.
 
-    The two candidate shapes hold their evidence differently and both are
-    honoured on their own terms:
-
-    * :class:`~jasper.active_speaker.measured_candidate.MeasuredElectricalCandidate`
-      (the evidence-store path) names an isolated and a summed evidence
-      artifact. Each present artifact counts as one.
-    * :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
-      (the v2 phone path) is counted from what its analysis RECORDED, never
+    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
+    is counted from what its analysis RECORDED, never
       from fields its ``__post_init__`` guarantees. Per-driver: the roles whose
       level the trim solve actually produced (``analysis.trim_band_average_db``
       — ``None`` on a legacy candidate), or the roles the fit corrected, taking
@@ -1819,29 +1810,23 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
     """
     if candidate is None:
         return {"driver": 0, "summed": 0}
-    role_trims = getattr(candidate, "role_attenuations_db", None)
-    if isinstance(role_trims, Mapping):
-        analysis = getattr(candidate, "analysis", None)
-        analysis = analysis if isinstance(analysis, Mapping) else {}
-        solved_levels = analysis.get("trim_band_average_db")
-        driver = len(solved_levels) if isinstance(solved_levels, Mapping) else 0
-        linearization = getattr(candidate, "linearization", None)
-        if isinstance(linearization, Mapping):
-            driver = max(driver, len(linearization))
-        exclusion = getattr(candidate, "exclusion_evidence", None)
-        positions = 0
-        if isinstance(exclusion, Mapping):
-            try:
-                positions = max(0, int(exclusion.get("n_positions") or 0))
-            except (TypeError, ValueError):
-                positions = 0
-        if analysis.get("alignment_confidence") is not None:
-            positions += 1
-        return {"driver": driver, "summed": positions}
-    return {
-        "driver": 1 if getattr(candidate, "isolated_evidence_artifact", None) else 0,
-        "summed": 1 if getattr(candidate, "summed_evidence_artifact", None) else 0,
-    }
+    analysis = getattr(candidate, "analysis", None)
+    analysis = analysis if isinstance(analysis, Mapping) else {}
+    solved_levels = analysis.get("trim_band_average_db")
+    driver = len(solved_levels) if isinstance(solved_levels, Mapping) else 0
+    linearization = getattr(candidate, "linearization", None)
+    if isinstance(linearization, Mapping):
+        driver = max(driver, len(linearization))
+    exclusion = getattr(candidate, "exclusion_evidence", None)
+    positions = 0
+    if isinstance(exclusion, Mapping):
+        try:
+            positions = max(0, int(exclusion.get("n_positions") or 0))
+        except (TypeError, ValueError):
+            positions = 0
+    if analysis.get("alignment_confidence") is not None:
+        positions += 1
+    return {"driver": driver, "summed": positions}
 
 
 def _compare_level_sittings(
@@ -1988,9 +1973,7 @@ def build_baseline_profile_candidate(
     driver_domain_pair_trim_db: float = 0.0,
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
-    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
-        None
-    ),
+    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2029,16 +2012,8 @@ def build_baseline_profile_candidate(
     if tuning_owner not in TUNING_OWNERS:
         raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
     if measured_candidate is not None:
-        from .measured_candidate import MeasuredElectricalCandidate
-        from .measured_crossover_candidate import MeasuredCrossoverCandidate
-
-        if not isinstance(
-            measured_candidate, (MeasuredElectricalCandidate, MeasuredCrossoverCandidate)
-        ):
-            raise TypeError(
-                "measured_candidate must be MeasuredElectricalCandidate or "
-                "MeasuredCrossoverCandidate"
-            )
+        if not isinstance(measured_candidate, MeasuredCrossoverCandidate):
+            raise TypeError("measured_candidate must be MeasuredCrossoverCandidate")
         if tuning_owner != "automatic":
             raise ValueError("measured_candidate requires automatic tuning ownership")
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
@@ -2566,10 +2541,9 @@ def build_baseline_profile_candidate(
         )
     issues.extend(correction_issues)
     # Layer-1a driver linearization (#1668 PR-D). Threads whatever the
-    # measured candidate carries: empty for a plain trims candidate, a
-    # legacy MeasuredElectricalCandidate (no ``.linearization`` attribute —
-    # hence ``getattr`` with a default), or a pre-PR-C persisted
-    # MeasuredCrossoverCandidate. Reduced to the emitter's own input shape by
+    # measured candidate carries: empty for no candidate at all or a plain
+    # trims candidate — hence ``getattr`` with a default — or a pre-PR-C
+    # persisted candidate. Reduced to the emitter's own input shape by
     # the shared helper, ``linearization_fit.linearization_filters_by_role``
     # — the same reduction ``measured_crossover_candidate.compile_candidate_config``
     # uses, so the two RICH-candidate call sites reduce identically. NOT
@@ -2587,9 +2561,8 @@ def build_baseline_profile_candidate(
     )
     # Gauge fix (2026-07-24): the single writer's own verdict for WHY
     # linearization did or didn't run this attempt — "" (empty, the
-    # ``getattr`` default) for a plain trims candidate, a legacy
-    # MeasuredElectricalCandidate (no ``.linearization_outcome`` attribute),
-    # or a pre-gauge-fix persisted MeasuredCrossoverCandidate. Never
+    # ``getattr`` default) for no candidate, a plain trims candidate, or a
+    # pre-gauge-fix persisted MeasuredCrossoverCandidate. Never
     # re-derived here — see MeasuredCrossoverCandidate.linearization_outcome's
     # own docstring.
     linearization_outcome = str(
@@ -2597,18 +2570,17 @@ def build_baseline_profile_candidate(
     )
     # WHICH trim pair the candidate committed — the outcome above cannot tell
     # an anchored commit from a resolved one. ``getattr`` default for the same
-    # eras as its neighbours, plus a round whose pair a trim pin displaced.
+    # cases as its neighbours, plus a round whose pair a trim pin displaced.
     trim_decision = dict(getattr(measured_candidate, "trim_decision", None) or {})
     # Decision 10's blend correction, already in the emitter's flat shape (the
     # solver writes it that way). ``getattr`` with a default for the same
-    # reason the two above use one: a legacy MeasuredElectricalCandidate has no
-    # such attribute at all.
+    # reason the two above use one.
     blend_correction = [
         dict(entry)
         for entry in (getattr(measured_candidate, "blend_correction", ()) or ())
     ]
     # The candidate's own room PEQ set, reduced to the emitter's single list by
-    # ``candidate_room_peqs``. ``getattr`` with a default for the same eras as
+    # ``candidate_room_peqs``. ``getattr`` with a default for the same cases as
     # its neighbours above; the helper needs the candidate's layout, so it only
     # runs once the field is known to be there.
     bass_extension = dict(getattr(measured_candidate, "bass_extension", None) or {})
@@ -2772,14 +2744,8 @@ def build_baseline_profile_candidate(
             # delay_graph + graph_safety proofs named in the crossover
             # measurement v2 design (§5.8). A failed proof is a blocker issue,
             # exactly like a failed CamillaDSP validation below: fail closed,
-            # no partial write reaches "ready". Scoped to the new candidate
-            # type only (isinstance), so a legacy MeasuredElectricalCandidate
-            # or a plain trims candidate is completely unaffected.
-            from .measured_crossover_candidate import (
-                MeasuredCrossoverCandidate,
-                MeasuredCrossoverCandidateError,
-                prove_candidate_config,
-            )
+            # no partial write reaches "ready".
+            from .measured_crossover_candidate import prove_candidate_config
 
             if (
                 isinstance(measured_candidate, MeasuredCrossoverCandidate)
@@ -3763,9 +3729,7 @@ async def apply_baseline_profile(
     expected_candidate_fingerprint: str | None = None,
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
-        None
-    ),
+    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     refresh_inputs: Callable[
         [],
         tuple[
@@ -3842,9 +3806,7 @@ async def _apply_baseline_profile_locked(
     expected_candidate_fingerprint: str | None = None,
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
-        None
-    ),
+    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
