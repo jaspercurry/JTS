@@ -125,8 +125,8 @@ class VolumeRoutes(ControlHandlerMixin):
         )
         return hold_owner
 
-    def _refuse_authoritative_raise(self, *, kind: str, **fields: Any) -> bool:
-        """Refuse a fader RAISE the measurement owns; True once the 409 is sent.
+    def _refuse_authoritative_write(self, *, kind: str, **fields: Any) -> bool:
+        """Refuse a fader write the measurement owns; True once the 409 is sent.
 
         Its own event and its own per-hold counter: `volume.observation_declined`
         and `declined_observations` are the source-observed vocabulary. The
@@ -184,11 +184,9 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        # Only a RAISE is refused while a measurement holds the fader; see
-        # _post_volume_set. A bump down cannot take a driver past its cap.
-        if delta_pct > 0 and self._refuse_authoritative_raise(
-            kind="adjust", delta_pct=delta_pct,
-        ):
+        # Either direction is refused while a measurement holds the fader; see
+        # _post_volume_set.
+        if self._refuse_authoritative_write(kind="adjust", delta_pct=delta_pct):
             return
         try:
             state = asyncio.run(self._adjust_op(delta_pct))
@@ -260,35 +258,36 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        # A live measurement owns the fader. A host slider or a HID knob
-        # mid-sweep would otherwise walk the very level the measurement is
-        # holding, which is both the writer war seat-level hit on jts3
+        # A live measurement OWNS the fader: it drives camilla's main_volume
+        # directly (audio_measurement.ramp) and never writes the persistence
+        # file, so the persisted household level says nothing about where the
+        # fader actually sits. A write of ANY size can therefore land a level
+        # far above the ramp's — the writer war seat-level hit on jts3
         # (journal: `event=volume.reconciled source=idle drift_db=+9.35`, once
         # a second) and a driver taken above its declared cap for the playing
-        # stimulus. Only a RAISE can do the latter, so only a raise is refused
-        # — a human turning it DOWN mid-sweep is never locked out.
+        # stimulus. So every level write is refused for the life of the hold,
+        # and MUTE stays open as the emergency door.
         # The two answers differ by contract, not by policy: a SOURCE-OBSERVED
         # write gets the ESTABLISHED `observation_applied: false` 200 that the
         # USB bridge already understands and retries against, while an
-        # AUTHORITATIVE one gets /measurement/hold's own 409 envelope, because
-        # its caller is a UI that can name the incumbent.
+        # AUTHORITATIVE one gets /measurement/hold's own 409 envelope.
         if measurement_hold.held():
-            try:
-                state = self._get_op()
-            except Exception as e:  # noqa: BLE001
-                # Same shape as _get_volume's guard: this reads the persisted
-                # projection, and a read failure is a 502, not a silent 200
-                # carrying whatever a half-built payload would have said.
-                logger.exception("declined observation state read failed")
-                self._send_json({"error": str(e)}, status=502)
-                return
-            if target_pct > state.effective_percent:
-                if not source_name:
-                    if self._refuse_authoritative_raise(
-                        kind="set", requested_pct=target_pct,
-                    ):
-                        return
-                elif self._measurement_hold_decline(
+            if not source_name:
+                if self._refuse_authoritative_write(
+                    kind="set", requested_pct=target_pct,
+                ):
+                    return
+            else:
+                try:
+                    state = self._get_op()
+                except Exception as e:  # noqa: BLE001
+                    # Same shape as _get_volume's guard: this reads the
+                    # persisted projection, and a read failure is a 502, not a
+                    # silent 200 carrying a half-built payload.
+                    logger.exception("declined observation state read failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                if self._measurement_hold_decline(
                     source=str(source_name), requested_pct=target_pct,
                 ) is not None:
                     payload = self._volume_payload(state)
@@ -360,6 +359,26 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
+        # Unmuting restores the household listening level onto the fader the
+        # measurement is holding, so it is a level write like any other and is
+        # refused (see _post_volume_set). Muting is the emergency door and
+        # stays open in both its shapes — explicit and toggle-to-muted.
+        if measurement_hold.held():
+            resolves_unmuted = explicit is False
+            if explicit is None:
+                try:
+                    state = self._get_op()
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("mute toggle state read failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                # The same latch toggle_mute itself branches on, so the
+                # refusal cannot disagree with what the toggle would do.
+                resolves_unmuted = state.restore_percent is not None
+            if resolves_unmuted and self._refuse_authoritative_write(
+                kind="unmute", explicit=str(explicit),
+            ):
+                return
         try:
             if explicit is None:
                 state = asyncio.run(self._mute_toggle_op())

@@ -330,18 +330,18 @@ class VolumeCoordinator:
         # user-volume surface for the final music+TTS mix.
         self._camilla_volume_locked: bool = False
         # Correction-measurement gate for the voice daemon's own 1 Hz
-        # reconciler AND for the voice tools' level doors (set/adjust), which
-        # reach this object in-process and so never pass jasper-control's
-        # measurement hold. This is intentionally narrow: it does not turn this
-        # process-local flag into a cross-daemon Camilla lock, refuse a level
-        # DECREASE, or block an emergency user mute. It prevents the observed
-        # writer from replacing a ramp value with persisted listening_level
-        # mid-measurement.
+        # reconciler AND for the voice tools' level doors (set/adjust/unmute),
+        # which reach this object in-process and so never pass jasper-control's
+        # measurement hold. It does not turn this process-local flag into a
+        # cross-daemon Camilla lock, and never blocks an emergency user MUTE.
+        # It prevents any writer from replacing a ramp value with the persisted
+        # listening_level mid-measurement.
         self._measurement_active: bool = False
         # When the flag above was raised, so a missed lower can lapse rather
         # than refuse for the life of the process. See
         # :meth:`_measurement_holds_fader`.
         self._measurement_active_at: float = 0.0
+        self._measurement_lapse_logged: bool = False
         # Edge state for the three faults this reconciler re-evaluates every
         # tick; each is reported once per episode, never at 1 Hz.
         self._deep_quiet_skipped: bool = False
@@ -522,43 +522,54 @@ class VolumeCoordinator:
     # ------------------------------------------------------------------
 
     def _measurement_holds_fader(self) -> bool:
-        """True while a live measurement owns the fader, lapsing a stuck flag.
+        """True while a live measurement owns the fader; False once it lapses.
 
-        ``note_measurement_active(False)`` is best-effort on the voice daemon's
-        rollback path: past its aggregate deadline the resume coroutine is
-        closed unawaited and the safety task is already cancelled, so the flag
-        can stay raised with nothing left to lower it. Treating it as lapsed
-        after MEASUREMENT_AUTOCLEAR_SEC — the backstop that would have cleared
-        it — bounds that to one window instead of the life of the process.
+        A pure predicate: it must not clear ``_measurement_active``, or a
+        volume write arriving after the lapse would also un-pause the 1 Hz
+        reconciler — which reads the raw flag — in the middle of a window that
+        is merely renewing late.
+
+        The lapse itself exists because ``note_measurement_active(False)`` is
+        best-effort on the voice daemon's rollback path: past its aggregate
+        deadline the resume coroutine is closed unawaited and the safety task
+        is already cancelled, so the flag can stay raised with nothing left to
+        lower it. Treating it as lapsed after MEASUREMENT_AUTOCLEAR_SEC — the
+        backstop that would have cleared it — bounds a stranded flag's effect
+        on these doors to one window instead of the life of the process.
         """
         if not self._measurement_active:
             return False
         held_for = _measurement_monotonic() - self._measurement_active_at
         if held_for < MEASUREMENT_AUTOCLEAR_SEC:
             return True
-        self._measurement_active = False
-        log_event(
-            logger,
-            "volume.measurement_flag_expired",
-            held_for_s=f"{held_for:.1f}",
-            autoclear_s=f"{MEASUREMENT_AUTOCLEAR_SEC:.1f}",
-            level=logging.WARNING,
-        )
+        if not self._measurement_lapse_logged:
+            self._measurement_lapse_logged = True
+            log_event(
+                logger,
+                "volume.measurement_flag_expired",
+                held_for_s=f"{held_for:.1f}",
+                autoclear_s=f"{MEASUREMENT_AUTOCLEAR_SEC:.1f}",
+                level=logging.WARNING,
+            )
         return False
 
-    def _refuse_level_raise_while_measuring(self, target: int) -> None:
-        """Refuse a level RAISE while a measurement holds the fader.
+    def _refuse_level_write_while_measuring(self) -> None:
+        """Refuse a level write while a measurement holds the fader.
 
-        These two doors are reached IN-PROCESS — `jasper.tools.audio` calls
-        them on this coordinator whenever the box is not a bonded follower, so
-        the request never crosses HTTP and jasper-control's measurement hold
-        never sees it. Raising is what makes the refusal visible: `tools`
-        turns the exception into the tool's `{"error": ...}` payload, so the
-        model says the speaker is busy rather than silently walking a
-        stimulus above the driver's declared cap. Only an INCREASE can do
-        that, so quieter, and mute/unmute, deliberately stay open.
+        These doors are reached IN-PROCESS — `jasper.tools.audio` calls them on
+        this coordinator whenever the box is not a bonded follower, so the
+        request never crosses HTTP and jasper-control's measurement hold never
+        sees it. While the hold is live the measurement OWNS the fader: it
+        drives camilla's main_volume directly and never writes the persistence
+        file, so no persisted level here can be compared against where the
+        fader actually sits, and a write in EITHER direction can land a
+        stimulus above the driver's declared cap. Raising is what makes the
+        refusal visible: `tools` turns the exception into the tool's
+        `{"error": ...}` payload, so the model says the speaker is busy. MUTE
+        stays open as the emergency door; unmute does not, because restoring
+        the household level is a level write.
         """
-        if target > self._effective_level() and self._measurement_holds_fader():
+        if self._measurement_holds_fader():
             raise VolumeClaimRefused(
                 "a measurement is in progress and holds the volume"
             )
@@ -570,7 +581,7 @@ class VolumeCoordinator:
         target = max(0, min(100, int(percent)))
         async with self._mutation():
             self._refresh_from_disk()
-            self._refuse_level_raise_while_measuring(target)
+            self._refuse_level_write_while_measuring()
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
             self._mute_token = None
@@ -596,7 +607,7 @@ class VolumeCoordinator:
         async with self._mutation():
             self._refresh_from_disk()
             target = max(0, min(100, self._level + int(delta)))
-            self._refuse_level_raise_while_measuring(target)
+            self._refuse_level_write_while_measuring()
             self._level = target
             self._pre_mute_level = None
             self._mute_token = None
@@ -650,7 +661,13 @@ class VolumeCoordinator:
         return saved
 
     async def _unmute_locked(self, fallback_level: int = 50) -> int:
-        """Apply unmute while ``_mutation`` is already held."""
+        """Apply unmute while ``_mutation`` is already held.
+
+        Every unmute path lands here, so this is the one place the measurement
+        refusal has to sit for `unmute`, `set_muted(False)` and a toggle that
+        resolves to unmuted.
+        """
+        self._refuse_level_write_while_measuring()
         target = (
             self._pre_mute_level
             if self._pre_mute_level is not None
@@ -1790,11 +1807,12 @@ class VolumeCoordinator:
 
     async def note_measurement_active(self, active: bool) -> None:
         """Pause/resume this process's 1 Hz Camilla drift reconciler and its
-        two level doors (see :meth:`_refuse_level_raise_while_measuring`)."""
+        level doors (see :meth:`_refuse_level_write_while_measuring`)."""
         async with self._reconcile_write_lock:
             self._measurement_active = bool(active)
             if self._measurement_active:
                 self._measurement_active_at = _measurement_monotonic()
+                self._measurement_lapse_logged = False
 
     async def get_camilla_target_db(self) -> float:
         """The absolute camilla.main_volume that should be in effect

@@ -7,10 +7,13 @@
 ``jasper.measurement_window.measurement_window()`` is the one writer of
 "a measurement is live". It already holds two self-expiring copies of that
 fact — jasper-voice's ``_measurement_active`` and jasper-mux's diagnostic-gate
-lease — and this module is the third: the copy jasper-control needs so it can
-stop any volume change that would RAISE the fader a measurement is holding —
-a host moving its USB slider, the landing page, a HID knob. Lowering it, and
-muting, stay open: neither can take a driver past its declared cap.
+lease — and this module is the third: the copy jasper-control needs so it can stop
+any volume change against the fader a measurement is holding — a host moving
+its USB slider, the landing page, a HID knob. The measurement OWNS that fader
+while the hold is live (it drives camilla's main_volume directly and never
+writes the persistence file, so no persisted level says where the fader
+sits). Mute stays open as the emergency door; any other level write,
+including unmute, is refused while the hold is live.
 
 Why the fact has to live HERE and not in the volume coordinator:
 ``jasper.control.volume_ops._with_coordinator`` builds a **fresh**
@@ -140,7 +143,7 @@ class MeasurementHold:
         # hold" is this object's lifecycle: it resets on a fresh acquire and on
         # every path that drops the hold, and a handler is per-request.
         self._declines: int = 0
-        # Refused AUTHORITATIVE fader raises against the CURRENT hold. Its own
+        # Refused AUTHORITATIVE fader writes against the CURRENT hold. Its own
         # counter, not `_declines`: the release line reports that one under the
         # source-observed name `declined_observations`, and conflating the two
         # would make that field lie.
@@ -343,7 +346,7 @@ class MeasurementHold:
             return owner, self._declines == 1
 
     def record_refused_write(self) -> tuple[str, bool] | None:
-        """Count one refused AUTHORITATIVE fader raise against this hold.
+        """Count one refused AUTHORITATIVE fader write against this hold.
 
         Same shape and the same first-line-only reason as
         :meth:`record_declined_observation`, on its own counter: a UI slider

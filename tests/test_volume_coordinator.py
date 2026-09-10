@@ -2158,44 +2158,74 @@ async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gat
 @pytest.mark.parametrize(
     "door",
     [
-        pytest.param(lambda coord: coord.set_listening_level(95), id="set"),
-        pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust"),
+        pytest.param(lambda coord: coord.set_listening_level(95), id="set_up"),
+        pytest.param(lambda coord: coord.set_listening_level(25), id="set_down"),
+        pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust_up"),
+        pytest.param(
+            lambda coord: coord.adjust_listening_level(-35), id="adjust_down",
+        ),
     ],
 )
-async def test_the_level_doors_refuse_a_raise_while_measuring(tmp_path, door):
+async def test_the_level_doors_refuse_every_write_while_measuring(tmp_path, door):
     """The voice tools reach these IN-PROCESS, never through jasper-control.
 
     ``jasper.tools.audio`` calls them on this coordinator whenever the box is
-    not a bonded follower, so the HTTP measurement hold never sees the request
-    and a "louder" mid-sweep would take the driver above the declared cap the
-    session volume is enforcing. The refusal type is what ``tools.dispatch_tool``
-    turns into the model-visible error payload.
+    not a bonded follower, so the HTTP measurement hold never sees the request.
+    Direction cannot be the test: the measurement drives camilla's main_volume
+    directly and never writes the persistence file, so the persisted level
+    these doors would compare against says nothing about where the fader sits,
+    and a "quieter" can be a large step UP on the stimulus. The refusal type is
+    what ``tools.dispatch_tool`` turns into the model-visible error payload.
     """
-    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    coord, cam, persistence = _real_coord(tmp_path, active={}, level=60)
     await coord.note_measurement_active(True)
 
     with pytest.raises(VolumeClaimRefused):
         await door(coord)
 
     assert cam.set_calls == []
+    _assert_persisted(persistence, level=60)
 
 
 @pytest.mark.parametrize(
-    "door, applied",
+    "door",
     [
-        pytest.param(lambda coord: coord.set_listening_level(25), 25, id="set"),
-        pytest.param(
-            lambda coord: coord.adjust_listening_level(-35), 25, id="adjust",
-        ),
+        pytest.param(lambda coord: coord.unmute(), id="unmute"),
+        pytest.param(lambda coord: coord.set_muted(False), id="set_muted_false"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_from_muted"),
     ],
 )
-async def test_the_level_doors_still_lower_while_measuring(tmp_path, door, applied):
-    """Only a raise can pass a driver's declared cap. Quieter is never refused."""
-    coord, _, persistence = _real_coord(tmp_path, active={}, level=60)
+async def test_unmute_is_refused_while_measuring(tmp_path, door):
+    """Unmute restores the household level onto the fader — a level write."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.mute()
+    await coord.note_measurement_active(True)
+    cam.set_calls.clear()
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+    assert coord.is_muted()
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.mute(), id="mute"),
+        pytest.param(lambda coord: coord.set_muted(True), id="set_muted_true"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_to_muted"),
+    ],
+)
+async def test_mute_still_lands_while_measuring(tmp_path, door):
+    """The emergency door: a human reaching for silence mid-sweep gets it."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
     await coord.note_measurement_active(True)
 
-    assert await door(coord) == applied
-    _assert_persisted(persistence, level=applied)
+    await door(coord)
+
+    assert coord.is_muted()
+    assert cam.mute_calls[-1] is True
 
 
 async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
@@ -2205,20 +2235,38 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
 
     Past its aggregate deadline the resume coroutine is closed unawaited and
     the safety task is already cancelled, so nothing is left to lower the flag.
-    Without the lapse this refuses every "louder" for the life of the process,
-    invisibly to /state.
+    Without the lapse this refuses every level write for the life of the
+    process, invisibly to /state. The lapse is a PREDICATE, not a clear: the
+    1 Hz reconciler reads the raw flag, and a volume write is not evidence
+    that a merely-late-renewing window has ended.
     """
-    clock = iter([0.0, MEASUREMENT_AUTOCLEAR_SEC - 1.0, MEASUREMENT_AUTOCLEAR_SEC])
-    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: next(clock))
-    coord, _, _ = _real_coord(tmp_path, active={}, level=60)
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
     await coord.note_measurement_active(True)
 
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
     with pytest.raises(VolumeClaimRefused):
-        await coord.set_listening_level(95)
+        await coord.set_listening_level(20)
 
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC
     with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
-        assert await coord.set_listening_level(95) == 95
+        assert await coord.set_listening_level(20) == 20
+        assert await coord.adjust_listening_level(-5) == 15
+    # _event_fields asserts exactly one: once per lapse, not once per write.
     assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+    cam.set_calls.clear()
+    cam._db = 0.0
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == [], "the lapsed write must not un-pause reconciliation"
+
+    await coord.note_measurement_active(False)
+    cam._db = 0.0
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls, "control: this drift IS one the reconciler corrects"
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
