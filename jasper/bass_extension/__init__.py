@@ -1,1 +1,1 @@
-"""Bass-extension measurement, fitting, and dynamic DSP."""
+"""Native dynamic bass extension DSP."""

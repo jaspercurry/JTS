@@ -28,7 +28,6 @@ from jasper.audio_measurement.room_boundary import (
 )
 from jasper.cli import round_views
 from jasper.cli.round_views import room
-from jasper.cli.round_views.bass_fit import _median as bass_median
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
 
 #: Away from every feature below, where the ladder alone sets the numbers.
@@ -146,7 +145,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         assert np.allclose(doc["median_db"], level)
         median = read_room_median(doc)
         assert median.band_hz == (50.0, 200.0)
-        assert bass_median(out)[0].evidence == median.evidence == doc["evidence"]
+        assert median.evidence == doc["evidence"]
         persistence = _run(capsys, [
             "room-persistence", str(round_dir), "--capture-id", record["take_id"],
         ])
