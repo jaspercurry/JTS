@@ -9,6 +9,7 @@ from importlib.resources import files
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -984,7 +985,6 @@ def _denied_receipt_status(
         _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
         _common.ROOM_AUTHORITY_RECEIPT_STALE,
         _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
-        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
         _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     ],
 )
@@ -1027,7 +1027,6 @@ def test_every_receipt_denial_carries_a_remedy_that_is_its_own() -> None:
         _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
         _common.ROOM_AUTHORITY_RECEIPT_STALE,
         _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
-        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
         _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     }
 
@@ -1186,27 +1185,85 @@ def test_a_blocker_outranks_a_notice_for_the_setup_headline(
     assert status["detail"] == blockers[0]["message"]
 
 
-@pytest.mark.parametrize("write_v2_apply_record", [True, False])
-def test_room_authority_reads_the_v2_apply_record(
+#: The measured candidate the applied automatic crossover was composed from.
+_APPLIED_CANDIDATE_FINGERPRINT = "9" * 64
+
+
+@pytest.fixture
+def v2_journey(tmp_path: Path):
+    """The real v2 journey writers, pointed at a temp state file.
+
+    Through ``set_state_path_for_tests``, the seam the flow's own loaders
+    honour, so a test drives writer -> gate end to end.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    v2.set_state_path_for_tests(tmp_path / "crossover_v2_state.json")
+    try:
+        yield v2
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def _v2_apply(v2: Any) -> None:
+    """A reviewed candidate, applied — ``observe_apply_success``'s own path."""
+    v2.save_v2_state({
+        "session_id": "session-1",
+        "accepted_phases": ["measure"],
+        "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT},
+        "applied": False,
+    })
+    v2.observe_apply_success(_APPLIED_CANDIDATE_FINGERPRINT)
+
+
+def _new_session_first_persist(v2: Any) -> None:
+    """``build_conductor_state`` carries ``applied`` forward only within one
+    session, so the first persist of a NEW measure session writes it ``False``
+    beside no candidate — while the applied graph keeps playing.
+    """
+    v2.save_v2_state({
+        "session_id": "session-2",
+        "accepted_phases": [],
+        "candidate": None,
+        "applied": False,
+    })
+
+
+def _republish_door(v2: Any) -> None:
+    """The way back republishes a banked candidate and writes ``applied``
+    ``False`` (``correction_crossover_v2_republish``), naming a DIFFERENT
+    candidate than the one playing.
+    """
+    v2.save_v2_state({
+        "session_id": "session-3",
+        "accepted_phases": ["measure"],
+        "candidate": {"fingerprint": "1" * 64},
+        "applied": False,
+        "republished": {"at": 1.0},
+    })
+
+
+def _start_over(v2: Any) -> None:
+    """Start over keeps the applied graph playing and drops the candidate."""
+    v2.reset_v2_journey_state()
+
+
+def _applied_automatic_room_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    write_v2_apply_record: bool,
-) -> None:
-    """``handle_v2_apply`` is the only door onto an automatic crossover
-    (#4788/#4792), so the durable v2 state it marks ``applied`` — naming the
-    same measured candidate the applied profile was composed from — is what
-    grants room correction. A box with no such record is denied ABSENT.
-    """
-    from jasper.active_speaker.crossover_v2 import durable_state
+    *,
+    candidate_fingerprint: str,
+) -> dict:
+    """One real setup status for an APPLIED automatic crossover."""
 
-    candidate_fingerprint = "9" * 64
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
     config_path = tmp_path / "active_speaker_baseline.yml"
     automatic = _applied_acoustic_profile(config_path=config_path)
     automatic["tuning_owner"] = "automatic"
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
-    automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
+    if candidate_fingerprint:
+        automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
     _write_applied_graph(topology, automatic, config_path)
     monkeypatch.setattr(
         baseline_mod,
@@ -1223,35 +1280,114 @@ def test_room_authority_reads_the_v2_apply_record(
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
     )
-    state_path = tmp_path / "crossover_v2_state.json"
-    if write_v2_apply_record:
-        state_path.write_text(
-            json.dumps(
-                {"applied": True, "candidate": {"fingerprint": candidate_fingerprint}}
-            ),
-            encoding="utf-8",
-        )
-    monkeypatch.setattr(durable_state, "DEFAULT_V2_STATE_PATH", state_path)
-
-    status = setup_mod.read_active_speaker_setup_status(
+    return setup_mod.read_active_speaker_setup_status(
         active_config_path=str(config_path),
+    )
+
+
+@pytest.mark.parametrize(
+    "journey_write",
+    [
+        pytest.param(lambda _v2: None, id="apply_only"),
+        pytest.param(_new_session_first_persist, id="new_session_first_persist"),
+        pytest.param(_republish_door, id="republish"),
+        pytest.param(_start_over, id="start_over"),
+    ],
+)
+def test_room_authority_survives_every_later_v2_journey_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    v2_journey: Any,
+    journey_write: Callable[[Any], None],
+) -> None:
+    """The grant reads what is PLAYING, not the per-session journey document.
+
+    ``handle_v2_apply`` is the only door onto an automatic crossover, so the
+    applied profile's ``source.measured_candidate_fingerprint`` is the
+    authority. The durable v2 state is not: three ordinary writes clear its
+    ``applied``/``candidate`` fields while the same graph keeps playing, and a
+    gate reading it would revoke room correction mid-listen on every one.
+    """
+    _v2_apply(v2_journey)
+    journey_write(v2_journey)
+
+    status = _applied_automatic_room_status(
+        monkeypatch, tmp_path,
+        candidate_fingerprint=_APPLIED_CANDIDATE_FINGERPRINT,
     )
     acoustic = status["acoustic_commissioning"]
 
-    if not write_v2_apply_record:
-        assert status["room_correction_allowed"] is False
-        assert acoustic["authority"] is None
-        assert acoustic["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
-        assert acoustic["receipt_fingerprint"] is None
-        return
     assert status["room_correction_allowed"] is True
     assert acoustic["authority"] == (
         setup_mod.ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
     )
-    assert acoustic["receipt_fingerprint"] == candidate_fingerprint
+    assert acoustic["receipt_fingerprint"] == _APPLIED_CANDIDATE_FINGERPRINT
     assert acoustic["layer_a_identity"] == (
         status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
     )
+
+
+def test_room_authority_is_absent_when_no_measured_candidate_was_applied(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    v2_journey: Any,
+) -> None:
+    """An automatic profile can also be the product of a guided level match,
+    which no ``handle_v2_apply`` composed. It names no measured candidate, so
+    nothing may be banked — even with an applied v2 journey on the box.
+    """
+    _v2_apply(v2_journey)
+
+    acoustic = _applied_automatic_room_status(
+        monkeypatch, tmp_path, candidate_fingerprint="",
+    )["acoustic_commissioning"]
+
+    assert acoustic["allowed"] is False
+    assert acoustic["authority"] is None
+    assert acoustic["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
+    assert acoustic["receipt_fingerprint"] is None
+
+
+def test_a_manual_applied_profile_never_consults_the_room_authority_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Manual authority is the applied snapshot itself (ADR-0019). Reaching
+    the automatic gate at all would make a manual profile's grant depend on
+    v2 artifacts it never had.
+    """
+
+    def _explode(_applied: Any) -> dict:
+        raise AssertionError("the automatic gate ran for a manual profile")
+
+    monkeypatch.setattr(setup_mod, "_v2_apply_room_authority", _explode)
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    manual = _applied_acoustic_profile(config_path=config_path, measured=False)
+    _write_applied_graph(topology, manual, config_path)
+    monkeypatch.setattr(
+        baseline_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: _candidate(status="applied", config_path=config_path),
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_measurement_state",
+        lambda _topology: {"summary": {}},
+    )
+    monkeypatch.setattr(
+        baseline_mod,
+        "load_applied_baseline_profile_state",
+        lambda _path=None: manual,
+    )
+
+    acoustic = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )["acoustic_commissioning"]
+
+    assert acoustic["authority"] == setup_mod.ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
+    assert acoustic["allowed"] is True
 
 
 def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(

@@ -12,8 +12,6 @@ into the answer that UI, control, and multiroom gates consume.
 
 from __future__ import annotations
 
-import errno
-import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,7 +25,6 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_ABSENT,
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
-    ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
     ROOM_AUTHORITY_RECEIPT_UNREADABLE,
 )
 from .capture_geometry import comparison_set_valid
@@ -39,6 +36,7 @@ from .crossover_contract import (
 )
 from .environment import read_camilla_statefile_config_path
 from .measurement import load_measurement_state
+from .passive_profile import measured_candidate_fingerprint
 from .profile import ActiveSpeakerConfigError
 from .runtime_contract import (
     CONTRACT_UNCONFIGURED,
@@ -55,34 +53,30 @@ ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
 )
 
 _RECEIPT_DETAIL_DEFAULT = (
-    "Room correction is running on an automatic crossover that is not "
-    "receipt-backed, so this result will not be banked as verified. Finish "
-    "commissioning, or apply the current crossover as a manual profile."
+    "Room correction is running on an automatic crossover that does not name "
+    "the measured candidate it came from, so this result will not be banked "
+    "as verified. Re-apply the crossover from the crossover review screen, or "
+    "apply the current crossover as a manual profile."
 )
 _RECEIPT_DETAIL = {
     ROOM_AUTHORITY_RECEIPT_ABSENT: _RECEIPT_DETAIL_DEFAULT,
     ROOM_AUTHORITY_RECEIPT_STALE: (
-        "The commissioning proof no longer describes this speaker, so room "
-        "correction is running on the last-known-good crossover without "
-        "banking a verified result. Re-mint it when convenient."
+        "The measured candidate this speaker's automatic crossover names is "
+        "not the one it is playing, so room correction is running without "
+        "banking a verified result. Re-apply from the crossover review screen "
+        "when convenient."
     ),
     ROOM_AUTHORITY_RECEIPT_MALFORMED: (
-        "The commissioning proof on this speaker is not valid — its contents "
-        "are not what a proof has to be — so room correction is running "
-        "without banking a verified result. Re-run commissioning to replace "
-        "it."
+        "The applied automatic crossover's record of the candidate it came "
+        "from is not valid, so room correction is running without banking a "
+        "verified result. Re-apply from the crossover review screen to "
+        "replace it."
     ),
     ROOM_AUTHORITY_RECEIPT_UNREADABLE: (
-        "JTS could not open or read this speaker's commissioning record, so "
-        "room correction is running without banking a verified result. That "
-        "is a machine-level fault rather than a verdict on the record, and "
-        "re-running commissioning is unlikely to change it."
-    ),
-    ROOM_AUTHORITY_RECEIPT_SUPERSEDED: (
-        "This speaker's commissioning proof was minted before a JTS update "
-        "that records more about how a proof was taken, so room correction is "
-        "running without banking a verified result. Nothing is wrong with the "
-        "speaker. Re-run commissioning when convenient."
+        "JTS could not read what the applied automatic crossover was composed "
+        "from, so room correction is running without banking a verified "
+        "result. That is a machine-level fault rather than a verdict on the "
+        "crossover, and re-applying is unlikely to change it."
     ),
 }
 
@@ -163,42 +157,31 @@ def _receipt_denial(reason: str, cause: str) -> dict[str, Any]:
 def _v2_apply_room_authority(
     applied_profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Whether the applied automatic crossover carries v2's own apply proof.
+    """Whether the applied automatic crossover was applied from a measurement.
 
     ``jasper.web.correction_crossover_v2.handle_v2_apply`` is the only door
-    onto an automatic crossover (#4788/#4792), and what it leaves behind is the
-    durable v2 state marked ``applied`` beside the candidate it installed. The
-    proof is that record naming the SAME measured candidate the applied profile
-    was composed from, so a later apply through any other owner reads as stale
-    rather than inheriting this grant.
-    """
-    from .crossover_v2 import durable_state
+    onto an automatic crossover (#4788/#4792) and it runs after VERIFY, so the
+    APPLY is the proof — and what it leaves on the speaker is the frozen
+    applied profile whose ``source.measured_candidate_fingerprint`` names the
+    measured candidate it installed. An automatic profile that names none was
+    never composed from a measured candidate, and is denied ABSENT.
 
-    try:
-        record = json.loads(
-            durable_state.DEFAULT_V2_STATE_PATH.read_text(encoding="utf-8")
-        )
-    except FileNotFoundError:
-        return _receipt_denial(ROOM_AUTHORITY_RECEIPT_ABSENT, "no v2 apply record")
-    except ValueError:
+    v2 banks no durable per-apply proof this could resolve that fingerprint
+    against. Its round receipt grades a LATER verify round, is keyed by capture
+    session rather than by candidate, and is written fail-soft; the candidate
+    bank proves a publish rather than an apply, behind a bounded scan. And the
+    durable v2 state is a per-SESSION journey, not a record of what is playing:
+    a new session's first persist, the republish door and Start Over all
+    rewrite its ``applied``/``candidate`` fields while the same graph keeps
+    playing. Reading any of those would revoke room correction mid-listen.
+    """
+    fingerprint = measured_candidate_fingerprint(
+        _mapping(applied_profile).get("source")
+    )
+    if not fingerprint:
         return _receipt_denial(
-            ROOM_AUTHORITY_RECEIPT_MALFORMED, "v2 apply record is not JSON"
-        )
-    except OSError as exc:
-        code = errno.errorcode.get(exc.errno or 0, str(exc.errno or ""))
-        return _receipt_denial(
-            ROOM_AUTHORITY_RECEIPT_UNREADABLE, f"{type(exc).__name__}:{code}"
-        )
-    if not isinstance(record, Mapping) or record.get("applied") is not True:
-        return _receipt_denial(ROOM_AUTHORITY_RECEIPT_ABSENT, "no applied v2 candidate")
-    applied_source = _mapping(_mapping(applied_profile).get("source"))
-    fingerprint = str(_mapping(record.get("candidate")).get("fingerprint") or "")
-    if not fingerprint or fingerprint != str(
-        applied_source.get("measured_candidate_fingerprint") or ""
-    ):
-        return _receipt_denial(
-            ROOM_AUTHORITY_RECEIPT_STALE,
-            "the v2 apply record is not the applied crossover",
+            ROOM_AUTHORITY_RECEIPT_ABSENT,
+            "the applied automatic crossover names no measured candidate",
         )
     return {
         "allowed": True,

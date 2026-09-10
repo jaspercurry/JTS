@@ -599,7 +599,6 @@ def check_room_correction_authority() -> CheckResult:
         ROOM_AUTHORITY_RECEIPT_ABSENT,
         ROOM_AUTHORITY_RECEIPT_MALFORMED,
         ROOM_AUTHORITY_RECEIPT_STALE,
-        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
         ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     )
     label = "room correction authority"
@@ -650,11 +649,7 @@ def check_room_correction_authority() -> CheckResult:
             f"({cause or denial}): {detail}",
             reason=REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
         )
-    if denial in {
-        ROOM_AUTHORITY_RECEIPT_STALE,
-        ROOM_AUTHORITY_RECEIPT_MALFORMED,
-        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
-    }:
+    if denial in {ROOM_AUTHORITY_RECEIPT_STALE, ROOM_AUTHORITY_RECEIPT_MALFORMED}:
         return CheckResult(
             label, "ok", f"room correction runs unproven ({denial}): {detail}",
             reason=REASON_ROOM_AUTHORITY_UNPROVEN,
