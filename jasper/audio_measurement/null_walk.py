@@ -26,7 +26,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
-from jasper.audio_measurement.evidence_identity import FingerprintedRecord
+from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.json_fields import finite_float
 
 MIN_CAPTURE_COUNT = 5

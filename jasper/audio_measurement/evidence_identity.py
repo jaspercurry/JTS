@@ -12,7 +12,6 @@ feature evidence.
 
 from __future__ import annotations
 
-import abc
 import hashlib
 import json
 import math
@@ -20,6 +19,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Mapping
+
+from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
+from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 EXACT_DSP_STATE_DOMAIN = "camilladsp_exact_transaction_state"
@@ -86,25 +88,6 @@ def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-class FingerprintedRecord(abc.ABC):
-    """A frozen dataclass's `to_dict`: `_core()` plus its `fingerprint`.
-
-    Persisted receipts and evidence are read back through each type's
-    `from_mapping`, which expects exactly this shape -- changing it breaks
-    every already-written record.
-    """
-
-    __slots__ = ()
-    fingerprint: str
-
-    @abc.abstractmethod
-    def _core(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
@@ -231,8 +214,6 @@ class ExactDspStateIdentity(FingerprintedRecord):
         *,
         state_domain: str = EXACT_DSP_STATE_DOMAIN,
     ) -> None:
-        from .null_walk import DspPredecessor, NullWalkError  # lazy: null_walk imports FingerprintedRecord from this module
-
         if state_domain != EXACT_DSP_STATE_DOMAIN:
             raise EvidenceIdentityError("unsupported exact DSP state domain")
         try:
@@ -327,8 +308,6 @@ class NormalizedActiveRawIdentity(FingerprintedRecord):
             raise EvidenceIdentityError(
                 "unsupported active_raw normalization algorithm version"
             )
-        from .null_walk import DspPredecessor, NullWalkError  # lazy: null_walk imports FingerprintedRecord from this module
-
         try:
             frozen = DspPredecessor(normalized_active_raw)
         except NullWalkError as exc:
