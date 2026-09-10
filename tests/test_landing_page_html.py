@@ -157,8 +157,9 @@ def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
     assert "dragging || flushing || inFlight || pending !== null" in js
     assert "Date.now() < ignorePollUntil" in js
     assert re.search(
-        r"async function poll\(\) \{\s+if \(localVolumeDirty\(\)\) return;",
+        r"async function poll\(\) \{.*?\s+if \(localVolumeDirty\(\)\) return;",
         js,
+        re.DOTALL,
     )
 
 
@@ -234,9 +235,9 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     assert "typeof safety.safety_muted === 'boolean'" in script
     assert "typeof safety.volume_allowed === 'boolean'" in script
     assert "var safetyMuted = false" in script
-    assert "if (safetyMuted) return;" in script
+    assert "if (safetyMuted || heldOwner !== null) return;" in script
     assert "aria-disabled" in script
-    assert "hit.classList.toggle('safety-muted', safetyMuted)" in script
+    assert "hit.classList.toggle('safety-muted', disabled);" in script
     assert "volume-safety-note" in script
     assert "fetch('/state'" not in script
     assert "disabled = true" not in script
@@ -376,6 +377,173 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
         """
     )
     script_path = tmp_path / "volume_slider_pointer_test.cjs"
+    script_path.write_text(harness, encoding="utf-8")
+
+    result = subprocess.run(
+        [node, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
+    """A 409 from /volume/set (jasper.control.measurement_hold) names the
+    incumbent in the status slot and locks the fader until the hold's own
+    expiry lapses — see jasper/control/handlers/volume.py's
+    `_refuse_authoritative_write`, whose body carries `owner` and
+    `measurement`."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the landing-page pointer harness")
+
+    slider = _volume_slider_script(_landing_js()) + "\ninitVolume();\n"
+    harness = textwrap.dedent(
+        f"""
+        const vm = require('node:vm');
+        const script = {json.dumps(slider)};
+        const posted = [];
+
+        function makeElement(id) {{
+          const el = {{
+            id,
+            style: {{}},
+            textContent: '',
+            attrs: {{}},
+            classes: new Set(),
+            listeners: {{}},
+            setAttribute(name, value) {{ this.attrs[name] = String(value); }},
+            removeAttribute(name) {{ delete this.attrs[name]; }},
+            getAttribute(name) {{ return this.attrs[name] || null; }},
+            addEventListener(type, fn) {{
+              (this.listeners[type] ||= []).push(fn);
+            }},
+            getBoundingClientRect() {{
+              return {{ left: 100, top: 20, width: 200, height: 56 }};
+            }},
+            focus() {{ this.focused = true; }},
+            setPointerCapture(pointerId) {{ this.captured = pointerId; }},
+            releasePointerCapture(pointerId) {{ this.released = pointerId; }},
+          }};
+          el.classList = {{
+            toggle(name, force) {{
+              if (force) el.classes.add(name);
+              else el.classes.delete(name);
+            }},
+          }};
+          return el;
+        }}
+
+        const elements = {{
+          'vol-control': makeElement('vol-control'),
+          'vol-fill': makeElement('vol-fill'),
+          'vol-percent': makeElement('vol-percent'),
+        }};
+
+        elements['vol-control'].setAttribute('aria-valuenow', '50');
+        elements['vol-control'].setAttribute('aria-valuetext', '50%');
+        elements['vol-fill'].style.width = '50%';
+        elements['vol-percent'].textContent = '50%';
+
+        function event(type, clientX) {{
+          return {{
+            type,
+            clientX,
+            pointerId: 7,
+            pointerType: 'touch',
+            defaultPrevented: false,
+            preventDefault() {{ this.defaultPrevented = true; }},
+          }};
+        }}
+
+        function dispatch(type, e) {{
+          for (const fn of elements['vol-control'].listeners[type] || []) {{
+            fn(e);
+          }}
+        }}
+
+        function assertEqual(actual, expected, message) {{
+          if (actual !== expected) {{
+            throw new Error(`${{message}}: expected ${{expected}}, got ${{actual}}`);
+          }}
+        }}
+
+        function delay(ms) {{
+          return new Promise((resolve) => setTimeout(resolve, ms));
+        }}
+
+        (async () => {{
+          const context = {{
+            document: {{
+              visibilityState: 'visible',
+              getElementById(id) {{ return elements[id]; }},
+            }},
+            fetch: async (url, options = {{}}) => {{
+              if (url === '/volume/set') {{
+                posted.push(JSON.parse(options.body));
+                return {{
+                  ok: false,
+                  status: 409,
+                  json: async () => ({{
+                    error: 'a measurement is in progress (owner=audio_measurement)',
+                    owner: 'audio_measurement',
+                    measurement: {{
+                      active: true,
+                      owner: 'audio_measurement',
+                      mode: 'gate',
+                      expires_in_s: 42.0,
+                      held_for_s: 3.2,
+                    }},
+                  }}),
+                }};
+              }}
+              return {{ ok: true, json: async () => ({{ percent: 50 }}) }};
+            }},
+            jsonHeaders: () => ({{ 'Content-Type': 'application/json' }}),
+            startPolling(fn) {{ fn(); return () => {{}}; }},
+            setTimeout,
+            Promise,
+            Date,
+            Math,
+            JSON,
+          }};
+
+          vm.runInNewContext(script, context, {{ timeout: 1000 }});
+          await delay(0);
+
+          dispatch('pointerdown', event('pointerdown', 150));
+          await delay(200);
+
+          assertEqual(posted.length, 1, 'one write attempted');
+          assertEqual(
+            elements['vol-percent'].textContent,
+            'Held by audio_measurement for measurement',
+            'held status text names the owner',
+          );
+          assertEqual(
+            elements['vol-control'].classes.has('safety-muted'),
+            true,
+            'fader visually disabled while held',
+          );
+          assertEqual(
+            elements['vol-control'].getAttribute('aria-disabled'),
+            'true',
+            'fader marked aria-disabled while held',
+          );
+
+          const retry = event('pointerdown', 260);
+          dispatch('pointerdown', retry);
+          assertEqual(retry.defaultPrevented, true, 'pointerdown blocked while held');
+          assertEqual(posted.length, 1, 'no further write while held');
+        }})().catch((err) => {{
+          console.error(err && err.stack ? err.stack : err);
+          process.exit(1);
+        }});
+        """
+    )
+    script_path = tmp_path / "volume_slider_measurement_hold_test.cjs"
     script_path.write_text(harness, encoding="utf-8")
 
     result = subprocess.run(

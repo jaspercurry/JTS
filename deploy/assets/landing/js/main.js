@@ -29,6 +29,12 @@ function initVolume() {
   var inFlight = false;
   var flushing = false;
   var safetyMuted = false;
+  // A measurement hold owns the fader (jasper-control refuses the write
+  // with 409; see measurement_hold.py). heldUntil is a local Date.now()
+  // deadline derived from the 409 body's expires_in_s, so the already
+  // running poll() can clear it on its own next tick — no new timer.
+  var heldOwner = null;
+  var heldUntil = 0;
   var desiredPct = null;
   var ignorePollUntil = 0;
   var pollInFlight = false;
@@ -77,9 +83,21 @@ function initVolume() {
     return false;
   }
 
+  // Either lock reason grays out the same control; keep the two flags
+  // independent so clearing one never re-enables a fader the other still
+  // owns.
+  function refreshControlDisabled() {
+    var disabled = safetyMuted || heldOwner !== null;
+    hit.classList.toggle('safety-muted', disabled);
+    if (disabled) {
+      hit.setAttribute('aria-disabled', 'true');
+    } else {
+      hit.removeAttribute('aria-disabled');
+    }
+  }
+
   function setSafetyMuted(muted) {
     safetyMuted = !!muted;
-    hit.classList.toggle('safety-muted', safetyMuted);
     if (safetyNote) safetyNote.hidden = !safetyMuted;
     if (safetyMuted) {
       dragging = false;
@@ -87,11 +105,33 @@ function initVolume() {
       desiredPct = null;
       ignorePollUntil = 0;
       hit.setAttribute('aria-describedby', 'volume-safety-note');
-      hit.setAttribute('aria-disabled', 'true');
     } else {
       hit.removeAttribute('aria-describedby');
-      hit.removeAttribute('aria-disabled');
     }
+    refreshControlDisabled();
+  }
+
+  // A measurement's hold refused the write (409; see
+  // jasper/control/measurement_hold.py). Name the incumbent and lock the
+  // fader until the hold's own expiry lapses.
+  function applyMeasurementHold(owner, measurement) {
+    heldOwner = owner;
+    var expiresIn = measurement && typeof measurement.expires_in_s === 'number'
+      ? measurement.expires_in_s : 0;
+    heldUntil = Date.now() + Math.max(0, expiresIn) * 1000;
+    dragging = false;
+    pending = null;
+    desiredPct = null;
+    ignorePollUntil = 0;
+    percentEl.textContent = 'Held by ' + owner + ' for measurement';
+    refreshControlDisabled();
+  }
+
+  function clearMeasurementHold() {
+    if (heldOwner === null) return;
+    heldOwner = null;
+    heldUntil = 0;
+    refreshControlDisabled();
   }
 
   function xToPercent(clientX) {
@@ -101,7 +141,7 @@ function initVolume() {
   }
 
   function setFromPointer(e) {
-    if (safetyMuted) return;
+    if (safetyMuted || heldOwner !== null) return;
     var pct = clampPct(xToPercent(e.clientX));
     setUI(pct);
     sendThrottled(pct);
@@ -113,7 +153,7 @@ function initVolume() {
   }
 
   function sendThrottled(pct) {
-    if (safetyMuted) return;
+    if (safetyMuted || heldOwner !== null) return;
     desiredPct = clampPct(pct);
     pending = desiredPct;
     ignorePollUntil = Date.now() + SETTLE_MS;
@@ -147,6 +187,19 @@ function initVolume() {
                 typeof data.percent === 'number') {
               setUI(data.percent);
             }
+          } else if (resp.status === 409) {
+            var holdBody = null;
+            try { holdBody = await resp.json(); } catch (_) {}
+            var measurement = holdBody && holdBody.measurement;
+            var owner = holdBody && typeof holdBody.owner === 'string'
+              ? holdBody.owner
+              : (measurement && typeof measurement.owner === 'string'
+                ? measurement.owner : null);
+            if (owner) {
+              applyMeasurementHold(owner, measurement);
+            } else {
+              markWriteFailed();
+            }
           } else {
             markWriteFailed();
           }
@@ -163,7 +216,7 @@ function initVolume() {
 
   hit.addEventListener('pointerdown', function(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (safetyMuted) {
+    if (safetyMuted || heldOwner !== null) {
       e.preventDefault();
       return;
     }
@@ -205,13 +258,17 @@ function initVolume() {
       default: return;
     }
     e.preventDefault();
-    if (safetyMuted) return;
+    if (safetyMuted || heldOwner !== null) return;
     next = clampPct(next);
     setUI(next);
     sendThrottled(next);
   });
 
   async function poll() {
+    if (heldOwner !== null) {
+      if (Date.now() < heldUntil) return;
+      clearMeasurementHold();
+    }
     if (localVolumeDirty()) return;
     if (document.visibilityState === 'hidden') return;
     if (pollInFlight) return;
