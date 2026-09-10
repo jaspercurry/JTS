@@ -5,6 +5,8 @@
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
 import { jtsConfirm } from '/assets/shared/js/dialog.js';
 import { renderCloud, redrawCloudChart } from './cloud.js';
+import { positionDiagram, positionCaption } from './position-diagram.js';
+import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } from './units.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
@@ -31,7 +33,11 @@ const els = {
   action: document.getElementById('crossover-action'),
   capture: document.getElementById('crossover-capture'),
   walk: document.getElementById('crossover-walk'),
+  walkUnitsImperial: document.getElementById('crossover-units-imperial'),
+  walkUnitsMetric: document.getElementById('crossover-units-metric'),
   walkProgress: document.getElementById('crossover-walk-progress'),
+  walkDiagram: document.getElementById('crossover-walk-diagram'),
+  walkCaption: document.getElementById('crossover-walk-caption'),
   walkHeadline: document.getElementById('crossover-walk-headline'),
   walkDetail: document.getElementById('crossover-walk-detail'),
   walkAction: document.getElementById('crossover-walk-action'),
@@ -658,6 +664,7 @@ function renderActions(primary, alternates = []) {
 // whenever the session stops being in flight (renderWalk's own !active arm),
 // so it can never describe a session that is over.
 let walkPrompt = null;
+let walkGeometry = null;
 let lastWalkKey = null;
 
 // A stable serialization of exactly what renderWalk builds — the same
@@ -685,12 +692,47 @@ function walkKey(prompt, pending, yielded) {
 // for this session (the closing screen's Save / Record-again, the review
 // screen's Apply) — one primary at a time, the rule the action row's capture
 // gate already holds.
+// The per-position picture (#3629, #1941 R11) -- degrees/vertical_deg ride
+// the SAME `position_pending` payload the prompt text is built from
+// (jasper.active_speaker.crossover_v2.position_gate), so this draws straight
+// off `pending`, never a second fetch. Hidden for a prompt with no bearing at
+// all (the mark itself has nothing to draw an arrow toward).
+function renderWalkDiagram(pending) {
+  const degrees = pending ? pending.degrees : 0;
+  const verticalDeg = pending ? pending.vertical_deg : 0;
+  const show = Boolean(pending) && (degrees || verticalDeg);
+  els.walkDiagram.hidden = !show;
+  els.walkCaption.hidden = !show;
+  if (!show) {
+    els.walkDiagram.replaceChildren();
+    return;
+  }
+  els.walkDiagram.replaceChildren(positionDiagram(degrees, verticalDeg));
+  els.walkCaption.textContent = positionCaption(degrees, verticalDeg);
+}
+
+// Re-applies the units preference to the currently displayed prompt without
+// waiting for the next 1.5 s poll -- the diagram itself is unit-agnostic
+// (degrees/vertical_deg, not text), so only the two prose lines need it.
+function refreshUnitsDisplay() {
+  if (!walkPrompt) return;
+  els.walkHeadline.textContent = formatDistances(walkPrompt.title || '');
+  els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
+}
+
+function setUnitsButtons(unit) {
+  const metric = unit === UNIT_METRIC;
+  els.walkUnitsMetric.setAttribute('aria-pressed', String(metric));
+  els.walkUnitsImperial.setAttribute('aria-pressed', String(!metric));
+}
+
 function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
   const held = walking ? capture.position_pending : null;
   const pending = held && held.hand_released ? held : null;
   if (pending && pending.prompt) walkPrompt = pending.prompt;
-  if (!walking) walkPrompt = null;
+  if (pending) walkGeometry = {degrees: pending.degrees, vertical_deg: pending.vertical_deg};
+  if (!walking) { walkPrompt = null; walkGeometry = null; }
   const show = Boolean(walking && walkPrompt && !yielded);
   const key = walkKey(show ? walkPrompt : null, show ? pending : null, yielded);
   if (key === lastWalkKey) return;
@@ -701,9 +743,10 @@ function renderWalk(capture, {active, yielded}) {
     return;
   }
   els.walkProgress.textContent = walkPrompt.progress || '';
-  els.walkHeadline.textContent = walkPrompt.title || '';
-  els.walkDetail.textContent = walkPrompt.body || '';
+  els.walkHeadline.textContent = formatDistances(walkPrompt.title || '');
+  els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
   els.walkDetail.hidden = !walkPrompt.body;
+  renderWalkDiagram(walkGeometry);
   // Two states, and the difference is whose move it is. Holding: the server
   // named the release action, so render it. Not holding: the tone is playing
   // on the spot named above, and there is nothing to press — say that rather
@@ -1051,6 +1094,20 @@ function refresh() {
 if (typeof document !== 'undefined') {
   els.captureStop.addEventListener('click', stopCapture);
   els.startOver.addEventListener('click', startOver);
+  // Page-local units preference (#3629, #1941 Q2): a static toggle, wired
+  // once here like Start Over / Stop above -- unlike the walk's own action
+  // button, it is never rebuilt by a render pass.
+  setUnitsButtons(currentUnits());
+  els.walkUnitsImperial.addEventListener('click', () => {
+    setUnits(UNIT_IMPERIAL);
+    setUnitsButtons(UNIT_IMPERIAL);
+    refreshUnitsDisplay();
+  });
+  els.walkUnitsMetric.addEventListener('click', () => {
+    setUnits(UNIT_METRIC);
+    setUnitsButtons(UNIT_METRIC);
+    refreshUnitsDisplay();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       // Re-apply whichever cadence is already in effect — schedulePoll()

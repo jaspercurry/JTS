@@ -9,8 +9,7 @@
 // listener must re-apply (not discard) the caller's last requested cadence.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
 const ids = [
   "crossover-verdict",
@@ -21,17 +20,17 @@ const ids = [
   "crossover-review-body",
   "crossover-action",
   "crossover-capture",
+  // #3629: the units toggle is wired at module load time (alongside Start
+  // Over / Stop below), unconditionally -- these two must exist even though
+  // this file never exercises renderWalk() itself.
+  "crossover-units-imperial",
+  "crossover-units-metric",
   "crossover-capture-status",
   "crossover-capture-stop",
   "capture-status",
 ];
 
 const visibilityListeners = [];
-installFixedDocument(ids, {
-  addEventListener(name, fn) {
-    if (name === "visibilitychange") visibilityListeners.push(fn);
-  },
-});
 
 // A real timer registry (not a no-op stub) so delay values are observable.
 const timers = [];
@@ -46,18 +45,19 @@ globalThis.clearTimeout = (id) => {
   if (idx !== -1) timers.splice(idx, 1);
 };
 
-globalThis.__getJSON = async () => ({});
-globalThis.__postJSON = async () => ({});
-
-const { schedulePoll } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals(["getJSON", "postJSON"]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["schedulePoll"],
+const { schedulePoll } = await crossoverMainModule({
+  ids,
+  documentOptions: {
+    addEventListener(name, fn) {
+      if (name === "visibilitychange") visibilityListeners.push(fn);
+    },
   },
-);
+  extraStubs: {
+    getJSON: async () => ({}),
+    postJSON: async () => ({}),
+  },
+  exportNames: ["schedulePoll"],
+});
 
 // --- visible: schedules at the caller's requested cadence -------------------
 schedulePoll(1500);

@@ -22,28 +22,19 @@
 //     truthy-but-not-boolean value can never invent the pinned wording.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { CROSSOVER_IDS, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
-const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
-globalThis.__getJSON = async () => ({});
-globalThis.__postJSON = async () => ({});
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
 
-const { render } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render"],
+const { elements, render } = await crossoverMainModule({
+  extraStubs: {
+    getJSON: async () => ({}),
+    postJSON: async () => ({}),
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
   },
-);
+});
 
 const baseEnvelope = {
   verdict_text: "",

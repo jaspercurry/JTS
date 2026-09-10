@@ -10,34 +10,28 @@
 // capture session, whose phone owns the tap.
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { CROSSOVER_IDS, element, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
-const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
 let nextEnvelope = null;
 const posted = [];
-globalThis.__getJSON = async () => nextEnvelope;
-globalThis.__postJSON = async (path, body) => {
-  posted.push({ path, body });
-  return { ok: true, released: { index: body && body.index } };
-};
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
-
-const { render } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render"],
+// This file pins the release-hold state machine, not the walk's per-
+// position picture/units logic (which has its own
+// tests/js/crossover_position_diagram_test.mjs and
+// tests/js/crossover_units_test.mjs) -- those stub through unchanged.
+const { elements, render } = await crossoverMainModule({
+  extraStubs: {
+    getJSON: async () => nextEnvelope,
+    postJSON: async (path, body) => {
+      posted.push({ path, body });
+      return { ok: true, released: { index: body && body.index } };
+    },
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
   },
-);
+});
 
 const walk = () => elements.get("crossover-walk");
 const walkAction = () => elements.get("crossover-walk-action");

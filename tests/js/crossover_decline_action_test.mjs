@@ -3,10 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
-import { CROSSOVER_IDS, installFixedDocument } from "./_dom.mjs";
+import { crossoverMainModule } from "./_dom.mjs";
 
-const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
@@ -16,25 +14,17 @@ let nextEnvelope = {
   next_action: { label: "Start", endpoint: "/sound/speaker/crossover/v2/session" },
   alternate_actions: [{ label: "Start full", endpoint: "/sound/speaker/crossover/v2/session" }],
 };
-globalThis.__getJSON = async () => nextEnvelope;
-globalThis.__postJSON = async (url, body) => {
-  posted.push({ url, body });
-  return nextEnvelope;
-};
-globalThis.__renderCloud = () => {};
-globalThis.__redrawCloudChart = () => {};
-
-const { render } = await loadEsm(
-  repoPath("deploy/assets/correction/js/crossover/main.js"),
-  {
-    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
-    ]),
-    truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render"],
+const { elements, render } = await crossoverMainModule({
+  extraStubs: {
+    getJSON: async () => nextEnvelope,
+    postJSON: async (url, body) => {
+      posted.push({ url, body });
+      return nextEnvelope;
+    },
+    renderCloud: () => {},
+    redrawCloudChart: () => {},
   },
-);
+});
 
 let passed = 0;
 function check(condition, message) {
