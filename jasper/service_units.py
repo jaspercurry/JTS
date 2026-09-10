@@ -87,6 +87,11 @@ DOCTOR_UNIT_ROSTER: tuple[str, ...] = (
     *DOCTOR_EXTRA_UNITS,
 )
 
+#: The root oneshot that re-detects output hardware and re-proves the boot
+#: CamillaDSP graph. Named here because three subsystems address it by name and
+#: a literal duplicated across them is exactly the pair that drifts.
+AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
+
 SHOW_PROPERTIES = (
     "Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "Result",
     "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent", "CPUUsageNSec",

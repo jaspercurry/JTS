@@ -92,7 +92,6 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
     "tests/test_tuning_tool_menu_generator.py",
-    "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
     "tests/test_waveform_fusion_experiment.py",

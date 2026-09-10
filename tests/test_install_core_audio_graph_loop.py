@@ -42,6 +42,7 @@ _REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
 # Every destination the install table should attempt, regardless of mid-loop
 # failure. Kept as the asserted contract so a future row addition is caught.
 EXPECTED_DSTS = (
+    "jasper-camilla-topology-gate",
     "jasper-camilla.service",
     "jasper-camilla-recover.service",
     "jasper-camilla-crossover.service",

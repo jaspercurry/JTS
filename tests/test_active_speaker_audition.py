@@ -31,9 +31,9 @@ from jasper.active_speaker.audition import (
     start_audition,
     stop_audition,
 )
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     recompose_applied_baseline_yaml,
-    topology_config_fingerprint,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME

@@ -944,6 +944,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
                 raise BoxNotMeasurable("measurement_volume_invalid", "volume must be within -100..0 dB")
             box = replace(box, session_volume_db=args.volume_db)
         payload = asyncio.run(_measure(specs, box, mic_serial=args.mic_serial))
+
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:

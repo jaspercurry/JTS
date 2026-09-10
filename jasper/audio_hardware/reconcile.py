@@ -1358,6 +1358,27 @@ class Pass:
             topology=self.output_topology_path,
         )
 
+    def open_runtime_graph_attempt(self) -> None:
+        """Stamp "this pass is working on THIS topology, unproved" before it acts.
+
+        :meth:`converge_runtime_graph` closes the stamp when it writes, so what
+        survives a pass names the topology whose boot graph nobody proved. It is
+        opened HERE, before the pass mutates anything, rather than inside the
+        convergence: EVERY exit from this point on — an i2s apply error, the
+        rejected outputd candidate, an OOM kill — is equally a pass that proved
+        no graph, and the gate has to see them. (The unreadable-asound abort
+        above is deliberately outside: it precedes every mutation, so the box is
+        exactly as the previous pass left it.)
+        """
+        topology = self.saved_topology()
+        if topology is None:
+            return
+        # lazy: import cost — the stamp writers live beside the topology, and
+        # the --print-env path returns before this point (ADR-0226).
+        from jasper.output_topology import stamp_statefile_convergence
+
+        stamp_statefile_convergence(self.camilla_statefile, topology, proved=False)
+
     def converge_runtime_graph(self) -> bool:
         """Seed the proved boot statefile for the saved topology.
 
@@ -1655,6 +1676,7 @@ class Pass:
             self.apply_observed_composite_policy()
             self.print_role_env()
             return 0
+        self.open_runtime_graph_attempt()
         self.reconcile_i2s_hat_boot()
         self.observe_output_hardware_state(write=True)
         self.sync_i2s_hat_reboot_marker()
@@ -1728,8 +1750,10 @@ class Pass:
             # A live topology-replacement caller already parked before saving,
             # so keep the preliminary non-active candidate rather than deriving
             # an active lane from an old graph. At boot the statefile may still
-            # be stale; jasper-camilla Requires this oneshot and therefore
-            # cannot start after this nonzero result.
+            # be stale; jasper-camilla only Wants= this oneshot, so it does
+            # start after a nonzero result — this exit status is the signal,
+            # and jasper-camilla-topology-gate is what refuses a graph proved
+            # against a different topology (#4416 R8).
             runtime_converge_failed = 1
         else:
             self.stage_outputd_env()

@@ -33,6 +33,7 @@ from jasper import audio_runtime_plan, output_hardware
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
+from tests.systemd_unit_helpers import values_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -726,10 +727,20 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
             assert fields[name] == value, name
 
 
-def test_camilla_boot_requires_successful_runtime_graph_convergence(
+def test_camilla_waits_for_the_runtime_graph_reconcile_without_being_gated_on_it(
     tmp_path: Path,
 ) -> None:
-    """A stale statefile cannot start Camilla after a failed boot reconcile."""
+    """The reconciler runs before Camilla, and its failure does not stop it.
+
+    Camilla is Restart=always precisely because a stopped CamillaDSP is a
+    silent speaker. A Requires= on this Type=oneshot turns any non-zero
+    reconcile into a dependency failure that leaves the daemon down with
+    nothing to restart it; After= alone still holds the start until the
+    reconciler is terminal, and the reconciler's own non-zero exit is what
+    surfaces the failure. What the Requires= was really carrying — a graph
+    proved against a different topology must not reach these drivers — is the
+    ExecCondition= gate instead (#4416 R8).
+    """
     camilla_unit = (ROOT / "deploy" / "systemd" / "jasper-camilla.service").read_text(
         encoding="utf-8"
     )
@@ -737,11 +748,14 @@ def test_camilla_boot_requires_successful_runtime_graph_convergence(
         ROOT / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text(encoding="utf-8")
 
-    assert "Requires=jasper-audio-hardware-reconcile.service" in camilla_unit
-    after_line = next(
-        line for line in camilla_unit.splitlines() if line.startswith("After=")
+    reconciler_unit = "jasper-audio-hardware-reconcile.service"
+    assert reconciler_unit in values_for(camilla_unit, "Wants")
+    assert reconciler_unit not in values_for(camilla_unit, "Requires")
+    assert reconciler_unit not in values_for(camilla_unit, "BindsTo")
+    assert reconciler_unit in values_for(camilla_unit, "After")
+    assert "/usr/local/sbin/jasper-camilla-topology-gate" in values_for(
+        camilla_unit, "ExecCondition"
     )
-    assert "jasper-audio-hardware-reconcile.service" in after_line
     # The required oneshot runs the same reconciler whose exit status is
     # nonzero when runtime convergence fails.
     assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile" in hardware_unit
@@ -3247,6 +3261,59 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
     ]
     assert stopped == [], stopped
     assert "jasper-voice.service" not in _systemctl_log(tmp_path)
+
+
+def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
+    tmp_path: Path,
+) -> None:
+    """A pass that exits before the graph proved no graph, and the gate has to
+    see that.
+
+    The unproved stamp is opened at the TOP of the pass, not inside the
+    convergence, precisely so the exits BEFORE the convergence — this one, an
+    i2s apply error, an OOM kill — are not read as "a graph was proved".
+    """
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        read_topology_fingerprint_stamp,
+        statefile_unproved_stamp_path,
+        topology_config_fingerprint,
+    )
+
+    graph_env = _apple_active_graph_env(tmp_path)
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
+        initial_outputd_env=(
+            "JASPER_OUTPUTD_BACKEND=alsa\n"
+            "JASPER_OUTPUTD_SINK=single_alsa\n"
+            "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
+        ),
+        extra_env={
+            **graph_env,
+            **_override_store(
+                tmp_path,
+                JASPER_OUTPUTD_PERIOD_FRAMES="1024",
+                JASPER_OUTPUTD_DAC_BUFFER_FRAMES="256",
+            ),
+        },
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert stderr_event(
+        result.stderr, "audio_hardware_reconcile.outputd_candidate_rejected"
+    )
+    # The convergence never ran, so nothing could have closed the stamp.
+    assert result.converge_calls == []
+    statefile = Path(graph_env["JASPER_CAMILLA_STATEFILE"])
+    topology = load_output_topology_strict(graph_env["JASPER_OUTPUT_TOPOLOGY_PATH"])
+    assert read_topology_fingerprint_stamp(
+        statefile_unproved_stamp_path(statefile)
+    ) == topology_config_fingerprint(topology)
 
 
 def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(

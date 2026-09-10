@@ -211,6 +211,7 @@ def _acoustic_commissioning_status(
         expected_topology_fingerprint=str(
             current_source.get("topology_fingerprint") or ""
         ) or None,
+        topology=topology,
     )
     tuning_owner = str(applied_state.get("owner") or "")
     applied_measured = (
@@ -487,6 +488,7 @@ def _derive_commissioning_summary(
         expected_topology_fingerprint=(
             str(current_source.get("topology_fingerprint") or "") or None
         ),
+        topology=topology,
     )
 
     return {
@@ -985,9 +987,7 @@ def read_active_speaker_setup_status(
             and protected_topology_fingerprint != current_topology_fingerprint
         )
         # Topology staleness is deliberately NOT a readiness input (ruling S10,
-        # ADR-0019): `topology_config_fingerprint` hashes the whole topology
-        # dict bar `pairing_intent`, so display-only strings that reach no clamp
-        # rotate it. This comparison enforces no cap — it hashes a dict and
+        # ADR-0019): this comparison enforces no cap — it hashes a dict and
         # reports inequality. The declared facts that DO gate keep their own
         # gates downstream, each reading the field rather than the hash
         # (`evaluate_driver_safety_profile`, `resolve_driver_excitation_ceilings`,
@@ -1105,6 +1105,7 @@ def read_active_speaker_setup_status(
         expected_topology_fingerprint=str(
             current_source.get("topology_fingerprint") or ""
         ) or None,
+        topology=topology,
     )
     layer_a_binding = _applied_layer_a_binding(
         topology,

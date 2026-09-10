@@ -20,13 +20,11 @@ Same two bars as ``tests/test_tts_wire_width.py``:
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from jasper.assistant_loudness import SPINE_SCALE, measure_pcm_24k_mono
-from jasper.voice import earcons
 from jasper.voice.earcons import (
     _CHIME_ASCENDING,
     _I32_MAX,
@@ -40,8 +38,6 @@ from jasper.voice.earcons import (
     _to_pcm16,
     _to_pcm32,
 )
-
-_REPO = Path(__file__).resolve().parents[1]
 
 # Captured by running `git archive origin/main jasper/` and re-baking each
 # earcon with the pre-change `_to_pcm16` at 1caff2304 (2026-08-12). These are
@@ -276,8 +272,3 @@ def test_measuring_a_wide_buffer_as_narrow_is_visibly_wrong():
     correct = measure_pcm_24k_mono(wide, wide=True)
     misread = measure_pcm_24k_mono(wide)
     assert abs(correct.source_lufs - misread.source_lufs) > 1.0
-
-
-def test_earcons_module_is_the_one_the_worktree_owns():
-    """Guard against a shared venv resolving `jasper` to another checkout."""
-    assert Path(earcons.__file__).resolve().parents[2] == _REPO

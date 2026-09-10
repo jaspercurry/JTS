@@ -38,7 +38,12 @@ from jasper.dsp_apply import (
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    canonical_fingerprint as _fingerprint,
+    topology_config_fingerprint,
+    topology_fingerprint_matches,
+)
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
@@ -200,11 +205,6 @@ def _safe_id(value: str) -> str:
     return out.strip("_")[:80] or "active_speaker"
 
 
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
     """Identify the exact immutable Layer-A candidate, not its cache source."""
 
@@ -232,15 +232,6 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
             source.get("fingerprint") if isinstance(source, Mapping) else None
         ),
         "recomposition_snapshot": hashed_snapshot,
-    })
-
-
-def topology_config_fingerprint(topology: OutputTopology) -> str:
-    """Fingerprint only topology fields that determine emitted DSP config."""
-    return _fingerprint({
-        key: value
-        for key, value in topology.to_dict().items()
-        if key != "pairing_intent"
     })
 
 
@@ -382,18 +373,8 @@ def _source_payload(
         else {}
     )
     # The baseline config cache invalidates whenever this source fingerprint
-    # changes, so the topology fingerprint must cover ONLY topology fields that
-    # determine the emitted CamillaDSP config (a one-directional constraint --
-    # nothing spurious in; see this function's docstring for what is left out
-    # altogether). `pairing_intent` is commission-time design intent that, by
-    # contract, drives no config (the multiroom reconciler resolves the runtime
-    # role from grouping.env, not from this field — see
-    # output_topology.py), so it is
-    # excluded: toggling it must not force a needless baseline recompile, and
-    # excluding it keeps the fingerprint stable across the field's introduction.
-    # The "pairing field never changes the cache" contract is pinned by
-    # test_pairing_intent_change_does_not_invalidate_baseline_cache, which fails
-    # if this key is ever renamed without updating the exclusion here.
+    # changes, so nothing spurious may ride the topology fingerprint — what it
+    # covers and why is `topology_config_fingerprint`'s own docstring.
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
@@ -3062,8 +3043,9 @@ def applied_baseline_hardware_match(
         )]
     if (
         snapshot.get("topology_id") != topology.topology_id
-        or snapshot.get("topology_fingerprint")
-        != topology_config_fingerprint(topology)
+        or not topology_fingerprint_matches(
+            snapshot.get("topology_fingerprint"), topology
+        )
     ):
         return None, [_issue(
             "blocker",
@@ -3995,6 +3977,7 @@ async def _apply_baseline_profile_locked(
         expected_topology_fingerprint=str(
             (candidate.get("source") or {}).get("topology_fingerprint") or ""
         ),
+        topology=topology,
         expected_domain="driver" if driver_domain else "full",
         require_applied=False,
     )

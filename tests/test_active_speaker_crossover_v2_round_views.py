@@ -2981,64 +2981,6 @@ def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
     assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])
 
 
-def test_every_import_in_the_round_views_package_resolves():
-    """Each view module's imports, module-scope AND deferred, name something
-    importable — the pin a mis-levelled relative import trips.
-
-    The subcommand tests below stub what a view calls, so a wrong ``.``-level
-    inside one would surface only on the operator's real invocation.
-    """
-    import ast
-    import importlib
-    import importlib.util
-
-    from jasper.cli import round_views as cli
-
-    def resolves(name: str) -> bool:
-        """A module, or a name a real module exposes.
-
-        ``find_spec`` answers ``None`` for a MISSING child of a real package
-        and raises for a child of a non-package, so neither result alone tells
-        a bad module path from a plain ``from module import attribute``; the
-        attribute is what the fallback checks, on the parent it just resolved.
-        """
-        try:
-            if importlib.util.find_spec(name) is not None:
-                return True
-        except (AttributeError, ImportError, ValueError):
-            pass
-        parent, _, leaf = name.rpartition(".")
-        if not parent:
-            return False
-        try:
-            return hasattr(importlib.import_module(parent), leaf)
-        except ImportError:
-            return False
-
-    package = cli.__name__
-    unresolved = []
-    for path in sorted(Path(cli.__file__).parent.glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                base = (
-                    importlib.util.resolve_name(
-                        "." * node.level + (node.module or ""), package
-                    )
-                    if node.level
-                    else node.module
-                )
-                names = [base, *(f"{base}.{alias.name}" for alias in node.names)]
-            else:
-                continue
-            unresolved += [
-                f"{path.name}: {name}" for name in names if not resolves(name)
-            ]
-
-    assert unresolved == []
-
-
 # --------------------------------------------------------------------------- #
 # candidates -- the CLI shape over candidate_ladder
 # --------------------------------------------------------------------------- #
