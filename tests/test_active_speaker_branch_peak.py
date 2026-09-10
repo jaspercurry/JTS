@@ -781,52 +781,6 @@ def test_the_frame_bound_is_checked_BEFORE_the_float64_allocation(tmp_path, monk
         branch_peak.read_stimulus_samples(tmp_path / "unused.wav")
 
 
-def test_the_modelled_filter_types_derive_from_the_shared_allowlist():
-    """One allowlist, not a third copy of it.
-
-    ``bass_extension.bench.derivation.ALLOWED_FILTER_TYPES`` owns which stage
-    types are exactly reproducible offline, and ``active_speaker.bench``
-    already imports it rather than restating it. A stage type admitted there
-    must not silently strand seat-level on the conservative bound, so this set
-    is DERIVED — and ``Conv`` is the one deliberate subtraction, because the
-    bench path runs the real binary over a shipped FIR while this module models
-    filters from the config text, which does not carry the coefficients.
-    """
-    import ast
-    from pathlib import Path
-
-    from jasper.bass_extension.bench.derivation import ALLOWED_FILTER_TYPES
-
-    assert branch_peak._MODELLED_FILTER_TYPES == ALLOWED_FILTER_TYPES - {"Conv"}
-    assert "Conv" in ALLOWED_FILTER_TYPES
-
-    # Value equality alone does NOT pin this: a literal set that happens to
-    # match today satisfies it, which is the whole hazard — the copy only
-    # diverges later, when someone widens the shared allowlist. So assert the
-    # DERIVATION, from the source: the assignment must read the shared name.
-    source = Path(branch_peak.__file__).read_text(encoding="utf-8")
-    assignments = [
-        node
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "_MODELLED_FILTER_TYPES"
-            for target in node.targets
-        )
-    ]
-    assert len(assignments) == 1, "_MODELLED_FILTER_TYPES is assigned more than once"
-    referenced = {
-        node.id
-        for node in ast.walk(assignments[0].value)
-        if isinstance(node, ast.Name)
-    }
-    assert "ALLOWED_FILTER_TYPES" in referenced, (
-        "_MODELLED_FILTER_TYPES must be derived from the shared allowlist, not "
-        "restated as a literal — a restated copy passes the equality above "
-        "until the day the shared set grows, which is exactly when it matters"
-    )
-
-
 def test_no_requested_channels_refuses(tmp_path):
     wav = _tone_wav(tmp_path / "s.wav")
     _refuses(

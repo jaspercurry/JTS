@@ -62,7 +62,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
-from jasper.bass_extension.bench.render import RenderError, resolve_render_binary
+from jasper.active_speaker.bench.render import RenderError, resolve_render_binary
 
 
 def _load_linearization(path: Path) -> dict[str, list[dict[str, Any]]]:

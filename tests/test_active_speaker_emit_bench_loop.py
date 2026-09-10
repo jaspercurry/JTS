@@ -33,7 +33,7 @@ from jasper.active_speaker.bench import loop
 from jasper.active_speaker.bench.compare import ARRIVAL_PRE_MS, SOFT_CLIP_BUDGET_DB
 from jasper.active_speaker.bench.loop import EmitLoopError, run_emit_loop
 from jasper.active_speaker.delta_probe import VERDICT_MATCHED, VERDICT_MODEL_ERROR
-from jasper.bass_extension.bench.render import BinaryIdentity
+from jasper.active_speaker.bench.render import BinaryIdentity
 from jasper.camilla_config_contract import SHELF_Q
 from tests._fake_camilladsp import SLOPE6_SHELF_ENV, slope6_shelf_q
 from tests.test_active_speaker_profile import _two_way_preset
@@ -47,7 +47,7 @@ SWEEP_SECONDS = 2.0
 # ``setrlimit(RLIMIT_AS)`` at ANY finite value, so a finite bound here would
 # make every case in this module fail on the maintainer's own laptop while
 # passing in CI. The finite-bound contract is render.py's and is covered by
-# tests/test_bass_extension_bench_render.py; what this module tests is the loop.
+# tests/test_active_speaker_bench_render.py; what this module tests is the loop.
 TEST_BOUNDS = loop.RenderBounds(
     timeout_s=600.0,
     rlimit_as_bytes=resource.RLIM_INFINITY,
@@ -265,27 +265,7 @@ def test_both_arms_render_deterministically(exact_report) -> None:
 
 
 def test_a_second_run_into_the_same_work_directory_still_grades(tmp_path) -> None:
-    """Re-running the bench into one bundle must not refuse on its own leftovers.
-
-    The determinism helper refuses when a preserved-output path is occupied.
-    That guard is right for the bass-extension campaign, which renders many
-    shapes into one bundle under caller-chosen names — but this loop renders
-    exactly two shapes under names it derives from the arm, so its OWN previous
-    run is not a collision worth refusing. Every other case here uses a fresh
-    ``tmp_path``, so none of them would notice: before the slots were cleared,
-    run 2 died with "preserved output path already exists" and took run 1's
-    verdict down with it, since the CLI's default ``--out`` is a fixed
-    directory.
-
-    Run 2 carries a DIFFERENT fit, and that is what makes the byte assertions
-    below able to discriminate at all: the treated arm must come back with
-    different bytes than run 1 produced, and the retained file must hash to
-    what run 2's own receipt records. Run the same fit twice and the two runs
-    render byte-identically — that is what determinism means — so neither
-    assertion could tell a fresh render from a leftover. The CONTROL arm
-    carries no filters in either run, so it renders identically by
-    construction and is deliberately not part of the difference assertion.
-    """
+    """A changed fit must replace prior output and receive its own receipt."""
 
     import copy
     import hashlib
@@ -393,7 +373,7 @@ def test_the_free_space_guard_is_sized_at_playback_width_in_pairs(
     determinism pair, so the outstanding count is pairs.
     """
 
-    from jasper.bass_extension.bench import render as render_mod
+    from jasper.active_speaker.bench import render as render_mod
 
     seen: dict[str, object] = {}
 

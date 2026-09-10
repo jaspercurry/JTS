@@ -2,58 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Emitter-generated active-speaker config → an offline-renderable config.
+"""Derive an offline render without changing the emitted speaker graph.
 
-**Stage: DERIVE.** Owns exactly one transform: take the YAML text
-:func:`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`
-produced, swap its live ALSA devices for file-backed ones, and hand back the
-result plus the per-branch facts the loop needs to read the render. Pure — no
-subprocess, no filesystem, no analysis, no numpy.
-
-**Units.** Frequencies in hertz; every level in decibels (``clip_limit`` and
-the program headroom gain are dBFS / dB as CamillaDSP spells them); channel
-indices are zero-based frame positions in the interleaved playback stream.
-
-What it owns
-------------
-* The device swap (``Alsa`` → ``WavFile`` capture / ``File`` playback,
-  ``enable_rate_adjust`` forced false) and the geometry validation that must
-  refuse *before* a render rather than produce a silently wrong one.
-* The admission gate: every pipeline step is a ``Filter`` or ``Mixer``, none
-  bypassed, every referenced filter of an allowlisted type, no async resampler.
-* Branch discovery: which pipeline step is each driver's own, which channels it
-  targets, and what its limiter's clip limit is.
-
-What it does NOT own
---------------------
-* **The allowlist and the async-resampler predicate.** Both are imported from
-  :mod:`jasper.bass_extension.bench.derivation`, which defined them first. They
-  are general offline-render admission facts — "filter types whose offline
-  behavior is exactly reproducible from the config text alone" — not
-  bass-specific ones, and importing rather than re-declaring them is what keeps
-  the two benches from admitting different stages.
-  :class:`~jasper.bass_extension.bench.derivation.ArtifactHeader` is imported
-  for the same reason: one shape for "what the stimulus file's header says".
-* **Truncating the graph.** Unlike that bench's ``derive_truncated_config``,
-  this derivation edits the ``pipeline``, ``filters``, and ``mixers`` blocks
-  **not at all** — it asserts them byte-identical to the source. A branch is
-  isolated at *extraction* time, by pulling its channel out of the interleaved
-  playback frame (:func:`jasper.bass_extension.bench.render.extract_channel`),
-  which is strictly safer than pipeline surgery: the graph that renders is the
-  graph the emitter wrote.
-* Rendering, comparison, verdicts, and the stimulus itself.
-
-Why the capture keeps no ``channels`` key
------------------------------------------
-``CaptureDeviceWavFile`` (pinned CamillaDSP v4.1.3, ``src/config/mod.rs``) is
-``{filename, extra_samples?, labels?}`` under ``#[serde(deny_unknown_fields)]``
-— it has **no** ``channels`` field, and capture geometry comes from the WAV's
-own header. So the live ``channels`` value is validated against the stimulus
-header here and recorded in the receipt, never emitted as a key. The playback
-side is the opposite: ``PlaybackDevice::File`` *declares* a required
-``channels``, so it is kept at the live pipeline width. Both citations are the
-sibling bench's, verified against the same pinned source tree; see its module
-docstring for the full chain.
+CamillaDSP v4.1.3's ``CaptureDeviceWavFile`` has no ``channels`` field;
+capture geometry comes from the WAV header. ``PlaybackDevice::File`` requires
+``channels``. See upstream ``src/config/mod.rs`` at tag v4.1.3.
 """
 
 from __future__ import annotations
@@ -66,15 +19,9 @@ import yaml
 
 from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
-from jasper.bass_extension.bench.derivation import (
-    ALLOWED_FILTER_TYPES,
-    ArtifactHeader,
-)
-from jasper.bass_extension.bench.derivation import (
-    DerivationError as _SiblingDerivationError,
-)
-from jasper.bass_extension.bench.derivation import (
-    assert_no_async_resampler as _assert_no_async_resampler,
+
+ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
+    {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}
 )
 
 #: The program-domain gain the emitter folds baseline headroom, room-correction
@@ -86,6 +33,13 @@ PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
 
 class EmitDerivationError(ValueError):
     """A derived render config could not be constructed, or failed its gate."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactHeader:
+    sample_rate_hz: int
+    channels: int
+    bits_per_sample: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,20 +140,13 @@ def _finite_float(value: Any, what: str) -> float:
 
 
 def assert_no_async_resampler(devices: Mapping[str, Any]) -> None:
-    """The sibling bench's async-resampler refusal, re-raised as OUR error type.
-
-    The predicate is imported rather than re-declared (one owner of "an async
-    resampler is not offline-reproducible"), but its exception is that module's
-    ``DerivationError``, and every caller of this module is documented to catch
-    :class:`EmitDerivationError`. Letting a foreign exception type out of one
-    admission path and not the others would mean a refusal that escapes the
-    loop's own handling — so it is translated at the boundary, here, once.
-    """
-
-    try:
-        _assert_no_async_resampler(devices)
-    except _SiblingDerivationError as exc:
-        raise EmitDerivationError(str(exc)) from exc
+    resampler = devices.get("resampler")
+    if isinstance(resampler, Mapping) and str(resampler.get("type", "")).startswith(
+        "Async"
+    ):
+        raise EmitDerivationError(
+            "live devices.resampler is an Async type, outside the offline render allowlist"
+        )
 
 
 def _assert_stage_allowlist(
@@ -210,7 +157,7 @@ def _assert_stage_allowlist(
     Enforced over the WHOLE pipeline, because the whole pipeline renders: this
     derivation truncates nothing, so there is no narrower "retained prefix" to
     scope the gate to. A stage outside
-    :data:`~jasper.bass_extension.bench.derivation.ALLOWED_FILTER_TYPES` is one
+    :data:`~jasper.active_speaker.bench.derivation.ALLOWED_FILTER_TYPES` is one
     whose offline behavior is not exactly reproducible from the config text, and
     a render containing one would grade an unreproducible transform as if it
     were the filters under test.
@@ -252,8 +199,7 @@ def _assert_graph_preserved(source_text: str, derived: Mapping[str, Any]) -> Non
     mapping would compare each object to itself — an ``==`` that can never be
     false. Re-parsing from the immutable source is genuinely independent, and
     it is what would catch a future in-place mutation by this module or a
-    caller. Same argument, and same shape, as the sibling bench's
-    ``_assert_filters_mixers_identical``.
+    caller.
     """
 
     reparsed = _parse(source_text)

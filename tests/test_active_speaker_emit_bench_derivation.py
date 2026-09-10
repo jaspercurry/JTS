@@ -20,13 +20,13 @@ import yaml
 from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_baseline_config
 from jasper.active_speaker.bench import derivation
 from jasper.active_speaker.bench.derivation import (
+    ArtifactHeader,
     EmitDerivationError,
     derive_offline_render_config,
     device_geometry,
 )
 from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
-from jasper.bass_extension.bench.derivation import ArtifactHeader
-from jasper.bass_extension.bench.render import DEPLOYED_PROCESSING_PRECISION
+from jasper.active_speaker.bench.render import DEPLOYED_PROCESSING_PRECISION
 from tests.test_active_speaker_profile import _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.bass_extension.bench.render import BinaryIdentity
+from jasper.active_speaker.bench.render import BinaryIdentity
 from jasper.cli import active_speaker_emit_bench as cli
 
 SHELF_Q = 1.0 / math.sqrt(2.0)
