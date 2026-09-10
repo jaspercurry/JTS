@@ -60,7 +60,11 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
+    PHASE_LATERAL,
     PHASE_REVIEW,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
@@ -892,6 +896,63 @@ def test_done_makes_no_claim_when_the_store_has_no_floor():
     assert env["verdict_text"].endswith(
         "No improvement claim was made because this speaker has no adopted "
         "measurement floor."
+    )
+
+
+def test_verdict_copy_switches_once_a_floor_is_adopted_after_a_no_floor_round():
+    """#2570's remaining half: the copy-continuity check the issue's own
+    2026-08-17 comment named as the cheapest close-out. Round N has no
+    adopted floor and says so; round N+1, after a floor is adopted, must
+    stop saying that -- the sentence dispatch table
+    (``_ATTEMPT_SENTENCE_BY_REASON``) picks a DIFFERENT reason once
+    ``decide_next`` is handed a floor, so this either confirms the pre-
+    existing dispatch already does the right thing (per the issue's own
+    speculation) or catches a dispatch bug -- there was no test either way
+    before this one.
+    """
+    no_floor_env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={
+            "last_decision": {
+                "decision": None,
+                "reason": ATTEMPT_REASON_NO_FLOOR,
+                "provenance": PROVENANCE_REALIZED,
+                "floor": None,
+            },
+            "store_count": 1,
+        },
+    ))
+    round_n_sentence = no_floor_env["verdict_text"]
+    assert "no adopted measurement floor" in round_n_sentence
+
+    # Round N+1: a floor now exists (adopted between the two rounds), and
+    # this is the first attempt graded against it.
+    metric = "linearization_residual_rms_db"
+    floor = FloorStats.from_policy_bar(
+        metric=metric,
+        claim_floor_db=0.5,
+        source="test policy bar",
+        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
+    )
+    decision = decide_next(
+        [AttemptRecord(
+            attempt_id="candidate-a",
+            metric=metric,
+            provenance=PROVENANCE_MODEL_GRADED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=0.9,
+        )],
+        floor,
+    )
+    round_n_plus_1_env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": decision.to_dict()},
+    ))
+    round_n_plus_1_sentence = round_n_plus_1_env["verdict_text"]
+
+    assert round_n_plus_1_sentence != round_n_sentence
+    assert "no adopted measurement floor" not in round_n_plus_1_sentence
+    assert round_n_plus_1_sentence.endswith(
+        "Recorded the first model-graded tracking result; another attempt is "
+        "needed before improvement can be judged."
     )
 
 
@@ -2062,6 +2123,29 @@ def test_the_browser_and_python_agree_on_the_class_prior_octave_code():
     assert match.group(1) == ReasonCode.LIMITED_BY_CLASS_PRIOR.value
 
 
+def test_the_browser_and_python_agree_on_the_mic_tier_octave_code():
+    """#2051: the third cross-language reason literal, pinned.
+
+    Same guard shape as the two tests above: the renderer decides whether a
+    mic-tier-limited band earns its disclosure sentence by comparing the
+    band's server-supplied ``reason`` against a literal it cannot import.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.active_speaker.linearization_envelope import ReasonCode
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const OCTAVE_REASON_LIMITED_BY_MIC_TIER = '([a-z0-9_]+)';", source,
+    )
+    assert match, "the renderer no longer carries a named mic-tier reason code"
+    assert match.group(1) == ReasonCode.LIMITED_BY_MIC_TIER.value
+
+
 def test_the_class_prior_remedy_points_at_the_driver_class_declaration_route():
     """The remedy pointer's route, pinned at the structured level — never the
     rendered sentence's prose, only the ``href`` string it is built from
@@ -2732,6 +2816,52 @@ def test_flatness_copy_names_no_frame_when_the_record_carries_none():
     details = env["expert_details"]
     assert any("from the spec reference at 11480 Hz" in line for line in details)
     assert not any("reference mean" in line for line in details)
+
+
+# --- #2100: the terminal state names accepted/required cloud positions ---
+
+
+def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block():
+    """The scoped first step: a household whose walk failed partway through
+    should see how much was banked, not just that the group did not close.
+    ``positions`` is the durable ``_cloud_summary``'s own key (the surviving
+    take per position); the count is real evidence already on disk, only
+    never surfaced."""
+    compact = compact_cloud_status({
+        PHASE_CLOUD_VERIFY: {
+            "geometry": {}, "pipeline": {},
+            "positions": [{"position_id": f"cloud_verify_0{i}"} for i in range(4)],
+        },
+    })
+    assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
+
+
+def test_compact_cloud_status_reports_positions_required_from_the_tier():
+    """The Full tier's shipped defaults name what "required" means for each
+    group phase -- the household's recovery screen can now say "4 of 5"
+    instead of just "4"."""
+    compact = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}, "positions": []}},
+        tier="full",
+    )
+    entry = compact[PHASE_CLOUD_MEASURE]
+    assert entry["positions_required"] == DEFAULT_CLOUD_MEASURE_POSITIONS
+
+
+def test_compact_cloud_status_never_fabricates_a_required_count():
+    """An unresolvable tier (stale/unknown) reports ``None``, never a guess --
+    the same "never a fabricated clean reading" rule this module already
+    applies to ``excluded_interval_count``. ``PHASE_LATERAL`` is not sized by
+    a cloud plan shape at all, so it reads ``None`` even with a good tier."""
+    bad_tier = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier="turbo",
+    )
+    assert bad_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
+
+    lateral = compact_cloud_status(
+        {PHASE_LATERAL: {"geometry": {}, "pipeline": {}}}, tier="full",
+    )
+    assert lateral[PHASE_LATERAL]["positions_required"] is None
 
 
 # --- #1857: every band discloses its own deviation, not just the pointer's ---

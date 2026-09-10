@@ -1002,10 +1002,22 @@ def normalize_tier(tier: Any) -> str:
     if not name:
         return DEFAULT_TIER
     if name not in TIERS:
-        raise CrossoverV2FlowError(
+        raise PlanShapeError(
             f"unknown commission tier {name!r} (expected one of {', '.join(TIERS)})"
         )
     return name
+
+
+class PlanShapeError(CrossoverV2FlowError):
+    """#2059: an unknown tier or an out-of-range position count.
+
+    A distinct subclass, not a new top-level exception, so every existing
+    ``except CrossoverV2FlowError`` still catches it. Lets
+    ``classify_program_failure`` tell a malformed *request* (this) apart from
+    a genuine capture-chain fault, which the owner ruled (2026-08-13) reads
+    as a loose fit under ``program_unplayable``'s "re-check the driver
+    details" copy.
+    """
 
 
 # The tiers that are ONE named (N, M) pair rather than a configurable range.
@@ -1041,7 +1053,7 @@ def resolve_plan_shape(
             ("cloud_verify_positions", m, cloud_verify_positions),
         ):
             if got is not None and int(got) != wanted:
-                raise CrossoverV2FlowError(
+                raise PlanShapeError(
                     f"the {name} tier is a fixed shape: {label} must be "
                     f"{wanted}, got {int(got)}"
                 )
@@ -1127,12 +1139,12 @@ def _validated_cloud_counts(
     m = int(cloud_verify_positions)
     if tier != TIER_EXPRESS:
         if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
-            raise CrossoverV2FlowError(
+            raise PlanShapeError(
                 f"cloud_measure_positions must be "
                 f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
             )
         if m < MIN_CLOUD_VERIFY_POSITIONS:
-            raise CrossoverV2FlowError(
+            raise PlanShapeError(
                 f"cloud_verify_positions must be at least "
                 f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
             )
@@ -1141,7 +1153,7 @@ def _validated_cloud_counts(
     # table resolved at plan-build time, so its fit is checked where that table
     # is known, in :func:`build_v2_verify_capture_plan`.
     if n - 1 > len(CLOUD_POSITION_PROMPTS):
-        raise CrossoverV2FlowError(
+        raise PlanShapeError(
             f"the pre-apply cloud group needs {n - 1} position prompts but "
             f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
         )

@@ -236,9 +236,11 @@ def classify_program_failure(
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
     wizard's DOM while the phone was told something else entirely.
     """
+    from jasper.active_speaker.crossover_v2.capture_plan import PlanShapeError
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT,
+        REASON_PROGRAM_PLAN_SHAPE_INVALID,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
@@ -270,6 +272,12 @@ def classify_program_failure(
             REASON_PROTECTION_SWEEP_TOO_LOW if exc.protection_floor
             else REASON_PROTECTION_NOT_SEPARABLE
         ), (exc.slug,)
+    if isinstance(exc, PlanShapeError):
+        # #2059: an unknown tier or an out-of-range position count is a
+        # malformed request, not a level ceiling the speaker could not meet --
+        # ``program_unplayable``'s "re-check the driver details" advice is a
+        # loose fit here (owner ruling, 2026-08-13).
+        return REASON_PROGRAM_PLAN_SHAPE_INVALID, ()
     if not isinstance(
         exc, (ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError)
     ):

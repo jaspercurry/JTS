@@ -40,6 +40,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_PROGRAM_PLAN_SHAPE_INVALID,
     REASON_PROGRAM_PROFILE_INCOMPLETE,
     REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -712,8 +713,13 @@ def test_plan_shape_refusal_is_classified_before_it_is_rewrapped():
     could not catch this: it hands the mapper a raw ``CrossoverV2FlowError``,
     which is precisely the shape the rewrap destroys before the mapper is ever
     reached (#1833).
+
+    #2059 (owner ruling 2026-08-13): an unknown tier is now its own code,
+    ``program_plan_shape_invalid`` -- distinct from ``program_unplayable``,
+    whose "re-check the driver details" advice is a loose fit for a
+    malformed request.
     """
-    spec = REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE]
+    spec = REASON_REGISTRY[REASON_PROGRAM_PLAN_SHAPE_INVALID]
 
     with pytest.raises(v2host.CrossoverV2Refused) as raised:
         v2host.prepare_v2_session(
@@ -723,10 +729,10 @@ def test_plan_shape_refusal_is_classified_before_it_is_rewrapped():
             camilla_factory=None,
         )
     assert str(raised.value) == spec.message
-    assert raised.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert raised.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
     assert "turbo" not in str(raised.value)
     _assert_household_copy(
-        REASON_PROGRAM_UNPLAYABLE, "prepare_v2_session", str(raised.value),
+        REASON_PROGRAM_PLAN_SHAPE_INVALID, "prepare_v2_session", str(raised.value),
     )
 
     # The verify-stage site resolves the tier off durable state instead of the
@@ -737,7 +743,7 @@ def test_plan_shape_refusal_is_classified_before_it_is_rewrapped():
             {"tier": "turbo"},
         )
     assert str(verify_raised.value) == spec.message
-    assert verify_raised.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert verify_raised.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
 
 
 def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
@@ -760,5 +766,5 @@ def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
     ]
     assert len(lines) == 1
     assert "turbo" in lines[0]
-    assert f"code={REASON_PROGRAM_UNPLAYABLE}" in lines[0]
-    assert "error_type=CrossoverV2FlowError" in lines[0]
+    assert f"code={REASON_PROGRAM_PLAN_SHAPE_INVALID}" in lines[0]
+    assert "error_type=PlanShapeError" in lines[0]

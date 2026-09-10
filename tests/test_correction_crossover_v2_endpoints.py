@@ -3018,11 +3018,16 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     text reaching the household: the refusal now carries the classifier's code
     and the journal carries the constraint. Both still separate it from the
     volume-recovery gate below it, which is uncoded and says "recover".
+
+    #2059 (owner ruling 2026-08-13): an unknown tier is a malformed request,
+    not a level ceiling — it now carries its own code, distinct from
+    ``program_unplayable``, rather than the generic "re-check the driver
+    details" copy.
     """
     import logging
 
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_PROGRAM_UNPLAYABLE,
+        REASON_PROGRAM_PLAN_SHAPE_INVALID,
     )
 
     class _Ready:
@@ -3034,7 +3039,7 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
         v2host.prepare_v2_session(
             {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
         )
-    assert excinfo.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert excinfo.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
     assert "recover" not in str(excinfo.value)
     assert any(
         "unknown commission tier" in r.getMessage() and "turbo" in r.getMessage()

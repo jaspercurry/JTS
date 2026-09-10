@@ -81,6 +81,12 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
 # a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# #2059: a plan-shape request the household's link/client sent that this build
+# does not recognize -- an unknown tier, or a position count outside its
+# tier's range. Owner ruling (2026-08-13): distinct from
+# ``program_unplayable`` -- that copy's "re-check the driver details" advice
+# is a loose fit for a malformed request, which no driver recheck fixes.
+REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # The main fader was not at the volume this session declared when a stimulus
 # was about to play, and re-asserting it could not be proven. The program was
 # admissible; the SPEAKER's level was not the one it was admitted against.
@@ -618,6 +624,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
     ),
+    REASON_PROGRAM_PLAN_SHAPE_INVALID: ReasonSpec(
+        REASON_PROGRAM_PLAN_SHAPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not start the measurement because this link's settings "
+        "(the tier or number of positions) are not ones this build "
+        "recognizes. Start over from this page to pick a tier.",
+    ),
     REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
         REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
         # NAMES THE OBSERVATION, NOT A CAUSE. Two conditions reach this code:
@@ -837,12 +849,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # what admits the retake: every rung spends one of the POSITION's
         # pooled extras.
         GEOMETRY_RETRY_POSITIONS,
-        # Copy names the ACTION, not the diagnosis — a household has no way to
-        # judge "the echo estimates clustered". The per-attempt wider-spot
-        # instruction rides the verdict payload's ``prompt`` field on top of
-        # this (see ``_cloud_measure_group_verdict``).
+        # #2092 (owner-approved 2026-08-08): the old diagnosis ("too close
+        # together") is factually false on a wide walk — the estimator reads
+        # only tau, never mic spread, so tau agreement at wide spread is
+        # positive evidence FOR a source-fixed defect, not proof the operator
+        # huddled. The honest sentence is a finding, not a chore: it names
+        # what the dip looks like, not a diagnosis a household cannot judge.
+        # The action (a wider-spot retake) is UNCHANGED — the spread-aware
+        # skip that would remove it stays deferred pending hardware evidence.
         RetryableReasonCopy(
-            "These spots were too close together to tell a real dip from an echo.",
+            "This dip looks like it belongs to the speaker rather than the room.",
             "Take this one from further out and we will use it instead.",
         ),
     ),

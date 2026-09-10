@@ -477,10 +477,25 @@ async def _ensure_commission_startup_anchor(
         crossover_preview=crossover_preview,
     )
     if stage.get("status") != "staged":
+        # #2184: forward the SPECIFIC stage failure — ~8 distinct causes
+        # (stale preview, active_playback_device_required,
+        # subwoofer_staging_unresolved, passive_main_output_unassigned,
+        # software_tweeter_guard_incomplete, staged_config_generation_failed,
+        # preset-bind issues, ...) each already mint their own code+message
+        # via ``_issue`` inside ``stage_protected_startup_config``. Falling
+        # back to the generic ``commission_startup_anchor_not_staged`` code
+        # only when staging reported no issue at all keeps every existing
+        # consumer's "did this stage?" branch working while the failure card
+        # names the actual remedy instead of one generic sentence for all ~8.
+        stage_issues = _dict_items(stage.get("issues"))
+        issue = (
+            stage_issues[0] if stage_issues
+            else commission_startup_anchor_not_staged_issue()
+        )
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            issue=commission_startup_anchor_not_staged_issue(),
+            issue=issue,
             startup_setup={"status": "blocked", "stage": stage},
         )
 
