@@ -37,6 +37,8 @@ from jasper import measurement_window as coordinator
 from jasper.measurement_window import MeasurementWindowError
 from jasper.mics import xvf3800
 
+from tests._log_events import event_fields, event_records
+
 ROOT = Path(__file__).resolve().parents[1]
 UNIT_PATH = ROOT / "deploy/systemd/jasper-aec-commission.service"
 
@@ -267,24 +269,23 @@ def test_passed_evidence_records_the_queue_cross_check_margin(
         effective_uid=0,
     )
 
-    assert "event=chip_aec_commission.passed" in caplog.text
+    fields = event_fields(caplog, "chip_aec_commission.passed")
     # VALUES, including the sign of the delta: a constant zero, a flipped sign,
     # and a before that echoes the after all satisfy a label-only assertion,
     # and all three would misreport the one margin this check passed by.
-    for field in (
-        "queue_median=285",
-        "queue_median_before=283",
-        "queue_median_delta=2",
-        f"queue_samples={len(_FakeIO.AFTER_SAMPLES)}",
-        "queue_spread=2",
+    for key, value in (
+        ("queue_median", "285"),
+        ("queue_median_before", "283"),
+        ("queue_median_delta", "2"),
+        ("queue_samples", str(len(_FakeIO.AFTER_SAMPLES))),
+        ("queue_spread", "2"),
     ):
-        assert field in caplog.text, field
-    assert "queue_median_delta=-2" not in caplog.text
+        assert fields[key] == value, key
     assert len(_FakeIO.AFTER_SAMPLES) != len(_FakeIO.BEFORE_SAMPLES)
     # The commissioned delay travels in the artifact so boot can bound against
     # it; it is the same number the evidence reports.
     assert artifact.sys_delay == -38
-    assert f"sys_delay={artifact.sys_delay}" in caplog.text
+    assert fields["sys_delay"] == str(artifact.sys_delay)
 
 
 def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
@@ -355,7 +356,7 @@ def test_the_warmup_probe_sets_one_capped_measurement_level(
         pytest.raises(aec_commission.CommissioningError)
         if refused
         else nullcontext()
-    ) as rejection:
+    ):
         aec_commission.run_commissioning(
             io,
             marker_path=tmp_path / "active",
@@ -366,20 +367,24 @@ def test_the_warmup_probe_sets_one_capped_measurement_level(
         )
 
     writes = [event for event in io.events if event.startswith("volume_measurement:")]
-    record = str(rejection.value) if refused else caplog.text
-    for field in (
-        f"warmup_raw_excess_snr_db={round(probe.raw_excess_snr_db, 2)}",
-        f"target_raw_excess_snr_db={TARGET_RAW_EXCESS_SNR_DB}",
-        f"level_offset_db={round(offset, 2)}",
-        f"selected_volume_db={round(volume, 2)}",
+    fields = event_fields(
+        caplog,
+        "chip_aec_commission.level_rejected" if refused
+        else "chip_aec_commission.level_selected",
+    )
+    for key, value in (
+        ("warmup_raw_excess_snr_db", str(round(probe.raw_excess_snr_db, 2))),
+        ("target_raw_excess_snr_db", str(TARGET_RAW_EXCESS_SNR_DB)),
+        ("level_offset_db", str(round(offset, 2))),
+        ("selected_volume_db", str(round(volume, 2))),
         # Which guard dominates says whether the dB-for-dB assumption held.
-        "pre_guard_dbfs=-60.0",
-        "post_guard_dbfs=-55.0",
+        ("pre_guard_dbfs", "-60.0"),
+        ("post_guard_dbfs", "-55.0"),
     ):
-        assert field in record, field
+        assert fields[key] == value, key
     if refused:
         assert writes == []
-        assert f"step_cap_db={AUDIBLE_RAMP_STEP_DB}" in record
+        assert fields["step_cap_db"] == str(AUDIBLE_RAMP_STEP_DB)
         retained = sorted(rejections.iterdir())
         assert [path.name for path in retained[0].iterdir()] == [
             aec_commission.WARMUP_CAPTURE_NAME
@@ -430,15 +435,16 @@ def test_a_timing_rejection_retains_its_captures_and_reports_both_arrivals(
     # Both arrivals and the ratio that separates them, in the journal and in
     # the operator-facing failure alike; the ratio is the run's whole verdict
     # and 121 - 20 samples is what a reflection hypothesis is tested against.
-    for field in (
-        "lag=20",
-        "competitor_lag=121",
-        "competitor_offset_ms=6.31",
-        "peak_ratio=1.0244",
-        f"retained_captures={retained[0]}",
+    log_fields = event_fields(caplog, "chip_aec_commission.timing_rejected")
+    for key, value, prose in (
+        ("lag", "20", "lag=20"),
+        ("competitor_lag", "121", "competitor_lag=121"),
+        ("competitor_offset_ms", "6.31", "competitor_offset_ms=6.31"),
+        ("peak_ratio", "1.0244", "peak_ratio=1.0244"),
+        ("retained_captures", str(retained[0]), f"retained_captures={retained[0]}"),
     ):
-        assert field in caplog.text, field
-        assert field in str(rejected.value), field
+        assert log_fields[key] == value, key
+        assert prose in str(rejected.value), prose
     assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
 
 
@@ -490,12 +496,9 @@ def test_a_product_rejection_retains_its_pair_and_reports_the_threshold(
         f"retained_captures={retained[0]}",
     ):
         assert field in str(rejected.value), field
-    for field in (
-        "event=chip_aec_commission.product_rejected",
-        "phase=product",
-        "min_beam_suppression_db=10.0",
-    ):
-        assert field in caplog.text, field
+    fields = event_fields(caplog, "chip_aec_commission.product_rejected")
+    assert fields["phase"] == "product"
+    assert fields["min_beam_suppression_db"] == "10.0"
     assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
 
 
@@ -549,8 +552,8 @@ def test_a_run_that_never_converges_retains_its_captures_and_its_counts(
         f"retained_captures={retained[0]}",
     ):
         assert field in str(rejected.value), field
-    for field in ("event=chip_aec_commission.adaptation_rejected", "adaptation_seconds="):
-        assert field in caplog.text, field
+    log_fields = event_fields(caplog, "chip_aec_commission.adaptation_rejected")
+    assert "adaptation_seconds" in log_fields
 
 
 def test_only_the_newest_rejections_are_retained(tmp_path: Path) -> None:
@@ -635,7 +638,8 @@ def test_a_registered_dac_commissions_and_the_record_carries_its_qualification(
         effective_uid=0,
     )
 
-    assert f"dac_qualification={qualification}" in caplog.text
+    fields = event_fields(caplog, "chip_aec_commission.passed")
+    assert fields["dac_qualification"] == qualification
     # Named, not merely flagged: the operator has to learn WHICH profile made
     # the alignment provisional, and only then.
     assert (dac_id in capsys.readouterr().out) is (qualification != "approved")
@@ -930,7 +934,7 @@ def test_a_release_failure_after_a_pass_is_its_own_event_not_a_failed_run(
     assert artifact_from_dict(json.loads(artifact_path.read_text())) == artifact
     assert json.loads(state_path.read_text())["state"] == "passed"
     assert isinstance(io.lease.error, MeasurementWindowError)
-    assert "chip_aec_commission.isolation_release_failed" in caplog.text
+    assert event_records(caplog, "chip_aec_commission.isolation_release_failed")
 
 
 def test_a_refused_body_hands_the_music_back_once_after_its_own_cleanup(

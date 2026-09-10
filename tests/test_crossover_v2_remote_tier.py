@@ -84,6 +84,7 @@ from jasper.active_speaker.crossover_v2.position_gate import (
     PositionGate,
 )
 
+from tests._log_events import event_fields, event_records
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     CLOUD_VERIFY_INDEXES,
@@ -573,9 +574,7 @@ def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog)
     with caplog.at_level(logging.INFO, logger=logger_name):
         with pytest.raises(CaptureBeginDeferred):
             healthy.gate(4, 4, _entry(7))
-    assert any(
-        "crossover_v2_position_pending" in rec.getMessage() for rec in caplog.records
-    ), [rec.getMessage() for rec in caplog.records]
+    assert event_records(caplog, "correction.crossover_v2_position_pending")
 
     caplog.clear()
     gate = PositionGate()
@@ -584,11 +583,9 @@ def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog)
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(4, 4, _entry(7))  # a hold this gate has never opened
     assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
-    lines = [rec.getMessage() for rec in caplog.records]
-    assert not any("crossover_v2_position_pending" in ln for ln in lines), lines
-    ceiling = [ln for ln in lines if "crossover_v2_session_ceiling_expired" in ln]
-    assert len(ceiling) == 1, lines
-    assert "waited_s=0.0" in ceiling[0]
+    assert not event_records(caplog, "correction.crossover_v2_position_pending")
+    ceiling = event_fields(caplog, "correction.crossover_v2_session_ceiling_expired")
+    assert ceiling["waited_s"] == "0.0"
     assert gate.pending() is None
 
 
@@ -965,12 +962,8 @@ def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch, caplog):
     # The journal names the PREDICATE, not just the tier: a stage-2 session is
     # constructed without one, so `tier=` alone would say nothing about why
     # this refused.
-    refused = [
-        r.getMessage() for r in caplog.records
-        if "crossover_v2_geometry_retake_unreachable" in r.getMessage()
-    ]
-    assert len(refused) == 1, refused
-    assert "gated=true" in refused[0]
+    fields = event_fields(caplog, "correction.crossover_v2_geometry_retake_unreachable")
+    assert fields["gated"] == "true"
     # ONE surface owns the answer: no prompt is handed back for a spot the gate
     # would go on contradicting.
     assert not verdict.get("prompt")
@@ -1299,12 +1292,9 @@ def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
     assert prepared.position_gate is not None
     assert prepared.request_retake is not None
     assert prepared.request_complete is not None
-    opens = [
-        r.getMessage() for r in caplog.records
-        if "correction.crossover_v2_remote_session_open" in r.getMessage()
-    ]
-    assert len(opens) == 1, opens
-    assert f"tier={TIER_FULL}" in opens[0] and "hand_released=true" in opens[0]
+    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
+    assert fields["tier"] == TIER_FULL
+    assert fields["hand_released"] == "true"
 
 
 def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
@@ -1330,12 +1320,9 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
 
     assert prepared.position_gate is not None
     assert prepared.request_retake is not None
-    opens = [
-        r.getMessage() for r in caplog.records
-        if "correction.crossover_v2_remote_session_open" in r.getMessage()
-    ]
-    assert len(opens) == 1, opens
-    assert "stage=2" in opens[0] and "hand_released=true" in opens[0]
+    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
+    assert fields["stage"] == "2"
+    assert fields["hand_released"] == "true"
 
 
 def _opened_conductor(monkeypatch, v2host, prepared):
@@ -1871,13 +1858,9 @@ def test_a_remote_session_open_announces_the_captures_it_will_actually_take(
         {"tier": TIER_REMOTE}, status=_status(), run_async=None, camilla_factory=None,
     )
 
-    opens = [
-        r.getMessage() for r in caplog.records
-        if "correction.crossover_v2_remote_session_open" in r.getMessage()
-    ]
-    assert len(opens) == 1, opens
-    assert "stage=1" in opens[0]
-    announced = int(re.search(r"captures=(\d+)", opens[0]).group(1))
+    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
+    assert fields["stage"] == "1"
+    announced = int(fields["captures"])
 
     conductor, _state = _open_prepared(monkeypatch, prepared)
     walked = len(_walked_index_map(conductor))
