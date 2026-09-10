@@ -33,6 +33,7 @@ from .contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH, TrimStrategy, detach
 
 __all__ = [
     "FittedBranches",
+    "GAIN_STRUCTURE_CEILING_DB",
     "JournalRecord",
     "LevelConsistency",
     "LinearizationPlan",
@@ -40,6 +41,7 @@ __all__ = [
     "TrimDecision",
     "assemble_plan",
     "compose_linearized_prediction",
+    "normalize_to_ceiling",
 ]
 
 
@@ -310,6 +312,59 @@ class FittedBranches:
     core_level_evidence: Mapping[str, Mapping[str, Any]]
     trim_band_estimate_db: Mapping[str, float]
     level_consistency: LevelConsistency | None
+
+
+#: The composed ceiling a branch's realized peak is normalized TO, dB (#2906).
+#: Unity, because the emitted per-driver trims are cut-only and a chain above
+#: unity is paid for out of the PROGRAM-domain headroom charge instead. Never
+#: positive: `measured_crossover_candidate` refuses an attenuation above 0 dB.
+GAIN_STRUCTURE_CEILING_DB: float = 0.0
+
+
+def normalize_to_ceiling(
+    fitted: FittedBranches, role_attenuations_db: Mapping[str, float],
+) -> tuple[dict[str, float], float]:
+    """Give back the common-mode attenuation the gain structure stranded (#2906).
+
+    Owner ruling 2026-08-23: **a common-mode trim is lost max SPL.** Every
+    branch's composed peak (crossover x linearization x trim) is read on the one
+    shared grid, and if the LOUDEST of them still sits below
+    :data:`GAIN_STRUCTURE_CEILING_DB` the whole set shifts UP by that distance —
+    identically for every role, so relative leveling is preserved exactly, the
+    same argument :func:`~.intervention.anchor_trims`' downward normalize makes.
+
+    The two directions this is bounded by, and both are structural rather than
+    checked afterwards:
+
+    * **Never above the ceiling.** The shift is ``ceiling - max(peak)`` and each
+      peak is ``trim + that branch's own excess above unity``, so a role's new
+      trim is at most ``ceiling - excess <= ceiling``. The ``min`` is belt and
+      braces on a hearing-safety invariant, not the argument.
+    * **A boost is never given back.** Any branch already at or above the
+      ceiling makes the shift non-positive and nothing moves — the headroom
+      charge for that boost is respected, not spent.
+
+    This is the UP half. :func:`~.intervention.anchor_trims` keeps the
+    non-positive clamp exactly as it is; this sits beside it, never inside it.
+    """
+    trims = {role: float(value) for role, value in role_attenuations_db.items()}
+    peaks = [
+        branch_chain_peak_db(
+            [f.to_dict() for f in fit.filters],
+            sections=fitted.sections[role],
+            trim_db=trims.get(role, 0.0),
+        )
+        for role, fit in fitted.fits.items()
+    ]
+    if not peaks:
+        return trims, 0.0
+    give_back_db = GAIN_STRUCTURE_CEILING_DB - max(peaks)
+    if give_back_db <= 0.0:
+        return trims, 0.0
+    return {
+        role: min(value + give_back_db, GAIN_STRUCTURE_CEILING_DB)
+        for role, value in trims.items()
+    }, give_back_db
 
 
 def assemble_plan(
