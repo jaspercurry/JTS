@@ -807,11 +807,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _write_apply_ts(cfg["apply_ts_path"], now)
         log_event(logger, "tools.apply", client=handler.address_string())
         # jasper-voice re-filters the registry against tool_state.env on
-        # restart (and re-writes the catalog JSON). The gates above already
-        # cover both SKIPPED cases, so the only outcomes here are RAN/REFUSED.
-        if restart_voice_daemon() is RestartOutcome.REFUSED:
+        # restart (and re-writes the catalog JSON).
+        outcome = restart_voice_daemon()
+        if outcome is not RestartOutcome.RAN:
             send_proxy_json(handler, json.dumps({
-                "restarted": False, "reason": "refused",
+                "restarted": False, "reason": outcome.name.lower(),
                 "message": "Saved, but the assistant did not restart — "
                            "save again, or check System.",
             }).encode(), status=200)
