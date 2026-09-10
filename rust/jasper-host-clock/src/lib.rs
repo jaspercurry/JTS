@@ -1475,7 +1475,10 @@ impl HostClock {
         // genuinely non-trivial" gate that arms anti-windup is half the probe
         // step (err is a ppm, not a frame count).
         let anti_windup_threshold = self.cfg.probe_ppm / 2.0;
-        let trim_ppm = {
+        // The block yields the anti-windup's own verdict alongside the trim:
+        // a HELD integrator is how a railed command actually presents in this
+        // mode, so the L2 evidence test below needs it (#3609).
+        let (trim_ppm, integrator_frozen) = {
             // Pure-integral outer law: `trim += −Ki · err` (negative feedback — a
             // positive correction error commands the host slower).
             //
@@ -1503,7 +1506,7 @@ impl HostClock {
             if !railed_further && candidate.is_finite() {
                 self.correction_trim_ppm = candidate;
             }
-            self.correction_trim_ppm
+            (self.correction_trim_ppm, railed_further)
         };
 
         // Total raw demand = feed-forward seed + outer trim. The clamp bounds the
@@ -1518,7 +1521,20 @@ impl HostClock {
         // physical question decoupled from the probe STEP magnitude, so a small
         // probe cannot make demotion hair-trigger nor let a residual wrong-way
         // drift under a railed command escape it forever.
-        let saturated = raw.abs() >= MAX_BIAS_PPM;
+        // AT THE ACTUATOR'S LIMIT, by either presentation. `raw` reaching the
+        // bound is the railed-FEED-FORWARD case: a crystal offset beyond
+        // authority, seeded on L0 entry. A host that drifts beyond authority
+        // AFTER the probe passed presents the other way and never reaches the
+        // bound at all — the conditional-integration anti-windup refuses the
+        // step that would cross it, pinning the command one step short. Testing
+        // only `saturated` therefore made this whole net unreachable in the one
+        // mode with a live consumer, because the anti-windup's arming test and
+        // `uncorrected` below are the SAME |err| comparison on the same
+        // quantity: whenever the observable is wrong-way enough to count as
+        // evidence, the integrator is already frozen below saturation
+        // (#3609, ADR-0214).
+        let saturated_by_raw = raw.abs() >= MAX_BIAS_PPM;
+        let saturated = saturated_by_raw || integrator_frozen;
         let observable = self.probe_observable_ppm();
         let l2_slope_threshold = (self.cfg.probe_ppm / 2.0).max(L2_SLOPE_FLOOR_PPM);
         // "Uncorrected direction": we are commanding to reduce the error, but the
@@ -1542,11 +1558,12 @@ impl HostClock {
             self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions); // pitch → neutral (forced)
             log::warn!(
-                "event={}.host_clock_lost_authority reason=lost_authority capture_generation={} control_generation={} observable_ppm={:.1}",
+                "event={}.host_clock_lost_authority reason=lost_authority capture_generation={} control_generation={} observable_ppm={:.1} saturated_by={}",
                 self.cfg.log_prefix,
                 self.control_status.capture_generation,
                 self.control_status.control_generation.unwrap_or(0),
                 observable,
+                if saturated_by_raw { "raw" } else { "frozen" },
             );
             return;
         }
@@ -2333,10 +2350,11 @@ mod tests {
     }
 
     /// A crystal offset beyond the ±[`MAX_BIAS_PPM`] actuator authority, so the
-    /// feed-forward seeded on L0 entry rails. This is the ONLY way the total
-    /// command reaches saturation: the pure-integral law's conditional
-    /// integration refuses any step that would push the total past the rail, so
-    /// the trim alone always stops just short of it.
+    /// feed-forward seeded on L0 entry rails. This is the only way `raw` itself
+    /// crosses the bound: the pure-integral law's conditional integration
+    /// refuses any step that would push the total past the rail, so the trim
+    /// alone always stops just short of it — which is why the L2 evidence test
+    /// also counts a FROZEN integrator as railed (#3609).
     const BEYOND_AUTHORITY_OFFSET_PPM: f64 = 1200.0;
 
     /// Mid-stream loss of authority: the host stops following while the command
@@ -2374,6 +2392,46 @@ mod tests {
         assert_eq!(hc.ladder(), Ladder::L2Fallback, "must demote mid-stream");
         assert_eq!(hc.demotions(), demotions_before + 1, "demotion counted");
         assert!(neutral_after_demote, "demotion forces neutral pitch");
+    }
+
+    /// A host that drifts beyond authority AFTER the probe passed: the
+    /// feed-forward is small, so the command never reaches ±[`MAX_BIAS_PPM`] —
+    /// the anti-windup freezes the integrator one step short of it. Before
+    /// #3609 the L2 net tested `raw` alone and this host was never demoted; it
+    /// steered at up to ±1000 ppm forever instead of standing down to neutral.
+    #[test]
+    fn beyond_authority_drift_after_a_passed_probe_still_demotes_to_l2() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        // A COMPLIANT probe: no crystal offset, so the feed-forward is ~0 and
+        // only the trim can rail.
+        let (mut cap, mut play) = drive_to_l0_correction(&mut hc, 0.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+
+        let mut demoted = false;
+        let mut ppm_before_demotion = hc.commanded_ppm();
+        for t in 200u64..800 {
+            cap += 48_000;
+            play += 48_000;
+            ppm_before_demotion = hc.commanded_ppm();
+            hc.tick(obs_corr(-500.0, cap, play), t * 1000);
+            if hc.ladder() == Ladder::L2Fallback {
+                demoted = true;
+                break;
+            }
+        }
+        assert!(
+            demoted,
+            "a wrong-way host past the actuator bound must demote"
+        );
+        // Sampled on the tick BEFORE the ladder flips: `commanded_ppm()` after
+        // the flip is forced to 0.0 by demotion itself, which would make this
+        // assertion vacuous.
+        assert!(
+            ppm_before_demotion.abs() < MAX_BIAS_PPM,
+            "the command never reached the bound — the integrator froze short of it"
+        );
+        assert_eq!(hc.commanded_ppm(), 0.0, "demotion forces neutral pitch");
     }
 
     /// Demotion sensitivity is `max(probe_ppm/2, L2_SLOPE_FLOOR_PPM)` — a

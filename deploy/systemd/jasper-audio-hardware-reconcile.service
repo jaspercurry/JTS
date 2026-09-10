@@ -5,6 +5,10 @@ Wants=sound.target
 Before=jasper-outputd.service
 # See #4123.
 ConditionPathExists=!/run/jasper-install/in_progress
+# udev fires one event per hot-plug leg, so a DAC replug is a burst of starts
+# within systemd's default 10s window; the default 5-start budget must not be
+# spent before the pass that finds the hardware present runs.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

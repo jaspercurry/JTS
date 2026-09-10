@@ -55,6 +55,12 @@ EXTRA_SERVICE_GROUPS = {
 # check asks about that is on neither list is read on demand.
 DOCTOR_EXTRA_UNITS = (
     "jasper-fanin-coupling-auto.service",
+    # #2802 item 3: peer reconcile oneshots tracked by
+    # cli.doctor._shared._RUNTIME_STATE_UNITS, same as the coupling unit
+    # above — without a roster entry they never appear in unit_states() and
+    # check_service_runtime_state silently no-ops on them.
+    "jasper-grouping-reconcile.service",
+    "jasper-source-intent-reconcile.service",
     "jasper-aec-commission.service",
     "jasper-enhanced-aec-install.service",
     "jasper-usbnet-dhcp.service",

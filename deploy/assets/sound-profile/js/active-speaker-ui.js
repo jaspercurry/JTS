@@ -17,15 +17,6 @@ export function outputStatusClass(statusValue) {
   return ' status-pill--planned';
 }
 
-export function humanMode(modeValue) {
-  return {
-    full_range_passive: 'Passive/full range',
-    active_2_way: 'Active 2-way',
-    active_3_way: 'Active 3-way',
-    subwoofer: 'Subwoofer'
-  }[modeValue] || modeValue || 'Unknown';
-}
-
 export function humanRole(role) {
   return {
     full_range: 'Full range',
@@ -638,30 +629,3 @@ export function levelMatchSummary(baseline) {
   };
 }
 
-export function playbackResultMessage(playback, fallback, normalizeMessage) {
-  playback = playback || {};
-  var issues = Array.isArray(playback.issues) ? playback.issues : [];
-  for (var i = 0; i < issues.length; i += 1) {
-    var issue = issues[i] || {};
-    var code = String(issue.code || '').toLowerCase();
-    var message = String(issue.message || issue.label || issue.code || '').trim();
-    if (
-      code === 'audio_backend_not_enabled' ||
-      code === 'test_pcm_required' ||
-      code === 'test_pcm_forbidden_main_lane'
-    ) {
-      return 'Driver tests are not available on this install yet.';
-    }
-    if (code === 'tone_plan_not_ready') {
-      return 'JTS could not prepare that driver test. Choose the driver again so it can rebuild the safe test setup.';
-    }
-    if (message) {
-      return typeof normalizeMessage === 'function' ?
-        normalizeMessage(message) :
-        message;
-    }
-  }
-  if (playback.status === 'blocked') return 'JTS could not start that test. Choose the driver again to try.';
-  if (playback.status === 'failed') return 'That test did not finish. Choose the driver again to try.';
-  return fallback || 'No sound played.';
-}

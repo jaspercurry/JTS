@@ -23,6 +23,7 @@ from jasper.wake_corpus import recording_backend
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
+from tests._log_events import event_fields
 from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
     _allow_capture_plan_conformance,
@@ -1240,6 +1241,79 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
         assert backend._pending_stop is None
         assert backend._stop_retry_handle is None
         assert backend._stop_retry_attempts == 0
+
+
+def test_stop_retry_gives_up_after_max_attempts(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog,
+) -> None:
+    """A lifecycle owner that never releases is abandoned, not retried forever."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+        clip_id = backend._current_clip_id
+    generation = (clip_id, task)
+
+    # Stand in for a lifecycle owner that never releases — every attempt,
+    # including the initial synchronous one, reports "still busy".
+    monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
+
+    backend._auto_stop_safe(generation)
+
+    def _gave_up() -> bool:
+        with backend._lock:
+            return (
+                backend._pending_stop is None
+                and backend._stop_retry_handle is None
+            )
+
+    wait_until_sync(_gave_up)
+    with backend._lock:
+        assert backend._stop_retry_attempts == 0
+    fields = event_fields(caplog, "wake_corpus.stop_retry_abandoned")
+    assert fields["attempts"] == "3"
+
+
+def test_recorder_usable_after_stop_retry_abandoned(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog,
+) -> None:
+    """Abandoning a wedged stop must give up on that clip, not on the
+    recorder — a later start_recording() must not be stuck raising
+    StateError forever."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+        clip_id = backend._current_clip_id
+    generation = (clip_id, task)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
+    backend._auto_stop_safe(generation)
+
+    def _gave_up() -> bool:
+        with backend._lock:
+            return (
+                backend._pending_stop is None
+                and backend._stop_retry_handle is None
+            )
+
+    wait_until_sync(_gave_up)
+
+    with backend._lock:
+        assert backend._current is None
+        assert backend._current_clip_id is None
+
+    backend.start_recording("quiet", "near")
 
 
 def test_stale_retry_callback_cannot_stop_the_next_clip(

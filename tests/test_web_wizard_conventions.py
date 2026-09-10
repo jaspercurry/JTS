@@ -35,6 +35,7 @@ from jasper.web import (
     google_setup,
     home_assistant_setup,
     rooms_setup,
+    sound_setup,
     sources_setup,
     speaker_setup,
     spotify_setup,
@@ -459,6 +460,11 @@ _TABLED_WIZARD_FACTORIES = {
         {"state_path": str(_SCRATCH / "ha.env")},
     ),
     "rooms_setup": rooms_setup._make_handler,
+    "sound_setup": lambda: sound_setup._make_handler(
+        profile_path=str(_SCRATCH / "sound-profile.json"),
+        library_path=str(_SCRATCH / "sound-library.json"),
+        config_dir=str(_SCRATCH / "sound-config"),
+    ),
     "sources_setup": sources_setup._make_handler,
     "speaker_setup": lambda: speaker_setup._make_handler(
         {"state_path": str(_SCRATCH / "speaker.env")},
@@ -508,6 +514,7 @@ _HEADER_CSRF_WIZARDS = frozenset({
     "chat_setup",
     "correction_setup",
     "rooms_setup",
+    "sound_setup",
     "sources_setup",
     "system_setup",
     "tools_setup",

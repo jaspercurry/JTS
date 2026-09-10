@@ -4,6 +4,10 @@ After=sound.target jasper-camilla.service
 Wants=sound.target jasper-camilla.service
 # See #4123.
 ConditionPathExists=!/run/jasper-install/in_progress
+# jasper-dongle-recover and udev sound-card events can both restart this unit
+# within one hot-plug burst; the default 5-start budget must not be spent
+# before the terminal pass that finds the hardware present runs.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

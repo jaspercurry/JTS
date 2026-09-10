@@ -153,8 +153,11 @@ class ConversationStore:
         return self._db_path
 
     def _warn(self, msg: str, *args: Any) -> None:
+        # stacklevel=2: the record must carry the CALLER's file:line, which is
+        # the flight recorder's auto-dump key — without it every warning that
+        # goes through this wrapper collapses into one key.
         if self._warn_unavailable:
-            logger.warning(msg, *args)
+            logger.warning(msg, *args, stacklevel=2)
 
     def add(self, turn: ConversationTurn) -> bool:
         conn = self._conn

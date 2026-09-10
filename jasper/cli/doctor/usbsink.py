@@ -1008,7 +1008,7 @@ def check_usbsink_active_libcomposite() -> CheckResult:
     manually `rmmod libcomposite` while the daemon is up, or if
     jasper-usbgadget.service succeeded its modprobe but a subsequent
     reload unloaded the module. The jasper-usbgadget ↔ marker
-    Requires=/After= chain normally prevents this, but a manual
+    PartOf=/After= chain normally prevents this, but a manual
     override breaks the invariant."""
     inactive = _skip_when_usbsink_inactive("usbsink active+modules")
     if inactive is not None:

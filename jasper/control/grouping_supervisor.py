@@ -69,6 +69,7 @@ from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from . import household_credential
 from ..platform.control_client import (
     CONTROL_PORT,
+    PEER_RESPONSE_MAX_BYTES,
     AsyncControlClient,
     peer_detail,
 )
@@ -274,7 +275,9 @@ class GroupingSupervisor:
         try:
             ok, detail = await self.post_peer_grouping(cfg.peer_addr, desired)
         except Exception as exc:  # noqa: BLE001
-            ok, detail = False, repr(exc)
+            ok, detail = False, peer_detail(
+                repr(exc), household_credential.current() or "",
+            )
             log_event(
                 logger,
                 "grouping_supervisor.reassert_post_crash",
@@ -283,7 +286,13 @@ class GroupingSupervisor:
                 exc_info=True,
             )
         self.reassert_last_ok = ok
-        self.reassert_last_detail = detail[:200]
+        # No cap here. Every `detail` above is bounded by construction: it is
+        # either `peer_detail` output (redacted, then capped to the one
+        # constant) or a supervisor-owned literal — the bare `HTTP <status>`
+        # post_peer_grouping returns for an empty non-2xx body. Capping again
+        # would crop `peer_detail`'s `<redacted>` marker off a body that
+        # straddles the boundary.
+        self.reassert_last_detail = detail
         if ok:
             self._reassert_failed_latched = False
             log_event(
@@ -503,6 +512,7 @@ class GroupingSupervisor:
     ) -> tuple[bool, str]:
         """POST /grouping/set to the roster peer with the household header."""
         headers = self.household_headers()
+        credential = (headers or {}).get("X-JTS-Household", "")
         try:
             resp = await self.peer_client(peer_addr).post(
                 "/grouping/set",
@@ -510,16 +520,17 @@ class GroupingSupervisor:
                 headers=headers,
             )
         except Exception as exc:  # noqa: BLE001 — peer offline is expected IO
-            return False, repr(exc)
+            return False, peer_detail(repr(exc), credential)
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
-            household_credential_value = (headers or {}).get("X-JTS-Household", "")
-            peer_text = peer_detail(resp.body, household_credential_value)
-            detail = f"{detail}: {peer_text}"
+            detail = f"{detail}: {peer_detail(resp.body, credential)}"
         return resp.ok, detail
 
     def peer_client(self, peer_addr: str) -> AsyncControlClient:
-        return AsyncControlClient(f"http://{peer_addr}:{CONTROL_PORT}")
+        return AsyncControlClient(
+            f"http://{peer_addr}:{CONTROL_PORT}",
+            max_bytes=PEER_RESPONSE_MAX_BYTES,
+        )
 
     def household_headers(self) -> dict[str, str] | None:
         secret = household_credential.current()

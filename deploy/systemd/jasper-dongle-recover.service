@@ -23,7 +23,7 @@ TimeoutStartSec=550
 # `reset-failed` clears the StartLimitBurst counter so subsequent
 # `start` calls aren't no-ops. Both commands are idempotent against
 # already-active or non-failed units.
-ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service jasper-voice.service
+ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service jasper-voice.service jasper-audio-hardware-reconcile.service
 ExecStart=/bin/systemctl start jasper-camilla.service
 ExecStart=/bin/systemctl start jasper-outputd.service
 ExecStart=/bin/systemctl start jasper-audio-hardware-reconcile.service

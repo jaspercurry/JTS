@@ -58,8 +58,9 @@ async def test_arbitrate_disabled_returns_win_without_io():
     "return_value, side_effect, expected_result, expected_epoch", [
         pytest.param({"result": "WIN", "epoch": "ep-123"}, None,
                      "WIN", "ep-123", id="win"),
+        # LOSE carries the winner's epoch — never adopt it as ours.
         pytest.param({"result": "LOSE", "epoch": "ep-456"}, None,
-                     "LOSE", "ep-456", id="lose"),
+                     "LOSE", "", id="lose"),
         pytest.param(None, FileNotFoundError, "WIN", "", id="no_daemon"),
         pytest.param(None, asyncio.TimeoutError, "WIN", "", id="timeout"),
         pytest.param(None, OSError("connection refused"),

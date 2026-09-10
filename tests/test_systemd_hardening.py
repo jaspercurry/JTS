@@ -291,6 +291,44 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
     )
 
 
+HOTPLUG_BURST_RECONCILERS = {
+    "jasper-audio-hardware-reconcile": (
+        ROOT / "deploy/systemd/jasper-audio-hardware-reconcile.service"
+    ),
+    "jasper-aec-reconcile": RECONCILE_ONESHOTS["jasper-aec-reconcile"],
+}
+
+
+@pytest.mark.parametrize("unit,path", sorted(HOTPLUG_BURST_RECONCILERS.items()))
+def test_hotplug_burst_reconcilers_disable_start_rate_limit(unit, path):
+    """A DAC replug (or aec profile) uevent burst inside systemd's default
+    5-starts/10s window must not exhaust the start budget before the terminal
+    pass that would see the hardware present runs; jasper-accessory-reconcile
+    already carries this fix for the same reason."""
+    pairs = set(_directives(path))
+    assert ("StartLimitIntervalSec", "0") in pairs, (
+        f"{unit} must disable start-rate limiting so a hot-plug burst cannot "
+        "spend the budget before a terminal pass runs (mirrors "
+        "jasper-accessory-reconcile)"
+    )
+
+
+def test_dongle_recover_reset_failed_covers_camillas_hard_dependency():
+    """jasper-camilla.service Requires=jasper-audio-hardware-reconcile.service,
+    so if the reconcile unit is parked failed, the unguarded
+    `systemctl start jasper-camilla.service` two lines below fails on its
+    dependency and the recovery unit locks itself out."""
+    unit_path = RECONCILE_ONESHOTS["jasper-dongle-recover"]
+    text = unit_path.read_text(encoding="utf-8")
+    reset_failed_argvs = [
+        argv
+        for argv in exec_argv_for(text, "ExecStart")
+        if argv and PurePosixPath(argv[0]).name == "systemctl" and argv[1:2] == ["reset-failed"]
+    ]
+    assert reset_failed_argvs, "expected one `systemctl reset-failed` ExecStart="
+    assert "jasper-audio-hardware-reconcile.service" in reset_failed_argvs[0]
+
+
 def test_grouping_timeout_covers_every_bounded_owner_handoff_step():
     """The outer oneshot must outlast its complete sequential child budget."""
     required_before_margin = (

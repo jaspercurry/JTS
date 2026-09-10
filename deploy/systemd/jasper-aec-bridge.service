@@ -60,7 +60,7 @@ StartLimitAction=reboot
 
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
-# emit `READY=1` (via sdnotify, see jasper/watchdog.py) before
+# emit `READY=1` (via jasper/platform/systemd.py) before
 # systemd considers it active. `WatchdogSec=30s` requires the daemon
 # to pat the watchdog every < 30 s; the daemon's heartbeat thread
 # only pats if its work loop has made progress recently (sentinel

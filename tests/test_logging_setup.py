@@ -136,6 +136,42 @@ def test_a_record_is_redacted_once(monkeypatch):
     assert len(passes) == 1
 
 
+def test_a_handler_root_already_carried_is_redacted_too():
+    """`logging.basicConfig` no-ops entirely when root already has a handler,
+    so the filter cannot be left to it. A process where anything (a
+    dependency, an earlier bootstrap) put a handler on root first must not
+    silently run its whole life unredacted."""
+    with bare_root_logger() as root:
+        foreign = logging.StreamHandler(io.StringIO())
+        root.addHandler(foreign)
+        root.setLevel(logging.DEBUG)
+        configure_logging()
+
+        logging.getLogger("jasper.x").debug(
+            "provider ready OPENAI_API_KEY=sk-live-abc123456789"
+        )
+        written = foreign.stream.getvalue()
+
+    assert "sk-live-abc123456789" not in written
+    assert "<redacted>" in written
+
+
+def test_the_pre_redaction_message_is_not_kept_on_the_record():
+    """The record a leak was found in must not carry the original text
+    onward. An f-string call site puts the secret in `record.msg` itself, so
+    a sink reading a stashed copy would re-publish exactly the line the
+    filter just scrubbed — and the flight recorder used to key a
+    process-lifetime dict on it."""
+    secret = "sk-live-abc123456789"
+    record = logging.LogRecord(  # the f-string shape: msg carries the value
+        "jasper.x", logging.WARNING, __file__, 1,
+        f"provider rejected key={secret}", (), None,
+    )
+    assert logging_setup.REDACTING_FILTER.filter(record) is True
+    assert secret not in record.getMessage()
+    assert secret not in repr(vars(record))
+
+
 # ------------------------------------------------------------------- ratchet
 
 # The parked tuning zone (#4193 lane brief): these keep their own
@@ -250,6 +286,9 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     name bound anywhere in the module. See ``_installs_its_own_handler`` for
     what is still out of scope.
 
+    Scans every Python tree that ships to the Pi — ``jasper/``, ``scripts/``,
+    ``experiments/`` and ``deploy/`` — not just the product package.
+
     Exact-match, so the allowlist cannot go stale either: a parked file that
     adopts must leave the set in the same commit. Remove this ratchet when
     ``logging.basicConfig`` stops being how the tree installs its journal
@@ -258,7 +297,8 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     """
     offenders = {
         path.relative_to(_REPO).as_posix()
-        for path in sorted((_REPO / "jasper").rglob("*.py"))
+        for directory in ("jasper", "scripts", "experiments", "deploy")
+        for path in sorted((_REPO / directory).rglob("*.py"))
         if path.name != "logging_setup.py"
         and _installs_its_own_handler(ast.parse(path.read_text()))
     }

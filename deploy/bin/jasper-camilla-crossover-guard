@@ -36,7 +36,8 @@
 # roleful/protected topology (every active speaker) can NEVER select the
 # flat fallback (jasper/active_speaker/runtime_contract.py
 # safe_graph_for_current_topology: the `select_flat` branch is gated on
-# `not requires_roleful_graph`). We still pass --flat-config because the
+# `topology_allows_flat_dac_graph(contract)`, which is false whenever the
+# topology needs per-driver DSP). We still pass --flat-config because the
 # CLI requires the arg, but on camilla#2's roleful topology it is
 # structurally unreachable.
 #
