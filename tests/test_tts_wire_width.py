@@ -312,12 +312,15 @@ def test_a_declared_narrow_box_speaks_the_narrow_verb(monkeypatch, tmp_path):
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
 
 
-def test_an_unreadable_declaration_resolves_narrow_and_says_so(monkeypatch, caplog):
+def test_an_unreadable_declaration_resolves_to_the_default_and_says_so(
+    monkeypatch, caplog,
+):
     """`jasper-fanin` owns the refusal; `jasper-voice` must not die twice.
 
     A bad token parks fan-in at exit 78. Re-raising here would also take down
     the daemon that plays the failure cues, so the fault is logged loudly and
-    the conservative width is used.
+    the width falls back to what the resolver itself answers for a box that
+    declares nothing — anything else puts this process on a width no box has.
     """
     import jasper.fanin_coupling as fc
 
@@ -327,7 +330,7 @@ def test_an_unreadable_declaration_resolves_narrow_and_says_so(monkeypatch, capl
     _clear_cache()
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _boom)
     with caplog.at_level("WARNING"):
-        assert tts_wire_is_wide() is False
+        assert tts_wire_is_wide() is True
     assert "tts_wire.declaration_unreadable" in caplog.text
     _clear_cache()
 
