@@ -180,6 +180,10 @@ class _SeatLevelSession:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
         except (OSError, ProcessLookupError):
             pass
         log_event(logger, "sound.seat_level_stop")

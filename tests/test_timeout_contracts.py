@@ -109,6 +109,17 @@ ALLOWLIST: dict[str, str] = {
         "doesn't already provide. Flagged by R6's review as a candidate "
         "for this allowlist (#4416)."
     ),
+    "jasper/web/sound_seat_level.py:147": (
+        "_SeatLevelSession.start's Popen is captured into self._process for "
+        "status()/stop() and reaped by _reap's proc.communicate() on its own "
+        "daemon thread; the constructor itself takes no timeout= keyword. "
+        "The CLI's normal run length is owned by the leveling pass "
+        "(ramp+convergence), not this module, so _reap's communicate() is "
+        "intentionally unbounded for that path. The user-initiated stop path "
+        "is bounded end to end: stop() escalates SIGINT+wait(timeout="
+        "SEAT_LEVEL_STOP_TIMEOUT_S) -> terminate()+wait(timeout=1.0) -> "
+        "kill()+wait(timeout=1.0), each with a real timeout= now."
+    ),
 }
 
 
