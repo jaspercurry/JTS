@@ -204,11 +204,24 @@ def test_invalid_openai_noise_reduction_env_rejected(monkeypatch):
         Config.from_env()
 
 
-def test_missing_voice_provider_raises_setup_exception(monkeypatch):
-    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+@pytest.mark.parametrize(
+    "provider", [None, "gemeni"], ids=("unset", "typo"),
+)
+def test_an_unusable_voice_provider_raises_the_setup_exception(
+    provider, monkeypatch,
+):
+    """The type is the routing: `daemon_main.main()` catches
+    VoiceProviderNotConfigured, cues the park and exits 78. A bare
+    RuntimeError for either shape would traceback to exit 1 instead, and
+    jasper-voice.service climbs Restart=on-failure to
+    StartLimitAction=reboot with nothing spoken (non-negotiable 6)."""
+    if provider is None:
+        monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_VOICE_PROVIDER", provider)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
-    with pytest.raises(VoiceProviderNotConfigured, match="JASPER_VOICE_PROVIDER"):
+    with pytest.raises(VoiceProviderNotConfigured):
         Config.from_env()
 
 

@@ -47,6 +47,7 @@ class CueDef:
 # one keys, so a failure path and its registry entry cannot drift.
 NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
+VOICE_ASSETS_MISSING_CUE_SLUG = "voice_assets_missing"
 
 
 CUES: tuple[CueDef, ...] = (
@@ -187,6 +188,22 @@ CUES: tuple[CueDef, ...] = (
             "'JASPER_VOICE_PROVIDER unset'. A box that was NEVER configured "
             "has no baked WAV for this cue — nothing has run `jasper-cues "
             "regenerate` with a key yet — so its first park stays silent."
+        ),
+    ),
+    CueDef(
+        slug=VOICE_ASSETS_MISSING_CUE_SLUG,
+        template=(
+            "Something this speaker needs is missing. Visit {hostname}, "
+            "open System, and run diagnostics."
+        ),
+        description=(
+            "Played once before the same 78 park as voice_not_set_up, but "
+            "for a speech-VAD asset that will not load "
+            "(jasper/voice/daemon_main.py:main() on SpeechVADSetupError). "
+            "Separate from voice_not_set_up because the remedy differs: "
+            "picking a voice service cannot restore a missing or corrupt "
+            "silero_vad.onnx, so sending the household to that wizard would "
+            "waste the one thing the speaker gets to say."
         ),
     ),
     CueDef(

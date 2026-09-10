@@ -442,7 +442,7 @@ class Config:
                 "jasper-voice.",
             )
         if provider not in VALID_PROVIDER_IDS:
-            raise RuntimeError(
+            raise VoiceProviderNotConfigured(
                 f"unsupported JASPER_VOICE_PROVIDER={provider!r}; expected "
                 f"one of: {', '.join(sorted(VALID_PROVIDER_IDS))}"
             )

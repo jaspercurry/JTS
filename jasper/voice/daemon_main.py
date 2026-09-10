@@ -35,7 +35,11 @@ from ..cues import (
     build_cue_tts_backend,
 )
 from ..cues.park import play_park_cue
-from ..cues.registry import NO_ROOM_MIC_CUE_SLUG, VOICE_NOT_SET_UP_CUE_SLUG
+from ..cues.registry import (
+    NO_ROOM_MIC_CUE_SLUG,
+    VOICE_ASSETS_MISSING_CUE_SLUG,
+    VOICE_NOT_SET_UP_CUE_SLUG,
+)
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
@@ -1265,6 +1269,7 @@ def main() -> None:
             level=logging.ERROR,
         )
         print(str(e), file=sys.stderr)
+        _announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)
         sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
     except KeyboardInterrupt:
         sys.exit(0)
