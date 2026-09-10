@@ -310,29 +310,6 @@ class NullWalkSpec:
             raise AssertionError("coarse null-walk schedule exceeded its hard bound")
         return tuple(self.fine_grid_coordinate(index) for index in indexes)
 
-    def candidate_delays_us(self) -> tuple[float, ...]:
-        """Return a deterministic grid containing the exact geometry seed.
-
-        The grid walks outward from the seed without crossing either physical
-        bound. Every adjacent candidate is therefore exactly the requested
-        50--100 microsecond step; the bounds are limits, not extra off-grid
-        candidates.
-        """
-
-        if self.candidate_count > MAX_EXHAUSTIVE_CANDIDATES:
-            raise NullWalkError(
-                "exhaustive null walk exceeds the bounded candidate budget; "
-                "use a reviewed adaptive host scheduler"
-            )
-        candidates = tuple(
-            self.fine_grid_coordinate(index)
-            for index in range(
-                self.fine_grid_index_min,
-                self.fine_grid_index_max + 1,
-            )
-        )
-        return candidates
-
     def dsp_candidate(self, relative_delay_us: Any) -> DelayCandidate:
         """Map one signed grid coordinate to a non-negative DSP operation."""
 

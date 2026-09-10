@@ -372,9 +372,9 @@ def compute_landscape(
 ) -> DelayLandscape:
     """Walk the WHOLE fine grid offline and pick the three coordinates to play.
 
-    The fine grid is enumerated directly rather than through
-    ``candidate_delays_us``: that helper's 25-point cap is a budget on AUDIBLE
-    candidates, and nothing here plays. Every coordinate still passes
+    The fine grid is enumerated directly rather than through a
+    candidate-budget helper: a 25-candidate cap bounds AUDIBLE candidates,
+    and nothing here plays. Every coordinate still passes
     ``fine_grid_coordinate``'s own physical bound and the 20 ms DSP ceiling.
     """
 

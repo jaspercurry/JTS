@@ -240,13 +240,12 @@ async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> Non
 _ALLOWED_APLAY_SPAWN_SITES = {
     # The owner: correction_play_argv's single argv display.
     "jasper/audio_measurement/correction_lane.py": 1,
-    # The heavier shared machinery (play_wav's one-shot spawn + TonePlayer's
-    # continuous-tone spawn). Its alsa_device is a required caller parameter
-    # — the policy-free neutral leaf, pinned by
-    # tests/test_audio_measurement_playback.py::
-    # test_neutral_surface_requires_owner_policy — so these are parameterized
-    # spawns, not inline correction-lane spawns.
-    "jasper/audio_measurement/playback.py": 2,
+    # The heavier shared machinery (play_wav's one-shot spawn). Its
+    # alsa_device is a required caller parameter — the policy-free neutral
+    # leaf, pinned by tests/test_audio_measurement_playback.py::
+    # test_neutral_surface_requires_owner_policy — so this is a parameterized
+    # spawn, not an inline correction-lane spawn.
+    "jasper/audio_measurement/playback.py": 1,
     # Renderer-DEVICE resolvability probe (plays /dev/zero on renderer pcms
     # such as shairport_substream — never the correction lane).
     "jasper/cli/doctor/renderers.py": 1,

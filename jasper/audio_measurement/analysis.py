@@ -14,8 +14,6 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
-
 #: The canonical shoulders, as multiples of Fc (one octave either side). THE
 #: one statement of the span: consumers multiply Fc by these rather than
 #: restating them, so moving the canon is this line.
@@ -248,156 +246,6 @@ def resample_log(
     return log_freqs.astype(np.float64), interp.astype(np.float64)
 
 
-def spatial_average_db(
-    magnitudes_db: list[np.ndarray],
-) -> np.ndarray:
-    """Per Toole/Welti/Olive: room responses average sensibly in LINEAR POWER, not dB — dB
-    averaging over-emphasizes deep nulls (a single -30 dB null at one position would drag the
-    whole region down even with flat response elsewhere). Power-averaged across the WHOLE
-    spectrum (no vector-mean/power-mean Schroeder split — this pipeline drops phase after
-    deconvolution). Empty list raises ``ValueError``; 1 element returns itself."""
-    if not magnitudes_db:
-        raise ValueError("need at least one magnitude array")
-    if len(magnitudes_db) == 1:
-        return magnitudes_db[0].astype(np.float64)
-    stack = np.stack([m.astype(np.float64) for m in magnitudes_db], axis=0)
-    # dB -> linear power -> mean -> dB
-    power = 10.0 ** (stack / 10.0)
-    mean_power = power.mean(axis=0)
-    return 10.0 * np.log10(np.maximum(mean_power, 1e-12))
-
-
-def deviation_metrics(
-    measured_db: np.ndarray,
-    target_db: np.ndarray,
-    freqs: np.ndarray,
-    *,
-    f_low: float = 50.0,
-    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
-) -> dict[str, float]:
-    """ABSOLUTE deviation-from-target stats over one band — says nothing about before/after on
-    its own; the verify path diffs two calls over the same band (see `before_after_delta`).
-
-    ``f_low`` defaults to 50 Hz, not 20 Hz: the iPhone built-in mic's ~24 dB/octave HPF starts
-    around 250 Hz (Apple hardware spec), so 20-50 Hz is dominated by the mic's own HPF + noise
-    floor, not the room — including it produced absurd "max 56 dB deviation" readings that were
-    mic artifacts.
-
-    ``f_high`` defaults to :data:`jasper.audio_measurement.room_boundary.ROOM_BOUNDARY_DEFAULT_HZ`,
-    routed through the boundary SSOT rather than re-declared (a hard-coded copy would silently
-    cap acceptance/verify/envelope at 350 Hz once the ceiling goes per-room, #1787). The 50 Hz
-    low edge is NOT that seam — it's the mic-physics floor above — so it stays a literal here.
-    """
-    band = (freqs >= f_low) & (freqs <= f_high)
-    if not band.any():
-        return {"rms_db": 0.0, "max_db": 0.0, "n_points": 0}
-    delta = (measured_db - target_db)[band]
-    rms = float(np.sqrt(np.mean(delta ** 2)))
-    max_dev = float(np.max(np.abs(delta)))
-    return {
-        "rms_db": rms,
-        "max_db": max_dev,
-        "n_points": int(band.sum()),
-    }
-
-
-def before_after_fill_segments(
-    freqs: np.ndarray,
-    before_db: np.ndarray,
-    after_db: np.ndarray,
-    target_db: np.ndarray,
-    *,
-    f_low: float = 50.0,
-    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
-) -> list[dict[str, Any]]:
-    """Tag each contiguous in-band segment as improved or regressed, so the browser fills the
-    before/after chart area from server-computed data rather than deriving it.
-
-    "Improved" means ``|after - target| < |before - target|`` at that grid point; a tie or a
-    move further from target reads "regressed" — improvement is never claimed without evidence.
-    Returned segments carry inclusive grid index ranges (`i_lo`/`i_hi`) plus frequency bounds.
-
-    Coupling note: tones are computed from the RAW 480-point log grid, but the browser draws
-    the fill on its DISPLAY curves, which may be chart-smoothed. Safe today because the chart's
-    smoothing preserves the grid; a future RESAMPLING display transform would break this index
-    alignment.
-    """
-    if not (len(freqs) == len(before_db) == len(after_db) == len(target_db)):
-        raise ValueError(
-            "freqs/before/after/target length mismatch: "
-            f"{len(freqs)}/{len(before_db)}/{len(after_db)}/{len(target_db)}"
-        )
-    band = (freqs >= f_low) & (freqs <= f_high)
-    band_idx = np.nonzero(band)[0]
-    if band_idx.size == 0:
-        return []
-
-    before_err = np.abs(before_db - target_db)
-    after_err = np.abs(after_db - target_db)
-    # Strict improvement only: ties read "regressed".
-    improved = after_err < before_err
-
-    segments: list[dict[str, Any]] = []
-    run_start = int(band_idx[0])
-    prev = int(band_idx[0])
-    run_tone = bool(improved[run_start])
-
-    def _emit(i_lo: int, i_hi: int, is_improved: bool) -> None:
-        segments.append({
-            "tone": "improved" if is_improved else "regressed",
-            "i_lo": i_lo,
-            "i_hi": i_hi,
-            "f_lo_hz": float(freqs[i_lo]),
-            "f_hi_hz": float(freqs[i_hi]),
-        })
-
-    for raw in band_idx[1:]:
-        idx = int(raw)
-        tone_here = bool(improved[idx])
-        # A gap in the band index or a tone flip closes the current run.
-        if idx != prev + 1 or tone_here != run_tone:
-            _emit(run_start, prev, run_tone)
-            run_start = idx
-            run_tone = tone_here
-        prev = idx
-    _emit(run_start, prev, run_tone)
-    return segments
-
-
-def before_after_delta(
-    freqs: np.ndarray,
-    before_db: np.ndarray,
-    after_db: np.ndarray,
-    target_db: np.ndarray,
-    *,
-    f_low: float = 50.0,
-    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
-) -> dict[str, Any]:
-    """Honest MEASURED before/after readout: both metrics computed by `deviation_metrics` over
-    the SAME band, guarding against a band-mismatch trap (verify used 50-350 Hz while a design's
-    predicted "before" was over the strategy band). `delta.rms_db`/`delta.max_db` are positive
-    when the correction reduced deviation."""
-    before = deviation_metrics(
-        before_db, target_db, freqs, f_low=f_low, f_high=f_high,
-    )
-    after = deviation_metrics(
-        after_db, target_db, freqs, f_low=f_low, f_high=f_high,
-    )
-    return {
-        "band_hz": [float(f_low), float(f_high)],
-        "before": before,
-        "after": after,
-        "delta": {
-            "rms_db": before["rms_db"] - after["rms_db"],
-            "max_db": before["max_db"] - after["max_db"],
-        },
-        "fill_segments": before_after_fill_segments(
-            freqs, before_db, after_db, target_db,
-            f_low=f_low, f_high=f_high,
-        ),
-    }
-
-
 def normalize_to_band(
     freqs: np.ndarray,
     magnitude_db: np.ndarray,
@@ -418,7 +266,7 @@ def normalize_to_band(
     return (magnitude_db - ref).astype(np.float64)
 
 
-from typing import Mapping, Sequence
+from typing import Mapping
 
 
 _THIRD_OCTAVE_CENTERS_HZ = (20.0, 25.0, 31.5, 40.0, 50.0, 63.0,
@@ -428,27 +276,6 @@ THIRD_OCTAVE_BASS_BANDS_HZ: tuple[tuple[float, float], ...] = tuple(
     (center / _THIRD_OCTAVE_EDGE_FACTOR, center * _THIRD_OCTAVE_EDGE_FACTOR)
     for center in _THIRD_OCTAVE_CENTERS_HZ
 )
-
-
-def band_levels_from_magnitude(
-    freqs,
-    magnitude_db,
-    bands,
-) -> tuple[float, ...]:
-    """Return the power-mean magnitude in each requested band."""
-
-    frequencies = np.asarray(freqs, dtype=np.float64)
-    magnitude = np.asarray(magnitude_db, dtype=np.float64)
-    if frequencies.ndim != 1 or magnitude.ndim != 1 or len(frequencies) != len(magnitude):
-        raise ValueError("frequency and magnitude arrays must be matched 1-D data")
-    levels = []
-    for low, high in bands:
-        mask = (frequencies >= low) & (frequencies < high)
-        if not np.any(mask):
-            raise ValueError(f"band {low:g}-{high:g} Hz has no frequency bins")
-        power = 10.0 ** (magnitude[mask] / 10.0)
-        levels.append(10.0 * np.log10(max(float(np.mean(power)), 1e-12)))
-    return tuple(levels)
 
 
 def thd_curve(
@@ -493,28 +320,6 @@ def thd_curve(
         interpolated_noise = np.interp(output_freqs, noise_freqs, noise_db)
         ratio[fundamental_db[mask] - interpolated_noise <= min_fund_snr_db] = np.nan
     return output_freqs, ratio
-
-
-def compression_curve(
-    rungs: Sequence[tuple[float, tuple[float, ...]]],
-) -> tuple[tuple[float, ...], ...]:
-    """Return measured-minus-linear-extrapolation compression per rung."""
-
-    if not rungs:
-        return ()
-    first_command, first_levels = rungs[0]
-    width = len(first_levels)
-    if any(len(levels) != width for _, levels in rungs):
-        raise ValueError("all compression rungs must have the same band count")
-    if any(rungs[index][0] <= rungs[index - 1][0] for index in range(1, len(rungs))):
-        raise ValueError("compression rungs must be in ascending commanded order")
-    return tuple(
-        tuple(
-            float(measured) - (float(baseline) + command - first_command)
-            for measured, baseline in zip(levels, first_levels)
-        )
-        for command, levels in rungs
-    )
 
 
 def _offset_invariant_rms_and_max(
