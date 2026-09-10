@@ -623,13 +623,24 @@ impl TtsMixer {
     /// [`QueuedAudioBlock::gained_contribution`].
     pub fn mix_period(&mut self, sum: &mut [i64]) {
         let queued_samples_before = self.pending_samples;
+        // The volume context is drained at the period boundary
+        // (`prepare_period`) and nothing in this loop moves it, so it is read
+        // once per period rather than once per frame.
+        let playout_context = self.loudness.current_volume_context();
+        let muted = playout_context.is_some_and(|context| context.muted);
+        // The ramp TARGET derives from the queue head's own gains and that same
+        // context, so it changes only when the head does — recomputed after a
+        // `pop_front`, not per frame. `gain_ramp.next_frame()` below stays per
+        // frame: that is the glide.
+        let mut head_target_gain_db: Option<f32> = None;
         for frame_sum in sum.chunks_exact_mut(CHANNELS as usize) {
             let Some(front) = self.queue.front() else {
                 break;
             };
-            let target_gain_db = self.target_gain_db(front);
-            let playout_context = self.loudness.current_volume_context();
-            let muted = playout_context.is_some_and(|context| context.muted);
+            let target_gain_db = match head_target_gain_db {
+                Some(value) => value,
+                None => *head_target_gain_db.insert(self.target_gain_db(front)),
+            };
             let segment_serial = front.segment_serial;
             let assistant_reference_eligible = front.assistant_reference_eligible;
             let starts_assistant_playback = assistant_reference_eligible
@@ -701,6 +712,7 @@ impl TtsMixer {
             }
             if block_finished {
                 self.queue.pop_front();
+                head_target_gain_db = None;
             }
             if block_finished && completes_assistant_reference {
                 if let Some(playback) = self.assistant_segment_playback.take() {
