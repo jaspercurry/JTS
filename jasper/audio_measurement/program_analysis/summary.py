@@ -267,6 +267,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             out["frame_tilt_db_per_octave"] = frame.get("tilt_db_per_octave")
             out["frame_pivot_hz"] = frame.get("pivot_hz")
             out["frame_n_bins"] = frame.get("n_bins")
+            out["frame_band_n_bins"] = frame.get("band_n_bins")
             tilt_removed = frame.get("tilt_removed")
             if isinstance(tilt_removed, Mapping):
                 out["rms_db_tilt_removed"] = tilt_removed.get("rms_db")

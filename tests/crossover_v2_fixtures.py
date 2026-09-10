@@ -1350,12 +1350,13 @@ def _pilot_obs(
     snr_valid: bool = True,
     linearity_ok: bool = True,
     channel_map_ok: bool = True,
+    peak_hi_dbfs: float = -24.0,
 ) -> PilotObservation:
     return PilotObservation(
         role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
         programmed_delta_db=programmed_delta_db, captured_delta_db=captured_delta_db,
         linearity_ok=linearity_ok, channel_map_ok=channel_map_ok, snr_valid=snr_valid,
-        snr_db=snr_db,
+        snr_db=snr_db, peak_hi_dbfs=peak_hi_dbfs,
         channel_map_target_rise_db=target_rise_db,
         channel_map_cross_rise_db=cross_rise_db,
     )

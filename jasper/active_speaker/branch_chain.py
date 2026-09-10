@@ -34,14 +34,13 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 
 # Safety margin added to the realized branch peak when charging headroom, dB (#1808).
 # Covers the cascade's between-sample peak plus the emitter's 4-decimal YAML rounding;
-# worst measured residue 0.1913 dB between filter centres, up to 1.7385 dB from 18 kHz
-# to Nyquist where the residue EXCEEDS the margin and the -1.0 dB per-driver soft-clip
-# limiters are the backstop instead (#2850; ADR-0207's widened boost caps widened that
-# ultrasonic exposure rather than closing it). Classifier boost ceiling 14254.4 Hz keeps
-# the honest loop out of that band, pinned by
-# ``test_the_classifier_cannot_vouch_into_the_under_read_band``; a Lowshelf cornered
-# below ~1.9 Hz is tracked separately as unbudgeted (#2846). 1.0 dB equals
-# ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
+# worst measured residue 0.1913 dB between filter centres. ``CHAIN_GRID_HZ``'s linear
+# tail closes the #2850 under-read from 14 kHz to 22 kHz to <=0.18 dB residue; from
+# ~22 kHz to Nyquist the residue still EXCEEDS this margin (1.04 dB at the fit engine's
+# own rails, 3.77 dB with unbounded Q, which the runtime contract does not bound), and
+# the -1.0 dB per-driver soft-clip limiters REMAIN the backstop there. A shelf cornered
+# outside the audible band is charged against its own asymptote sample (#2846). 1.0 dB
+# equals ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
 HEADROOM_MARGIN_DB: float = 1.0
 
 # Below this the evaluated peak is treated as "never exceeds unity", dB. The digital
@@ -64,22 +63,49 @@ _NYQUIST_HZ: float = 0.5 * RESPONSE_SAMPLE_RATE_HZ
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
 _CHAIN_GRID_POINTS_PER_OCTAVE: int = 48
 
-# Grid every chain peak is evaluated on: 1/48 octave, EDGE TO EDGE. NOT the fit's own
-# 150 Hz-floored ``DEFAULT_ENVELOPE_GRID_HZ``: this grid is read by the runtime contract
-# against an untrusted graph and must see a boost placed at 60 Hz. Full domain, not the
-# audio band, is a correctness requirement (#2758): a shipped-band example peaks 6.8728
-# dB at 21500.6 Hz, which a 20 Hz-20 kHz background read as 0.8596. Roughly 6 ms per
-# branch for a full 8-filter chain; the cut-only short-circuit below means an ordinary
-# graph pays none of it.
-CHAIN_GRID_HZ: np.ndarray = np.geomspace(
-    _GRID_EDGE_LO_HZ,
-    _GRID_EDGE_HI_HZ,
-    round(
-        _CHAIN_GRID_POINTS_PER_OCTAVE
-        * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)
-    ) + 1,
-)
+# Above this corner the background switches from 1/48 octave to a LINEAR tail of
+# ``_GRID_HF_TAIL_STEP_HZ`` (#2850). A constant fraction of an octave is a step that
+# GROWS in absolute Hz -- 315.6 Hz at 21.7 kHz -- and a close mixed-sign Peaking pair up
+# there puts its extremum between two background bins AND outside the hull of its own
+# centres, so neither the unioned centres nor the adjacent-pair midpoints reach it.
+# #2850's published worst case (+10.01 dB Q 3.67 at 23632.6 Hz with -9.53 dB Q 5.58 at
+# 23648.1 Hz, true peak 4.0576 dB) read 2.4460 dB on the pure geometric background --
+# a 1.6116 dB residue, EXCEEDING ``HEADROOM_MARGIN_DB``. With this tail it reads
+# 3.7695 dB, a 0.2881 dB residue. The corner is 14 kHz, not 18 kHz, because the
+# mechanism is continuous in frequency and the 0.25 dB crossing sits nearer 14 kHz
+# (worst 0.4910 dB at a 16.96 kHz centre over 2,500 in-band trials).
+_GRID_HF_TAIL_FROM_HZ: float = 14000.0
+_GRID_HF_TAIL_STEP_HZ: float = 25.0
+
+# Grid every chain peak is evaluated on: 1/48 octave to ``_GRID_HF_TAIL_FROM_HZ``, then a
+# linear tail, EDGE TO EDGE. NOT the fit's own 150 Hz-floored
+# ``DEFAULT_ENVELOPE_GRID_HZ``: this grid is read by the runtime contract against an
+# untrusted graph and must see a boost placed at 60 Hz. Full domain, not the audio band,
+# is a correctness requirement (#2758): a shipped-band example peaks 6.8728 dB at
+# 21500.6 Hz, which a 20 Hz-20 kHz background read as 0.8596. Roughly 10 ms per branch
+# for a full 8-filter chain; the cut-only short-circuit below means an ordinary graph
+# pays none of it.
+CHAIN_GRID_HZ: np.ndarray = np.unique(np.concatenate([
+    np.geomspace(
+        _GRID_EDGE_LO_HZ,
+        _GRID_EDGE_HI_HZ,
+        round(
+            _CHAIN_GRID_POINTS_PER_OCTAVE
+            * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)
+        ) + 1,
+    ),
+    np.arange(_GRID_HF_TAIL_FROM_HZ, _GRID_EDGE_HI_HZ, _GRID_HF_TAIL_STEP_HZ),
+]))
 CHAIN_GRID_HZ.flags.writeable = False
+
+# A shelf's extremum is its ASYMPTOTE, which sits past its corner rather than at it, so
+# a shelf cornered near a domain edge has no grid sample anywhere near its own extreme
+# (#2846: a +12 dB Lowshelf at 1.8 Hz read 10.7063 dB, and at or below 1.0 Hz read
+# exactly half its gain). Each shelf therefore contributes ``freq / K`` (Lowshelf) or
+# ``freq * K`` (Highshelf) to the grid. K = 32 holds the worst residual approach under
+# 1e-4 dB across Q 0.05-50 and |gain| <= 24 dB -- two orders below ``_PEAK_EPS_DB``.
+_SHELF_ASYMPTOTE_RATIO: float = 32.0
+_SHELF_BIQUAD_TYPES: frozenset[str] = frozenset({"Lowshelf", "Highshelf"})
 
 
 def _evaluation_grid(
@@ -104,7 +130,29 @@ def _evaluation_grid(
     extra.extend(
         math.sqrt(lower * upper) for lower, upper in zip(centres, centres[1:])
     )
+    extra.extend(_shelf_asymptotes(filters))
     return np.unique(np.concatenate([base, np.asarray(extra, dtype=np.float64)]))
+
+
+def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
+    """One sample per shelf, out past its corner where its extremum actually is (#2846).
+
+    Below ``_GRID_EDGE_LO_HZ`` for a Lowshelf, which is legal and deliberate: a grid
+    point is a place to evaluate the digital cascade, not a claim about the domain. A
+    Highshelf's sample is capped at Nyquist, where the bilinear transform lands its
+    infinite-frequency asymptote exactly.
+    """
+    out: list[float] = []
+    for entry in filters:
+        kind = str(entry.get("biquad_type") or "")
+        freq = float(entry.get("freq") or 0.0)
+        if kind not in _SHELF_BIQUAD_TYPES or not freq > 0.0:
+            continue
+        out.append(
+            freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
+            else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
+        )
+    return out
 
 
 @dataclass(frozen=True)

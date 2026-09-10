@@ -415,6 +415,7 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
     assert [r.event for r in plan.journal] == [
         "correction.crossover_v2_linearization_fit_band",
         "correction.crossover_v2_linearization_giveback",
+        "correction.crossover_v2_gain_structure_normalized",
         "correction.crossover_v2_linearization_trim_rejected",
         "correction.crossover_v2_realized_level_match",
         "correction.crossover_v2_linearization_headroom",
@@ -1154,3 +1155,116 @@ def test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it(
     monkeypatch.setattr(iv, "solve_branch_trims", _bad_level)
     with pytest.raises(iv.PlannerInputError, match="finite"):
         _pure(_sections_at(SELECTED_FC_HZ))
+
+
+# --------------------------------------------------------------------------- #
+# the UP half of the normalize: no headroom left on the table (#2906)
+# --------------------------------------------------------------------------- #
+
+
+def _fitted_for(filters_by_role):
+    """A `FittedBranches` carrying only what `normalize_to_ceiling` reads."""
+    from jasper.active_speaker.linearization_fit import LinearizationFilter
+
+    fits = {
+        role: types.SimpleNamespace(filters=tuple(
+            LinearizationFilter(**entry) for entry in entries
+        ))
+        for role, entries in filters_by_role.items()
+    }
+    return pa.FittedBranches(
+        fc_hz=None, fits=fits, sections={role: () for role in fits},
+        radiating_band_hz={}, core_level_evidence={},
+        trim_band_estimate_db={}, level_consistency=None,
+    )
+
+
+def _composed_peak_db(fitted, trims):
+    """The loudest branch's realized peak, the emitter's own reading."""
+    from jasper.active_speaker.branch_chain import branch_chain_peak_db
+
+    return max(
+        branch_chain_peak_db(
+            [f.to_dict() for f in fit.filters],
+            sections=fitted.sections[role], trim_db=trims[role],
+        )
+        for role, fit in fitted.fits.items()
+    )
+
+
+def test_a_stranded_common_mode_trim_is_retrimmed_back_up():
+    """Owner ruling 2026-08-23: a common-mode trim is lost max SPL.
+
+    Two cut-only branches sitting 6 and 9 dB down are 6 dB of pure ledger — the
+    speaker plays 6 dB quieter than the envelope permits for nothing. The
+    normalize gives exactly that back, moves the pair to the ceiling, and moves
+    neither role relative to the other.
+    """
+    fitted = _fitted_for({
+        "woofer": [{"biquad_type": "Peaking", "freq": 90.0, "q": 2.0, "gain": -3.0}],
+        "tweeter": [{"biquad_type": "Peaking", "freq": 9000.0, "q": 2.0, "gain": -2.0}],
+    })
+    trims = {"woofer": -6.0, "tweeter": -9.0}
+
+    normalized, give_back_db = pa.normalize_to_ceiling(fitted, trims)
+
+    assert give_back_db == pytest.approx(6.0)
+    assert normalized == {
+        "woofer": pytest.approx(0.0), "tweeter": pytest.approx(-3.0),
+    }
+    # Relative leveling is preserved exactly — the whole safety argument for
+    # shifting a committed pair at all.
+    assert (normalized["woofer"] - normalized["tweeter"]) == pytest.approx(
+        trims["woofer"] - trims["tweeter"]
+    )
+    assert _composed_peak_db(fitted, normalized) == pytest.approx(
+        pa.GAIN_STRUCTURE_CEILING_DB
+    )
+
+
+def test_the_normalize_never_gives_back_a_boosts_own_charge():
+    """The other direction, and the one that has to hold under tamper.
+
+    A branch already at or above the ceiling makes the shift non-positive, so
+    the headroom charged for its boost stays charged. Nothing moves, and — the
+    invariant `measured_crossover_candidate` refuses a graph for breaking — no
+    trim ever lands above unity.
+    """
+    boosted = _fitted_for({
+        "woofer": [{"biquad_type": "Peaking", "freq": 90.0, "q": 2.0, "gain": 4.0}],
+        "tweeter": [{"biquad_type": "Peaking", "freq": 9000.0, "q": 2.0, "gain": -2.0}],
+    })
+    trims = {"woofer": 0.0, "tweeter": -3.0}
+
+    normalized, give_back_db = pa.normalize_to_ceiling(boosted, trims)
+    assert give_back_db == 0.0
+    assert normalized == trims
+
+    # And when the SAME boost sits under a deep trim, the give-back is bounded
+    # by the boost rather than by the trim: 10 dB down with a 4 dB boost is
+    # 6 dB of slack, not 10.
+    deep = {"woofer": -10.0, "tweeter": -9.0}
+    normalized, give_back_db = pa.normalize_to_ceiling(boosted, deep)
+    assert give_back_db == pytest.approx(6.0, abs=0.05)
+    assert all(v <= pa.GAIN_STRUCTURE_CEILING_DB for v in normalized.values())
+    assert _composed_peak_db(boosted, normalized) == pytest.approx(
+        pa.GAIN_STRUCTURE_CEILING_DB, abs=1e-9
+    )
+
+
+def test_the_planner_always_discloses_what_the_normalize_gave_back():
+    """The journal states the number every round, zero included.
+
+    A give-back that only appears when non-zero cannot be told from an emitter
+    that stopped running, which is exactly how a standing step goes quiet.
+    """
+    plan = _pure(_sections_at(SELECTED_FC_HZ))
+    (record,) = [
+        r for r in plan.journal
+        if r.event == "correction.crossover_v2_gain_structure_normalized"
+    ]
+    assert record.fields["ceiling_db"] == pa.GAIN_STRUCTURE_CEILING_DB
+    assert record.fields["level_give_back_db"] >= 0.0
+    assert set(record.fields["normalized_trim_db"]) == set(
+        plan.role_attenuations_db
+    )

@@ -18,6 +18,7 @@ from jasper.audio_measurement.alignment import (
     _bandlimit,
     _gcc_local_peak_snap,
     gcc_phat,
+    parabolic_peak,
     GCC_UPSAMPLE,
 )
 from jasper.audio_measurement.comparison_bands import (
@@ -440,18 +441,18 @@ def _estimate_alignment(
         )
 
     # Fine stage (methodology §10). The aligner OWNS the physical peak-gap
-    # anchor (raw full-IR argmax gap, drift+parallax-corrected); the argmax
-    # is never recomputed downstream so the snap center and the reported
-    # anchor cannot desync. The snap moves the anchor to the nearest local
-    # maximum of the same correlation within +/-(period/6) at Fc; ``None``
-    # leaves ``_build_candidate`` on the bare anchor. Snaps applied delay
-    # only — GCC polarity/confidence is untouched.
+    # anchor (full-IR peak gap, drift+parallax-corrected); the peak is never
+    # recomputed downstream so the snap center and the reported anchor cannot
+    # desync. The snap moves the anchor to the nearest local maximum of the
+    # same correlation within +/-(period/6) at Fc; ``None`` leaves
+    # ``_build_candidate`` on the bare anchor. Snaps applied delay only — GCC
+    # polarity/confidence is untouched.
     snapped_delay_us: float | None = None
     anchor_delay_us: float | None = None
     if status == ALIGNMENT_OK:
-        anchor_lag_samples = float(
-            int(np.argmax(np.abs(tweeter_full_ir)))
-            - int(np.argmax(np.abs(woofer_full_ir)))
+        anchor_lag_samples = (
+            _rectified_peak_sample(tweeter_full_ir)
+            - _rectified_peak_sample(woofer_full_ir)
         )
         # Peak gap - inter-sweep drift, plus parallax, negated into the signed frame.
         inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
@@ -486,6 +487,21 @@ def _estimate_alignment(
         anchor_delay_us=anchor_delay_us,
         snapped_delay_us=snapped_delay_us,
     )
+
+
+def _rectified_peak_sample(ir: np.ndarray) -> float:
+    """Sub-sample position of an IR's rectified peak, the parabolic estimator.
+
+    ``np.abs`` then a 3-point parabola over the argmax bin — a rectified peak,
+    not a Hilbert envelope. A bare ``argmax`` quantises the inter-driver
+    anchor to one sample — 20.8 us at 48 kHz, +/-15 deg at a 2 kHz Fc — which
+    is large enough to flip ``delay_role`` between sessions on the same
+    hardware (#1869; measured +/-2 samples of argmax jitter between
+    bit-identical sweep repeats). The same parabolic estimator three siblings
+    in this package already use, refining within the same bin.
+    """
+    magnitude = np.abs(np.asarray(ir, dtype=np.float64))
+    return parabolic_peak(magnitude, int(np.argmax(magnitude)))
 
 
 def predicted_branch_sum(

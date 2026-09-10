@@ -2110,6 +2110,44 @@ def test_snap_recovers_physical_delay_through_drift_and_noise():
     assert res.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
 
 
+def _fractional_band_impulse(
+    delay: float, f_lo: float, f_hi: float, amp: float, n: int = 4096
+) -> np.ndarray:
+    """`_band_impulse` at a FRACTIONAL delay, built as a linear-phase ramp."""
+    freqs = np.fft.rfftfreq(n, 1.0 / SR)
+    spectrum = amp * np.exp(-2j * np.pi * freqs * delay / SR)
+    spectrum[(freqs < f_lo) | (freqs > f_hi)] = 0.0
+    return np.fft.irfft(spectrum, n)
+
+
+@pytest.mark.parametrize("frac", [0.0, 0.2, 0.35, 0.5, 0.6, 0.8])
+def test_alignment_anchor_resolves_below_one_sample(frac):
+    """The inter-driver anchor is sub-sample, not integer-argmax (#1869).
+
+    A bare argmax quantises the anchor to 20.83 us at 48 kHz, enough to flip
+    ``delay_role`` between sessions on one speaker. Two synthetic band-limited
+    impulses a known FRACTIONAL distance apart: the argmax gap is wrong by up
+    to half a sample by construction, the shipped estimator is not.
+    """
+    lo, hi = 800.0, 3200.0
+    true_gap = 9.0 + frac
+    woofer_ir = _fractional_band_impulse(400.0, lo, hi, 1.0)
+    tweeter_ir = _fractional_band_impulse(400.0 + true_gap, lo, hi, 0.8)
+
+    argmax_gap = float(
+        int(np.argmax(np.abs(tweeter_ir))) - int(np.argmax(np.abs(woofer_ir)))
+    )
+    assert argmax_gap.is_integer(), "premise: the bare argmax gap IS quantised"
+
+    refined = (
+        program_analysis.response._rectified_peak_sample(tweeter_ir)
+        - program_analysis.response._rectified_peak_sample(woofer_ir)
+    )
+    # 0.05 samples is 1.04 us at 48 kHz — a twentieth of the argmax quantum.
+    assert refined == pytest.approx(true_gap, abs=0.05)
+    assert abs(refined - true_gap) <= abs(argmax_gap - true_gap)
+
+
 def test_gcc_local_peak_snap_stays_near_anchor_despite_taller_far_peak():
     """Wrong-peak regression (methodology §10, 2026-07-22): a TALLER correlation
     peak planted ~200 µs from the anchor must NOT steer the selector — the
@@ -3885,8 +3923,8 @@ def test_snap_production_path_preserves_parallax_contract(
         epsilon=epsilon,
     )
     measured_peak_gap_us = (
-        int(np.argmax(np.abs(tweeter_full_ir)))
-        - int(np.argmax(np.abs(woofer_full_ir)))
+        program_analysis.response._rectified_peak_sample(tweeter_full_ir)
+        - program_analysis.response._rectified_peak_sample(woofer_full_ir)
     ) / SR * 1e6
     inter_sweep_drift_us = (
         epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6
@@ -3907,9 +3945,9 @@ def test_snap_production_path_preserves_parallax_contract(
         1.0,
         physical_seed_us,
     )
-    # The band-limited synthetic IR's spectral truncation shifts its argmax by
-    # a fraction of a sample relative to the impulse placement. The production
-    # selector operates in that measured argmax frame, so allow that expected
+    # The band-limited synthetic IR's spectral truncation shifts its peak by a
+    # fraction of a sample relative to the impulse placement. The production
+    # selector operates in that measured peak frame, so allow that expected
     # analysis granularity in addition to the sub-sample snap.
     assert result.alignment.delay_us == pytest.approx(
         expected_delay_us, abs=8.0,
@@ -5419,17 +5457,21 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     * a heavy bleed at 10 dB of isolation, an order of magnitude below every
       honest row on record.
 
-    Both are commanded well above `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`, so
-    the ratio is actually judged, and both clear the TARGET floor first — or
-    the refusal would prove nothing about the CROSS half.
+    Both are commanded with a CROSS rise well above `CHANNEL_MAP_TARGET_RISE_DB`,
+    so the ratio is actually judged (#2801), and both clear the TARGET floor
+    first — or the refusal would prove nothing about the CROSS half.
+
+    The third row is what the direct judging condition BUYS: negative isolation
+    at a target rise the retired proxy left unjudged, deferred one phase to the
+    SNR gates instead of refused here.
     """
-    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+    floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
 
     both_bands_ok, both_target, both_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
     assert program_analysis.channel_map_isolation_db(
         both_target, both_cross,
     ) == pytest.approx(0.0, abs=1.0)
-    assert both_target > judged_above, (
+    assert both_cross > floor, (
         "the fixture must clear the judged threshold, or the CROSS half never "
         "looked and this proves nothing"
     )
@@ -5439,8 +5481,16 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     assert program_analysis.channel_map_isolation_db(
         bleed_target, bleed_cross,
     ) == pytest.approx(10.0, abs=1.0)
-    assert bleed_target > judged_above
+    assert bleed_cross > floor
     assert bleed_ok is False
+
+    neg_ok, neg_target, neg_cross = _isolation_case("woofer", 13.5, 38.5, seed=903)
+    assert neg_target == pytest.approx(13.5, abs=0.5)
+    assert neg_cross == pytest.approx(38.5, abs=0.5)
+    assert program_analysis.channel_map_isolation_db(
+        neg_target, neg_cross,
+    ) < 0.0
+    assert neg_ok is False
 
 
 def test_channel_map_cross_test_never_eats_the_target_floor():
@@ -5464,20 +5514,13 @@ def test_channel_map_cross_test_never_eats_the_target_floor():
     ``snr_floor``. A hard stop telling a household to open its speaker, on a
     capture whose only real problem was that it was quiet (#2052/#2644).
 
-    The guard is `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`: below it the TARGET
-    floor governs alone. What that buys, and what this test really pins, is
-    that a CROSS refusal is self-justifying — above the threshold, refusing
-    requires ``cross_rise >= CHANNEL_MAP_TARGET_RISE_DB``, so the WRONG band
-    cleared the very bar we demand of a driver that played. Nothing merely
-    quiet can manufacture that.
+    The guard is the CROSS rise itself (#2801): the ratio is judged only once
+    ``cross_rise >= CHANNEL_MAP_TARGET_RISE_DB``, so a CROSS refusal is
+    self-justifying by construction — the WRONG band cleared the very bar we
+    demand of a driver that played. Nothing merely quiet can manufacture that.
     """
     floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
     bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
-    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
-    assert judged_above == pytest.approx(floor + bound), (
-        "the threshold IS floor+bound; any other value breaks the "
-        "cross_rise >= floor implication this rung's honesty rests on"
-    )
 
     # The regression itself, on the real validator.
     ok, target_rise, cross_rise = _isolation_case("woofer", 13.50, 1.72, seed=904)
@@ -5525,8 +5568,9 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
     ambient = np.full(64, 1.0)
     pilot = np.full(64, 2.0)
     bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
-    # Comfortably above the judged threshold, so the ratio is actually judged.
-    target_rise = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB + 30.0
+    # Scripted cross rises land at ``target_rise - bound``; keep those well
+    # above the TARGET floor so the ratio is actually judged (#2801).
+    target_rise = program_analysis.CHANNEL_MAP_TARGET_RISE_DB + bound + 30.0
 
     def _script(cross_rise: float):
         def _rms(samples, sample_rate, f1, f2):
@@ -5992,8 +6036,8 @@ def test_verify_discloses_the_frame_it_compared_across():
     assert tracking is not None
     frame = tracking["frame"]
     assert set(frame) == {
-        "offset_db", "tilt_db_per_octave", "pivot_hz", "n_bins", "band_hz",
-        "raw", "tilt_removed",
+        "offset_db", "tilt_db_per_octave", "pivot_hz", "n_bins", "band_n_bins",
+        "band_hz", "raw", "tilt_removed",
     }
     # The record's raw pair IS the reported pair — one computation, two views,
     # so a surface reading the disclosure can never quote a different number
@@ -6070,6 +6114,10 @@ def test_excluding_notch_bins_from_the_fit_beats_fitting_the_whole_band(
 
     # The notch really did exclude bins — otherwise this fixture proves nothing.
     assert frame["n_bins"] < int(in_band.sum())
+    # #1990: the GRADED bin count rides the record beside the TRUSTED one, so
+    # the exclusion fraction — the "was this tilt estimated over a notch-heavy
+    # prediction" signal the caveat rests on — is derivable without the source.
+    assert frame["band_n_bins"] == int(in_band.sum())
     assert band[0] <= frame["band_hz"][0] <= frame["band_hz"][1] <= band[1]
 
     # The construction this replaced: fit over every graded bin, notch included.
@@ -6202,6 +6250,7 @@ def test_the_frame_and_its_beside_grades_ride_the_retention_sidecar():
     assert summary["frame_tilt_db_per_octave"] == pytest.approx(0.7, abs=0.01)
     assert summary["frame_pivot_hz"] == frame["pivot_hz"]
     assert summary["frame_n_bins"] == frame["n_bins"]
+    assert summary["frame_band_n_bins"] == frame["band_n_bins"]
     assert summary["rms_db_tilt_removed"] == frame["tilt_removed"]["rms_db"]
     assert summary["max_db_notch_excluded_tilt_removed"] == frame["tilt_removed"]["max_db"]
     # And the raw ones are still there, unchanged, beside them.

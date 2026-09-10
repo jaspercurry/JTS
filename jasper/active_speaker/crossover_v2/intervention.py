@@ -57,6 +57,7 @@ from .contracts import (
     TrimStrategy,
 )
 from .plan_assembly import (
+    GAIN_STRUCTURE_CEILING_DB,
     FittedBranches,
     JournalRecord,
     LevelConsistency,
@@ -65,6 +66,7 @@ from .plan_assembly import (
     TrimDecision,
     assemble_plan,
     compose_linearized_prediction,
+    normalize_to_ceiling,
 )
 
 __all__ = [
@@ -711,7 +713,10 @@ def decide_trim(
     anchor is level-*preserving* — each branch's own measured give-back,
     normalized so no trim is ever positive — so the committed pair can never
     exceed the branch's own pre-correction system level and the emitted trims
-    stay cut-only; and the committed pair is still MEASURED afterwards at the
+    stay cut-only (the committed pair is then shifted UP as a COMMON MODE by
+    :func:`~.plan_assembly.normalize_to_ceiling`, which moves no role relative
+    to another and keeps every trim at or below unity); and the committed pair
+    is still MEASURED afterwards at the
     host's accountability seam, which discloses rather than refuses
     (`docs/measurement-loop-doctrine.md` deviation (i)), so a badly-levelled
     anchor produces a round that SAYS so.
@@ -1484,7 +1489,30 @@ def plan_linearization(
         ripple_db=ripple_lin,
         sanity_margin_db=request.trim_sanity_margin_db,
     )
-    role_attenuations_db = dict(trim.committed_db)
+    # The UP half of the normalize, after the pair is committed and before any
+    # consumer reads it (#2906). `anchor_trims` clamps the pair non-positive and
+    # then leaves whatever common-mode attenuation the branches share ON the
+    # table; the owner's ruling is that a common-mode trim is lost max SPL. The
+    # prediction below is composed from the SAME dict, so the shipped graph and
+    # the curve VERIFY grades it against stay one level frame.
+    role_attenuations_db, level_give_back_db = normalize_to_ceiling(
+        fitted, trim.committed_db,
+    )
+    # Emitted every round, zero included: a disclosure that only appears when
+    # it moved cannot be told from an emitter that stopped running.
+    emit(
+        "correction.crossover_v2_gain_structure_normalized",
+        {
+            "level_give_back_db": round(level_give_back_db, 3),
+            "ceiling_db": GAIN_STRUCTURE_CEILING_DB,
+            "committed_trim_db": {
+                k: round(float(v), 3) for k, v in trim.committed_db.items()
+            },
+            "normalized_trim_db": {
+                k: round(float(v), 3) for k, v in role_attenuations_db.items()
+            },
+        },
+    )
 
     if trim.beyond_sanity_margin:
         emit(
@@ -1559,6 +1587,11 @@ def plan_linearization(
     "correction.crossover_v2_realized_level_match",
     {
         "matched": committed_match.matched,
+        # `level_w_db`/`level_t_db` are read off the committed pair BEFORE
+        # `normalize_to_ceiling` (#2906); `trim_db` below is the post-normalize
+        # trim actually emitted. Labelled so the absolutes are not read as the
+        # emitted graph's own levels.
+        "level_frame": "committed_pair_pre_normalize",
         "level_w_db": round(float(committed_match.level_w_db), 3),
         "level_t_db": round(float(committed_match.level_t_db), 3),
         "difference_db": round(float(committed_match.difference_db), 3),

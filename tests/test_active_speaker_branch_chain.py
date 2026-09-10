@@ -19,6 +19,8 @@ import pytest
 
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
+    _GRID_HF_TAIL_FROM_HZ,
+    _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
     CrossoverSection,
@@ -427,16 +429,24 @@ def test_the_grid_spans_the_whole_domain_the_peak_is_taken_over():
     ) == pytest.approx(5.0, abs=0.05)
 
 
-def test_the_background_stays_at_one_forty_eighth_of_an_octave():
-    """The span widened; the resolution the tamper-hardening rests on did not.
+def test_the_background_resolution_is_never_coarser_than_it_was():
+    """The span widened and #2850 added a linear HF tail; the resolution the
+    tamper-hardening rests on only ever got FINER.
 
-    Pinned because :data:`CHAIN_GRID_HZ`'s point count is now DERIVED from the
+    Pinned because :data:`CHAIN_GRID_HZ`'s point count is DERIVED from the
     edges, so a moved edge silently changes the spacing every between-bin bound
-    below is measured at.
+    below is measured at. Two claims: no step anywhere exceeds 1/48 octave, and
+    above the tail corner no step exceeds its own absolute cap.
     """
-    steps = np.diff(np.log2(np.asarray(CHAIN_GRID_HZ)))
-    assert float(np.max(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
-    assert float(np.min(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
+    grid = np.asarray(CHAIN_GRID_HZ)
+    assert float(np.max(np.diff(np.log2(grid)))) <= 1.0 / 48.0 + 1e-4
+
+    tail = grid[grid >= _GRID_HF_TAIL_FROM_HZ]
+    assert float(np.max(np.diff(tail))) <= _GRID_HF_TAIL_STEP_HZ + 1e-6
+    # The geometric half is untouched: below the corner the spacing is exactly
+    # 1/48 octave, not merely no coarser.
+    head = np.log2(grid[grid < _GRID_HF_TAIL_FROM_HZ])
+    assert float(np.min(np.diff(head))) == pytest.approx(1.0 / 48.0, abs=1e-4)
 
 
 @pytest.mark.parametrize(
@@ -558,12 +568,14 @@ _SUBSONIC_CASCADE = (
 
 #: Where `HEADROOM_MARGIN_DB` stops covering the grid's sampling residue, Hz.
 #:
-#: Below this the margin covers it about four times over; above it the residue
-#: exceeds the margin (worst measured under-read 1.7385 dB) and the -1.0 dB
-#: per-driver soft-clip limiters are the backstop instead. Issue #2850. Stated
-#: as ~18 kHz in `branch_chain.HEADROOM_MARGIN_DB`'s own comment, which is the
-#: owner of the number; this is the test-side name for it.
-_HEADROOM_UNDER_READ_FLOOR_HZ = 18_000.0
+#: The 25 Hz linear tail (#2850) closed the residue from 14 kHz to 22 kHz to
+#: <=0.18 dB. Above ~22 kHz it still exceeds the margin (0.18 dB at 22 kHz,
+#: 1.04 dB at the fit engine's own rails near 23.5 kHz, 3.77 dB with unbounded
+#: Q -- the runtime contract bounds none), and the -1.0 dB per-driver
+#: soft-clip limiters are the backstop instead. Stated as ~22 kHz in
+#: `branch_chain.HEADROOM_MARGIN_DB`'s own comment, which is the owner of the
+#: number; this is the test-side name for it.
+_HEADROOM_UNDER_READ_FLOOR_HZ = 22_000.0
 
 
 def _old_gate_composed_db(filters, band_hz):
@@ -584,6 +596,117 @@ def _old_gate_composed_db(filters, band_hz):
         20.0 * np.log10(np.maximum(np.abs(chain_response(filters, grid)), 1e-12))
     ))
 
+
+def _background_only_read_db(filters) -> float:
+    """The grid read WITHOUT this module's shape-aware samples.
+
+    Background + centres + adjacent-pair geometric midpoints on a pure
+    1/48-octave span — the construction `main` shipped before #2846/#2850.
+    Rebuilt here rather than imported because the shipped constructor no
+    longer produces it; that is the whole point of the pins below.
+    """
+    centres = sorted(
+        freq for entry in filters
+        if 0.0 < (freq := float(entry["freq"])) < 0.5 * RESPONSE_SAMPLE_RATE_HZ
+    )
+    extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ, *centres]
+    extra.extend(math.sqrt(a * b) for a, b in zip(centres, centres[1:]))
+    grid = np.unique(np.concatenate([
+        np.geomspace(
+            _GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ,
+            round(48 * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)) + 1,
+        ),
+        np.asarray(extra, dtype=np.float64),
+    ]))
+    return float(np.max(
+        20.0 * np.log10(np.maximum(np.abs(chain_response(filters, grid)), 1e-12))
+    ))
+
+
+@pytest.mark.parametrize(
+    "biquad_type,corner_hz,gain_db",
+    [
+        ("Lowshelf", 1.8, 12.0),
+        ("Lowshelf", 1.0, 12.0),
+        ("Lowshelf", 0.5, 12.0),
+        # The high edge sits essentially AT Nyquist, so its gap is a fixed
+        # FRACTION of the shelf gain (6.5 %) rather than the low edge's runaway
+        # — it needs a taller shelf to clear the margin, and a tampered graph
+        # can carry one (`_validated_biquad_entry` bounds only ``freq > 0``).
+        ("Highshelf", 23_990.0, 20.0),
+    ],
+)
+def test_a_shelf_is_charged_at_its_asymptote_not_at_the_domain_edge(
+    biquad_type, corner_hz, gain_db,
+):
+    """#2846: a shelf's extreme is its ASYMPTOTE, which sits PAST its corner.
+
+    Once the corner approaches a domain edge the asymptote is off the grid
+    entirely, so nothing samples the level the branch actually realizes. A
+    +12 dB Lowshelf at or below 1.0 Hz read exactly half its gain — the grid
+    landing on the shelf's midpoint and nothing lower — while the branch
+    delivers the full 12 dB.
+
+    Tamper-reachable only (no fit or prescription emits a shelf there), which
+    is precisely the threat model the shared grid constructor exists for:
+    ``runtime_contract`` re-proves graphs it does not trust.
+    """
+    filters = [{
+        "biquad_type": biquad_type, "freq": corner_hz, "q": 0.7071, "gain": gain_db,
+    }]
+
+    under_read = gain_db - _background_only_read_db(filters)
+    assert under_read > HEADROOM_MARGIN_DB, (
+        "premise: this shelf is a case the pre-fix grid under-read PAST the "
+        "margin — if it were not, the pin below proves nothing"
+    )
+    assert branch_chain_peak_db(filters) == pytest.approx(gain_db, abs=_PEAK_EPS_DB)
+
+
+def test_the_ultrasonic_mixed_sign_residue_sits_under_the_headroom_margin():
+    """#2850's published worst case, end to end.
+
+    A 1/48-octave background's step GROWS in absolute Hz — 315.6 Hz at
+    21.7 kHz — so a close mixed-sign Peaking pair up there puts its continuous
+    extremum between two background bins AND outside the hull of its own
+    centres, where neither the unioned centres nor their midpoints reach it.
+    The branch then realizes more than it was charged, which is exactly what
+    ``HEADROOM_MARGIN_DB`` is the term for.
+
+    Truth is re-derived here on a dense linear sweep rather than quoted.
+    """
+    filters = [
+        {"biquad_type": "Peaking", "freq": 23_632.6, "q": 3.67, "gain": 10.01},
+        {"biquad_type": "Peaking", "freq": 23_648.1, "q": 5.58, "gain": -9.53},
+    ]
+    dense = np.linspace(23_000.0, 0.5 * RESPONSE_SAMPLE_RATE_HZ, 200_001)
+    truth_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+    ))
+
+    assert truth_db - _background_only_read_db(filters) > HEADROOM_MARGIN_DB, (
+        "premise: the pre-fix grid under-read this pair by MORE than the margin"
+    )
+    assert truth_db - branch_chain_peak_db(filters) < HEADROOM_MARGIN_DB
+
+
+def test_the_shared_grid_only_ever_reads_a_chain_higher():
+    """Both #2846 and #2850 add SAMPLES; neither removes one.
+
+    A maximum over a superset is never smaller, so every charge this round
+    moves moves UP. Pinned on the keystone profile plus the two shapes above
+    so a future grid change that trades a sample away fails here.
+    """
+    corpus = (
+        list(JTS3_20260728_WOOFER),
+        [{"biquad_type": "Lowshelf", "freq": 1.8, "q": 0.7071, "gain": 12.0}],
+        [
+            {"biquad_type": "Peaking", "freq": 23_632.6, "q": 3.67, "gain": 10.01},
+            {"biquad_type": "Peaking", "freq": 23_648.1, "q": 5.58, "gain": -9.53},
+        ],
+    )
+    for filters in corpus:
+        assert branch_chain_peak_db(filters) >= _background_only_read_db(filters)
 
 def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
     """Why the corpus above asserts the charge and not the margin.
@@ -753,16 +876,19 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
 
 
 def test_the_classifier_cannot_vouch_into_the_under_read_band():
-    """The tripwire for the ONE thing keeping the honest loop out of #2850.
+    """The tripwire for the ONE thing keeping the honest loop out of the
+    still-open ~22 kHz-Nyquist under-read band.
 
-    Above ~18 kHz the grid's sampling residue exceeds ``HEADROOM_MARGIN_DB``,
-    and R8's widened per-filter ceiling admits the filter magnitudes that
-    residue was measured at. What makes that unreachable through the product
-    loop is not the gate — hand-inject a 19 kHz ``defect-boostable`` verdict and
-    the gate takes it — but the CLASSIFIER, which cannot produce a verdict up
-    there at all: a boost is admitted only against a banked verdict near its
-    centre, and the highest frequency that can be banked is the classifiable
-    band's top widened by the verdict match tolerance.
+    #2850's 25 Hz linear tail closed the residue from 14 kHz to 22 kHz to
+    <=0.18 dB; above ~22 kHz the grid's sampling residue still exceeds
+    ``HEADROOM_MARGIN_DB``, and R8's widened per-filter ceiling admits the
+    filter magnitudes that residue was measured at. What makes that
+    unreachable through the product loop is not the gate -- hand-inject a
+    23 kHz ``defect-boostable`` verdict and the gate takes it -- but the
+    CLASSIFIER, which cannot produce a verdict up there at all: a boost is
+    admitted only against a banked verdict near its centre, and the highest
+    frequency that can be banked is the classifiable band's top widened by
+    the verdict match tolerance.
 
     So the protection is PRODUCER-side, it is arithmetic rather than a rule
     anyone wrote down as one, and nothing else fails if it moves. Raising
@@ -786,15 +912,45 @@ def test_the_classifier_cannot_vouch_into_the_under_read_band():
     assert highest_vouchable_hz < _HEADROOM_UNDER_READ_FLOOR_HZ, (
         f"the classifier can now vouch up to {highest_vouchable_hz:.1f} Hz, "
         f"into the >= {_HEADROOM_UNDER_READ_FLOOR_HZ:.0f} Hz band where the "
-        "sampling residue exceeds HEADROOM_MARGIN_DB (issue #2850). The "
+        "sampling residue exceeds HEADROOM_MARGIN_DB. The #2850 tail closed "
+        "14-22 kHz to <=0.18 dB residue but left ~22 kHz-Nyquist open (1.04 "
+        "dB at fit-engine rails, 3.77 dB with unbounded Q), where the -1.0 "
+        "dB per-driver soft-clip limiters remain the only backstop. The "
         "producer-side protection that made R8's widened boost caps safe to "
-        "land with #2850 open has just been removed — close #2850, or re-argue "
-        "the caps"
+        "land with that band open has just been removed -- lower "
+        "TRUSTED_CEILING_HZ (or the match tolerance) back down, or close the "
+        "~22 kHz-Nyquist residue"
     )
     # Today's values, pinned after it so the margin above is legible rather
-    # than mysterious: 14254.4 Hz against an 18000 Hz floor is ~3.7 kHz of room.
+    # than mysterious: 14254.4 Hz against a 22000 Hz floor is ~7.7 kHz of room.
     assert classifiable_hi_hz == pytest.approx(12_699.2084, abs=1e-3)
     assert highest_vouchable_hz == pytest.approx(14_254.3795, abs=1e-3)
+
+
+def test_a_rails_legal_pair_near_nyquist_still_under_reads_past_the_margin():
+    """The residual #2850 band, pinned rather than left to the tripwire alone.
+
+    A mixed-sign Peaking pair at the fit engine's own rails (``_PEAKING_Q_MAX``
+    8.0, ``PER_FILTER_BOOST_CAP_DB`` 12.0) sitting near Nyquist still under-reads
+    on the grid by more than ``HEADROOM_MARGIN_DB`` -- the linear tail's 14-22 kHz
+    fix does not reach ~23 kHz. If a future grid change closes this too, delete
+    this pin AND ``test_the_classifier_cannot_vouch_into_the_under_read_band``
+    together; they document the same residue from two sides.
+    """
+    filters = [
+        {"biquad_type": "Peaking", "freq": 23_549.9982, "q": 6.8434, "gain": 11.3035},
+        {"biquad_type": "Peaking", "freq": 23_531.7808, "q": 8.0, "gain": -11.8646},
+    ]
+    dense = np.linspace(23_000.0, 0.5 * RESPONSE_SAMPLE_RATE_HZ, 200_001)
+    truth_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+    ))
+
+    assert truth_db - branch_chain_peak_db(filters) > HEADROOM_MARGIN_DB - 0.05, (
+        "premise: a fit-rails-legal pair near Nyquist under-reads by more "
+        "than the margin -- if the grid closes this, delete this pin and "
+        "the classifier tripwire above together"
+    )
 
 
 @pytest.mark.parametrize(

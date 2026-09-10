@@ -130,10 +130,17 @@ class FrameComparison:
     raw_max_db: float | None = None
     tilt_removed_rms_db: float | None = None
     tilt_removed_max_db: float | None = None
+    #: Bins the comparison GRADES, against ``fit.n_bins``'s bins it TRUSTED. The pair is
+    #: the exclusion fraction, i.e. "was this tilt estimated over a notch-heavy
+    #: prediction" — the caveat's own signal, which ``n_bins`` alone cannot carry
+    #: (#1990). Disclosure: nothing reads it to decide anything. ``None`` when the caller
+    #: states no band.
+    band_n_bins: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Grades nest under ``raw``/``tilt_removed`` rather than flattening with suffixes."""
         payload = self.fit.to_dict()
+        payload["band_n_bins"] = self.band_n_bins
         payload["raw"] = {"rms_db": self.raw_rms_db, "max_db": self.raw_max_db}
         payload["tilt_removed"] = {
             "rms_db": self.tilt_removed_rms_db,

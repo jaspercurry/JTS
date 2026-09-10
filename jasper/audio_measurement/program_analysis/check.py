@@ -26,7 +26,6 @@ from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from .model import (
     ALIGNMENT_SNR_REFUSAL_VERDICT,
-    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     CHANNEL_MAP_TARGET_RISE_DB,
     DBFS_FLOOR,
@@ -422,9 +421,11 @@ def _channel_map_ok(
        nonlinearity) — not the mis-wire discriminator, which rung 1
        catches. A ratio rather than an additive bound because honest
        cross-band content sits at a roughly fixed RELATIVE level (see
-       ``CHANNEL_MAP_MIN_ISOLATION_DB``'s derivation). Judged only above
-       ``CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB``, since below it the CROSS
-       test would turn a retriable ``snr_floor`` into a rewire hard stop.
+       ``CHANNEL_MAP_MIN_ISOLATION_DB``'s derivation). Judged only once the
+       CROSS band itself rose ``CHANNEL_MAP_TARGET_RISE_DB`` — the bar a
+       driver that PLAYED has to clear — so a merely quiet capture cannot
+       manufacture a rewire hard stop out of a retriable ``snr_floor``
+       (#2801).
 
     Without an ambient window, falls back to the fraction test (energy in
     the declared band must exceed half the pilot window's total spectral
@@ -463,8 +464,6 @@ def _channel_map_ok(
     )
     if target_rise < CHANNEL_MAP_TARGET_RISE_DB:
         return False, target_rise, None
-    # Cross rises are always MEASURED; only JUDGED above CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB.
-    judge_cross = target_rise >= CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
     worst_cross_rise: float | None = None
     for other_f1, other_f2 in other_bands:
         cross_rise = (
@@ -473,7 +472,10 @@ def _channel_map_ok(
         )
         if worst_cross_rise is None or cross_rise > worst_cross_rise:
             worst_cross_rise = cross_rise
-        if not judge_cross:
+        # Cross rises are always MEASURED; a rise under the TARGET floor is
+        # not JUDGED — nothing that quiet cleared the bar a driver that played
+        # has to clear, so its ratio decides nothing (#2801).
+        if cross_rise < CHANNEL_MAP_TARGET_RISE_DB:
             continue
         isolation = channel_map_isolation_db(target_rise, cross_rise)
         # Fail-closed: an unjudgeable ratio must never read as a PASS.
