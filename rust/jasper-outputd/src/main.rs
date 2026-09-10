@@ -342,6 +342,29 @@ fn state_counters(sink: &RuntimeAlsaSink) -> IoCounters {
     sink.counters()
 }
 
+/// Read the DAC's `snd_pcm_delay` for the period just written, publish it to
+/// STATUS, and answer with the frames the TTS ledger drains against. On an
+/// unavailable delay it warns ONCE per process (`warned` is the run loop's
+/// latch) and falls back to the negotiated DAC buffer.
+///
+/// Must be called AFTER the period write: the value is the queued depth
+/// including that write.
+fn observe_dac_delay(sink: &RuntimeAlsaSink, state: &OutputdState, warned: &mut bool) -> u64 {
+    match sink.dac_delay_frames() {
+        Ok(frames) => {
+            state.mark_dac_delay(frames);
+            frames
+        }
+        Err(e) => {
+            if !*warned {
+                eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
+                *warned = true;
+            }
+            sink.dac_negotiated().buffer_frames as u64
+        }
+    }
+}
+
 fn run_alsa(
     config: &Config,
     state: &Arc<OutputdState>,
@@ -608,19 +631,7 @@ fn run_alsa(
             core.prepare_period_with_content(&content_buf);
             sink.write_period(core.output_period())?;
             sink.mark_runtime_status(state);
-            let dac_delay_frames = match sink.dac_delay_frames() {
-                Ok(frames) => {
-                    state.mark_dac_delay(frames);
-                    frames
-                }
-                Err(e) => {
-                    if !dac_delay_warning_logged {
-                        eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
-                        dac_delay_warning_logged = true;
-                    }
-                    sink.dac_negotiated().buffer_frames as u64
-                }
-            };
+            let dac_delay_frames = observe_dac_delay(&sink, state, &mut dac_delay_warning_logged);
             // The ledger drains against ACTUAL DAC progress — the honest
             // max_audio_played_ms barge-in has never had from fanin.
             let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
@@ -648,19 +659,7 @@ fn run_alsa(
         } else {
             sink.write_period(&content_buf)?;
             sink.mark_runtime_status(state);
-            let _dac_delay_frames = match sink.dac_delay_frames() {
-                Ok(frames) => {
-                    state.mark_dac_delay(frames);
-                    frames
-                }
-                Err(e) => {
-                    if !dac_delay_warning_logged {
-                        eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
-                        dac_delay_warning_logged = true;
-                    }
-                    sink.dac_negotiated().buffer_frames as u64
-                }
-            };
+            observe_dac_delay(&sink, state, &mut dac_delay_warning_logged);
             // Real clip accounting: the passthrough never clips, so a
             // full-scale sample means CamillaDSP hit the ceiling upstream —
             // the honest signal the no-clip gate needs.

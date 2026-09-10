@@ -259,6 +259,12 @@ pub struct PairedCompositeSink {
     delay_delta_baseline: Option<i64>,
     last_delay_delta: Option<i64>,
     last_delay_delta_error: Option<i64>,
+    /// The `(A, B)` child delays read by the most recent
+    /// [`Self::check_delay_delta`], so `dac_delay_frames` answers from that
+    /// same pair instead of issuing two more `snd_pcm_delay` ioctls in the same
+    /// period. `None` until the first post-write check (the pair is read
+    /// directly then).
+    last_child_delays: Option<(i64, i64)>,
     max_delay_delta_frames: i64,
     /// The two child period buffers, at the children's declared edge width —
     /// and the ONE place that width is represented at runtime. See
@@ -815,6 +821,7 @@ impl PairedCompositeSink {
             delay_delta_baseline: None,
             last_delay_delta: None,
             last_delay_delta_error: None,
+            last_child_delays: None,
             max_delay_delta_frames: config.dual_max_delay_delta_frames,
             // `configure_pcm`'s final-edge readback checked the installed
             // client-side format on BOTH children against this requested one, so
@@ -1167,18 +1174,22 @@ impl PairedCompositeSink {
         }
     }
 
+    /// Deepest queued child, in frames. Answers from the pair
+    /// [`Self::check_delay_delta`] already read for this period; only a period
+    /// that ran no check (the pair was not Running) reads the devices itself.
     pub fn dac_delay_frames(&self) -> Result<u64> {
-        let a = self
-            .dac_a
-            .delay()
-            .context("reading outputd dual DAC A delay")?
-            .max(0) as u64;
-        let b = self
-            .dac_b
-            .delay()
-            .context("reading outputd dual DAC B delay")?
-            .max(0) as u64;
-        Ok(a.max(b))
+        let (delay_a, delay_b) = match self.last_child_delays {
+            Some(pair) => pair,
+            None => (
+                self.dac_a
+                    .delay()
+                    .context("reading outputd dual DAC A delay")?,
+                self.dac_b
+                    .delay()
+                    .context("reading outputd dual DAC B delay")?,
+            ),
+        };
+        Ok((delay_a.max(0) as u64).max(delay_b.max(0) as u64))
     }
 
     fn check_delay_delta(&mut self) -> Result<()> {
@@ -1190,6 +1201,7 @@ impl PairedCompositeSink {
             .dac_b
             .delay()
             .context("reading outputd dual DAC B delay")?;
+        self.last_child_delays = Some((delay_a, delay_b));
         let delta = delay_a - delay_b;
         let baseline = *self.delay_delta_baseline.get_or_insert(delta);
         let check = delay_delta_check(delta, baseline, self.max_delay_delta_frames);
