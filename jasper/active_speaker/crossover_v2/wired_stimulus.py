@@ -26,6 +26,7 @@ from jasper.audio_measurement.playback import (
     PlaybackError, PlaybackObservation, WavPlaybackCancelled,
     WavPlaybackCancelledBeforeSpawn,
 )
+from jasper.log_event import log_event
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
@@ -48,10 +49,10 @@ def _capture_stopped(
     cause: WiredCaptureError, playback: PlaybackObservation,
 ) -> StimulusCaptureStopped:
     if isinstance(cause, WiredSplCeilingExceeded):
-        logger.error(
-            "event=measurement_spl_ceiling_stop observed_db_spl=%.2f "
-            "ceiling_db_spl=%.2f weighting=Z",
-            cause.observed_db_spl, cause.ceiling_db_spl,
+        log_event(
+            logger, "active_speaker.measurement_spl_ceiling_stop", level=logging.ERROR,
+            observed_db_spl=round(cause.observed_db_spl, 2),
+            ceiling_db_spl=cause.ceiling_db_spl, weighting="Z",
         )
     return StimulusCaptureStopped(getattr(cause, "code", "wired_capture_failed"), str(cause), playback)
 
