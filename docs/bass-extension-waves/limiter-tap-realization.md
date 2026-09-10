@@ -314,10 +314,9 @@ the i32 spine scale — which is every ring-armed box since the ring wire's
 default went wide on 2026-08-15
 ([`60-jts-ring.conf`](../../deploy/alsa/conf.d/60-jts-ring.conf) declares that
 wire). What still carries this requirement is the BENCH LANE, which
-is narrow by its own decision: the renderer-ingress lanes in
-[`61-jts-renderer-lanes.conf`](../../deploy/alsa/conf.d/61-jts-renderer-lanes.conf)
-omit `format` deliberately, unlike the program ring's conf.d, so the stimulus
-path stays 48 kHz S16_LE whether it rides snd-aloop or a ring. The module
+is narrow by its own decision: renderer ingress is the snd-aloop substreams in
+[`asoundrc.jasper`](../../deploy/alsa/asoundrc.jasper), which fan-in reads as
+S16_LE, so the stimulus path stays 48 kHz S16_LE. The module
 docstring quoted here has been re-worded to match ("Renderer lane inputs are
 S16_LE interleaved stereo; the USB DIRECT lane …").
 

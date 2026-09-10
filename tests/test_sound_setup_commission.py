@@ -32,6 +32,7 @@ from jasper.active_speaker import (
     reset_ramp_state,
 )
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
+from jasper.audio_measurement import correction_lane
 from jasper.active_speaker.measurement import record_driver_measurement
 
 from tests._armed_transport import arm_ring_transport
@@ -395,34 +396,17 @@ def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
     assert result["signal_plan"]["selection_reason"] == "above_strictest_highpass_edge"
 
 
-@pytest.mark.parametrize("lane_armed", [False, True])
 def test_commission_tone_payload_reports_the_device_the_spawn_used(
-    monkeypatch, tmp_path, lane_armed
+    monkeypatch, tmp_path
 ):
-    """Payload-equals-spawn is the sweep's actual promise, pinned ARMED.
+    """Payload-equals-spawn is the sweep's actual promise.
 
-    The device-fact sweep (P6c-ii) exists "precisely so an armed box can
-    never spawn on the ring while its telemetry reports the substream" —
-    but every prior payload assertion ran UNARMED, where the reader and
-    the old constant agree by construction, so a payload regressing to
-    the IMPORTED CONSTANT (`{"pcm": CORRECTION_SUBSTREAM}`) passed the
-    whole suite while diverging on exactly the armed box (found
-    empirically by the review panel; the SSOT literal guard is blind to
-    imported-constant references by design). This drives the tone flow —
-    the spawn through the shared helper AND web_commissioning's
-    `_commission_tone_payload` builder — on BOTH transports and asserts
-    the payload equals the SPAWN'S OWN argv device, which is stronger
-    than asserting either value alone.
+    This drives the tone flow — the spawn through the shared helper AND
+    web_commissioning's `_commission_tone_payload` builder — and asserts the
+    payload equals the SPAWN'S OWN argv device, which is stronger than
+    asserting either value alone.
     """
-    from jasper import renderer_lanes as rl
-
-    map_path = tmp_path / "renderer_lanes.env"
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(map_path))
-    lane = rl.lane_by_label("correction")
-    assert lane is not None
-    if lane_armed:
-        map_path.write_text(rl.render_env_text((lane.label,)))
-    expected_device = lane.ring_device if lane_armed else lane.aloop_device
+    expected_device = correction_lane.CORRECTION_SUBSTREAM
 
     monkeypatch.setattr(sound_active_speaker, "_COMMISSION_TONE_SESSION", None)
     wav_path = tmp_path / "tone.wav"
@@ -1332,23 +1316,10 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
     }
 
 
-@pytest.mark.parametrize("lane_armed", [False, True])
 def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
-    monkeypatch, tmp_path, lane_armed
+    monkeypatch, tmp_path
 ):
-    # Both lane transports (P6c-ii): the payload-equals-spawn assertions
-    # below are the armed-state pin for sound_setup's summed payload site —
-    # an unarmed-only run is satisfied by an imported-constant regression
-    # by construction (reader == old constant there).
-    from jasper import renderer_lanes as rl
-
-    lane_map = tmp_path / "renderer_lanes.env"
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(lane_map))
-    lane = rl.lane_by_label("correction")
-    assert lane is not None
-    if lane_armed:
-        lane_map.write_text(rl.render_env_text((lane.label,)))
-    expected_device = lane.ring_device if lane_armed else lane.aloop_device
+    expected_device = correction_lane.CORRECTION_SUBSTREAM
 
     summed = _summed_test_stubs(monkeypatch, tmp_path)
     controller = summed["controller"]

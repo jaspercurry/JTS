@@ -719,14 +719,14 @@ mod tests {
         assert!(periods > 0, "the window was open and had to close");
     }
 
-    /// Pin 11a (the fresh-session hole): a lane whose renderer ring is still
-    /// EMPTY when `SELECT` lands must HOLD its selection window, not spend it on
-    /// periods the sum never heard. Spending it there opens the lane at unity on
-    /// the first period that carries real samples — which is a step, and is what
-    /// a first AirPlay session start looks like. The wake window cannot cover
+    /// Pin 11a (the fresh-session hole): a lane that captures NOTHING when
+    /// `SELECT` lands must HOLD its selection window, not spend it on periods
+    /// the sum never heard. Spending it there opens the lane at unity on the
+    /// first period that carries real samples — which is a step, and is what a
+    /// first AirPlay session start looks like. The wake window cannot cover
     /// this: the gap here is far under `ARM_SILENCE_MS`.
     #[test]
-    fn an_empty_ring_at_select_holds_the_selection_window() {
+    fn an_empty_capture_at_select_holds_the_selection_window() {
         let mut fade = settled_lane("airplay");
         // mux drops the lane while it streams; the fade-out runs to completion.
         for periods in 0.. {
@@ -736,7 +736,7 @@ mod tests {
                 break;
             }
         }
-        // SELECT returns, but the ring hands over nothing for a while.
+        // SELECT returns, but the lane hands over nothing for a while.
         let mut empty: [i16; 0] = [];
         for _ in 0..(2 * RAMP_FRAMES / (PERIOD as usize) + 2) {
             assert!(!fade.observe(&empty[..], PERIOD));

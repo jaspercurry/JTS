@@ -54,8 +54,7 @@ ReadWritePaths=/var/lib/jasper /var/lib/camilladsp
 # Deliberately tight: correction profiles, capture bundles, and measurement
 # artifacts stay owner-only. Every file shared across daemons is published by
 # jasper.atomic_io with an explicit mode, so this governs only the private
-# set. The correction-lane aplay children override it per spawn with
-# CORRECTION_PLAY_UMASK so an armed box's ring still comes up group-writable.
+# set.
 UMask=0077
 # /run is root-owned 0755, so the non-root process cannot create the
 # staged-startup hold marker's directory itself; RuntimeDirectory= creates it

@@ -28,11 +28,6 @@ single Apple, dual Apple, and DAC8x profiles the same TTS semantics.
 MUSIC chain (gets CamillaDSP processing)
     renderers / correction sweeps → private fan-in lanes
               → hw:Loopback,0,0..4 → snd-aloop → hw:Loopback,1,0..4
-              (a lane ARMED for ring ingress replaces its snd-aloop hop with
-               a per-renderer SHM slot ring — /dev/shm/jts-ring/lane-<label>.ring,
-               written by the renderer's own jts_ring ioplug and read by fan-in.
-               Arming is per box and operator-explicit; the fleet default is
-               unarmed, and an unarmed box runs the aloop path above.)
               → jasper-fanin → Ring A (/dev/shm/jts-ring/program.ring)
               → jasper-camilla (jts_ring_capture; main_volume + filters)
               → Ring B (/dev/shm/jts-ring/content.ring), or the ACTIVE ring
@@ -516,12 +511,8 @@ last server activity, not acoustic latency.
 ## Operational notes
 
 **Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
-Goes through CamillaDSP, so `main_volume` applies. On a box whose
-`correction` renderer-ingress lane is armed onto its SHM ring
-(`jasper-audio-config renderer-lanes` reports it; the fleet default is
-unarmed), fan-in reads the ring instead of this alias, so use
-`aplay -D correction_ring_lane file.wav` there — the product's own
-measurement spawns pick the right one automatically
+Goes through CamillaDSP, so `main_volume` applies. The product's own
+measurement spawns resolve the same device
 (`jasper.audio_measurement.correction_lane.correction_play_device`).
 
 **Test the TTS chain**: use `jasper-voice`/cue playback or the canonical

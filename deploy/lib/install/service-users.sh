@@ -198,56 +198,34 @@ create_jasper_service_users() {
         usermod -aG jasper-intsecrets jasper-mux 2>/dev/null || true
         usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
     fi
-    # U3 / P6 — renderer users join `jts-ring` so a migrated lane's ioplug can
-    # create and write its ring under /dev/shm/jts-ring. Guarded on the account
-    # EXISTING: `pi` is the distro's login account, not one this installer
-    # creates, and a box brought up with a custom user has no `pi` at all — a
-    # bare usermod there would fail the install under `set -euo pipefail`. Same
-    # shape as the `bluetooth` guard above, and idempotent on upgrade.
-    #
-    # This is INERT until a lane is armed: group membership grants the ability to
-    # write the ring directory, it does not point any renderer at a ring. The
-    # lane map (jasper.renderer_lanes) is what arms one.
     if getent group jts-ring >/dev/null 2>&1; then
-        if getent passwd pi >/dev/null 2>&1; then
-            usermod -aG jts-ring pi 2>/dev/null || true
-        fi
-        # U3/P6c — jasper-web's wizard-spawned aplay children create the
-        # correction lane's ring while this box has the lane armed. The RUNTIME grant
-        # comes from the unit's SupplementaryGroups= (systemd adds the
-        # group to the process directly; the group need only exist). This
-        # passwd record serves the non-systemd consumers — `sudo -u
-        # jasper-web` probes, operator shells — and this file's own
-        # convention that -G lists match each unit's SupplementaryGroups=.
-        # The useradd -G above is skipped when the user already exists
-        # (every pre-P6c-i box), hence this idempotent add — same shape as
-        # the jasper-secrets/jasper-intsecrets upgrade blocks. It covers
-        # jasper-correction-web too: that unit spawns the same aplay children
-        # under this same account. The remaining correction-lane writer
-        # identities (the streambox variant, operator CLIs) run as root and
-        # write the 2775 root-owned directory regardless — the P6b root
-        # exemption; their ring FILE mode comes from the shared spawn
-        # helper's umask, not a group.
+        # jasper-web READS one ring header: the /rooms/ wizards
+        # (jasper/web/rooms_setup.py, pair_flow.py) import
+        # jasper.multiroom.state, whose ring_flow_state opens
+        # /dev/shm/jts-ring/grouping.ring O_RDONLY. It writes no ring.
+        # Its RUNTIME grant comes from the unit's SupplementaryGroups=
+        # (systemd adds the group to the process directly; the group need only
+        # exist). This passwd record serves the non-systemd consumers —
+        # `sudo -u jasper-web` probes, operator shells — and this file's own
+        # convention that -G lists match each unit's SupplementaryGroups=. The
+        # useradd -G above is skipped when the user already exists, hence this
+        # idempotent add — same shape as the
+        # jasper-secrets/jasper-intsecrets upgrade blocks.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
-        # #2786 — jasper-control READS one ring header: /state's grouping
-        # `ring` block opens /dev/shm/jts-ring/grouping.ring O_RDONLY for its
-        # first 128 bytes. Unlike every other member here it never writes a
-        # ring. Same shape as the jasper-web line above: the RUNTIME grant is
-        # the unit's SupplementaryGroups=, and this passwd record serves the
+        # #2786 — jasper-control READS one ring header too: /state's grouping
+        # `ring` block opens the same file O_RDONLY for its first 128 bytes.
+        # Same shape as the jasper-web line above: the RUNTIME grant is the
+        # unit's SupplementaryGroups=, and this passwd record serves the
         # non-systemd consumers plus this file's convention that the -G lists
         # match each unit. Takes effect on the daemon's next start, which the
         # deploy performs.
         usermod -aG jts-ring jasper-control 2>/dev/null || true
-        # U3/P6d — shairport-sync writes the airplay lane's ring as its own
-        # non-root user. Fresh boxes get the group at useradd time
-        # (renderers.sh hard-lists it, which is safe because THIS function
-        # creates the group first); this guarded usermod is the UPGRADE path
-        # for boxes whose shairport-sync user predates P6d. Guarded on the
-        # account existing because on a fresh box install_renderers has not
-        # run yet at this point — same shape as the `pi` guard above.
-        if getent passwd shairport-sync >/dev/null 2>&1; then
-            usermod -aG jts-ring shairport-sync 2>/dev/null || true
-        fi
+        # The renderer users were members while the per-renderer ring ingress
+        # existed; nothing arms it any more, so drop the stale grant on an
+        # upgraded box (a fresh box never had it).
+        # REMOVAL CONDITION: every box has taken one install after this lands.
+        gpasswd -d pi jts-ring 2>/dev/null || true
+        gpasswd -d shairport-sync jts-ring 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the remaining root correction-lane identities write rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; jts-ring = jasper-web + jasper-control, both header READERS)"
 }

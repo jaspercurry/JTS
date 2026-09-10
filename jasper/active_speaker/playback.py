@@ -104,18 +104,6 @@ APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
 #   - an flock's identity is the PATHNAME, so unlinking `<ring>.writer.lock`
 #     voids exclusivity SILENTLY, with no log line between two live writers.
 # A hearing-safety fence should not rest on a guard with those three holes.
-#
-# RENDERER-lane rings (jts_ring_lane_* / *_ring_lane, incl. the correction
-# lane's — U3/P6) are still deliberately NOT fenced, but on the CONSEQUENCE
-# asymmetry rather than the mechanism one this paragraph used to claim: a lane
-# ring is INGRESS into fan-in, not a sink, so a tone landing there is wrong
-# output on the ordinary program path — not audio placed past the crossover.
-# Their ioplug writer side takes the same P6a flock, so a stray second writer
-# gets a clean bounded-wait EBUSY. The env-chosen test PCM here is operator
-# intent and does NOT silently follow the lane map: an operator who arms the
-# correction lane and wants lab tones on the ring re-points
-# JASPER_AUDIO_LAB_TEST_PCM themselves; one pointed at a busy armed lane fails
-# loudly with EBUSY.
 FORBIDDEN_TEST_PCM_TOKENS = (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",

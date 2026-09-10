@@ -145,19 +145,12 @@ def test_conf_asset_echoes_state_what_was_placed_not_what_the_box_is_doing(tmp_p
     false where it matters most, because on a box whose coupling is armed those
     exact files carry the audio. This helper cannot see the coupling from here,
     so the honest line states what it PLACED rather than what the box is doing.
-
-    The renderer-lane echo is the shape that survives, and asserting it still
-    prints is deliberate: its `inert` is CONDITIONED on an arm that has not
-    happened ("until a lane is armed"), which is a statement about that lane's
-    state rather than a claim about the platform, so a later sweep of this
-    vocabulary must not take it with the rest.
     """
     repo = tmp_path / "repo"
     (repo / "deploy" / "alsa" / "conf.d").mkdir(parents=True)
     (repo / "deploy" / "tmpfiles").mkdir(parents=True)
     for rel in (
         "deploy/alsa/conf.d/60-jts-ring.conf",
-        "deploy/alsa/conf.d/61-jts-renderer-lanes.conf",
         "deploy/alsa/conf.d/62-jts-ring-grouping.conf",
         "deploy/tmpfiles/jts-ring.conf",
     ):
@@ -179,7 +172,6 @@ def test_conf_asset_echoes_state_what_was_placed_not_what_the_box_is_doing(tmp_p
     # The unconditioned label, in both parenthetical spellings it had.
     assert "; inert)" not in out
     assert "(inert)" not in out
-    assert "inert until a lane is armed" in out
 
 
 # --- the provenance helpers, EXECUTED ---------------------------------------

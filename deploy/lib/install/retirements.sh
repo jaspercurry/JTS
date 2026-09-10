@@ -42,6 +42,13 @@ JASPER_RETIRED_LEFTOVERS=(
     # REMOVAL CONDITION: that check drops its WARN AND no Pi still carries
     # /etc/asound.conf.dmix-mode-backup.
     "file|${STATE_DIR}/audio_topology.env /etc/asound.conf.dmix-mode-backup|the dmix/fanin topology switch state"
+    # The never-armed per-renderer SHM ring ingress. renderer_lanes.env is the
+    # arm map nothing writes or reads any more, and the conf.d drop-in defines
+    # the `*_ring_lane` PCMs it pointed at; alsa-lib parses that directory on
+    # every PCM open on the box, so a definition naming a transport no code can
+    # arm must not stay resolvable.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/renderer_lanes.env /etc/alsa/conf.d/61-jts-renderer-lanes.conf|the per-renderer ring ingress arm map and lane PCMs"
     # v1.yml is the pre-outputd rollback graph (issue #2240); install.sh stopped
     # seeding it, but a copy left by an older install is not inert — camillagui's
     # config picker scans /etc/camilladsp/*.yml, and the install-time statefile

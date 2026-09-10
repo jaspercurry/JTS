@@ -3771,3 +3771,20 @@ def test_retired_leftovers_table_file_targets_are_scoped():
     # #4336: the Bluetooth role store holds the MAC of every device the box
     # ever paired and lost its last writer, reader and mode-healer in #4333.
     assert "${STATE_DIR}/bt_roles.json" in file_targets
+
+
+def test_retired_leftovers_table_retires_the_renderer_lane_ingress():
+    """Static pin: an upgraded box carries the never-armed per-renderer ring
+    ingress as an arm map and a conf.d drop-in, and the retirement table names
+    both -- nothing else in the tree removes either."""
+    text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
+    targets = {
+        target
+        for kind, body in re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
+        if kind == "file"
+        for target in body.split("|", 1)[0].split()
+    }
+    assert {
+        "${STATE_DIR}/renderer_lanes.env",
+        "/etc/alsa/conf.d/61-jts-renderer-lanes.conf",
+    } <= targets

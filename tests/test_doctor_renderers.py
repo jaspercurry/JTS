@@ -159,27 +159,8 @@ def test_check_bluetooth_pairing_policy_verdicts(
     assert r.reason == (getattr(renderers, reason) if reason else "")
 
 
-def _patch_lane_map(monkeypatch, tmp_path: Path, armed):
-    """Pin the renderer-lane map the shairport conf check consults.
-
-    ``armed=None`` means NO map file — the shipped fleet state. Anything
-    else is rendered through the map's real writer-side text so the test
-    reads exactly what production would. Without this pin the check would
-    read the HOST's /var/lib/jasper map, making these tests answer
-    differently on an armed box.
-    """
-    import jasper.renderer_lanes as rl
-
-    map_path = tmp_path / "renderer_lanes.env"
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(map_path))
-    if armed is not None:
-        map_path.write_text(rl.render_env_text(tuple(armed)))
-
-
 def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
-    """Canonical fan-in wiring: AirPlay targets its private aloop lane —
-    the unarmed/fleet default (no lane map exists)."""
-    _patch_lane_map(monkeypatch, tmp_path, None)
+    """Canonical fan-in wiring: AirPlay targets its private aloop lane."""
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "shairport_substream";\n};\n',
@@ -187,61 +168,11 @@ def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
     )
     r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
-    assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_UNARMED_OK
-
-
-def test_shairport_check_ring_device_ok_when_armed(monkeypatch, tmp_path):
-    """Armed lane + conf rendering the ring device = the coherent armed
-    state (U3/P6d)."""
-    _patch_lane_map(monkeypatch, tmp_path, ["airplay"])
-    _patch_shairport_conf(
-        monkeypatch,
-        'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
-        tmp_path,
-    )
-    r = renderers.check_shairport_sync_loopback_plughw()
-    assert r.status == "ok"
-    assert r.reason == renderers.REASON_SHAIRPORT_RING_ARMED_OK
-
-
-def test_shairport_check_armed_but_conf_aloop_warns_restart(
-    monkeypatch, tmp_path
-):
-    """ARMED lane but the conf still renders the aloop device: the unit has
-    not restarted since the arm — the half-flip window the arm CLI's
-    restart_required instruction exists to close. The conf is re-rendered
-    at every unit start, so this disagreement means exactly that, and the
-    detail must say so with the unit named."""
-    _patch_lane_map(monkeypatch, tmp_path, ["airplay"])
-    _patch_shairport_conf(
-        monkeypatch,
-        'alsa = {\n    output_device = "shairport_substream";\n};\n',
-        tmp_path,
-    )
-    r = renderers.check_shairport_sync_loopback_plughw()
-    assert r.status == "warn"
-    assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_ARMED_STALE
-
-
-def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
-    """Conf renders the ring device while the lane is NOT armed: the
-    rollback half of the same window (disarm without restart). shairport
-    would write a ring fan-in no longer reads — silence — so this warns
-    with the restart remedy rather than counting as 'not recognized'."""
-    _patch_lane_map(monkeypatch, tmp_path, [])
-    _patch_shairport_conf(
-        monkeypatch,
-        'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
-        tmp_path,
-    )
-    r = renderers.check_shairport_sync_loopback_plughw()
-    assert r.status == "warn"
-    assert r.reason == renderers.REASON_SHAIRPORT_RING_DISARMED_STALE
+    assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_OK
 
 
 def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
     """The retired renderer-dmix device is now a hard drift signal."""
-    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
@@ -259,7 +190,6 @@ def test_shairport_check_legacy_plughw_ok_with_redeploy_hint(
     """Pre-PR-#214 wiring: output_device still points at the bare
     loopback. Legacy-but-functional, cosmetic advisory to redeploy —
     not a fault (ADR-0233)."""
-    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
@@ -274,7 +204,6 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
     """Raw `hw:Loopback,0,0` bypasses plug entirely. shairport requests
     44.1 kHz and snd-aloop is locked at 48 kHz → silent rejection.
     This is the hard-fail case."""
-    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "hw:Loopback,0,0";\n};\n',
@@ -289,32 +218,12 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
     "stale_device",
     ["jasper_renderer_in", "plughw:Loopback,0,0", "hw:Loopback,0,0"],
 )
-@pytest.mark.parametrize(
-    ("armed", "expected_device", "forbidden_device"),
-    [
-        ([], "shairport_substream", "shairport_ring_lane"),
-        (["airplay"], "shairport_ring_lane", "shairport_substream"),
-    ],
-    ids=["unarmed", "armed"],
-)
-def test_shairport_legacy_remediations_name_this_box_s_device(
+def test_shairport_legacy_remediations_name_the_canonical_device(
     monkeypatch,
     tmp_path,
     stale_device,
-    armed,
-    expected_device,
-    forbidden_device,
 ):
-    """Every legacy branch must name the device the lane map resolves HERE.
-
-    All three stale values predate the lane map, so they say nothing about
-    whether the airplay lane is armed — the remediation has to consult the
-    map like the coherent branches do. Hardcoding `shairport_substream`
-    (as all three did before U4/P7-5) sends an armed box's operator to a
-    device their box does not render, and a redeploy to that target would
-    not converge anything.
-    """
-    _patch_lane_map(monkeypatch, tmp_path, armed)
+    """Every legacy branch must name the device this box actually renders."""
     _patch_shairport_conf(
         monkeypatch,
         f'alsa = {{\n    output_device = "{stale_device}";\n}};\n',
@@ -331,12 +240,7 @@ def test_shairport_legacy_remediations_name_this_box_s_device(
     expected_status = "ok" if stale_device == "plughw:Loopback,0,0" else "fail"
     assert r.status == expected_status
     assert r.reason == expected_reason
-    # The reason code is the same regardless of `armed`; what changes is the
-    # DEVICE the remediation names. A device identifier is data, not prose, and
-    # nothing else in the result carries it — this is the one place the
-    # lane-map wiring of the three legacy branches is observable.
-    assert expected_device in r.detail
-    assert forbidden_device not in r.detail
+    assert "shairport_substream" in r.detail
 
 
 @pytest.mark.parametrize(
@@ -471,45 +375,10 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     ]
 
 
-# Captured on jts3 (#3515) from the non-negotiable-#5 probe run against
-# `librespot_ring_lane` while a live writer held it. The busy marker is the
-# SECOND line: the ioplug refuses from `prepare`, which alsa-lib runs inside
-# `snd_pcm_hw_params`, so aplay's hw_params dump lands AFTER it.
-_BUSY_RING_LANE_STDERR = """\
-event=jts_ring.writer.busy path=/dev/shm/jts-ring/lane-spotify.ring \
-reason=writer_lock_held
-ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: \
-writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16 \
-(ring already has a live writer — EBUSY)
-aplay: set_params:1456: Unable to install hw params:
-ACCESS:  RW_INTERLEAVED
-FORMAT:  S16_LE
-SUBFORMAT:  STD
-SAMPLE_BITS: 16
-FRAME_BITS: 32
-CHANNELS: 2
-RATE: 48000
-PERIOD_TIME: (5333 5334)
-PERIOD_SIZE: 256
-PERIOD_BYTES: 1024
-PERIODS: 16
-BUFFER_TIME: (85333 85334)
-BUFFER_SIZE: 4096
-BUFFER_BYTES: 16384
-TICK_TIME: 0
-"""
-
 # Same box, same command, a PCM name that resolves nowhere.
 _UNKNOWN_PCM_STDERR = (
     "ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM jts_no_such_pcm\n"
     "aplay: main:850: audio open error: No such file or directory\n"
-)
-
-# Same box, same command, nothing holding the lane: the burst completed and
-# aplay exited 0 on its own. 19 slots x 256 frames covers the 4800 written.
-_IDLE_RING_LANE_STDERR = (
-    "ALSA lib pcm_jts_ring.c:644:(jts_ring_close) jts_ring: closing "
-    "published_slots=19 drop_no_reader=0 full_waits=0\n"
 )
 
 # The REAL shape on a JTS box: renderer units declare `Slice=jts-audio.slice`,
@@ -549,10 +418,7 @@ class _FakeProcPath:
 
 
 _OUTCOME = renderers.ProbeOutcome
-#: librespot's ARMED device (ring ingress) and its UNARMED one (snd-aloop).
-#: An un-armed box — the fleet default, and jts3 today — resolves to the
-#: latter, so both halves of the ownership gate are live and both are driven.
-_RING = "librespot_ring_lane"
+#: librespot's ALSA device — its private snd-aloop fan-in lane.
 _ALOOP = "librespot_substream"
 
 # Each row: the device the renderer resolves to; what the probe subprocess does
@@ -560,107 +426,55 @@ _ALOOP = "librespot_substream"
 # the cgroup the lane's published owner pid resolves to; and the verdict and
 # check status that must follow.
 _PROBE_ROWS = [
-    # A ring lane refused by its OWN renderer's writer lock: the probe
-    # reached the lock, so the PCM resolved and opened.
-    ("busy-owned", _RING, (1, _BUSY_RING_LANE_STDERR),
+    # A lane refused by its OWN renderer: the probe reached snd_pcm_open's
+    # single-writer refusal, so the PCM resolved.
+    ("busy-owned", _ALOOP, (1, _BUSY_ALOOP_STDERR),
      _OWNED_CGROUP, _OUTCOME.BUSY, "ok"),
-    # The ioplug's errno alone must carry the verdict: the `— EBUSY` gloss on
-    # that line is a conditional suffix in the C, and nothing else prints it.
-    (
-        "ring-marker-without-the-ebusy-gloss", _RING,
-        (
-            1,
-            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
-            "writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
-        ),
-        _OWNED_CGROUP, _OUTCOME.BUSY, "ok",
-    ),
-    # Split across two lines, neither half complete: the two markers must be
-    # required TOGETHER on ONE line, not merely both present somewhere.
-    (
-        "ring-marker-split-across-lines", _RING,
-        (
-            1,
-            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
-            "writer_open(\n/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
-        ),
-        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
-    ),
-    # The ring's CAPTURE half refuses with the same errno and the same gloss
-    # (`pcm_jts_ring.c:758`). It is not this playback probe bouncing off the
-    # writer lock, so `rc=-16` alone must not carry a busy verdict.
-    (
-        "reader-open-refusal-is-not-our-busy", _RING,
-        (
-            1,
-            "ALSA lib pcm_jts_ring.c:759:(jts_ring_capture_prepare) jts_ring: "
-            "reader_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16 "
-            "(ring already has a live reader — EBUSY)\n",
-        ),
-        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
-    ),
     # The ownership gate is fail-closed: an unreadable cgroup proves nothing.
     (
-        "cgroup-unreadable", _RING, (1, _BUSY_RING_LANE_STDERR),
+        "cgroup-unreadable", _ALOOP, (1, _BUSY_ALOOP_STDERR),
         PermissionError(13, "Permission denied"), _OUTCOME.BUSY, "fail",
     ),
     # A same-named unit under a per-user manager is not the system unit.
     (
-        "user-manager-impostor", _RING, (1, _BUSY_RING_LANE_STDERR),
+        "user-manager-impostor", _ALOOP, (1, _BUSY_ALOOP_STDERR),
         _USER_MANAGER_CGROUP, _OUTCOME.BUSY, "fail",
     ),
-    # The SAME ioplug line with a different errno is NOT busy: `writer_open`
-    # prints it for every refusal and only glosses -EBUSY, so a geometry shear
-    # (-22) must stay a failure rather than borrow the ownership proof.
-    (
-        "ring-writer-open-failed-not-busy", _RING,
-        (
-            1,
-            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
-            "writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-22\n",
-        ),
-        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
-    ),
-    # An UNARMED lane: aplay refuses at snd_pcm_open, so its own wording is the
-    # only marker there is — no ioplug line, no rc=-16 — and the owner pid
-    # comes from /proc/asound rather than the ring header.
-    ("aloop-busy-owned", _ALOOP, (1, _BUSY_ALOOP_STDERR),
-     _OWNED_CGROUP, _OUTCOME.BUSY, "ok"),
     # The PR #223 bug class stays a hard failure.
-    ("unknown-pcm", _RING, (1, _UNKNOWN_PCM_STDERR),
+    ("unknown-pcm", _ALOOP, (1, _UNKNOWN_PCM_STDERR),
      _OWNED_CGROUP, _OUTCOME.FAILED, "fail"),
-    # Busy, but a stray process holds the ring — not the renderer.
-    ("busy-stray", _RING, (1, _BUSY_RING_LANE_STDERR),
+    # Busy, but a stray process holds the lane — not the renderer.
+    ("busy-stray", _ALOOP, (1, _BUSY_ALOOP_STDERR),
      _STRAY_CGROUP, _OUTCOME.BUSY, "fail"),
-    # Busy on a device in NEITHER lane map: nothing can prove who holds it.
-    ("busy-unknown-device", "some_other_pcm", (1, _BUSY_RING_LANE_STDERR),
+    # Busy on a device in NO lane map: nothing can prove who holds it.
+    ("busy-unknown-device", "some_other_pcm", (1, _BUSY_ALOOP_STDERR),
      _OWNED_CGROUP, _OUTCOME.BUSY, "fail"),
-    # The probe never executed. A live ring writer must not excuse that: the
-    # header proves the RENDERER opened the lane, never that the probe
+    # The probe never executed. A live writer must not excuse that: the
+    # owner pid proves the RENDERER opened the lane, never that the probe
     # resolved it as the unit's User=.
     (
-        "sudo-refused", _RING, (1, "sudo: a password is required\n"),
+        "sudo-refused", _ALOOP, (1, "sudo: a password is required\n"),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
     # One extra alsa-lib line must not defeat the Unknown-PCM failure:
     # nothing here may key on a fixed slice of stderr.
     (
-        "unknown-pcm-plus-a-line", _RING,
+        "unknown-pcm-plus-a-line", _ALOOP,
         (1, _UNKNOWN_PCM_STDERR + _ALSA_CONFIG_WARNING),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
-    # The same from the other end: a warning ABOVE the marker, a hw_params dump
+    # The same from the other end: a warning above the marker and another
     # below it. Neither a head slice nor a tail slice can classify this.
     (
-        "busy-between-a-warning-and-the-dump", _RING,
-        (1, _ALSA_CONFIG_WARNING + _BUSY_RING_LANE_STDERR),
+        "busy-between-two-warnings", _ALOOP,
+        (1, _ALSA_CONFIG_WARNING + _BUSY_ALOOP_STDERR + _ALSA_CONFIG_WARNING),
         _OWNED_CGROUP, _OUTCOME.BUSY, "ok",
     ),
     # A slave open deeper in the chain reports its own -16 and busy text; the
-    # PCM the probe asked for still did not resolve. Neither marker may match
+    # PCM the probe asked for still did not resolve. The marker may not match
     # on a bare substring, or this reads as a healthy busy lane.
     (
-        "slave-busy-then-unknown-pcm", _RING,
+        "slave-busy-then-unknown-pcm", _ALOOP,
         (
             1,
             "ALSA lib pcm_hw.c:1829:(snd_pcm_hw_open) open '/dev/snd/pcmC0D0p'"
@@ -671,45 +485,45 @@ _PROBE_ROWS = [
     # Nothing was contending: the burst completed and aplay exited 0 itself.
     # This is the ONLY success shape.
     (
-        "idle-burst-completed", _RING, (0, _IDLE_RING_LANE_STDERR),
+        "idle-burst-completed", _ALOOP, (0, ""),
         _OWNED_CGROUP, _OUTCOME.OPENED, "ok",
     ),
     # Killed with the burst unfinished. Nothing completed, so nothing is
     # proven — a kill is a failure, not a success reached by outlasting a
     # timer.
     (
-        "timeout-kill-no-marker", _RING, (124, ""),
+        "timeout-kill-no-marker", _ALOOP, (124, ""),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
-    # The marker outranks the exit code: the ioplug's SNDERR fires the instant
-    # the lock wait expires, and the outer `timeout` can land anywhere in the
+    # The marker outranks the exit code: the refusal fires the instant the
+    # open is rejected, and the outer `timeout` can land anywhere in the
     # hw_params dump that follows, so a contended probe can carry BOTH.
     (
-        "busy-and-timeout-killed", _RING, (124, _BUSY_RING_LANE_STDERR),
+        "busy-and-timeout-killed", _ALOOP, (124, _BUSY_ALOOP_STDERR),
         _STRAY_CGROUP, _OUTCOME.BUSY, "fail",
     ),
     # `timeout`/sudo could not exec what it was given.
     (
-        "exit-126", _RING, (126, "sudo: unable to execute /usr/bin/aplay\n"),
+        "exit-126", _ALOOP, (126, "sudo: unable to execute /usr/bin/aplay\n"),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
-    ("exit-127", _RING, (127, "aplay: command not found\n"),
+    ("exit-127", _ALOOP, (127, "aplay: command not found\n"),
      _OWNED_CGROUP, _OUTCOME.FAILED, "fail"),
     # The probe binary is missing, or the outer guard fired: nothing ran, so
     # nothing is proven, however healthy the lane looks.
     (
-        "exec-missing", _RING, FileNotFoundError("timeout"),
+        "exec-missing", _ALOOP, FileNotFoundError("timeout"),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
     (
-        "outer-guard-fired", _RING,
+        "outer-guard-fired", _ALOOP,
         subprocess.TimeoutExpired(cmd=["timeout", "aplay"], timeout=4.0),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
     # A fork that cannot allocate on a 1 GB Pi must fail this renderer, not
     # escape as an exception and crash the whole check.
     (
-        "fork-enomem", _RING, OSError(12, "Cannot allocate memory"),
+        "fork-enomem", _ALOOP, OSError(12, "Cannot allocate memory"),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
 ]
@@ -726,8 +540,8 @@ def test_probe_verdict_and_check_status(
     """(probe argv, probe result, lane owner) -> verdict -> check status.
 
     Real aplay output captured on jts3, run through the real classifier and
-    the real ownership gate; only the probe subprocess and the two /proc reads
-    are stubbed. A busy verdict is what licenses the ownership check — never a
+    the real ownership gate; only the probe subprocess and the /proc read are
+    stubbed. A busy verdict is what licenses the ownership check — never a
     substitute for a probe that did not open."""
     monkeypatch.setattr(renderers, "_renderer_device_shairport", lambda: None)
     monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
@@ -751,12 +565,9 @@ def test_probe_verdict_and_check_status(
         return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
 
     monkeypatch.setattr(renderers, "_run", fake_run)
-    monkeypatch.setattr(
-        "jasper.renderer_lanes.ring_writer_pid", lambda label: _ALOOP_OWNER_PID
-    )
-    # Aloop ownership reads through the evidence cache now (not `Path`); seed
-    # every private-lane substream so whichever aloop device a row uses (only
-    # `_ALOOP` today) finds its owner_pid.
+    # Aloop ownership reads through the evidence cache (not `Path`); seed
+    # every private-lane substream so whichever aloop device a row uses finds
+    # its owner_pid.
     _evidence.evidence.seed(
         "loopback_substreams",
         {i: f"owner_pid : {_ALOOP_OWNER_PID}\n" for i in range(3)},
@@ -815,7 +626,7 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
     monkeypatch.setattr(renderers, "_renderer_device_shairport", lambda: None)
     monkeypatch.setattr(renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+        renderers, "_renderer_device_librespot", lambda: "librespot_substream"
     )
     monkeypatch.setattr(
         renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
@@ -1363,53 +1174,15 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# U3 / P6a — the renderer device is a ${VAR}, and `systemctl show` cannot
-# resolve it. These pin the surfaces that CAN.
+# The renderer device is a ${VAR}, and `systemctl show` cannot resolve it.
+# These pin the surfaces that CAN.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_device_prefers_the_lane_map_over_systemctl_show(monkeypatch, tmp_path):
-    """`systemctl show -p Environment` returns ONLY `Environment=` directives —
-    never `EnvironmentFile=` layers, which is where every JTS runtime override
-    lives (established empirically on an armed box 2026-07-02; re-confirmed on
-    jts.local during the P6a review).
-
-    So on an ARMED box `systemctl show` reports the in-unit aloop DEFAULT while
-    the renderer is really writing its ring device. Trusting it would make the
-    doctor probe the wrong PCM and call an unprobed ring lane healthy. The lane
-    map — the SSOT that wrote the override — must win.
-    """
-    from jasper import renderer_lanes as rl
-    lanes = str(tmp_path / "renderer_lanes.env")
-    rl.render_renderer_lanes_env(("spotify",), path=lanes)
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
-
-    # Exactly what a real armed box reports: the stale in-unit default.
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
-
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
-    monkeypatch.setattr(renderers, "_unit_runtime_environ", lambda unit: {})
-
-    resolved = renderers._resolve_systemd_env_vars(
-        "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
-    )
-    assert resolved == "librespot_ring_lane", (
-        "an armed box must resolve to its RING device; resolving to the "
-        "systemctl-visible aloop default would probe the wrong PCM"
-    )
-
-
-def test_resolve_device_falls_back_to_proc_environ(monkeypatch, tmp_path):
-    """With no lane map (an operator override, or a box predating it), the
-    running daemon's own `/proc/<MainPID>/environ` is the next-best surface —
-    the arm.sh precedent — and it still beats `systemctl show`."""
-    from jasper import renderer_lanes as rl
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
+def test_resolve_device_falls_back_to_proc_environ(monkeypatch):
+    """The running daemon's own `/proc/<MainPID>/environ` is the most
+    authoritative surface — the arm.sh precedent — and it beats
+    `systemctl show`."""
 
     def fake_run(cmd, **kwargs):
         class R:
@@ -1433,11 +1206,9 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch, tmp_path):
     )
 
 
-def test_unarmed_box_resolves_to_the_shipped_aloop_device(monkeypatch, tmp_path):
-    """The shipped fleet state: no lane map, no override — the in-unit default
-    is what the renderer writes and what the probe must open."""
-    from jasper import renderer_lanes as rl
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
+def test_no_override_resolves_to_the_shipped_aloop_device(monkeypatch):
+    """No override — the in-unit default is what the renderer writes and what
+    the probe must open."""
 
     def fake_run(cmd, **kwargs):
         class R:
@@ -1457,68 +1228,17 @@ def test_unarmed_box_resolves_to_the_shipped_aloop_device(monkeypatch, tmp_path)
     )
 
 
-def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_path):
-    """An EBUSY on a ring lane proves the PCM resolved AND that someone holds
-    it; this proves it is the RIGHT someone, from the pid the ring itself
-    published. Reachable only because the resolver above now returns the ring
-    device on an armed box.
-    """
-    from jasper import renderer_lanes as rl
-    # No monkeypatch of the device map: it is DERIVED from RENDERER_LANES now,
-    # so the real registry is the right input and each new lane is covered here
-    # for free. (P6a hand-listed it, which meant a second lane would silently
-    # miss the EBUSY-owner path and fail a healthy box.)
-    assert renderers._ring_renderer_devices()["librespot_ring_lane"] == "spotify"
-    monkeypatch.setattr(rl, "ring_writer_pid", lambda label: 4242)
-
-    cgroup = tmp_path / "cgroup"
-    cgroup.write_text("0::/system.slice/librespot.service\n")
-    real_path = renderers.Path
-
-    def fake_path(p):
-        if str(p) == "/proc/4242/cgroup":
-            return cgroup
-        return real_path(p)
-
-    monkeypatch.setattr(renderers, "Path", fake_path)
-
-    owner = renderers._fanin_lane_busy_owner_matches(
-        "librespot_ring_lane", "librespot.service"
-    )
-    assert owner.ok, owner.detail
-    assert owner.code == renderers.LANE_OWNER_MATCHED
-    assert owner.pid == 4242
-
-    # A DIFFERENT unit holding the ring is NOT accepted — that is a stray
-    # writer in the music path, which is the whole reason the guard exists.
-    other = tmp_path / "other"
-    other.write_text("0::/system.slice/some-other.service\n")
-
-    def fake_path_other(p):
-        if str(p) == "/proc/4242/cgroup":
-            return other
-        return real_path(p)
-
-    monkeypatch.setattr(renderers, "Path", fake_path_other)
-    owner = renderers._fanin_lane_busy_owner_matches(
-        "librespot_ring_lane", "librespot.service"
-    )
-    assert not owner.ok
-    assert owner.code == renderers.LANE_OWNER_FOREIGN
-    assert owner.pid == 4242
-
-
 def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_path):
     """Execute the /proc tier end to end on real bytes.
 
     This is the tier the B1 fix EXISTS for — `systemctl show` cannot see
-    `EnvironmentFile=` and the lane map only knows lanes it wrote — and it was
-    the one mutation survivor: every other path was covered by a monkeypatched
-    stand-in. Feed it a genuine NUL-delimited environ blob.
+    `EnvironmentFile=` — and it was the one mutation survivor: every other
+    path was covered by a monkeypatched stand-in. Feed it a genuine
+    NUL-delimited environ blob.
     """
     environ = tmp_path / "environ"
     environ.write_bytes(
-        b"PATH=/usr/bin\x00JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\x00"
+        b"PATH=/usr/bin\x00JASPER_LIBRESPOT_DEVICE=operator_override_pcm\x00"
         b"EMPTY=\x00NOEQUALS\x00LANG=C.UTF-8\x00"
     )
 
@@ -1536,7 +1256,7 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
     )
 
     env = renderers._unit_runtime_environ("librespot.service")
-    assert env["JASPER_LIBRESPOT_DEVICE"] == "librespot_ring_lane"
+    assert env["JASPER_LIBRESPOT_DEVICE"] == "operator_override_pcm"
     assert env["PATH"] == "/usr/bin"
     assert env["EMPTY"] == "", "an empty value is a value, not an absence"
     assert "NOEQUALS" not in env, "a malformed entry is dropped, not crashed on"
@@ -1554,42 +1274,6 @@ def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
 
         monkeypatch.setattr(renderers.subprocess, "run", fake_run)
         assert renderers._unit_runtime_environ("librespot.service") == {}, mainpid
-
-
-def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path, caplog):
-    """The docstring promises `/proc` is worth naming as ground truth. When the
-    map's implied device differs from what the daemon is ACTUALLY running, that
-    disagreement is the single most diagnostic fact available — the map wins
-    (it is what the next restart will apply) but the divergence must not be
-    silent."""
-    import logging
-
-    from jasper import renderer_lanes as rl
-    lanes = str(tmp_path / "renderer_lanes.env")
-    rl.render_renderer_lanes_env(("spotify",), path=lanes)
-    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
-
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = ""
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        renderers, "_unit_runtime_environ",
-        lambda unit: {"JASPER_LIBRESPOT_DEVICE": "librespot_substream"},
-    )
-
-    with caplog.at_level(logging.WARNING):
-        resolved = renderers._resolve_systemd_env_vars(
-            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
-        )
-    assert resolved == "librespot_ring_lane", "the map wins — it is what restarts apply"
-    assert any(
-        "renderer_lane.device_disagreement" in r.getMessage()
-        for r in caplog.records
-    ), "the map-vs-running disagreement must be surfaced, not swallowed"
 
 
 # ---------------------------------------------------------------- mux mode

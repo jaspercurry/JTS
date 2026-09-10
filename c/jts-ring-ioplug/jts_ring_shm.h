@@ -89,25 +89,14 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // -EBUSY; if the unit's start limit is tight, that loop PARKS it (the one
 // non-self-healing shape here). Every ring writer, checked:
 //
-// Parsed by tests/test_renderer_ring_lanes.py; keep the line grammar.
-//   - librespot.service            RestartSec=5  — clears it comfortably
-//   - bluealsa-aplay.service       RestartSec=5  — via the JTS drop-in
-//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf
 //   - jasper-camilla               RestartSec=2  — sits ON the boundary
-//   - shairport-sync.service       RestartSec=5  — clears it comfortably;
-//     also opens its output PCM per AirPlay session, not at process start,
-//     so even a wedge-supervisor `systemctl restart` (which skips
-//     RestartSec) cannot race this window
 //   - jasper-snapclient.service    RestartSec=3  — the grouping ingress
 //     ring on a bonded endpoint, StartLimitBurst=6: a follower whose leader
 //     is powered off retries into this window, so the burst decides
 //     whether it re-joins or parks
-//   - correction lane: EPHEMERAL aplay writers
-//     (jasper.audio_measurement.correction_lane) — no unit, no
-//     auto-respawn to clear
-// Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window
-// itself) and tests/test_renderer_ring_lanes.py, which walks this enumeration
-// against each unit's actual RestartSec.
+//     (pinned by tests/test_grouping_ring_platform.py)
+// The window itself is pinned by
+// test_writer_lock_survives_a_sigkilled_incumbent.
 //
 // A Rust `RingWriter` does not take the lock (fan-in owns Ring A by
 // construction), so on a Rust-written ring the heartbeat is the only
@@ -133,12 +122,6 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // completes.
 #define JTS_RING_WRITER_LOCK_SUFFIX ".writer.lock"
 #define JTS_RING_OPEN_LOCK_MODE 0660
-// DEPENDENT: jasper-doctor's renderer probe (`_PROBE_TIMEOUT_SEC` in
-// jasper/cli/doctor/renderers.py) MUST outlast this wait. The probe reads a
-// timeout-kill as SUCCESS, so a probe shorter than this window would be killed
-// while still blocked on a contended ring lock and report a healthy lane it
-// never actually opened — hiding the EBUSY the ownership check needs.
-// tests/test_renderer_ring_lanes.py pins the two values against each other.
 #define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS 500ull
 #define JTS_RING_OPEN_LOCK_WAIT_STEP_US 1000ull
 #define JTS_RING_OPEN_MAX_ATTEMPTS 8u

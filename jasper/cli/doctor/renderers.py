@@ -11,7 +11,6 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shutil
@@ -22,9 +21,6 @@ from pathlib import Path
 from typing import Optional
 from ...airplay_session import REASONS as AIRPLAY_CLEANUP_REASONS
 from ...config import Config
-from ...log_event import log_event
-
-_LANE_LOG = logging.getLogger(__name__)
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
 from ...source_intent import (
@@ -87,15 +83,11 @@ REASON_SPOTIFY_DEVICE_NOT_VISIBLE = "spotify_device_not_visible"
 REASON_SHAIRPORT_CONF_MISSING = "shairport_conf_missing"
 REASON_SHAIRPORT_CONF_UNREADABLE = "shairport_conf_unreadable"
 REASON_SHAIRPORT_NO_OUTPUT_DEVICE = "shairport_no_output_device"
-REASON_SHAIRPORT_LANE_REGISTRY_MISSING = "shairport_lane_registry_missing"
-REASON_SHAIRPORT_RING_DISARMED_STALE = "shairport_ring_disarmed_stale"
-REASON_SHAIRPORT_ALOOP_ARMED_STALE = "shairport_aloop_armed_stale"
 REASON_SHAIRPORT_LEGACY_DMIX = "shairport_legacy_dmix"
 REASON_SHAIRPORT_LEGACY_PLUGHW = "shairport_legacy_plughw"
 REASON_SHAIRPORT_RAW_HW_LOOPBACK = "shairport_raw_hw_loopback"
 REASON_SHAIRPORT_DEVICE_UNRECOGNIZED = "shairport_device_unrecognized"
-REASON_SHAIRPORT_RING_ARMED_OK = "shairport_ring_armed_ok"
-REASON_SHAIRPORT_ALOOP_UNARMED_OK = "shairport_aloop_unarmed_ok"
+REASON_SHAIRPORT_ALOOP_OK = "shairport_aloop_ok"
 
 REASON_RENDERER_DEVICE_UNRESOLVABLE = "renderer_device_unresolvable"
 REASON_RENDERER_NONE_CONFIGURED = "renderer_none_configured"
@@ -708,35 +700,18 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
 @doctor_check()
 def check_shairport_sync_loopback_plughw() -> CheckResult:
     """Verify the deployed shairport-sync.conf uses a multi-writer-safe
-    renderer device that MATCHES the lane map's intent.
+    renderer device.
 
-    Canonical is transport-dependent since U3/P6d: `shairport_substream`
-    (AirPlay's private snd-aloop fan-in lane — the unarmed/fleet default)
-    or `shairport_ring_lane` (the SHM ring, when the airplay renderer lane
-    is armed). Both names come from the `airplay` row in
-    `jasper.renderer_lanes.RENDERER_LANES` — never respelled here — and the
-    armed set from the same lane map `jasper-apply-airplay-mode` reads, so
-    this check and the conf renderer cannot disagree about intent.
-
-    The conf is a DERIVED artifact re-rendered at every unit start, so a
-    conf that disagrees with the armed set means exactly one thing: the
-    unit has not restarted since the map changed. That is the half-flip
-    window the arm CLI's restart_required instruction exists to close, and
-    naming it here makes that instruction verifiable after the fact.
+    Canonical is `shairport_substream` — AirPlay's private snd-aloop fan-in
+    lane, declared in `deploy/alsa/asoundrc.jasper`.
 
     A stale `jasper_renderer_in` value means shairport is still pointed at
     the retired renderer-side dmix path. Legacy `plughw:Loopback,0,0` and
     raw `hw:Loopback,0,0` are both stale now; the raw form is additionally
-    broken because it bypasses ALSA's plug layer. All three legacy
-    remediations name the device the lane map resolves for THIS box —
-    the ring PCM when the lane is armed, the aloop lane when it is not —
-    rather than a hardcoded `shairport_substream`, which would send an
-    armed box's operator to the wrong target.
+    broken because it bypasses ALSA's plug layer.
 
     Check runs against the DEPLOYED file (not the repo) so it catches
     both kinds of drift: branch not yet merged, and manual on-Pi edits."""
-    from jasper.renderer_lanes import device_for, lane_by_label, read_armed_labels
-
     label = "shairport-sync.conf: output_device"
     p = Path("/etc/shairport-sync.conf")
     if not p.exists():
@@ -767,51 +742,13 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             reason=REASON_SHAIRPORT_NO_OUTPUT_DEVICE,
         )
     line = active_lines[0]
-    lane = lane_by_label("airplay")
-    if lane is None:  # registry regression — a doctor check never raises
-        return CheckResult(
-            label, "warn",
-            "no `airplay` row in jasper.renderer_lanes.RENDERER_LANES — "
-            "cannot judge the rendered device against the lane map",
-            reason=REASON_SHAIRPORT_LANE_REGISTRY_MISSING,
-        )
-    armed = lane.label in read_armed_labels()
-    if lane.ring_device in line:
-        if armed:
-            return CheckResult(
-                label, "ok",
-                f"{lane.ring_device} (renderer ring lane, armed)",
-                reason=REASON_SHAIRPORT_RING_ARMED_OK,
-            )
-        return CheckResult(
-            label, "warn",
-            f"conf renders {lane.ring_device} but the {lane.label} lane is "
-            "NOT armed — shairport-sync has not restarted since the disarm, "
-            "and is writing a ring jasper-fanin no longer reads (silent "
-            f"AirPlay). Restart {lane.unit} (its ExecStartPre re-renders "
-            "the conf from the lane map).",
-            reason=REASON_SHAIRPORT_RING_DISARMED_STALE,
-        )
-    if lane.aloop_device in line:
-        if armed:
-            return CheckResult(
-                label, "warn",
-                f"the {lane.label} lane is ARMED but the conf still renders "
-                f"{lane.aloop_device} — shairport-sync has not restarted "
-                "since the arm, so it is writing the aloop lane while "
-                "jasper-fanin reads the ring (silent AirPlay). Restart "
-                f"{lane.unit} (its ExecStartPre re-renders the conf from "
-                "the lane map).",
-                reason=REASON_SHAIRPORT_ALOOP_ARMED_STALE,
-            )
+    expected_device = "shairport_substream"
+    if expected_device in line:
         return CheckResult(
             label, "ok",
-            f"{lane.aloop_device} (fan-in private AirPlay lane)",
-            reason=REASON_SHAIRPORT_ALOOP_UNARMED_OK,
+            f"{expected_device} (fan-in private AirPlay lane)",
+            reason=REASON_SHAIRPORT_ALOOP_OK,
         )
-    # One spelling of the armed→device rule, shared with the arm CLI and the
-    # rendered map (jasper.renderer_lanes.device_for) rather than restated.
-    expected_device = device_for(lane, armed)
     if "jasper_renderer_in" in line:
         return CheckResult(
             label, "fail",
@@ -931,38 +868,6 @@ def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
     user = (users[0] or None) if users else None
     return user, load_state
 
-def _renderer_lane_device_overrides() -> dict[str, str]:
-    """Renderer `--device` values the lane map declares (U3 / P6).
-
-    The lane map is the SSOT for which PCM each migrated renderer writes, so
-    resolving from it is exact by construction rather than reconstructed from a
-    systemd surface. This is the pattern-3 shape the rest of the ring platform
-    uses: the reconciler/CLI is the single writer of the resolved value, and
-    every reader — the daemon, the doctor — reads that same file.
-
-    Returns `{}` when NO map exists, which is the shipped fleet state. That
-    emptiness is load-bearing: an absent map has no opinion about any device, so
-    it must not assert the aloop default over a genuine operator override that
-    `/proc/<MainPID>/environ` can see. (`fanin_env_expectations` deliberately
-    names every lane's device including the unarmed ones — that is right for a
-    drift check against a map that exists, and wrong as a claim when none does.)
-    """
-    try:
-        from jasper import renderer_lanes as rl
-    except ImportError:  # pragma: no cover - the package is always present
-        return {}
-    if not os.path.exists(rl.RENDERER_LANES_ENV):
-        return {}
-    try:
-        return rl.fanin_env_expectations()
-    except (OSError, ValueError):
-        # Fail-SOFT, as this function's contract says: a torn or malformed map
-        # must degrade to "no opinion" and let the next tier answer, never raise
-        # into a doctor check. ValueError belongs here alongside OSError because
-        # the map is parsed, not just read.
-        return {}
-
-
 def _unit_runtime_environ(unit: str) -> dict[str, str]:
     """The FULLY RESOLVED environment the running unit was exec'd with.
 
@@ -1001,30 +906,20 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
     """Expand `${VAR}` references in a device string to what the renderer
     actually writes.
 
-    Renderer units use a `${VAR}` device so a per-box ring flip is one env write
-    rather than a unit edit (U3 / P6). systemd expands the reference at daemon
-    start; the doctor reading the unit file sees the literal `${VAR}`, and
-    passing that to aplay would fail with "Unknown PCM ${VAR}" — a false
-    positive.
+    systemd expands the reference at daemon start; the doctor reading the unit
+    file sees the literal `${VAR}`, and passing that to aplay would fail with
+    "Unknown PCM ${VAR}" — a false positive.
 
     **`systemctl show -p Environment` CANNOT answer this.** That property
     returns the unit's `Environment=` directives ONLY — it does not include
-    `EnvironmentFile=` layers, which is exactly where every JTS runtime
-    override lives: an armed box's real `PERIOD_FRAMES` / `ACTIVE_LANE`
-    values can be invisible to it entirely, which is why this reads
-    `/proc/<MainPID>/environ` instead. Trusting the old surface here would
-    have made the doctor probe an ARMED box's *aloop* device — reporting a
-    lane healthy while the live ring lane went unprobed.
+    `EnvironmentFile=` layers, which is where JTS runtime overrides live —
+    which is why this reads `/proc/<MainPID>/environ` first.
 
-    Three sources, most authoritative first:
+    Two sources, most authoritative first:
 
-    1. **The lane map** (`jasper.renderer_lanes`) — the SSOT that WROTE the
-       override. Exact by construction, and readable whether or not the unit is
-       running.
-    2. **`/proc/<MainPID>/environ`** — the running daemon's real environment,
-       the arm.sh precedent. Catches an operator override the lane map does not
-       know about, and disagreement with (1) is itself worth surfacing.
-    3. **`systemctl show -p Environment`** — kept LAST, and only for what it can
+    1. **`/proc/<MainPID>/environ`** — the running daemon's real environment,
+       the arm.sh precedent. Catches an operator override no unit file declares.
+    2. **`systemctl show -p Environment`** — kept LAST, and only for what it can
        actually answer: a genuine in-unit `Environment=` directive on a unit
        that is not running.
 
@@ -1046,30 +941,7 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
             env_map.update(_parse_systemd_environment(r.stdout))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
-    observed = _unit_runtime_environ(unit)
-    env_map.update(observed)
-    declared = _renderer_lane_device_overrides()
-    # The map WINS (it is what the next restart will apply), but a disagreement
-    # with what the daemon is actually running is the single most diagnostic
-    # fact available here — it means the unit has not restarted since the lane
-    # was armed or disarmed, which is exactly the half-flip window. Naming it
-    # costs one line; swallowing it leaves an operator comparing a healthy-
-    # looking probe against a lane that is silent.
-    for name, value in declared.items():
-        was = observed.get(name)
-        if was is not None and was != value:
-            # The unit has not restarted since the lane map changed; the
-            # probe follows the map.
-            log_event(
-                _LANE_LOG,
-                "renderer_lane.device_disagreement",
-                level=logging.WARNING,
-                unit=unit,
-                key=name,
-                lane_map=value,
-                running=was,
-            )
-    env_map.update(declared)
+    env_map.update(_unit_runtime_environ(unit))
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1)
@@ -1079,14 +951,9 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
 #: The probe is bounded by its OWN work, not by outlasting a timer: `aplay -s`
 #: writes `_PROBE_FRAMES` frames (100 ms at 48 kHz, per channel) then exits 0
-#: after open → prepare → write → drain — ~0.13 s (ring) / ~0.16 s (aloop) on a
-#: Pi. `_PROBE_TIMEOUT_SEC` is a backstop only: a kill (124) is a FAILURE, since
-#: a probe that never finished proved nothing. It **MUST exceed TWICE
-#: `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, `jts_ring_shm.h`) — both of a
-#: contended open's lock waits ADD inside `snd_pcm_prepare`, and an open that
-#: wins at the end of them must not be killed into a false failure (jts3: a
-#: singly contended open returns EBUSY at 0.55 s). Pinned, with the full
-#: rationale, by `test_renderer_ring_lanes.py`.
+#: after open → prepare → write → drain — ~0.16 s on a Pi. `_PROBE_TIMEOUT_SEC`
+#: is a backstop only: a kill (124) is a FAILURE, since a probe that never
+#: finished proved nothing.
 _PROBE_FRAMES = "4800"
 _PROBE_TIMEOUT_SEC = "2.0"
 
@@ -1101,13 +968,8 @@ class ProbeOutcome(Enum):
     FAILED = "failed"
 
 
-#: The ring ioplug's own refusal, out of `jts_ring_prepare`
-#: (`c/jts-ring-ioplug/pcm_jts_ring.c`); BOTH halves must sit on ONE line, as a
-#: slave open further down the chain reports its own EBUSY — spelled
-#: `failed (-16)`, never `rc=-16` — which `rc=-16` alone would swallow.
-#: `_ALOOP_BUSY_MARKER` is aplay's refusal for an snd-aloop substream that
-#: already has a writer, anchored on its prefix likewise. Both captured on jts3.
-_RING_BUSY_MARKERS = ("jts_ring: writer_open(", "rc=-16")
+#: aplay's refusal for an snd-aloop substream that already has a writer,
+#: anchored on its prefix. Captured on jts3.
 _ALOOP_BUSY_MARKER = "audio open error: Device or resource busy"
 
 
@@ -1115,7 +977,7 @@ def _busy_marker_line(stderr: str) -> Optional[str]:
     """The stderr line proving the PCM opened and hit a single-writer lock.
     EVERY line is scanned — `_classify_probe` owns why a slice cannot (#3515)."""
     for line in stderr.splitlines():
-        if all(m in line for m in _RING_BUSY_MARKERS) or _ALOOP_BUSY_MARKER in line:
+        if _ALOOP_BUSY_MARKER in line:
             return line.strip()
     return None
 
@@ -1124,10 +986,10 @@ def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     """The ONE place a probe's (returncode, stderr) becomes a verdict.
 
     A busy marker decides BEFORE the return code, and every line is searched:
-    the SNDERR fires the instant the lock wait expires, aplay then dumps ~15
+    the refusal fires the instant the open is rejected, aplay then dumps ~15
     hw_params lines, and the outer `timeout` can land anywhere in them — so a
     contended probe can carry the marker AND be killed at 124 (#3515). It
-    cannot carry one and exit 0, both markers being fatal where they print.
+    cannot carry one and exit 0, the marker being fatal where it prints.
 
     Otherwise ONLY a clean exit is success: aplay bounds itself at
     `_PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
@@ -1186,23 +1048,6 @@ _FANIN_PRIVATE_RENDERER_DEVICES = {
     "bluealsa_substream": 2,
 }
 
-def _ring_renderer_devices() -> dict[str, str]:
-    """Ring-lane PCM name -> the fan-in lane LABEL whose ring it carries.
-
-    DERIVED from `jasper.renderer_lanes.RENDERER_LANES`, not hand-listed. Like
-    the aloop lanes above these are single-writer, but the exclusivity is
-    enforced by the ioplug's writer guard rather than by snd-aloop, and the
-    owner pid lives in the ring HEADER rather than in /proc/asound.
-
-    Deriving it is load-bearing: a lane hand-listed here could be forgotten
-    when one is added to the registry, and that lane's busy probe would then
-    fail with "not a known fan-in ring lane" — a red doctor on a healthy box.
-    """
-    from jasper.renderer_lanes import RENDERER_LANES
-
-    return {lane.ring_device: lane.label for lane in RENDERER_LANES}
-
-
 def _cgroup_owner_is_unit(pid: object, unit: str) -> tuple[bool, str]:
     """Does `pid` run inside the SYSTEM manager's `unit`? Fail-closed: an
     empty `unit` would make the membership test match any cgroup at all, and
@@ -1226,51 +1071,12 @@ def _cgroup_owner_is_unit(pid: object, unit: str) -> tuple[bool, str]:
     return False, f"cgroup={cgroup.strip()!r}"
 
 
-def _ring_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
-    """Who owns an EBUSY renderer RING lane.
-
-    The ring's exact analogue of the aloop `owner_pid` check below: the caller
-    has already established that the probe opened the PCM (a BUSY verdict), so
-    this only has to separate "the renderer legitimately owns its ring" from
-    "some stray process is writing frames into the mix".
-    """
-    label = _ring_renderer_devices().get(device)
-    if label is None:
-        return LaneOwner(
-            LANE_OWNER_UNKNOWN_LANE, detail="not a known fan-in ring lane"
-        )
-    from jasper.renderer_lanes import ring_writer_pid
-
-    pid = ring_writer_pid(label)
-    if pid is None:
-        return LaneOwner(
-            LANE_OWNER_NO_WRITER, detail=f"ring for lane {label} names no writer"
-        )
-    owned, why = _cgroup_owner_is_unit(pid, unit)
-    if owned:
-        return LaneOwner(
-            LANE_OWNER_MATCHED, pid, f"busy/owned pid={pid} (ring writer)"
-        )
-    return LaneOwner(LANE_OWNER_FOREIGN, pid, f"busy but ring writer pid={pid} {why}")
-
-
 def _fanin_lane_busy_owner_matches(device: str, unit: str) -> LaneOwner:
     """Return whether an EBUSY private fan-in lane is owned by `unit`.
 
     A BUSY verdict proves the PCM resolved, not that the expected renderer
-    owns the lane; `/proc/asound` publishes the aloop `owner_pid`, and ring
-    lanes take the sibling path above for the same fact.
-
-    RETIREMENT. This aloop branch survives the audio-graph consolidation
-    (#2285) because a renderer whose lane is NOT armed for ring ingress still
-    writes its snd-aloop substream, and `/proc/asound` is then the only place
-    its owner pid exists. It retires with the snd-aloop renderer lanes
-    themselves, taking `_FANIN_PRIVATE_RENDERER_DEVICES` with it. Fleet arming
-    state is not that trigger: an all-armed fleet has not deleted the aloop
-    lanes from the code, and an un-armed box would still open one.
+    owns the lane; `/proc/asound` publishes the aloop `owner_pid`.
     """
-    if device in _ring_renderer_devices():
-        return _ring_lane_busy_owner_matches(device, unit)
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
         return LaneOwner(
