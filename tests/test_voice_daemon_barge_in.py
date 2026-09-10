@@ -45,6 +45,7 @@ class _SpyTurn:
         self._interrupted = False
         self.local_interrupt_calls = 0
         self.send_audio_calls = 0
+        self.sent: list[bytes] = []
 
     def audio_chunks_pending(self) -> int:
         return self._chunks_pending
@@ -61,8 +62,9 @@ class _SpyTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
-    async def send_audio(self, _data) -> None:
+    async def send_audio(self, data) -> None:
         self.send_audio_calls += 1
+        self.sent.append(data)
 
 
 class _FixedVad:
@@ -218,7 +220,7 @@ def test_flag_on_threshold_respected():
 # --- The provider that owns interruption gets no host flush ------------
 
 
-def _continuous_loop(*, owns_interruption: bool, score: float = 0.9):
+def _continuous_loop(*, owns_interruption: bool, score: float = 0.9, ref_ok: bool = True):
     """A WakeLoop mid-turn on a continuous-input provider that is speaking."""
     from jasper.voice_daemon import State
 
@@ -233,7 +235,7 @@ def _continuous_loop(*, owns_interruption: bool, score: float = 0.9):
     wl._vad = _FixedVad(score)
     wl._bg_tasks = set()
     wl._barge_in_active = True
-    wl._barge_in_reference_available = True
+    wl._barge_in_reference_available = ref_ok
     return wl
 
 
@@ -286,6 +288,24 @@ def test_continuous_barge_in_reports_the_same_fields_as_the_playback_path(caplog
     status = wl.session_status()
     assert status["barge_in_last_leg"] == "on"
     assert isinstance(status["barge_in_last_at"], str) and status["barge_in_last_at"]
+
+
+@pytest.mark.parametrize("owns_interruption", [False, True])
+def test_unreferenced_speech_reaches_a_turn_that_owns_interruption(
+    owns_interruption,
+):
+    """On a profile with no AEC reference the host substitutes digital
+    silence so its own endpointer cannot score the echo. A turn whose
+    provider owns interruption has no other stop path, so it gets the real
+    room audio instead — otherwise the answer cannot be interrupted at all."""
+    wl = _continuous_loop(owns_interruption=owns_interruption, ref_ok=False)
+    frame = silent_frame()
+    frame[:8] = 1000
+
+    asyncio.run(wl._handle_session_frame(frame))
+
+    (sent,) = wl._turn.sent
+    assert sent == (frame.tobytes() if owns_interruption else bytes(frame.nbytes))
 
 
 def test_owning_interruption_does_not_outlive_conversation_end(monkeypatch):

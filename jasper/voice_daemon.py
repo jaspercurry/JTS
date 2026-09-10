@@ -2117,7 +2117,13 @@ class WakeLoop:
         speaking = (self._turn.audio_chunks_pending() > 0
                     or self._tts.expected_drain_at() > now)
         if speaking and not self._barge_in_reference_available:
-            await self._turn.send_audio(bytes(frame.nbytes))
+            # Digital silence keeps the HOST's own endpointer off this
+            # unreferenced echo, but a turn that owns interruption is only
+            # stoppable by the provider's VAD, which needs the real room.
+            if self._turn.owns_interruption:
+                await self._send_session_audio(frame)
+            else:
+                await self._turn.send_audio(bytes(frame.nbytes))
             return
         score = self._vad.predict(frame)
         threshold = self._cfg.vad_barge_in_threshold if speaking else END_OF_UTTERANCE_SPEECH_THRESHOLD
