@@ -122,10 +122,13 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
-GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate", "room_candidate", "candidate_branches")
+GRAPH_SCOPES = (
+    GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "room_tune", "applied",
+    "candidate", "room_candidate", "bass_candidate", "candidate_branches",
+)
 #: The scopes whose graph is compiled FROM one named candidate, and which
 #: therefore cannot be selected without naming it.
-CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate", "candidate_branches"})
+CANDIDATE_SCOPES = frozenset({"candidate", "room_candidate", "bass_candidate", "candidate_branches"})
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,8 @@ class MeasureSpec:
     polarity: str = POLARITY_NORMAL
     inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
+    sweep_band_hz: tuple[float, float] | tuple[()] = ()
+    spl_ceiling_db_spl: float | None = None
     candidate_id: str = ""
     #: R-1's delay coordinate: which branch carries it, and how much. The pair
     #: behaves like ``polarity``/``inverted_role`` — stating one without the
@@ -187,6 +192,17 @@ class MeasureSpec:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
             raise ValueError(f"{self.graph_scope} graph_scope requires candidate_id")
+        if self.sweep_band_hz:
+            if self.graph_scope == GRAPH_SCOPE_DRIVERS:
+                raise ValueError("sweep_band_hz requires a summed graph_scope")
+            if len(self.sweep_band_hz) != 2 or not (
+                0 < self.sweep_band_hz[0] < self.sweep_band_hz[1] < 24_000
+            ):
+                raise ValueError("sweep_band_hz must be two ascending values below Nyquist")
+        if self.spl_ceiling_db_spl is not None and (
+            not math.isfinite(self.spl_ceiling_db_spl) or self.spl_ceiling_db_spl <= 0
+        ):
+            raise ValueError("spl_ceiling_db_spl must be finite and positive")
         if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
             self.polarity != POLARITY_NORMAL or self.inverted_role
             or self.delayed_role or self.delay_us or self.level_matched

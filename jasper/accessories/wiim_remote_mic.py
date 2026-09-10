@@ -32,6 +32,7 @@ from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
+from jasper.bluetooth.adapter import BUS_CONNECT_TIMEOUT_SEC, connect_bounded
 from jasper.log_event import log_event
 
 from ._dbus import variant_value
@@ -516,8 +517,10 @@ class MicAdapterConfig:
 async def _run_subscription(config: MicAdapterConfig) -> None:
     with ExitStack() as cleanup:
         bus = MessageBus(bus_type=BusType.SYSTEM)
+        # connect_bounded drops the bus itself when the connect fails, so the
+        # stack takes it over only once there is a live connection to close.
+        await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="wiim_mic")
         cleanup.callback(bus.disconnect)
-        await bus.connect()
         sink = UdpPcmSink(config.udp_host, config.udp_port)
         cleanup.callback(sink.close)
         stream = WiimVoicePacketStream()

@@ -4,10 +4,6 @@
 
 """One seat-cube median document, as lane B's ``room_median.json`` carries it.
 
-A fixture library rather than a builder inside a test module, because several
-suites read it — the room grade, the bass fit and the exit vocabulary — and a
-shared builder living in a collected module makes that module undeletable.
-
 The shape is arithmetic a reader can do: one ripple amplitude per band, one
 mode and one dip in the lowest band, and a deviation above the ceiling that no
 band may read. The grid and the ceiling satisfy

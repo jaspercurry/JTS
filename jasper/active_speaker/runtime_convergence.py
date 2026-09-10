@@ -31,9 +31,11 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
+    stamp_statefile_convergence,
 )
+from jasper.service_units import OUTPUTD_SERVICE
 
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,13 @@ def converge_boot_statefile(
 
     if topology is None:
         topology = load_output_topology_strict(topology_path)
+    if write_statefile:
+        # Opened as soon as the topology is READ and closed only by a statefile
+        # write: what is left behind names the topology whose boot graph nobody
+        # proved, which is what jasper-camilla's ExecCondition gate refuses to
+        # start on (#4416 R8). Opening it after graph selection, or after the
+        # `decision.ok` test, would miss every failure before that point.
+        stamp_statefile_convergence(statefile_path, topology, proved=False)
     kwargs: dict[str, Any] = {
         "statefile_path": statefile_path,
         "current_config_path": current_config_path,
@@ -136,6 +145,7 @@ def converge_boot_statefile(
         # anything it cannot re-prove all-muted. Fail the pass: a statefile
         # pointing at a config we would not write is worse than a red deploy.
         return StatefileConvergenceResult(decision, topology, False, f"{exc}")
+    stamp_statefile_convergence(statefile_path, topology, proved=True)
     return StatefileConvergenceResult(decision, topology, wrote)
 
 

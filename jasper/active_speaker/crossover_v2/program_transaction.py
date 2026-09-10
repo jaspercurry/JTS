@@ -54,6 +54,7 @@ __all__ = [
     "ProgramPlaybackTransaction",
     "StimulusCapture",
     "StimulusCaptureError",
+    "StimulusCaptureStopped",
 ]
 
 #: The measurement volume was not open/confirmed/fresh, so nothing was played.
@@ -124,6 +125,15 @@ class StimulusCaptureError(RuntimeError):
     """
 
 
+class StimulusCaptureStopped(StimulusCaptureError):
+    """A capture stop ends the measurement session, including later ladder rungs."""
+
+    def __init__(self, code: str, detail: str, playback: PlaybackObservation) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.playback = playback
+
+
 class StimulusCapture(Protocol):
     """Record what the room does while one stimulus plays."""
 
@@ -177,9 +187,8 @@ class ProgramPlaybackTransaction:
     ) -> PlaybackOutcome:
         """Play one stimulus, record it, and report the last stage COMPLETED.
 
-        Never raises for a measurement problem — a transaction that raised would
-        strand the session and lose the walk. Every failure is a stage plus a
-        reason code, which is what a record can carry.
+        Recoverable failures return a stage and reason. Terminal capture stops
+        propagate so the session restores without playing another stimulus.
         """
         try:
             prepared = await _resolve(self._compose(
@@ -226,8 +235,8 @@ class ProgramPlaybackTransaction:
                 await _play()
             else:
                 wav_path = await self._capture.around(_play, program=prepared.program)
-        except PlaybackInterrupted as exc:
-            raise PlaybackInterrupted(observation, wav_path=exc.wav_path) from exc
+        except PlaybackInterrupted:
+            raise
         except (WavPlaybackCancelled, WavPlaybackCancelledBeforeSpawn) as exc:
             observation = (
                 exc.observation if isinstance(exc, WavPlaybackCancelled)
@@ -242,9 +251,11 @@ class ProgramPlaybackTransaction:
         except ProgramPlaybackRefused:
             stage, incident = STAGE_READY, STIMULUS_ADMISSION_REFUSED
             observation = PlaybackObservation(emission="not_started")
-        except StimulusCaptureError:
+        except StimulusCaptureStopped:
+            raise
+        except StimulusCaptureError as exc:
             stage = STAGE_RESTORE if played else STAGE_READY
-            incident = STIMULUS_NOT_CAPTURED
+            incident = str(getattr(exc, "code", STIMULUS_NOT_CAPTURED))
         except ProgramPlaybackError:
             stage, incident = STAGE_LOCK, STIMULUS_PLAY_FAILED
         except PlaybackError as exc:

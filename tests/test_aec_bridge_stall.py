@@ -41,13 +41,11 @@ import pytest
 from jasper.cli import aec_bridge
 from jasper.cli.aec_bridge import (
     BridgeStalled,
-    OUT_PORT,
-    OUT_PORT_RAW,
     _aec_loop,
     _shutdown,
 )
 from jasper.aec import bridge_engines, bridge_telemetry
-from jasper.aec.bridge_config import OUT_HOST
+from jasper.aec.bridge_config import OUT_HOST, leg_default_port
 from jasper.aec.bridge_engines import FRAME_SAMPLES
 from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 from jasper.cues.registry import (
@@ -59,6 +57,17 @@ from tests._sounddevice_stub import stub_sounddevice
 # The voice daemon's boot-park pins own these fakes; both parks now play
 # through the same jasper.cues.park seam, so they are shared, not re-rolled.
 from tests.test_voice_input_gate import _ParkCues, _ParkPlayout
+
+# jasper.cli.aec_bridge reads ports off BridgeConfig / leg_default_port at
+# runtime, never module-level constants — compute the expected values the
+# same way the tests below assert against.
+OUT_PORT = leg_default_port("on")
+OUT_PORT_RAW = leg_default_port("off")
+
+
+def _sweep_ports(variants):
+    """Leg -> default UDP port, the shape the bridge's sweep path emits on."""
+    return {variant.leg: variant.default_port for variant in variants}
 
 
 class _AlwaysEmptyQ:
@@ -554,21 +563,20 @@ def test_raw0_port_default_9879():
     """Default raw mic 0 UDP port is the canonical 9879. wake-corpus
     recorder + wake_enroll CLI both subscribe to this port; if it
     drifts from the bridge's default they'd silently get no audio."""
-    import jasper.cli.aec_bridge as bridge_mod
     from jasper.cli.wake_enroll import DEFAULT_AEC_RAW0_PORT
-    assert bridge_mod.OUT_PORT_RAW0 == 9879
+    assert leg_default_port("raw0") == 9879
     assert DEFAULT_AEC_RAW0_PORT == 9879
 
 
 @pytest.mark.parametrize(
-    ("leg_kwarg", "sockets_before_leg", "port_attr", "frames_via_ref_q"),
+    ("leg_kwarg", "sockets_before_leg", "leg_token", "frames_via_ref_q"),
     [
-        pytest.param("raw0_q", 2, "OUT_PORT_RAW0", False, id="raw0_q"),
-        pytest.param("emit_ref", 3, "OUT_PORT_REF", True, id="emit_ref"),
+        pytest.param("raw0_q", 2, "raw0", False, id="raw0_q"),
+        pytest.param("emit_ref", 3, "ref", True, id="emit_ref"),
     ],
 )
 def test_aec_loop_emits_single_opt_in_leg(
-    monkeypatch, leg_kwarg, sockets_before_leg, port_attr, frames_via_ref_q,
+    monkeypatch, leg_kwarg, sockets_before_leg, leg_token, frames_via_ref_q,
 ):
     """A single opt-in leg (raw0 / ref) emits exactly its own packet to its
     own port, byte-distinct from the mic_q and primary-AEC frames so we can
@@ -608,7 +616,7 @@ def test_aec_loop_emits_single_opt_in_leg(
 
     _aec_loop(ref_q, _ScriptedMicQ(mic_frames), engine, **extra_kwargs)
 
-    port = getattr(aec_bridge, port_attr)
+    port = leg_default_port(leg_token)
     leg_sock.sendto.assert_called_once_with(
         b"".join(leg_frames), (OUT_HOST, port),
     )
@@ -722,7 +730,8 @@ def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
     """The reconciler advertises optional chip-beam wake detector channels
     with JASPER_MIC_DEVICE_CHIP_AEC_*; only then does the bridge emit them."""
     import socket as real_socket
-    from jasper.cli.aec_bridge import OUT_PORT_CHIP_AEC_150, OUT_PORT_CHIP_AEC_210
+    OUT_PORT_CHIP_AEC_150 = leg_default_port("chip_aec_150")
+    OUT_PORT_CHIP_AEC_210 = leg_default_port("chip_aec_210")
     from jasper.mics import xvf3800
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
@@ -777,78 +786,13 @@ def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
     )
 
 
-def test_aec_loop_corpus_chip_aec_flag_emits_promised_beams(monkeypatch):
-    """The wake-corpus chip-AEC comparison plan promises both fixed beams.
-
-    That promise is owned by JASPER_AEC_CORPUS_CHIP_AEC_ENABLED, not by the
-    production wake-loop JASPER_MIC_DEVICE_CHIP_AEC_* toggles.
-    """
-    import socket as real_socket
-    from jasper.cli.aec_bridge import (
-        OUT_PORT_CHIP_AEC_150,
-        OUT_PORT_CHIP_AEC_210,
-    )
-    from jasper.mics import xvf3800
-
-    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
-    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
-    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_150", raising=False)
-    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_210", raising=False)
-    monkeypatch.setenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "1")
-
-    aec_sock = _mock_socket()
-    raw_sock = _mock_socket()
-    raw0_sock = _mock_socket()
-    chip_150_sock = _mock_socket()
-    chip_210_sock = _mock_socket()
-    socket_factory = MagicMock(
-        side_effect=[
-            aec_sock, raw_sock, raw0_sock, chip_150_sock, chip_210_sock,
-        ],
-    )
-    monkeypatch.setattr(real_socket, "socket", socket_factory)
-
-    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    chip_150_frames = [
-        bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
-    ]
-    chip_210_frames = [
-        bytes([i + 150]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
-    ]
-    engine = MagicMock()
-
-    _aec_loop(
-        _AlwaysEmptyQ(),
-        _ScriptedMicQ(mic_frames),
-        engine,
-        chip_aec_qs={
-            "chip_aec_150": _ScriptedMicQ(chip_150_frames),
-            "chip_aec_210": _ScriptedMicQ(chip_210_frames),
-        },
-        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
-        production_chip_aec_enabled=True,
-        chip_aec_primary_leg="chip_aec_150",
-    )
-
-    engine.process.assert_not_called()
-    raw_sock.sendto.assert_not_called()
-    aec_sock.sendto.assert_called_once_with(
-        b"".join(chip_150_frames), (OUT_HOST, OUT_PORT),
-    )
-    chip_150_sock.sendto.assert_called_once_with(
-        b"".join(chip_150_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_150),
-    )
-    chip_210_sock.sendto.assert_called_once_with(
-        b"".join(chip_210_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_210),
-    )
-
-
 def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     """Corpus USB mode emits cheap-mic raw plus a second WebRTC AEC
     output, without changing the primary XVF AEC/raw/raw0 packets."""
     import socket as real_socket
     from jasper.aec_sweep import USB_AEC3_CORPUS_OVERRIDES
-    from jasper.cli.aec_bridge import OUT_PORT_USB_RAW, OUT_PORT_USB_WEBRTC
+    OUT_PORT_USB_RAW = leg_default_port("usb_raw")
+    OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
@@ -907,7 +851,8 @@ def test_aec_loop_emits_aec3_sweep_variants_when_enabled(monkeypatch):
     same mic/ref frames and emits each as its own UDP leg."""
     import socket as real_socket
     from jasper.aec_sweep import AEC3_SWEEP_ENV_FLAG, AEC3_SWEEP_VARIANTS
-    from jasper.cli.aec_bridge import OUT_PORT_AEC3_SWEEP
+
+    OUT_PORT_AEC3_SWEEP = _sweep_ports(AEC3_SWEEP_VARIANTS)
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
@@ -969,7 +914,8 @@ def test_aec_loop_can_feed_aec3_sweep_from_usb_mic(monkeypatch):
         AEC3_SWEEP_VARIANTS,
         USB_AEC3_SWEEP_BASELINE_OVERRIDES,
     )
-    from jasper.cli.aec_bridge import OUT_PORT_AEC3_SWEEP, OUT_PORT_USB_WEBRTC
+    OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
+    OUT_PORT_AEC3_SWEEP = _sweep_ports(AEC3_SWEEP_VARIANTS)
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
@@ -1054,11 +1000,10 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     plus the same reference frame as the WebRTC corpus path."""
     import socket as real_socket
     from jasper.aec_engines import dtln as dtln_mod
-    from jasper.cli.aec_bridge import (
-        OUT_PORT_USB_DTLN,
-        OUT_PORT_USB_RAW,
-        OUT_PORT_USB_WEBRTC,
-    )
+
+    OUT_PORT_USB_DTLN = leg_default_port("usb_dtln")
+    OUT_PORT_USB_RAW = leg_default_port("usb_raw")
+    OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "1")

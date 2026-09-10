@@ -149,7 +149,7 @@ async def precheck_active_follower(
     from .active_profile import build_grouped_profile  # lazy: optional tuning dependencies
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_camilla_graph,
+        classify_bass_extension_graph,
     )
     from jasper.output_topology import (
         OutputTopologyError,
@@ -200,14 +200,11 @@ async def precheck_active_follower(
             "this speaker as an active speaker before bonding it",
         )
 
-    # Re-prove the complete emitted Layer-A graph independently. The emit gates
-    # cover tweeter HP and the bass-owner pair; this verifier also proves every
-    # driver crossover/gain/limiter chain before the candidate can be loaded.
-    graph = classify_camilla_graph(
-        topology=topology,
-        text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
-        config_path=FOLLOWER_CONFIG_PATH,
-        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
+        applied_baseline_state=candidate,
     )
     if (
         not graph.allowed
@@ -492,8 +489,6 @@ async def _prove_live_bass_extension_graph(
         classify_active_bass_extension_graph,
     )
     from jasper.active_speaker.staging import staged_metadata_path
-    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
     from jasper.output_topology import load_output_topology_strict
 
     deadline = asyncio.get_running_loop().time() + settle_timeout_s
@@ -506,8 +501,6 @@ async def _prove_live_bass_extension_graph(
                 raw, best_effort=False
             ),
             applied_baseline_path=baseline_profile_state_path(),
-            profile_path=DEFAULT_PROFILE_PATH,
-            intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
             staged_metadata_path=staged_metadata_path(),
         )
         if (

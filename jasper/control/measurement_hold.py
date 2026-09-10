@@ -345,20 +345,26 @@ class MeasurementHold:
             self._declines += 1
             return owner, self._declines == 1
 
-    def record_refused_write(self) -> tuple[str, bool] | None:
+    def record_refused_write(self) -> tuple[str, bool, dict[str, Any]] | None:
         """Count one refused AUTHORITATIVE fader write against this hold.
 
         Same shape and the same first-line-only reason as
         :meth:`record_declined_observation`, on its own counter: a UI slider
         drag and a spun HID knob are the repetition here, and the two counts
         reach the journal under different names.
+
+        Returns ``(owner, is_first, snapshot)`` — the snapshot is taken in
+        this SAME locked read, so a 409 body's top-level ``owner`` and its
+        ``measurement.owner`` can never disagree across a hold that expires
+        between two separate reads.
         """
         with self._lock:
-            owner = self._live_owner_locked()
-            if owner is None:
+            now = self._clock()
+            self._expire_locked(now)
+            if self._owner is None:
                 return None
             self._refusals += 1
-            return owner, self._refusals == 1
+            return self._owner, self._refusals == 1, self._snapshot_locked(now)
 
     def snapshot(self) -> dict[str, Any]:
         """The ``/state.measurement`` projection."""
@@ -395,7 +401,7 @@ def record_declined_observation() -> tuple[str, bool] | None:
     return _hold.record_declined_observation()
 
 
-def record_refused_write() -> tuple[str, bool] | None:
+def record_refused_write() -> tuple[str, bool, dict[str, Any]] | None:
     return _hold.record_refused_write()
 
 

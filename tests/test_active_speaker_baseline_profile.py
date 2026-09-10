@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import time
 from copy import deepcopy
 from dataclasses import replace
@@ -14,7 +13,6 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest import mock
 
 import numpy as np
 import pytest
@@ -80,6 +78,7 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests._log_events import event_field_maps, event_records
 
 
 # What a REAL MEASURE analysis records and PR-L4 item 5 counts as evidence: the
@@ -1821,176 +1820,6 @@ async def test_apply_baseline_profile_reloads_when_target_config_differs(
     ]
 
 
-async def test_apply_baseline_profile_preserves_only_current_sealed_bass_block(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from jasper.bass_extension.profile import (
-        evaluate_bass_extension_profile,
-        save_bass_extension_profile,
-    )
-    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
-    from tests.test_active_speaker_runtime_contract import _sealed_profile
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    state_path = tmp_path / "baseline_profile.json"
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    bass_path = tmp_path / "bass_extension_profile.json"
-    monkeypatch.setenv("JASPER_BASS_EXTENSION_PROFILE_STATE", str(bass_path))
-    loaded_graphs: list[str] = []
-
-    async def load_config(path: str) -> bool:
-        loaded_graphs.append(Path(path).read_text(encoding="utf-8"))
-        return True
-
-    first = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        load_config=load_config,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-    profile = _sealed_profile(topology, first["profile"])
-    save_bass_extension_profile(profile, bass_path)
-
-    with mock.patch(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
-        wraps=classify_bass_extension_graph,
-    ) as prove:
-        repeated = await apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            load_config=load_config,
-            state_path=state_path,
-            config_path=config_path,
-            validate=_valid_config,
-        )
-
-    assert repeated["status"] == "applied"
-    assert "bass_ext_lt" in loaded_graphs[-1]
-    assert "bass_ext_subsonic" in loaded_graphs[-1]
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=repeated["profile"],
-    ).status == "accepted"
-    assert prove.call_args.kwargs["desired_profile"] == profile
-
-    deferred = replace(
-        profile,
-        enclosure={
-            "adapter_id": "ported_v1",
-            "adapter_version": 1,
-            "cabinet_fingerprint": "ported-cabinet",
-        },
-        natural={
-            "fb_hz": 43.1,
-            "knee_hz": 55.0,
-            "knee_slope_db_oct": 21.0,
-            "fit_rms_db": 0.4,
-            "natural_curve": {
-                "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
-                "magnitude_db": [0.0] * 96,
-            },
-            "notes": [],
-        },
-    )
-    save_bass_extension_profile(deferred, bass_path)
-    with mock.patch(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
-        wraps=classify_bass_extension_graph,
-    ) as prove:
-        deferred_apply = await apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            load_config=load_config,
-            state_path=state_path,
-            config_path=config_path,
-            validate=_valid_config,
-        )
-    assert deferred_apply["status"] == "applied"
-    assert "bass_ext_lt" not in loaded_graphs[-1]
-    assert prove.call_args.kwargs["desired_profile"] == deferred
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=deferred_apply["profile"],
-    ).status == "accepted"
-
-    bypassed = replace(profile, status="bypassed")
-    save_bass_extension_profile(bypassed, bass_path)
-    with mock.patch(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
-        wraps=classify_bass_extension_graph,
-    ) as prove:
-        bypassed_apply = await apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            load_config=load_config,
-            state_path=state_path,
-            config_path=config_path,
-            validate=_valid_config,
-        )
-    assert bypassed_apply["status"] == "applied"
-    assert "bass_ext_lt" not in loaded_graphs[-1]
-    assert prove.call_args.kwargs["desired_profile"] == bypassed
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=bypassed_apply["profile"],
-    ).status == "bypassed"
-
-    save_bass_extension_profile(profile, bass_path)
-    changed_manual = {
-        "drivers": [
-            {"role": "woofer", "gain_offset_db": 0.0},
-            {"role": "tweeter", "gain_offset_db": -7.0},
-        ],
-        "crossover_candidates": _research()["crossover_candidates"],
-    }
-    changed_draft = build_design_draft(
-        topology,
-        driver_research=_research(),
-        manual_settings=changed_manual,
-        created_at="2026-07-18T12:00:00Z",
-    )
-    changed_preview = build_crossover_preview(changed_draft)
-    with mock.patch(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
-        wraps=classify_bass_extension_graph,
-    ) as prove:
-        changed = await apply_baseline_profile(
-            topology,
-            design_draft=changed_draft,
-            crossover_preview=changed_preview,
-            measurements=measurements,
-            load_config=load_config,
-            state_path=state_path,
-            config_path=config_path,
-            validate=_valid_config,
-        )
-
-    assert changed["status"] == "applied"
-    assert "bass_ext_lt" not in loaded_graphs[-1]
-    assert "bass_ext_subsonic" not in loaded_graphs[-1]
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=changed["profile"],
-    ).status == "stale"
-    assert prove.call_args.kwargs["desired_profile"] == profile
 
 
 async def test_apply_baseline_profile_refuses_failed_graph_proof_before_load(
@@ -3232,7 +3061,6 @@ def _driver_capture_wav(
     A low-passed (woofer) or high-passed (tweeter) sweep at a relative level, the
     way the production graph would excite one driver. Returns ``(path, meta)``.
     """
-    import numpy as np
     from scipy.signal import fftconvolve, firwin
 
     from jasper.active_speaker import driver_acoustics as da
@@ -3507,7 +3335,7 @@ def test_measured_trim_far_from_the_datasheet_is_refused_with_both_numbers(
     assert payload["level_match"]["frame_tolerance_db"] == (
         MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
     )
-    assert "event=baseline_profile.level_frame_disagreement" in caplog.text
+    assert event_records(caplog, "baseline_profile.level_frame_disagreement")
 
 
 def test_the_two_level_sittings_are_compared_and_disclosed(
@@ -3565,7 +3393,7 @@ def test_the_two_level_sittings_are_compared_and_disclosed(
     assert "driver_level_sittings_differ" in {
         issue["code"] for issue in payload["issues"]
     }
-    assert "event=baseline_profile.level_sittings_differ" in caplog.text
+    assert event_records(caplog, "baseline_profile.level_sittings_differ")
     # The gap is unplaceable without its frames, so both sittings are named.
     frame = payload["level_match"]["sitting_frame"]
     assert frame["crossover_sweep_axis"] == LEVEL_MATCH_AXIS
@@ -4712,9 +4540,7 @@ async def test_apply_baseline_profile_dsp_error_emits_exactly_one_rolled_back_ev
     assert "rollback_error=null" in message
     assert _events(caplog, "correction.crossover_apply_succeeded") == []
     # There is no separate "apply_failed" event name -- rolled_back is it.
-    assert not any(
-        "correction.crossover_apply_failed" in r.getMessage() for r in caplog.records
-    )
+    assert not event_records(caplog, "correction.crossover_apply_failed")
 
 
 async def test_apply_baseline_profile_dsp_error_reports_real_rollback_attempt(
@@ -4794,10 +4620,9 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
         )
 
     assert payload["status"] == "blocked"
-    assert not any(
-        r.getMessage().startswith("event=correction.crossover_apply_")
-        for r in caplog.records
-    )
+    assert not event_records(caplog, "correction.crossover_apply_started")
+    assert not event_records(caplog, "correction.crossover_apply_succeeded")
+    assert not event_records(caplog, "correction.crossover_apply_rolled_back")
 
 
 # --- Wave 4 (crossover measurement v2 §5.8): MeasuredCrossoverCandidate -----
@@ -4939,13 +4764,11 @@ def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
     preserved, preserved_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        bass_extension_profile=None,
     )
     speaker_only, speaker_only_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
         room_peqs=(),
-        bass_extension_profile=None,
     )
     assert preserved_issues == speaker_only_issues == []
     assert preserved is not None and speaker_only is not None
@@ -4994,7 +4817,6 @@ def test_legacy_applied_room_mirror_survives_frozen_read_and_recompose(
     recomposed, recompose_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=frozen,
-        bass_extension_profile=None,
     )
     assert recompose_issues == []
     assert recomposed is not None
@@ -5286,7 +5108,7 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     applied = load_applied_baseline_profile_state(tmp_path / "baseline_profile.json")
     assert applied["recomposition_snapshot"]["driver_protection"]["profile_fingerprint"] == safety["profile_fingerprint"]
     emitted, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied,
     )
     assert issues == []
     assert emitted is not None
@@ -5326,149 +5148,128 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     assert changed["config"]["path"] != applied["config"]["path"]
 
 
-async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    from jasper.active_speaker.measured_crossover_candidate import (
-        prove_candidate_config,
-    )
-    from jasper.active_speaker.runtime_contract import (
-        classify_bass_extension_graph,
-    )
-    from jasper.bass_extension.profile import (
-        evaluate_bass_extension_profile,
-        save_bass_extension_profile,
-    )
-    from tests.test_active_speaker_runtime_contract import _sealed_profile
-
+@pytest.mark.parametrize("with_room", [False, True])
+@pytest.mark.parametrize("matching_tuning_graph", [True, False])
+async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, matching_tuning_graph, with_room):
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
     assert preset is not None, issues
     measured = _v2_candidate(preset)
-    state_path = tmp_path / "baseline_profile.json"
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    bass_path = tmp_path / "bass_extension_profile.json"
-    monkeypatch.setenv("JASPER_BASS_EXTENSION_PROFILE_STATE", str(bass_path))
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
-    )
-    loaded_graphs: list[str] = []
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json"))
+    loaded_graphs = []
 
-    async def load_config(path: str) -> bool:
-        loaded_graphs.append(Path(path).read_text(encoding="utf-8"))
+    async def load_config(path):
+        loaded_graphs.append(Path(path).read_text())
         return True
 
-    first = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={},
-        load_config=load_config,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-        tuning_owner="automatic",
-        measured_candidate=measured,
-    )
+    kwargs = dict(design_draft=draft, crossover_preview=preview, measurements={},
+                  state_path=tmp_path / "profile.json", config_path=tmp_path / "baseline.yml",
+                  validate=_valid_config, tuning_owner="automatic")
+    first = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                         measured_candidate=measured)
     assert first["status"] == "applied"
-    profile = _sealed_profile(topology, first["profile"])
-    save_bass_extension_profile(profile, bass_path)
-
-    with (
-        mock.patch(
-            "jasper.active_speaker.measured_crossover_candidate."
-            "prove_candidate_config",
-            wraps=prove_candidate_config,
-        ) as prove_measured,
-        mock.patch(
-            "jasper.active_speaker.runtime_contract."
-            "classify_bass_extension_graph",
-            wraps=classify_bass_extension_graph,
-        ) as prove_graph,
-    ):
-        repeated = await apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements={},
-            load_config=load_config,
-            state_path=state_path,
-            config_path=config_path,
-            validate=_valid_config,
-            tuning_owner="automatic",
-            measured_candidate=measured,
-        )
-
-    assert repeated["status"] == "applied"
-    assert prove_measured.call_count == 1
-    assert prove_graph.call_count == 1
-    repeated_text = loaded_graphs[-1]
-    repeated_yaml = yaml_lib.safe_load(repeated_text)
-    assert prove_measured.call_args.args == (measured, repeated_text)
-    assert prove_graph.call_args.kwargs["graph_text"] == repeated_text
-    assert prove_graph.call_args.kwargs["desired_profile"] == profile
-    assert "bass_ext_lt" in repeated_yaml["filters"]
-    assert "bass_ext_subsonic" in repeated_yaml["filters"]
-    assert "delay: 0.2500" in repeated_text
-    assert repeated_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
-        "inverted"
-    ] is True
-    assert repeated["profile"]["corrections"]["tweeter"] == {
-        "gain_db": -2.0,
-        "delay_ms": 0.25,
-        "inverted": True,
-    }
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=repeated["profile"],
-    ).status == "accepted"
-
-    changed_measured = MeasuredCrossoverCandidate(
-        program_id="prog-v2-2",
-        analysis={"drift_ppm": 4.0, "sweeps": ["w", "t", "w", "t"], **_MEASURE_EVIDENCE},
-        source_preset=preset,
-        role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
-        alignment=MeasuredCrossoverAlignment(
-            delay_us=375.0,
-            delay_role="tweeter",
-            polarity="keep",
-        ),
+    if with_room:
+        measured = replace(measured, room_correction=_ROOM_CORRECTION)
+        room = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                           measured_candidate=measured)
+        assert room["status"] == "applied", room
+    upstream = baseline_profile_mod.load_applied_baseline_profile_state(kwargs["state_path"])
+    bass = {"low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
+            "compressor_threshold_dbfs": -30.}
+    measured = replace(measured, bass_extension=bass)
+    preview_graph = build_baseline_profile_candidate(
+        topology, **kwargs, write=False, compile_config=True, measured_candidate=measured,
     )
-    changed = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={},
-        load_config=load_config,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-        tuning_owner="automatic",
-        measured_candidate=changed_measured,
+    expected = str(preview_graph["config"]["sha256"])[:16]
+    result = await apply_baseline_profile(
+        topology, **kwargs, load_config=load_config, measured_candidate=measured,
+        expected_tuning_graph_fingerprint=expected if matching_tuning_graph else "0" * 16,
     )
+    if matching_tuning_graph:
+        assert result["status"] == "applied"
+        assert result["profile"]["config"]["sha256"] == preview_graph["config"]["sha256"]
+        assert result["profile"]["recomposition_snapshot"]["bass_extension"]["low_boost_db"] == 4.
+        assert yaml_lib.safe_load(loaded_graphs[-1])["processors"]
+        snapshot = result["profile"]["recomposition_snapshot"]
+        for layer in ("corrections", "linearization", "blend_correction", "room_correction"):
+            assert snapshot.get(layer) == upstream["recomposition_snapshot"].get(layer)
+    else:
+        assert result["status"] == "blocked"
+        assert "candidate_trial_graph_mismatch" in {issue["code"] for issue in result["issues"]}
+        assert len(loaded_graphs) == 1 + with_room
 
-    assert changed["status"] == "applied"
-    changed_text = loaded_graphs[-1]
-    changed_yaml = yaml_lib.safe_load(changed_text)
-    assert "bass_ext_lt" not in changed_text
-    assert "bass_ext_subsonic" not in changed_text
-    assert "delay: 0.3750" in changed_text
-    assert changed_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
-        "inverted"
-    ] is False
-    assert changed["profile"]["corrections"]["tweeter"] == {
-        "gain_db": -3.0,
-        "delay_ms": 0.375,
-        "inverted": False,
+
+@pytest.mark.parametrize("change", ["speaker", "room"])
+async def test_bass_apply_refuses_changed_saved_upstream_inside_writer_lock(monkeypatch, tmp_path, change):
+    from contextlib import asynccontextmanager
+    from jasper.active_speaker import measurement_emit
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    loaded = []
+
+    async def load_config(path):
+        loaded.append(path)
+        return True
+
+    kwargs = dict(design_draft=draft, crossover_preview=preview, measurements={},
+                  state_path=tmp_path / "profile.json", config_path=tmp_path / "baseline.yml",
+                  validate=_valid_config, tuning_owner="automatic")
+    speaker = _v2_candidate(preset)
+    first = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                         measured_candidate=speaker)
+    assert first["status"] == "applied"
+    bass = replace(speaker, bass_extension={
+        "low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
+        "compressor_threshold_dbfs": -30.,
+    })
+    captured = build_baseline_profile_candidate(
+        topology, **kwargs, measured_candidate=bass, write=False, compile_config=True,
+    )["config"]["sha256"][:16]
+    updated = (_v2_candidate(preset, tweeter_gain_db=-3.) if change == "speaker"
+               else replace(speaker, room_correction=_ROOM_CORRECTION))
+    changed = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                           measured_candidate=updated)
+    assert changed["status"] == "applied", changed
+    saved = kwargs["state_path"].read_bytes()
+    lock_held = False
+    real_lock = baseline_profile_mod.dsp_writer_lock
+    real_upstream = measurement_emit.candidate_upstream_snapshot
+
+    @asynccontextmanager
+    async def observed_lock(config_dir, *, source):
+        nonlocal lock_held
+        async with real_lock(config_dir, source=source):
+            lock_held = True
+            try:
+                yield
+            finally:
+                lock_held = False
+
+    def checked_upstream(*args, **call_kwargs):
+        assert lock_held
+        return real_upstream(*args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", observed_lock)
+    monkeypatch.setattr(measurement_emit, "candidate_upstream_snapshot", checked_upstream)
+    result = await apply_baseline_profile(
+        topology, **kwargs, load_config=load_config, measured_candidate=bass,
+        expected_tuning_graph_fingerprint=captured,
+    )
+    assert result["status"] == "blocked"
+    assert {issue["code"] for issue in result["issues"]} >= {
+        "measurement_candidate_tune_mismatch" if change == "speaker"
+        else "measurement_candidate_room_mismatch",
     }
-    assert evaluate_bass_extension_profile(
-        path=bass_path,
-        topology=topology,
-        applied_baseline_state=changed["profile"],
-    ).status == "stale"
+    assert kwargs["state_path"].read_bytes() == saved
+    assert len(loaded) == 2
+
 
 
 # --- Layer-1a driver linearization threading (#1668 PR-D) -------------------
@@ -6851,20 +6652,8 @@ def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_che
 
 
 def _bank_events(caplog) -> list[dict[str, str]]:
-    """The base-trim seam's events as FIELDS, never as prose.
-
-    ``log_event`` renders logfmt, so one ``shlex.split`` recovers the
-    structured pairs a consumer actually reads — the result and reason codes —
-    without pinning the wording of any detail string.
-    """
-    out: list[dict[str, str]] = []
-    for message in _events(caplog, "dsp.baseline_base_trim_banked"):
-        fields: dict[str, str] = {}
-        for token in shlex.split(message):
-            key, _, value = token.partition("=")
-            fields[key] = value
-        out.append(fields)
-    return out
+    """The base-trim seam's events as FIELDS, never as prose."""
+    return event_field_maps(caplog, "dsp.baseline_base_trim_banked")
 
 
 def _applied_with_sources(

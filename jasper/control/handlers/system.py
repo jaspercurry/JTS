@@ -39,6 +39,7 @@ from ...fanin.latency_mode import (
 from ...install_profile import system_capabilities_for_profile
 from ...local_sources import local_source_park_units
 from ...log_event import log_event
+from ...service_units import JASPER_VOICE_SERVICE
 from .. import debug_control
 from .. import restart_broker
 from .. import server as _server
@@ -221,6 +222,31 @@ def _try_restart_each(
         else:
             groups["failed_units"].append(unit)
     return groups
+
+
+def _camilla_topology_gate_field(action: str) -> dict[str, Any]:
+    """``{"topology_gate": {...}}`` when jasper-camilla's start gate refused.
+
+    The restart is ``--no-block``, so this names the refusal the LAST
+    jasper-camilla start hit, not the one this start will hit. That is still
+    the fact the operator needs: a topology-gate refusal (ADR-0283) survives a
+    restart, so re-pressing the button cannot clear it and a bare 202 would
+    report success into a speaker that stays silent. Absent on every other
+    action, and absent when the gate did not refuse.
+    """
+    if action != "restart-audio":
+        return {}
+    from .. import camilla_topology_gate_state
+
+    state = _safe("topology gate", camilla_topology_gate_state.snapshot, {})
+    if not isinstance(state, dict) or not state.get("refused"):
+        return {}
+    return {
+        "topology_gate": {
+            key: state.get(key)
+            for key in ("reason", "detail", "action", "re_arm", "refused_utc")
+        }
+    }
 
 
 def _safe(label: str, read: Callable[[], Any], fallback: Any = None) -> Any:
@@ -632,7 +658,7 @@ class SystemRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-            units = ["jasper-voice.service"]
+            units = [JASPER_VOICE_SERVICE]
             restart_units = units
             action = "restart-voice"
         elif self.path == "/system/restart/audio":
@@ -718,5 +744,8 @@ class SystemRoutes(ControlHandlerMixin):
                 **groups,
             )
             return
-        self._send_accepted(action=action, units=units, **groups)
+        self._send_accepted(
+            action=action, units=units, **groups,
+            **_camilla_topology_gate_field(action),
+        )
         return

@@ -1022,7 +1022,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
 
 def _applied_profile_for(topology, *, fingerprint: str | None = None):
     """An applied Layer-A record whose snapshot matches ``topology`` by default."""
-    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.output_topology import topology_config_fingerprint
 
     return {
         "status": "applied",
@@ -2444,7 +2444,6 @@ def _derived_marker(graph_yaml, topology, *, cap=8):
         evidence_source="desired",
         graph_text=graph_yaml,
         applied_baseline_state={},
-        desired_profile=None,
     )
     _width, _problem, device = _outputd_endpoint_width(graph, cap)
     return device
@@ -2912,7 +2911,7 @@ def test_the_first_arm_of_a_box_already_on_the_stereo_ring_clears_the_validator(
     BEFORE the path's writer has run; the candidate is the live ``outputd.env``
     copied forward plus the newly-armed marker, so it carried Ring B's path. The
     validator refused, the reconciler exited 78, and ``jasper-camilla``'s
-    ``Requires=`` on that unit took the DSP graph down — which also disabled the
+    then-``Requires=`` on that unit took the DSP graph down — which also disabled the
     box's own rollback, because rollback needs the websocket of the daemon the
     refusal had just killed.
 
@@ -3053,10 +3052,6 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.promote_applied_baseline_candidate",
         lambda *a, **k: None,
-    )
-    monkeypatch.setattr(
-        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
-        lambda **k: SimpleNamespace(status="rejected", profile=None),
     )
 
     def _recompose(topology, **kwargs):

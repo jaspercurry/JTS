@@ -60,7 +60,11 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
+    PHASE_LATERAL,
     PHASE_REVIEW,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
@@ -895,12 +899,48 @@ def test_done_makes_no_claim_when_the_store_has_no_floor():
     )
 
 
+def test_verdict_copy_switches_once_a_floor_is_adopted_after_a_no_floor_round():
+    """#2570's remaining half: the copy-continuity check the issue's own
+    2026-08-17 comment named as the cheapest close-out. Round N has no
+    adopted floor; round N+1, after a floor is adopted, is graded against
+    it. The sentence dispatch table (``_ATTEMPT_SENTENCE_BY_REASON``) keys
+    off ``decision.reason``, so this pins that the reason itself changes
+    once ``decide_next`` is handed a floor -- the two rendered sentences are
+    already pinned verbatim by
+    ``test_done_makes_no_claim_when_the_store_has_no_floor`` and
+    ``test_first_attempt_sentence_formats_the_kernel_provenance``.
+    """
+    round_n_reason = ATTEMPT_REASON_NO_FLOOR
+
+    # Round N+1: a floor now exists (adopted between the two rounds), and
+    # this is the first attempt graded against it.
+    metric = "linearization_residual_rms_db"
+    floor = FloorStats.from_policy_bar(
+        metric=metric,
+        claim_floor_db=0.5,
+        source="test policy bar",
+        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
+    )
+    decision = decide_next(
+        [AttemptRecord(
+            attempt_id="candidate-a",
+            metric=metric,
+            provenance=PROVENANCE_MODEL_GRADED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=0.9,
+        )],
+        floor,
+    )
+
+    assert decision.reason != round_n_reason
+
+
 def _cloud_verify_spec(passed: bool):
     return {
         PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
             "geometry_guidance": "", "spec_bands": [],
-            "overall_passed": passed, "excluded_interval_count": 0,
+            "overall_within_target": passed, "excluded_interval_count": 0,
             "flatness": {
                 "max_db": -4.85, "max_hz": 11480.0,
                 "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
@@ -993,7 +1033,7 @@ def test_done_headline_is_unchanged_when_no_spec_verdict_exists():
 
 
 def test_done_headline_will_not_call_an_unmeasurable_group_a_miss():
-    """#2160: ``overall_passed`` is ``False`` for a spectrum no band survived
+    """#2160: ``overall_within_target`` is ``False`` for a spectrum no band survived
     to grade as well as for one that was graded and missed, so the screen used
     to tell a household its speaker "measures further from flat than the
     target" on the strength of a measurement that never produced a number.
@@ -2062,6 +2102,29 @@ def test_the_browser_and_python_agree_on_the_class_prior_octave_code():
     assert match.group(1) == ReasonCode.LIMITED_BY_CLASS_PRIOR.value
 
 
+def test_the_browser_and_python_agree_on_the_mic_tier_octave_code():
+    """#2051: the third cross-language reason literal, pinned.
+
+    Same guard shape as the two tests above: the renderer decides whether a
+    mic-tier-limited band earns its disclosure sentence by comparing the
+    band's server-supplied ``reason`` against a literal it cannot import.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.active_speaker.linearization_envelope import ReasonCode
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const OCTAVE_REASON_LIMITED_BY_MIC_TIER = '([a-z0-9_]+)';", source,
+    )
+    assert match, "the renderer no longer carries a named mic-tier reason code"
+    assert match.group(1) == ReasonCode.LIMITED_BY_MIC_TIER.value
+
+
 def test_the_class_prior_remedy_points_at_the_driver_class_declaration_route():
     """The remedy pointer's route, pinned at the structured level — never the
     rendered sentence's prose, only the ``href`` string it is built from
@@ -2616,7 +2679,7 @@ def _cloud_flatness_status(**overrides):
     return {
         PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": False,
             "excluded_interval_count": 3, "flatness": flatness,
         },
     }
@@ -2639,7 +2702,7 @@ def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
     return {
         PHASE_CLOUD_MEASURE: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": False,
             "excluded_interval_count": 3, "flatness": flatness,
             "carve_outs": carve_outs or [],
         },
@@ -2724,7 +2787,7 @@ def test_flatness_copy_names_no_frame_when_the_record_carries_none():
         verify={"outcome": "pass"},
         cloud={PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": False,
             "excluded_interval_count": 3, "flatness": flatness,
         }},
         candidate=_candidate_summary(),
@@ -2732,6 +2795,64 @@ def test_flatness_copy_names_no_frame_when_the_record_carries_none():
     details = env["expert_details"]
     assert any("from the spec reference at 11480 Hz" in line for line in details)
     assert not any("reference mean" in line for line in details)
+
+
+# --- #2100: the terminal state names accepted/required cloud positions ---
+
+
+def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block():
+    """The scoped first step: a household whose walk failed partway through
+    should see how much was banked, not just that the group did not close.
+    ``positions`` is the durable ``_cloud_summary``'s own key (the surviving
+    take per position); the count is real evidence already on disk, only
+    never surfaced."""
+    compact = compact_cloud_status({
+        PHASE_CLOUD_VERIFY: {
+            "geometry": {}, "pipeline": {},
+            "positions": [{"position_id": f"cloud_verify_0{i}"} for i in range(4)],
+        },
+    })
+    assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
+
+
+def test_compact_cloud_status_reports_positions_required_from_the_tier():
+    """The Full tier's shipped defaults name what "required" means for each
+    group phase -- the household's recovery screen can now say "4 of 5"
+    instead of just "4"."""
+    compact = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}, "positions": []}},
+        tier="full",
+    )
+    entry = compact[PHASE_CLOUD_MEASURE]
+    assert entry["positions_required"] == DEFAULT_CLOUD_MEASURE_POSITIONS
+
+
+def test_compact_cloud_status_never_fabricates_a_required_count():
+    """An unresolvable tier (stale/unknown) reports ``None``, never a guess --
+    the same "never a fabricated clean reading" rule this module already
+    applies to ``excluded_interval_count``. ``PHASE_LATERAL`` is not sized by
+    a cloud plan shape at all, so it reads ``None`` even with a good tier."""
+    bad_tier = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier="turbo",
+    )
+    assert bad_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
+
+    lateral = compact_cloud_status(
+        {PHASE_LATERAL: {"geometry": {}, "pipeline": {}}}, tier="full",
+    )
+    assert lateral[PHASE_LATERAL]["positions_required"] is None
+
+
+def test_compact_cloud_status_missing_tier_reports_required_as_none():
+    """A missing tier (a durable block written before tier tracking existed)
+    must not be read as Full -- that is :func:`normalize_tier`'s absence
+    rule for STARTING a plan, not this projection's rule for reporting one
+    that may already exist. Reporting Full's counts here would claim
+    knowledge this durable state never recorded."""
+    missing_tier = compact_cloud_status(
+        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier=None,
+    )
+    assert missing_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
 
 
 # --- #1857: every band discloses its own deviation, not just the pointer's ---
@@ -2810,7 +2931,7 @@ def test_the_shipped_pointer_names_the_dark_tweeter_not_the_woofer():
         b for b in report.bands if (b.f_lo_hz, b.f_hi_hz) == (8000.0, 16000.0)
     )
     assert top.max_deviation_db == pytest.approx(0.0, abs=5e-3)
-    assert top.passed is True
+    assert top.within_target is True
 
 
 def test_the_expert_disclosure_now_names_every_band_beside_the_pointer():
@@ -2873,7 +2994,7 @@ def test_per_band_lines_uniformly_flat_shows_no_alarm():
     report = evaluate_flat_spec(freqs, np.zeros_like(freqs), None)
     spec_bands = [
         {
-            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "passed": b.passed,
+            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "within_target": b.within_target,
             "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
         }
         for b in report.bands
@@ -2894,7 +3015,7 @@ def test_per_band_lines_single_band_defect_leaves_the_others_quiet():
     report = evaluate_flat_spec(freqs, curve, None)
     spec_bands = [
         {
-            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "passed": b.passed,
+            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "within_target": b.within_target,
             "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
         }
         for b in report.bands
@@ -2909,11 +3030,11 @@ def test_per_band_lines_both_bands_failing_shows_both():
     genuinely out of spec (not one dragging the other) — the per-band line
     must show both failures, not collapse to the single pointer."""
     spec_bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": False,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": False,
          "max_deviation_db": 3.0, "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": False,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": False,
          "max_deviation_db": -4.5, "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": True,
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": True,
          "max_deviation_db": 1.0, "tolerance_db": 2.5},
     ]
     line = _per_band_flatness_lines(spec_bands)[0]
@@ -2923,14 +3044,14 @@ def test_per_band_lines_both_bands_failing_shows_both():
 
 
 def test_per_band_lines_skips_unevaluable_bands_without_fabricating():
-    """A band with no surviving evidence (``passed`` is ``None``, not a
+    """A band with no surviving evidence (``within_target`` is ``None``, not a
     bool) contributes no line — the same "unevaluable is not a fabricated
     verdict" rule ``BandResult`` itself follows — rather than printing a
     fake 0 dB reading for a band nothing measured."""
     spec_bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": None,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": None,
          "max_deviation_db": None, "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": False,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": False,
          "max_deviation_db": -4.5, "tolerance_db": 2.0},
     ]
     line = _per_band_flatness_lines(spec_bands)[0]
@@ -2945,7 +3066,7 @@ def test_per_band_lines_empty_or_malformed_input_renders_nothing():
     assert _per_band_flatness_lines([]) == []
     assert _per_band_flatness_lines(None) == []
     assert _per_band_flatness_lines("not a list") == []
-    assert _per_band_flatness_lines([{"passed": None}, "not a mapping"]) == []
+    assert _per_band_flatness_lines([{"within_target": None}, "not a mapping"]) == []
 
 
 def test_done_screen_states_the_band_verify_graded():
@@ -3185,7 +3306,7 @@ def _passing_post_apply_group():
     return {
         PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": True,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": True,
             "excluded_interval_count": 0,
             "flatness": {
                 "max_db": 0.9, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
@@ -3702,7 +3823,7 @@ def test_done_says_unavailable_when_the_cloud_pipeline_failed():
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
         cloud={PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": None,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": None,
             "excluded_interval_count": None, "flatness": None,
         }},
     ))
@@ -3714,7 +3835,7 @@ def test_done_says_unavailable_when_the_cloud_pipeline_failed():
 
 def test_done_distinguishes_a_pre_gauge_record_from_a_failed_pipeline():
     """A durable state written between PR-4 and PR-5 has a WORKING pipeline
-    (``overall_passed`` is a real verdict) but no gauge key. Telling that
+    (``overall_within_target`` is a real verdict) but no gauge key. Telling that
     household "the spatial measurement could not be analysed" would be a
     false statement about a session that analysed fine — the two states get
     different copy, and neither invents a number."""
@@ -3722,7 +3843,7 @@ def test_done_distinguishes_a_pre_gauge_record_from_a_failed_pipeline():
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
         cloud={PHASE_CLOUD_VERIFY: {
             "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_passed": True,
+            "geometry_guidance": "", "spec_bands": [], "overall_within_target": True,
             "excluded_interval_count": 2, "flatness": None,
         }},
     ))
@@ -3734,7 +3855,7 @@ def test_done_distinguishes_a_pre_gauge_record_from_a_failed_pipeline():
 
 def test_done_says_unmeasurable_when_the_gauge_ran_but_found_no_bins():
     """The gauge ran and could not measure (every spec band excluded or out
-    of range). ``passed`` is False there by ``FlatSpecReport.overall_passed``'s
+    of range). ``passed`` is False there by ``FlatSpecReport.overall_within_target``'s
     own rule, so this must never render as a fail."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
@@ -4235,7 +4356,7 @@ _PRIOR_SESSION_CLOUD = {
         "geometry": {"verdict": "ok"},
         "positions": [["mark", 1]],
         "pipeline": {"spec": {"bands": [{"name": "handoff", "max_deviation_db": 6.66,
-                                         "tolerance_db": 3.0, "passed": False}]}},
+                                         "tolerance_db": 3.0, "within_target": False}]}},
         "session_id": "cap_dead_session",
     },
 }
@@ -4873,7 +4994,7 @@ def test_envelope_carries_capture_block_awaiting_and_after_failure():
 
 
 def _prediction(
-    *, curve=True, overall_passed=True, bands=None, reference_db=80.0,
+    *, curve=True, overall_within_target=True, bands=None, reference_db=80.0,
 ) -> dict:
     """One ``prediction_status`` projection, in the shape the wire sends.
 
@@ -4888,29 +5009,29 @@ def _prediction(
         if curve else None,
         "spec_bands": bands if bands is not None else [
             {
-                "f_lo_hz": 250.0, "f_hi_hz": 500.0, "passed": True,
+                "f_lo_hz": 250.0, "f_hi_hz": 500.0, "within_target": True,
                 "max_deviation_db": 1.2, "tolerance_db": 3.0,
             },
         ],
-        "overall_passed": overall_passed,
+        "overall_within_target": overall_within_target,
         "reference_db": reference_db,
     }
 
 
 _FAILING_BANDS = [
     {
-        "f_lo_hz": 100.0, "f_hi_hz": 250.0, "passed": True,
+        "f_lo_hz": 100.0, "f_hi_hz": 250.0, "within_target": True,
         "max_deviation_db": 1.0, "tolerance_db": 3.0,
     },
     # The worst miss: |-9.04| - 3.0 = 6.04 dB past tolerance — the 2026-07-28
     # session's own number, which is what makes this the case the work order
     # was written from rather than a synthetic one.
     {
-        "f_lo_hz": 250.0, "f_hi_hz": 500.0, "passed": False,
+        "f_lo_hz": 250.0, "f_hi_hz": 500.0, "within_target": False,
         "max_deviation_db": -9.04, "tolerance_db": 3.0,
     },
     {
-        "f_lo_hz": 500.0, "f_hi_hz": 2000.0, "passed": False,
+        "f_lo_hz": 500.0, "f_hi_hz": 2000.0, "within_target": False,
         "max_deviation_db": 4.5, "tolerance_db": 3.0,
     },
 ]
@@ -5128,7 +5249,7 @@ def test_review_names_the_band_and_the_margin_when_the_prediction_fails():
     which is the entire reason this screen exists.
     """
     env = build_crossover_envelope_v2(_review_status(
-        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+        prediction=_prediction(overall_within_target=False, bands=_FAILING_BANDS),
     ))
     verdict = env["verdict_text"]
     assert "6.0 dB" in verdict          # 9.04 - 3.0, the worst band's overshoot
@@ -5144,7 +5265,7 @@ def test_review_never_states_the_prediction_as_a_measurement():
     sides, so the room cancels and nothing here may be phrased as a finding
     about the room."""
     env = build_crossover_envelope_v2(_review_status(
-        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+        prediction=_prediction(overall_within_target=False, bands=_FAILING_BANDS),
     ))
     verdict = env["verdict_text"]
     assert "worked out from the measurement, not measured" in verdict
@@ -5161,7 +5282,7 @@ def test_an_ungradeable_prediction_disables_apply_rather_than_guessing():
     prediction block at all (state 3) — land here. ``None`` means unknown, and
     a consumer must never read it as permission.
     """
-    for prediction in (_prediction(overall_passed=None, bands=[]), None):
+    for prediction in (_prediction(overall_within_target=None, bands=[]), None):
         env = build_crossover_envelope_v2(_review_status(prediction=prediction))
         assert env["screen"] == "review"
         assert env["next_action"]["enabled"] is False, prediction
@@ -5179,10 +5300,10 @@ def test_a_graded_miss_is_not_an_ungradeable_prediction():
     dead end or offer an unevidenced proposal as if it had been checked.
     """
     missed = build_crossover_envelope_v2(_review_status(
-        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+        prediction=_prediction(overall_within_target=False, bands=_FAILING_BANDS),
     ))
     unknown = build_crossover_envelope_v2(_review_status(
-        prediction=_prediction(overall_passed=None, bands=[]),
+        prediction=_prediction(overall_within_target=None, bands=[]),
     ))
     assert missed["next_action"]["enabled"] is True
     assert unknown["next_action"]["enabled"] is False
@@ -5193,7 +5314,7 @@ def test_the_refusal_lane_states_its_verdict_and_stages_no_decision():
     """``prediction_status``'s **4th** state: report present, curve absent.
 
     The improvement gate refused, so the verdict was stashed before the gate ran
-    while ``predicted_sum`` was never assigned — ``overall_passed`` is a REAL
+    while ``predicted_sum`` was never assigned — ``overall_within_target`` is a REAL
     ``False`` here, not the ``None`` that means unknown, and there is no
     candidate behind it. So the verdict is still stated (it genuinely evaluated
     that prediction) and NO decision is staged: an Apply control over a
@@ -5202,7 +5323,7 @@ def test_the_refusal_lane_states_its_verdict_and_stages_no_decision():
     env = build_crossover_envelope_v2(_review_status(
         candidate=None,
         prediction=_prediction(
-            curve=False, overall_passed=False, bands=_FAILING_BANDS,
+            curve=False, overall_within_target=False, bands=_FAILING_BANDS,
         ),
     ))
     assert env["next_action"] is None
@@ -5255,7 +5376,7 @@ def test_a_refusal_button_never_renders_without_its_explaining_sentence():
     knowable now (#1828).
     """
     env = build_crossover_envelope_v2(_review_status(
-        prediction=_prediction(overall_passed=None, bands=[]),  # ungradeable
+        prediction=_prediction(overall_within_target=None, bands=[]),  # ungradeable
         stage2_preflight={
             "ok": False,
             "message": "JTS could not use this speaker's saved safety limits.",

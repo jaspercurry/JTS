@@ -43,6 +43,7 @@ from jasper.active_speaker.flat_spec import (
     spec_convergence_residual,
 )
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
+from tests._log_events import event_fields, event_records, parse_event
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
@@ -528,8 +529,8 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     assert verdict["accepted"] is True
 
     assert calls == []  # the scan never ran
-    assert "event=correction.crossover_v2_linearization_ripple_trim_skipped" in caplog.text
-    assert "reason=ripple_band_one_sided" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_ripple_trim_skipped")
+    assert fields["reason"] == "ripple_band_one_sided"
     # The applied trim is the anchored give-back, untouched by any scan.
     # #1938: the raw trim has to be derived from THIS fixture's own curves —
     # the default woofer paired with the one-sided tweeter above — not from
@@ -574,9 +575,7 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         -4.918, abs=0.02
     )
     # ...and the guard never fired, because the trim never left the anchor.
-    assert (
-        "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
-    )
+    assert not event_records(caplog, "correction.crossover_v2_linearization_trim_rejected")
 
 
 def test_straddling_band_still_runs_the_linearized_ripple_polish(caplog):
@@ -589,9 +588,8 @@ def test_straddling_band_still_runs_the_linearized_ripple_polish(caplog):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
-    assert (
-        "event=correction.crossover_v2_linearization_ripple_trim_skipped"
-        not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_linearization_ripple_trim_skipped"
     )
 
 
@@ -609,17 +607,13 @@ def test_linearization_giveback_ledger_carries_both_target_levels(caplog):
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
 
-    assert "event=correction.crossover_v2_linearization_giveback" in caplog.text
-    line = next(
-        text for text in caplog.text.splitlines()
-        if "event=correction.crossover_v2_linearization_giveback" in text
-    )
-    assert "target_level_db=" in line
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_giveback")
+    assert "target_level_db" in fields
     for role in ("woofer", "tweeter"):
         expected = round(
             float(c.candidate.linearization[role]["target_level_db"]), 3
         )
-        assert f"'{role}': {expected}" in line
+        assert f"'{role}': {expected}" in fields["target_level_db"]
 
 
 def test_analysis_json_round_trips_trim_band_average_db():
@@ -680,7 +674,8 @@ def test_measure_diag_logs_trim_ripple_gain_db(caplog):
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert "trim_ripple_gain_db=9.0" in caplog.text  # -0.5 - (-9.5)
+    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
+    assert fields["trim_ripple_gain_db"] == "9.0"  # -0.5 - (-9.5)
     caplog.clear()
 
     # No band-average evidence on this candidate (legacy/test construction
@@ -691,7 +686,8 @@ def test_measure_diag_logs_trim_ripple_gain_db(caplog):
     _run_phase(c2, 1, 1)
     verdict2 = _run_phase(c2, 2, 2)
     assert verdict2["accepted"] is True
-    assert "trim_ripple_gain_db=null" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
+    assert fields["trim_ripple_gain_db"] == "null"
 
 
 def test_driver_class_by_role_ctor_param_threads_into_the_fit():
@@ -836,13 +832,13 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_disclosed_by_the_level_che
     # commits the anchored pair, and lets item 1 grade it — is unchanged. Item 1
     # refused when that note was written; deviation (i) changed what item 1 does
     # with the pair, not what this guard does.)
-    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "drift_db=9.8" in caplog.text
-    assert "committed=anchored" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
+    assert fields["drift_db"] == "9.8"
+    assert fields["committed"] == "anchored"
     # …and item 1's own realized-level check DISCLOSES the 20 dB it sees.
-    assert "event=correction.crossover_v2_level_match_finding" in caplog.text
-    assert "tolerance_db=3.0" in caplog.text
-    assert "difference_db=-20.0" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_level_match_finding")
+    assert fields["tolerance_db"] == "3.0"
+    assert fields["difference_db"] == "-20.0"
     # The round proceeded: a candidate exists and was published, carrying the
     # finding. Inverted from the pre-demotion assertions on purpose — the
     # household gets a proposal plus the reservation, not silence.
@@ -887,13 +883,13 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     assert committed["woofer"] == pytest.approx(captured["trim_w_db"])
     assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
     assert committed != dict(_FIXTURE_RAW_TRIM_DB)
-    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "anchored_trim_db=" in caplog.text
-    assert "fallback_trim_db=" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
+    assert "anchored_trim_db" in fields
+    assert "fallback_trim_db" in fields
     # PR-L4 item 9: the rejection names WHY this pair won, in levels.
-    assert "committed=anchored" in caplog.text
-    assert "anchored_level_error_db=" in caplog.text
-    assert "resolved_level_error_db=" in caplog.text
+    assert fields["committed"] == "anchored"
+    assert "anchored_level_error_db" in fields
+    assert "resolved_level_error_db" in fields
     # linearization itself still gets reported — only the trim falls back.
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
@@ -980,12 +976,11 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
     # although the scan levels better. Both level errors are still measured and
     # still disclosed, which is what makes the rejection auditable rather than
     # merely stated.
-    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "committed=anchored" in caplog.text
-    assert "committed=resolved" not in caplog.text
-    assert "strategy=anchored_committed_after_sanity_drift" in caplog.text
-    assert "anchored_level_error_db=2.5" in caplog.text
-    assert "resolved_level_error_db=0.2" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
+    assert fields["committed"] == "anchored"
+    assert fields["strategy"] == "anchored_committed_after_sanity_drift"
+    assert fields["anchored_level_error_db"] == "2.5"
+    assert fields["resolved_level_error_db"] == "0.2"
     # **The swept drift table this fixture's verdicts come from** (R10a, #1817),
     # kept because it is what makes the acceptance above readable. Measured by
     # sweeping the forced drift and reading
@@ -1181,7 +1176,7 @@ def test_wild_trim_boundary_exact_passes_just_above_falls_back(caplog, monkeypat
             _run_phase(c, 2, 2)
         except CaptureBeginRefused:
             pass  # the level gate's verdict; this test is about the guard's
-        return "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
+        return bool(event_records(caplog, "correction.crossover_v2_linearization_trim_rejected"))
 
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     assert _run_at(LINEARIZATION_TRIM_SANITY_MARGIN_DB) is False
@@ -1213,7 +1208,7 @@ def test_predicted_spec_report_is_graded_on_the_shared_analysis_grid():
     graded_bins = sum(band.n_bins for band in report.bands)
     assert 0 < graded_bins <= MAX_ANALYSIS_BINS
     # A flat curve is flat at any grid density.
-    assert report.overall_passed is True
+    assert report.overall_within_target is True
 
 
 def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
@@ -1327,9 +1322,10 @@ def test_prediction_gate_banks_a_correction_that_does_not_improve_and_proceeds(c
     assert c.last_failure_code is None
     # The verdict the forecast reached is on the record, at WARNING, with the
     # numbers a reader needs to weigh it.
-    assert "reason=not_an_improvement" in caplog.text
-    assert "required_db=0.5" in caplog.text
-    assert "improvement_db=" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_gate")
+    assert fields["reason"] == "not_an_improvement"
+    assert fields["required_db"] == "0.5"
+    assert "improvement_db" in fields
 
 
 def test_prediction_gate_tolerance_is_the_models_own_tracking_error():
@@ -1404,7 +1400,8 @@ def test_prediction_gate_abstains_when_no_fit_ran(caplog, monkeypatch):
     verdict = _walk_measure_cloud_to_close(c)
     assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate.linearization == {}
-    assert "reason=no_linearization" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_gate")
+    assert fields["reason"] == "no_linearization"
 
 
 def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
@@ -1418,18 +1415,18 @@ def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
     c = _cloud_conductor(fakes)
     assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
-    assert "event=correction.crossover_v2_prediction_gate" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_gate")
     # PR-L5 moved this fixture's OUTCOME, not the ledger's contract: the shared
     # level frame flattens the default pair enough that its predicted sum now
     # meets the spec outright, which is the gate's ``predicted_in_spec`` early
     # return rather than its ``improved`` one. The claim under test — that the
     # gate speaks on every path — is what this asserts, and it is stronger for
     # covering an early-return path.
-    assert "reason=predicted_in_spec" in caplog.text
+    assert fields["reason"] == "predicted_in_spec"
     # The terms the taken path can honestly report are on the line, so the
     # verdict is re-derivable from the journal alone.
-    for ledger_field in ("after_rms_db=", "required_db="):
-        assert ledger_field in caplog.text
+    for ledger_field in ("after_rms_db", "required_db"):
+        assert ledger_field in fields
 
 
 def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
@@ -1517,16 +1514,17 @@ def test_the_gates_ledger_and_the_stashed_verdict_never_disagree(caplog):
     c = _cloud_conductor(fakes)
     _walk_measure_cloud_to_close(c)
 
-    assert "reason=no_linearization" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_gate")
+    assert fields["reason"] == "no_linearization"
     report = spec_report_for_predicted_sum(c.measure_predicted_sum)
     stashed = dict(c.measure_predicted_spec_report)
     assert stashed.pop("comparison")["reason"] == "no_linearization"
     assert report.to_dict() == stashed
     # ``log_event`` renders booleans JSON-style, so compare in its vocabulary
     # rather than Python's.
-    assert f"after_passed={'true' if report.overall_passed else 'false'}" in caplog.text
+    assert fields["after_passed"] == ("true" if report.overall_within_target else "false")
     rms_db = round(float(spec_convergence_residual(report).rms_db), 3)
-    assert f"after_rms_db={rms_db}" in caplog.text
+    assert fields["after_rms_db"] == str(rms_db)
 
 
 def test_an_ungradeable_prediction_stashes_none_and_names_itself(caplog, monkeypatch):
@@ -1548,10 +1546,9 @@ def test_an_ungradeable_prediction_stashes_none_and_names_itself(caplog, monkeyp
     assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     assert c.measure_predicted_spec_report is None
-    assert "event=correction.crossover_v2_prediction_ungradeable" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_ungradeable")
     # The prediction existed; the evaluator is what refused it.
-    assert "why=evaluator_refused" in caplog.text
-    assert "why=no_prediction" not in caplog.text
+    assert fields["why"] == "evaluator_refused"
 
 
 def test_an_absent_prediction_names_the_other_cause(caplog):
@@ -1573,8 +1570,8 @@ def test_an_absent_prediction_names_the_other_cause(caplog):
 
     assert c.measure_predicted_sum is None
     assert c.measure_predicted_spec_report is None
-    assert "why=no_prediction" in caplog.text
-    assert "why=evaluator_refused" not in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prediction_ungradeable")
+    assert fields["why"] == "no_prediction"
 
 
 def test_an_accountability_gate_no_longer_stamps_a_failure_code():
@@ -1669,20 +1666,15 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
     assert c.candidate.linearization_outcome == "fit_failed"
-    # Anchored to the SAME record two ways: startswith() rather than a bare
-    # `in caplog.text` substring search (the journal_dropped line's own
-    # `dropped_event=` field ends in "event=", so a substring search would
-    # also match a drop of this same event), and the `reason=` check reads
-    # off that specific record rather than the whole caplog blob, so a drop
-    # line whose port also raised ValueError could not satisfy both
-    # assertions the way two independent bare-substring checks could (#2368).
-    fit_failed_lines = [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
-    ]
-    assert fit_failed_lines, "the fit_failed event was never said"
-    assert "reason=ValueError" in fit_failed_lines[0]
-    assert "linearization=fit_failed" in caplog.text
+    # Anchored to the SAME record two ways, not two independent bare
+    # substring checks: `event_fields` matches the exact event name (the
+    # journal_dropped line's own `dropped_event=` field also contains
+    # "event=...", which a substring search would confuse this record with)
+    # and reads `reason` off that specific record (#2368).
+    fit_failed_fields = event_fields(caplog, planning.EVENT_FIT_FAILED)
+    assert fit_failed_fields["reason"] == "ValueError"
+    fields = event_fields(caplog, "correction.crossover_v2_candidate_built")
+    assert fields["linearization"] == "fit_failed"
 
 
 def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, monkeypatch):
@@ -1707,86 +1699,90 @@ def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, mon
     assert verdict["accepted"] is True
     assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
-    assert "reason=RuntimeError" in caplog.text
-    assert "linearization=fit_failed" in caplog.text
+    fit_failed_fields = event_fields(caplog, planning.EVENT_FIT_FAILED)
+    assert fit_failed_fields["reason"] == "RuntimeError"
+    fields = event_fields(caplog, "correction.crossover_v2_candidate_built")
+    assert fields["linearization"] == "fit_failed"
 
 
-def test_candidate_built_linearization_field_fitted(caplog):
-    """SF3: the fitted outcome.
-
-    The field lives on ``correction.crossover_v2_candidate_built`` since the
-    2026-07-27 timing move; it could not stay on ``..._measure_diag``, which is
-    emitted before the candidate exists whenever a session runs a cloud group.
-    """
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
+def _configure_fitted(fakes, _monkeypatch):
     fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert "event=correction.crossover_v2_candidate_built" in caplog.text
-    assert "linearization=fitted" in caplog.text
-    # The retired location must not quietly come back carrying a value it
-    # cannot know on a cloud session.
-    measure_diag = next(
-        line for line in caplog.text.splitlines()
-        if "event=correction.crossover_v2_measure_diag" in line
-    )
-    assert "linearization=" not in measure_diag
-    # Gauge fix (2026-07-24): the SAME outcome is now stamped onto the
-    # persisted candidate — this is the single writer's value threading all
-    # the way to the artifact, not just the log line.
-    assert c.candidate.linearization_outcome == "fitted"
 
 
-def test_candidate_built_linearization_field_ineligible_mic_tier(caplog):
-    """SF3: the ineligible_mic_tier outcome."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
+def _configure_ineligible_mic_tier(fakes, _monkeypatch):
     fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert "linearization=ineligible_mic_tier" in caplog.text
-    assert c.candidate.linearization_outcome == "ineligible_mic_tier"
 
 
-def test_candidate_built_linearization_field_ineligible_repeats(caplog):
-    """SF3: the ineligible_repeats outcome."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
+def _configure_ineligible_repeats(fakes, _monkeypatch):
     fakes.measure = lambda program: _eligible_measure_analysis(
         program, mic_tier="reference", tweeter_repeats=0,
     )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert "linearization=ineligible_repeats" in caplog.text
-    assert c.candidate.linearization_outcome == "ineligible_repeats"
 
 
-def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
-    """SF3: the trim_rejected outcome (fit succeeded, but the ripple-optimal
-    tweeter re-solve drifted implausibly far from its band-average seed and
-    fell back to the seed pair -- distinct from "fitted" even though
-    linearization is populated in both). Seed-anchored (#1668), so force the
-    drift by monkeypatching the ripple-optimal solve."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+def _configure_trim_rejected(fakes, monkeypatch):
+    # Seed-anchored (#1668): force the ripple-optimal tweeter re-solve to
+    # drift implausibly far from its band-average seed so it falls back to
+    # the seed pair -- distinct from "fitted" even though linearization is
+    # populated in both.
     monkeypatch.setattr(
         iv, "solve_ripple_optimal_trim",
         lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
     )
-    fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
+
+
+@pytest.mark.parametrize(
+    "configure,expected_outcome",
+    [
+        pytest.param(_configure_fitted, "fitted", id="fitted"),
+        pytest.param(
+            _configure_ineligible_mic_tier, "ineligible_mic_tier",
+            id="ineligible_mic_tier",
+        ),
+        pytest.param(
+            _configure_ineligible_repeats, "ineligible_repeats",
+            id="ineligible_repeats",
+        ),
+        pytest.param(_configure_trim_rejected, "trim_rejected", id="trim_rejected"),
+    ],
+)
+def test_candidate_built_linearization_field(
+    caplog, monkeypatch, configure, expected_outcome,
+):
+    """SF3: each linearization outcome the candidate-built event and the
+    persisted candidate both carry.
+
+    The field lives on ``correction.crossover_v2_candidate_built`` since the
+    2026-07-27 timing move; it could not stay on ``..._measure_diag``, which is
+    emitted before the candidate exists whenever a session runs a cloud group
+    (see ``test_candidate_built_linearization_field_not_on_measure_diag``
+    below). Gauge fix (2026-07-24): the same outcome is stamped onto the
+    persisted candidate too — the single writer's value threading all the way
+    to the artifact, not just the log line.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    configure(fakes, monkeypatch)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert "linearization=trim_rejected" in caplog.text
-    assert c.candidate.linearization_outcome == "trim_rejected"
+    fields = event_fields(caplog, "correction.crossover_v2_candidate_built")
+    assert fields["linearization"] == expected_outcome
+    assert c.candidate.linearization_outcome == expected_outcome
+
+
+def test_candidate_built_linearization_field_not_on_measure_diag(caplog):
+    """The retired location must not quietly come back carrying a value it
+    cannot know on a cloud session."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+    measure_diag_fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
+    assert "linearization" not in measure_diag_fields
 
 
 def test_no_linearization_claim_at_all_when_the_verdict_is_rejected(caplog):
@@ -1807,8 +1803,10 @@ def test_no_linearization_claim_at_all_when_the_verdict_is_rejected(caplog):
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is False
-    assert "event=correction.crossover_v2_candidate_built" not in caplog.text
-    assert "linearization=" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_candidate_built")
+    # No event of any name carries the field, not just the retired location.
+    parsed_records = [p for p in (parse_event(r.getMessage()) for r in caplog.records) if p]
+    assert not any("linearization" in fields for _event, fields in parsed_records)
     assert c.candidate is None
 
 

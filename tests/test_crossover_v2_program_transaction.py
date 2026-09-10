@@ -28,6 +28,7 @@ import pytest
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
 from jasper.active_speaker.crossover_v2.playback_transaction import (
+    PlaybackInterrupted,
     STAGE_LOCK,
     STAGE_READY,
     STAGE_RESTORE,
@@ -43,6 +44,11 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     ProgramForStimulus,
     ProgramPlaybackTransaction,
     StimulusCaptureError,
+    StimulusCaptureStopped,
+)
+from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
+from jasper.audio_measurement.wired_capture import (
+    WiredCaptureError, WiredSplCeilingExceeded, WiredSplMonitor,
 )
 from jasper.active_speaker.program_playback import ProgramPlaybackError
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
@@ -253,6 +259,70 @@ async def test_cancel_preserves_emission_and_child_cleanup(error, emission, clea
         await _run(_transaction(seams=_Seams(play_raises=error)))
     assert stopped.value.playback.emission == emission
     assert stopped.value.playback.cleanup_state == cleanup
+
+
+@pytest.mark.parametrize("stop", ["cancel", "spl", "microphone"])
+async def test_guarded_capture_drains_playback_before_returning(tmp_path, stop):
+    tasks_before = set(asyncio.all_tasks())
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events = []
+
+    class Recorder:
+        failure = None
+
+        def start(self):
+            pass
+
+        def abort(self):
+            events.append("abort")
+
+    recorder = Recorder()
+    observation = PlaybackObservation(
+        emission="possible", cleanup_state=PlaybackCleanupState.KILLED_AND_REAPED,
+        returncode=-9,
+    )
+
+    async def play():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaning.set()
+            await release.wait()
+            events.append("playback_stopped")
+            raise WavPlaybackCancelled(observation)
+
+    capture = WiredStimulusCapture(
+        device=None, bundle_dir=tmp_path, recorder_factory=lambda *_: recorder,
+        spl_monitor=WiredSplMonitor(None, 80, 0),
+    )
+    task = asyncio.create_task(capture.around(play, program=_Program()))
+    await asyncio.wait_for(entered.wait(), 1)
+    if stop == "cancel":
+        task.cancel()
+    else:
+        recorder.failure = (
+            WiredSplCeilingExceeded(81, 80) if stop == "spl"
+            else WiredCaptureError("microphone disconnected")
+        )
+    await asyncio.wait_for(cleaning.wait(), 1)
+    if stop == "cancel":
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not task.done()
+    assert events == []
+    release.set()
+    error = PlaybackInterrupted if stop == "cancel" else StimulusCaptureStopped
+    with pytest.raises(error) as caught:
+        await asyncio.wait_for(task, 1)
+    assert caught.value.playback == observation
+    if stop != "cancel":
+        assert caught.value.code == (
+            "spl_ceiling_exceeded" if stop == "spl" else "wired_capture_failed"
+        )
+    assert events == ["playback_stopped", "abort"]
+    assert capture.take_answer() is None
+    assert set(asyncio.all_tasks()) <= tasks_before
 
 
 @pytest.mark.parametrize(
@@ -660,6 +730,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
 
     def readmit_summed(*args, **kwargs):
         assert kwargs["graph_yaml"] == graph
+        assert kwargs["bass_extension"] == {"low_boost_db": 4.0}
         assert scope != "drivers"
         return SimpleNamespace(allowed=True)
 
@@ -675,6 +746,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
         store=Store(), capture_session_id="same-pose", cam_factory=Cam,
         config_dir=str(tmp_path), topology=None, safety_profile={}, role_targets={},
         session_volume_db=-20, before_play=before_play, graph_yaml=lambda: graph,
+        bass_extension_for_spec=lambda spec: {"low_boost_db": 4.0},
     )
     spec = MeasureSpec(
         kind="baseline", graph_scope=scope, program_phase=phase,

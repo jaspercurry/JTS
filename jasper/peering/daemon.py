@@ -104,6 +104,12 @@ class PeeringDaemon:
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._start_attempted = False
+        # R18 (#4416): a failed multicast bind (#4391) is retried by the
+        # caller re-invoking start() on a supervisor tick. The Avahi advert
+        # is unaffected by that failure and its install already forks a
+        # `systemctl reload avahi-daemon` (via avahi.render_and_install), so
+        # it must render once per daemon lifetime, not once per retry.
+        self._advert_installed = False
 
     # ---------- public lifecycle ----------
 
@@ -135,13 +141,17 @@ class PeeringDaemon:
         # the template is missing; we'll still arbitrate). Off the loop:
         # it renders a file and shells out to `systemctl reload
         # avahi-daemon` (up to 4 s), and this loop is shared with
-        # jasper-control's supervisors.
-        await asyncio.to_thread(
-            avahi.render_and_install,
-            peer_id=self._cfg.peer_id,
-            room=self._cfg.room,
-            primary=self._cfg.primary,
-        )
+        # jasper-control's supervisors. Once per daemon lifetime — a
+        # multicast-bind retry (below) must not re-render/re-install an
+        # advert that hasn't changed.
+        if not self._advert_installed:
+            await asyncio.to_thread(
+                avahi.render_and_install,
+                peer_id=self._cfg.peer_id,
+                room=self._cfg.room,
+                primary=self._cfg.primary,
+            )
+            self._advert_installed = True
 
         # Multicast transport.
         self._transport = MulticastTransport()
@@ -158,13 +168,30 @@ class PeeringDaemon:
             self._transport = None
             raise
 
-        # UDS server for voice ↔ peering RPC.
-        self._uds_server = await uds.serve(
+        # UDS server for voice ↔ peering RPC. Run to completion under a
+        # shield even if THIS coroutine is cancelled mid-bind (e.g. peering
+        # stopping while a retry is in flight): otherwise a cancellation
+        # landing right as asyncio.start_unix_server finishes discards its
+        # result, self._uds_server is never assigned, and stop() can never
+        # close the socket it just bound. Mirrors
+        # jasper.active_speaker.restore_wait's shield-loop idiom.
+        uds_task = asyncio.ensure_future(uds.serve(
             path=PEERING_UDS_PATH,
             arbitrate=self._handle_arbitrate,
             notify_session_started=self._handle_session_started,
             notify_session_ended=self._handle_session_ended,
-        )
+        ))
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                self._uds_server = await asyncio.shield(uds_task)
+                break
+            except asyncio.CancelledError as exc:
+                if uds_task.cancelled():
+                    raise
+                cancellation = exc
+        if cancellation is not None:
+            raise cancellation
 
         self._running = True
         log_event(
@@ -216,6 +243,7 @@ class PeeringDaemon:
         # for the same reason as the install, and so a slow reload cannot
         # eat jasper-control's shutdown budget.
         await asyncio.to_thread(avahi.uninstall)
+        self._advert_installed = False
 
         # Resolve any in-flight decision as WIN — voice falls back to
         # solo mode rather than hanging.

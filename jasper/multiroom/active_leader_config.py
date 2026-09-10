@@ -161,7 +161,7 @@ async def precheck_active_leader(
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_camilla_graph,
+        classify_bass_extension_graph,
     )
     from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
     from jasper.output_topology import (
@@ -249,11 +249,11 @@ async def precheck_active_leader(
             f"(status={candidate.get('status')}, issues={codes}); commission "
             "this speaker as an active speaker before leading a bond",
         )
-    crossover_graph = classify_camilla_graph(
-        topology=topology,
-        text=Path(CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8"),
-        config_path=CROSSOVER_CONFIG_PATH,
-        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+    crossover_graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=Path(CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8"),
+        applied_baseline_state=candidate,
     )
     if (
         not crossover_graph.allowed
@@ -307,18 +307,11 @@ async def precheck_active_leader(
         # mypy cannot narrow a ``**`` splat to the two keys it carries.
         **bake_capture_kwargs,  # type: ignore[arg-type]
     )
-    # Program-bake graphs cannot carry the optional baseline bass block, so
-    # their pre-publication proof is a frozen in-memory composition check.  The
-    # late apply still performs the canonical live authority sandwich.
-    from jasper.active_speaker.runtime_contract import (
-        NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    )
-
-    bake_graph = classify_camilla_graph(
-        config_path=LEADER_BAKE_CONFIG_PATH,
-        topology=topology,
-        text=Path(LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8"),
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    bake_graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=Path(LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8"),
+        applied_baseline_state={},
     )
     if not bake_graph.allowed:
         raise ActiveLeaderError(

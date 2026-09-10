@@ -8,7 +8,7 @@
 `docs/HANDOFF-*.md` had grown to 56 files (~30,700 lines), plus one copy
 (`HANDOFF-correction-revision-plan.md`, 1,899 lines) already renamed into
 `docs/historical/` rather than deleted. Deep-audit findings recorded in
-`docs/DEEP-AUDIT-2026-08-25.md` named this corpus, and AGENTS.md's own prose
+`docs/audits/2026-08-25-deep-audit.md` named this corpus, and AGENTS.md's own prose
 restating it, as the single largest cuttable mass in the repo. Every one of
 these docs described a subsystem's state at the moment it was last hand-edited
 — never re-verified against the code it claimed to describe — and agents kept

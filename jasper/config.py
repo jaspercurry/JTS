@@ -670,22 +670,26 @@ class Config:
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
-            # Pre-response idle watchdog: closes the turn after this
-            # many seconds of pure model silence (no audio chunk
-            # received, server hasn't sent turn_complete, no
-            # intermediate events like tool dispatches — those reset
-            # the anchor via ``_note_activity()``). The chosen 20 s
-            # sits comfortably above the worst observed OpenAI
-            # Realtime first-chunk latency (~7.7 s in 2026-05-21
-            # production logs) while keeping recovery from a genuine
-            # API hang under half a minute.
+            # Pre-response idle watchdog: closes the turn after this many
+            # seconds with no PROGRESS on it — no audio chunk, no
+            # transcript delta either way, no tool call, no
+            # turn_complete. Server errors and session bookkeeping do not
+            # count, so this measures a stalled turn rather than a quiet
+            # socket. The chosen 20 s sits comfortably above the worst
+            # observed OpenAI Realtime first-chunk latency (~7.7 s in
+            # 2026-05-21 production logs) while keeping recovery from a
+            # genuine API hang under half a minute. A turn that keeps
+            # making progress but never answers is released instead by
+            # the cap below, measured from end-of-input.
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
-            # Last-resort output-side cap after a provider has begun
-            # speaking but never sends turn_complete. Normal speech
+            # Last-resort cap on one answer, applied twice: after a
+            # provider has begun speaking but never sends turn_complete,
+            # and — measured from end-of-input — on a turn that keeps
+            # making progress but never produces audio. Normal speech
             # pauses are much shorter, and providers should end via the
             # explicit server signal; this is only the recovery path for
-            # a wedged response stream that would otherwise leave music
-            # ducked and the wake loop in SESSION indefinitely.
+            # a wedged response that would otherwise leave music ducked
+            # and the wake loop in SESSION indefinitely.
             response_stall_timeout_sec=_env_int(
                 "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
                 120,

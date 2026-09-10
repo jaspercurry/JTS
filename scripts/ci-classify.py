@@ -70,7 +70,6 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 # directions -- an undiscoverable entry cannot arrive with no reason, and a
 # note cannot outlive the entry becoming discoverable.
 DOCS_HAND_REGISTERED_READERS = {
-    "tests/test_env_vars_codified.py": "rglob('*') over non-docs surfaces",
     "tests/test_run_wake_training_phase0.py": (
         "CWD-relative README hashed by an importlib-loaded script"
     ),
@@ -82,20 +81,17 @@ DOCS_HAND_REGISTERED_READERS = {
 # safe (a few seconds of bundle runtime); under-registering would let a prose
 # edit merge green past a contract it breaks.
 DOCS_TEST_FILES = (
-    "tests/test_bass_extension_limiter_protocol.py",
     "tests/test_build_and_ci_contracts.py",
     "tests/test_ci_classifier.py",
     "tests/test_crossover_v2_prescriber_status.py",
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
-    "tests/test_env_vars_codified.py",
     "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
     "tests/test_tuning_tool_menu_generator.py",
-    "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
     "tests/test_waveform_fusion_experiment.py",

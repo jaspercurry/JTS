@@ -49,6 +49,11 @@ from ..audio_validation import (
 )
 from ..log_event import log_event
 from ..logging_setup import configure_logging
+from ..service_units import (
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+    JASPER_VOICE_SERVICE,
+)
 
 logger = logging.getLogger("jasper.cli.audio_hw_validate")
 
@@ -76,12 +81,12 @@ def _collect_service_states() -> dict[str, str]:
     return {
         unit: service_state(unit)
         for unit in (
-            "jasper-outputd.service",
+            OUTPUTD_SERVICE,
             "jasper-camilla.service",
-            "jasper-fanin.service",
+            FANIN_SERVICE,
             "jasper-aec-bridge.service",
             "jasper-aec-init.service",
-            "jasper-voice.service",
+            JASPER_VOICE_SERVICE,
         )
     }
 

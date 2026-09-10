@@ -75,6 +75,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
 )
+from tests._log_events import event_fields, event_records
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -302,11 +303,12 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     assert records[0]["realized_db"] == pytest.approx(0.9)
     assert recovered.attempt_history == history
     assert recovered.last_attempt_decision is None
-    assert (
-        "event=correction.crossover_v2_model_error_identity_conflict"
-        in caplog.text
+    assert event_records(
+        caplog, "correction.crossover_v2_model_error_identity_conflict"
     )
-    assert "correction.crossover_v2_model_error_write_failed" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_model_error_write_failed"
+    )
 
     # The host persists the conductor snapshot verbatim. The household surface
     # must see no attempt sentence—not the hydrated previous candidate's 0.4 dB
@@ -351,7 +353,7 @@ def test_model_error_store_failure_warns_without_blocking_verify(caplog):
     assert verdict["accepted"] is True
     assert c.current_phase == PHASE_DONE
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-    assert "event=correction.crossover_v2_model_error_write_failed" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_model_error_write_failed")
 
 
 def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
@@ -406,13 +408,11 @@ def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
     # The forensics failure did not reverse the VERIFY the gate accepted.
     assert [verdict["accepted"] for verdict in verdicts] == [True, True]
     assert c.current_phase == PHASE_DONE
-    assert (
-        "event=correction.crossover_v2_model_error_write_unexpected"
-        in caplog.text
+    assert event_records(
+        caplog, "correction.crossover_v2_model_error_write_unexpected"
     )
-    assert (
-        "event=correction.crossover_v2_model_error_write_failed"
-        not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_model_error_write_failed"
     )
 
 
@@ -1028,14 +1028,11 @@ def test_predicted_ripple_disclosure_emits_its_own_event(caplog):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
-    assert "event=correction.crossover_v2_ripple_disclosed" in caplog.text
-    assert "predicted_ripple_db=15.244" in caplog.text
-    assert "threshold_db=15.0" in caplog.text
-    assert any(
-        record.levelno == logging.WARNING
-        and "crossover_v2_ripple_disclosed" in record.getMessage()
-        for record in caplog.records
-    )
+    fields = event_fields(caplog, "correction.crossover_v2_ripple_disclosed")
+    assert fields["predicted_ripple_db"] == "15.244"
+    assert fields["threshold_db"] == "15.0"
+    (record,) = event_records(caplog, "correction.crossover_v2_ripple_disclosed")
+    assert record.levelno == logging.WARNING
 
 
 def test_predicted_ripple_well_under_threshold_banks_nothing():

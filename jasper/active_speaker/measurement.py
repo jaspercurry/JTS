@@ -31,12 +31,12 @@ import hashlib
 import logging
 import math
 import os
-import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -77,10 +77,6 @@ SUMMED_OUTCOMES = {
 MAX_DRIVER_RECORDS = 48
 MAX_SUMMED_RECORDS = 24
 MAX_SUMMED_TEST_RECORDS = 24
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def measurement_state_path(path: str | Path | None = None) -> Path:

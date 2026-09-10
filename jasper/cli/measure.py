@@ -17,9 +17,11 @@ import json
 import logging
 import math
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
@@ -48,6 +50,8 @@ REFUSE_SPEC_INVALID = "measure_spec_invalid"
 REFUSE_BOX_NOT_READY = "measure_box_not_ready"
 #: No measurement microphone answered, so nothing would record the stimulus.
 REFUSE_NO_MIC = "measure_no_wired_mic"
+REFUSE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
+REFUSE_SPL_CEILINGS_MIXED = "measure_spl_ceilings_mixed"
 #: ``--level-matched`` on a box whose banked evidence names no trims. Refused
 #: at open, where an operator can still act on it.
 REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
@@ -327,6 +331,8 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             polarity=args.polarity,
             inverted_role=args.inverted_role,
             level_ladder_dbfs=tuple(args.level_dbfs),
+            sweep_band_hz=tuple(args.sweep_band_hz),
+            spl_ceiling_db_spl=args.spl_ceiling_db_spl,
             candidate_id=args.candidate_id.strip(),
             delayed_role=args.delayed_role,
             delay_us=args.delay_us,
@@ -344,7 +350,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
 #: entry may omit.
 _PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
                    "delayed_role", "delay_us", "level_matched", "level_dbfs",
-                   "candidate_id")
+                   "sweep_band_hz", "candidate_id")
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -412,7 +418,7 @@ def _typed_entry(index: int, entry: Mapping[str, Any]) -> dict[str, Any]:
         return MeasureFlagError(REFUSE_SPEC_INVALID, f"spec {index}: {what}")
 
     fields = dict(entry)
-    for key in ("positions", "pose_prompts", "level_ladder_dbfs"):
+    for key in ("positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"):
         if key in fields:
             if not isinstance(fields[key], list):
                 raise refuse(f"{key} must be a JSON array")
@@ -457,6 +463,7 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
         "vertical_deg": args.vertical_deg,
         "regime": args.regime,
         "graph_scope": args.graph_scope,
+        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
     }
     specs = []
     for index, entry in enumerate(document):
@@ -510,10 +517,12 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
 
 def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
-    config_dir: str, graph: Any,
+    config_dir: str, graph: Any, measurement_profile: Any = None,
 ) -> Any:
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
-    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+    from jasper.active_speaker.measurement_emit import measurement_bass_extension
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
@@ -529,7 +538,8 @@ def _bind_compose(
         peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
         if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
-        return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
+        summed = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
+        return summed.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
 
     async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
@@ -541,6 +551,17 @@ def _bind_compose(
         except MeasurementFaderDrift as exc:
             raise ProgramPlaybackError(str(exc)) from exc
 
+    def bass_for_spec(spec: Any) -> Mapping[str, Any]:
+        if measurement_profile is None:
+            return {}
+        candidate = (
+            find_banked_candidate(spec.candidate_id).candidate
+            if spec.graph_scope in CANDIDATE_SCOPES else None
+        )
+        return measurement_bass_extension(
+            measurement_profile, scope=spec.graph_scope, candidate=candidate,
+        )
+
     return bind_program_composer(
         program_for_spec=program_for_spec, store=store,
         capture_session_id=session_id, cam_factory=cam_factory,
@@ -549,6 +570,7 @@ def _bind_compose(
         session_volume_db=box.session_volume_db,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
+        bass_extension_for_spec=bass_for_spec,
     )
 
 
@@ -568,7 +590,9 @@ def _wired_setup_reference() -> Mapping[str, Any] | None:
     ))
 
 
-async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any]:
+async def _measure(
+    specs: tuple[Any, ...], box: BoxDeclaration, *, mic_serial: str | None = None,
+) -> dict[str, Any]:
     """Open the door once, measure every spec through it, close, and report.
 
     One session hold for the whole batch: the physical cost is the microphone
@@ -618,6 +642,26 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     except WiredMicMissing as exc:
         # The kernel owns the sentence; this door owns only its exit code.
         raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
+    ceilings = {spec.spl_ceiling_db_spl for spec in specs}
+    if len(ceilings) > 1:
+        raise BoxNotMeasurable(
+            REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
+        )
+    ceiling = next(iter(ceilings))
+    spl_monitor = None
+    if ceiling is not None:
+        from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
+        from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+        from jasper.audio_measurement.wired_capture import WiredSplMonitor
+
+        sensitivity = resolve_mic_sensitivity(mic_serial=mic_serial)
+        if sensitivity is None:
+            raise BoxNotMeasurable(
+                REFUSE_SPL_CALIBRATION_REQUIRED,
+                "an SPL ceiling requires a resolvable microphone sensitivity",
+            )
+        channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
+        spl_monitor = WiredSplMonitor(sensitivity, ceiling, channel)
 
     session_id = f"measure-{secrets.token_hex(4)}"
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)
@@ -629,15 +673,16 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     store: Any = None
     bundle_dir: Path | None = None
     try:
+        measurement_profile = MeasurementGraphProfile(
+            preset=box.preset,
+            topology=box.topology,
+            role_channels={"woofer": 0, "tweeter": 1},
+            playback_device=box.playback_device,
+            protection_sections_by_role=box.protection_sections_by_role,
+            applied_profile=load_applied_baseline_profile_state(),
+        )
         async with measurement_door(
-            profile=MeasurementGraphProfile(
-                preset=box.preset,
-                topology=box.topology,
-                role_channels={"woofer": 0, "tweeter": 1},
-                playback_device=box.playback_device,
-                protection_sections_by_role=box.protection_sections_by_role,
-                applied_profile=load_applied_baseline_profile_state(),
-            ),
+            profile=measurement_profile,
             measurement_volume_db=box.session_volume_db,
             camilla_factory=cam_factory,
             action="measuring",
@@ -659,6 +704,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,
+                spl_monitor=spl_monitor,
             )
             seams = bind_engine_seams(
                 session_graph=door.graph,
@@ -678,6 +724,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     cam_factory=cam_factory,
                     config_dir=config_dir,
                     graph=door.graph,
+                    measurement_profile=measurement_profile,
                 ),
                 capture_stimulus=capture,
             )
@@ -702,6 +749,8 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     finally:
         bundle_closed = bundle_dir is None or mark_state(bundle_dir, "closed") is not None
     report = _report(outcomes, store=store, session_id=session_id)
+    report["measurement_volume_db"] = box.session_volume_db
+    report["measurement_loudness_volume_db"] = door.measurement_loudness_volume_db
     if not bundle_closed:
         report["status"] = "incomplete"
         report["bundle_failure"] = REFUSE_STORE_LOST
@@ -726,6 +775,7 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
     from jasper.measurement_window import MeasurementWindowError
 
     reasons: dict[type, str] = {
+        StimulusCaptureStopped: "measurement_capture_stopped",
         SessionGraphError: REFUSE_GRAPH_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
@@ -757,6 +807,8 @@ async def _measured(
             reason = next(
                 code for cls, code in reasons.items() if isinstance(exc, cls)
             )
+            if isinstance(exc, StimulusCaptureStopped):
+                reason = exc.code
             # A cancellation is CONVERTED rather than re-raised: the operator
             # interrupting a long batch most needs the ids of what banked, and
             # the door's give-back still runs shielded on the way out.
@@ -886,7 +938,13 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except MeasureFlagError as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_UNREADABLE)
     try:
-        payload = asyncio.run(_measure(specs, read_box_declaration()))
+        box = read_box_declaration()
+        if args.volume_db is not None:
+            if not math.isfinite(args.volume_db) or not -100 <= args.volume_db <= 0:
+                raise BoxNotMeasurable("measurement_volume_invalid", "volume must be within -100..0 dB")
+            box = replace(box, session_volume_db=args.volume_db)
+        payload = asyncio.run(_measure(specs, box, mic_serial=args.mic_serial))
+
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:
@@ -947,6 +1005,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
+    parser.add_argument("--volume-db", type=float, help="temporary Main and bass reference level; defaults to the saved measurement level")
     parser.add_argument("--graph-scope", choices=[scope for scope in GRAPH_SCOPES if scope != "candidate_branches"], default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here
@@ -1003,6 +1062,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DBFS",
         help="one stimulus level per ladder rung, repeatable",
     )
+    parser.add_argument(
+        "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
+        help="summed-sweep bounds in Hz; protected graph admission still applies",
+    )
+    parser.add_argument("--spl-ceiling-db-spl", type=float, default=None)
+    parser.add_argument("--mic-serial", default=None)
     parser.add_argument(
         "--candidate-id",
         default="",

@@ -77,11 +77,11 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
     written = _write(payload, args.out, _view_out(args, banked))
     return answer(
-        args.command, out=written, overall_passed=report.overall_passed,
+        args.command, out=written, overall_within_target=report.overall_within_target,
         bands=[
             {
                 "band_hz": [band.f_lo_hz, band.f_hi_hz],
-                "passed": band.passed,
+                "within_target": band.within_target,
                 "gate_window_verdict": band.gate_window_verdict,
                 "sigma_growth_ratio": band.sigma_growth_ratio,
                 "n_valid_rungs": band.n_valid_rungs,

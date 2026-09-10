@@ -582,6 +582,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         GRADE_INCONCLUSIVE,
         GRADE_MARK_VERIFIED,
         GRADE_NOT_APPLIED,
+        GRADE_TUNING_TRIAL_MEASURED,
         GRADE_SPATIAL_ABSENT,
         GRADE_SPATIAL_FAILED,
         GRADE_SPATIAL_PASSED,
@@ -604,6 +605,8 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     )
     if state == GRADE_NOT_APPLIED:
         return "no applied measured crossover", ""
+    if state == GRADE_TUNING_TRIAL_MEASURED:
+        return "applied from its measured tuning trial; speaker VERIFY not run", ""
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
         # A non-empty word this build does not recognize is a later build's
@@ -720,7 +723,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
         entry = cloud[phase]
         if not isinstance(entry, dict):
             continue
-        overall = entry.get("overall_passed")
+        overall = entry.get("overall_within_target")
         spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
         if phase == PHASE_CLOUD_VERIFY and overall is False:
             any_fail = True

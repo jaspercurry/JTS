@@ -143,7 +143,7 @@ def test_every_gauge_figure_is_a_figure_from_the_report():
     assert gauge.rms_db == residual.rms_db
     assert gauge.n_bins == residual.n_bins
     assert gauge.n_excluded == residual.n_excluded
-    assert gauge.passed == report.overall_passed
+    assert gauge.passed == report.overall_within_target
     assert gauge.evaluable is True
 
 
@@ -187,13 +187,13 @@ def test_the_frame_is_named_even_when_no_band_could_be_graded():
         report,
         bands=tuple(
             replace(
-                b, evaluable=False, passed=None, max_deviation_db=None,
+                b, evaluable=False, within_target=None, max_deviation_db=None,
                 max_deviation_hz=None, rms_deviation_db=None,
                 n_excluded=b.n_bins,
             )
             for b in report.bands
         ),
-        overall_passed=False,
+        overall_within_target=False,
     )
     gauge = spec_flatness_gauge(blanked)
 
@@ -258,7 +258,7 @@ def test_an_exact_tie_between_bands_resolves_to_the_lowest_band():
 
 def test_the_gauge_is_unevaluable_never_a_fabricated_zero_when_all_bins_are_masked():
     """Every spec-band bin excluded ⇒ ``evaluable=False`` and ``None`` metrics.
-    ``passed`` is False there too (``FlatSpecReport.overall_passed``'s own
+    ``passed`` is False there too (``FlatSpecReport.overall_within_target``'s own
     "will not report a clean bill of health" rule), which is exactly why a
     renderer must read the two together — pinned so a future reader does not
     mistake this state for a failing speaker."""
@@ -286,13 +286,13 @@ def test_the_gauge_is_unevaluable_never_a_fabricated_zero_when_all_bins_are_mask
         report,
         bands=tuple(
             replace(
-                b, evaluable=False, passed=None, max_deviation_db=None,
+                b, evaluable=False, within_target=None, max_deviation_db=None,
                 max_deviation_hz=None, rms_deviation_db=None,
                 n_excluded=b.n_bins,
             )
             for b in report.bands
         ),
-        overall_passed=False,
+        overall_within_target=False,
     )
     blank_gauge = spec_flatness_gauge(blanked)
     assert blank_gauge.evaluable is False
@@ -375,7 +375,7 @@ def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
     and the pipeline reports ``available: False`` rather than a report with an
     unevaluable band. Which clamp emptied it is not the claim.
 
-    ``overall_passed`` still reads False, by ``FlatSpecReport``'s own "will
+    ``overall_within_target`` still reads False, by ``FlatSpecReport``'s own "will
     not report a clean bill of health for a spectrum it could not fully
     measure" rule, so nothing is flattered by the distinction."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
@@ -391,10 +391,10 @@ def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
     assert top["graded_hi_hz"] == pytest.approx(SPEC_BANDS[2][0])
     assert top["graded_lo_hz"] >= top["graded_hi_hz"]
     assert top["evaluable"] is False
-    assert top["passed"] is None  # never False
+    assert top["within_target"] is None  # never False
     assert top["n_bins"] == 0
     assert top["max_deviation_db"] is None
-    assert clamped["spec"]["overall_passed"] is False
+    assert clamped["spec"]["overall_within_target"] is False
     # The bands INSIDE the trusted range are graded normally.
     assert clamped["spec"]["bands"][1]["evaluable"] is True
     # ...and the report says on its face where grading stopped.
@@ -423,7 +423,7 @@ def test_a_floor_below_the_spec_edge_changes_no_graded_number():
     assert json.dumps(clamped["flatness"], sort_keys=True) == json.dumps(
         unclamped["flatness"], sort_keys=True
     )
-    for key in ("bands", "reference_db", "overall_passed", "excluded_intervals"):
+    for key in ("bands", "reference_db", "overall_within_target", "excluded_intervals"):
         assert json.dumps(clamped["spec"][key], sort_keys=True) == json.dumps(
             unclamped["spec"][key], sort_keys=True
         ), key
@@ -459,7 +459,7 @@ def test_the_cloud_report_publishes_its_seats_pooled_room_floor_and_grades_the_s
     assert declared["spec"]["entanglement_floor_source"] == _DECLARED
     assert undeclared["spec"]["entanglement_floor_hz"] is None
     assert undeclared["spec"]["entanglement_floor_source"] == _UNKNOWN
-    for key in ("bands", "reference_db", "overall_passed", "excluded_intervals"):
+    for key in ("bands", "reference_db", "overall_within_target", "excluded_intervals"):
         assert json.dumps(
             _without_room_marks(declared["spec"][key]), sort_keys=True
         ) == json.dumps(
@@ -651,7 +651,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
         "state": compact[PHASE_CLOUD_VERIFY]["flatness"],
         "envelope": envelope["cloud"][PHASE_CLOUD_VERIFY]["flatness"],
         "ledger_lines": envelope["expert_details"],
-        "state_overall_passed": compact[PHASE_CLOUD_VERIFY]["overall_passed"],
+        "state_overall_within_target": compact[PHASE_CLOUD_VERIFY]["overall_within_target"],
         "state_validity_floor_hz": compact[PHASE_CLOUD_VERIFY]["validity_floor_hz"],
         "state_spec_bands": compact[PHASE_CLOUD_VERIFY]["spec_bands"],
         "doctor_status": doctor.status,
@@ -688,8 +688,8 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert gauge["max_hz"] == worst["max_deviation_hz"]
     assert gauge["max_band_hz"] == [worst["f_lo_hz"], worst["f_hi_hz"]]
     assert gauge["tolerance_db"] == worst["tolerance_db"]
-    assert gauge["passed"] == spec["overall_passed"]
-    assert views["state_overall_passed"] == spec["overall_passed"]
+    assert gauge["passed"] == spec["overall_within_target"]
+    assert views["state_overall_within_target"] == spec["overall_within_target"]
 
     # SF-2: the clamp is separable from interference on the LIVE surface, not
     # only in the durable state — otherwise a reader seeing a large
@@ -701,8 +701,8 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert [b["max_deviation_db"] for b in views["state_spec_bands"]] == [
         b["max_deviation_db"] for b in spec["bands"]
     ]
-    assert [b["passed"] for b in views["state_spec_bands"]] == [
-        b["passed"] for b in spec["bands"]
+    assert [b["within_target"] for b in views["state_spec_bands"]] == [
+        b["within_target"] for b in spec["bands"]
     ]
 
     # And the household-facing line prints those digits, not a re-derivation.
@@ -716,7 +716,7 @@ def _assert_one_number_everywhere(views: dict) -> None:
     # doctor's prose — which used to be pinned digit-for-digit here).
     from jasper.cli.doctor import correction as doctor_correction
 
-    if spec["overall_passed"] is False:
+    if spec["overall_within_target"] is False:
         assert views["doctor_status"] == "warn"
         assert views["doctor_reason"] == doctor_correction.REASON_CLOUD_VERIFY_SPEC_FAILED
     else:
@@ -726,7 +726,7 @@ def _assert_one_number_everywhere(views: dict) -> None:
     # PR-7: the before/after chart's own inputs are the SAME report, not a
     # fourth derivation. reference_db is the corridor's center line;
     # spec_bands already carries tolerance_db (asserted above via
-    # max_deviation_db/passed) — this pins the reference alongside it.
+    # max_deviation_db/within_target) — this pins the reference alongside it.
     assert views["state_reference_db"] == spec["reference_db"]
     assert views["envelope_reference_db"] == spec["reference_db"]
     pipeline_freqs = views["pipeline_curve"]["freqs_hz"]
@@ -802,7 +802,7 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
     compact = compact_cloud_status(_durable_cloud_block(result))
     entry = compact[PHASE_CLOUD_VERIFY]
     assert entry["flatness"] is None
-    assert entry["overall_passed"] is None
+    assert entry["overall_within_target"] is None
     assert entry["excluded_interval_count"] is None
     # PR-7: same honesty rule for the corridor reference and the chart curve.
     assert entry["reference_db"] is None
@@ -982,8 +982,8 @@ def test_the_real_s0_positions_no_longer_collapse_a_gate():
     assert headline_shift == pytest.approx(+0.0243, abs=5e-4)
     assert headline_shift == pytest.approx(-reference_shift, abs=1e-9)
     # No verdict is bought by it — every band still fails on its own merits.
-    assert [b["passed"] for b in natural["spec"]["bands"]] == [False, False, False]
-    assert natural["spec"]["overall_passed"] is False
+    assert [b["within_target"] for b in natural["spec"]["bands"]] == [False, False, False]
+    assert natural["spec"]["overall_within_target"] is False
 
 
 @corpus.requires_s0_curves
@@ -1026,7 +1026,7 @@ def test_the_trusted_floor_clamp_costs_the_low_band(monkeypatch):
       the first number the ledger line prints;
     * the pooled RMS moves 5.7705 -> 2.7474 dB (-3.0232 dB);
     * and the 250 Hz-2 kHz band **VERDICT FLIPS**, -4.9174 dB (fail) ->
-      -0.3677 dB (pass), because ``passed`` is ``abs(max) <= tolerance``. The
+      -0.3677 dB (pass), because ``within_target`` is ``abs(max) <= tolerance``. The
       pre-clamp worst bin in that band now sits on the QUIET side of the new
       reference rather than the loud side (it read +4.2458 dB, too loud,
       before #1857 narrowed the frame) — a different bin becomes the argmax
@@ -1084,12 +1084,12 @@ def test_the_trusted_floor_clamp_costs_the_low_band(monkeypatch):
     low_after = clamped["spec"]["bands"][0]
     assert (low_before["f_lo_hz"], low_before["f_hi_hz"]) == (250.0, 2000.0)
     assert low_before["max_deviation_db"] == pytest.approx(-4.9174, abs=5e-4)
-    assert low_before["passed"] is False
+    assert low_before["within_target"] is False
     assert low_after["max_deviation_db"] == pytest.approx(-0.3677, abs=5e-4)
-    assert low_after["passed"] is True
+    assert low_after["within_target"] is True
     # Overall still fails — the other two bands fail on their own merits, so
     # the flip is visible per band rather than flattering the whole verdict.
-    assert clamped["spec"]["overall_passed"] is False
+    assert clamped["spec"]["overall_within_target"] is False
 
     # The interference accounting is untouched by a gate artifact.
     assert (

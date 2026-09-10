@@ -65,6 +65,7 @@ from .attempts_loop import (
     REASON_SITTING_UNRECORDED,
 )
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
+from .candidate_trials import tuning_trial_matches_candidate
 from .crossover_v2.journey import (
     CAPTURE_PHASES,
     PHASE_APPLYING,
@@ -691,14 +692,14 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
         hi = _finite(band.get("f_hi_hz"))
         deviation_db = _finite(band.get("max_deviation_db"))
         tolerance_db = _finite(band.get("tolerance_db"))
-        passed = band.get("passed")
+        within_target = band.get("within_target")
         if (
             lo is None or hi is None or deviation_db is None
-            or tolerance_db is None or not isinstance(passed, bool)
+            or tolerance_db is None or not isinstance(within_target, bool)
         ):
             continue
         margin_db = abs(deviation_db) - tolerance_db
-        compare = f"{margin_db:.1f} dB outside" if not passed else "within"
+        compare = f"{margin_db:.1f} dB outside" if not within_target else "within"
         parts.append(
             f"{lo:.0f}–{hi:.0f} Hz {deviation_db:+.2f} dB "
             f"({compare} the ±{tolerance_db:.1f} dB target)"
@@ -865,13 +866,13 @@ def _worst_failing_band(bands: Any) -> tuple[float, float, float] | None:
     """``(f_lo_hz, f_hi_hz, overshoot_db)`` for the band that misses the
     target by the most, or ``None``. Overshoot is how far past the band's
     own tolerance the deviation reaches, not the raw deviation. Reads only
-    bands marked ``passed is False`` — an ungraded band is not failing.
+    bands marked ``within_target is False`` — an ungraded band is not failing.
     """
     if not isinstance(bands, list):
         return None
     worst: tuple[float, float, float] | None = None
     for band in bands:
-        if not isinstance(band, Mapping) or band.get("passed") is not False:
+        if not isinstance(band, Mapping) or band.get("within_target") is not False:
             continue
         lo = _finite(band.get("f_lo_hz"))
         hi = _finite(band.get("f_hi_hz"))
@@ -904,7 +905,7 @@ def _review_verdict(prediction: Mapping[str, Any] | None, has_candidate: bool) -
     if not has_candidate:
         # No decision to present with nothing applyable behind it.
         detail = ""
-        if prediction is not None and prediction.get("overall_passed") is False:
+        if prediction is not None and prediction.get("overall_within_target") is False:
             failing = _worst_failing_band(prediction.get("spec_bands"))
             detail = (
                 " The correction it worked out would still have missed the "
@@ -924,14 +925,14 @@ def _review_verdict(prediction: Mapping[str, Any] | None, has_candidate: bool) -
             "there is nothing to judge this proposal by. Measure again, or "
             "leave things as they are."
         )
-    passed = prediction.get("overall_passed")
-    if passed is None:
+    within_target = prediction.get("overall_within_target")
+    if within_target is None:
         return (
             f"{opening} JTS could not check the result it expects against the "
             "target, so there is nothing to judge this proposal by. Measure "
             "again, or leave things as they are."
         )
-    if passed is False:
+    if within_target is False:
         failing = _worst_failing_band(prediction.get("spec_bands"))
         miss = (
             f"misses the target by {failing[2]:.1f} dB between "
@@ -1051,7 +1052,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     can_open_stage_2, preflight_message, preflight_action = _stage2_preflight(status)
     # D4: an ungradeable prediction DISABLES Apply. A GRADED MISS stays
     # enabled — presenting improved-but-failing is the point (D3.4).
-    gradeable = bool(prediction and prediction.get("overall_passed") is not None)
+    gradeable = bool(prediction and prediction.get("overall_within_target") is not None)
     # Stage-2 openability does NOT disable Apply: the apply transaction
     # re-runs the same predicate. The preflight stays a render-time
     # DISCLOSURE, early and loud (#1828).
@@ -1071,7 +1072,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "that is sorted."
             ),
         })
-    if prediction is not None and prediction.get("overall_passed") is False:
+    if prediction is not None and prediction.get("overall_within_target") is False:
         nudges.append({
             "code": "crossover_v2_prediction_out_of_spec",
             "severity": "warn",
@@ -1656,13 +1657,13 @@ def attempt_loop_verdict_sentence(status: Mapping[str, Any]) -> str:
 def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
     """The honest gauge-absent rendering for a CLOUD-VERIFY block that
     CLOSED but carries no usable flatness. Two states: the pipeline DID
-    run and carries no gauge (an older build; ``overall_passed`` is
+    run and carries no gauge (an older build; ``overall_within_target`` is
     ``None``), or it never became available (a combine/DSP-step failure).
     Neither quotes a number. A MISSING entry never reaches here (#1965) —
     :func:`_flatness_details_lines` routes that to
     :func:`_pre_apply_flatness_lines` first.
     """
-    if entry.get("overall_passed") is not None:
+    if entry.get("overall_within_target") is not None:
         return [
             "flatness not recorded for this measurement — it predates the "
             "spec gauge; re-measure to see it"
@@ -2607,10 +2608,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # "tuned" over a profile whose gauge had failed all three bands).
         # Only an explicit False speaks; ``None`` leaves the copy alone.
         # R19 (#2160): reads the PRODUCER's spatial grade, not the cloud
-        # entry's ``overall_passed`` (False for both a miss and a
+        # entry's ``overall_within_target`` (False for both a miss and a
         # never-graded spectrum). Literal grade words because
         # ``jasper.active_speaker`` never imports ``jasper.web``.
         grade = _mapping(v2.get("post_apply_grade"))
+        if str(grade.get("state") or "") == "tuning_trial_measured":
+            done_verdict = "Your measured tuning is applied."
         spatial = str(grade.get("spatial") or "")
         spec_passed = (
             True if spatial == "passed" else False if spatial == "failed" else None
@@ -2883,6 +2886,15 @@ def crossover_v2_phase(
     # implies graded" ladder for a stage 2 that ran and could not decide.
     if PHASE_VERIFY not in phases:
         if applied:
+            candidate = state.get("candidate") if isinstance(state, Mapping) else None
+            candidate_fingerprint = (
+                candidate.get("fingerprint")
+                if isinstance(candidate, Mapping) else None
+            )
+            if tuning_trial_matches_candidate(
+                (state or {}).get("tuning_trial"), candidate_fingerprint,
+            ):
+                return PHASE_DONE
             return PHASE_VERIFY
         # …and the measuring session's own TAIL is not the review interlude
         # either. Accepting the final cloud position marks every stage-1 phase
@@ -2939,10 +2951,13 @@ def _provenance_note(measured_this_session: bool | None) -> str:
 
 
 def compact_cloud_status(
-    cloud_state: Any, *, current_session_id: str | None = None,
+    cloud_state: Any,
+    *,
+    current_session_id: str | None = None,
+    tier: Any = None,
 ) -> dict[str, Any] | None:
     """PR-4's ``/state`` projection of the durable ``cloud`` block — compact:
-    per band, only ``passed``; the excluded-interval COUNT, not the
+    per band, only ``within_target``; the excluded-interval COUNT, not the
     intervals; the geometry verdict's two household-relevant bits.
 
     The full per-null τ/r/evidence numbers and the decimated curve live in
@@ -3016,7 +3031,7 @@ def compact_cloud_status(
     range outside every spec band produces no row at all. Copied verbatim, like
     ``flatness``. ``[]`` when the pipeline never became
     available — an empty LIST, not ``None``, is safe here because the entry it
-    sits in already reports ``overall_passed``/``excluded_interval_count`` as
+    sits in already reports ``overall_within_target``/``excluded_interval_count`` as
     ``None`` for that state, so an empty carve-out list cannot be read as "we
     looked and found nothing" without contradicting its own neighbours.
 
@@ -3046,13 +3061,45 @@ def compact_cloud_status(
     stamp existed (no ``session_id`` on the block) reads as unknown, not
     stale, so an upgrade does not manufacture a false "this is old" warning
     for data nobody ever mis-attributed.
+
+    ``positions_accepted``/``positions_required`` (#2100): the scoped first
+    step of the incomplete-stage-2 recovery fix. A household whose walk fails
+    partway through has always had this count in ``block["positions"]`` and
+    the durable ``tier`` — the gap was that nothing surfaced it, so recovery
+    looked like starting from zero rather than resuming a partial group.
+    Disclosure only: full invalidation across a new session is unchanged.
+    ``positions_required`` is ``None`` when the tier is missing or cannot be
+    resolved (a stale/unknown value) or for a phase this build's plan shape
+    does not size (``PHASE_LATERAL``) — never a fabricated count. A missing
+    tier is deliberately NOT resolved to Full here the way
+    :func:`~.crossover_v2.capture_plan.normalize_tier` resolves an absent
+    tier when starting a plan: this projection reports what the durable
+    state actually recorded, and a durable block written before tier
+    tracking existed does not let the household infer Full's counts.
     """
+    from .crossover_v2.capture_plan import PlanShapeError, resolve_plan_shape
+
+    plan_shape = None
+    if tier is not None:
+        try:
+            plan_shape = resolve_plan_shape(tier)
+        except PlanShapeError:
+            plan_shape = None
+    required_by_phase = (
+        {
+            PHASE_CLOUD_MEASURE: plan_shape.cloud_measure_positions,
+            PHASE_CLOUD_VERIFY: plan_shape.cloud_verify_positions,
+        }
+        if plan_shape is not None
+        else {}
+    )
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
     for phase, block in cloud_state.items():
         if not isinstance(block, Mapping):
             continue
+        positions = block.get("positions")
         geometry = block.get("geometry")
         geometry = geometry if isinstance(geometry, Mapping) else {}
         pipeline = block.get("pipeline")
@@ -3066,13 +3113,17 @@ def compact_cloud_status(
             "thin_evidence": bool(geometry.get("thin_evidence")),
             "geometry_guidance": _geometry_guidance_copy(geometry),
             "spec_bands": [],
-            "overall_passed": None,
+            "overall_within_target": None,
             "excluded_interval_count": None,
             "flatness": None,
             "reference_db": None,
             "validity_floor_hz": None,
             "carve_outs": [],
             "provenance_note": _provenance_note(measured_this_session),
+            "positions_accepted": (
+                len(positions) if isinstance(positions, list) else None
+            ),
+            "positions_required": required_by_phase.get(str(phase)),
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -3088,7 +3139,7 @@ def compact_cloud_status(
                     # a span this evaluation did not grade.
                     "graded_lo_hz": b.get("graded_lo_hz"),
                     "graded_hi_hz": b.get("graded_hi_hz"),
-                    "passed": b.get("passed"),
+                    "within_target": b.get("within_target"),
                     "max_deviation_db": b.get("max_deviation_db"),
                     # WHERE the worst bin sat. A dB with no frequency names
                     # no defect to fix.
@@ -3098,7 +3149,7 @@ def compact_cloud_status(
                 for b in bands
                 if isinstance(b, Mapping)
             ] if isinstance(bands, list) else []
-            entry["overall_passed"] = spec.get("overall_passed")
+            entry["overall_within_target"] = spec.get("overall_within_target")
             entry["reference_db"] = _finite(spec.get("reference_db"))
             merged = pipeline.get("merged_excluded_bands_hz")
             entry["excluded_interval_count"] = (
@@ -3267,7 +3318,7 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
        2); a pre-retirement state still carries it, and a consumer shows the
        verdict with no curve to draw.
 
-    So ``overall_passed`` is ``None`` — not ``False`` — whenever no report was
+    So ``overall_within_target`` is ``None`` — not ``False`` — whenever no report was
     stored, under the same never-fabricate-a-clean-reading rule
     :func:`compact_cloud_status` states at length. ``None`` here means
     "unknown", and a consumer must not read it as permission. ``False`` is the
@@ -3303,16 +3354,16 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
             {
                 "f_lo_hz": b.get("f_lo_hz"),
                 "f_hi_hz": b.get("f_hi_hz"),
-                "passed": b.get("passed"),
+                "within_target": b.get("within_target"),
                 "max_deviation_db": b.get("max_deviation_db"),
                 "tolerance_db": b.get("tolerance_db"),
             }
             for b in bands
             if isinstance(b, Mapping)
         ] if isinstance(bands, list) else [],
-        "overall_passed": (
-            spec.get("overall_passed")
-            if isinstance(spec.get("overall_passed"), bool)
+        "overall_within_target": (
+            spec.get("overall_within_target")
+            if isinstance(spec.get("overall_within_target"), bool)
             else None
         ),
         "reference_db": _finite(spec.get("reference_db")),

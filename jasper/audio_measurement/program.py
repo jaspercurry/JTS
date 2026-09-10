@@ -1085,7 +1085,27 @@ def build_verify_program(
             segments, cursor, at_sample=prelude_at, channels=1,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
+    program = _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
+    if sweep_band_hz is None:
+        return program
+    from .distortion import (  # lazy: harmonic analysis imports only for explicit sweep bands
+        preceding_silence_s, required_pre_guard_s, segment_sweep_meta,
+    )
+
+    sweep = program.segment("sweep_verify")
+    required_n = math.ceil(required_pre_guard_s(segment_sweep_meta(sweep)) * PROGRAM_SAMPLE_RATE_HZ)
+    quiet_n = round(preceding_silence_s(program, sweep) * PROGRAM_SAMPLE_RATE_HZ)
+    extra_n = max(0, required_n - quiet_n)
+    if not extra_n:
+        return program
+    sweep_index = segments.index(sweep)
+    gap = segments[sweep_index - 1]
+    segments[sweep_index - 1] = replace(gap, n_samples=gap.n_samples + extra_n)
+    segments[sweep_index:] = [
+        replace(segment, start_sample=segment.start_sample + extra_n)
+        for segment in segments[sweep_index:]
+    ]
+    return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor + extra_n)
 
 
 #: Why a null confirm could not be composed. ``reason`` is the contract a

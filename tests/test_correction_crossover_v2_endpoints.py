@@ -76,6 +76,7 @@ from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
+from tests._log_events import event_fields, event_records
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -1154,8 +1155,8 @@ def test_building_the_blocks_never_costs_the_capture(
 
     assert set(blocks) == survives
     assert all(isinstance(value, dict) for value in blocks.values())
-    assert caplog.text.count(
-        "event=correction.crossover_v2_capture_evidence_block_failed"
+    assert len(
+        event_records(caplog, "correction.crossover_v2_capture_evidence_block_failed")
     ) == lost
 
 
@@ -1311,14 +1312,14 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         "available": True,
         "geometry": {"locked": True, "reason": "geometry_locked"},
         "null_registry": {"classification": "position_invariant"},
-        "spec": {"overall_passed": False},
+        "spec": {"overall_within_target": False},
         "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-1.0, -2.0]},
     }
     verify_result = {
         "available": True,
         "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
         "null_registry": {"classification": "insufficient_evidence"},
-        "spec": {"overall_passed": True},
+        "spec": {"overall_within_target": True},
         "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-0.5, -0.6]},
     }
     publish_cloud(PHASE_CLOUD_MEASURE, measure_result)
@@ -1359,11 +1360,11 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         (artifacts_dir / f"{PHASE_CLOUD_VERIFY}.json").read_text()
     )
     assert verify_on_disk["geometry"]["locked"] is False
-    assert verify_on_disk["spec"]["overall_passed"] is True
+    assert verify_on_disk["spec"]["overall_within_target"] is True
 
 
 def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
-    """PR-4's ``/state`` surface: per band, only ``passed``; the
+    """PR-4's ``/state`` surface: per band, only ``within_target``; the
     excluded-interval COUNT, not the intervals; the geometry verdict's two
     household-relevant bits. The full per-null τ/r/evidence numbers stay in
     the durable state's own ``pipeline`` sub-key (not re-derived here) and
@@ -1379,20 +1380,20 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
                     "available": True,
                     "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
                     "spec": {
-                        "overall_passed": False,
+                        "overall_within_target": False,
                         "reference_db": -27.27,
                         "bands": [
-                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
                              "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
                              "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
                              "tolerance_db": 1.5},
-                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
                              "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
                              "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
                              "tolerance_db": 2.0},
                             # The top band graded past its NOMINAL 16 kHz edge:
                             # this session's microphone is trusted to 20 kHz.
-                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
                              "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
                              "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
                              "tolerance_db": 2.5},
@@ -1431,7 +1432,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
         "positions. Spreading the microphone further apart next time may "
         "help JTS tell the speaker's own sound apart from the room's."
     )
-    assert measure["overall_passed"] is False
+    assert measure["overall_within_target"] is False
     assert measure["excluded_interval_count"] == 2
     # Per-band ``max_deviation_db``/``tolerance_db`` ride along
     # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
@@ -1443,15 +1444,15 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # band's graded edge no longer equals its nominal one -- a row printing
     # only ``f_hi_hz`` here would say 16 kHz about a band graded to 20.
     assert measure["spec_bands"] == [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
          "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
          "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
          "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
          "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
          "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
          "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
          "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
          "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
          "tolerance_db": 2.5},
@@ -1473,7 +1474,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # a fabricated-clean claim for a pipeline that never ran.
     verify = cloud[PHASE_CLOUD_VERIFY]
     assert verify["geometry_locked"] is False
-    assert verify["overall_passed"] is None
+    assert verify["overall_within_target"] is None
     assert verify["excluded_interval_count"] is None
     assert verify["spec_bands"] == []
     assert verify["geometry_guidance"] == ""
@@ -1507,7 +1508,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
                     "available": True,
                     "merged_excluded_bands_hz": [],
                     "spec": {
-                        "overall_passed": True,
+                        "overall_within_target": True,
                         "reference_db": 10 ** 400,
                         "bands": [],
                     },
@@ -1518,7 +1519,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
 
     measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["reference_db"] is None
-    assert measure["overall_passed"] is True
+    assert measure["overall_within_target"] is True
 
 
 def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():
@@ -1550,7 +1551,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
     measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["geometry_locked"] is True
     assert measure["excluded_interval_count"] is None
-    assert measure["overall_passed"] is None
+    assert measure["overall_within_target"] is None
     assert measure["spec_bands"] == []
     assert measure["geometry_guidance"] == (
         "The measured echo pattern did not change between microphone "
@@ -1576,7 +1577,7 @@ def test_cloud_summary_stamps_the_producing_session_id():
         group_geometry=lambda phase: {"locked": True, "reason": "geometry_locked"},
         group_position_takes=lambda phase: [],
         group_cloud_result=lambda phase: {
-            "available": True, "spec": {"overall_passed": True},
+            "available": True, "spec": {"overall_within_target": True},
         },
     )
     summary = v2host._cloud_summary(fake)
@@ -1592,7 +1593,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     or there is no stamp at all (a durable state written before this marker
     existed — unknown, not stale, so an upgrade cannot manufacture a false
     warning for data nobody ever mis-attributed)."""
-    pipeline = {"available": True, "spec": {"overall_passed": True, "bands": []}}
+    pipeline = {"available": True, "spec": {"overall_within_target": True, "bands": []}}
     stamped_state = {
         PHASE_CLOUD_VERIFY: {
             "geometry": {"locked": False},
@@ -1669,8 +1670,8 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
                 "geometry_guidance": "Spread the mic further.",
                 "merged_excluded_bands_hz": [[8000.0, 9000.0]],
                 "spec": {
-                    "overall_passed": False,
-                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False}],
+                    "overall_within_target": False,
+                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False}],
                 },
             },
         },
@@ -1726,7 +1727,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     compact = v2status.crossover_v2_status_block()["cloud"]
     assert compact is not None
     assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-    assert compact[PHASE_CLOUD_MEASURE]["overall_passed"] is False
+    assert compact[PHASE_CLOUD_MEASURE]["overall_within_target"] is False
 
     # Surface 3: the envelope.
     monkeypatch.setattr(
@@ -1779,7 +1780,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
                 "positions": [
                     {"position_id": "cloud_measure_09", "index": 9, "attempt": 9}
                 ],
-                "pipeline": {"available": True, "spec": {"overall_passed": False}},
+                "pipeline": {"available": True, "spec": {"overall_within_target": False}},
             },
         },
     })
@@ -2323,6 +2324,98 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
+def _tuning_trial_state(*, reference=None, scope="room_candidate"):
+    fingerprint = "room-candidate-fingerprint"
+    return {
+        "session_id": "cap_room",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": fingerprint},
+        "applied": True,
+        "tuning_trial": reference if reference is not None else {
+            "candidate_fingerprint": fingerprint,
+            "graph_scope": scope,
+            "graph_fingerprint": "0123456789abcdef",
+            "record_path": "/bank/position-0001.json",
+        },
+    }
+
+
+@pytest.mark.parametrize("scope, receipt_key", [
+    ("room_candidate", "tuning_trial"), ("bass_candidate", "tuning_trial"),
+    ("room_candidate", "room_trial"),
+])
+def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatch, scope, receipt_key):
+    state = _tuning_trial_state(scope=scope)
+    state[receipt_key] = state.pop("tuning_trial")
+    v2host.save_v2_state(state)
+    assert "room_trial" not in v2host.load_v2_state()
+    monkeypatch.setattr(v2host, "_applied_graph_boosts", lambda: True)
+
+    block = v2status.crossover_v2_status_block()
+    assert block["phase"] == "done"
+    assert block["post_apply_grade"] == {
+        "state": v2host.GRADE_TUNING_TRIAL_MEASURED,
+        "graded": True,
+        "verify_outcome": None,
+        "post_apply_spec_passed": None,
+        "scope": v2host.GRADE_SCOPE_TUNING_TRIAL,
+        "spatial": v2host.GRADE_SPATIAL_ABSENT,
+        "spatial_worst_db": None,
+        "spatial_worst_hz": None,
+        "complete": True,
+        "improvement_db": None,
+        "tracking_passed": None,
+        "absolute_passed": None,
+        "absolute_miss_db": None,
+        "absolute_worst_hz": None,
+        "candidate_fingerprint": "room-candidate-fingerprint",
+    }
+    envelope = v2projection.build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert envelope["verdict_text"] == "Your measured tuning is applied."
+
+    with pytest.raises(v2host.CrossoverV2Refused):
+        v2host.prepare_v2_session(
+            {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
+        )
+
+
+@pytest.mark.parametrize("scope", ["room_candidate", "bass_candidate"])
+def test_tuning_review_does_not_warn_about_the_unused_speaker_verify_stage(monkeypatch, scope):
+    status = {"crossover_v2": {
+        "phase": "review",
+        "candidate": {"fingerprint": "room", "trial_scope": scope},
+    }}
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context",
+        lambda _status: pytest.fail("Room review checked speaker VERIFY"),
+    )
+
+    v2host.attach_stage2_preflight(status)
+
+    assert status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong", "stale"])
+def test_an_invalid_tuning_trial_proof_does_not_close_the_apply(fault):
+    state = _tuning_trial_state()
+    if fault == "missing":
+        state.pop("tuning_trial")
+    elif fault == "wrong":
+        state["tuning_trial"]["graph_scope"] = "candidate"
+    else:
+        state["tuning_trial"]["candidate_fingerprint"] = "older-candidate"
+    v2host.save_v2_state(state)
+
+    block = v2status.crossover_v2_status_block()
+    assert block["phase"] == PHASE_VERIFY
+    assert block["post_apply_grade"]["state"] == v2host.GRADE_UNVERIFIED
+
+
 def test_a_session_that_verified_still_resolves_to_done():
     """The review branch keys on a session that never intended to VERIFY, so
     every shape that DID keeps its shipped terminal — a full pre-cloud session
@@ -2439,7 +2532,7 @@ def test_a_refused_preflight_carries_the_predicates_own_sentence(caplog):
     assert preflight["message"] == (
         "protected speaker setup is not ready; finish it before measuring"
     )
-    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_stage2_preflight_refused")
 
 
 def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
@@ -2490,7 +2583,7 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     preflight = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]
     assert preflight["ok"] is False
     assert "could not check" in preflight["message"]
-    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_stage2_preflight_refused")
 
 
 def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
@@ -2677,7 +2770,7 @@ def test_a_resolvable_context_renders_a_quiet_review_screen():
             candidate={"fingerprint": "fp-1", "trims_db": {"woofer": -2.0}},
             prediction={
                 "curve": {"freqs_hz": [100.0], "magnitude_db": [80.0]},
-                "spec_bands": [], "overall_passed": True, "reference_db": 80.0,
+                "spec_bands": [], "overall_within_target": True, "reference_db": 80.0,
             },
         )
         v2host.attach_stage2_preflight(status)
@@ -3017,11 +3110,16 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     text reaching the household: the refusal now carries the classifier's code
     and the journal carries the constraint. Both still separate it from the
     volume-recovery gate below it, which is uncoded and says "recover".
+
+    #2059 (owner ruling 2026-08-13): an unknown tier is a malformed request,
+    not a level ceiling — it now carries its own code, distinct from
+    ``program_unplayable``, rather than the generic "re-check the driver
+    details" copy.
     """
     import logging
 
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_PROGRAM_UNPLAYABLE,
+        REASON_PROGRAM_PLAN_SHAPE_INVALID,
     )
 
     class _Ready:
@@ -3033,7 +3131,7 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
         v2host.prepare_v2_session(
             {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
         )
-    assert excinfo.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert excinfo.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
     assert "recover" not in str(excinfo.value)
     assert any(
         "unknown commission tier" in r.getMessage() and "turbo" in r.getMessage()
@@ -3178,12 +3276,12 @@ def test_the_prediction_reaches_the_status_block_with_its_verdict():
 
     prediction = v2status.crossover_v2_status_block()["prediction"]
     stored = conductor.measure_predicted_spec_report
-    assert prediction["overall_passed"] == stored["overall_passed"]
+    assert prediction["overall_within_target"] == stored["overall_within_target"]
     assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
     # The per-band vocabulary matches the compact cloud block's, key for key,
     # so the review screen can draw both curves in one tolerance corridor.
     assert [set(b) for b in prediction["spec_bands"]] == [
-        {"f_lo_hz", "f_hi_hz", "passed", "max_deviation_db", "tolerance_db"}
+        {"f_lo_hz", "f_hi_hz", "within_target", "max_deviation_db", "tolerance_db"}
     ] * len(stored["bands"])
     assert prediction["curve"]["freqs_hz"]
 
@@ -3370,7 +3468,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
 
     Three absences, three honest shapes: no priors at all ⇒ no block; a curve
     with no stored report (a state written before D4, or a prediction the
-    evaluator refused) ⇒ the curve with ``overall_passed`` **None** and no
+    evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
     bands — never ``False``, which would read as a measured failure, and never
     ``True``, which the compact-cloud rule already forbids fabricating."""
     v2host.save_v2_state({"session_id": "cap_x", "verify_priors": None})
@@ -3391,7 +3489,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     })
     prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
-    assert prediction["overall_passed"] is None
+    assert prediction["overall_within_target"] is None
     assert prediction["spec_bands"] == []
     assert prediction["reference_db"] is None
 
@@ -3410,7 +3508,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     any later refusal between the stash and ``commit_intervention_proposal``
     reproduces the shape.
 
-    The rendering is what must not regress. ``overall_passed`` is a REAL
+    The rendering is what must not regress. ``overall_within_target`` is a REAL
     ``False``, not the ``None`` that means unknown, and there is no curve to
     draw beside it — the state a review screen is most likely to get wrong.
 
@@ -3432,7 +3530,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     # The pre-burn-down pairing, stated directly: item 2 graded the prediction
     # and stashed the report, then refused before any curve was committed.
     conductor._measure_predicted_spec_report = {
-        "overall_passed": False,
+        "overall_within_target": False,
         "reference_db": 0.0,
         "bands": [{
             "f_lo_hz": 200.0, "f_hi_hz": 2000.0, "tolerance_db": 3.0,
@@ -3463,7 +3561,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"] is None
     # A graded miss, NOT an ungradeable unknown.
-    assert prediction["overall_passed"] is False
+    assert prediction["overall_within_target"] is False
     assert prediction["spec_bands"]
     assert prediction["reference_db"] is not None
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -3472,7 +3570,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     # No outcome, and therefore no classification line: the round is graded as
     # not-applied, and there is nothing left that claims to know what it meant.
     assert "outcome" not in grade
-    assert "event=correction.crossover_v2_result_classified" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_result_classified")
 
 
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
@@ -3695,7 +3793,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
                 "geometry": {"locked": False},
                 "pipeline": {
                     "available": True,
-                    "spec": {"overall_passed": False, "bands": []},
+                    "spec": {"overall_within_target": False, "bands": []},
                     "merged_excluded_bands_hz": [],
                 },
                 "session_id": "cap_graded_cloud",
@@ -3763,7 +3861,7 @@ def _honest_result_state(
             },
         },
         "verify_priors": {"predicted_spec": {
-            "overall_passed": False, "bands": [],
+            "overall_within_target": False, "bands": [],
             "comparison": {
                 "reason": (
                     "improved" if improvement >= 0.5
@@ -3863,7 +3961,7 @@ def _no_sweep_state(*, fc_selection=None):
             },
         },
         "verify_priors": {"predicted_spec": {
-            "overall_passed": False, "bands": [],
+            "overall_within_target": False, "bands": [],
             "comparison": {
                 "reason": "improved", "baseline_rms_db": 2.0,
                 "selected_rms_db": 1.2, "improvement_db": 0.8, "required_db": 0.5,
@@ -4015,16 +4113,12 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
         v2host.persist_conductor_state(conductor, failure_code=None)
         v2host.persist_conductor_state(conductor, failure_code=None)
         v2status.crossover_v2_status_block()
-    lines = [
-        record.message for record in caplog.records
-        if "event=correction.crossover_v2_result_classified" in record.message
-    ]
-    assert len(lines) == 1
-    assert "outcome=verified_best_evaluated" in lines[0]
-    assert "absolute_passed=false" in lines[0]
-    assert "absolute_miss_db=4.3139" in lines[0]
-    assert "absolute_worst_hz=1590.4083" in lines[0]
-    assert "candidate_fingerprint=fp-p04" in lines[0]
+    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
+    assert fields["outcome"] == "verified_best_evaluated"
+    assert fields["absolute_passed"] == "false"
+    assert fields["absolute_miss_db"] == "4.3139"
+    assert fields["absolute_worst_hz"] == "1590.4083"
+    assert fields["candidate_fingerprint"] == "fp-p04"
 
 
 def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplog):
@@ -4039,7 +4133,8 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     )
     with caplog.at_level(logging.INFO, logger=v2host.__name__):
         v2host.persist_conductor_state(conductor, failure_code=None)
-    assert "outcome=inconclusive" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
+    assert fields["outcome"] == "inconclusive"
 
 
 _NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
@@ -4049,7 +4144,7 @@ def _closed_cloud_group(*, passed, flatness=_NO_GAUGE):
     """A closed post-apply group in DURABLE shape, as the conductor writes it."""
     pipeline = {
         "available": True,
-        "spec": {"overall_passed": passed, "bands": []},
+        "spec": {"overall_within_target": passed, "bands": []},
         # Four excluded intervals — the jts3 2026-08-07 shape.
         "merged_excluded_bands_hz": [
             [1400.0, 1900.0], [3000.0, 3200.0], [5000.0, 5400.0], [9000.0, 9600.0],
@@ -4076,7 +4171,7 @@ _GRADED_AND_FAILED_FLATNESS = {
 def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     """#2160 — the jts3 2026-08-07 shape, reproduced.
 
-    ``overall_passed=False`` reaches ``GRADE_GRADED`` because a
+    ``overall_within_target=False`` reaches ``GRADE_GRADED`` because a
     graded-and-failed group IS graded, and every consuming surface read that
     state name as a clean result: doctor printed ``applied and graded
     (state=graded, verify=pass)`` beside a cloud line reading ``spec=fail
@@ -4163,7 +4258,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             id="an-ungradeable-group-is-not-a-failure",
         ),
         # Unmeasurable is claimed only on POSITIVE evidence: a state written
-        # before the gauge shipped carries a real ``overall_passed=False`` and
+        # before the gauge shipped carries a real ``overall_within_target=False`` and
         # no ``flatness``, and downgrading that on the ABSENCE of an instrument
         # is the fabricated reading pointed the other way.
         pytest.param(
@@ -4523,10 +4618,10 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
     assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
     # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
     # actually held at resolve time — here nothing at all.
-    assert "setup_mode=absent" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert fields["setup_mode"] == "absent"
 
 
 # --- mic_tier threading (#1668 PR-C) --------------------------------------
@@ -4699,9 +4794,9 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
             MeasurementGeometry(),
             phase="verify",
         )
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
-    assert "setup_mode=stored" in caplog.text
-    assert "setup_calibration_id=cal-stale" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert fields["setup_mode"] == "stored"
+    assert fields["setup_calibration_id"] == "cal-stale"
     # Redaction: the serial never reaches the journal.
     assert "SECRET-810" not in caplog.text
 
@@ -4886,7 +4981,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
         "applied": True, "calibration_id": record.calibration_id,
         "curve_fingerprint": json_fingerprint(record.curve.to_dict()),
     }
-    assert "crossover_v2_uncalibrated_capture" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
 
 
 def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
@@ -4942,8 +5037,8 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     assert out == "analysis"
     assert seen["calibration"] is None  # never mis-applied
     assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
-    assert "calibration_device_identity_mismatch" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert event_records(caplog, "correction.calibration_device_identity_mismatch")
 
     # The household record was never re-persisted against the wrong device.
     from jasper.audio_measurement.household_mic import (
@@ -5984,6 +6079,147 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
     assert state["applied"] is True
 
 
+@pytest.mark.parametrize("program", ["room", "bass", "bass_room"])
+def test_tuning_apply_persists_the_exact_compiled_trial_without_speaker_preflight(
+    monkeypatch, tmp_path, program,
+):
+    from jasper.active_speaker import candidate_trials
+    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    cam = _FakeApplyCam()
+    apply_kwargs = dict(
+        design_draft=load_design_draft(topology=_topology),
+        crossover_preview=load_crossover_preview(),
+        measurements=load_measurement_state(_topology),
+        tuning_owner="automatic", load_config=cam.set_config_file_path,
+    )
+    first = _bg_run_async(baseline_profile_mod.apply_baseline_profile(
+        _topology, **apply_kwargs, measured_candidate=base,
+    ))
+    assert first["status"] == "applied", first
+    if program == "bass_room":
+        base = replace(base, room_correction=_room_correction())
+        room = _bg_run_async(baseline_profile_mod.apply_baseline_profile(
+            _topology, **apply_kwargs, measured_candidate=base,
+        ))
+        assert room["status"] == "applied", room
+    candidate = replace(
+        base, analysis={**base.analysis, "measurement_status": "unmeasured"},
+        room_correction=_room_correction() if program != "bass" else {},
+        bass_extension=BASS_EXTENSION if program != "room" else {},
+    )
+    scope = "room_candidate" if program == "room" else "bass_candidate"
+    reviewed = build_baseline_profile_candidate(
+        _topology,
+        design_draft=load_design_draft(topology=_topology),
+        crossover_preview=load_crossover_preview(),
+        measurements=load_measurement_state(_topology),
+        write=False,
+        compile_config=True,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    graph_fingerprint = reviewed["config"]["sha256"][:16]
+    proof = {
+        "candidate_id": candidate.fingerprint,
+        "graph_scope": scope,
+        "graph_fingerprint": graph_fingerprint,
+        "record_path": str(tmp_path / "bank" / "position-0001.json"),
+    }
+    seen = {}
+
+    def require_trial(_candidate, *, expected_graph_fingerprint=None):
+        seen["trial_graph"] = expected_graph_fingerprint
+        return proof
+
+    monkeypatch.setattr(candidate_trials, "require_candidate_trial", require_trial)
+
+    monkeypatch.setattr(
+        v2host, "_assert_stage_2_can_open",
+        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_room_apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, lambda: cam, status={},
+    )
+
+    assert payload["status"] == "applied"
+    assert seen["trial_graph"] == graph_fingerprint
+    assert payload["profile"]["config"]["sha256"] == reviewed["config"]["sha256"]
+    snapshot = payload["profile"]["recomposition_snapshot"]
+    assert snapshot.get("room_correction", {}) == candidate.room_correction
+    assert snapshot.get("bass_extension", {}) == candidate.bass_extension
+    assert v2host.load_v2_state()["tuning_trial"] == {
+        "candidate_fingerprint": candidate.fingerprint,
+        "graph_scope": scope,
+        "graph_fingerprint": graph_fingerprint,
+        "record_path": proof["record_path"],
+    }
+
+
+def test_room_apply_refuses_a_trial_for_a_different_compiled_graph(
+    monkeypatch, tmp_path,
+):
+    from jasper.active_speaker import candidate_trials
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    candidate = replace(
+        base,
+        analysis={**base.analysis, "measurement_status": "unmeasured"},
+        room_correction=_room_correction(),
+    )
+    def require_wrong_trial(_candidate, *, expected_graph_fingerprint=None):
+        raise candidate_trials.CandidateBankRefusal(
+            "candidate_trial_required", "no matching graph",
+        )
+
+    monkeypatch.setattr(
+        candidate_trials, "require_candidate_trial", require_wrong_trial,
+    )
+    monkeypatch.setattr(
+        v2host, "_assert_stage_2_can_open",
+        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_wrong_room_graph",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    cam = _FakeApplyCam()
+
+    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+        v2host.handle_v2_apply(
+            {"expected_candidate_fingerprint": candidate.fingerprint,
+             "candidate": candidate.to_dict()},
+            _bg_run_async, lambda: cam, status={},
+        )
+
+    assert refusal.value.code == "candidate_trial_required"
+    assert cam.path is None
+    assert v2host.load_v2_state()["applied"] is False
+
+
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
     """#2292 scope 2: accepting an alternative Fc fsyncs FIVE writes at the
     accept/apply seam -- the Sound declaration (apply_measured_crossover_geometry),
@@ -6389,8 +6625,8 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     assert "raise the crossover to at least" in str(excinfo.value)
     # The machine-readable half. The sentence above may be reworded; this slug
     # is what an operator greps a hearing-safety refusal out of the journal by.
-    assert "event=correction.crossover_v2_apply_refused" in caplog.text
-    assert "reason=crossover_below_declared_protection_floor" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_apply_refused")
+    assert fields["reason"] == "crossover_below_declared_protection_floor"
 
     draft = load_design_draft()
     assert draft["manual_settings"]["crossover_candidates"][0][
@@ -7372,8 +7608,8 @@ def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
     )
     with caplog.at_level(logging.WARNING):
         assert v2host._applied_profile_now() is None
-    assert "event=correction.crossover_v2_applied_profile_displaced" in caplog.text
-    assert "surface=commanded_axis" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_applied_profile_displaced")
+    assert fields["surface"] == "commanded_axis"
 
 
 def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
@@ -8003,16 +8239,12 @@ def test_a_corrupted_bank_refuses_the_automatic_way_back_loudly(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         assert rollback("realized_shape_differs_from_commanded") is False
 
-    refused_lines = [
-        record.getMessage() for record in caplog.records
-        if record.getMessage().startswith(
-            "event=correction.crossover_v2_delta_probe_restore_refused "
-        )
-    ]
-    assert len(refused_lines) == 1, refused_lines
+    fields = event_fields(
+        caplog, "correction.crossover_v2_delta_probe_restore_refused"
+    )
     # The fingerprint it aimed at rides the line, so a support read can tell
     # WHICH candidate could not come back.
-    assert "candidate_fingerprint=" in refused_lines[0]
+    assert "candidate_fingerprint" in fields
     assert (v2host.load_v2_state() or {})["applied"] is True
 
 
@@ -8688,7 +8920,9 @@ def test_a_pre_envelope_alignment_record_round_trips_through_the_prior(caplog):
     # Tolerated, not merely swallowed: no "unreadable" WARNING for the legacy
     # shape, which is what separates "read as absent" from "read as this
     # build's own kind and version 1."
-    assert "alignment_prescription_unreadable" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_alignment_prescription_unreadable"
+    )
 
 
 def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
@@ -8720,7 +8954,9 @@ def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
     assert rehydrated is not None
     assert rehydrated.fc_hz == 2400.0
     assert rehydrated.order == 4
-    assert "crossover_v2_topology_prescription_unreadable" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_topology_prescription_unreadable"
+    )
 
 
 def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(

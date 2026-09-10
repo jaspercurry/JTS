@@ -257,12 +257,12 @@ def test_tuning_layers_exclude_saved_household_processing(tuning_profile, tmp_pa
         tuning_profile.topology, applied_profile=source,
         preference_filters=build_sound_filter_slots(load_profile(preference_path)),
         room_peqs=[PeqFilter(freq=80.0, q=2.0, gain=3.0)],
-        output_trim_db=-2.0, bass_extension_profile=None,
+        output_trim_db=-2.0, bass_extension={},
     )
     assert household and not issues
     graph = yaml.safe_load(compile_tuning_graph(tuning_profile, scope=scope))
     clean, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=source, bass_extension_profile=None,
+        tuning_profile.topology, applied_profile=source, bass_extension={},
         drop_measured_correction=scope == "base",
     )
     assert not issues and graph == yaml.safe_load(clean)
@@ -353,7 +353,7 @@ def test_the_room_candidate_scope_always_names_its_candidate():
     """The new scope joins the candidate scopes, which never stand alone."""
 
     assert "room_candidate" in GRAPH_SCOPES
-    assert CANDIDATE_SCOPES == frozenset({"candidate", "room_candidate", "candidate_branches"})
+    assert {"room_candidate", "bass_candidate"} <= CANDIDATE_SCOPES
     with pytest.raises(ValueError):
         MeasureSpec(kind="baseline", graph_scope="room_candidate")
     assert MeasureSpec(
@@ -460,3 +460,61 @@ def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning
         assert source["channel"] == tuning_profile.role_channels[output.driver_role]
         assert source["gain"] == 0
         assert not source["inverted"]
+
+
+BASS_EXTENSION = {
+    "low_boost_db": 4.0,
+    "reference_level_db": -10.0,
+    "detector_lowpass_hz": 120.0,
+    "compressor_threshold_dbfs": -15.0,
+}
+
+
+@pytest.mark.parametrize("scope", ["speaker_tune", "room_tune", "applied", "bass_candidate"])
+def test_room_and_bass_scopes_preserve_saved_upstream_layers(tuning_profile, scope):
+    from jasper.bass_extension.dynamic_graph import validated_base_graph
+    from jasper.active_speaker.measurement_emit import measurement_bass_extension
+
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
+    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
+    snapshot["room_correction"] = dict(candidate.room_correction)
+    snapshot["bass_extension"] = dict(candidate.bass_extension)
+    saved = deepcopy(tuning_profile.applied_profile)
+    selected = candidate if scope == "bass_candidate" else None
+    text = compile_tuning_graph(tuning_profile, scope=scope, candidate=selected)
+    graph = yaml.safe_load(text)
+    descriptor = measurement_bass_extension(tuning_profile, scope=scope, candidate=selected)
+    if descriptor:
+        graph = validated_base_graph(graph, descriptor, (0,))
+    expected, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=saved,
+        room_peqs=() if scope == "speaker_tune" else None,
+        bass_extension={},
+    )
+    assert not issues and graph == yaml.safe_load(expected)
+    assert bool(descriptor) is (scope in {"applied", "bass_candidate"})
+    assert tuning_profile.applied_profile == saved
+
+
+@pytest.mark.parametrize("change, reason", [
+    ("speaker", "measurement_candidate_tune_mismatch"),
+    ("room", "measurement_candidate_room_mismatch"),
+    ("missing_bass", "measurement_candidate_no_bass"),
+    ("wrong_scope", "measurement_candidate_bass_scope"),
+])
+def test_bass_trial_refuses_upstream_changes(tuning_profile, change, reason):
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
+    tuning_profile.applied_profile["recomposition_snapshot"]["room_correction"] = dict(candidate.room_correction)
+    if change == "speaker":
+        candidate = replace(candidate, role_attenuations_db={"woofer": -3.0, "tweeter": -4.25})
+    elif change == "room":
+        candidate = replace(candidate, room_correction={})
+    elif change == "missing_bass":
+        candidate = replace(candidate, bass_extension={})
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(
+            tuning_profile,
+            scope="room_candidate" if change == "wrong_scope" else "bass_candidate",
+            candidate=candidate,
+        )
+    assert exc.value.reason == reason

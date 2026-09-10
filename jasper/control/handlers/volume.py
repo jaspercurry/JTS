@@ -136,7 +136,7 @@ class VolumeRoutes(ControlHandlerMixin):
         refused = measurement_hold.record_refused_write()
         if refused is None:
             return False
-        hold_owner, first_refusal = refused
+        hold_owner, first_refusal, snapshot = refused
         log_event(
             logger,
             "volume.write_refused_measurement_hold",
@@ -150,7 +150,7 @@ class VolumeRoutes(ControlHandlerMixin):
             {
                 "error": f"a measurement is in progress (owner={hold_owner})",
                 "owner": hold_owner,
-                "measurement": measurement_hold.snapshot(),
+                "measurement": snapshot,
             },
             status=409,
         )

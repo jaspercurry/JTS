@@ -219,6 +219,16 @@ const CLASS_PRIOR_REMEDY = {
   href: '/sound/speaker/',
 };
 
+// #2051: the third reason code this module reads, same second-copy-pinned-
+// by-test contract as the two above
+// (jasper.active_speaker.linearization_envelope.ReasonCode.LIMITED_BY_MIC_TIER).
+// mic_trust_limit() tapers the correction envelope to zero above the
+// declared mic tier's trusted range by design -- O9's "free half": those top
+// octaves are deliberately left uncorrected, not a deficit, and until now no
+// surface said so. One sentence per row, not per-band, same shape as the
+// class-prior sentence below.
+const OCTAVE_REASON_LIMITED_BY_MIC_TIER = 'envelope_limited_by_mic_tier';
+
 // The measured-crossover candidate the household reviews before applying
 // (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
 // derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
@@ -473,6 +483,16 @@ function renderCandidateReview(review) {
         `${row.role}: this driver's technology class is not declared, so ` +
         'correction above this range is capped conservatively — declare it ' +
         `at ${CLASS_PRIOR_REMEDY.href} for a less conservative limit`);
+    }
+    // #2051: mic-tier-limited top octaves render unchanged (a real,
+    // measured residual within the driver's own band) plus one disclosure
+    // sentence — the free half of O9 the household was never told about.
+    const micTierLimited = bands.some(
+      (band) => band.reason === OCTAVE_REASON_LIMITED_BY_MIC_TIER);
+    if (micTierLimited) {
+      details.push(
+        `${row.role}: correction above this range is left uncorrected by ` +
+        'design — your declared microphone tier is not trusted that high');
     }
   });
   if (details.length) {

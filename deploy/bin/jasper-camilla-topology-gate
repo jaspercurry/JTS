@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# jasper-camilla-topology-gate — refuse to start CamillaDSP on a graph that was
+# proved against a different speaker topology.
+#
+# Runs as ExecCondition= on jasper-camilla.service. Since #4416 R8 that unit
+# only Wants= the hardware reconciler, so a failed reconcile no longer stops the
+# daemon that must never stay stopped. What Requires= WAS carrying is exactly
+# this: the statefile CamillaDSP loads is a pointer to a graph the reconciler
+# proved, and a reconcile that failed after a topology change leaves that
+# pointer naming a graph whose crossover and protection belong to the previous
+# speakers. Driving a tweeter through the previous topology's filters is the
+# hazard; a stopped daemon is not.
+#
+# Two stamps, no interpreter (ADR-0226 rules 1 and 2): both fingerprints are
+# computed by the root convergence that owns the statefile and published beside
+# it, and this gate reads them.
+#
+#   PROVED_STAMP    the topology the statefile's graph was proved against.
+#                   Written by every convergence that wrote a statefile.
+#   UNPROVED_STAMP  the topology a convergence was working on. Written BEFORE
+#                   the attempt and removed only when it succeeded, so it
+#                   survives a pass that refused AND a pass the OOM killer took
+#                   mid-flight.
+#
+# UNKNOWN IS NOT MISMATCH. Either stamp absent, empty or unreadable allows the
+# start: a box that has never run a convergence carrying these stamps proves
+# nothing either way, and a permissions regression must not silence a speaker
+# over a fact nobody observed. Only two present, non-empty, different values
+# refuse. This gate never writes a stamp — shell cannot prove a graph, and a
+# stamp it minted would be a proof nobody made.
+#
+# Refusal is visible on three surfaces: this journal line, the /run record the
+# `camilla statefile topology` doctor row reads, and jasper-control's heal
+# supervisor (which publishes restart-audio in /state.resilience.heal).
+#
+# REMOVE WHEN jasper-camilla no longer loads a persisted pointer at start —
+# a CamillaDSP started with its graph passed in, or a statefile the daemon
+# re-proves itself, leaves this gate nothing to compare (ADR-0283).
+
+set -uo pipefail
+
+# shellcheck disable=SC2034  # the sourced common guard library's log() reads it
+JASPER_CAMILLA_GUARD_EVENT=camilla_topology_gate
+
+# Parameter expansion, not $(dirname): the two ExecStartPre guards can afford a
+# subshell, an ExecCondition on every CamillaDSP start should not (ADR-0226).
+COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
+if [ -z "$COMMON_LIB" ]; then
+    COMMON_LIB="${BASH_SOURCE[0]%/*}/../lib/jasper-camilla-guard-common.sh"
+    [ -r "$COMMON_LIB" ] \
+        || COMMON_LIB=/usr/local/lib/jasper/jasper-camilla-guard-common.sh
+fi
+# The family's log() and statefile default live there. RESIDUAL, stated: an
+# unreadable library therefore blinds this gate rather than making it refuse —
+# unknown allows, as everywhere else here (ADR-0283). The library is installed
+# transactionally BEFORE this script and a failure to install it fails the
+# deploy, so the journal line below is the whole surface it needs. No logger
+# exists yet at this point, so that line is spelled out.
+# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
+    echo "event=camilla_topology_gate.allowed reason=common_lib_unavailable" >&2
+    exit 0
+fi
+
+STATEFILE="$JASPER_CAMILLA_STATEFILE"
+# Suffixes duplicated from STATEFILE_TOPOLOGY_STAMP_SUFFIX /
+# STATEFILE_UNPROVED_STAMP_SUFFIX in jasper/output_topology.py; pinned against
+# them by tests/test_camilla_topology_gate_script.py.
+PROVED_STAMP="${STATEFILE}.topology"
+UNPROVED_STAMP="${STATEFILE}.topology.unproved"
+# Per-boot, like every other park record: a reboot re-runs the reconciler, so a
+# stale record must not outlive the boot it describes. Path duplicated from
+# jasper/control/camilla_topology_gate_state.py.
+GATE_STATE="${JASPER_CAMILLA_TOPOLOGY_GATE_STATE:-/run/jasper-camilla-topology-gate.state}"
+
+REFUSE_ACTION="run the hardware reconciler, then start the graph: systemctl start jasper-audio-hardware-reconcile.service && systemctl start jasper-camilla.service"
+REFUSE_RE_ARM="a reconcile that converges re-proves the graph and re-stamps the statefile; until then CamillaDSP stays down and the speaker is silent"
+
+# A death by signal FAILS an ExecCondition=, while any exit in 1..254 only skips
+# the unit. Map the three a stop can deliver into the skip band.
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+
+# Sets `stamp` to the file's trimmed first line, or "" for absent, unreadable
+# or empty. Builtins only, into a variable rather than through `$(...)`: this
+# runs on every CamillaDSP start, and neither a fork nor a subshell buys
+# anything here (ADR-0226).
+read_stamp() {
+    stamp=""
+    [ -r "$1" ] || return 0
+    read -r stamp <"$1" 2>/dev/null || true
+    stamp="${stamp//[[:space:]]/}"
+}
+
+clear_record() {
+    [ -e "$GATE_STATE" ] || return 0
+    rm -f -- "$GATE_STATE" 2>/dev/null || true
+}
+
+# A record the doctor row and the heal supervisor read. Failing to write it does
+# NOT change the verdict below — the refusal still stands on the journal line —
+# but it does blind those two surfaces, so say so.
+write_record() {
+    local tmp
+    mkdir -p -- "$(dirname -- "$GATE_STATE")" 2>/dev/null || true
+    # tempfile+rename so a reader never sees a truncated record.
+    tmp="${GATE_STATE}.tmp.$$"
+    if ! {
+        printf 'refused_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'reason=topology_mismatch\n'
+        printf 'detail=%s\n' "the CamillaDSP graph named by ${STATEFILE} was proved against a different speaker topology than the one the last convergence was working on"
+        printf 'unproved=%s\n' "$1"
+        printf 'proved=%s\n' "$2"
+        printf 'action=%s\n' "$REFUSE_ACTION"
+        printf 're_arm=%s\n' "$REFUSE_RE_ARM"
+    } >"$tmp" 2>/dev/null || ! mv -f "$tmp" "$GATE_STATE" 2>/dev/null; then
+        rm -f -- "$tmp" 2>/dev/null || true
+        log record_write_failed "path=${GATE_STATE}" \
+            "detail=the refusal below is on this journal line only"
+    fi
+}
+
+allow() {
+    clear_record
+    log allowed "reason=$1" "${@:2}"
+    exit 0
+}
+
+read_stamp "$UNPROVED_STAMP"
+unproved="$stamp"
+read_stamp "$PROVED_STAMP"
+proved="$stamp"
+
+[ -n "$unproved" ] || allow no_unproved_convergence
+[ -n "$proved" ] || allow no_proof_stamp
+[ "$unproved" != "$proved" ] || allow topology_matches "fingerprint=${proved:0:8}"
+
+write_record "$unproved" "$proved"
+log refused "reason=topology_mismatch" \
+    "unproved=${unproved:0:8} proved=${proved:0:8}" \
+    "action=${REFUSE_ACTION}"
+exit 1

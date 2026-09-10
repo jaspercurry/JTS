@@ -65,10 +65,18 @@ install_jasper_support_files() {
 #     triggers it via polkit). On-demand only — not enabled.
 #   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
 #     statefile off a dead Snapcast PLAYBACK pipe before camilla launches.
+#   jasper-camilla-topology-gate — ExecCondition: skips the start when the
+#     statefile's graph was proved against a different topology than the one
+#     the last convergence worked on.
 #   jasper-camilla-crossover-guard — like the pipe-guard but repairs ONLY to the
 #     re-proven driver-domain graph (never flat — a flat crossover would send
 #     full-range to the tweeter). Live only on a reconciled active leader.
 JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
+    # The gate lands before the unit that names it, for the same reason the
+    # hardware reconciler's script does: a systemd exec failure (203) is in the
+    # ExecCondition SKIP band, so a deploy interrupted between these two rows
+    # would silently stop starting CamillaDSP.
+    "0755 deploy/bin/jasper-camilla-topology-gate /usr/local/sbin/jasper-camilla-topology-gate"
     "0644 deploy/systemd/jasper-camilla.service ${SYSTEMD_DIR}/jasper-camilla.service"
     "0644 deploy/systemd/jasper-camilla-recover.service ${SYSTEMD_DIR}/jasper-camilla-recover.service"
     "0644 deploy/systemd/jasper-camilla-crossover.service ${SYSTEMD_DIR}/jasper-camilla-crossover.service"
@@ -87,6 +95,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
     "0755 deploy/bin/jasper-outputd-failure-reconcile /usr/local/sbin/jasper-outputd-failure-reconcile"
+    "0755 deploy/bin/jasper-outputd-unpark /usr/local/sbin/jasper-outputd-unpark"
     "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
     "0755 deploy/bin/jasper-camilla-recover /usr/local/sbin/jasper-camilla-recover"
     "0755 deploy/bin/jasper-camilla-crossover-guard /usr/local/sbin/jasper-camilla-crossover-guard"
@@ -822,6 +831,9 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-bluetooth-adapter.rules" \
+        /etc/udev/rules.d/99-jasper-bluetooth-adapter.rules
 }
 
 pin_attached_apple_dongle_power_control() {

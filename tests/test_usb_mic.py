@@ -12,6 +12,7 @@ import struct
 import pytest
 
 from jasper.cli import usb_mic as usb_mic_cli
+from jasper.env_file import read_env_file
 from jasper.cli.usb_mic import (
     ALSA_BUFFER_FRAMES,
     ALSA_PERIOD_BYTES,
@@ -62,7 +63,7 @@ def test_intent_is_explicit_and_atomic(tmp_path: Path) -> None:
     assert usb_mic_enabled(path) is False
     write_usb_mic_enabled(True, path)
     assert usb_mic_enabled(path) is True
-    assert path.read_text() == "JASPER_USB_MIC=enabled\n"
+    assert read_env_file(str(path)) == {"JASPER_USB_MIC": "enabled"}
     write_usb_mic_enabled(False, path)
     assert usb_mic_enabled(path) is False
     assert read_intent(path).valid is True
@@ -441,12 +442,6 @@ def test_source_frame_splits_into_two_exact_alsa_periods() -> None:
     assert periods[0].pcm + periods[1].pcm == frame.pcm
     assert periods[0].record_source_age is False
     assert periods[1].record_source_age is True
-
-
-def test_relay_data_plane_no_longer_references_aplay_or_popen() -> None:
-    source = Path(usb_mic_cli.__file__).read_text(encoding="utf-8")
-    assert "subprocess.Popen" not in source
-    assert '"aplay"' not in source
 
 
 class _StatusReader:

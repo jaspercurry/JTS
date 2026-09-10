@@ -29,6 +29,12 @@ function initVolume() {
   var inFlight = false;
   var flushing = false;
   var safetyMuted = false;
+  // A measurement hold owns the fader (jasper-control refuses the write
+  // with 409; see measurement_hold.py). The already-running poll() reads
+  // /volume's own `measurement` field every tick and is the sole source of
+  // truth for whether the hold is still live — no local deadline, no new
+  // timer.
+  var heldOwner = null;
   var desiredPct = null;
   var ignorePollUntil = 0;
   var pollInFlight = false;
@@ -77,9 +83,25 @@ function initVolume() {
     return false;
   }
 
+  // Either lock reason grays out the same control; keep the two flags
+  // independent so clearing one never re-enables a fader the other still
+  // owns.
+  function controlLocked() {
+    return safetyMuted || heldOwner !== null;
+  }
+
+  function refreshControlDisabled() {
+    var disabled = controlLocked();
+    hit.classList.toggle('safety-muted', disabled);
+    if (disabled) {
+      hit.setAttribute('aria-disabled', 'true');
+    } else {
+      hit.removeAttribute('aria-disabled');
+    }
+  }
+
   function setSafetyMuted(muted) {
     safetyMuted = !!muted;
-    hit.classList.toggle('safety-muted', safetyMuted);
     if (safetyNote) safetyNote.hidden = !safetyMuted;
     if (safetyMuted) {
       dragging = false;
@@ -87,11 +109,30 @@ function initVolume() {
       desiredPct = null;
       ignorePollUntil = 0;
       hit.setAttribute('aria-describedby', 'volume-safety-note');
-      hit.setAttribute('aria-disabled', 'true');
     } else {
       hit.removeAttribute('aria-describedby');
-      hit.removeAttribute('aria-disabled');
     }
+    refreshControlDisabled();
+  }
+
+  // A measurement's hold refused the write (409; see
+  // jasper/control/measurement_hold.py) or poll()'s own /volume read still
+  // reports it active. Name the incumbent and lock the fader; poll() clears
+  // it the moment the SERVER reports the hold gone, not on a local timer.
+  function applyMeasurementHold(owner) {
+    heldOwner = owner;
+    dragging = false;
+    pending = null;
+    desiredPct = null;
+    ignorePollUntil = 0;
+    percentEl.textContent = 'Held by ' + owner + ' for measurement';
+    refreshControlDisabled();
+  }
+
+  function clearMeasurementHold() {
+    if (heldOwner === null) return;
+    heldOwner = null;
+    refreshControlDisabled();
   }
 
   function xToPercent(clientX) {
@@ -101,7 +142,7 @@ function initVolume() {
   }
 
   function setFromPointer(e) {
-    if (safetyMuted) return;
+    if (controlLocked()) return;
     var pct = clampPct(xToPercent(e.clientX));
     setUI(pct);
     sendThrottled(pct);
@@ -113,7 +154,7 @@ function initVolume() {
   }
 
   function sendThrottled(pct) {
-    if (safetyMuted) return;
+    if (controlLocked()) return;
     desiredPct = clampPct(pct);
     pending = desiredPct;
     ignorePollUntil = Date.now() + SETTLE_MS;
@@ -147,6 +188,19 @@ function initVolume() {
                 typeof data.percent === 'number') {
               setUI(data.percent);
             }
+          } else if (resp.status === 409) {
+            var holdBody = null;
+            try { holdBody = await resp.json(); } catch (_) {}
+            var measurement = holdBody && holdBody.measurement;
+            var owner = holdBody && typeof holdBody.owner === 'string'
+              ? holdBody.owner
+              : (measurement && typeof measurement.owner === 'string'
+                ? measurement.owner : null);
+            if (owner) {
+              applyMeasurementHold(owner);
+            } else {
+              markWriteFailed();
+            }
           } else {
             markWriteFailed();
           }
@@ -163,7 +217,7 @@ function initVolume() {
 
   hit.addEventListener('pointerdown', function(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (safetyMuted) {
+    if (controlLocked()) {
       e.preventDefault();
       return;
     }
@@ -205,11 +259,22 @@ function initVolume() {
       default: return;
     }
     e.preventDefault();
-    if (safetyMuted) return;
+    if (controlLocked()) return;
     next = clampPct(next);
     setUI(next);
     sendThrottled(next);
   });
+
+  // A measurement hold is decided by the SERVER, on every tick — never a
+  // local timer. A short gate measurement can release() well before any
+  // client-guessed deadline would have, and the fader must re-enable the
+  // moment /volume next reports it gone, not sit "Held by ..." for a
+  // cached TTL.
+  function holdOwnerFrom(data) {
+    var measurement = data && data.measurement;
+    return measurement && measurement.active &&
+      typeof measurement.owner === 'string' ? measurement.owner : null;
+  }
 
   async function poll() {
     if (localVolumeDirty()) return;
@@ -221,9 +286,15 @@ function initVolume() {
       if (resp.ok) {
         var data = await resp.json();
         pollFails = 0;
+        var holdOwner = holdOwnerFrom(data);
+        if (holdOwner !== null) {
+          if (heldOwner !== holdOwner) applyMeasurementHold(holdOwner);
+        } else if (heldOwner !== null) {
+          clearMeasurementHold();
+        }
         if (typeof data.percent === 'number') {
           lastServerPct = data.percent;
-          setUI(data.percent);
+          if (holdOwner === null) setUI(data.percent);
         }
         return;
       }

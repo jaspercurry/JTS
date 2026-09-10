@@ -62,6 +62,29 @@ SESSION_ROTATE_AFTER_SEC = 135.0
 GOAWAY_DEFER_MIN_TIME_LEFT_SEC = 30.0
 
 
+def _is_progress_response(response) -> bool:
+    """True when this message proves the turn is making progress, so it
+    advances the pre-response idle anchor: audio, a tool call,
+    transcript text in either direction, turn_complete, or
+    generation_complete.
+
+    Connection bookkeeping — `session_resumption_update`, `go_away`, a
+    bare usage snapshot — proves only that the socket is open and must
+    not reset the anchor. See issue #4532.
+    """
+    if getattr(response, "data", None) or getattr(response, "tool_call", None) is not None:
+        return True
+    sc = getattr(response, "server_content", None)
+    if sc is None:
+        return False
+    return bool(
+        getattr(sc, "turn_complete", False)
+        or getattr(sc, "generation_complete", False)
+        or getattr(getattr(sc, "input_transcription", None), "text", None)
+        or getattr(getattr(sc, "output_transcription", None), "text", None)
+    )
+
+
 def _goaway_time_left_seconds(time_left) -> float | None:
     """Best-effort conversion of a GoAway `time_left` to seconds.
 
@@ -709,6 +732,9 @@ class GeminiLiveConnection(BaseLiveConnection):
                     )
                     request_unplanned_reopen(self)
                     return
+                turn = self._active_turn
+                if turn is not None and self._owns_turn(turn) and _is_progress_response(response):
+                    turn._note_activity()
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
                 if sru is not None:
@@ -750,7 +776,6 @@ class GeminiLiveConnection(BaseLiveConnection):
                 transcription = getattr(getattr(response, "server_content", None), "input_transcription", None)
                 if transcription is not None:
                     self._on_input_transcription(transcription)
-                turn = self._active_turn
                 if turn is not None and self._owns_turn(turn) and not turn._server_turn_complete:
                     await turn._on_response(response)
         except asyncio.CancelledError:

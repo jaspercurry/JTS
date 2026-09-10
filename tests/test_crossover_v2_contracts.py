@@ -69,8 +69,8 @@ def _proposal(**overrides: object) -> InterventionProposal:
         "evidence_identities": {"session_id": "cap_1"},
         "predicted_response_before": ([100.0, 200.0], [-1.0, -2.0]),
         "predicted_response_after": ([100.0, 200.0], [-0.5, -1.5]),
-        "predicted_spec_before": {"overall_passed": False},
-        "predicted_spec_after": {"overall_passed": True},
+        "predicted_spec_before": {"overall_within_target": False},
+        "predicted_spec_after": {"overall_within_target": True},
         "commanded_delta": ([100.0, 200.0], [0.5, 0.5]),
         "trim_strategy": TrimStrategy.RESOLVED_COMMITTED_AFTER_SANITY_DRIFT,
         "trim_rationale": "drifted, committed anyway",
@@ -304,11 +304,11 @@ def test_a_proposal_detaches_the_nested_containers_it_was_handed_too():
 def test_the_proposal_fingerprint_is_deterministic_across_key_ordering():
     forward = _proposal(
         evidence_identities={"session_id": "cap_1", "program_id": "p"},
-        predicted_spec_after={"overall_passed": True, "reference_db": -31.367},
+        predicted_spec_after={"overall_within_target": True, "reference_db": -31.367},
     )
     shuffled = _proposal(
         evidence_identities={"program_id": "p", "session_id": "cap_1"},
-        predicted_spec_after={"reference_db": -31.367, "overall_passed": True},
+        predicted_spec_after={"reference_db": -31.367, "overall_within_target": True},
     )
     assert forward.fingerprint == shuffled.fingerprint
 
@@ -320,8 +320,8 @@ _COMMITTED_FIELD_MUTATIONS: tuple[tuple[str, object], ...] = (
     ("evidence_identities", {"session_id": "cap_2"}),
     ("predicted_response_before", ([100.0, 200.0], [-1.0, -2.5])),
     ("predicted_response_after", ([100.0, 200.0], [-0.5, -1.6])),
-    ("predicted_spec_before", {"overall_passed": True}),
-    ("predicted_spec_after", {"overall_passed": False}),
+    ("predicted_spec_before", {"overall_within_target": True}),
+    ("predicted_spec_after", {"overall_within_target": False}),
     ("commanded_delta", ([100.0, 200.0], [0.5, 0.6])),
     ("trim_strategy", TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT),
     ("trim_rationale", "a different rationale"),

@@ -30,6 +30,7 @@ import numpy as np
 
 from jasper.control import restart_broker
 from jasper.log_event import log_event
+from jasper.service_units import OUTPUTD_SERVICE
 from jasper.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
@@ -105,12 +106,14 @@ from .runtime_probe import (  # noqa: F401
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
+_BRIDGE_ENV_OWNER = "JTS /wake-corpus recorder control"
+
 
 # ---------------------------------------------------------------------------
 # Bridge-side corpus-output config + systemctl units
 # ---------------------------------------------------------------------------
 AUDIO_CONTEXT_SCHEMA_VERSION = 1
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 AEC_INIT_UNIT = "jasper-aec-init.service"
 # Owner of the chip-AEC arming decision and single writer of the daemon-facing
 # mic env. The recorder owns its corpus overrides and nothing else, so a corpus
@@ -739,14 +742,16 @@ def _write_env_and_restart_with_rollback(
 ) -> None:
     """Apply recorder env and restore it if the matching restart fails."""
     if values:
-        write_env_file(env_path, values, mode=0o644)
+        write_env_file(env_path, values, mode=0o644, owner=_BRIDGE_ENV_OWNER)
     else:
         delete_env_file(env_path)
     try:
         restart()
     except _BRIDGE_RESTART_ERRORS:
         if existed:
-            write_env_file(env_path, old_values, mode=0o644)
+            write_env_file(
+                env_path, old_values, mode=0o644, owner=_BRIDGE_ENV_OWNER,
+            )
         else:
             delete_env_file(env_path)
         try:

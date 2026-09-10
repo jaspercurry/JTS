@@ -316,7 +316,13 @@ class CommissioningCaptureService:
         ):
             raise CommissioningServiceError(
                 "launch_scope_unsupported",
-                "automatic commissioning currently requires a DAC8x active 2-way speaker",
+                # #2171: name the capability the check actually tests
+                # (dac_profile.supports_active_crossover_commissioning), not
+                # one board that happens to declare it today — a future DAC
+                # profile could set the same flag and this message must stay
+                # true.
+                "automatic commissioning currently requires a 2-way speaker "
+                "whose output hardware supports active crossover commissioning",
             )
         safety = evaluate_driver_safety_profile(
             authority.safety_profile, authority.topology

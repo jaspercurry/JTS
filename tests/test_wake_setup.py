@@ -32,6 +32,7 @@ import pytest
 
 from jasper import env_file, wake_models
 from jasper.web import _common, wake_setup
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 
 def _stage_bundled_asset(
@@ -586,7 +587,7 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda: called.append("restart"),
+        lambda: called.append("restart") or RestartOutcome.RAN,
     )
     post_with_csrf(base, "/save", {"model": "alexa"})
     # Wizard wrote the env file at mode 0644 (path-only, no secret).
@@ -596,6 +597,25 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
         "JASPER_WAKE_MODEL": "alexa",
     }
     assert called == ["restart"]
+
+
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_http_post_save_describes_the_restart_it_actually_got(
+    running_server, monkeypatch, outcome,
+):
+    from ._web_test_helpers import post_with_csrf
+
+    base, state_path = running_server
+    _stage_bundled_asset(monkeypatch, Path(state_path).parent)
+    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: outcome)
+    jar = post_with_csrf(base, "/save", {"model": "alexa"})
+    flash = next(
+        urllib.parse.unquote(c.value)
+        for c in jar if c.name == "jts_flash"
+    )
+    entry = wake_models.by_model("alexa")
+    label = entry.label if entry else "alexa"
+    assert flash == f"Saved {label}.{RESTART_CLAUSE[outcome]}"
 
 
 def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch):
@@ -610,7 +630,7 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda: called.append("restart"),
+        lambda: called.append("restart") or RestartOutcome.RAN,
     )
     # Seed wake_model.env as if /sensitivity had previously landed.
     with open(state_path, "w") as f:

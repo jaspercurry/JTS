@@ -6,10 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import os
+import socket
+import tempfile
 import types
 
 import pytest
 from dbus_next import MessageType, Variant
+from dbus_next.aio import MessageBus
 from dbus_next.errors import DBusError
 
 from jasper.bluetooth import adapter
@@ -20,6 +25,7 @@ from jasper.bluetooth.agent import (
     REJECTED_DBUS_NAME,
     register_agent,
 )
+from tests._log_events import event_fields
 
 
 class _FakeProps:
@@ -541,6 +547,56 @@ class _CountingBus:
         if self.sweeps >= self._stop_after:
             self.done.set()
         return _managed_reply({})
+
+
+async def test_connect_bounded_times_out_and_names_its_caller(caplog):
+    class _HangingBus:
+        def __init__(self) -> None:
+            self.journal: list[str] = []
+
+        async def connect(self):
+            await asyncio.Event().wait()  # never set: simulates a wedged connect
+
+        def disconnect(self) -> None:
+            self.journal.append("bus_disconnect")
+
+    bus = _HangingBus()
+    with caplog.at_level(logging.WARNING, logger=adapter.__name__):
+        with pytest.raises(TimeoutError):
+            await adapter.connect_bounded(bus, 0.01, site="probe")
+
+    fields = event_fields(caplog, "bluetooth.connect_timeout")
+    assert fields["timeout_sec"] == "0.01"
+    assert fields["site"] == "probe"
+    assert bus.journal == ["bus_disconnect"]
+
+
+async def test_connect_bounded_drops_a_real_hung_bus():
+    """The teardown must survive dbus-next\'s own never-connected bus.
+
+    The stub above pins that disconnect is *called*; this pins that the real
+    `MessageBus.disconnect()` runs to completion on a bus whose `connect()`
+    never finished, by reading the EOF the shutdown puts on the peer.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = os.path.join(tmpdir, "s")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with contextlib.closing(listener):
+            listener.bind(sock_path)
+            listener.listen(1)
+            # dbus-next opens (and connects) the socket in the constructor.
+            bus = MessageBus(bus_address=f"unix:path={sock_path}")
+            peer, _addr = listener.accept()
+            with contextlib.closing(peer):
+                async def hang(*_a, **_kw):
+                    await asyncio.Event().wait()
+
+                bus.connect = hang  # type: ignore[method-assign]
+                with pytest.raises(TimeoutError):
+                    await adapter.connect_bounded(bus, 0.01, site="probe")
+
+                peer.settimeout(5)
+                assert peer.recv(1) == b""
 
 
 def test_agent_lifetime_opens_one_bus_connection(monkeypatch):

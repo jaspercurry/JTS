@@ -443,6 +443,19 @@ def test_a_corrupt_file_reads_as_empty_rather_than_half_trusted(tmp_path, caplog
     assert "model_error_store_unreadable" in caplog.text
 
 
+def test_a_bad_byte_reads_as_empty_too_not_a_vanished_status_block(tmp_path, caplog):
+    """#2082 item 4: `UnicodeDecodeError` from a torn write is not an
+    `OSError` or a `json.JSONDecodeError` -- uncaught, it would propagate
+    past every outer fail-soft catch in the v2 status block and take the
+    whole block down instead of costing only this store's history."""
+    path = tmp_path / "store.json"
+    path.write_bytes(b"floor: " + bytes([0xFF, 0xFE]) + b" not valid utf-8")
+    state = load_state(path)
+    assert state["floor"] is None
+    assert state["model_error"] == []
+    assert "model_error_store_unreadable" in caplog.text
+
+
 @pytest.mark.parametrize("floor_payload", [
     {"metric": "", "claim_floor_db": 0.17, "basis": FLOOR_BASIS_MEASURED},
     {"metric": "m", "claim_floor_db": 0.0, "basis": FLOOR_BASIS_MEASURED},

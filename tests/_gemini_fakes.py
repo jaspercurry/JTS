@@ -11,9 +11,17 @@ from typing import Any
 
 
 @dataclass
+class Transcription:
+    text: str | None = None
+
+
+@dataclass
 class ServerContent:
     turn_complete: bool = False
+    generation_complete: bool = False
     interrupted: bool = False
+    input_transcription: Transcription | None = None
+    output_transcription: Transcription | None = None
 
 
 @dataclass

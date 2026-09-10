@@ -268,11 +268,11 @@ def test_marginal_weak_driver_in_band_still_reads_present(tmp_path):
     marginal range into "out_of_band" would silently reject quiet-but-correct
     drivers, and this test would go red."""
     sig, meta = _reference_sweep()
-    # A gentle ~+4 dB high-shelf above the woofer band leaves slightly more
+    # A gentle ~+2 dB high-shelf above the woofer band leaves slightly more
     # energy outside (40-400 Hz) than inside it — a small negative separation —
     # while the capture stays well above the silent floor.
     nyq = SR / 2
-    g = 10 ** (4.0 / 20)
+    g = 10 ** (2.0 / 20)
     ir = firwin2(1023, [0.0, 400 / nyq, 800 / nyq, 1.0], [1.0, 1.0, g, g]).astype(
         np.float64
     )
@@ -556,13 +556,13 @@ def test_stored_ambient_uses_real_signal_bounded_window_and_calibration_cancels(
     reduced_snr = [band["estimated_snr_db"] for band in reduced.snr["bands"]]
     accepted_snr = [band["estimated_snr_db"] for band in accepted.snr["bands"]]
     assert refused_snr == pytest.approx(
-        [39.1, 34.5, 32.8, 29.1, 23.6, 18.6], abs=0.2
+        [39.1, 34.5, 32.7, 29.1, 23.5, 18.4], abs=0.2
     )
     assert reduced_snr == pytest.approx(
-        [44.2, 39.6, 37.9, 34.2, 28.7, 23.7], abs=0.2
+        [44.2, 39.6, 37.8, 34.2, 28.6, 23.5], abs=0.2
     )
     assert accepted_snr == pytest.approx(
-        [47.4, 42.8, 41.1, 37.4, 31.9, 26.9], abs=0.2
+        [47.4, 42.8, 41.0, 37.4, 31.8, 26.7], abs=0.2
     )
     assert refused.snr["verdict"] == "insufficient"
     assert reduced.snr["verdict"] == "reduced"

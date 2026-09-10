@@ -25,6 +25,7 @@ from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
+from tests._gemini_fakes import Transcription as _Transcription
 
 try:
     from google.genai import types
@@ -66,6 +67,7 @@ class _FakeSession:
         self.sent_client_content: list[dict] = []
         self.sent_tool_responses: list[Any] = []
         self.closed = False
+        self.received = 0
         self.setup_complete = types.LiveServerSetupComplete()
 
     async def send_realtime_input(self, **kwargs) -> None:
@@ -97,6 +99,7 @@ class _FakeSession:
         item = await self._inbox.get()
         if isinstance(item, Exception):
             raise item
+        self.received += 1
         return item
 
     async def close(self) -> None:
@@ -1058,9 +1061,11 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     mid-dispatch at small timeout values.
 
     Mirrors ``test_openai_session.py``'s equivalent contract test.
-    Pin: at minimum the per-tool reset inside ``_handle_tool_call``
-    advances the anchor — proves the cross-provider contract
-    is enforced for Gemini."""
+    Pin: the per-tool reset inside ``_handle_tool_call`` advances the
+    anchor. Driven by calling the dispatcher directly rather than
+    feeding a ``tool_call`` frame: the receive loop resets the anchor on
+    any progress event, so going through the wire would move it whatever
+    the dispatcher did."""
     from jasper.tools import tool as tool_decorator
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -1080,19 +1085,13 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
         # Park briefly so the loop clock advances measurably.
         await asyncio.sleep(0.05)
 
-        # Server sends a tool_call. The connection's receive loop
-        # routes it to turn._on_response which calls _handle_tool_call
-        # with the turn passed in; the dispatcher resets the anchor
-        # per-tool and again after send_tool_response.
-        sess.feed(_Resp(tool_call=_ToolCall(function_calls=[
-            _FC(name="get_weather", id="fc-1", args={}),
-        ])))
-        # Wait for the dispatcher to invoke send_tool_response.
-        await _wait_until(
-            lambda: len(sess.sent_tool_responses) >= 1,
-            timeout=2.0,
+        # The dispatcher resets the anchor per-tool and again after
+        # send_tool_response.
+        await conn._handle_tool_call(
+            _ToolCall(function_calls=[_FC(name="get_weather", id="fc-1", args={})]),
+            turn,
         )
-        await asyncio.sleep(0.05)
+        assert len(sess.sent_tool_responses) == 1
 
         anchor_after = turn.last_activity_at()
         assert anchor_after > anchor_before, (
@@ -1830,5 +1829,48 @@ async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, 
             await _wait_until(turn.turn_lost)
         assert not turn.server_turn_complete()
         assert (turn.usage().input_tokens, turn.usage().output_tokens) == (600, 70)
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("response, advances", [
+    # Progress: the model is transcribing what it heard, or what it is
+    # about to say. A slow generation emitting these must not be reaped.
+    (_Resp(server_content=_ServerContent(
+        input_transcription=_Transcription(text="what is the weather"),
+    )), True),
+    (_Resp(server_content=_ServerContent(
+        output_transcription=_Transcription(text="it is"),
+    )), True),
+    (_Resp(server_content=_ServerContent(generation_complete=True)), True),
+    # Liveness only: the socket is open, the turn is not moving.
+    (_Resp(session_resumption_update=_ResumptionUpdate(new_handle="h1")), False),
+    (_Resp(), False),
+])
+async def test_only_progress_messages_advance_the_idle_anchor(response, advances):
+    """#4532: the pre-response idle timer must mean "this turn is not
+    moving", not "no audio yet" and not "the socket went quiet".
+
+    Transcript text either way shows work happening even though no audio
+    has arrived; connection bookkeeping does not, so a session that keeps
+    sending handles without ever answering still reaches the watchdog.
+    Complements the tool-round pin above, which covers the local
+    milestones that produce no server message at all."""
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        sess = factory.sessions[0]
+        turn = await conn.acquire_turn()
+        stale = asyncio.get_event_loop().time() - 100.0
+        turn._last_activity_at = stale
+
+        sess.feed(response)
+        await _wait_until(lambda: sess.received >= 1, timeout=2.0)
+        await asyncio.sleep(0.05)
+
+        assert (turn.last_activity_at() > stale) is advances
+        assert turn.chunks_received() == 0
+        assert turn.server_turn_complete() is False
+        await turn.release()
     finally:
         await conn.stop()

@@ -111,6 +111,7 @@ from jasper.camilla_config_contract import SHELF_Q
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 
+from tests._log_events import event_fields
 from tests.test_crossover_v2_blend_prescription import _bundle
 
 #: The CLI tests here build a packet from a live session bundle with no
@@ -2914,11 +2915,11 @@ def test_the_staged_event_reports_what_the_document_will_spend(tmp_path, caplog)
             ),
         )
 
-    assert "event=crossover_v2.prescription_staged" in caplog.text
-    assert "prescription_class=boost" in caplog.text
-    assert "boost_filters=2" in caplog.text
-    assert "composed_boost_role=tweeter" in caplog.text
-    assert "max_spl_spend_bound_db=13.0" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["prescription_class"] == "boost"
+    assert fields["boost_filters"] == "2"
+    assert fields["composed_boost_role"] == "tweeter"
+    assert fields["max_spl_spend_bound_db"] == "13.0"
 
 
 def test_a_cut_only_staging_reports_no_spend_at_all(tmp_path, caplog):
@@ -2928,12 +2929,13 @@ def test_a_cut_only_staging_reports_no_spend_at_all(tmp_path, caplog):
     ):
         _stage_driver(tmp_path, ordinal=6, filters=[_cut()])
 
-    assert "prescription_class=cut" in caplog.text
-    assert "boost_filters=0" in caplog.text
-    assert "composed_boost_db=0.0" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["prescription_class"] == "cut"
+    assert fields["boost_filters"] == "0"
+    assert fields["composed_boost_db"] == "0.0"
     # A document that spent nothing has no role that spent. Naming one would
     # attribute 0.0 dB to whichever role happened to sort first.
-    assert "composed_boost_role=null" in caplog.text
+    assert fields["composed_boost_role"] == "null"
 
 
 def test_depth_rides_the_banked_rows_end_to_end_with_no_schema_bump(tmp_path):
@@ -3645,11 +3647,8 @@ def test_the_staged_event_names_the_class_rather_than_twinning_the_event(
     with caplog.at_level("INFO"):
         _stage_driver(tmp_path)
 
-    line = next(
-        r.getMessage() for r in caplog.records
-        if "crossover_v2.prescription_staged" in r.getMessage()
-    )
-    assert f"prescription_kind={DRIVER_PRESCRIPTION_KIND}" in line
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["prescription_kind"] == DRIVER_PRESCRIPTION_KIND
 
 
 def test_a_document_staged_for_another_round_is_refused_by_name(tmp_path):
@@ -3891,11 +3890,8 @@ def test_the_stage_verb_banks_the_verdicts_its_own_gate_read_dips_included(
         if row["classification"] == DEFECT_BOOSTABLE
     ] == [1037.0, 4582.0, 6245.0, 8530.0]
     # And the newly-unbounded dimension is visible without opening the file.
-    line = next(
-        r.getMessage() for r in caplog.records
-        if "crossover_v2.prescription_staged" in r.getMessage()
-    )
-    assert f"classifications={len(_BANKED_RECORD)}" in line
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["classifications"] == str(len(_BANKED_RECORD))
 
 
 def test_the_banked_classification_stays_far_inside_the_envelope_cap(tmp_path):
@@ -4729,12 +4725,13 @@ def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog
             incumbent={"tweeter": INCUMBENT_TWEETER},
         )
 
-    assert "displaced_filters=4" in caplog.text
-    assert "displaced_boost_role=tweeter" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["displaced_filters"] == "4"
+    assert fields["displaced_boost_role"] == "tweeter"
     # The document's one filter sits on the banked 5 kHz feature, so it IS
     # vouched — a zero that was measured, which is the answer this line has to
     # be able to give as clearly as a non-zero one.
-    assert "unvouched_filters=0" in caplog.text
+    assert fields["unvouched_filters"] == "0"
 
 
 def test_the_staged_event_counts_a_document_the_evidence_does_not_back(
@@ -4755,4 +4752,5 @@ def test_the_staged_event_counts_a_document_the_evidence_does_not_back(
             classification=_classification([_verdict(WOOFER_FEATURE_HZ)]),
         )
 
-    assert "unvouched_filters=1" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["unvouched_filters"] == "1"

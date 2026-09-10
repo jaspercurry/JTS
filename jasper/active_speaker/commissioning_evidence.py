@@ -24,6 +24,7 @@ from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     CaptureIdentity,
     EvidenceIdentityError,
+    FingerprintedRecord,
     json_fingerprint,
 )
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
@@ -41,10 +42,12 @@ from jasper.audio_measurement.null_walk import (
 )
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.json_fields import finite_float
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    topology_config_fingerprint,
+)
 
 from ._common import require_sha256_hex
-from .baseline_profile import topology_config_fingerprint
 from .bundles import BUNDLE_KIND
 from .measurement import active_driver_targets
 from .commissioning_run import (
@@ -285,7 +288,7 @@ def _attempt_handle_from_mapping(raw: Any) -> CommissioningAttemptHandle:
 
 
 @dataclass(frozen=True, slots=True)
-class CommissioningEvidenceAuthority:
+class CommissioningEvidenceAuthority(FingerprintedRecord):
     """Exact run and immutable environment bound into every evidence value."""
 
     run: CommissioningRunHandle
@@ -354,9 +357,6 @@ class CommissioningEvidenceAuthority:
             "expected_geometry_id": self.expected_geometry_id,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningEvidenceAuthority":
         value = _strict_object(
@@ -392,7 +392,7 @@ class CommissioningEvidenceAuthority:
 
 
 @dataclass(frozen=True, slots=True)
-class RegionEvidenceTarget:
+class RegionEvidenceTarget(FingerprintedRecord):
     """One exact group/region and its phase-distinct measurement identities."""
 
     speaker_group_id: str
@@ -518,9 +518,6 @@ class RegionEvidenceTarget:
             "delay_context_base_fingerprint": self.delay_context_base_fingerprint,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "RegionEvidenceTarget":
         fields = frozenset(
@@ -552,7 +549,7 @@ class RegionEvidenceTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class DriverEvidenceTarget:
+class DriverEvidenceTarget(FingerprintedRecord):
     """One canonical physical driver identity bound into the run plan."""
 
     speaker_group_id: str
@@ -591,9 +588,6 @@ class DriverEvidenceTarget:
             "driver_target_id": self.driver_target_id,
             "driver_target_fingerprint": self.driver_target_fingerprint,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "DriverEvidenceTarget":
@@ -637,7 +631,7 @@ def _driver_keys_from_region_targets(
 
 
 @dataclass(frozen=True, slots=True)
-class RegionEvidencePlan:
+class RegionEvidencePlan(FingerprintedRecord):
     """Canonical region target plan for one exact commissioning run."""
 
     authority: CommissioningEvidenceAuthority
@@ -713,9 +707,6 @@ class RegionEvidencePlan:
             "targets": [target.to_dict() for target in self.targets],
             "driver_targets": [target.to_dict() for target in self.driver_targets],
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "RegionEvidencePlan":
@@ -1394,7 +1385,7 @@ def _validate_admitted_excitation_proof(
 
 
 @dataclass(frozen=True, slots=True)
-class AdmittedRegionCapture:
+class AdmittedRegionCapture(FingerprintedRecord):
     """One fresh, one-shot, graph-confirmed region capture."""
 
     authority: CommissioningEvidenceAuthority
@@ -1553,9 +1544,6 @@ class AdmittedRegionCapture:
             **self._admitted_proof.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "AdmittedRegionCapture":
         fields = frozenset(
@@ -1610,7 +1598,7 @@ class AdmittedRegionCapture:
 
 
 @dataclass(frozen=True, slots=True)
-class AdmittedIsolatedDriverCapture:
+class AdmittedIsolatedDriverCapture(FingerprintedRecord):
     """One admitted, graph-confirmed capture of one physical driver."""
 
     authority: CommissioningEvidenceAuthority
@@ -1789,9 +1777,6 @@ class AdmittedIsolatedDriverCapture:
             "graph_fingerprint": self.graph_fingerprint,
             **self._admitted_proof.to_dict(),
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "AdmittedIsolatedDriverCapture":
@@ -1979,7 +1964,7 @@ def _assert_fresh_isolated_capture_set(
 
 
 @dataclass(frozen=True, slots=True)
-class IsolatedDriverEvidence:
+class IsolatedDriverEvidence(FingerprintedRecord):
     """Exactly three admitted captures for one physical driver target."""
 
     authority: CommissioningEvidenceAuthority
@@ -2117,9 +2102,6 @@ class IsolatedDriverEvidence:
             "repeatability_artifact": self.repeatability_artifact.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "IsolatedDriverEvidence":
         fields = frozenset(
@@ -2186,7 +2168,7 @@ def _required_isolated_driver_keys(
 
 
 @dataclass(frozen=True, slots=True)
-class CompleteIsolatedDriverEvidence:
+class CompleteIsolatedDriverEvidence(FingerprintedRecord):
     """The exact isolated-driver evidence set required by one region plan."""
 
     plan: RegionEvidencePlan
@@ -2305,9 +2287,6 @@ class CompleteIsolatedDriverEvidence:
             "drivers": [driver.to_dict() for driver in self.drivers],
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "CompleteIsolatedDriverEvidence":
         value = _strict_object(
@@ -2331,7 +2310,7 @@ class CompleteIsolatedDriverEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class StationaryRegionEvidence:
+class StationaryRegionEvidence(FingerprintedRecord):
     """Exactly three fresh captures for one normal or reverse stationary target."""
 
     authority: CommissioningEvidenceAuthority
@@ -2437,9 +2416,6 @@ class StationaryRegionEvidence:
             "captures": [capture.to_dict() for capture in self.captures],
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "StationaryRegionEvidence":
         fields = frozenset(
@@ -2543,7 +2519,7 @@ def delay_point_context_base_fingerprint(
 
 
 @dataclass(frozen=True, slots=True)
-class DelayPointEvidence:
+class DelayPointEvidence(FingerprintedRecord):
     """Exactly five one-shot null captures at one graph-confirmed delay."""
 
     authority: CommissioningEvidenceAuthority
@@ -2654,9 +2630,6 @@ class DelayPointEvidence:
             "captures": [capture.to_dict() for capture in self.captures],
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "DelayPointEvidence":
         fields = frozenset(
@@ -2717,7 +2690,7 @@ def _spec_from_mapping(raw: Any) -> NullWalkSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class RegionGeometryAttestation:
+class RegionGeometryAttestation(FingerprintedRecord):
     """Explicit signed acoustic-center provenance for one exact region target."""
 
     speaker_group_id: str
@@ -2775,9 +2748,6 @@ class RegionGeometryAttestation:
             "attestation_artifact": self.attestation_artifact.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "RegionGeometryAttestation":
         value = _strict_object(
@@ -2809,7 +2779,7 @@ class RegionGeometryAttestation:
 
 
 @dataclass(frozen=True, slots=True)
-class DelayWalkEvidence:
+class DelayWalkEvidence(FingerprintedRecord):
     """A complete bounded null-walk schedule; this makes no winning-delay claim."""
 
     authority: CommissioningEvidenceAuthority
@@ -2999,9 +2969,6 @@ class DelayWalkEvidence:
             "repeatability_artifact": self.repeatability_artifact.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "DelayWalkEvidence":
         value = _strict_object(
@@ -3131,7 +3098,7 @@ def _capture_role_identities(
 
 
 @dataclass(frozen=True, slots=True)
-class RegionCommissioningEvidence:
+class RegionCommissioningEvidence(FingerprintedRecord):
     """Complete normal, reverse, and delay evidence for one exact region."""
 
     plan: RegionEvidencePlan
@@ -3349,9 +3316,6 @@ class RegionCommissioningEvidence:
             "delay_walk": self.delay_walk.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "RegionCommissioningEvidence":
         value = _strict_object(
@@ -3381,7 +3345,7 @@ def _region_captures(
 
 
 @dataclass(frozen=True, slots=True)
-class CompleteCommissioningEvidence:
+class CompleteCommissioningEvidence(FingerprintedRecord):
     """Exactly one fresh evidence value for every target in an immutable plan."""
 
     plan: RegionEvidencePlan
@@ -3474,9 +3438,6 @@ class CompleteCommissioningEvidence:
             "plan": self.plan.to_dict(),
             "regions": [region.to_dict() for region in self.regions],
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CompleteCommissioningEvidence":

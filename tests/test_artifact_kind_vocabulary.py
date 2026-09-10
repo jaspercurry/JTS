@@ -60,7 +60,6 @@ UNKNOWN_KIND = "jts_some_future_feature_artifact"
 @pytest.mark.parametrize(
     "kind",
     [
-        "jts_bass_extension_bench_receipt",
         "jts_room_capture",
         "jts_active_round_receipt",
         UNKNOWN_KIND,

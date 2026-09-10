@@ -36,7 +36,18 @@ def test_ring_drops_oldest_beyond_capacity():
     assert len(ring.buffer) == 3  # oldest two dropped
 
 
-def test_flush_writes_tagged_burst_and_clears():
+def _dump_sizes(stream: io.StringIO) -> list[int]:
+    """`records=N` off every dump header the stream has collected."""
+    return [
+        int(line.split("records=")[1])
+        for line in stream.getvalue().splitlines()
+        if "event=flightrec.dump " in line
+    ]
+
+
+def test_flush_writes_a_tagged_burst_and_keeps_the_ring():
+    """The ring survives its own dump: the lines around an anomaly are still
+    the context an explicit dump right after it wants."""
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)
     ring.emit(_rec(logging.DEBUG, "hello-context"))
@@ -46,7 +57,50 @@ def test_flush_writes_tagged_burst_and_clears():
     assert "event=flightrec.dump reason=test records=1" in out
     assert "hello-context" in out
     assert "event=flightrec.dump.end reason=test" in out
-    assert len(ring.buffer) == 0
+    assert len(ring.buffer) == 1
+
+
+def test_an_auto_flush_writes_only_the_lines_added_since_the_last_flush(
+    monkeypatch,
+):
+    """The ring outlives its own dumps now, so the volume bound that emptying
+    it used to give has to come from the cursor instead. The cursor is global
+    across flushes, so a dump a minute after another carries only the lines
+    that arrived between them. Keying it per signature gives nothing: at
+    ~1151 lines/h every line in a 1000-line ring is newer than any one
+    signature's floor, and a signature dumping for the first time has no
+    cursor at all (#4122)."""
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(fr.DEFAULT_CAPACITY, s)
+    now = [1_000.0]
+    monkeypatch.setattr(fr.time, "monotonic", lambda: now[0])
+    for i in range(fr.DEFAULT_CAPACITY - 1):
+        ring.emit(_rec(logging.DEBUG, f"ctx{i}"))
+    ring.emit(_rec(logging.WARNING, "first", name="jasper.one"))
+    assert _dump_sizes(s) == [fr.DEFAULT_CAPACITY]
+
+    for i in range(9):
+        ring.emit(_rec(logging.DEBUG, f"new{i}"))
+    now[0] += 60.0
+    ring.emit(_rec(logging.WARNING, "second", name="jasper.two"))
+
+    assert _dump_sizes(s) == [fr.DEFAULT_CAPACITY, 10]
+
+
+def test_an_explicit_dump_replays_the_ring_and_still_advances_the_cursor():
+    """"Flag that" and SIGUSR1 ask for the window around the moment, which
+    includes lines an automatic dump already carried. What follows one is
+    new, so the next automatic dump starts after it rather than repeating
+    it."""
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    ring.emit(_rec(logging.DEBUG, "ctx"))
+    ring.emit(_rec(logging.WARNING, "boom"))
+    assert _dump_sizes(s) == [2]
+
+    assert ring.flush_buffer("manual") == 2
+    ring.emit(_rec(logging.DEBUG, "after"))
+    assert ring.flush_buffer("later", since_last_flush=True) == 1
 
 
 def test_auto_flush_on_warning_includes_prior_context():
@@ -58,7 +112,6 @@ def test_auto_flush_on_warning_includes_prior_context():
     out = s.getvalue()
     assert "reason=auto:warning" in out
     assert "ctx1" in out and "ctx2" in out and "boom" in out
-    assert len(ring.buffer) == 0
 
 
 def test_auto_flush_is_floored_per_signature(monkeypatch):
@@ -154,7 +207,7 @@ def test_explicit_dump_is_never_floored():
     ring = fr.RingFlushHandler(10, s)
     ring.emit(_rec(logging.WARNING, "churn"))
     ring.emit(_rec(logging.WARNING, "churn"))  # floored
-    assert ring.flush_buffer("manual") == 1
+    assert ring.flush_buffer("manual") == 2
 
 
 def test_no_flush_on_info_or_debug():
@@ -203,8 +256,9 @@ def test_ring_stores_formatted_strings_not_records():
     ring.emit(logging.LogRecord(
         "jasper.x", logging.DEBUG, "f.py", 1, "payload=%s", (payload,), None))
     assert len(ring.buffer) == 1
-    assert isinstance(ring.buffer[0], str)  # a string, not the LogRecord/list
-    assert "chunk" in ring.buffer[0]
+    _, line = ring.buffer[0]
+    assert isinstance(line, str)  # a string, not the LogRecord/list
+    assert "chunk" in line
 
 
 # -------------------------------------------------------------------- install

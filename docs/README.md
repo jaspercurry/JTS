@@ -46,10 +46,9 @@ and bank evidence ([ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.m
 Adoption is explicit. Runtime readback checks the applied graph; a new acoustic
 capture is a separate experiment.
 
-[The bass-extension plan](HANDOFF-bass-extension-plan.md) remains the parked
-plan and authorization source under
-[ADR-0018](adr/0018-bass-extension-stays-parked.md). It is not a statement that
-bass extension is active.
+[The bass-extension plan](HANDOFF-bass-extension-plan.md) is the resumed plan
+and authorization source under
+[ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md).
 
 ## Plans, research, and history
 

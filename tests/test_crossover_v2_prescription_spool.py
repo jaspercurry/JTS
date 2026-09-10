@@ -67,6 +67,7 @@ from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 from jasper.web import correction_crossover_v2 as v2host
 
+from tests._log_events import event_field_maps, event_fields, event_records
 from tests.crossover_v2_fixtures import (
     FakeSeams,
     _conductor,
@@ -602,7 +603,8 @@ def test_staging_twice_is_last_wins_and_says_so(caplog):
     assert staged.prescription_sha256 == prescription_sha256(second)
     # logfmt renders booleans lowercase — the rendered line is the contract a
     # reader greps, so it is what gets asserted.
-    assert "replaced=true" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["replaced"] == "true"
 
 
 def test_staging_the_first_time_does_not_claim_to_have_replaced_anything(caplog):
@@ -611,7 +613,8 @@ def test_staging_the_first_time_does_not_claim_to_have_replaced_anything(caplog)
                                               ".prescription_spool"):
         _stage(for_round_ordinal=9)
 
-    assert "replaced=false" in caplog.text
+    fields = event_fields(caplog, "crossover_v2.prescription_staged")
+    assert fields["replaced"] == "false"
 
 
 # --------------------------------------------------------------------------- #
@@ -1620,7 +1623,10 @@ def test_the_preparer_accepts_every_class_the_slot_can_carry(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         conductor = _prepare(monkeypatch)
 
-    assert spool.PRESCRIPTION_CLASS_NOT_ACCEPTED not in caplog.text
+    refusals = event_field_maps(caplog, "correction.crossover_v2_prescription_refused")
+    assert not any(
+        fields["reason"] == spool.PRESCRIPTION_CLASS_NOT_ACCEPTED for fields in refusals
+    )
     assert conductor._prescribed_driver is not None
 
 
@@ -1641,12 +1647,12 @@ def test_the_take_event_names_the_class_and_the_branches_it_replaces(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         _prepare(monkeypatch)
 
-    assert "event=correction.crossover_v2_prescription_taken" in caplog.text
-    assert f"prescription_kind={DRIVER_PRESCRIPTION_KIND}" in caplog.text
-    assert "prescription_class=cut" in caplog.text
-    assert "roles=tweeter" in caplog.text
-    assert "filters=1" in caplog.text
-    assert f"prescription_sha256={prescription_sha256(payload)}" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prescription_taken")
+    assert fields["prescription_kind"] == DRIVER_PRESCRIPTION_KIND
+    assert fields["prescription_class"] == "cut"
+    assert fields["roles"] == "tweeter"
+    assert fields["filters"] == "1"
+    assert fields["prescription_sha256"] == prescription_sha256(payload)
 
 
 def test_the_blend_classs_take_event_carries_the_class_and_no_roles(
@@ -1664,9 +1670,9 @@ def test_the_blend_classs_take_event_carries_the_class_and_no_roles(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         _prepare(monkeypatch)
 
-    assert "event=correction.crossover_v2_prescription_taken" in caplog.text
-    assert f"prescription_kind={PRESCRIPTION_KIND}" in caplog.text
-    assert 'roles=""' in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_prescription_taken")
+    assert fields["prescription_kind"] == PRESCRIPTION_KIND
+    assert fields["roles"] == ""
 
 
 # --- the refusals, inherited whole ------------------------------------------ #
@@ -1674,11 +1680,10 @@ def test_the_blend_classs_take_event_carries_the_class_and_no_roles(
 
 def _refusal_slug(caplog) -> str:
     """The slug on this round's refusal line, or ``""`` if it never said one."""
-    for record in caplog.records:
-        message = record.getMessage()
-        if "event=correction.crossover_v2_prescription_refused" in message:
-            return message.split("reason=")[1].split(" ")[0]
-    return ""
+    records = event_records(caplog, "correction.crossover_v2_prescription_refused")
+    if not records:
+        return ""
+    return event_fields(caplog, "correction.crossover_v2_prescription_refused")["reason"]
 
 
 def test_a_per_driver_document_staged_for_another_round_is_refused_and_consumed(
@@ -2386,12 +2391,9 @@ def test_the_three_consumers_of_the_prediction_see_the_prescribed_filters(
     ) > 0.0
 
 
-def _gate_lines(caplog) -> list[str]:
-    """Every pre-Apply prediction-gate line captured so far."""
-    return [
-        record.getMessage() for record in caplog.records
-        if "event=correction.crossover_v2_prediction_gate" in record.getMessage()
-    ]
+def _gate_lines(caplog) -> list[dict[str, str]]:
+    """Every pre-Apply prediction-gate line's fields, captured so far."""
+    return event_field_maps(caplog, "correction.crossover_v2_prediction_gate")
 
 
 def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
@@ -2435,10 +2437,10 @@ def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
     # a branch that collapsed either way would leave one of these two wrong, and
     # asserting only the prescribed side would not notice the fitted class
     # quietly losing its own 0.5 dB.
-    assert any("required_db=0.0" in line for line in prescribed_lines)
-    assert not any("required_db=0.5" in line for line in prescribed_lines)
-    assert any("required_db=0.5" in line for line in automatic_lines)
-    assert not any("required_db=0.0" in line for line in automatic_lines)
+    assert any(fields["required_db"] == "0.0" for fields in prescribed_lines)
+    assert not any(fields["required_db"] == "0.5" for fields in prescribed_lines)
+    assert any(fields["required_db"] == "0.5" for fields in automatic_lines)
+    assert not any(fields["required_db"] == "0.0" for fields in automatic_lines)
     assert flow.PRESCRIBED_NON_WORSENING_DB == 0.0
     assert flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
 
@@ -2480,15 +2482,12 @@ def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(
         built = _walked_round(monkeypatch, taken)
 
     assert built.conductor.candidate is not None
-    gate = [
-        line for line in caplog.text.splitlines()
-        if "event=correction.crossover_v2_prediction_gate" in line
-    ]
-    assert gate, caplog.text
-    assert "reason=not_an_improvement" in gate[-1]
+    gate = event_field_maps(caplog, "correction.crossover_v2_prediction_gate")
+    assert gate
+    assert gate[-1]["reason"] == "not_an_improvement"
     # The deciding number on the wire says WHICH bar judged it — the prescribed
     # class's non-worsening floor, not the fitted class's 0.5 dB.
-    assert "required_db=0.0" in gate[-1]
+    assert gate[-1]["required_db"] == "0.0"
     # The control: the same session with no document also proceeds, so the
     # ledger line above is about the DOCUMENT rather than the fixture.
     assert _walked_round(monkeypatch, None).conductor.candidate is not None
@@ -2573,8 +2572,8 @@ def test_a_prescribed_round_with_no_fit_says_the_ceiling_is_unavailable(
         )
 
     assert ceiling is None
-    assert "event=correction.crossover_v2_mic_trust_ceiling_unavailable" in caplog.text
-    assert "reason=no_entry_recorded_a_mic_tier" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_mic_trust_ceiling_unavailable")
+    assert fields["reason"] == "no_entry_recorded_a_mic_tier"
     # …and the instruction still landed, so this is a statement about the TIER
     # rather than about an empty candidate.
     assert set(candidate.linearization) == {"tweeter"}

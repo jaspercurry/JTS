@@ -851,13 +851,16 @@ def test_stop_peering_daemon_returns_promptly_when_stop_races_the_start(
         assert srv_mod._peering_task is None
 
 
-def test_peering_start_failure_clears_task_and_allows_retry(_peering_env, monkeypatch):
-    """A start() failure clears `_peering_task` so the next start is a
-    real retry."""
+def test_peering_start_failure_retries_without_restart(_peering_env, monkeypatch):
+    """R18 (#4416): a daemon.start() failure (e.g. the multicast bind OSError
+    #4391 now raises instead of swallowing) must not require jasper-control
+    to restart — the shared run_supervisor_loop retries the SAME coroutine
+    until start() succeeds, so `_peering_task` stays alive throughout."""
     srv_mod, peering_daemon_mod = _peering_env
+    monkeypatch.setattr(srv_mod, "_PEERING_RETRY_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr(srv_mod, "_PEERING_RETRY_JITTER_SEC", 0.0)
 
     start_calls: list[int] = []
-    stop_calls: list[int] = []
 
     class FakePeeringDaemon:
         def __init__(self, cfg):
@@ -865,23 +868,19 @@ def test_peering_start_failure_clears_task_and_allows_retry(_peering_env, monkey
 
         async def start(self):
             start_calls.append(1)
-            raise OSError(errno.ENODEV, "No such device")
+            if len(start_calls) < 3:
+                raise OSError(errno.ENODEV, "No such device")
 
         async def stop(self):
-            stop_calls.append(1)
+            pass
 
     monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
 
     srv_mod.start_peering_daemon_if_enabled()
-    wait_until_sync(lambda: srv_mod._peering_task is None)
-    assert start_calls == [1]
-    assert stop_calls == [1]
-
-    srv_mod.start_peering_daemon_if_enabled()
-    wait_until_sync(lambda: len(start_calls) >= 2)
-    assert start_calls == [1, 1]
-    wait_until_sync(lambda: srv_mod._peering_task is None)
-    assert stop_calls == [1, 1]
+    wait_until_sync(lambda: len(start_calls) >= 3)
+    assert start_calls == [1, 1, 1]
+    with srv_mod._peering_lock:
+        assert srv_mod._peering_task is not None
 
 
 # ---------------------------------------------------------------------------

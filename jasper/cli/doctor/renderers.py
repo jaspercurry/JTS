@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — renderers domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — renderers domain."""
 from __future__ import annotations
 
 import json
@@ -27,6 +22,7 @@ from ...source_intent import (
     read_bluetooth_rfkill_state,
     source_intent_enabled,
 )
+from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -272,7 +268,7 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
     )
 
 
-@doctor_check(label="librespot.service", needs_cfg=True)
+@doctor_check(label=LIBRESPOT_SERVICE, needs_cfg=True)
 def check_librespot_running(cfg: Config) -> CheckResult:
     """Verify librespot is installed and the systemd unit is active.
 
@@ -280,13 +276,13 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     on 2026-05-07 specifically for the configurable volume curve
     (--volume-ctrl log over 60 dB range). It has no local control
     HTTP, so health is checked via systemd state + binary version."""
-    parked = _parked_follower_result("librespot.service")
+    parked = _parked_follower_result(LIBRESPOT_SERVICE)
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
         Source.SPOTIFY,
-        "librespot.service",
-        units=("librespot.service",),
+        LIBRESPOT_SERVICE,
+        units=(LIBRESPOT_SERVICE,),
     )
     if intentional_off is not None:
         return intentional_off
@@ -298,19 +294,19 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "apt install raspotify (provides librespot via .deb)",
             reason=REASON_LIBRESPOT_BINARY_MISSING,
         )
-    state = (evidence.unit_state("librespot.service") or {}).get(
+    state = (evidence.unit_state(LIBRESPOT_SERVICE) or {}).get(
         "active_state",
     ) or "unknown"
     if state != "active":
         return CheckResult(
-            "librespot.service", "fail",
+            LIBRESPOT_SERVICE, "fail",
             f"systemctl is-active = '{state}'. Check: "
             "systemctl status librespot",
             reason=REASON_LIBRESPOT_NOT_ACTIVE,
         )
     # Best-effort version line (librespot prints to stderr at startup)
     return CheckResult(
-        "librespot.service", "ok",
+        LIBRESPOT_SERVICE, "ok",
         f"{bin_path} active (state file: {cfg.librespot_state_path})",
     )
 
@@ -606,7 +602,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     intentional_off = _intentional_source_off(
         Source.SPOTIFY,
         label,
-        units=("librespot.service",),
+        units=(LIBRESPOT_SERVICE,),
     )
     if intentional_off is not None:
         return intentional_off
@@ -858,7 +854,7 @@ def _renderer_device_bluealsa() -> Optional[str]:
 #: The renderer units :func:`renderer_probes` covers, in probe order.
 _RENDERER_UNITS = (
     "shairport-sync.service",
-    "librespot.service",
+    LIBRESPOT_SERVICE,
     "bluealsa-aplay.service",
 )
 

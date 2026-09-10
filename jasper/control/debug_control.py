@@ -56,7 +56,10 @@ def _read_env() -> dict[str, str]:
 
 
 def _atomic_write(updates: dict[str, str]) -> None:
-    locked_update_env_file(debug_mode.DEBUG_FILE, updates, mode=0o644)
+    locked_update_env_file(
+        debug_mode.DEBUG_FILE, updates, mode=0o644,
+        owner="JTS /system debug-logging control",
+    )
 
 
 def _clear_all() -> dict[str, str]:

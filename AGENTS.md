@@ -77,7 +77,8 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   (ruling 13, ADR-0199; the live bass-extension plan is exempt, ADR-0229) — do
   not recreate that tier; a subsystem fact gets re-derived at HEAD, not parked
   in a new handoff. Do not restate here, in README, or in code what another
-  file owns.
+  file owns. Audits: one frozen report per run under `docs/audits/`, findings
+  as `audit`-labelled issues (ADR-0284).
 - **Duplication:** before writing a helper, constant vocabulary, or module,
   grep for the existing one and extend or consume it. Two implementations of
   one concern in reach: converge them or open an issue — never add a third.

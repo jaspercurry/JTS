@@ -24,6 +24,7 @@ import urllib.parse
 import pytest
 
 from jasper.web import transit_page, transit_setup
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
@@ -290,7 +291,7 @@ def test_post_clear_with_csrf_redirects_and_restarts(tmp_path, monkeypatch):
     confirm moved client-side but the server contract is unchanged."""
     restarts: list[None] = []
     monkeypatch.setattr(
-        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     token = "z" * 64
     # csrf_token = form field (_common.CSRF_FORM_FIELD); jts_csrf = cookie.
@@ -302,13 +303,33 @@ def test_post_clear_with_csrf_redirects_and_restarts(tmp_path, monkeypatch):
     assert restarts == [None]
 
 
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_post_clear_describes_the_restart_it_actually_got(
+    tmp_path, monkeypatch, outcome,
+):
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: outcome)
+    token = "z" * 64
+    body = ("csrf_token=" + token).encode()
+    h, _ = make_real_handler(
+        _handler_cls(tmp_path), "/clear", body=body,
+        headers={"Cookie": "jts_csrf=" + token},
+    )
+    h.do_POST()
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    cookie = next(
+        c for c in h.header_values("Set-Cookie") if c.startswith("jts_flash=")
+    )
+    flash = urllib.parse.unquote(cookie.split("jts_flash=", 1)[1].split(";", 1)[0])
+    assert flash == "Cleared transit settings." + RESTART_CLAUSE[outcome]
+
+
 def test_post_save_writes_routes_key_to_secret_file_and_default_to_transit_env(
     tmp_path,
     monkeypatch,
 ):
     restarts: list[None] = []
     monkeypatch.setattr(
-        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     token = "z" * 64
     key = "AIzaSySynthetic-Test_Key"
@@ -332,7 +353,7 @@ def test_post_save_writes_routes_key_to_secret_file_and_default_to_transit_env(
 
 
 def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypatch):
-    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
     transit_setup.write_env_file(
         str(tmp_path / "google_routes.env"),
         {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Keep_Key"},
@@ -353,7 +374,7 @@ def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypa
 
 
 def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
     transit_setup.write_env_file(
         str(tmp_path / "google_routes.env"),
         {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Clear_Key"},
@@ -408,7 +429,7 @@ def test_cities_section_carries_csrf(stub_gbfs):
 def test_post_cities_enables_pack_writes_env_and_restarts(tmp_path, monkeypatch):
     restarts: list[None] = []
     monkeypatch.setattr(
-        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     # Seed coords so the round-trip preserves them alongside the new toggle.
     transit_setup.write_env_file(
@@ -429,7 +450,7 @@ def test_post_cities_uncheck_all_writes_empty_value(tmp_path, monkeypatch):
     # Unchecking every city must persist an EXPLICIT empty value (present, not
     # absent) so enabled_pack_ids reads it as "no cities" rather than falling
     # back to the absent-key "all" default. This is the toggle's whole point.
-    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
     transit_setup.write_env_file(
         str(tmp_path / "transit.env"),
         {**NYC_STATE, "JASPER_TRANSIT_CITIES": "nyc"},
@@ -450,7 +471,7 @@ def test_post_cities_uncheck_all_writes_empty_value(tmp_path, monkeypatch):
 def test_post_cities_rejects_bad_csrf(tmp_path, monkeypatch):
     restarts: list[None] = []
     monkeypatch.setattr(
-        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     body = b"csrf_token=" + b"a" * 64 + b"&city_nyc=on"
     h, _ = make_real_handler(_handler_cls(tmp_path), "/cities", body=body, headers={"Cookie": "jts_csrf=" + "b" * 64})

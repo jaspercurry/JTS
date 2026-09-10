@@ -50,7 +50,8 @@ GENERATION_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/generation"
 PLAYBACK_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/playback"
 MAX_ADMISSION_ARTIFACT_BYTES = 64 * 1024
 ADMISSION_FILE_MODE = 0o640
-ADMISSION_DIRECTORY_MODE = 0o750
+# Preserve the feature-owned parent group when root and service users publish.
+ADMISSION_DIRECTORY_MODE = 0o2750
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")

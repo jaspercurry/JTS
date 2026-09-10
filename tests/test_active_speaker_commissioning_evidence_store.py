@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker.bundles import (
+    BUNDLE_DIR_MODE,
     BUNDLE_FILE_MODE,
     DEFAULT_SESSIONS_MAX_BYTES,
     open_bundle,
@@ -962,23 +964,23 @@ def test_identical_success_paths_refuse_drift_before_return(
 
 def test_new_artifact_inherits_the_authority_directory_group(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jasper.active_speaker.commissioning_evidence_store as evidence_store
-
+    shared_gid = next((gid for gid in os.getgroups() if gid != os.getegid()), os.getegid())
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    os.chown(sessions, -1, shared_gid)
+    sessions.chmod(BUNDLE_DIR_MODE)
     store = _open_store(tmp_path)
-    observed: list[int] = []
-    real_fchown = evidence_store.os.fchown
-
-    def record_fchown(descriptor: int, uid: int, gid: int) -> None:
-        observed.append(gid)
-        real_fchown(descriptor, uid, gid)
-
-    monkeypatch.setattr(evidence_store.os, "fchown", record_fchown)
-    artifact = store.publish_raw_artifact("group-owned.bin", b"owned")
-
-    assert observed == [(store.bundle_dir / artifact.relative_path).parent.stat().st_gid]
-    assert (store.bundle_dir / artifact.relative_path).stat().st_gid == observed[0]
+    artifact = store.publish_raw_artifact("nested/group-owned.bin", b"owned")
+    path = store.bundle_dir / artifact.relative_path
+    assert store.reopen_artifact(artifact) == b"owned"
+    assert path.stat().st_gid == shared_gid
+    assert path.stat().st_mode & 0o7777 == 0o640
+    parent = path.parent
+    while parent != sessions:
+        assert parent.stat().st_gid == shared_gid
+        assert parent.stat().st_mode & 0o7777 == 0o2750
+        parent = parent.parent
 
 
 def test_total_bound_covers_the_proven_max_capture_matrix() -> None:

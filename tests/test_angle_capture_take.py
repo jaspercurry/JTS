@@ -23,7 +23,7 @@ import json
 import logging
 import math
 import os
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
@@ -57,6 +57,7 @@ from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase, bank_into
+from tests.test_bass_extension_dynamic import _descriptor
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 _FC_HZ = 2000.0
@@ -550,7 +551,7 @@ def _played_measure_spec(measure_spec, monkeypatch):
     return one
 
 
-def _banked(monkeypatch, *, room_correction=None, **alignment):
+def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignment):
     """A banked candidate whose corner is the preset ``_take`` is handed."""
     region = SimpleNamespace(
         fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
@@ -561,7 +562,7 @@ def _banked(monkeypatch, *, room_correction=None, **alignment):
         candidate_bank, "find_banked_candidate",
         lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
             fingerprint=fingerprint, linearization={}, source_preset=preset,
-            room_correction=room_correction or {},
+            room_correction=room_correction or {}, bass_extension=bass_extension or {},
             alignment=SimpleNamespace(**alignment),
         )),
     )
@@ -789,9 +790,15 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
 
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])
-def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(slot, monkeypatch, delay_us):
+@pytest.mark.parametrize("bass_extension,scope", [
+    ({}, "candidate"), (asdict(_descriptor()), "bass_candidate"),
+])
+def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(
+    slot, monkeypatch, delay_us, bass_extension, scope,
+):
     preset = _banked(
-        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER, delay_us=delay_us,
+        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER,
+        delay_us=delay_us, bass_extension=bass_extension,
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
@@ -800,7 +807,7 @@ def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(slot, monkeypat
 
     spec, = [s for i, s in specs.items() if s.candidate_id]
     assert (spec.graph_scope, spec.candidate_id, claims[0].candidate_id) == (
-        "candidate", "fp-a", "fp-a",
+        scope, "fp-a", "fp-a",
     )
     assert (spec.positions, spec.vertical_deg, spec.pose_prompts) == (
         (20,), 5, (prompts[0].text,),

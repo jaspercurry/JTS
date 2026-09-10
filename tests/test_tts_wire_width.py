@@ -45,6 +45,7 @@ from jasper.tts_playout import (
 )
 
 from .fanin_env_fixtures import declare_fanin_env
+from tests._log_events import event_fields, event_records
 
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
@@ -338,7 +339,7 @@ def test_an_unreadable_declaration_resolves_to_the_default_and_says_so(
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _boom)
     with caplog.at_level("WARNING"):
         assert tts_wire_is_wide() is undeclared
-    assert "tts_wire.declaration_unreadable" in caplog.text
+    assert event_records(caplog, "tts_wire.declaration_unreadable")
     _clear_cache()
 
 
@@ -383,15 +384,16 @@ def test_a_startup_line_names_the_resolved_width_and_where_it_came_from(
     _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     with caplog.at_level("INFO"):
         TtsPlayout(socket_path="/nonexistent.sock")
-    assert "event=tts_wire.resolved" in caplog.text
-    assert "width=S32_LE" in caplog.text
-    assert "verb=AUDIO32" in caplog.text
-    assert "source=box_declaration" in caplog.text
+    fields = event_fields(caplog, "tts_wire.resolved")
+    assert fields["width"] == "S32_LE"
+    assert fields["verb"] == "AUDIO32"
+    assert fields["source"] == "box_declaration"
     caplog.clear()
     with caplog.at_level("INFO"):
         TtsPlayout(socket_path="/nonexistent.sock", wire_wide=False)
-    assert "width=S16_LE" in caplog.text
-    assert "source=explicit" in caplog.text
+    fields = event_fields(caplog, "tts_wire.resolved")
+    assert fields["width"] == "S16_LE"
+    assert fields["source"] == "explicit"
 
 
 # ---------------------------------------------------------------------------

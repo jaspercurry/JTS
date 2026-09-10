@@ -40,12 +40,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
 
 from .attempts_loop import (
@@ -92,10 +92,6 @@ def _store_lock_path(path: Path) -> Path:
     """The one cross-process lock for every mutation of ``path``."""
 
     return path.with_name(f"{path.name}.lock")
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _base_state(path: Path) -> dict[str, Any]:
@@ -173,7 +169,7 @@ def load_state(path: str | Path | None = None) -> dict[str, Any]:
         raw = json.loads(resolved.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return _base_state(resolved)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         log_event(
             logger,
             "active_speaker.model_error_store_unreadable",

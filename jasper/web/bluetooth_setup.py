@@ -41,7 +41,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 
-from dbus_next.errors import DBusError  # type: ignore
+from dbus_next.errors import (  # type: ignore
+    AuthError,
+    DBusError,
+    InvalidAddressError,
+)
 
 from ..bluetooth.availability import (
     BLUETOOTH_CONTROL_PLANE_UNIT,
@@ -343,8 +347,29 @@ class _AsyncDispatcher:
         self._ready.wait(timeout=10)
         if self._loop is None:
             raise RuntimeError("dispatcher loop failed to start")
-        # Engine bootstrap on the loop.
-        self.run(self._engine.start())
+        # Engine bootstrap on the loop, bounded to ~15 s by
+        # BluetoothEngine.start(). BlueZ can outlast that while it comes up
+        # (minutes, on a low-memory Pi Zero 2 W); raising here crash-loops the
+        # unit into its systemd start limit and /bluetooth/ then 502s until a
+        # `reset-failed`. Serve degraded instead: /state runs on its own
+        # short-lived bus, and every bus-using request runs the lazy recovery
+        # that reconnects the bus and retries the observer.
+        #
+        # Environment failures only. A rejected EXTERNAL handshake (AuthError)
+        # and a malformed bus address are misconfiguration this daemon cannot
+        # fix, but they are still no reason to fail the page. RuntimeError is
+        # deliberately absent: on this path it means a dead loop or a bug
+        # inside start(), and those must crash rather than serve degraded.
+        try:
+            self.run(self._engine.start())
+        except (DBusError, AuthError, InvalidAddressError, OSError) as exc:
+            log_event(
+                logger,
+                "bluetooth.engine_start_deferred",
+                level=logging.WARNING,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def _run(self) -> None:
         loop = asyncio.new_event_loop()

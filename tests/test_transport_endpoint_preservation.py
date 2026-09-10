@@ -520,51 +520,24 @@ async def test_every_recompose_call_site_names_the_endpoint_or_is_exempt():
     assert not _ENDPOINT_EXEMPT_CALL_SITES - found, "exemption names no call site"
 
 
-@pytest.mark.parametrize("seam", ["sound_carrier", "bass_extension"])
-async def test_the_re_emit_seams_forward_the_derived_endpoint(
-    applied_box, tmp_path, monkeypatch, seam,
-):
-    """The derived value REACHES the recomposer, not merely gets computed: a
-    seam that resolves the endpoint and drops it reads as fixed to any
-    source-level check while behaving exactly like the defect, so a sentinel is
-    threaded through the real seam and caught at the recomposer's boundary."""
+async def test_sound_carrier_forwards_the_derived_endpoint(applied_box):
     from unittest import mock
 
     from jasper.sound import graph_carrier
 
-    topology, applied = applied_box
     sentinel_device = "jts_sentinel_endpoint"
     spy = mock.Mock(return_value=(None, []))
-
     with mock.patch(
         "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", spy
     ), mock.patch(
         "jasper.active_speaker.playback_route.resolve_live_active_endpoint",
         mock.Mock(return_value=(sentinel_device, LOADED_GRAPH_SOURCE)),
     ), pytest.raises(graph_carrier.CarrierCannotHostEq):
-        if seam == "sound_carrier":
-            graph_carrier._recompose_active_baseline_with_eq(
-                SoundProfile(enabled=False), out_path=None
-            )
-        else:
-            selected = tmp_path / "selected.yml"
-            selected.write_text(_graph_for(topology, applied, None), encoding="utf-8")
-            preference_path = tmp_path / "pref.json"
-            preference_path.write_text(
-                json.dumps(SoundProfile(enabled=False).to_dict()), encoding="utf-8"
-            )
-            settings_path = tmp_path / "sound-settings.json"
-            settings_path.write_text("{}", encoding="utf-8")
-            graph_carrier.recompose_active_baseline_for_bass_extension(
-                topology,
-                applied_profile=applied,
-                desired_profile=None,
-                current_config_path=selected,
-                preference_profile_path=preference_path,
-                sound_settings_path=settings_path,
-            )
+        graph_carrier._recompose_active_baseline_with_eq(
+            SoundProfile(enabled=False), out_path=None
+        )
 
-    assert spy.call_args is not None, f"{seam} never reached the recomposer"
+    assert spy.call_args is not None
     assert spy.call_args.kwargs.get("playback_device") == sentinel_device
 
 

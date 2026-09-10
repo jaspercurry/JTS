@@ -194,32 +194,28 @@ def test_unit_caps_tasks_without_memorymax_kill_boundary():
     assert _value_for(unit, "MemoryMax") is None
 
 
-def test_unit_bounds_the_stop_grace_period():
-    """A wedged shutdown must not block whatever stopped the unit
-    (a reboot, a restart) indefinitely."""
-    unit = _read_unit()
-    assert _value_for(unit, "TimeoutStopSec") == "10s"
+# TimeoutStopSec=10s (a wedged shutdown must not block whatever stopped the
+# unit indefinitely) is pinned, with the rest of the restart ladder, by
+# tests/test_systemd_hardening.py's RESTART_POLICY table (R22, #4416).
 
 
 def test_bind_failure_parks_the_unit_instead_of_rebooting_the_box():
     """The unit half of ADR-0251.
 
-    jasper-control carries StartLimitAction=reboot, so an exit code the unit
-    does not hold spends the burst and reboots the Pi. A refused listen
-    socket cannot be freed by a restart, so the park code the daemon returns
-    must appear in BOTH exit-status directives — RestartPreventExitStatus
-    stops the ladder, SuccessExitStatus leaves the unit `inactive` rather
-    than `failed`. Retire this pin when the unit stops escalating to reboot.
+    jasper-control carries StartLimitAction=reboot (pinned, with RestartSec
+    and the rest of the restart ladder, by tests/test_systemd_hardening.py's
+    RESTART_POLICY table — R22, #4416), so an exit code the unit does not
+    hold spends the burst and reboots the Pi. A refused listen socket cannot
+    be freed by a restart, so the park code the DAEMON returns (checked here
+    against the live constant, not a hardcoded literal) must appear in BOTH
+    exit-status directives — RestartPreventExitStatus stops the ladder,
+    SuccessExitStatus leaves the unit `inactive` rather than `failed`.
     """
     from jasper.control.server import CONTROL_BIND_FAILED_EXIT
 
     unit = _read_unit()
     park = str(CONTROL_BIND_FAILED_EXIT)
     assert park == "78"
-    assert _value_for(unit, "StartLimitAction") == "reboot", (
-        "this pin exists because the unit escalates to reboot; if that is "
-        "gone, delete the pin and the exit-status lines together."
-    )
     assert park in _values_for(unit, "SuccessExitStatus"), (
         "jasper-control.service must list CONTROL_BIND_FAILED_EXIT in "
         f"SuccessExitStatus so a bind failure parks `inactive`. Got "
@@ -230,8 +226,4 @@ def test_bind_failure_parks_the_unit_instead_of_rebooting_the_box():
         "RestartPreventExitStatus so a permanent bind fault cannot climb "
         f"StartLimitBurst into a reboot. Got "
         f"{_values_for(unit, 'RestartPreventExitStatus')!r}"
-    )
-    assert _value_for(unit, "RestartSec") == "5", (
-        "RestartSec must not narrow back to 2 s: with StartLimitBurst=4 that "
-        "made control the tightest restart ladder on the box (~8 s to reboot)."
     )

@@ -1187,10 +1187,10 @@ def test_the_rounds_flatness_verdicts_reach_the_operator_and_the_trail(
         "graded_band_hz": [357.14, 20000.0],
         "bands": [
             {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "graded_lo_hz": 357.14,
-             "graded_hi_hz": 2000.0, "tolerance_db": 1.5, "passed": True,
+             "graded_hi_hz": 2000.0, "tolerance_db": 1.5, "within_target": True,
              "max_deviation_db": 1.02, "max_deviation_hz": 412.0},
             {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "graded_lo_hz": 8000.0,
-             "graded_hi_hz": 20000.0, "tolerance_db": 2.5, "passed": False,
+             "graded_hi_hz": 20000.0, "tolerance_db": 2.5, "within_target": False,
              "max_deviation_db": -4.85, "max_deviation_hz": 11480.0},
         ],
         "tilt": {"step_db": 2.37, "high_band_hz": [250.0, 2000.0],

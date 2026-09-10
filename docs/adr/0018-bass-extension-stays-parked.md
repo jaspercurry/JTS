@@ -8,7 +8,7 @@
 
 The bass-extension program's apply pathway is built and unwired. The 2026-08-25
 deep audit listed its parked half as a deletion candidate
-(`docs/DEEP-AUDIT-2026-08-25.md:79`, ~4,600 lines plus 715 optional test lines),
+(`docs/audits/2026-08-25-deep-audit.md:79`, ~4,600 lines plus 715 optional test lines),
 noting that *"deadness is structurally enforced by its own tests"* and that the
 one CLI that could wire it in unconditionally raises `SystemExit` naming
 [#1738](https://github.com/jaspercurry/JTS/issues/1738). The tuning refactor's

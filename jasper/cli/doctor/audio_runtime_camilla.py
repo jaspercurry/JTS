@@ -69,6 +69,11 @@ REASON_CAMILLA_PARK_RECORD_UNREADABLE = "camilla_park_record_unreadable"
 REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
 REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 
+REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH = "camilla_statefile_topology_mismatch"
+REASON_CAMILLA_TOPOLOGY_GATE_UNREADABLE = "camilla_topology_gate_unreadable"
+REASON_CAMILLA_TOPOLOGY_GATE_UNINTELLIGIBLE = "camilla_topology_gate_unintelligible"
+REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING = "camilla_topology_stamps_missing"
+
 
 @doctor_check(core=True)
 def check_camilla_service() -> CheckResult:
@@ -76,10 +81,11 @@ def check_camilla_service() -> CheckResult:
 
     Owns the CLEAN-stop state its peers miss (#2163): `check_service_runtime_state`
     flags only `failed`, and `check_camilla_websocket` reports it as an
-    unreachable 127.0.0.1:1234. "Enabled but not active" is unambiguous here
-    because CamillaDSP has no gate that makes `inactive` legitimate, unlike
-    jasper-outputd (missing-DAC `ExecCondition`) or jasper-voice
-    (`voice-input-absent` marker).
+    unreachable 127.0.0.1:1234. "Enabled but not active" is unambiguous here:
+    unlike jasper-outputd (missing-DAC `ExecCondition`) or jasper-voice
+    (`voice-input-absent` marker), CamillaDSP's own `ExecCondition` gate skips
+    the start only on a topology mismatch, which is a silent speaker and not a
+    legitimate rest state — `check_camilla_topology_gate` names that case.
 
     Returns:
       - ok when enabled and active.
@@ -633,4 +639,105 @@ def check_camilla_recover_park() -> CheckResult:
         "fail",
         ". ".join(parts),
         reason=REASON_CAMILLA_GRAPH_PARKED,
+    )
+
+
+@doctor_check(core=True)
+def check_camilla_topology_gate() -> CheckResult:
+    """CamillaDSP is not held down by a statefile/topology mismatch.
+
+    ``deploy/bin/jasper-camilla-topology-gate`` is jasper-camilla's
+    ``ExecCondition=``: it skips the start when the graph the statefile names
+    was proved against a different speaker topology than the one the last
+    convergence was working on, so the previous speakers' crossover and
+    protection cannot reach these drivers (#4416 R8, ADR-0283). Severity is
+    ``fail``: the speaker emits NOTHING and only a convergence that succeeds
+    clears it. The record's own ``action=``/``re_arm=`` text is surfaced
+    verbatim rather than restated here.
+
+    No refusal is not automatically ``ok``, because the gate ALLOWS on unknown:
+    see :func:`_topology_gate_allowed_result`.
+    """
+    label = "camilla statefile topology"
+
+    from ...control import camilla_topology_gate_state
+
+    state = camilla_topology_gate_state.snapshot()
+    status = state.get("status")
+
+    if status == "absent":
+        return _topology_gate_allowed_result(label)
+
+    if status == "unreadable":
+        return CheckResult(
+            label,
+            "warn",
+            f"topology-gate record at {state.get('path')} exists but could "
+            f"not be read ({state.get('error')}) — a refusal cannot be ruled "
+            "out. Check journalctl -u jasper-camilla.",
+            reason=REASON_CAMILLA_TOPOLOGY_GATE_UNREADABLE,
+        )
+
+    if status == "unintelligible":
+        return CheckResult(
+            label,
+            "warn",
+            f"topology-gate record at {state.get('path')} is present but "
+            "carries no reason (a truncated write) — a refusal cannot be "
+            "ruled out from it. Check journalctl -u jasper-camilla.",
+            reason=REASON_CAMILLA_TOPOLOGY_GATE_UNINTELLIGIBLE,
+        )
+
+    parts = [
+        "REFUSED — CamillaDSP was not started because the saved graph belongs "
+        f"to a different speaker topology (proved {state.get('proved')}, "
+        f"unproved {state.get('unproved')})",
+    ]
+    refused_utc = state.get("refused_utc")
+    if refused_utc:
+        parts.append(f"at {refused_utc}")
+    for field, prefix in (
+        ("detail", ""),
+        ("action", "ACTION: "),
+        ("re_arm", "RE-ARM: "),
+    ):
+        value = state.get(field)
+        if value:
+            parts.append(f"{prefix}{value}")
+    return CheckResult(
+        label,
+        "fail",
+        ". ".join(parts),
+        reason=REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH,
+    )
+
+
+def _topology_gate_allowed_result(label: str) -> CheckResult:
+    """No refusal this boot — but say whether the gate could have refused.
+
+    The gate allows on UNKNOWN, so "no refusal" alone cannot tell a working
+    speaker from a blind gate. The proof stamp beside the statefile is what
+    makes the comparison possible at all, so its absence on a box running this
+    build is the warning: either no convergence has written a statefile since
+    the deploy, or the stamp writes are failing (they log
+    `event=camilla_topology_stamp.write_failed`).
+    """
+    from ...active_speaker.environment import camilla_statefile_path
+    from ...output_topology import (
+        read_topology_fingerprint_stamp,
+        statefile_topology_stamp_path,
+    )
+
+    statefile = camilla_statefile_path()
+    if read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile)):
+        return CheckResult(label, "ok", "no topology-gate refusal this boot")
+    return CheckResult(
+        label,
+        "warn",
+        "no topology-gate refusal this boot, but no proof stamp beside "
+        f"{statefile} either, so the gate cannot tell this graph's topology "
+        "from any other. Run the hardware reconciler "
+        "(systemctl start jasper-audio-hardware-reconcile.service) and check "
+        "the journal for event=camilla_topology_stamp.write_failed.",
+        reason=REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING,
     )

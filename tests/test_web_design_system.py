@@ -295,6 +295,7 @@ def test_canonical_page_observes_manifest_replacement_in_warm_process(
 # in the system page's ES modules, which the Python render tests don't execute —
 # so guard the grammar statically here.
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
+SHARED_JS = ROOT / "deploy" / "assets" / "shared" / "js"
 
 
 def _css_body(css: str, selector: str) -> str:
@@ -314,7 +315,9 @@ def test_typographic_grammar_tiers_do_not_reflatten():
     assert "text-transform: uppercase" in _css_body(css, ".deflist dt"), \
         "row labels must remain the uppercase EYEBROW tier"
     # …and titledCard actually renders the cased class (not the old eyebrow()).
-    assert "section__title" in (SYSTEM_JS / "components.js").read_text(), \
+    # titledCard is shared verbatim from ui.js (byte-identical between the
+    # chat and system-status page modules).
+    assert "section__title" in (SHARED_JS / "ui.js").read_text(), \
         "titledCard must render the cased .section__title"
 
 

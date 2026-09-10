@@ -331,21 +331,10 @@ class SessionStats:
     """Aggregate per-clip peak scores per leg.
 
     Generalized to any subset of legs so the same code handles 2-leg
-    (on + off) and 3-leg (on + off + dtln) sessions. `peaks_on` /
-    `peaks_off` accessors are kept as backward-compat shims for the
-    original test fixtures.
+    (on + off) and 3-leg (on + off + dtln) sessions.
     """
 
     peaks_per_leg: dict[str, list[float]] = field(default_factory=dict)
-
-    # ----- backward-compat accessors used by the 2-leg test fixtures
-    @property
-    def peaks_on(self) -> list[float]:
-        return self.peaks_per_leg.setdefault("on", [])
-
-    @property
-    def peaks_off(self) -> list[float]:
-        return self.peaks_per_leg.setdefault("off", [])
 
     def record(self, peak_on: float, peak_off: float,
                peak_dtln: float | None = None) -> None:
@@ -538,7 +527,8 @@ async def run_session(args: argparse.Namespace) -> int:
             if seq < args.count:
                 await asyncio.sleep(INTER_CLIP_PAUSE_SEC)
 
-    print(f"\nSession complete. {len(stats.peaks_on)}/{args.count} clips saved.")
+    saved_on = len(stats.peaks_per_leg.get("on", []))
+    print(f"\nSession complete. {saved_on}/{args.count} clips saved.")
     print(stats.summary())
     if stats.weak_count() > 0:
         print(

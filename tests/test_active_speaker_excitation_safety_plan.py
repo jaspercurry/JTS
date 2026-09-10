@@ -24,6 +24,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_protection_slope_db_per_octave,
 )
 from jasper.active_speaker.measurement import active_driver_targets
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
 
 
@@ -593,7 +594,7 @@ def test_ceiling_supersession_logs_event(caplog):
             program_admission=True,
             declared_sensitivities=_JTS3_SENSITIVITIES,
         )
-    assert "event=active_speaker.excitation_ceiling_superseded" in caplog.text
+    assert event_records(caplog, "active_speaker.excitation_ceiling_superseded")
     caplog.clear()
     with caplog.at_level(
         logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
@@ -603,7 +604,7 @@ def test_ceiling_supersession_logs_event(caplog):
             targets["tweeter"]["target_fingerprint"],
             declared_sensitivities=_JTS3_SENSITIVITIES,
         )
-    assert "event=active_speaker.excitation_ceiling_superseded" not in caplog.text
+    assert not event_records(caplog, "active_speaker.excitation_ceiling_superseded")
 
 
 def test_skipped_derivation_logs_named_role(caplog):
@@ -622,9 +623,11 @@ def test_skipped_derivation_logs_named_role(caplog):
             targets["tweeter"]["target_fingerprint"],
             program_admission=True,
         )
-    assert "event=active_speaker.excitation_ceiling_derivation_skipped" in caplog.text
-    assert "role=tweeter" in caplog.text
-    assert "reason=declared_sensitivity_missing" in caplog.text
+    fields = event_fields(
+        caplog, "active_speaker.excitation_ceiling_derivation_skipped"
+    )
+    assert fields["role"] == "tweeter"
+    assert fields["reason"] == "declared_sensitivity_missing"
     caplog.clear()
     with caplog.at_level(
         logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
@@ -632,7 +635,9 @@ def test_skipped_derivation_logs_named_role(caplog):
         resolve_driver_excitation_ceilings(
             profile, targets["tweeter"]["target_fingerprint"],
         )
-    assert "excitation_ceiling_derivation_skipped" not in caplog.text
+    assert not event_records(
+        caplog, "active_speaker.excitation_ceiling_derivation_skipped"
+    )
 
 
 # --- resolve_driver_excitation_ceilings: band-edge asymmetry (PR-A, #1668) ---
@@ -753,9 +758,11 @@ def test_the_widened_floor_is_announced_when_it_moves(caplog):
         resolve_driver_excitation_ceilings(
             profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
         )
-    assert "active_speaker.excitation_floor_widened_to_hard_band" in caplog.text
-    assert "declared_measurement_floor_hz=2000.0" in caplog.text
-    assert "excitation_floor_hz=1600.0" in caplog.text
+    fields = event_fields(
+        caplog, "active_speaker.excitation_floor_widened_to_hard_band"
+    )
+    assert fields["declared_measurement_floor_hz"] == "2000.0"
+    assert fields["excitation_floor_hz"] == "1600.0"
 
 
 def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog):
@@ -769,7 +776,9 @@ def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog)
         resolve_driver_excitation_ceilings(
             profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
         )
-    assert "excitation_floor_widened_to_hard_band" not in caplog.text
+    assert not event_records(
+        caplog, "active_speaker.excitation_floor_widened_to_hard_band"
+    )
 
 
 # --- resolve_driver_measurement_band_hz (flat-linearization plan PR-4) ------

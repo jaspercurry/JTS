@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from jasper.web import _common, wake_setup
+from jasper.web._common import RestartOutcome
 
 
 def _bundled_entry():
@@ -510,7 +511,7 @@ def test_post_save_writes_env_and_restarts(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda *a, **k: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda *a, **k: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
     )
     entry = _bundled_entry()
     h, cap = _make_request(

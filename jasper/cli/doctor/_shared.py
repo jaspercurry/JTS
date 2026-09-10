@@ -41,7 +41,11 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
 )
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
-from ...service_units import unit_not_running
+from ...service_units import (
+    JASPER_VOICE_SERVICE,
+    LIBRESPOT_SERVICE,
+    unit_not_running,
+)
 
 GREEN = "\033[32m"
 
@@ -361,7 +365,7 @@ def _parked_follower_result(label: str) -> CheckResult | None:
 # record and all) own their runtime state, so one down unit is one fail row.
 _RUNTIME_STATE_UNITS = (
     "nginx.service",
-    "jasper-voice.service",
+    JASPER_VOICE_SERVICE,
     "jasper-aec-bridge.service",
     "jasper-control.service",
     "jasper-input.service",
@@ -371,7 +375,7 @@ _RUNTIME_STATE_UNITS = (
     "jasper-mux.service",
     "nqptp.service",
     "shairport-sync.service",
-    "librespot.service",
+    LIBRESPOT_SERVICE,
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",

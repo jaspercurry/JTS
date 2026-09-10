@@ -17,11 +17,11 @@ import jasper.active_speaker._common as _common
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.active_speaker import commissioning_verification
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     recompose_applied_baseline_yaml,
-    topology_config_fingerprint,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
@@ -1051,8 +1051,8 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
 ) -> None:
     """A rotated topology fingerprint is a notice, not a stop (wave 7j).
 
-    `topology_config_fingerprint` hashes the whole topology dict bar
-    `pairing_intent`, so a display-only string that reaches no clamp and no
+    `topology_config_fingerprint` hashes every hardware, speaker-group and
+    routing field, so a display-only string that reaches no clamp and no
     emitted filter — `human_output_label`, a speaker group's `label` — used
     to take the box to `blocked`/`safety_muted`, refuse volume and grouping,
     and refuse a v2 measure session. Ruling S10: playback stays on the applied
@@ -1097,6 +1097,54 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
     ]
     assert [issue["severity"] for issue in status["issues"]] == ["warning"]
     assert status["protected_profile"]["topology_current"] is False
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_two_anchors_written_either_side_of_the_narrowing_are_one_topology(
+    swap: bool,
+) -> None:
+    """#2500 narrowed `topology_config_fingerprint`, so a box that takes that
+    deploy carries an applied snapshot holding the LEGACY hash while its next
+    candidate is built with the narrowed one. Raw equality reads that as a
+    topology change and refuses the candidate — the exact false staleness the
+    narrowing exists to prevent. Either side may be the legacy one.
+
+    Remove with `_legacy_topology_config_fingerprint`.
+    """
+    from jasper import output_topology as output_topology_mod
+    from jasper.active_speaker.crossover_contract import crossover_snapshot_state
+
+    topology = _active_topology()
+    legacy = output_topology_mod._legacy_topology_config_fingerprint(topology)
+    narrowed = topology_config_fingerprint(topology)
+    assert legacy != narrowed
+    recorded, expected = (narrowed, legacy) if swap else (legacy, narrowed)
+
+    def _state(**kwargs):
+        return crossover_snapshot_state(
+            {"status": "applied", "recomposition_snapshot": {
+                "schema_version": 1, "domain": "full",
+                "topology_fingerprint": recorded,
+            }},
+            expected_topology_fingerprint=expected,
+            **kwargs,
+        )
+
+    # Without the live topology there is nothing to reconcile them with.
+    assert _state()["reason"] == "active_applied_profile_snapshot_topology_stale"
+    # With it, both anchors name this topology, so neither is stale. (The
+    # snapshot is still rejected for its missing preset — a different reason.)
+    assert _state(topology=topology)["reason"] != (
+        "active_applied_profile_snapshot_topology_stale"
+    )
+    # A fingerprint that names some OTHER topology stays stale either way.
+    assert crossover_snapshot_state(
+        {"status": "applied", "recomposition_snapshot": {
+            "schema_version": 1, "domain": "full", "topology_fingerprint": "a" * 64,
+        }},
+        expected_topology_fingerprint=narrowed,
+        topology=topology,
+    )["reason"] == "active_applied_profile_snapshot_topology_stale"
 
 
 def test_a_blocker_outranks_a_notice_for_the_setup_headline(

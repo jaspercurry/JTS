@@ -72,6 +72,10 @@ _UNIT_DIRECTIVES: dict[str, dict[str, str]] = {
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot",
         "jasper-control": "reboot",
+        # R22 (#4416): the reboot-ladder unit test_bootloop_guard_script.py's
+        # own grep for the shipped units already covers; this table just
+        # hadn't caught up.
+        "jasper-fanin": "reboot",
     },
     "OnFailure": {"jasper-camilla": "jasper-camilla-recover.service"},
 }

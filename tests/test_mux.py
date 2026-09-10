@@ -2305,7 +2305,7 @@ def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
 
 # ---------------------------------------------------------------------------
 # Audit C5 — _tick hygiene: preempt-release locking, best-effort pause
-# fan-out, and removal of the never-implemented DEBOUNCE_TICKS policy.
+# fan-out.
 # ---------------------------------------------------------------------------
 
 
@@ -2424,14 +2424,3 @@ async def test_sigterm_shuts_the_daemon_down_through_its_cleanup(
     await asyncio.wait_for(task, timeout=10.0)
 
     assert len(event_records(caplog, "mux.shutdown")) == 1
-
-
-def test_debounce_ticks_constant_removed():
-    """DEBOUNCE_TICKS documented an anti-flap hold that was never
-    implemented (dead since the file's first commit). The constant was
-    deleted rather than activated — see the commit message rationale.
-    This guards against the comment/constant reappearing without an
-    actual implementation + tests."""
-    assert not hasattr(Mux, "DEBOUNCE_TICKS")
-
-

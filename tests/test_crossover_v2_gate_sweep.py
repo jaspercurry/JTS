@@ -261,13 +261,10 @@ def test_null_model_recovers_the_windows_own_bias(direct_only_report: dict) -> N
 
 
 def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> None:
-    """Too few resolution-valid rungs nulls the sensitivity, by name.
-
-    The table itself still publishes every value with its cycles count: a
-    read that cannot be trusted is flagged, never silently dropped.
-    """
+    """Too few readable rungs suppress sensitivity but retain every pose value."""
     root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=None) for i in range(3)])
-    report = sweep_round(root, rungs_ms=(1.0, 2.0))
+    # Even the band's 2 kHz ceiling has fewer than three cycles at either rung.
+    report = sweep_round(root, rungs_ms=(0.5, 1.0))
     band = _low_band(report)
 
     assert band["sensitivity"] is None
@@ -276,7 +273,7 @@ def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> 
     assert set(band["resolution_by_rung"].values()) == {"invalid"}
     assert len(band["poses"]) == 3
     for pose in band["poses"]:
-        assert set(pose["value_db_by_rung"]) == {"1", "2"}
+        assert set(pose["value_db_by_rung"]) == {"0.5", "1"}
         # Only what varies with the BIN. Who the pose is is the round's fact
         # and is published once, in the report's own `poses` block.
         assert set(pose) == {"pose_key", "value_db_by_rung", "detrended_db_by_rung"}

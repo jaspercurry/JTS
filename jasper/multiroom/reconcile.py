@@ -39,7 +39,11 @@ from ..fanin_coupling import (
 )
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import run_systemctl
+from ..service_units import (
+    OUTPUTD_SERVICE,
+    JASPER_VOICE_SERVICE,
+    run_systemctl,
+)
 from ..source_intent import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -162,10 +166,10 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # active member, so a stale file can never leave the lane half-configured.
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = "jasper-camilla.service"
 
-VOICE_UNIT = "jasper-voice.service"
+VOICE_UNIT = JASPER_VOICE_SERVICE
 
 # Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre
 # (jasper-apply-airplay-mode) layers when deriving the AirPlay backend latency

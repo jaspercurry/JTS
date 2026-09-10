@@ -26,6 +26,7 @@ from jasper.audio_measurement.comparison_bands import (
     OVERLAP_OCTAVE_RATIO,
 )
 from jasper.audio_measurement.program import (
+    DEFAULT_VERIFY_TAIL_S,
     ExcitationProgram,
     ProgramSegment,
     segment_stimulus,
@@ -78,7 +79,7 @@ def _deconvolve_window(
     *,
     epsilon: float = 0.0,
     pre_guard_s: float = DECONV_PRE_GUARD_S,
-    tail_s: float = 0.5,
+    tail_s: float = DEFAULT_VERIFY_TAIL_S,
 ) -> tuple[np.ndarray, int]:
     """Deconvolve one sweep → ``(full_ir, pre_guard_samples)``.
 
@@ -295,7 +296,9 @@ def _driver_response(
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
         full_ir, sample_rate, direct_peak_idx=peak_idx,
-        pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
+        pre_arrival_ms=IR_PRE_MS,
+        post_arrival_ms=(1000 * DEFAULT_VERIFY_TAIL_S
+                         if gate_exempt_reason == gating.SEAT_EXEMPT else IR_POST_MS),
     )
     ir = deconv.apply_arrival_window(full_ir, window)
     if gate_exempt_reason is not None:

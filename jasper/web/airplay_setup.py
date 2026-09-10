@@ -39,7 +39,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from jasper.airplay_mode import ENV_VAR, MODE_ENV_FILE, mode_from_env
+from jasper.airplay_mode import ENV_VAR, MODE_ENV_FILE, MODE_ENV_OWNER, mode_from_env
 
 from ..control.restart_broker import manage_units
 from ..env_file import read_env_file, write_env_file
@@ -199,7 +199,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             return
         value = "yes" if mode == "free-running" else "no"
         try:
-            write_env_file(cfg["state_path"], {ENV_VAR: value}, mode=0o644)
+            write_env_file(
+                cfg["state_path"], {ENV_VAR: value}, mode=0o644,
+                owner=MODE_ENV_OWNER,
+            )
         except OSError as e:
             logger.exception("could not write airplay mode env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")

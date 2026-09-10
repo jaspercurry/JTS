@@ -115,6 +115,8 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
+from tests._log_events import event_fields, event_records
+
 # The round harness: one staging of "a real stage 2, post-apply, with a
 # comparable before" — a fixture library rather than a test file, so no
 # suite depends on another's collection.
@@ -667,18 +669,13 @@ def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog
         assert rollback("second") is False
     assert attempts == []
 
-    lines = [record.getMessage() for record in caplog.records]
-    refused = [
-        line for line in lines
-        if "event=correction.crossover_v2_delta_probe_restore_refused" in line
-    ]
-    repeats = [
-        line for line in lines
-        if "event=correction.crossover_v2_delta_probe_restore_repeat" in line
-    ]
-    assert len(refused) == 1
-    assert len(repeats) == 1
-    assert "restored=false" in repeats[0]
+    assert len(
+        event_records(caplog, "correction.crossover_v2_delta_probe_restore_refused")
+    ) == 1
+    fields = event_fields(
+        caplog, "correction.crossover_v2_delta_probe_restore_repeat"
+    )
+    assert fields["restored"] == "false"
 
 
 def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
@@ -1225,10 +1222,7 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
         {"round_receipt": identity}
     ).ordinal == 2
     # The loss is recorded rather than silent.
-    failures = [
-        record for record in caplog.records
-        if "event=correction.crossover_v2_round_receipt_failed" in record.getMessage()
-    ]
+    failures = event_records(caplog, "correction.crossover_v2_round_receipt_failed")
     assert failures, "a lost receipt must be recorded, not silent"
     # …at ERROR. The LEVEL is the pin, not incidental: this is the event that
     # would have fired on every shipped round for a whole phase while the
@@ -1275,7 +1269,7 @@ def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
     assert conductor.round_evaluation is None
     assert conductor.round_receipt_identity is None
     assert attempts == []
-    assert "correction.crossover_v2_round_grade_failed" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_round_grade_failed")
 
 
 def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
@@ -1509,10 +1503,9 @@ def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
         answer = coordinator.rollback_available(ports, session_id="cap_x")
 
     assert answer is False
-    assert not [
-        r for r in caplog.records
-        if "crossover_v2_rollback_available_failed" in r.getMessage()
-    ], "an unbound probe is a configuration fact, not a failure to report"
+    assert not event_records(
+        caplog, "correction.crossover_v2_rollback_available_failed"
+    ), "an unbound probe is a configuration fact, not a failure to report"
 
 
 def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
@@ -1535,8 +1528,10 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
 
     assert answer is False
     assert [
-        r.levelname for r in caplog.records
-        if "crossover_v2_rollback_available_failed" in r.getMessage()
+        r.levelname
+        for r in event_records(
+            caplog, "correction.crossover_v2_rollback_available_failed"
+        )
     ] == ["WARNING"]
 
 
@@ -1619,10 +1614,7 @@ def test_the_no_anchor_escalation_is_logged_at_error(monkeypatch, caplog):
     with caplog.at_level("INFO"):
         _consume_verify(conductor, _post_apply_analysis(conductor))
 
-    records = [
-        r for r in caplog.records
-        if "crossover_v2_round_recovery_required" in r.getMessage()
-    ]
+    records = event_records(caplog, "correction.crossover_v2_round_recovery_required")
     assert records, "the no-anchor escalation must reach the journal"
     assert [r.levelname for r in records] == ["ERROR"]
 
@@ -1649,10 +1641,7 @@ def test_a_failed_restore_is_logged_at_error_and_a_successful_one_is_not(
     with caplog.at_level("INFO"):
         _consume_verify(conductor, _post_apply_analysis(conductor))
 
-    failed = [
-        r for r in caplog.records
-        if "crossover_v2_round_restore " in r.getMessage() + " "
-    ]
+    failed = event_records(caplog, "correction.crossover_v2_round_restore")
     assert [r.levelname for r in failed] == ["ERROR"]
 
     caplog.clear()
@@ -1664,10 +1653,7 @@ def test_a_failed_restore_is_logged_at_error_and_a_successful_one_is_not(
     with caplog.at_level("INFO"):
         _consume_verify(ok_conductor, _post_apply_analysis(ok_conductor))
 
-    succeeded = [
-        r for r in caplog.records
-        if "crossover_v2_round_restore " in r.getMessage() + " "
-    ]
+    succeeded = event_records(caplog, "correction.crossover_v2_round_restore")
     assert [r.levelname for r in succeeded] == ["INFO"]
 
 
@@ -1778,13 +1764,12 @@ def test_every_refusal_kind_the_coordinator_can_return_is_mapped(caplog):
             assert verdict.accepted is False
             assert verdict.code
 
-    unmapped = [
-        r.getMessage() for r in caplog.records
-        if "crossover_v2_round_refusal_kind_unmapped" in r.getMessage()
-    ]
+    unmapped = event_records(
+        caplog, "correction.crossover_v2_round_refusal_kind_unmapped"
+    )
     assert unmapped == [], (
         "a declared refusal kind reached the fallback instead of its own arm: "
-        f"{unmapped}"
+        f"{[r.getMessage() for r in unmapped]}"
     )
 
 
@@ -1800,10 +1785,9 @@ def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
     with caplog.at_level("INFO"):
         verdict = conductor._round_refusal_for(refusal)
 
-    unmapped = [
-        r for r in caplog.records
-        if "crossover_v2_round_refusal_kind_unmapped" in r.getMessage()
-    ]
+    unmapped = event_records(
+        caplog, "correction.crossover_v2_round_refusal_kind_unmapped"
+    )
     assert [r.levelname for r in unmapped] == ["ERROR"]
     # Still refuses, and under the most conservative code available.
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
@@ -1997,7 +1981,7 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert isinstance(spec, dict)
     assert {"max_db", "max_hz", "graded_band_hz", "passed", "tilt"} <= set(spec)
     assert isinstance(spec["bands"], list) and spec["bands"]
-    assert {"f_lo_hz", "f_hi_hz", "graded_lo_hz", "graded_hi_hz", "passed",
+    assert {"f_lo_hz", "f_hi_hz", "graded_lo_hz", "graded_hi_hz", "within_target",
             "tolerance_db", "max_deviation_db", "max_deviation_hz"} == set(
         spec["bands"][0]
     )

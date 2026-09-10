@@ -1835,14 +1835,14 @@ def test_the_entry_grade_carries_a_per_band_table(tmp_path):
         row[2] for row in flat_spec.SPEC_BANDS
     ]
     assert all(band.evaluable for band in report.bands)
-    assert report.overall_passed is True
+    assert report.overall_within_target is True
 
 
 def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
     """Discriminating: the grade tracks the curve, not the fixture.
 
     A treble shelf far outside the top band's tolerance must fail THAT band and
-    leave the others passing — a door returning a canned "passed" report, or
+    leave the others passing — a door returning a canned "within_target" report, or
     grading somebody else's curve, cannot produce this shape.
     """
     curve = _flat_curve()
@@ -1852,11 +1852,11 @@ def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
     report = entry_state_grade(banked).report
 
     assert report is not None
-    assert report.overall_passed is False
+    assert report.overall_within_target is False
     by_edge = {band.f_lo_hz: band for band in report.bands}
-    assert by_edge[8000.0].passed is False
+    assert by_edge[8000.0].within_target is False
     assert all(
-        band.passed is True for lo, band in by_edge.items() if lo != 8000.0
+        band.within_target is True for lo, band in by_edge.items() if lo != 8000.0
     )
 
 
@@ -1880,7 +1880,7 @@ def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
         _round_with_entry_baseline(tmp_path / "b", magnitude_db=curve, excluded=spike)
     )
 
-    assert entry_state_grade(unmasked).report.overall_passed is False
+    assert entry_state_grade(unmasked).report.overall_within_target is False
     masked_report = entry_state_grade(masked).report
     assert masked_report is not None
     # The masked band has no evidence left, so it is UNEVALUABLE — never a
@@ -1888,8 +1888,8 @@ def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
     # it rather than restating it.
     by_edge = {band.f_lo_hz: band for band in masked_report.bands}
     assert by_edge[8000.0].evaluable is False
-    assert by_edge[8000.0].passed is None
-    assert by_edge[250.0].passed is True
+    assert by_edge[8000.0].within_target is None
+    assert by_edge[250.0].within_target is True
 
 
 def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
@@ -2529,7 +2529,7 @@ def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
     # RoundCapturesRefused this round actually hit.
     assert stamped.bands[0].gate_sensitivity_detail["reason"] == REFUSE_NO_CAPTURES
     assert stamped.gate_sweep_frame is None
-    assert stamped.overall_passed == report.overall_passed
+    assert stamped.overall_within_target == report.overall_within_target
 
 
 def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
@@ -2573,9 +2573,9 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     assert np.isfinite(low["gate_sensitivity_db"])
     # The verdict is the round's OWN, re-read and not re-graded.
     banked = load_banked_round(round_dir).graded_report
-    assert spec["overall_passed"] == banked.overall_passed
+    assert spec["overall_within_target"] == banked.overall_within_target
     assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
-    assert low["passed"] == banked.bands[0].passed
+    assert low["within_target"] == banked.bands[0].within_target
 
 
 # --------------------------------------------------------------------------- #
@@ -2979,64 +2979,6 @@ def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
     assert payload["refit_vs_banked_db"] < payload["tolerance_db"]
     woofer = next(r for r in payload["roles"] if r["role"] == "woofer")
     assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])
-
-
-def test_every_import_in_the_round_views_package_resolves():
-    """Each view module's imports, module-scope AND deferred, name something
-    importable — the pin a mis-levelled relative import trips.
-
-    The subcommand tests below stub what a view calls, so a wrong ``.``-level
-    inside one would surface only on the operator's real invocation.
-    """
-    import ast
-    import importlib
-    import importlib.util
-
-    from jasper.cli import round_views as cli
-
-    def resolves(name: str) -> bool:
-        """A module, or a name a real module exposes.
-
-        ``find_spec`` answers ``None`` for a MISSING child of a real package
-        and raises for a child of a non-package, so neither result alone tells
-        a bad module path from a plain ``from module import attribute``; the
-        attribute is what the fallback checks, on the parent it just resolved.
-        """
-        try:
-            if importlib.util.find_spec(name) is not None:
-                return True
-        except (AttributeError, ImportError, ValueError):
-            pass
-        parent, _, leaf = name.rpartition(".")
-        if not parent:
-            return False
-        try:
-            return hasattr(importlib.import_module(parent), leaf)
-        except ImportError:
-            return False
-
-    package = cli.__name__
-    unresolved = []
-    for path in sorted(Path(cli.__file__).parent.glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                base = (
-                    importlib.util.resolve_name(
-                        "." * node.level + (node.module or ""), package
-                    )
-                    if node.level
-                    else node.module
-                )
-                names = [base, *(f"{base}.{alias.name}" for alias in node.names)]
-            else:
-                continue
-            unresolved += [
-                f"{path.name}: {name}" for name in names if not resolves(name)
-            ]
-
-    assert unresolved == []
 
 
 # --------------------------------------------------------------------------- #

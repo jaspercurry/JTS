@@ -489,11 +489,11 @@ def test_per_band_flatness_log_field_both_bands_failing():
     genuinely out of spec (not one dragging the other) -- the field must
     show both, not just the one flatness_max_db picked."""
     bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": True, "passed": False,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": True, "within_target": False,
          "max_deviation_db": 3.0},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "passed": False,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "within_target": False,
          "max_deviation_db": -4.5},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "evaluable": True, "passed": True,
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "evaluable": True, "within_target": True,
          "max_deviation_db": 1.0},
     ]
     assert _per_band_flatness_log_field(bands) == (
@@ -503,9 +503,9 @@ def test_per_band_flatness_log_field_both_bands_failing():
 
 def test_per_band_flatness_log_field_skips_unevaluable_bands():
     bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": False, "passed": None,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": False, "within_target": None,
          "max_deviation_db": None},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "passed": False,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "within_target": False,
          "max_deviation_db": -4.5},
     ]
     assert _per_band_flatness_log_field(bands) == "2000-8000Hz:-4.50dB:fail"
@@ -570,7 +570,7 @@ def test_assemble_cloud_group_result_reports_geometry_and_registry_for_a_locked_
     # one OVER the nominal cap — not <=, but never far past it.
     assert len(result["curve"]["freqs_hz"]) <= CLOUD_CURVE_MAX_JSON_POINTS + 1
     assert len(result["curve"]["freqs_hz"]) == len(result["curve"]["magnitude_db"])
-    assert isinstance(result["spec"]["overall_passed"], bool)
+    assert isinstance(result["spec"]["overall_within_target"], bool)
 
 
 def test_assemble_cloud_group_result_publishes_the_clamp_to_a_payload_reader():
@@ -735,7 +735,7 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
     baseline — never passes its spec by construction. This mirrors that
     scripted run as a pinned, repeatable test.
 
-    The S0 main-leg cloud genuinely fails its spec (``overall_passed`` is
+    The S0 main-leg cloud genuinely fails its spec (``overall_within_target`` is
     ``False`` in all three bands — this is real measured data, not a rigged
     number), so it stands in for a real ``cloud_measure`` block exactly as
     it would appear in a household's durable state. Paired with a synthetic
@@ -755,7 +755,7 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
         signal_band_hz=corpus.S0_SUMMED_PASSBAND_HZ,
     )
     real_measure_result = assemble_cloud_group_result(combined, echo_band_hz=echo_band_hz)
-    assert real_measure_result["spec"]["overall_passed"] is False, (
+    assert real_measure_result["spec"]["overall_within_target"] is False, (
         "this test's whole premise is a REAL pre-apply spec failure"
     )
 
@@ -771,7 +771,7 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
                     "geometry": {"locked": False},
                     "pipeline": {
                         "available": True,
-                        "spec": {"overall_passed": True, "bands": []},
+                        "spec": {"overall_within_target": True, "bands": []},
                         "merged_excluded_bands_hz": [],
                     },
                 },
@@ -1114,7 +1114,7 @@ def test_a_carve_out_below_the_trusted_floor_is_listed_under_no_band():
             f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
             max_deviation_db=0.0, max_deviation_hz=1000.0,
             rms_deviation_db=0.0, n_bins=1, n_excluded=0,
-            evaluable=True, passed=True, graded_lo_hz=graded_lo_hz,
+            evaluable=True, within_target=True, graded_lo_hz=graded_lo_hz,
         )
 
     null_report = SimpleNamespace(nulls=(), reason="", excluded_bands_hz=())
@@ -1124,7 +1124,7 @@ def test_a_carve_out_below_the_trusted_floor_is_listed_under_no_band():
 
     unclamped = carve_outs_by_band(
         FlatSpecReport(
-            reference_db=0.0, bands=(_band(250.0),), overall_passed=True,
+            reference_db=0.0, bands=(_band(250.0),), overall_within_target=True,
             excluded_intervals=(), best_effort_above_hz=16000.0,
             smoothing_fraction=3,
         ),
@@ -1132,7 +1132,7 @@ def test_a_carve_out_below_the_trusted_floor_is_listed_under_no_band():
     )
     clamped = carve_outs_by_band(
         FlatSpecReport(
-            reference_db=0.0, bands=(_band(357.1425),), overall_passed=True,
+            reference_db=0.0, bands=(_band(357.1425),), overall_within_target=True,
             excluded_intervals=(), best_effort_above_hz=16000.0,
             smoothing_fraction=3, trusted_floor_hz=357.1425,
         ),

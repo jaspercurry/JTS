@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from ...audio_profile_state import normalize_audio_input_profile
 from ...log_event import log_event
+from ...service_units import JASPER_VOICE_SERVICE
 from ...usb_mic import (
     read_usb_mic_leg,
     usb_mic_leg_choices,
@@ -366,7 +367,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         restart = restart_broker.manage_units(
-            "jasper-voice.service",
+            JASPER_VOICE_SERVICE,
             verb="restart",
             reason="wake_threshold",
             no_block=True,

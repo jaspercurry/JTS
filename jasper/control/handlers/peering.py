@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
 import threading
@@ -22,8 +23,12 @@ from ...platform.control_client import (
     ControlError,
     request as control_request,
 )
-from ...service_units import read_unit_states
-from ..supervisor_runtime import signal_on_control_loop, spawn_on_control_loop
+from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
+from ..supervisor_runtime import (
+    run_supervisor_loop,
+    signal_on_control_loop,
+    spawn_on_control_loop,
+)
 from ._base import ControlHandlerMixin, logger
 
 # ---------- peering daemon ----------
@@ -35,6 +40,14 @@ _peering_lock = threading.Lock()
 _peering_task: concurrent.futures.Future[None] | None = None
 _peering_shutdown: asyncio.Event | None = None
 
+# R18 (#4416): a failed daemon.start() (e.g. the multicast bind OSError
+# #4391 now raises instead of swallowing) retries on this cadence via the
+# shared run_supervisor_loop, rather than leaving peering dead until
+# jasper-control restarts. PeeringDaemon.start() no-ops once running, so the
+# tick stops mattering the moment it succeeds.
+_PEERING_RETRY_INTERVAL_SEC = 30.0
+_PEERING_RETRY_JITTER_SEC = 3.0
+
 
 async def _run_peering(shutdown: asyncio.Event) -> None:
     """Own the peering daemon until `shutdown` is set by stop_peering_daemon."""
@@ -44,17 +57,36 @@ async def _run_peering(shutdown: asyncio.Event) -> None:
     from ...peering import load_config
     from ...peering.daemon import PeeringDaemon
 
-    daemon = None
-    try:
-        daemon = PeeringDaemon(load_config())
+    daemon = PeeringDaemon(load_config())
+    started = False
+
+    async def _tick() -> None:
+        nonlocal started
+        if started:
+            return
         await daemon.start()
+        started = True
+
+    supervisor = asyncio.ensure_future(run_supervisor_loop(
+        tick=_tick,
+        cold_start_sec=0.0,
+        interval_sec=_PEERING_RETRY_INTERVAL_SEC,
+        jitter_sec=_PEERING_RETRY_JITTER_SEC,
+        logger=logger,
+        start_event="peering_supervisor.start",
+        tick_crash_event="peering_supervisor.tick_crash",
+        start_fields={},
+    ))
+    try:
         await shutdown.wait()
     finally:
-        if daemon is not None:
-            try:
-                await daemon.stop()
-            except Exception:  # noqa: BLE001
-                logger.exception("peering daemon stop failed")
+        supervisor.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await supervisor
+        try:
+            await daemon.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("peering daemon stop failed")
         with _peering_lock:
             _peering_task = None
 
@@ -109,7 +141,7 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # second hop (see PeeringRoutes._maybe_forward_pair_action_to_leader's loop
 # breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_VOICE_UNIT = "jasper-voice.service"
+_VOICE_UNIT = JASPER_VOICE_SERVICE
 _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
     "activating",
     "deactivating",

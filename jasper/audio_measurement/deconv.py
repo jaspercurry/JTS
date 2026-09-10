@@ -4,11 +4,11 @@
 
 """FFT-based regularized deconvolution for room-impulse extraction.
 
-    H(f) = Y(f) * conj(X(f)) / (|X(f)|² + ε)
+    H(f) = Y(f) * conj(X(f)) / max(|X(f)|², ε)
     h(t) = ifft(H(f))
 
-The Tikhonov ε is constant and proportional to the peak of |X(f)|², which is
-robust over the 20 Hz-20 kHz sweep band. The recovered IR is trimmed around
+The denominator floor bounds inversion where the stimulus has little energy
+without tilting a log sweep's excited band. The recovered IR is trimmed around
 the direct-arrival peak: 5 ms before (non-causal artifacts of the inversion)
 and 500 ms after (domestic-room decay).
 """
@@ -132,7 +132,7 @@ def regularized_deconvolution_full(
     Y = np.fft.rfft(captured, n=n_pad)
     X = np.fft.rfft(sweep, n=n_pad)
     eps = epsilon_relative * float(np.max(np.abs(X) ** 2))
-    H = Y * np.conj(X) / (np.abs(X) ** 2 + eps)
+    H = Y * np.conj(X) / np.maximum(np.abs(X) ** 2, max(eps, np.finfo(float).tiny))
     return np.fft.irfft(H, n=n_pad)
 
 
@@ -186,8 +186,8 @@ def deconvolve(
     """Recover h(t) from y(t) ≈ (h * x)(t) via regularized FFT.
 
     ``sweep`` must be the EXACT signal played, or the math is wrong by an
-    unknown filter. ``epsilon_relative`` is the regularizer as a fraction of
-    peak |X(f)|²; 1e-3 is the standard Kirkeby value. ``post_arrival_ms`` of
+    unknown filter. ``epsilon_relative`` is the denominator floor as a fraction
+    of peak |X(f)|². ``post_arrival_ms`` of
     500 covers a living room (RT60 < 1 s). ``max_capture_seconds=None`` reads
     :data:`DEFAULT_MAX_CAPTURE_SECONDS` at call time; <= 0 disables.
     """

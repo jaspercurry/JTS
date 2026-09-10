@@ -33,6 +33,7 @@ from jasper.active_speaker.program_admission import (
     readmit_summed_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -44,7 +45,7 @@ from jasper.audio_measurement.program import (
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
-from tests.test_crossover_v2_tuning_scope import _trial_candidate
+from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
 
 
@@ -830,3 +831,74 @@ def test_branch_admission_checks_both_input_routes_and_actual_channels(tmp_path,
     assert not result.allowed
     assert (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN if damage == "swapped_inputs"
             else ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP) in result.refusals
+
+
+@pytest.mark.parametrize("change", [None, "missing_descriptor", "processor", "woofer_peak"])
+def test_dynamic_bass_admission_proves_graph_and_reserves_its_maximum_lift(tmp_path, change):
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=40, woofer_highpass=40, woofer_peak=-24,
+        tweeter_peak=0, max_sweep_duration_s=4,
+    )
+    applied = _applied_profile(topology)
+    applied["recomposition_snapshot"]["bass_extension"] = BASS_EXTENSION
+    measurement = MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
+        topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+        applied_profile=applied,
+    )
+    text = compile_tuning_graph(measurement, scope="applied")
+    if change == "processor":
+        text = text.replace("makeup_gain: 0.0", "makeup_gain: 3.0")
+    program = build_verify_program(
+        1600, gain_db=-6 if change == "woofer_peak" else -12,
+        downstream_gain_db=-20, sweep_s=2,
+    )
+    wav = tmp_path / "bass.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=text, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+        bass_extension=None if change == "missing_descriptor" else BASS_EXTENSION,
+    )
+    if change in {"missing_descriptor", "processor"}:
+        assert admission.refusals == (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,)
+    elif change == "woofer_peak":
+        assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP in admission.refusals
+        assert all(s.execution_allowed for s in admission.segments if s.role == "tweeter")
+        assert any(not s.execution_allowed for s in admission.segments if s.role == "woofer")
+    else:
+        assert admission.allowed, admission.to_dict()
+        assert admission.channels[0].cap_dbfs == pytest.approx(
+            -24 - dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**BASS_EXTENSION))
+        )
+
+
+@pytest.mark.parametrize("low_hz", [10, 20, 40, 60])
+@pytest.mark.parametrize("highpass", [None, 40])
+def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_hz, highpass):
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=40, woofer_measurement_floor=60, max_sweep_duration_s=4,
+        woofer_highpass=highpass,
+    )
+    applied = _applied_profile(topology)
+    measurement = MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
+        topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+        applied_profile=applied,
+    )
+    graph = compile_tuning_graph(measurement, scope="room_tune")
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=1600,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+        summed_sweep_band_hz=(low_hz, 20_000),
+    ).verify_program()
+    wav = tmp_path / "room.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+    )
+    assert admission.allowed is (low_hz >= 20 and (low_hz >= 40 or highpass is not None)), admission.to_dict()

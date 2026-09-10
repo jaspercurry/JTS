@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — grouping domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — grouping domain."""
 from __future__ import annotations
 
 import errno
@@ -26,6 +21,7 @@ from ._shared import (
     _parse_systemd_environment,
     _run,
 )
+from ...service_units import JASPER_VOICE_SERVICE
 
 # Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
 # pin status + reason, never `detail` prose). Named by the fact a consumer
@@ -729,7 +725,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
 
     unit_env: dict[str, str] | None = None
     error = ""
-    values = evidence.unit_property("Environment", ("jasper-voice.service",))
+    values = evidence.unit_property("Environment", (JASPER_VOICE_SERVICE,))
     if values is None:
         error = "systemctl unavailable"
     else:

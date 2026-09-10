@@ -13,17 +13,18 @@ the leader); each speaker plays a single assigned *channel*
 
 **Off by default.** A solo speaker pays nothing: with grouping `off`,
 no snapserver or snapclient runs, no channel split happens, no socket
-opens. The user explicitly opts in (later phase: a web wizard writes
-`/var/lib/jasper/grouping.env` — ABSENT means off, exactly like
-`/var/lib/jasper/peering.env`).
+opens. The user explicitly opts in via the web wizard
+(`jasper/web/rooms_setup.py`), which POSTs to jasper-control's
+`/grouping/set` route; `_write_grouping` (`jasper/control/handlers/grouping.py`)
+is the sole writer of `/var/lib/jasper/grouping.env` — ABSENT means off,
+exactly like `/var/lib/jasper/peering.env`.
 
-Off-by-default plumbing has landed (config + the reconciler decision
-layer + a /state reader); the BondedSet / channel-split / volume system
-and the live snapcast lifecycle arrive in later phases. The pure layers
-(config, plan, argv builders, state) do no I/O beyond reading the SSOT
-file; only the reconciler's thin `main()` entrypoint touches systemd
-(start/stop units) — and even that does not run until a household opts
-in, so a solo speaker spawns no subprocess and opens no socket.
+Channel splitting, the live snapcast lifecycle, and the setup wizard have
+since shipped. The pure layers (config, plan, argv builders, state) do no
+I/O beyond reading the SSOT file; only the reconciler's thin `main()`
+entrypoint touches systemd (start/stop units) — and even that does not run
+until a household opts in, so a solo speaker spawns no subprocess and opens
+no socket.
 
 Fail-safe vs fail-loud (mirrors peering + the project rule):
   - Missing / unreadable / malformed file => grouping OFF, no error.

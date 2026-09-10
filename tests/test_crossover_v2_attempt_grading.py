@@ -8,7 +8,12 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
-from jasper.active_speaker.attempts_loop import AttemptBudget, STOP_FLOOR
+from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.attempts_loop import (
+    AttemptBudget,
+    AttemptIntegrity,
+    STOP_FLOOR,
+)
 
 from tests.crossover_v2_fixtures import (
     SESSION,
@@ -135,3 +140,24 @@ def test_comparison_advice_does_not_limit_further_human_started_experiments():
     assert c.last_attempt_decision["authority"] == "advisory"
     assert c.last_attempt_decision["decision"] is None
     assert c.last_attempt_decision["reason"] == "ungraded_no_floor"
+
+
+def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypatch):
+    """#2082 item 1: ``verdict.accepted`` does not imply ``record.integrity.comparable``
+    (the legacy ``capture_integrity=None`` shape, defensive-only today). Banking an
+    incomparable record into accepted history would make the NEXT attempt's
+    predecessor comparison permanently fail.
+    """
+    real_from_verify = flow.attempt_record_from_verify
+
+    def _incomparable_record(*args, **kwargs):
+        record = real_from_verify(*args, **kwargs)
+        return replace(
+            record,
+            integrity=AttemptIntegrity(comparable=False, reasons=("legacy_shape",)),
+        )
+
+    monkeypatch.setattr(flow, "attempt_record_from_verify", _incomparable_record)
+    c = _verify_only_conductor(FakeSeams(), tuning_attempt_id="candidate-a")
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert c.attempt_history == ()

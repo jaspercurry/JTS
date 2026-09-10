@@ -100,8 +100,9 @@ ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 # Retire the helper's park record. Type=notify, so this runs only once outputd
 # has sent READY=1 — a start attempt that exits 78 again never reaches it and
-# the record stands.
-ExecStartPost=-/bin/rm -f /run/jasper-outputd-failure-reconcile.park
+# the record stands. jasper-outputd-unpark copies the record's fields plus
+# unparked_at to a .last sibling before removing it (R15, #4416).
+ExecStartPost=-/usr/local/sbin/jasper-outputd-unpark
 
 [Install]
 WantedBy=multi-user.target

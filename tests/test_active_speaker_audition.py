@@ -31,15 +31,15 @@ from jasper.active_speaker.audition import (
     start_audition,
     stop_audition,
 )
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     recompose_applied_baseline_yaml,
-    topology_config_fingerprint,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -107,12 +107,11 @@ def test_baseline_layer_drops_only_the_measured_correction_stages() -> None:
     applied = _applied_profile(topology)
 
     full_text, full_issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied,
     )
     reduced_text, reduced_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        bass_extension_profile=None,
         drop_measured_correction=True,
     )
     assert full_issues == [] and reduced_issues == []
@@ -147,8 +146,9 @@ def test_baseline_layer_drops_only_the_measured_correction_stages() -> None:
             or "_lp_" in n}, sorted(shared)
 
 
+@pytest.mark.parametrize("bass_extension", [False, True])
 def test_the_household_layers_survive_the_reduction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bass_extension: bool,
 ) -> None:
     """The audition's OWN derivation, with nothing stubbed between it and the
     emitter.
@@ -180,9 +180,11 @@ def test_the_household_layers_survive_the_reduction(
 
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_profile(topology)
+    if bass_extension:
+        applied["recomposition_snapshot"]["bass_extension"] = _dynamic_bass_descriptor()
     anchor_file = tmp_path / "anchor.yml"
     full_text, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied,
     )
     assert issues == [] and full_text is not None
     anchor_file.write_text(full_text, encoding="utf-8")
@@ -207,6 +209,10 @@ def test_the_household_layers_survive_the_reduction(
     # The manual headroom trim rode along with it into the one common gain.
     headroom = filters["active_baseline_headroom"]["parameters"]["gain"]
     assert headroom <= -3.0
+    full = _filters(full_text)
+    bass_names = {name for name in filters if name.startswith("bass_ext_dynamic")}
+    assert bool(bass_names) is bass_extension
+    assert all(filters[name] == full[name] for name in bass_names)
 
 
 def test_the_level_disclosure_counts_the_cuts_it_gives_back() -> None:
@@ -330,7 +336,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_profile(topology)
     full_text, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied,
     )
     assert issues == [] and full_text is not None
 
@@ -352,7 +358,6 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             recompose_applied_baseline_yaml(
                 topology,
                 applied_profile=applied_profile,
-                bass_extension_profile=None,
                 drop_measured_correction=True,
             )
         ),

@@ -15,7 +15,7 @@ from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
 from ...control.heal_supervisor import TICK_INTERVAL_SEC as _HEAL_TICK_SEC
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...service_units import unit_unstable, unit_uptime_sec
+from ...service_units import JASPER_VOICE_SERVICE, unit_unstable, unit_uptime_sec
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
@@ -241,7 +241,7 @@ def check_accessory_bridges() -> CheckResult:
     )
 
 
-_VOICE_UNIT = "jasper-voice.service"
+_VOICE_UNIT = JASPER_VOICE_SERVICE
 
 
 @doctor_check(core=True)
@@ -728,9 +728,11 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             "unrelated failure would otherwise read as this park.",
             reason=REASON_OUTPUTD_PARK_RECORD_STALE,
         )
-    return CheckResult(
-        label, "ok", f"{reader.UNIT} is running and carries no park record",
-    )
+    last_park = state.get("last_park")
+    detail = f"{reader.UNIT} is running and carries no park record"
+    if isinstance(last_park, dict):
+        detail += f" (last park {_parked_ago(last_park.get('parked_at'))})"
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check()

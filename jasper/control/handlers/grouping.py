@@ -31,6 +31,7 @@ from ...multiroom.runtime_balance import apply_local_trim as apply_live_grouping
 from ...multiroom.state import grouping_response, read_grouping_state
 from .. import grouping_supervisor
 from .. import household_credential
+from .. import restart_broker
 from .. import server as _server
 from ._base import ControlHandlerMixin, logger
 
@@ -79,18 +80,19 @@ def _write_grouping_reconciler_trailing_delay(delay_s: float) -> None:
     path.write_text(f"{delay_seconds}\n", encoding="ascii")
 
 
-def _arm_grouping_reconciler_trailing_service(delay_s: float) -> None:
+def _arm_grouping_reconciler_trailing_service(delay_s: float) -> dict[str, Any]:
+    """Arm the packaged trailing kick; returns the broker result.
+
+    Bounded because the coalescer lock is held across this call: every worker
+    reaching /grouping/set queues behind it.
+    """
     _write_grouping_reconciler_trailing_delay(delay_s)
-    subprocess.run(
-        [
-            "systemctl",
-            "restart",
-            "--no-block",
-            _GROUPING_RECONCILE_TRAILING_UNIT,
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    return restart_broker.manage_units(
+        _GROUPING_RECONCILE_TRAILING_UNIT,
+        verb="restart",
+        reason="grouping trailing kick",
+        no_block=True,
+        timeout=5.0,
     )
 
 
@@ -116,7 +118,6 @@ class _SystemdServiceTrailingKickHandle:
         mark_applied: Callable[[], None],
         timer_factory: Callable[[float, Callable[[], None]], Any],
     ) -> None:
-        _arm_grouping_reconciler_trailing_service(delay_s)
         mark_timer = timer_factory(delay_s, mark_applied)
         mark_timer.daemon = True
         mark_timer.start()
@@ -134,19 +135,28 @@ def _schedule_grouping_reconciler_trailing_kick(
     *,
     timer_factory: Callable[[float, Callable[[], None]], Any] = threading.Timer,
 ) -> _SystemdServiceTrailingKickHandle | _ThreadingTrailingKickHandle:
+    error: str | None
     try:
-        handle = _SystemdServiceTrailingKickHandle(
-            delay_s,
-            mark_applied,
-            timer_factory,
+        result = _arm_grouping_reconciler_trailing_service(delay_s)
+    except OSError as exc:
+        error = str(exc)
+    else:
+        error = (
+            None
+            if result.get("ok")
+            else str(result.get("error") or f"rc={result.get('rc')}")
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    if error is not None:
+        # The broker reports a failure without knowing whether PID 1 took the
+        # restart anyway, so stop the unit before the in-process timer owns
+        # the kick — otherwise both could fire.
+        _cancel_grouping_reconciler_trailing_service()
         log_event(
             logger,
             "grouping.reconciler_trailing_schedule_fallback",
             delay_s=f"{delay_s:.3f}",
             scheduler="threading.Timer",
-            error=str(exc),
+            error=error,
             level=logging.WARNING,
         )
         return _ThreadingTrailingKickHandle(delay_s, run_trailing, timer_factory)
@@ -158,7 +168,7 @@ def _schedule_grouping_reconciler_trailing_kick(
         scheduler="systemd-service",
         unit=_GROUPING_RECONCILE_TRAILING_UNIT,
     )
-    return handle
+    return _SystemdServiceTrailingKickHandle(delay_s, mark_applied, timer_factory)
 
 
 class _GroupingReconcilerKickCoalescer:
@@ -404,7 +414,9 @@ def _write_grouping(
     # config.format_roster).
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
-    locked_update_env_file(GROUPING_ENV_FILE, updates, mode=0o644)
+    locked_update_env_file(
+        GROUPING_ENV_FILE, updates, mode=0o644, owner="JTS /rooms grouping control",
+    )
 
 
 class GroupingRoutes(ControlHandlerMixin):

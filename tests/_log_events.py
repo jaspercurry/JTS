@@ -15,14 +15,16 @@ this event" into every call site.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import pytest
 
 __all__ = [
     "event_field_maps",
     "event_fields",
+    "event_fields_in",
     "event_records",
+    "event_records_in",
     "parse_event",
     "stderr_event",
     "stderr_events",
@@ -109,30 +111,44 @@ def stderr_event(stderr: str, name: str) -> dict[str, str]:
     return matched[0]
 
 
-def event_records(
-    caplog: pytest.LogCaptureFixture, event: str
+def event_records_in(
+    records: Iterable[logging.LogRecord], event: str
 ) -> list[logging.LogRecord]:
-    """Every captured record whose event name is exactly ``event``.
+    """Every record in ``records`` whose event name is exactly ``event``.
 
     Exact, so `chip_aec_init` never matches `chip_aec_init.ordering_probe`.
     """
     matched: list[logging.LogRecord] = []
-    for record in caplog.records:
+    for record in records:
         parsed = parse_event(record.getMessage())
         if parsed is not None and parsed[0] == event:
             matched.append(record)
     return matched
 
 
+def event_records(
+    caplog: pytest.LogCaptureFixture, event: str
+) -> list[logging.LogRecord]:
+    """Every captured record whose event name is exactly ``event``."""
+    return event_records_in(caplog.records, event)
+
+
+def event_fields_in(
+    records: Iterable[logging.LogRecord], event: str
+) -> dict[str, str]:
+    """The ONE record named ``event`` in ``records``, as its ``k=v`` field map."""
+    matched = event_records_in(records, event)
+    assert len(matched) == 1, [record.getMessage() for record in matched]
+    parsed = parse_event(matched[0].getMessage())
+    assert parsed is not None
+    return parsed[1]
+
+
 def event_fields(
     caplog: pytest.LogCaptureFixture, event: str
 ) -> dict[str, str]:
     """The ONE record named ``event``, as its ``k=v`` field map."""
-    records = event_records(caplog, event)
-    assert len(records) == 1, [record.getMessage() for record in records]
-    parsed = parse_event(records[0].getMessage())
-    assert parsed is not None
-    return parsed[1]
+    return event_fields_in(caplog.records, event)
 
 
 def event_field_maps(

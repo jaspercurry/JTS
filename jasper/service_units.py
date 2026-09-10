@@ -14,14 +14,20 @@ import subprocess
 import time
 from typing import Any, Mapping, Sequence
 
+# Import these instead of re-spelling the literal.
+JASPER_VOICE_SERVICE = "jasper-voice.service"
+OUTPUTD_SERVICE = "jasper-outputd.service"
+FANIN_SERVICE = "jasper-fanin.service"
+LIBRESPOT_SERVICE = "librespot.service"
+
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
 # renders, under "JTS".
 JASPER_SERVICE_GROUPS = {
     "jasper-aec-bridge.service": "Mic",
-    "jasper-voice.service": "Voice",
+    JASPER_VOICE_SERVICE: "Voice",
     "jasper-camilla.service": "Audio",
-    "jasper-fanin.service": "Audio",
-    "jasper-outputd.service": "Audio",
+    FANIN_SERVICE: "Audio",
+    OUTPUTD_SERVICE: "Audio",
     "jasper-mux.service": "Audio",
     "jasper-usbgadget.service": "Audio",
     "jasper-usbsink.service": "Audio",
@@ -36,7 +42,7 @@ JASPER_SERVICE_GROUPS = {
 
 EXTRA_SERVICE_GROUPS = {
     "shairport-sync.service": "Audio",
-    "librespot.service": "Audio",
+    LIBRESPOT_SERVICE: "Audio",
     "bluealsa.service": "Audio",
     "bluealsa-aplay.service": "Audio",
     "nqptp.service": "Audio",
@@ -86,6 +92,11 @@ DOCTOR_UNIT_ROSTER: tuple[str, ...] = (
     *EXTRA_SERVICE_GROUPS,
     *DOCTOR_EXTRA_UNITS,
 )
+
+#: The root oneshot that re-detects output hardware and re-proves the boot
+#: CamillaDSP graph. Named here because three subsystems address it by name and
+#: a literal duplicated across them is exactly the pair that drifts.
+AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 SHOW_PROPERTIES = (
     "Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "Result",

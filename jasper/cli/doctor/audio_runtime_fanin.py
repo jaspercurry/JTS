@@ -23,6 +23,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _service_state_failure, silence_unobserved
 from .audio_runtime_camilla import _loaded_device_fields
+from ...service_units import FANIN_SERVICE
 
 
 REASON_FANIN_BINARY_MISSING = "fanin_binary_missing"
@@ -345,7 +346,7 @@ def check_fanin_service() -> CheckResult:
     """
     service_failure = _service_state_failure(
         "jasper-fanin service",
-        "jasper-fanin.service",
+        FANIN_SERVICE,
         missing=REASON_FANIN_UNIT_MISSING,
         not_enabled=REASON_FANIN_UNIT_NOT_ENABLED,
         inactive=REASON_FANIN_INACTIVE,

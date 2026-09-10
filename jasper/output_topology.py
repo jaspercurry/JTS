@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
+from .log_event import log_event
 from .transition_log import TransitionLog
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -732,6 +733,69 @@ class OutputTopology:
         if include_evaluation:
             out["evaluation"] = evaluation
         return out
+
+
+def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
+    """SHA-256 over one canonically serialised payload.
+
+    Public because ``active_speaker.baseline_profile`` consumes it: the two
+    modules fingerprint the same artifacts and a second copy of the
+    serialisation would let their digests drift apart silently.
+    """
+
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def topology_config_fingerprint(topology: OutputTopology) -> str:
+    """Fingerprint only topology fields that determine emitted DSP config.
+
+    ``hardware``/``speaker_groups``/``routing`` and nothing else. ``status`` and
+    ``safety`` are the evaluation's own output — ``safety.warnings`` is prose
+    that determines no filter — and hashing them made every warning reword move
+    every persisted anchor (#2500). ``topology_id`` and ``name`` are identity
+    and label; each anchor site compares ``topology_id`` separately.
+    ``pairing_intent`` stays out because it drives no config either: the
+    multiroom reconciler resolves the runtime role from ``grouping.env``. That
+    exclusion is pinned by
+    ``test_pairing_intent_change_does_not_invalidate_baseline_cache``.
+
+    Reading only the dataclass fields also means this never runs
+    :meth:`OutputTopology.evaluation`, so the gate that compares two of these
+    at CamillaDSP start costs one parse.
+    """
+
+    return canonical_fingerprint({
+        "hardware": topology.hardware.to_dict(),
+        "speaker_groups": [group.to_dict() for group in topology.speaker_groups],
+        "routing": topology.routing.to_dict(),
+    })
+
+
+def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
+    """The pre-#2500 hash, for reading anchors persisted before the narrowing.
+
+    Remove once no fleet box can still carry an anchor written by a build older
+    than #2500 — every one is rewritten by the next apply of the artifact that
+    holds it (baseline profile, bass-extension profile, commissioning plan).
+    """
+
+    return canonical_fingerprint({
+        key: value
+        for key, value in topology.to_dict().items()
+        if key != "pairing_intent"
+    })
+
+
+def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
+    """Whether a persisted anchor names this topology, old hash or new."""
+
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    return recorded in (
+        topology_config_fingerprint(topology),
+        _legacy_topology_config_fingerprint(topology),
+    )
 
 
 def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:
@@ -1962,6 +2026,149 @@ def topology_lock_path(path: str | Path | None = None) -> Path:
 
     target = topology_path(path)
     return target.with_name(f".{target.name}.lock")
+
+
+# The two stamps jasper-camilla's ExecCondition= gate compares, both beside the
+# CamillaDSP statefile and both written by the root convergence that owns it.
+# Push, not pull (ADR-0226 rule 1): the fingerprints are computed by the Python
+# that already holds the topology, and the gate is shell reading two files.
+# Suffixes are duplicated in `deploy/bin/jasper-camilla-topology-gate` and
+# pinned against it by tests/test_camilla_topology_gate_script.py.
+STATEFILE_TOPOLOGY_STAMP_SUFFIX = ".topology"
+STATEFILE_UNPROVED_STAMP_SUFFIX = ".topology.unproved"
+
+
+def statefile_topology_stamp_path(statefile_path: str | Path) -> Path:
+    """Where the fingerprint a written statefile was PROVED against lives."""
+
+    target = Path(statefile_path)
+    return target.with_name(target.name + STATEFILE_TOPOLOGY_STAMP_SUFFIX)
+
+
+def statefile_unproved_stamp_path(statefile_path: str | Path) -> Path:
+    """Where the fingerprint an UNFINISHED convergence was for lives.
+
+    Written before a convergence attempts to prove a graph and removed only
+    when it succeeds, so it survives a pass that returned a refusal AND a pass
+    that was killed mid-flight. Absent means the sibling proof stamp is current.
+    """
+
+    target = Path(statefile_path)
+    return target.with_name(target.name + STATEFILE_UNPROVED_STAMP_SUFFIX)
+
+
+def read_topology_fingerprint_stamp(path: str | Path) -> str | None:
+    """One stamped fingerprint, or ``None`` when absent or unreadable.
+
+    Fail-soft on purpose: an unreadable stamp is UNKNOWN, and the gate treats
+    unknown as "allow" — refusing on a permissions regression would take the
+    speaker down for a fact nobody observed.
+    """
+
+    try:
+        value = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return value or None
+
+
+def write_topology_fingerprint_stamp(path: str | Path, fingerprint: str) -> bool:
+    """Publish one stamp atomically. False when it could not be written.
+
+    A failed write is logged, not raised — every caller is on the boot path —
+    and the line is the ONLY place that fact exists: a stamp nobody could write
+    leaves the gate reading unknown, which allows.
+    """
+
+    try:
+        atomic_write_text(Path(path), fingerprint + "\n", mode=0o644)
+    except OSError as exc:
+        log_event(
+            logger,
+            "camilla_topology_stamp.write_failed",
+            path=str(path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    return True
+
+
+def clear_topology_fingerprint_stamp(path: str | Path) -> bool:
+    """Retire one stamp. False when it is still on disk.
+
+    An unremovable stamp does NOT make the gate refuse: the unproved stamp left
+    behind carries the same fingerprint the proof stamp just took, so the two
+    compare EQUAL and the start is allowed. What is lost is the NEXT pass's
+    evidence, not this boot's — hence the event.
+    """
+
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        log_event(
+            logger,
+            "camilla_topology_stamp.clear_failed",
+            path=str(path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    return True
+
+
+def stamp_statefile_topology(
+    statefile_path: str | Path, topology: OutputTopology | None
+) -> None:
+    """Record which topology a WRITTEN statefile was PROVED against.
+
+    Stamped after every apply that reached the statefile, not only when the
+    pointer moves: the statefile may already name the right config while the
+    stamp is missing (a box upgraded from a build before the stamp existed) or
+    stale (a topology change that resolved to the same config).
+    ``jasper-camilla-topology-gate`` compares it with the unproved sibling
+    :func:`stamp_statefile_convergence` writes.
+
+    Best effort: a stamp that cannot be written leaves the gate reading unknown,
+    which allows. Never raises — this is on the boot path.
+    """
+
+    if topology is None:
+        return
+    write_topology_fingerprint_stamp(
+        statefile_topology_stamp_path(statefile_path),
+        topology_config_fingerprint(topology),
+    )
+
+
+def stamp_statefile_convergence(
+    statefile_path: str | Path, topology: OutputTopology, *, proved: bool
+) -> None:
+    """Open, or close, one attempt to prove this topology's boot graph.
+
+    ``proved=False`` at the TOP of the pass, as soon as the saved topology is
+    read and before any decision is taken; ``proved=True`` only once a statefile
+    write has succeeded. What is left behind names the topology whose graph
+    nobody proved — a pass that refused, a pass that took some other early
+    exit, and a pass killed mid-flight (the OOM killer included) at any point
+    AFTER this stamp landed. A pass that died BEFORE it landed leaves nothing,
+    and nothing is unknown, which allows.
+
+    ``jasper-camilla-topology-gate`` refuses a CamillaDSP start when this stamp
+    and the proof stamp are both present and DIFFERENT: the statefile then names
+    a graph belonging to some other topology than the one a convergence was
+    working on. Equal means the statefile already holds the right graph and the
+    pass failed over something else, so the start goes ahead.
+
+    Best effort, never raises: on the boot path, and a stamp nobody could write
+    leaves the gate reading unknown, which allows.
+    """
+
+    stamp = statefile_unproved_stamp_path(statefile_path)
+    if proved:
+        clear_topology_fingerprint_stamp(stamp)
+        return
+    write_topology_fingerprint_stamp(stamp, topology_config_fingerprint(topology))
 
 
 @dataclass(frozen=True)

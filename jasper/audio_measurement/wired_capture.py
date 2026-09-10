@@ -58,7 +58,7 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -83,6 +83,8 @@ __all__ = [
     "WiredMicMissing",
     "WiredRecorder",
     "WiredRecording",
+    "WiredSplCeilingExceeded",
+    "WiredSplMonitor",
     "build_capture_integrity_report",
     "decode_wav_to_mono",
     "encode_wav_s32",
@@ -160,6 +162,48 @@ class WiredMicMissing(WiredCaptureError):
     """
 
     code = CODE_WIRED_MIC_MISSING
+
+
+class WiredSplCeilingExceeded(WiredCaptureError):
+    code = "spl_ceiling_exceeded"
+
+    def __init__(self, observed_db_spl: float, ceiling_db_spl: float) -> None:
+        self.observed_db_spl = float(observed_db_spl)
+        self.ceiling_db_spl = float(ceiling_db_spl)
+        super().__init__(
+            f"wired microphone measured {observed_db_spl:.1f} dB SPL, above "
+            f"the {ceiling_db_spl:.1f} dB SPL ceiling"
+        )
+
+
+@dataclass
+class WiredSplMonitor:
+    """Unweighted period-RMS ceiling on the recorder's existing stream."""
+
+    sensitivity: Any
+    ceiling_db_spl: float
+    channel: int
+    exceeded: threading.Event = field(default_factory=threading.Event)
+    max_window_db_spl: float = float("-inf")
+    error: WiredSplCeilingExceeded | None = None
+
+    def reset(self) -> None:
+        self.exceeded.clear()
+        self.max_window_db_spl = float("-inf")
+        self.error = None
+
+    def observe(self, data: bytes, frames: int, channels: int) -> None:
+        import numpy as np
+
+        samples = np.frombuffer(data, dtype="<i4", count=frames * channels)
+        column = samples.reshape(-1, channels)[:, self.channel].astype(np.float64)
+        rms = float(np.sqrt(np.mean(np.square(column / np.iinfo(np.int32).max))))
+        dbfs = 20.0 * math.log10(rms) if rms > 0 else float("-inf")
+        observed = self.sensitivity.db_spl_from_dbfs(dbfs)
+        self.max_window_db_spl = max(self.max_window_db_spl, observed)
+        if observed > self.ceiling_db_spl:
+            self.error = WiredSplCeilingExceeded(observed, self.ceiling_db_spl)
+            self.exceeded.set()
 
 
 @dataclass(frozen=True)
@@ -321,6 +365,7 @@ class WiredRecorder:
         period_frames: int = 1024,
         pcm_factory: Callable[[], CapturePcm] | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
+        spl_monitor: WiredSplMonitor | None = None,
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
@@ -351,6 +396,7 @@ class WiredRecorder:
         self._gap_frames = 0
         self._truncated = False
         self._reader_error: WiredCaptureError | None = None
+        self.spl_monitor = spl_monitor
 
     # -- reader thread ------------------------------------------------------ #
 
@@ -388,7 +434,10 @@ class WiredRecorder:
                 last_read_ns = now
                 self._chunks.append(data[: length * frame_bytes])
                 self._frames += length
-                self._first_chunk.set()
+                if self.spl_monitor is not None:
+                    self.spl_monitor.observe(data, length, self._channels)
+                    if self.spl_monitor.error is not None:
+                        raise self.spl_monitor.error
                 if self._frames >= self._max_frames:
                     # Budget guard, not a normal stop — tripping this means the caller's
                     # play/tail schedule broke. BOOKED as a discontinuity (unknowable size,
@@ -397,13 +446,21 @@ class WiredRecorder:
                     self._truncated = True
                     self._gap_count += 1
                     self._gap_frames += 1
+                    if self.spl_monitor is not None:
+                        raise WiredCaptureError("SPL monitoring exhausted the capture budget")
+                    self._first_chunk.set()
                     return
+                self._first_chunk.set()
         except WiredCaptureError as exc:
             self._reader_error = exc
             # Wake a start() still waiting on the first chunk so it fails now, not at timeout.
             self._first_chunk.set()
 
     # -- caller side -------------------------------------------------------- #
+
+    @property
+    def failure(self) -> WiredCaptureError | None:
+        return self._reader_error
 
     def start(self, *, ready_timeout_s: float = START_TIMEOUT_S) -> None:
         """Blocks until capture is confirmed live — the pre-roll guarantee: a caller that
@@ -629,6 +686,7 @@ class WiredCaptureAnswer:
     capture_integrity: Mapping[str, Any] | None = None
     wav_path: str = ""
     wav_sha256: str = ""
+    program: Mapping[str, Any] | None = None
 
 
 def setup_from_hint(hint: Any) -> Mapping[str, Any] | None:

@@ -103,6 +103,8 @@ from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
+    RESTART_CLAUSE,
+    RestartOutcome,
     SECRET_ENV_MODE,
     access_log_line,
     begin_request,
@@ -203,19 +205,19 @@ def _write_creds_file(
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
         "SPOTIFY_OAUTH_MODE": mode,
-    }, mode=SECRET_ENV_MODE)
+    }, mode=SECRET_ENV_MODE, owner="JTS /spotify wizard")
 
 
 def _delete_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> None:
     delete_env_file(path)
 
 
-def _restart_voice_daemon() -> None:
-    restart_systemd_units("jasper-voice")
+def _restart_voice_daemon() -> RestartOutcome:
+    return restart_systemd_units("jasper-voice")
 
 
-def _restart_spotify_consumers() -> None:
-    restart_systemd_units("jasper-voice", "jasper-control", "jasper-mux")
+def _restart_spotify_consumers() -> RestartOutcome:
+    return restart_systemd_units("jasper-voice", "jasper-control", "jasper-mux")
 
 
 # ============================================================
@@ -1003,10 +1005,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # client_id change invalidates every cached token-health
             # verdict (verdicts are computed against the old client_id).
             _invalidate_health_cache()
-            _restart_spotify_consumers()
+            clause = RESTART_CLAUSE[_restart_spotify_consumers()]
             # Action + requester only — no client_id/account in the line.
             log_event(logger, "spotify.credentials", client=self.address_string())
-            send_see_other(self, "./", flash="Credentials saved. Now add the redirect URL to your Spotify app.")
+            send_see_other(
+                self, "./",
+                flash=(
+                    "Credentials saved. Now add the redirect URL to your "
+                    f"Spotify app.{clause}"
+                ),
+            )
 
         @form_guarded
         def _handle_reset_credentials(self, _form: dict[str, str]) -> None:
@@ -1014,9 +1022,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
             _invalidate_health_cache()
-            _restart_spotify_consumers()
+            clause = RESTART_CLAUSE[_restart_spotify_consumers()]
             log_event(logger, "spotify.reset", client=self.address_string())
-            send_see_other(self, "./", flash="Credentials cleared.")
+            send_see_other(self, "./", flash=f"Credentials cleared.{clause}")
 
         @form_guarded
         def _handle_start(self, form: dict[str, str]) -> None:
@@ -1141,11 +1149,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 flash_error(self, "Auth exchange failed", e)
                 return
             _invalidate_health_cache()
-            _restart_spotify_consumers()
+            clause = RESTART_CLAUSE[_restart_spotify_consumers()]
             # No account name in the line — a household-member label is mild PII
             # and the journal gets bundled/shared for debugging.
             log_event(logger, "spotify.link", client=self.address_string())
-            send_see_other(self, "./", flash=f"Linked {account_name} successfully")
+            send_see_other(
+                self, "./", flash=f"Linked {account_name} successfully.{clause}",
+            )
 
         @form_guarded
         def _handle_remove(self, form: dict[str, str]) -> None:
@@ -1163,9 +1173,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except OSError:
                         pass
                 _invalidate_health_cache()
-                _restart_spotify_consumers()
+                clause = RESTART_CLAUSE[_restart_spotify_consumers()]
                 log_event(logger, "spotify.unlink", client=self.address_string())
-                send_see_other(self, "./", flash=f"Removed {name}")
+                send_see_other(self, "./", flash=f"Removed {name}.{clause}")
             else:
                 send_see_other(self, "./", flash="Account not found")
 
@@ -1176,11 +1186,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if registry.get(name) is not None:
                 registry.default_name = name
                 registry.save()
-                _restart_spotify_consumers()
+                clause = RESTART_CLAUSE[_restart_spotify_consumers()]
                 # Account-identity config (which account voice cold-starts from)
                 # + a 3-daemon restart — same audit category as link/unlink.
                 log_event(logger, "spotify.default", client=self.address_string())
-                send_see_other(self, "./", flash=f"Default set to {name}")
+                send_see_other(self, "./", flash=f"Default set to {name}.{clause}")
             else:
                 send_see_other(self, "./", flash="Account not found")
 
@@ -1234,8 +1244,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash="Account not found")
                 return
             registry.save()
-            _restart_voice_daemon()
-            send_see_other(self, "./", flash=f"Added {name} to {account_name}")
+            clause = RESTART_CLAUSE[_restart_voice_daemon()]
+            send_see_other(
+                self, "./", flash=f"Added {name} to {account_name}.{clause}",
+            )
 
         @form_guarded
         def _handle_playlist_remove(self, form: dict[str, str]) -> None:
@@ -1247,8 +1259,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             registry = Registry.load(cfg["registry_path"])
             if registry.remove_playlist(account_name, uri):
                 registry.save()
-                _restart_voice_daemon()
-                send_see_other(self, "./", flash=f"Removed playlist from {account_name}")
+                clause = RESTART_CLAUSE[_restart_voice_daemon()]
+                send_see_other(
+                    self, "./",
+                    flash=f"Removed playlist from {account_name}.{clause}",
+                )
             else:
                 send_see_other(self, "./", flash="Playlist not found")
 

@@ -107,28 +107,8 @@ def test_bridge_gates_on_the_reconciler_published_ready_marker() -> None:
     assert f"rm -f {marker}" in INSTALL_UNITS_PATH.read_text()
 
 
-def test_bridge_parks_on_the_permanent_fault_exit_codes() -> None:
-    """A permanent fault must not spend the StartLimitAction=reboot budget.
-
-    `RestartSec=5` x `StartLimitBurst=4` means a fault the bridge cannot grow
-    out of reboots the box in ~20 s and comes back to the same fault.
-    `jasper/cli/aec_bridge.py` exits 78 (os.EX_CONFIG) on the three config
-    faults and the opt-in corpus-USB leg, and 66 (os.EX_NOINPUT) when the wake
-    mic itself will not open; both must read as success here so the unit parks.
-    A stalled loop stays exit 1 and keeps restarting.
-    """
-    unit = UNIT_PATH.read_text()
-    success = _values_for(unit, "SuccessExitStatus")
-    prevent = _values_for(unit, "RestartPreventExitStatus")
-    for code in ("66", "78"):
-        assert code in success, success
-        assert code in prevent, prevent
-    assert "1" not in success, success
-
-
-def test_restart_sec_matches_controls_reboot_ladder() -> None:
-    """RestartSec must not narrow back to 2 s: with StartLimitBurst=4 that
-    made the bridge the tightest restart ladder on the box (~8 s to reboot).
-    """
-    unit = UNIT_PATH.read_text()
-    assert _value_for(unit, "RestartSec") == "5", _value_for(unit, "RestartSec")
+# The permanent-fault exit codes (66/78 as SuccessExitStatus AND
+# RestartPreventExitStatus, so a config/no-mic fault parks instead of
+# spending the StartLimitAction=reboot budget) and RestartSec=5 are pinned
+# for every reboot-ladder unit, this one included, by
+# tests/test_systemd_hardening.py's RESTART_POLICY table (R22, #4416).

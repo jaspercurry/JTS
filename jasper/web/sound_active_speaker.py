@@ -831,6 +831,11 @@ def _active_speaker_channel_protection_save_payload(
             role=role,
             protection_status=protection_status,
         )
+        # #2162: a ``required_missing`` write here must get the same
+        # software-guard upgrade the topology-save path applies
+        # (`_save_output_topology_payload`), or this route parks a topology
+        # `safe_graph_for_current_topology` refuses and deploys fail.
+        updated, guards_changed = _request_missing_software_guards(updated)
         mutation.save(updated)
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
@@ -841,6 +846,7 @@ def _active_speaker_channel_protection_save_payload(
         group_id=speaker_group_id,
         role=role,
         protection_status=protection_status,
+        software_guards_requested=str(guards_changed),
         status=str(report.get("status")),
         blockers=len(evaluation.get("blockers") or []),
     )

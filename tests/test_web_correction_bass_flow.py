@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from http import HTTPStatus
 from pathlib import Path
 
 import pytest
 
 from jasper.web import correction_bass_flow as flow
+from jasper.active_speaker import baseline_profile
+from tests.test_bass_extension_dynamic import _descriptor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,37 +66,32 @@ def test_status_payload_is_display_only_no_control_keys(monkeypatch):
     assert set(payload) == {"corner_hz", "configured", "bass_extension"}
 
 
-def test_status_payload_includes_bass_extension_section(monkeypatch):
-    """The Bass Extension status (a separate, not-yet-launched feature) rides
-    the same /bass/status payload as the long-shipped bass-management
-    section, verbatim from bass_extension_state_summary()."""
-    import jasper.bass_extension.profile as profile_mod
-
-    _corner(monkeypatch)  # the corner is irrelevant here
-    summary = {"commissioned": True, "status": "accepted"}
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
+@pytest.mark.parametrize("configured", [False, True])
+def test_status_payload_includes_native_bass_descriptor(monkeypatch, configured):
+    _corner(monkeypatch)
+    descriptor = asdict(_descriptor()) if configured else {}
+    monkeypatch.setattr(baseline_profile, "applied_bass_extension", lambda: descriptor)
 
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK
-    assert payload["bass_extension"] == summary
+    assert payload["bass_extension"] == (descriptor or None)
 
 
 def test_status_payload_bass_extension_section_is_fail_soft(monkeypatch):
     """A broken bass-extension read must not take down the long-shipped
     bass-management payload it shares a page with — the section is null,
     everything else stays intact."""
-    import jasper.bass_extension.profile as profile_mod
-
     _corner(monkeypatch, 80.0)
 
     def boom():
         raise RuntimeError("profile read failed")
 
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
+    monkeypatch.setattr(baseline_profile, "applied_bass_extension", boom)
 
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK
     assert payload["bass_extension"] is None
+    assert payload["bass_extension_error"] == "unreadable"
     assert payload["configured"] is True
     assert payload["corner_hz"] == 80.0
 
