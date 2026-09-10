@@ -11,10 +11,11 @@ Type=oneshot
 # is group-readable by the non-root jasper-control without being
 # world-readable (the doctor JSON can name configured subsystems).
 Group=jasper
-# 172 checks / concurrency 8 = ~22 waves x the 15 s per-check ceiling ~= 330 s,
-# plus the exclusive-lane probes (audio-probe) which run serialized outside
-# that, so ~600 s leaves headroom on a Zero 2 W without letting a wedged probe
-# leave the oneshot activating forever.
+# Must cover a full registry run — waves of `DOCTOR_MAX_CONCURRENCY` (8)
+# checks at the 15 s per-check ceiling, plus the exclusive-lane probes
+# (audio-probe) which run serialized outside that — with headroom on a
+# Zero 2 W, without letting a wedged probe leave the oneshot activating
+# forever.
 TimeoutStartSec=600
 # Whole-cgroup ceiling, not a per-process one: the ~40 MB doctor import, up to
 # `DOCTOR_MAX_CONCURRENCY` (8) checks in flight, and every subprocess they
