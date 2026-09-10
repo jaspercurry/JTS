@@ -7,9 +7,13 @@
 ``jasper.measurement_window.measurement_window()`` is the one writer of
 "a measurement is live". It already holds two self-expiring copies of that
 fact — jasper-voice's ``_measurement_active`` and jasper-mux's diagnostic-gate
-lease — and this module is the third: the copy jasper-control needs so it can
-stop applying **source-observed** volume changes (a host moving its USB
-slider) into the fader a measurement is holding.
+lease — and this module is the third: the copy jasper-control needs so it can stop
+any volume change against the fader a measurement is holding — a host moving
+its USB slider, the landing page, a HID knob. The measurement OWNS that fader
+while the hold is live (it drives camilla's main_volume directly and never
+writes the persistence file, so no persisted level says where the fader
+sits). Mute stays open as the emergency door; any other level write,
+including unmute, is refused while the hold is live.
 
 Why the fact has to live HERE and not in the volume coordinator:
 ``jasper.control.volume_ops._with_coordinator`` builds a **fresh**
@@ -70,6 +74,7 @@ __all__ = [
     "held",
     "read_measurement_hold",
     "record_declined_observation",
+    "record_refused_write",
     "release",
     "reset_for_tests",
     "snapshot",
@@ -138,6 +143,11 @@ class MeasurementHold:
         # hold" is this object's lifecycle: it resets on a fresh acquire and on
         # every path that drops the hold, and a handler is per-request.
         self._declines: int = 0
+        # Refused AUTHORITATIVE fader writes against the CURRENT hold. Its own
+        # counter, not `_declines`: the release line reports that one under the
+        # source-observed name `declined_observations`, and conflating the two
+        # would make that field lie.
+        self._refusals: int = 0
 
     def reset_for_tests(self) -> None:
         with self._lock:
@@ -150,6 +160,7 @@ class MeasurementHold:
         self._acquired_at = 0.0
         self._expires_at = 0.0
         self._declines = 0
+        self._refusals = 0
 
     # -- internals -------------------------------------------------------
 
@@ -166,11 +177,13 @@ class MeasurementHold:
         expired_mode = self._mode
         held_for = now - self._acquired_at
         declines = self._declines
+        refusals = self._refusals
         self._clear_locked()
         log_event(
             logger,
             "measurement.hold_expired",
             declined_observations=declines,
+            refused_writes=refusals,
             owner=expired_owner,
             mode=expired_mode,
             held_for_s=f"{held_for:.1f}",
@@ -270,6 +283,7 @@ class MeasurementHold:
             mode = self._mode
             held_for = now - self._acquired_at
             declines = self._declines
+            refusals = self._refusals
             self._clear_locked()
             state = self._snapshot_locked(now)
         log_event(
@@ -278,10 +292,11 @@ class MeasurementHold:
             owner=owner,
             mode=mode,
             held_for_s=f"{held_for:.1f}",
-            # The count the per-hold DEBUG demotion below suppressed, reported
+            # The counts the per-hold DEBUG demotions below suppressed, reported
             # once at the end so the volume the journal did NOT carry is still
             # a number an operator can see.
             declined_observations=declines,
+            refused_writes=refusals,
         )
         return state
 
@@ -293,9 +308,12 @@ class MeasurementHold:
         between. :meth:`held` is the readable alias, not a second reader.
         """
         with self._lock:
-            now = self._clock()
-            self._expire_locked(now)
-            return self._owner
+            return self._live_owner_locked()
+
+    def _live_owner_locked(self) -> str | None:
+        """The unexpired incumbent, lapsing a dead hold first. Lock held."""
+        self._expire_locked(self._clock())
+        return self._owner
 
     def held(self) -> bool:
         """True while an unexpired hold is live."""
@@ -321,12 +339,26 @@ class MeasurementHold:
         release/expiry lines report it as ``declined_observations``.
         """
         with self._lock:
-            now = self._clock()
-            self._expire_locked(now)
-            if self._owner is None:
+            owner = self._live_owner_locked()
+            if owner is None:
                 return None
             self._declines += 1
-            return self._owner, self._declines == 1
+            return owner, self._declines == 1
+
+    def record_refused_write(self) -> tuple[str, bool] | None:
+        """Count one refused AUTHORITATIVE fader write against this hold.
+
+        Same shape and the same first-line-only reason as
+        :meth:`record_declined_observation`, on its own counter: a UI slider
+        drag and a spun HID knob are the repetition here, and the two counts
+        reach the journal under different names.
+        """
+        with self._lock:
+            owner = self._live_owner_locked()
+            if owner is None:
+                return None
+            self._refusals += 1
+            return owner, self._refusals == 1
 
     def snapshot(self) -> dict[str, Any]:
         """The ``/state.measurement`` projection."""
@@ -361,6 +393,10 @@ def owner() -> str | None:
 
 def record_declined_observation() -> tuple[str, bool] | None:
     return _hold.record_declined_observation()
+
+
+def record_refused_write() -> tuple[str, bool] | None:
+    return _hold.record_refused_write()
 
 
 def snapshot() -> dict[str, Any]:

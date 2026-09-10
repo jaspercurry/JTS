@@ -28,6 +28,7 @@ from jasper import volume_coordinator as vc_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
+from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import (
     BT_VOLUME_MAX,
     ECHO_WINDOW_SEC,
@@ -45,7 +46,7 @@ from jasper.volume_diagnostics import (
     read_diagnostics,
 )
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_owner import ClaimKind
+from jasper.volume_owner import ClaimKind, VolumeClaimRefused
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
 
@@ -2152,6 +2153,150 @@ async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gat
 
     assert cam.set_calls == []
     assert cam.mute_calls == []
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.set_listening_level(95), id="set_up"),
+        pytest.param(lambda coord: coord.set_listening_level(25), id="set_down"),
+        pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust_up"),
+        pytest.param(
+            lambda coord: coord.adjust_listening_level(-35), id="adjust_down",
+        ),
+    ],
+)
+async def test_the_level_doors_refuse_every_write_while_measuring(tmp_path, door):
+    """The voice tools reach these IN-PROCESS, never through jasper-control.
+
+    ``jasper.tools.audio`` calls them on this coordinator whenever the box is
+    not a bonded follower, so the HTTP measurement hold never sees the request.
+    Direction cannot be the test: the measurement drives camilla's main_volume
+    directly and never writes the persistence file, so the persisted level
+    these doors would compare against says nothing about where the fader sits,
+    and a "quieter" can be a large step UP on the stimulus. The refusal type is
+    what ``tools.dispatch_tool`` turns into the model-visible error payload.
+    """
+    coord, cam, persistence = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+    _assert_persisted(persistence, level=60)
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.unmute(), id="unmute"),
+        pytest.param(lambda coord: coord.set_muted(False), id="set_muted_false"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_from_muted"),
+    ],
+)
+async def test_unmute_is_refused_while_measuring(tmp_path, door):
+    """Unmute restores the household level onto the fader — a level write."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.mute()
+    await coord.note_measurement_active(True)
+    cam.set_calls.clear()
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+    assert coord.is_muted()
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.mute(), id="mute"),
+        pytest.param(lambda coord: coord.set_muted(True), id="set_muted_true"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_to_muted"),
+    ],
+)
+async def test_mute_still_lands_while_measuring(tmp_path, door):
+    """The emergency door: a human reaching for silence mid-sweep gets it."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    await door(coord)
+
+    assert coord.is_muted()
+    assert cam.mute_calls[-1] is True
+
+
+async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
+    tmp_path, monkeypatch, caplog,
+):
+    """The voice rollback path can drop note_measurement_active(False).
+
+    Past its aggregate deadline the resume coroutine is closed unawaited and
+    the safety task is already cancelled, so nothing is left to lower the flag.
+    Without the lapse this refuses every level write for the life of the
+    process, invisibly to /state. The bound is per WINDOW, not per process: a
+    later window that strands its own flag lapses, and says so, again.
+    """
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
+    await coord.note_measurement_active(True)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
+    with pytest.raises(VolumeClaimRefused):
+        await coord.set_listening_level(20)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        assert await coord.set_listening_level(20) == 20
+        assert await coord.adjust_listening_level(-5) == 15
+        # _event_fields asserts exactly one: once per lapse, not once per write.
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+        # A second window strands its flag too. The once-per-lapse latch is
+        # reset by note_measurement_active(True), so this one is announced.
+        caplog.clear()
+        await coord.note_measurement_active(True)
+        with pytest.raises(VolumeClaimRefused):
+            await coord.set_listening_level(30)
+        now[0] += MEASUREMENT_AUTOCLEAR_SEC
+        assert await coord.set_listening_level(30) == 30
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+
+async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
+    tmp_path, monkeypatch, caplog,
+):
+    """Same bound, applied on the tick's OWN clock.
+
+    The write doors only bound their own refusal; the 1 Hz reconciler reads the
+    raw flag, so a flag the voice rollback path stranded would pause drift
+    correction for the life of the process. A tick is not a volume write — it
+    IS the clock the pause runs on — so it may clear what it finds lapsed.
+    """
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
+    await coord.note_measurement_active(True)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
+    await coord.note_measurement_active(True)  # the window renews
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC + 1.0   # past the FIRST window's bound
+    cam._db = 0.0
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == [], "a renewing window must stay paused"
+
+    now[0] += MEASUREMENT_AUTOCLEAR_SEC
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        await coord.maybe_reconcile_camilla()
+    assert cam.set_calls, "a stranded flag must not pause drift correction"
+    assert _event_fields(caplog, "volume.measurement_flag_expired")
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):

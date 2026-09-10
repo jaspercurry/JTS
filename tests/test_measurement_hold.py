@@ -19,9 +19,10 @@ What must hold, and what would break without it:
   or a healthy long sweep un-gates itself mid-capture;
 * a second owner is **refused, by name** — this is the cross-process mutex the
   window's in-process ``_window_active`` flag structurally cannot be;
-* jasper-control **declines source-observed volume writes** while held, on the
-  established ``observation_applied: false`` contract, and **still honours
-  authoritative ones** (a human at the speaker is not locked out);
+* jasper-control **declines every level write** while held — source-observed
+  ones on the established ``observation_applied: false`` contract, and
+  authoritative ones (landing slider, HID knob, unmute) with a 409 naming the
+  incumbent — while **mute** stays open as the emergency door;
 * the window **releases on every exit** — normal, raised, and cancelled;
 * an unreachable jasper-control is **fail-soft** (the hazard it guards cannot
   occur while the daemon serving it is down), while a 409 is **fail-closed**.
@@ -52,6 +53,7 @@ from jasper.measurement_window import (
 )
 
 from tests._async_wait import wait_signalled
+from tests._log_events import event_fields, event_records
 from tests.control_server_fixtures import FakeCoordinator
 
 
@@ -478,16 +480,159 @@ def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):
     assert "persistence unreadable" in body["error"]
 
 
-def test_an_authoritative_write_still_lands_while_held(control_server):
-    """A human at the speaker is not locked out. This is isolation, not a lockout."""
+_WRITE_CALLS = {"set", "adjust", "mute", "unmute"}
+
+
+@pytest.mark.parametrize(
+    "route, payload",
+    [
+        ("/volume/set", {"percent": 91}),
+        ("/volume/set", {"percent": 42}),
+        ("/volume/adjust", {"delta_percent": 25}),
+        ("/volume/adjust", {"delta_percent": -25}),
+        ("/volume/mute", {"muted": False}),
+    ],
+)
+def test_every_authoritative_level_write_is_a_409(control_server, route, payload):
+    """The landing slider, the HID knob and an unmute, mid-sweep.
+
+    The measurement OWNS the fader: its ramp drives camilla directly and never
+    writes the persistence file, so the persisted household level says nothing
+    about where the fader sits — a "42%" while the ramp holds −38 dB is a large
+    step UP on the stimulus. Direction cannot be the test, so no level write
+    lands. Same 409 envelope /measurement/hold answers a second owner with.
+    """
     base, fake = control_server
     _post(f"{base}/measurement/hold", {"owner": "seat-level"})
 
-    status, body = _post(f"{base}/volume/set", {"percent": 42})
+    status, body = _post(f"{base}{route}", payload)
+    assert status == 409
+    assert body["owner"] == "seat-level"
+    assert body["measurement"]["owner"] == "seat-level"
+    assert fake._level == 60
+    assert not [kind for kind, _ in fake.calls if kind in _WRITE_CALLS]
+
+
+def test_a_toggle_that_would_unmute_is_a_409(control_server):
+    """Toggle carries no direction in its body — it is read off the latch."""
+    base, fake = control_server
+    _post(f"{base}/volume/mute", {"muted": True})
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 409
+    assert body["owner"] == "seat-level"
+    assert fake.is_muted()
+
+
+@pytest.mark.parametrize("payload", [{}, {"muted": True}])
+def test_mute_still_lands_while_held(control_server, payload):
+    """The emergency door, in both its shapes: explicit, and toggle-to-muted.
+
+    A human reaching for silence mid-sweep gets it — that is the one write a
+    measurement never owns.
+    """
+    base, fake = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    status, body = _post(f"{base}/volume/mute", payload)
     assert status == 200
-    assert body["percent"] == 42
-    assert ("set", 42) in fake.calls
-    assert "observation_applied" not in body
+    assert body["percent"] == 0
+    assert fake.is_muted()
+
+
+def test_a_toggle_mutes_when_the_latch_cannot_be_read(control_server, monkeypatch):
+    """The emergency door fails toward SILENCE, never toward a 502.
+
+    The toggle carries no direction, so the refusal reads the latch first. That
+    read must not be able to close the door: `toggle_mute` does its own read
+    under the coordinator's lock, and it is the authority on the direction.
+    """
+    import jasper.control.server as srv_mod
+
+    base, fake = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    def exploding_read():
+        raise RuntimeError("persistence unreadable")
+
+    monkeypatch.setattr(srv_mod, "_read_volume_state", exploding_read)
+
+    status, _ = _post(f"{base}/volume/mute", {})
+    assert status == 200
+    assert fake.is_muted()
+
+
+@pytest.mark.parametrize(
+    "route, payload, kind",
+    [
+        ("/volume/set", {"percent": 42}, "set"),
+        ("/volume/adjust", {"delta_percent": -25}, "adjust"),
+        ("/volume/mute", {"muted": False}, "unmute"),
+    ],
+)
+def test_a_refusal_is_its_own_vocabulary(control_server, caplog, route, payload, kind):
+    """A refused fader write is NOT a declined observation, and says so.
+
+    Two counters and two event names because the two are different contracts:
+    the source-observed one answers 200 + `observation_applied: false` and is
+    counted as `declined_observations`, and conflating them would make that
+    field on the way out lie about what the journal did not carry.
+    """
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    with caplog.at_level(logging.DEBUG, logger="jasper"):
+        assert _post(f"{base}{route}", payload)[0] == 409
+        refusal = event_fields(caplog, "volume.write_refused_measurement_hold")
+        assert refusal["kind"] == kind
+        assert refusal["owner"] == "seat-level"
+
+        _post(f"{base}/measurement/release", {"owner": "seat-level"})
+        released = event_fields(caplog, "measurement.hold_released")
+    assert released["refused_writes"] == "1"
+    assert released["declined_observations"] == "0"
+
+
+def test_repeated_refusals_log_once_at_info_then_debug(control_server, caplog):
+    """A slider drag and a spun HID knob repeat; the transition is the signal.
+
+    Same demotion, and same reason, as its declined sibling — see
+    test_repeated_declines_log_once_at_info_then_debug.
+    """
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    with caplog.at_level(logging.DEBUG, logger="jasper"):
+        for _ in range(5):
+            assert _post(f"{base}/volume/adjust", {"delta_percent": -5})[0] == 409
+
+    records = event_records(caplog, "volume.write_refused_measurement_hold")
+    assert len(records) == 5, "every refusal is still recorded, just not at INFO"
+    assert [r.levelno for r in records] == [logging.INFO] + [logging.DEBUG] * 4
+
+
+def test_both_end_of_hold_lines_report_the_refusals(caplog):
+    """The demoted count reaches the journal on EVERY exit, not just the tidy one.
+
+    A crashed holder never releases, so the expiry line is the only place its
+    refusals are ever named.
+    """
+    clock = Clock()
+    hold = mh.MeasurementHold(clock=clock)
+
+    with caplog.at_level(logging.DEBUG, logger="jasper"):
+        hold.acquire("seat-level")
+        hold.record_refused_write()
+        hold.record_refused_write()
+        hold.release("seat-level")
+        assert event_fields(caplog, "measurement.hold_released")["refused_writes"] == "2"
+
+        hold.acquire("correction-measurement")
+        hold.record_refused_write()
+        clock.advance(mh.MEASUREMENT_HOLD_TTL_SEC + 1.0)
+        hold.snapshot()  # any read lapses it
+        assert event_fields(caplog, "measurement.hold_expired")["refused_writes"] == "1"
 
 
 def test_the_observation_applies_once_the_hold_is_released(control_server):
