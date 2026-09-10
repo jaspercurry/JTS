@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import finite_float as _finite_float, issue as _issue
@@ -139,10 +139,6 @@ REQUIRED_PATHS: tuple[PathSafetyRequirement, ...] = (
         ),
     ),
 )
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _normalise_issue(raw: Any) -> dict[str, str]:

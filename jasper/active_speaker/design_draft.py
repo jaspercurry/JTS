@@ -16,11 +16,11 @@ import json
 import math
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from ._common import (
     ACTIVE_CROSSOVER_ROLE_PAIRS,
@@ -130,10 +130,6 @@ class ActiveSpeakerDesignDraftRevisionConflict(ActiveSpeakerDesignDraftError):
     def __init__(self, message: str, current_draft: Mapping[str, Any]):
         super().__init__(message)
         self.current_draft = dict(current_draft)
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _design_draft_path(path: str | Path | None = None) -> Path:

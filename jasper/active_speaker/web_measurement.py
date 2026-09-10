@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from jasper.active_speaker.measurement import (
@@ -14,11 +13,8 @@ from jasper.active_speaker.measurement import (
     active_summed_targets,
     load_measurement_state,
 )
+from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import load_output_topology
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def status_payload() -> dict[str, Any]:
