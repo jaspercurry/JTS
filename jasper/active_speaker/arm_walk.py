@@ -401,6 +401,22 @@ COMPLETE_PATH = "/sound/speaker/crossover/v2/complete"
 #: ``crossover/main.js``'s Stop button posts.
 CAPTURE_CANCEL_PATH = "/sound/speaker/crossover/capture-cancel"
 
+#: The refusal ``correction_handlers._handle_crossover_capture_cancel`` maps a
+#: stale cancel to (HTTP 400, ``{"ok": false, "error": "...already stopped..."}``)
+#: -- a park that raced the session's own natural end, or a second tab's Stop.
+_CAPTURE_ALREADY_GONE_MARKER = "already stopped"
+
+
+def _capture_already_gone(status: int, body: str) -> bool:
+    """True if a non-200 cancel found no matching capture, not a real failure."""
+    if status == 200:
+        return False
+    try:
+        error = json.loads(body).get("error", "")
+    except (TypeError, ValueError, AttributeError):
+        error = body
+    return _CAPTURE_ALREADY_GONE_MARKER in str(error).lower()
+
 
 class LoopbackSession(WizardClient):
     """The position gate's three verbs, over the wizard reached on loopback. A
@@ -528,6 +544,7 @@ class ArmWalk:
         self._sleep = sleep
         self._parked = False
         self._saw_session = False
+        self._capture_ended = False
         self._served: set[tuple[int, int]] = set()
         self._served_angles: set[int] = set()
         self._releases: list[tuple[int, int, float]] = []
@@ -776,6 +793,7 @@ class ArmWalk:
         return after is not None and len(self._served) >= after
 
     def _post_complete(self) -> int:
+        self._capture_ended = True
         status, body = self._session.complete()
         self._trail.emit(
             "complete",
@@ -798,6 +816,7 @@ class ArmWalk:
         (fewer positions measured than planned); ``complete`` returns cleanly, leaving
         the ``--expect-angles`` check to :meth:`_final_code`.
         """
+        self._capture_ended = True
         if poll.failed_error is not None:
             self._trail.emit("session_failed", level=logging.ERROR,
                              error=poll.failed_error)
@@ -836,18 +855,30 @@ class ArmWalk:
         return EXIT_WALK_NOT_TAKEN
 
     def _cancel_capture(self) -> None:
-        """Best-effort: stop the box's own capture session. Never raises."""
+        """Best-effort: stop the box's own capture session. Never raises.
+
+        Skipped once this walk already ended the session itself (a normal
+        ``_post_complete``, or a terminal status ``_session_ended`` read) --
+        the box has no matching capture left, and cancelling it would only
+        log a spurious warning. A cancel that still races a session's own
+        end (another tab's Stop, or the session finishing between the last
+        poll and this park) gets the same box-side "no matching capture"
+        refusal; that outcome is reported ok, not a warning.
+        """
+        if self._capture_ended:
+            return
         try:
-            status, _body = self._session.cancel()
+            status, body = self._session.cancel()
         except Exception as exc:  # noqa: BLE001 -- the park must still run
             self._trail.emit(
                 "capture_cancel", level=logging.WARNING, ok=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
             return
+        ok = status == 200 or _capture_already_gone(status, body)
         self._trail.emit(
-            "capture_cancel", level=logging.INFO if status == 200 else logging.WARNING,
-            ok=status == 200, status=status,
+            "capture_cancel", level=logging.INFO if ok else logging.WARNING,
+            ok=ok, status=status,
         )
 
     def _park(self) -> None:
