@@ -1111,6 +1111,7 @@ reconcile_aec_state() {
     systemctl enable jasper-aec-reconcile.service
     if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
         if [[ -e "$aec_bridge_marker" ]]; then
             echo "  WARN: AEC bridge marker still present ($aec_bridge_marker) from a prior pass"
         else
@@ -1130,8 +1131,10 @@ reconcile_grouping_state() {
     # snapclient still ship disabled and only the reconciler starts them
     # on explicit wizard opt-in.
     systemctl enable jasper-grouping-reconcile.service
-    systemctl restart jasper-grouping-reconcile.service || \
+    systemctl restart jasper-grouping-reconcile.service || {
         echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
 }
 
 resolve_fanin_coupling_default() {
@@ -1146,8 +1149,10 @@ resolve_fanin_coupling_default() {
     # single env writer; daemons read the resolved env. The reconciler CLI hydrates
     # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
     systemctl enable jasper-fanin-coupling-auto.service
-    /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || \
+    /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
 }
 
 provision_correction_tls() {
