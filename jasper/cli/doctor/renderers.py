@@ -879,15 +879,8 @@ def _unit_runtime_environ(unit: str) -> dict[str, str]:
     environ cannot be read — the caller then falls back, and a genuinely
     unresolvable `${VAR}` reaches aplay and fails loudly, which is correct.
     """
-    try:
-        r = subprocess.run(
-            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return {}
-    pid = r.stdout.strip()
-    if r.returncode != 0 or not pid.isdigit() or pid == "0":
+    pid = (evidence.unit_state(unit) or {}).get("main_pid") or 0
+    if pid <= 0:
         return {}
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()

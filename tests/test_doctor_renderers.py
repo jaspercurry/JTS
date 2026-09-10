@@ -1242,13 +1242,7 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
         b"EMPTY=\x00NOEQUALS\x00LANG=C.UTF-8\x00"
     )
 
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "4242\n"
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_states(**{"librespot.service": {"main_pid": 4242}})
     real_path = renderers.Path
     monkeypatch.setattr(
         renderers, "Path",
@@ -1262,17 +1256,12 @@ def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_p
     assert "NOEQUALS" not in env, "a malformed entry is dropped, not crashed on"
 
 
-def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
+def test_unit_runtime_environ_returns_empty_for_a_parked_unit():
     """MainPID 0 means stopped/parked/failed. There is no environ to read, and
     guessing one would be worse than deferring to the next tier."""
-    for mainpid in ("0", "", "not-a-pid"):
-        def fake_run(cmd, _v=mainpid, **kwargs):
-            class R:
-                returncode = 0
-                stdout = _v
-            return R()
-
-        monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    for mainpid in (0, None):
+        _evidence.evidence.reset()
+        _seed_unit_states(**{"librespot.service": {"main_pid": mainpid}})
         assert renderers._unit_runtime_environ("librespot.service") == {}, mainpid
 
 
