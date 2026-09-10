@@ -331,32 +331,16 @@ def render_config(
     output_path: Path,
     bounds: RenderBounds,
     fader_db: float,
+    loudness_fader_db: float | None = None,
 ) -> RenderInvocation:
-    """R9: invoke the pinned binary on ``config_path``, bounded, isolated.
+    """Render files with recorded Main and optional Aux1 fader values.
 
-    argv is exactly ``[binary_path, f"--gain={fader_db}", str(config_path)]``
-    — no ``--statefile``, no ``-p``/``-a``. ``--gain`` and its value MUST be
-    ONE ``=``-joined token, never two separate argv elements: the pinned
-    v4.1.3 README's own "Initial volume" section documents that clap
-    (pinned ``4.5.4``, no ``allow_hyphen_values`` on this ``Arg``) parses
-    ``--gain -12.3`` (a space, i.e. two argv tokens) as broken — "These have
-    a space before the minus sign and do **NOT** work" — while
-    ``--gain=-12.3`` is one of the two forms that do. JTS fader values are
-    always ``<= 0`` dB, so the two-token form would refuse (well, SIGSEGV or
-    exit non-zero from clap) on every real render. ``fader_db`` is R4(a)'s
-    bracketed (before == after, proved stable) main-volume reading,
-    reproduced here because R4(c) always resolves to "precedes the limiter"
-    for the pinned build (see this module's docstring): every render's
-    ``self.volume`` stage must apply the identical gain the live pass's
-    fader applied, or the rendered peak is systematically off by the
-    fader's dB. Bounds are process-local (``RLIMIT_AS``, ``RLIMIT_CPU``,
-    ``os.nice``) applied in the child via ``preexec_fn``, on top of the
-    same bounded-subprocess shape ``jasper/dsp_apply.py`` uses for
-    ``--check`` (explicit argv, timeout, captured stdout/stderr, typed
-    result).
+    Negative gains need the single-token ``--gain=<db>`` syntax in v4.1.3.
+    Omitting websocket/statefile flags keeps this process isolated.
     """
 
-    argv = (binary_path, f"--gain={fader_db}", str(config_path))
+    auxiliary = () if loudness_fader_db is None else (f"--gain1={loudness_fader_db}",)
+    argv = (binary_path, f"--gain={fader_db}", *auxiliary, str(config_path))
     # Split each token on its FIRST "=" before the membership check: an
     # embedded forbidden flag (e.g. a hypothetical "--port=1234" token)
     # would otherwise bypass an exact-string check that only ever sees

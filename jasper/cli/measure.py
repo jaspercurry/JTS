@@ -715,6 +715,7 @@ async def _measure(
                         capture_session_id=session_id,
                     ),
                     capture=capture,
+                    enrich=lambda _answer, _record: {"loudness_volume_db": door.measurement_loudness_volume_db},
                 ),
                 volume_claim=door.claim,
                 session_volume_plan=door.plan,
