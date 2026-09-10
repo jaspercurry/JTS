@@ -172,17 +172,6 @@ def test_innomaker_capability_reads_the_width_two_active_ring() -> None:
     assert cap.issues == ()
     assert cap.ready is True
 
-    # The transport plan is what actually carries the lane to the DAC.
-    layout = resolve_output_layout(topo)
-    assert layout.transport_plan is not None
-    assert layout.transport_plan.transport_channels == 2
-    # dac_channel_map is None on the profile => identity permutation.
-    assert [
-        (entry.camilla_out_index, entry.physical_dac_channel)
-        for entry in layout.transport_plan.channel_map
-    ] == [(0, 0), (1, 1)]
-    assert layout.transport_plan.clock_domain_contract == "single_device"
-
 
 def test_dual_apple_capability_reads_outputd_lane_width() -> None:
     children = [

@@ -412,7 +412,6 @@ def test_the_one_flat_graph_is_seeded(tmp_path: Path):
     decision = safe_graph_for_current_topology(
         _full_range_stereo(),
         flat_config_path=flat,
-        staged_config={},
     )
     assert decision.status == "select_flat", decision.reason
     assert decision.selected_config_path == str(flat)

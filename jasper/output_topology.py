@@ -30,8 +30,6 @@ from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
-    ChannelMapEntry,
-    DacProfile,
     by_id as _dac_by_id,
     clock_domain_contract_for as _dac_clock_domain_contract_for,
     clock_domain_label_for as _dac_clock_domain_label_for,
@@ -59,8 +57,6 @@ SCHEMA_VERSION = 1
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
 CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
-OUTPUT_LAYOUT_KIND = "jts_output_layout"
-OUTPUT_TRANSPORT_PLAN_KIND = "jts_output_transport_plan"
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 
 # Active-output route resolution. Owned here, not on the IO-free DAC registry,
@@ -70,20 +66,6 @@ ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
 OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
 EXPLICIT_SOURCE = "explicit"
 MISSING_SOURCE = "missing"
-
-# The transport dispatches on clock-domain SHAPE, never a per-DAC branch:
-# one sink string per shape, width + channel map carried as data.
-TRANSPORT_SINK_SINGLE_ALSA = "single_alsa"
-TRANSPORT_SINK_COMPOSITE = "composite"
-
-# Every physical-DAC PCM the active path resolves MUST be a stable, name-keyed
-# ALSA identifier (``hw:CARD=<name>,DEV=<n>``): a USB DAC or the Apple dongles
-# re-enumerate to a different numeric ALSA index across a reboot/hotplug, so
-# ``hw:<index>`` / ``plughw:`` forms are unsafe on the active path. This regex
-# is the single guard that keeps them out at the type boundary. Anchored with
-# \A...\Z (not ^...$) so a trailing newline cannot sneak past — Python's $
-# matches before a final '\n', which would false-accept "hw:CARD=x,DEV=0\n".
-_STABLE_CARD_PCM_RE = re.compile(r"\Ahw:CARD=[^,\s]+,DEV=\d+\Z")
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
@@ -1449,122 +1431,6 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
     }
 
 
-def stable_card_pcm(card_id: str | None) -> str | None:
-    """Return a STABLE, name-keyed ALSA PCM for an output card, or ``None``.
-
-    The one chokepoint every physical-DAC PCM on the active-crossover path goes
-    through, so the path is keyed on the card's stable name rather than a
-    drift-prone numeric index. ``card_id`` is the ALSA card *name*
-    (``/proc/asound/card<N>/id``, e.g. ``DAC8``/``Array``), the same name the
-    DAC profile matches on; the ``CARD=`` form forces name lookup even if that
-    id happens to be numeric.
-    """
-
-    card = (card_id or "").strip()
-    if not card:
-        return None
-    return f"hw:CARD={card},DEV=0"
-
-
-def is_stable_card_pcm(pcm: str | None) -> bool:
-    """Return True only for a stable ``hw:CARD=<name>,DEV=<n>`` identifier."""
-
-    return bool(_STABLE_CARD_PCM_RE.match(pcm or ""))
-
-
-def _transport_sink_for_kind(kind: str) -> str:
-    """Map a DAC clock-domain shape (``kind``) to its transport sink string.
-
-    The whole of the per-shape dispatch: a new DAC of an established shape adds
-    no code here, because width and channel map ride as data.
-    """
-
-    return TRANSPORT_SINK_COMPOSITE if kind == "composite" else TRANSPORT_SINK_SINGLE_ALSA
-
-
-def _resolve_transport_dac_pcms(
-    hardware: OutputHardware,
-    profile: DacProfile,
-) -> tuple[str, ...]:
-    """Resolve the physical DAC PCM(s) the transport writes to (stable identity).
-
-    Child/card identity may be incomplete in a draft topology (observed
-    hardware not yet recorded), so this is best-effort: it returns only the
-    stable PCMs it can resolve, and never a numeric form.
-    """
-
-    if profile.kind == "composite":
-        pcms: list[str] = []
-        for child in hardware.child_devices:
-            pcm = stable_card_pcm(child.card_id)
-            if pcm:
-                pcms.append(pcm)
-        return tuple(pcms)
-    pcm = stable_card_pcm(hardware.card_id)
-    return (pcm,) if pcm else ()
-
-
-@dataclass(frozen=True)
-class OutputTransportPlan:
-    """DAC-agnostic active-output transport truth for a resolved DAC.
-
-    The single source of truth the reconciler emits to env and
-    ``jasper-outputd`` consumes; here it is pure data with no env or ALSA I/O.
-    ``dac_pcms`` are always stable ``hw:CARD=`` identifiers — the invariant
-    that survives card-index drift is enforced at this boundary.
-    """
-
-    sink: str
-    transport_channels: int
-    channel_map: tuple[ChannelMapEntry, ...]
-    dac_pcms: tuple[str, ...]
-    clock_domain_contract: str
-
-    def __post_init__(self) -> None:
-        if self.sink not in (TRANSPORT_SINK_SINGLE_ALSA, TRANSPORT_SINK_COMPOSITE):
-            raise OutputTopologyError(f"unsupported transport sink {self.sink!r}")
-        if self.transport_channels <= 0:
-            raise OutputTopologyError("transport_channels must be > 0")
-        if len(self.channel_map) != self.transport_channels:
-            raise OutputTopologyError(
-                "channel_map must carry one entry per transport channel"
-            )
-        camilla_indexes = sorted(e.camilla_out_index for e in self.channel_map)
-        if camilla_indexes != list(range(self.transport_channels)):
-            raise OutputTopologyError(
-                "channel_map camilla_out_index values must be exactly "
-                f"0..{self.transport_channels - 1}"
-            )
-        physical = [e.physical_dac_channel for e in self.channel_map]
-        if len(set(physical)) != len(physical):
-            raise OutputTopologyError(
-                "channel_map maps two lanes to the same physical_dac_channel"
-            )
-        for pcm in self.dac_pcms:
-            if not is_stable_card_pcm(pcm):
-                raise OutputTopologyError(
-                    "dac_pcms must be stable hw:CARD= identifiers (no numeric "
-                    f"index, no plug/plughw), got {pcm!r}"
-                )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": OUTPUT_TRANSPORT_PLAN_KIND,
-            "sink": self.sink,
-            "transport_channels": self.transport_channels,
-            "channel_map": [
-                {
-                    "camilla_out_index": entry.camilla_out_index,
-                    "physical_dac_channel": entry.physical_dac_channel,
-                }
-                for entry in self.channel_map
-            ],
-            "dac_pcms": list(self.dac_pcms),
-            "clock_domain_contract": self.clock_domain_contract,
-        }
-
-
 @dataclass(frozen=True)
 class OutputLayout:
     """Resolved active-output route for a saved topology.
@@ -1572,9 +1438,8 @@ class OutputLayout:
     Computed FRESH from the ``OutputTopology`` on every call, never cached
     against a numeric card index, so a boot/udev topology recompute flows
     straight through to the resolved route. ``playback_device`` is where the
-    active path hands audio off (the production outputd active lane or an
-    explicit lab PCM); ``transport_plan`` is present only when a production
-    outputd active lane exists.
+    active path hands audio off: the production outputd active lane or an
+    explicit lab PCM.
     """
 
     device_id: str
@@ -1583,22 +1448,6 @@ class OutputLayout:
     playback_device_source: str
     transport_channel_count: int
     subwoofer_supported: bool
-    transport_plan: OutputTransportPlan | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": OUTPUT_LAYOUT_KIND,
-            "device_id": self.device_id,
-            "card_id": self.card_id,
-            "playback_device": self.playback_device,
-            "playback_device_source": self.playback_device_source,
-            "transport_channel_count": self.transport_channel_count,
-            "subwoofer_supported": self.subwoofer_supported,
-            "transport_plan": (
-                self.transport_plan.to_dict() if self.transport_plan else None
-            ),
-        }
 
 
 def resolve_output_layout(
@@ -1614,8 +1463,7 @@ def resolve_output_layout(
     1. An explicit lab/CI device (``playback_device`` arg or
        ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``).
     2. The production outputd active lane, when the resolved ``DacProfile``
-       declares one. This is the durable path and the only one carrying an
-       ``OutputTransportPlan``.
+       declares one. This is the durable path.
     3. Otherwise the route is missing (no width, no subwoofer support).
 
     Case 2 has ONE transport, and this is where a FRESH emit names it: the
@@ -1647,7 +1495,6 @@ def resolve_output_layout(
             playback_device_source=EXPLICIT_SOURCE,
             transport_channel_count=physical_width,
             subwoofer_supported=True,
-            transport_plan=None,
         )
 
     if (
@@ -1679,7 +1526,6 @@ def resolve_output_layout(
             playback_device_source=OUTPUTD_ACTIVE_LANE_SOURCE,
             transport_channel_count=profile.active_outputd_lane_channels,
             subwoofer_supported=True,
-            transport_plan=_build_outputd_transport_plan(hardware, profile),
         )
 
     return OutputLayout(
@@ -1689,25 +1535,6 @@ def resolve_output_layout(
         playback_device_source=MISSING_SOURCE,
         transport_channel_count=0,
         subwoofer_supported=False,
-        transport_plan=None,
-    )
-
-
-def _build_outputd_transport_plan(
-    hardware: OutputHardware,
-    profile: DacProfile,
-) -> OutputTransportPlan:
-    width = int(profile.active_outputd_lane_channels or 0)
-    if profile.dac_channel_map is not None:
-        channel_map = profile.dac_channel_map
-    else:
-        channel_map = tuple(ChannelMapEntry(index, index) for index in range(width))
-    return OutputTransportPlan(
-        sink=_transport_sink_for_kind(profile.kind),
-        transport_channels=width,
-        channel_map=channel_map,
-        dac_pcms=_resolve_transport_dac_pcms(hardware, profile),
-        clock_domain_contract=profile.clock_domain_contract,
     )
 
 
