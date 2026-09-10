@@ -235,7 +235,23 @@ start_monitor() {
     # other job control happens in between), so exec_failed vs eof is read
     # off MONITOR_MODE instead -- whether THIS generation ever proved
     # itself connected before it went away.
+    #
+    # `stop_monitor`'s `kill "$MONITOR_PGID"` only reaches this subshell --
+    # the fanned-out `alsactl &` children below are not in a process group
+    # the shell put them in, so left alone they'd simply be orphaned and
+    # keep running past the reset (#4772 review). The trap forwards that
+    # same TERM to every child this generation started before the subshell
+    # itself exits.
     exec 3< <(
+        child_pids=()
+        kill_fanout_children() {
+            local pid
+            (( ${#child_pids[@]} )) || return 0
+            for pid in "${child_pids[@]}"; do
+                kill "$pid" 2>/dev/null
+            done
+        }
+        trap kill_fanout_children TERM
         for card in "${APPLE_CARDS[@]}"; do
             [[ -n "$card" ]] || continue
             if (( use_stdbuf )); then
@@ -243,6 +259,7 @@ start_monitor() {
             else
                 alsactl monitor "hw:${card}" &
             fi
+            child_pids+=("$!")
         done
         wait
     )
@@ -292,6 +309,43 @@ sweep_cards() {
     done
 }
 
+# Symmetric with `detected` above: a card the last refresh was tracking that
+# is no longer in APPLE_CARDS gets a structured event and drops its
+# per-card bookkeeping, so a card that comes back later starts clean
+# instead of reusing a previous instance's card_last/reset state.
+prune_departed_cards() {
+    local i=0 key still_armed card
+    local kept_keys=() kept_last=() kept_unreadable=() kept_reset=()
+    while (( i < ${#card_keys[@]} )); do
+        key="${card_keys[$i]}"
+        still_armed=0
+        if (( ${#APPLE_CARDS[@]} )); then
+            for card in "${APPLE_CARDS[@]}"; do
+                [[ "$card" == "$key" ]] && { still_armed=1; break; }
+            done
+        fi
+        if (( still_armed )); then
+            kept_keys+=("$key")
+            kept_last+=("${card_last[$i]}")
+            kept_unreadable+=("${card_unreadable[$i]}")
+            kept_reset+=("${card_reset_at[$i]}")
+        else
+            echo "event=apple_dongle.headphone_monitor.card_gone card=${key}"
+        fi
+        i=$(( i + 1 ))
+    done
+    card_keys=()
+    card_last=()
+    card_unreadable=()
+    card_reset_at=()
+    if (( ${#kept_keys[@]} )); then
+        card_keys=("${kept_keys[@]}")
+        card_last=("${kept_last[@]}")
+        card_unreadable=("${kept_unreadable[@]}")
+        card_reset_at=("${kept_reset[@]}")
+    fi
+}
+
 absent_logged=0
 probe_failed_logged=0
 sweep_due=1
@@ -310,6 +364,7 @@ while true; do
     fi
     if [[ "$POPULATION_MOVED" == "1" ]]; then
         stop_monitor
+        prune_departed_cards
         sweep_due=1
     fi
 
@@ -319,10 +374,11 @@ while true; do
             echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
             absent_logged=1
         fi
-        card_keys=()
-        card_last=()
-        card_unreadable=()
-        card_reset_at=()
+        # So the next generation's first mode transition logs for real
+        # instead of being deduped against a reason from before the board
+        # went empty (set_monitor_mode only logs on an actual change).
+        MONITOR_MODE=""
+        MONITOR_MODE_REASON=""
         sleep "$MONITOR_POLL_SEC"
         continue
     fi

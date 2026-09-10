@@ -5,8 +5,10 @@
 """The outputd topology's wiring: declarative pins plus the steps that run."""
 from __future__ import annotations
 
+import errno
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -298,6 +300,23 @@ def _event_fields(line: str) -> dict[str, str]:
     return dict(token.split("=", 1) for token in line.split() if "=" in token)
 
 
+def _read_pid(path: Path) -> int | None:
+    """The pid a fake `alsactl monitor` recorded at `path`, or None before
+    it has written one."""
+    if not path.exists():
+        return None
+    text = path.read_text().strip()
+    return int(text) if text.isdigit() else None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+    return True
+
+
 def _empty_board(tmp_path: Path) -> dict[str, str]:
     sys_class = tmp_path / "sys" / "class" / "sound"
     proc_asound = tmp_path / "proc" / "asound"
@@ -358,6 +377,70 @@ def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
             assert monitor.poll() is None, f"monitor exited; alsactl.log: {started!r}"
             time.sleep(0.02)
         assert sorted(started) == ["monitor hw:A", "monitor hw:A_1"]
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_kills_every_fanned_out_alsactl_on_a_population_move(
+    tmp_path,
+):
+    """`stop_monitor` used to `kill` only the process-substitution subshell
+    that fans `alsactl monitor` out one-per-card -- the fanned-out children
+    are not in a process group the shell put them in, so they were silently
+    orphaned and kept running past every population-triggered restart
+    (#4772 review). Two armed cards, then one leaves the board: neither
+    card's OLD `alsactl` survives the restart, and the departed card gets
+    its own structured event."""
+    bin_dir, log = _amixer_double(tmp_path)
+    started = bin_dir / "alsactl.log"
+    events = bin_dir / "alsactl.events"
+    (bin_dir / "alsactl").write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$1" == "monitor" ]] || exit 0\n'
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(started))}\n'
+        # A leaked orphan IS this fake's own pid, recorded under the card
+        # name so the test can `kill -0` it after a stop.
+        'card="${2#hw:}"\n'
+        f'printf "%s" "$$" > {shlex.quote(str(bin_dir))}/alsactl.pid."$card"\n'
+        f"exec tail -n +1 -f {shlex.quote(str(events))}\n"
+    )
+    (bin_dir / "alsactl").chmod(0o755)
+
+    monitor, journal = _start_monitor(tmp_path, bin_dir, _dual_apple_cards(tmp_path))
+    try:
+        _await(monitor, log, _BOTH_APPLE_PINS)
+
+        deadline = time.monotonic() + 30.0
+        pid_a = pid_a1 = None
+        while time.monotonic() < deadline and (pid_a is None or pid_a1 is None):
+            pid_a = _read_pid(bin_dir / "alsactl.pid.A")
+            pid_a1 = _read_pid(bin_dir / "alsactl.pid.A_1")
+            if pid_a is None or pid_a1 is None:
+                time.sleep(0.02)
+        assert pid_a and pid_a1, "both fake alsactls never recorded a pid"
+        assert _pid_alive(pid_a) and _pid_alive(pid_a1)
+
+        # Card A_1 leaves the board: the population moves from two cards to
+        # one, which is what a population-triggered restart is.
+        sys_class = tmp_path / "sys" / "class" / "sound"
+        (sys_class / "card2").unlink()
+        shutil.rmtree(tmp_path / "proc" / "asound" / "card2")
+        with events.open("a", encoding="utf-8") as fh:
+            fh.write("node hw:0,0,0 value|info\n")
+
+        _await(
+            monitor,
+            journal,
+            ("event=apple_dongle.headphone_monitor.card_gone card=A_1",),
+        )
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and (_pid_alive(pid_a) or _pid_alive(pid_a1)):
+            assert monitor.poll() is None, "monitor exited while awaiting cleanup"
+            time.sleep(0.02)
+        assert not _pid_alive(pid_a), "old card A alsactl survived the restart"
+        assert not _pid_alive(pid_a1), "old card A_1 alsactl survived the restart"
     finally:
         monitor.kill()
         monitor.wait()
