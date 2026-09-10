@@ -69,6 +69,7 @@ from .voice.output_gate import (
     AssistantOutputGate,
 )
 from .voice.turn_playback import (  # noqa: F401
+    PRE_RESPONSE_CAPPED_REASON,
     PlaybackReport,
     idle_watchdog,
     play_responses,
@@ -743,6 +744,10 @@ class WakeLoop:
         # Turns since daemon start that were asked a question and produced no
         # answer. Published as /state.voice.silent_responses_session.
         self._silent_responses_session: int = 0
+        # The subset of those the idle watchdog's pre-response cap released
+        # (issue #4532). Published as /state.voice.turns_pre_response_capped;
+        # the cap's removal condition reads it.
+        self._turns_pre_response_capped: int = 0
         self._barge_in_active: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
@@ -853,7 +858,12 @@ class WakeLoop:
         failed = [task for task in done if not task.cancelled() and task.exception() is not None]
         if failed:
             return "playback_failed"
-        return (self._playback_report.stop_reason or "ended") if done else None
+        if not done:
+            return None
+        # `idle_watchdog` names its own ending when it chose one; both
+        # background tasks return None on the ordinary paths.
+        chosen = [r for t in done if not t.cancelled() and isinstance(r := t.result(), str)]
+        return chosen[0] if chosen else (self._playback_report.stop_reason or "ended")
 
     def _on_turn_background_done(self, task: asyncio.Task) -> None:
         if task not in self._bg_tasks:
@@ -2346,6 +2356,7 @@ class WakeLoop:
             # nothing or lost the link before finishing. Daemon-lifetime,
             # like barge_in_count_session below.
             "silent_responses_session": self._silent_responses_session,
+            "turns_pre_response_capped": self._turns_pre_response_capped,
             # In-session barge-in firing telemetry → /state.voice.barge_in
             # (the `enabled` flag is read fresh in jasper-control's
             # aggregator, not here — it can change without restarting this
@@ -2731,7 +2742,12 @@ class WakeLoop:
 
     async def _record_turn_outcome(self, reason: str) -> None:
         failed = reason == "playback_failed" or self._reply_lost()
-        self._emit_turn_timeline("failed" if failed else "complete")
+        capped = reason == PRE_RESPONSE_CAPPED_REASON
+        if capped:
+            self._turns_pre_response_capped += 1
+        self._emit_turn_timeline(
+            "failed" if failed else PRE_RESPONSE_CAPPED_REASON if capped else "complete",
+        )
         if not failed:
             await self._wake_telemetry.stage("turn_complete")
         # Capture event_id BEFORE the outcome write clears it.
@@ -2759,10 +2775,11 @@ class WakeLoop:
         self, reason: str, episode: AssistantOutputEpisode | None,
     ) -> bool:
         drain_wait_sec: float | None = None
-        if self._turn is not None and self._turn.last_chunk_at() > 0:
-            drain_wait_sec = max(
-                0.0, time.monotonic() - self._turn.last_activity_at(),
-            )
+        if self._turn is not None and (last_chunk_at := self._turn.last_chunk_at()) > 0:
+            # From the last audio chunk, not the last activity of any kind:
+            # the anchor also moves on transcript deltas and turn_complete,
+            # which arrive after the audio and would shorten the tail.
+            drain_wait_sec = max(0.0, time.monotonic() - last_chunk_at)
         research_window = self._research.window_snapshot()
         turn = self._turn
         assert turn is not None

@@ -51,6 +51,9 @@ class FakeLiveTurn:
     def last_activity_at(self) -> float:
         return 0.0
 
+    def end_input_at(self) -> float:
+        return 0.0
+
     async def send_audio(self, _pcm_16khz_int16: bytes) -> None:
         self.send_audio_calls += 1
 

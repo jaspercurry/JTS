@@ -19,6 +19,10 @@ logger = logging.getLogger("jasper.voice_daemon")
 
 _WATCHDOG_POLL_SEC = 0.25
 
+#: `_end_turn` reason for a turn the pre-response cap below released: the
+#: model was asked a question, kept making progress, and never answered.
+PRE_RESPONSE_CAPPED_REASON = "pre_response_capped"
+
 
 @dataclass
 class PlaybackReport:
@@ -153,17 +157,24 @@ async def idle_watchdog(
     tts: TtsPlayout,
     timeout: float,
     response_stall_timeout: float,
-) -> None:
+) -> str | None:
     """Close the turn based on explicit server-side signals where
     possible, falling back to a timer when the server stays silent.
+    Returns the `_end_turn` reason when this watchdog is the one that
+    chose the ending, else None for the ordinary "ended".
 
     Three cases:
       * `turn.server_turn_complete()` is True → server says "model is
         done speaking". Canonical clean close; the loop below holds the
         turn open while playout is still moving.
-      * No chunks received yet → model hasn't started speaking;
-        wait the full `timeout` for the first chunk to arrive (Live
-        API can take 3-5 s, sometimes longer).
+      * No chunks received yet → model hasn't started speaking; wait
+        the full `timeout` for the turn to make any PROGRESS at all. The
+        activity anchor advances on content and tool events only, so
+        this measures a stalled turn, not a slow generation (Live API
+        can take 3-5 s to first audio, sometimes longer). Capped at
+        `response_stall_timeout` measured from `end_input()`, so a
+        server that keeps working without ever producing audio still
+        releases the duck.
       * Chunks arriving but turn_complete hasn't fired → mid-response
         chunk gaps can be > 1.5 s during normal speech pauses, so a
         short timer here would race with real output. A separate,
@@ -186,7 +197,7 @@ async def idle_watchdog(
         await asyncio.sleep(_WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
-            return
+            return None
         now = time.monotonic()
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
@@ -211,17 +222,39 @@ async def idle_watchdog(
                     stalled_s=round(stalled_for, 2),
                     level=logging.WARNING,
                 )
-                return
+                return None
             if tts.expected_drain_at() > now:
                 continue
-            return
+            return None
         any_chunk_received = turn.last_chunk_at() > 0
         if not any_chunk_received and idle_for > timeout:
             logger.info(
                 "idle timeout (pre-response phase, %.1fs); no chunks, ending turn",
                 float(timeout),
             )
-            return
+            return None
+        if (
+            not any_chunk_received
+            and (end_input_at := turn.end_input_at()) > 0
+            and now - end_input_at > response_stall_timeout
+        ):
+            # The anchor above advances on tool calls and transcript
+            # deltas, so a model that keeps working without ever
+            # producing audio — the recorded no-audio-after-a-tool-call
+            # shape (issue #4534) — can hold the duck open indefinitely.
+            # Same last-resort ceiling the mid-response branch applies,
+            # measured from end-of-input so the user's own utterance
+            # cannot consume the model's budget.
+            # Removal condition: drop this branch when /state shows zero
+            # voice.turns_pre_response_capped over 30 days.
+            log_event(
+                logger,
+                "turn.pre_response_capped",
+                waited_s=round(now - end_input_at, 2),
+                silent_s=round(idle_for, 2),
+                level=logging.WARNING,
+            )
+            return PRE_RESPONSE_CAPPED_REASON
         if any_chunk_received:
             stalled_for = now - turn.last_chunk_at()
             if stalled_for > response_stall_timeout:
@@ -230,4 +263,4 @@ async def idle_watchdog(
                     "no turn_complete, ending turn",
                     stalled_for,
                 )
-                return
+                return None
