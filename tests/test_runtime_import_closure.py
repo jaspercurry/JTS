@@ -186,9 +186,13 @@ def test_the_walk_sees_a_real_import_graph():
 def test_the_walk_reads_both_import_depths(deferred):
     """The deferred pass is the one that sees a function-body import."""
 
-    runtime_contract = REPO_ROOT / "jasper/active_speaker/runtime_contract.py"
-    found = _imports(runtime_contract, deferred=deferred)
-    assert ("jasper.bass_extension" in found) is deferred
+    tree = ast.parse("import module_scope\ndef run():\n    import function_scope\n")
+    found = {
+        alias.name
+        for node in _import_nodes(tree.body, deferred=deferred)
+        for alias in node.names
+    }
+    assert found == ({"module_scope", "function_scope"} if deferred else {"module_scope"})
 
 
 @pytest.mark.parametrize("module", TRUTH_LAYER_MODULES)

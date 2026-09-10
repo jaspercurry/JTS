@@ -37,9 +37,6 @@ REASON_SOUND_PROFILE_UNREADABLE = "sound_profile_unreadable"
 REASON_SOUND_PROFILE_NOT_ACTIVE = "sound_profile_not_active"
 
 REASON_BASS_EXTENSION_NOT_COMMISSIONED = "bass_extension_not_commissioned"
-REASON_BASS_EXTENSION_MALFORMED = "bass_extension_malformed"
-REASON_BASS_EXTENSION_STALE = "bass_extension_stale"
-REASON_BASS_EXTENSION_BYPASSED = "bass_extension_bypassed"
 
 REASON_DSP_APPLY_NONE = "dsp_apply_none"
 REASON_DSP_APPLY_ROLLBACK_FAILED = "dsp_apply_rollback_failed"
