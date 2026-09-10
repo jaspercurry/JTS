@@ -26,6 +26,7 @@ import pytest
 from jasper.identity.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
+from ._log_events import event_fields, event_records
 from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -163,8 +164,8 @@ def test_bluez_main_conf_missing_is_fail_soft(tmp_path, caplog):
         speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
 
     assert not conf.exists()
-    assert "event=speaker_name.bluez_conf_missing" in caplog.text
-    assert f"path={conf}" in caplog.text
+    fields = event_fields(caplog, "speaker_name.bluez_conf_missing")
+    assert fields["path"] == str(conf)
 
 
 def test_bluez_main_conf_identical_name_does_not_rewrite(tmp_path, monkeypatch):
@@ -211,15 +212,9 @@ def test_bluez_main_conf_invalid_utf8_is_fail_soft(tmp_path, caplog):
         speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
 
     assert conf.read_bytes() == b"[General]\nName = \xff\n"
-    assert "event=speaker_name.bluez_conf" in caplog.text
-    assert "result=failed" in caplog.text
-    assert "operation=read" in caplog.text
-    bluez_records = [
-        record
-        for record in caplog.records
-        if record.getMessage().startswith("event=speaker_name.bluez_conf ")
-    ]
-    assert len(bluez_records) == 1
+    fields = event_fields(caplog, "speaker_name.bluez_conf")
+    assert fields["result"] == "failed"
+    assert fields["operation"] == "read"
 
 
 @pytest.mark.parametrize("gadget_active", [False, True])
@@ -445,16 +440,10 @@ def test_apply_name_continues_after_bluez_alias_and_advert_failures(
         ("restart", tuple(speaker_setup.RESTART_UNITS), True, 5.0),
     ]
     assert conf.read_text(encoding="utf-8") == "[General]\nName = Old\n"
-    assert "event=speaker_name.bluez_conf" in caplog.text
-    assert "operation=write" in caplog.text
-    assert "event=speaker_name.bluetooth_alias" in caplog.text
-    assert "event=speaker_name.avahi" in caplog.text
-    bluez_records = [
-        record
-        for record in caplog.records
-        if record.getMessage().startswith("event=speaker_name.bluez_conf ")
-    ]
-    assert len(bluez_records) == 1
+    fields = event_fields(caplog, "speaker_name.bluez_conf")
+    assert fields["operation"] == "write"
+    assert event_records(caplog, "speaker_name.bluetooth_alias")
+    assert event_records(caplog, "speaker_name.avahi")
 
 
 def test_get_root_renders_canonical_page(monkeypatch):
