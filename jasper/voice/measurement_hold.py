@@ -144,10 +144,13 @@ class MeasurementHold:
         copy of that same fact that survived the restart, so ask it once, at
         startup, before any mic frame is read.
 
-        Unreachable, nothing-held, and a hold carrying no remaining lease all
-        mean "stay listening", logged as ``measurement.hold_adopt_skipped`` so
-        the degraded startup is visible: the coordinator's renewal, not this,
-        is the guarantee it re-arms.
+        Unavailable (``read_measurement_hold`` returns ``None`` for both an
+        unreachable control socket and a malformed response body — it cannot
+        tell them apart any cheaper than jasper-control already does),
+        nothing-held, and a hold carrying no remaining lease all mean "stay
+        listening", logged as ``measurement.hold_adopt_skipped`` so the
+        degraded startup is visible: the coordinator's renewal, not this, is
+        the guarantee it re-arms.
 
         An adopted lease's crash backstop is clipped to what is LEFT of
         jasper-control's TTL. install.sh restarts jasper-voice and
@@ -162,7 +165,7 @@ class MeasurementHold:
 
         hold = await asyncio.to_thread(read_measurement_hold)
         if hold is None:
-            self._log_adopt_skipped("unreachable")
+            self._log_adopt_skipped("unavailable")
             return False
         if not hold.get("active"):
             self._log_adopt_skipped("inactive")
@@ -198,9 +201,11 @@ class MeasurementHold:
     def _log_adopt_skipped(reason: str, **detail: Any) -> None:
         """Name a startup that stayed listening, so fail-open is not silent.
 
-        ``fields=`` rather than keywords: the caller-supplied detail differs
-        per reason and would otherwise collide with log_event's own
-        parameters.
+        ``fields=`` rather than keywords: ``detail`` is arbitrary
+        caller-supplied data (its keys vary per ``reason``), and could someday
+        include one that collides with a reserved ``log_event`` parameter
+        (``level``, ``exc_info``) — routing it through ``fields`` sidesteps
+        that regardless of what ``detail`` holds.
         """
 
         log_event(
@@ -308,7 +313,10 @@ class MeasurementHold:
                     # crash-backstop gap; generation + slot make the old task
                     # stale immediately.
                     previous = self._safety_task
-                    self._arm_safety_locked(autoclear_sec)
+                    # A renewal always re-arms the full backstop: the caller's
+                    # autoclear_sec (e.g. an adopted lease's clip) applies only to
+                    # the opening transition above, never to a renewal.
+                    self._arm_safety_locked(MEASUREMENT_AUTOCLEAR_SEC)
                     deferred_cancel |= (
                         await self._cancel_safety_locked(
                             previous,

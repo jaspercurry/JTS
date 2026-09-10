@@ -415,7 +415,7 @@ async def test_turn_episode_is_taken_when_no_measurement_opens():
 @pytest.mark.parametrize(
     ("hold", "reason"),
     [
-        (None, "unreachable"),
+        (None, "unavailable"),
         ({"active": False}, "inactive"),
         ({"active": True, "owner": "crossover_v2"}, "no_lease"),
         ({"active": True, "owner": "crossover_v2", "expires_in_s": 0.0}, "no_lease"),
@@ -515,6 +515,56 @@ async def test_an_adopted_backstop_is_clipped_to_the_lease_that_is_left(
     await safety
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
+
+
+async def test_an_adopted_renewal_keeps_the_full_backstop(monkeypatch):
+    """The lease clip bounds only the OPENING transition, never a renewal.
+
+    A coordinator MEASURE_PAUSE can renew a hold that is already open (via a
+    normal pause) right before adopt_live_window reads it; adopt then lands
+    on the renewal branch of _pause_detailed. If it applied its own
+    (possibly short) lease clip there, it would replace the coordinator's
+    fresh 120 s backstop with the adopted lease's stale remainder (#4826).
+    """
+    import jasper.voice.measurement_hold as measurement_hold_mod
+
+    slept: list[float] = []
+    armed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def recording_safety_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        armed.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        measurement_hold_mod, "_measurement_safety_sleep", recording_safety_sleep,
+    )
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    opening_safety = wl.measurement_hold._safety_task
+    await wait_signalled(
+        armed, "opening backstop", producer=opening_safety,
+    )
+    assert slept == [MEASUREMENT_AUTOCLEAR_SEC]
+
+    armed.clear()
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold",
+        lambda: {"active": True, "owner": "crossover_v2", "expires_in_s": 7.0},
+    )
+    assert await wl.measurement_hold.adopt_live_window() is True
+    renewal_safety = wl.measurement_hold._safety_task
+    await wait_signalled(
+        armed, "renewed backstop", producer=renewal_safety,
+    )
+    assert slept == [MEASUREMENT_AUTOCLEAR_SEC, MEASUREMENT_AUTOCLEAR_SEC]
+
+    release.set()
+    assert renewal_safety is not None
+    await renewal_safety
+    assert not wl._measurement_active.is_set()
 
 
 @pytest.mark.parametrize("muted_before", [False, True])
