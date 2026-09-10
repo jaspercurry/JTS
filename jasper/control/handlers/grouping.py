@@ -91,6 +91,9 @@ def _arm_grouping_reconciler_trailing_service(delay_s: float) -> None:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        # Bounded because the coalescer lock is held across this call: every
+        # worker reaching /grouping/set queues behind it.
+        timeout=5.0,
     )
 
 
@@ -140,7 +143,11 @@ def _schedule_grouping_reconciler_trailing_kick(
             mark_applied,
             timer_factory,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         log_event(
             logger,
             "grouping.reconciler_trailing_schedule_fallback",

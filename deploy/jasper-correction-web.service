@@ -39,6 +39,10 @@ RestartSec=2
 User=jasper-web
 Group=jasper
 SupplementaryGroups=audio jts-ring
+
+# OOM wizard tier — see jasper/_oom_adj.py
+OOMScoreAdjust=200
+
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 # ProtectSystem stays `full` (NOT strict): the tuning program's write surface

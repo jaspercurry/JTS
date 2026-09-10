@@ -2,6 +2,12 @@
 Description=Jasper Bluetooth no-code pairing agent
 Requires=bluetooth.service
 After=bluetooth.service
+# The agent registers with BlueZ once at start and never re-registers, so a
+# bluetoothd restart silently drops it; PartOf= propagates that restart here.
+# The Off pass clears the marker below before it stops this unit, so the
+# paired Upholds= in bluetooth.service.d/jts-timeout.conf cannot resurrect a
+# parked agent.
+PartOf=bluetooth.service
 # Safe to restart after transient Bluetooth/OOM churn; finite so a broken
 # BlueZ stack does not spin forever.
 StartLimitIntervalSec=600

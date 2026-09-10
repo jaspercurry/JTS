@@ -16,6 +16,9 @@ from tests.systemd_unit_helpers import (
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "bt-agent.service"
+BLUEZ_DROPIN_PATH = (
+    REPO / "deploy" / "systemd" / "bluetooth.service.d" / "jts-timeout.conf"
+)
 
 
 def test_bt_agent_uses_jts_no_code_agent() -> None:
@@ -33,6 +36,12 @@ def test_bt_agent_has_short_stop_timeout() -> None:
 def test_bt_agent_restarts_when_bluez_releases_it() -> None:
     unit = UNIT_PATH.read_text()
     assert _value_for(unit, "Restart") == "always"
+
+
+def test_bt_agent_follows_bluetoothd_through_a_restart() -> None:
+    """A bluetoothd restart drops the registered agent; nothing re-registers it."""
+    assert _value_for(UNIT_PATH.read_text(), "PartOf") == "bluetooth.service"
+    assert _value_for(BLUEZ_DROPIN_PATH.read_text(), "Upholds") == "bt-agent.service"
 
 
 def test_bt_agent_carries_the_memory_bounds_its_siblings_do() -> None:

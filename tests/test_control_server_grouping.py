@@ -378,6 +378,7 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
             "check": True,
             "stdout": srv_mod.subprocess.DEVNULL,
             "stderr": srv_mod.subprocess.DEVNULL,
+            "timeout": 5.0,
         },
     )]
     assert len(timers) == 1
@@ -390,8 +391,16 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
     assert launches == []
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CalledProcessError(1, "systemctl"),
+        subprocess.TimeoutExpired("systemctl", 5.0),
+    ],
+    ids=["exit_nonzero", "timed_out"],
+)
 def test_grouping_trailing_scheduler_falls_back_to_process_timer(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, failure,
 ):
     import jasper.control.handlers.grouping as srv_mod
 
@@ -421,8 +430,8 @@ def test_grouping_trailing_scheduler_falls_back_to_process_timer(
             assert not self.cancelled
             self.callback()
 
-    def fake_run(cmd, **_kwargs):
-        raise subprocess.CalledProcessError(1, cmd)
+    def fake_run(_cmd, **_kwargs):
+        raise failure
 
     monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(
