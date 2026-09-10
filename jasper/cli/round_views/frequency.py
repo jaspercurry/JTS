@@ -53,15 +53,22 @@ def _frequency_default_out(source: Path) -> Path:
     return source / name
 
 
-def _frequency_source(path: Path, *, analyze_wavs: bool = False, calibration_root: Path | None = None):
+def _frequency_source(
+    path: Path, *, analyze_wavs: bool = False, calibration_root: Path | None = None,
+    run_reference_db: float | None = None,
+):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
     if analyze_wavs:
         from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle  # lazy: laptop FFT analysis
         try:
-            return analyze_measurement_bundle(path, calibration_root=calibration_root)
+            return analyze_measurement_bundle(
+                path, calibration_root=calibration_root, run_reference_db=run_reference_db,
+            )
         except CommissioningEvidenceStoreError as exc:
             raise MeasurementAnalysisRefused(exc.code.value) from exc
+    if run_reference_db is not None:
+        raise ValueError("--reference-db requires --analyze-wavs")
     if path.is_file():
         document = json.loads(path.read_text())
         if not isinstance(document, dict):
@@ -112,11 +119,13 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     # Resolving a source IS this verb's load stage, "that document holds no
     # curves" included: the fix is to name a different source.
     run_a = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a,
-                  analyze_wavs=args.analyze_wavs, calibration_root=args.calibration_root)
+                  analyze_wavs=args.analyze_wavs, calibration_root=args.calibration_root,
+                  run_reference_db=args.reference_db)
     run_b = (
         stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b),
             analyze_wavs=args.analyze_wavs, calibration_root=args.calibration_root,
+            run_reference_db=args.reference_db,
         )
         if args.source_b
         else None
@@ -159,6 +168,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     frequency.add_argument("--analyze-wavs", action="store_true", help="analyze captured Room/bass WAVs on this computer (laptop recommended)")
     frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs")
+    frequency.add_argument("--reference-db", type=float, help="display reference from a same-level full-band baseline; requires --analyze-wavs")
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
     add_image_args(frequency)
     frequency.set_defaults(func=_cmd_frequency)

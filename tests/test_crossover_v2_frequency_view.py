@@ -669,7 +669,7 @@ def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, m
     assert {r.details["graph_fingerprint"] for r in run.series} == {"played-a", "played-b"}
 
 @pytest.fixture
-def summed_capture_bundle(tmp_path):
+def summed_capture_bundle(tmp_path, request):
     info = open_bundle(
         mono_output_topology(mode="active_2_way"), calibration_id="",
         sessions_dir=tmp_path / "sessions",
@@ -686,7 +686,7 @@ def summed_capture_bundle(tmp_path):
     calibration_path.parent.mkdir(parents=True)
     calibration_path.write_text(json.dumps(calibration.to_dict()))
     program = build_verify_program(
-        2500, sweep_band_hz=(20, 20000), gain_db=-14, downstream_gain_db=-20,
+        2500, sweep_band_hz=(20, getattr(request, "param", 20000)), gain_db=-14, downstream_gain_db=-20,
         sweep_s=1.5, leading_pilot_gains_db=(-24, -14),
     )
     pcm = render_program_pcm(program)[:, 0]
@@ -731,7 +731,11 @@ def summed_capture_bundle(tmp_path):
     return bundle, calibration_root, program, bank
 
 
-def test_frequency_replays_recorded_program_and_calibration_without_changing_level(summed_capture_bundle, tmp_path):
+@pytest.mark.parametrize("summed_capture_bundle,reference_db", [(20000, None), (200, -24.0)],
+                         indirect=["summed_capture_bundle"])
+def test_frequency_replays_recorded_program_and_calibration_without_changing_level(
+    summed_capture_bundle, reference_db, tmp_path,
+):
     bundle, calibration_root, program, bank = summed_capture_bundle
     first = asyncio.run(bank("baseline"))
     asyncio.run(bank("bass", scope="bass_candidate", candidate="bass-6db", setup={
@@ -742,9 +746,15 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     assert ExcitationProgram.from_dict(record["program"]).program_id == program.program_id
     destination = tmp_path / "frequency.json"
     assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == EXIT_UNREADABLE
+    reference_args = [] if reference_db is None else ["--reference-db", str(reference_db)]
+    if reference_db is not None:
+        assert round_views_main([
+            "frequency", str(bundle), "--analyze-wavs", "--calibration-root", str(calibration_root),
+            "--out", str(destination),
+        ]) == EXIT_UNREADABLE
     assert round_views_main([
         "frequency", str(bundle), "--analyze-wavs", "--calibration-root", str(calibration_root),
-        "--out", str(destination),
+        "--out", str(destination), *reference_args,
     ]) == 0
     view = json.loads(destination.read_text())
     baseline, bass = view["runs"][0]["series"]
@@ -756,10 +766,28 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     assert bass["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
     assert 20 <= min(baseline["freqs_hz"]) <= 22
     frequencies = np.array(baseline["freqs_hz"])
-    band = (frequencies >= 40) & (frequencies <= 18000)
+    band = (frequencies >= 40) & (frequencies <= program.segment("sweep_verify").f2_hz * 0.9)
     assert np.array(baseline["magnitude_db"])[band] == pytest.approx(20 * np.log10(0.4) - 20, abs=0.3)
     assert np.array(bass["magnitude_db"]) - np.array(baseline["magnitude_db"]) == pytest.approx(2, abs=0.001)
+    assert baseline["reference_db"] == pytest.approx(
+        20 * np.log10(0.4) - 20 if reference_db is None else reference_db, abs=0.3,
+    )
+    if reference_db is not None:
+        assert baseline["reference_db"] == bass["reference_db"] == reference_db
+        assert np.array(baseline["display"]["deviation_db"]) == pytest.approx(
+            np.array(baseline["magnitude_db"]) - reference_db,
+        )
     assert before == {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("reference_db", [float("nan"), float("inf"), float("-inf")])
+def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_db):
+    with pytest.raises(MeasurementAnalysisRefused) as caught:
+        analyze_measurement_bundle(tmp_path, run_reference_db=reference_db)
+    assert caught.value.code == "measurement_reference_invalid"
+    assert round_views_main([
+        "frequency", str(tmp_path), "--analyze-wavs", f"--reference-db={reference_db}",
+    ]) == EXIT_UNREADABLE
 
 
 @pytest.mark.parametrize("scope,retain_program,code", [

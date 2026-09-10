@@ -18,6 +18,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry, analysis_diagnostic_summary, analyze_program_capture,
 )
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
+from jasper.json_fields import finite_float
 
 from .bundles import BUNDLE_KIND
 from .commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
@@ -35,8 +36,11 @@ class MeasurementAnalysisRefused(ValueError):
 
 def analyze_measurement_bundle(
     bundle_dir: Path, *, calibration_root: Path | None = None,
+    run_reference_db: float | None = None,
 ) -> FrequencyRun:
     """Read exact captured programs and WAVs; never rewrite banked evidence."""
+    if run_reference_db is not None and finite_float(run_reference_db) is None:
+        raise MeasurementAnalysisRefused("measurement_reference_invalid")
     info = json.loads((bundle_dir / "info.json").read_text())
     store = CommissioningEvidenceStore.open(bundle_dir, expected_session_id=info["session_id"])
     artifacts = {row["path"]: row for row in read_artifact_manifest(bundle_dir)["artifacts"]}
@@ -88,4 +92,5 @@ def analyze_measurement_bundle(
     return frequency_run_from_documents(
         run_id=store.session_id, documents=documents,
         started_at=info.get("started_at"), state=info.get("state"),
+        run_reference_db=run_reference_db,
     )
