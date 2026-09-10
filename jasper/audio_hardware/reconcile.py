@@ -1728,8 +1728,10 @@ class Pass:
             # A live topology-replacement caller already parked before saving,
             # so keep the preliminary non-active candidate rather than deriving
             # an active lane from an old graph. At boot the statefile may still
-            # be stale; jasper-camilla Requires this oneshot and therefore
-            # cannot start after this nonzero result.
+            # be stale; jasper-camilla only Wants= this oneshot, so it does
+            # start after a nonzero result — this exit status is the signal,
+            # and jasper-camilla-topology-gate is what refuses a graph proved
+            # against a different topology (#4416 R8).
             runtime_converge_failed = 1
         else:
             self.stage_outputd_env()

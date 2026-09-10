@@ -12,9 +12,9 @@ import pytest
 import yaml
 
 from jasper.active_speaker import commissioning_service as service_module
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     recompose_applied_baseline_yaml,
-    topology_config_fingerprint,
 )
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import (

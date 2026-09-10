@@ -734,6 +734,69 @@ class OutputTopology:
         return out
 
 
+def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
+    """SHA-256 over one canonically serialised payload.
+
+    Public because ``active_speaker.baseline_profile`` consumes it: the two
+    modules fingerprint the same artifacts and a second copy of the
+    serialisation would let their digests drift apart silently.
+    """
+
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def topology_config_fingerprint(topology: OutputTopology) -> str:
+    """Fingerprint only topology fields that determine emitted DSP config.
+
+    ``hardware``/``speaker_groups``/``routing`` and nothing else. ``status`` and
+    ``safety`` are the evaluation's own output — ``safety.warnings`` is prose
+    that determines no filter — and hashing them made every warning reword move
+    every persisted anchor (#2500). ``topology_id`` and ``name`` are identity
+    and label; each anchor site compares ``topology_id`` separately.
+    ``pairing_intent`` stays out because it drives no config either: the
+    multiroom reconciler resolves the runtime role from ``grouping.env``. That
+    exclusion is pinned by
+    ``test_pairing_intent_change_does_not_invalidate_baseline_cache``.
+
+    Reading only the dataclass fields also means this never runs
+    :meth:`OutputTopology.evaluation`, so the gate that compares two of these
+    at CamillaDSP start costs one parse.
+    """
+
+    return canonical_fingerprint({
+        "hardware": topology.hardware.to_dict(),
+        "speaker_groups": [group.to_dict() for group in topology.speaker_groups],
+        "routing": topology.routing.to_dict(),
+    })
+
+
+def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
+    """The pre-#2500 hash, for reading anchors persisted before the narrowing.
+
+    Remove once no fleet box can still carry an anchor written by a build older
+    than #2500 — every one is rewritten by the next apply of the artifact that
+    holds it (baseline profile, bass-extension profile, commissioning plan).
+    """
+
+    return canonical_fingerprint({
+        key: value
+        for key, value in topology.to_dict().items()
+        if key != "pairing_intent"
+    })
+
+
+def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
+    """Whether a persisted anchor names this topology, old hash or new."""
+
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    return recorded in (
+        topology_config_fingerprint(topology),
+        _legacy_topology_config_fingerprint(topology),
+    )
+
+
 def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:
     return tuple(
         PhysicalOutput(
@@ -1962,6 +2025,70 @@ def topology_lock_path(path: str | Path | None = None) -> Path:
 
     target = topology_path(path)
     return target.with_name(f".{target.name}.lock")
+
+
+# The two stamps jasper-camilla's ExecCondition= gate compares, both beside the
+# CamillaDSP statefile and both written by the root convergence that owns it.
+# Push, not pull (ADR-0226 rule 1): the fingerprints are computed by the Python
+# that already holds the topology, and the gate is shell reading two files.
+# Suffixes are duplicated in `deploy/bin/jasper-camilla-topology-gate` and
+# pinned against it by tests/test_camilla_topology_gate_script.py.
+STATEFILE_TOPOLOGY_STAMP_SUFFIX = ".topology"
+STATEFILE_UNPROVED_STAMP_SUFFIX = ".topology.unproved"
+
+
+def statefile_topology_stamp_path(statefile_path: str | Path) -> Path:
+    """Where the fingerprint a written statefile was PROVED against lives."""
+
+    target = Path(statefile_path)
+    return target.with_name(target.name + STATEFILE_TOPOLOGY_STAMP_SUFFIX)
+
+
+def statefile_unproved_stamp_path(statefile_path: str | Path) -> Path:
+    """Where the fingerprint an UNFINISHED convergence was for lives.
+
+    Written before a convergence attempts to prove a graph and removed only
+    when it succeeds, so it survives a pass that returned a refusal AND a pass
+    that was killed mid-flight. Absent means the sibling proof stamp is current.
+    """
+
+    target = Path(statefile_path)
+    return target.with_name(target.name + STATEFILE_UNPROVED_STAMP_SUFFIX)
+
+
+def read_topology_fingerprint_stamp(path: str | Path) -> str | None:
+    """One stamped fingerprint, or ``None`` when absent or unreadable.
+
+    Fail-soft on purpose: an unreadable stamp is UNKNOWN, and the gate treats
+    unknown as "allow" — refusing on a permissions regression would take the
+    speaker down for a fact nobody observed.
+    """
+
+    try:
+        value = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return value or None
+
+
+def write_topology_fingerprint_stamp(path: str | Path, fingerprint: str) -> bool:
+    """Publish one stamp atomically. False when it could not be written."""
+
+    try:
+        atomic_write_text(Path(path), fingerprint + "\n", mode=0o644)
+    except OSError:
+        return False
+    return True
+
+
+def clear_topology_fingerprint_stamp(path: str | Path) -> None:
+    """Retire one stamp. A stamp that cannot be removed is left to the gate,
+    which refuses — the safe direction for a proof nobody could retire."""
+
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
 
 
 @dataclass(frozen=True)

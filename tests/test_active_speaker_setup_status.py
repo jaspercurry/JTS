@@ -17,11 +17,11 @@ import jasper.active_speaker._common as _common
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.active_speaker import commissioning_verification
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     recompose_applied_baseline_yaml,
-    topology_config_fingerprint,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
@@ -1051,8 +1051,8 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
 ) -> None:
     """A rotated topology fingerprint is a notice, not a stop (wave 7j).
 
-    `topology_config_fingerprint` hashes the whole topology dict bar
-    `pairing_intent`, so a display-only string that reaches no clamp and no
+    `topology_config_fingerprint` hashes every hardware, speaker-group and
+    routing field, so a display-only string that reaches no clamp and no
     emitted filter — `human_output_label`, a speaker group's `label` — used
     to take the box to `blocked`/`safety_muted`, refuse volume and grouping,
     and refuse a v2 measure session. Ruling S10: playback stays on the applied

@@ -18,6 +18,33 @@ _NOW = 1_800_000_000.0
 _DAY = 24 * 60 * 60.0
 
 
+_CAMILLA = "jasper-camilla.service"
+_RECONCILER = heal.AUDIO_HARDWARE_RECONCILE_UNIT
+
+
+def _units(
+    *,
+    camilla_active: bool = True,
+    camilla_result: str = "success",
+    reconciler_failed: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """The `systemctl show` records one tick reads, in their real shape."""
+    return {
+        "jasper-fanin.service": {"load_state": "loaded", "active_state": "active"},
+        "jasper-outputd.service": {"load_state": "loaded", "active_state": "active"},
+        _CAMILLA: {
+            "load_state": "loaded",
+            "active_state": "active" if camilla_active else "inactive",
+            "result": camilla_result,
+        },
+        _RECONCILER: {
+            "load_state": "loaded",
+            "active_state": "failed" if reconciler_failed else "inactive",
+            "result": "exit-code" if reconciler_failed else "success",
+        },
+    }
+
+
 def _supervisor(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -25,12 +52,24 @@ def _supervisor(
     status: str = "ok",
     warmup: bool = False,
     guards_ok: bool = True,
+    units: dict[str, dict[str, Any]] | None = None,
+    gate_refused: bool = False,
     voice: dict[str, Any] | None = None,
     profile_expects_wake: bool = True,
 ) -> heal.HealSupervisor:
     supervisor = heal.HealSupervisor()
-    monkeypatch.setattr(heal, "guards_active", lambda: guards_ok)
+    monkeypatch.setattr(
+        heal, "read_audio_path_units",
+        lambda: _units() if units is None else units,
+    )
+    if units is None:
+        monkeypatch.setattr(heal, "guards_active", lambda _units: guards_ok)
     monkeypatch.setattr(heal, "profile_expects_wake", lambda: profile_expects_wake)
+
+    async def _gate() -> bool:
+        return gate_refused
+
+    monkeypatch.setattr(supervisor, "gate_refused", _gate)
     monkeypatch.setattr(
         supervisor, "audio_health",
         lambda: {
@@ -108,8 +147,8 @@ async def test_one_fact_map_from_the_tick_to_one_would_act_line(
         assert supervisor.snapshot()["would_act"] is None
         return
     action = (
-        heal.ACTION_RESTART_AUDIO if case == "silent"
-        else heal.ACTION_RESTART_VOICE
+        heal.ACTION_RESTART_VOICE if case == "deaf"
+        else heal.ACTION_RESTART_AUDIO
     )
     assert event_fields(caplog, "heal.would_act") == {
         "case": case,
@@ -188,3 +227,90 @@ def test_the_module_snapshot_is_disabled_before_the_supervisor_starts(
 ) -> None:
     monkeypatch.setattr(heal, "_supervisor", None)
     assert heal.snapshot() == {"enabled": False}
+
+
+@pytest.mark.parametrize(
+    ("camilla_active", "camilla_result", "reconciler_failed", "gate", "reason"),
+    [
+        # The gate skipped the start: a condition skip is a SUCCESS, so no unit
+        # reads failed and nothing systemd owns will re-try it.
+        (False, "success", False, True, "topology_gate"),
+        # A start job cancelled by a failed requirement dependency.
+        (False, "dependency", False, False, "dependency_cancelled"),
+        # Running: nothing to heal, whatever the record says happened before.
+        (True, "dependency", False, False, None),
+        # An operator stop, and a crash: neither is heal's.
+        (False, "success", False, False, None),
+        (False, "exit-code", False, False, None),
+        # The reconciler is still failed: the fault is systemd's own to answer.
+        (False, "dependency", True, False, None),
+        (False, "success", True, True, None),
+    ],
+)
+def test_only_a_camilla_no_restart_will_retry_reaches_the_stopped_case(
+    camilla_active: bool,
+    camilla_result: str,
+    reconciler_failed: bool,
+    gate: bool,
+    reason: str | None,
+) -> None:
+    units = _units(
+        camilla_active=camilla_active,
+        camilla_result=camilla_result,
+        reconciler_failed=reconciler_failed,
+    )
+    assert heal.camilla_stopped_reason(units, gate) == reason
+
+
+@pytest.mark.parametrize("record", [None, {}])
+def test_units_nobody_could_read_are_unknown_not_stopped(
+    record: dict[str, Any] | None,
+) -> None:
+    """systemctl answering nothing is not evidence CamillaDSP is down."""
+    assert heal.camilla_stopped_reason(record, True) is None
+
+
+async def test_the_gated_graph_publishes_the_dashboard_action_that_starts_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`restart-audio` IS the start: it carries jasper-camilla and nothing else,
+    and a camilla start re-queues the hardware reconciler that re-proves the
+    graph. Still observe-only — heal reaches no actuator (ADR-0271)."""
+    monkeypatch.setattr(heal.time, "time", lambda: _NOW)
+    supervisor = _supervisor(
+        monkeypatch,
+        units=_units(camilla_active=False),
+        gate_refused=True,
+        # A stopped CamillaDSP makes the signal path issue a fact about the
+        # same outage; the stopped case must outrank it.
+        code="output_deaf",
+        status="issue",
+    )
+    caplog.set_level(logging.INFO)
+
+    await supervisor._tick()
+
+    assert event_fields(caplog, "heal.would_act") == {
+        "case": heal.CASE_STOPPED,
+        "reason": "topology_gate",
+        "action": heal.ACTION_RESTART_AUDIO,
+    }
+    assert supervisor.snapshot()["would_act"] == {
+        "case": heal.CASE_STOPPED,
+        "reason": "topology_gate",
+        "action": heal.ACTION_RESTART_AUDIO,
+        "ts": _NOW,
+    }
+
+
+async def test_a_healthy_audio_path_reaches_no_stopped_verdict(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(heal.time, "time", lambda: _NOW)
+    supervisor = _supervisor(monkeypatch, units=_units())
+    caplog.set_level(logging.INFO)
+
+    await supervisor._tick()
+
+    assert event_records(caplog, "heal.would_act") == []
+    assert supervisor.snapshot()["would_act"] is None

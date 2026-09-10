@@ -484,10 +484,8 @@ def evaluate_loaded_bass_extension_profile(
 ) -> BassExtensionEvaluation:
     """Evaluate one already-parsed immutable profile without disk I/O."""
 
-    from jasper.active_speaker.baseline_profile import (
-        baseline_candidate_fingerprint,
-        topology_config_fingerprint,
-    )
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+    from jasper.output_topology import topology_fingerprint_matches
 
     refusals: list[BassExtensionRefusal] = []
     mismatches: list[str] = []
@@ -502,7 +500,7 @@ def evaluate_loaded_bass_extension_profile(
         mismatches.append("baseline fingerprint mismatch")
     if (
         getattr(topology, "topology_id", None) != profile.topology_id
-        or topology_config_fingerprint(topology) != profile.topology_fingerprint
+        or not topology_fingerprint_matches(profile.topology_fingerprint, topology)
     ):
         refusals.append(BassExtensionRefusal.TOPOLOGY_MISMATCH)
         mismatches.append("topology id/fingerprint mismatch")

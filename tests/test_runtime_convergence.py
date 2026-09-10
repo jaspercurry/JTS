@@ -16,7 +16,14 @@ import pytest
 
 from jasper.active_speaker import runtime_convergence
 from jasper.active_speaker.runtime_contract import parked_safe_graph_decision
-from tests.test_active_speaker_runtime_contract import _topology
+from jasper.output_topology import (
+    OutputTopology,
+    read_topology_fingerprint_stamp,
+    statefile_topology_stamp_path,
+    statefile_unproved_stamp_path,
+    topology_config_fingerprint,
+)
+from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
 
 
 class _Controller:
@@ -373,3 +380,95 @@ def test_stay_parked_skips_selection_so_a_re_pin_cannot_resume_audio(
         str(parked_safe_graph_decision(topology).selected_config_path)
     ]
     assert str(playing) not in parked_controller.path_sets
+
+
+def _boot_convergence_paths(tmp_path: Path) -> dict[str, Path]:
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    return {
+        "statefile_path": tmp_path / "outputd-statefile.yml",
+        "flat_config_path": flat,
+        "applied_baseline_path": tmp_path / "applied-baseline.json",
+        "staged_metadata_path": tmp_path / "staged-metadata.json",
+    }
+
+
+def _empty_topology() -> OutputTopology:
+    """A declared-but-unassigned box: the selector resolves it, so a
+    convergence over it succeeds."""
+    return _topology([], {})
+
+
+def _unassigned_passive_mono() -> OutputTopology:
+    """A passive main whose identity is unverified: the selector REFUSES it,
+    which is the commonest way a pass proves no graph."""
+    return _topology(
+        [{
+            "id": "mono", "label": "Mono", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        {"mono_group_id": "mono"},
+    )
+
+
+def test_a_convergence_that_wrote_a_statefile_retires_the_unproved_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The steady state jasper-camilla's startup gate reads as "start"."""
+    paths = _boot_convergence_paths(tmp_path)
+    unproved = statefile_unproved_stamp_path(paths["statefile_path"])
+    unproved.write_text("stale\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runtime_convergence, "apply_safe_graph_decision_to_statefile",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = runtime_convergence.converge_boot_statefile(
+        topology=_empty_topology(), write_statefile=True, **paths
+    )
+
+    assert result.ok is True
+    assert not unproved.exists()
+
+
+@pytest.mark.parametrize("failure", ["refused", "raised"])
+def test_a_convergence_that_proved_nothing_leaves_its_topology_stamped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    """What the gate refuses on. Both halves of "did not prove it": a decision
+    that refused, and a write that blew up part way through."""
+    topology = _empty_topology()
+    paths = _boot_convergence_paths(tmp_path)
+    if failure == "raised":
+        def _explode(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(
+            runtime_convergence, "apply_safe_graph_decision_to_statefile", _explode,
+        )
+    else:
+        topology = _unassigned_passive_mono()
+
+    result = runtime_convergence.converge_boot_statefile(
+        topology=topology, write_statefile=True, **paths
+    )
+
+    assert result.ok is False
+    stamp = statefile_unproved_stamp_path(paths["statefile_path"])
+    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+        topology
+    )
+
+
+def test_a_read_only_convergence_stamps_nothing(tmp_path: Path) -> None:
+    """`write_statefile=False` callers own no statefile, so they may not move
+    the proof a gate reads."""
+    paths = _boot_convergence_paths(tmp_path)
+
+    runtime_convergence.converge_boot_statefile(
+        topology=_empty_topology(), write_statefile=False, **paths
+    )
+
+    assert not statefile_unproved_stamp_path(paths["statefile_path"]).exists()
+    assert not statefile_topology_stamp_path(paths["statefile_path"]).exists()

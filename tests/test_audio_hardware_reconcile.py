@@ -33,6 +33,7 @@ from jasper import audio_runtime_plan, output_hardware
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
+from tests.systemd_unit_helpers import values_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -726,10 +727,20 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
             assert fields[name] == value, name
 
 
-def test_camilla_boot_requires_successful_runtime_graph_convergence(
+def test_camilla_waits_for_the_runtime_graph_reconcile_without_being_gated_on_it(
     tmp_path: Path,
 ) -> None:
-    """A stale statefile cannot start Camilla after a failed boot reconcile."""
+    """The reconciler runs before Camilla, and its failure does not stop it.
+
+    Camilla is Restart=always precisely because a stopped CamillaDSP is a
+    silent speaker. A Requires= on this Type=oneshot turns any non-zero
+    reconcile into a dependency failure that leaves the daemon down with
+    nothing to restart it; After= alone still holds the start until the
+    reconciler is terminal, and the reconciler's own non-zero exit is what
+    surfaces the failure. What the Requires= was really carrying — a graph
+    proved against a different topology must not reach these drivers — is the
+    ExecCondition= gate instead (#4416 R8).
+    """
     camilla_unit = (ROOT / "deploy" / "systemd" / "jasper-camilla.service").read_text(
         encoding="utf-8"
     )
@@ -737,11 +748,14 @@ def test_camilla_boot_requires_successful_runtime_graph_convergence(
         ROOT / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text(encoding="utf-8")
 
-    assert "Requires=jasper-audio-hardware-reconcile.service" in camilla_unit
-    after_line = next(
-        line for line in camilla_unit.splitlines() if line.startswith("After=")
+    reconciler_unit = "jasper-audio-hardware-reconcile.service"
+    assert reconciler_unit in values_for(camilla_unit, "Wants")
+    assert reconciler_unit not in values_for(camilla_unit, "Requires")
+    assert reconciler_unit not in values_for(camilla_unit, "BindsTo")
+    assert reconciler_unit in values_for(camilla_unit, "After")
+    assert "/usr/local/sbin/jasper-camilla-topology-gate" in values_for(
+        camilla_unit, "ExecCondition"
     )
-    assert "jasper-audio-hardware-reconcile.service" in after_line
     # The required oneshot runs the same reconciler whose exit status is
     # nonzero when runtime convergence fails.
     assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile" in hardware_unit

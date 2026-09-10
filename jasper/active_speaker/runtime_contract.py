@@ -50,7 +50,12 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     SpeakerGroup,
+    clear_topology_fingerprint_stamp,
     load_output_topology_strict,
+    statefile_topology_stamp_path,
+    statefile_unproved_stamp_path,
+    topology_config_fingerprint,
+    write_topology_fingerprint_stamp,
 )
 
 from ._common import issue as _issue
@@ -4946,11 +4951,62 @@ def apply_safe_graph_decision_to_statefile(
             statefile=str(statefile_path),
             config_path=decision.selected_config_path,
         )
+    stamp_statefile_topology(statefile_path, topology)
     current = _statefile_config_path(statefile_path)
     if _path_matches(current, decision.selected_config_path):
         return False
     write_camilla_statefile(statefile_path, decision.selected_config_path)
     return True
+
+
+def stamp_statefile_topology(
+    statefile_path: str | Path, topology: OutputTopology | None
+) -> None:
+    """Record which topology this statefile was PROVED against.
+
+    Stamped on every apply, not only when the pointer moves: the statefile may
+    already name the right config while the stamp is missing (a box upgraded
+    from a build before the stamp existed) or stale (a topology change that
+    resolved to the same config). ``jasper-camilla-topology-gate`` compares it
+    with the unproved sibling :func:`stamp_statefile_convergence` writes.
+
+    Best effort: a stamp that cannot be written leaves the gate reading unknown,
+    which allows. Never raises — this is on the boot path.
+    """
+
+    if topology is None:
+        return
+    write_topology_fingerprint_stamp(
+        statefile_topology_stamp_path(statefile_path),
+        topology_config_fingerprint(topology),
+    )
+
+
+def stamp_statefile_convergence(
+    statefile_path: str | Path, topology: OutputTopology, *, proved: bool
+) -> None:
+    """Open, or close, one attempt to prove this topology's boot graph.
+
+    ``proved=False`` before the attempt, ``proved=True`` only once it wrote.
+    What is left behind names the topology whose graph nobody proved — a pass
+    that returned a refusal, and equally a pass that was OOM-killed mid-flight,
+    which is the half a return value cannot cover.
+
+    ``jasper-camilla-topology-gate`` refuses a CamillaDSP start when this stamp
+    and the proof stamp are both present and DIFFERENT: the statefile then names
+    a graph belonging to some other topology than the one a convergence was
+    working on. Equal means the statefile already holds the right graph and the
+    pass failed over something else, so the start goes ahead.
+
+    Best effort, never raises: on the boot path, and a stamp nobody could write
+    leaves the gate reading unknown, which allows.
+    """
+
+    stamp = statefile_unproved_stamp_path(statefile_path)
+    if proved:
+        clear_topology_fingerprint_stamp(stamp)
+        return
+    write_topology_fingerprint_stamp(stamp, topology_config_fingerprint(topology))
 
 
 def materialise_safe_graph_decision(

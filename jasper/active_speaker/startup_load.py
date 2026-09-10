@@ -35,6 +35,7 @@ from jasper.dsp_apply import (
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, channel_identity_report
+from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 
 from ._common import gate as _gate, issue as _issue
 from .calibration_level import (
@@ -71,7 +72,6 @@ logger = logging.getLogger(__name__)
 STARTUP_LOAD_SCHEMA_VERSION = 1
 STARTUP_LOAD_PREFLIGHT_KIND = "jts_active_speaker_startup_load_preflight"
 STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
-AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]

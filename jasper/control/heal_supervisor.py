@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Heal supervisor — the two silences every unit state calls healthy: a
-speaker emitting nothing with its audio path up, and a reachable voice daemon
-that has heard no wake word in a day. Facts come from jasper-control's own
-memory; the answer is an action the /system dashboard already offers. It
+"""Heal supervisor — the silences every unit state calls healthy: a speaker
+emitting nothing with its audio path up, a reachable voice daemon that has
+heard no wake word in a day, and a CamillaDSP whose start job was cancelled or
+gated and that no `Restart=` will ever re-try. Facts come from jasper-control's
+own memory; the answer is an action the /system dashboard already offers. It
 observes only — nothing here reaches an actuator. See ADR-0271.
 """
 from __future__ import annotations
@@ -21,10 +22,19 @@ from jasper.install_profile import (
     read_install_profile,
 )
 from jasper.log_event import log_event
-from jasper.service_units import read_unit_states, unit_not_running
+from jasper.service_units import (
+    AUDIO_HARDWARE_RECONCILE_UNIT,
+    read_unit_states,
+    unit_active,
+    unit_failed,
+    unit_loaded,
+    unit_not_running,
+    unit_unstable,
+)
 
 from ..measurement_window import DEFAULT_VOICE_SOCKET_PATH
 from ..platform.uds import voice_socket_command
+from . import camilla_topology_gate_state
 from .supervisor_runtime import (
     run_supervisor_loop,
     snapshot_or_disabled,
@@ -35,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 CASE_SILENT = "silent"
 CASE_DEAF = "deaf"
+CASE_STOPPED = "stopped"
 
 #: The dashboard's own actions (`handlers/system._post_system_action`,
 #: `/system/restart/audio` and `/system/restart/voice`); heal names the action
@@ -55,6 +66,12 @@ SILENT_CODES = frozenset({
     "output_stalled",
     "path_stalled",
 })
+
+#: The one `Result` an inactive daemon can carry that systemd will not retry:
+#: a start job cancelled because a dependency failed leaves no restart
+#: machinery behind it, unlike `exit-code`/`signal`/`start-limit-hit`, which
+#: are systemd's and jasper-camilla-recover's to answer (ADR-0271).
+CAMILLA_STOPPED_RESULTS = frozenset({"dependency"})
 
 TICK_INTERVAL_SEC = 600.0  # seconds
 TICK_JITTER_SEC = 30.0  # seconds
@@ -88,16 +105,57 @@ def _seconds(value: Any) -> float | None:
     return float(value)
 
 
+def camilla_stopped_reason(
+    units: dict[str, dict[str, Any]] | None, gate_refused: bool
+) -> str | None:
+    """Why CamillaDSP is down with nothing left to bring it back, or None.
+
+    The narrow pair systemd cannot see, both of which end with a silent speaker
+    that no `Restart=always` re-tries:
+
+    * `topology_gate` — the ExecCondition refused the start because the saved
+      graph was proved against a different topology (#4416 R8). A condition
+      skip is a SUCCESS, so no unit reads failed anywhere.
+    * `dependency_cancelled` — the start job was cancelled by a failed
+      requirement dependency.
+
+    Both require the hardware reconciler to be healthy again: while it is
+    failed the fault is one systemd and its own recovery own, and heal stands
+    down. Every other inactive posture — an operator stop, a crash, an
+    exhausted burst, a start still in flight — answers None.
+    """
+    # lazy: audio_health owns the roster and costs ~3k lines of imports.
+    from .audio_health import CAMILLA_UNIT_FULL
+
+    camilla = (units or {}).get(CAMILLA_UNIT_FULL)
+    if not unit_loaded(camilla) or unit_active(camilla) or unit_unstable(camilla):
+        return None
+    if unit_failed((units or {}).get(AUDIO_HARDWARE_RECONCILE_UNIT)):
+        return None
+    if gate_refused:
+        return "topology_gate"
+    if str((camilla or {}).get("result") or "") in CAMILLA_STOPPED_RESULTS:
+        return "dependency_cancelled"
+    return None
+
+
 def decide(
     *,
     code: str,
     warmup: bool,
     guards_ok: bool,
+    stopped_reason: str | None,
     voice: dict[str, Any] | None,
     profile_expects_wake: bool,
     now: float,
 ) -> Verdict | None:
     """The whole fact→case map. None means nothing here belongs to heal."""
+    # First, and outside the guard gate: this case IS a guard unit being down,
+    # and while CamillaDSP is stopped every signal-path code is meaningless.
+    if stopped_reason is not None:
+        return Verdict(
+            CASE_STOPPED, stopped_reason, ACTION_RESTART_AUDIO, stopped_reason
+        )
     if not guards_ok:
         return None
     if code in SILENT_CODES and not warmup:
@@ -121,19 +179,30 @@ def decide(
     return None
 
 
-def guards_active() -> bool:
-    """Every shared-path unit present and active, in one `systemctl show`.
-    Blocking: call it off the control loop."""
+def read_audio_path_units() -> dict[str, dict[str, Any]] | None:
+    """The shared audio path plus its reconciler, in ONE `systemctl show`.
+
+    One read serves both the guard gate and the stopped case; two would be two
+    forks per tick for the same facts. `None` means systemctl answered nothing,
+    which is unknown, not down. Blocking: call it off the control loop.
+    """
     # lazy: audio_health owns the roster but costs ~3k lines of imports the
     # doctor's own `--core` run (which reads TICK_INTERVAL_SEC from here) must
     # not pay.
     from .audio_health import RESTART_WATCH_UNITS
 
-    units = tuple(RESTART_WATCH_UNITS)
-    records = read_unit_states(units)
-    if records is None:
+    return read_unit_states(
+        (*RESTART_WATCH_UNITS, AUDIO_HARDWARE_RECONCILE_UNIT)
+    )
+
+
+def guards_active(units: dict[str, dict[str, Any]] | None) -> bool:
+    """Every shared-path unit present and active."""
+    from .audio_health import RESTART_WATCH_UNITS
+
+    if units is None:
         return False
-    return all(unit_not_running(records.get(u)) is None for u in units)
+    return all(unit_not_running(units.get(u)) is None for u in RESTART_WATCH_UNITS)
 
 
 def profile_expects_wake() -> bool:
@@ -189,10 +258,13 @@ class HealSupervisor:
         signal = _mapping(self.audio_health().get("signal_path"))
         code = str(signal.get("code") or "") if signal.get("status") == "issue" else ""
         warmup = self.warmup_active()
-        guards_ok = await asyncio.to_thread(guards_active)
+        units = await asyncio.to_thread(read_audio_path_units)
+        guards_ok = guards_active(units)
+        stopped_reason = camilla_stopped_reason(units, await self.gate_refused())
         voice = await self.voice_status()
         verdict = decide(
-            code=code, warmup=warmup, guards_ok=guards_ok, voice=voice,
+            code=code, warmup=warmup, guards_ok=guards_ok,
+            stopped_reason=stopped_reason, voice=voice,
             profile_expects_wake=await asyncio.to_thread(profile_expects_wake),
             now=now,
         )
@@ -262,6 +334,14 @@ class HealSupervisor:
     def warmup_active(self) -> bool:
         sampler = _mapping(_mapping(self.audio_health().get("technical")).get("sampler"))
         return bool(sampler.get("warmup_active"))
+
+    async def gate_refused(self) -> bool:
+        """Whether jasper-camilla's ExecCondition refused this boot's start."""
+        return bool(
+            (
+                await asyncio.to_thread(camilla_topology_gate_state.snapshot)
+            ).get("refused")
+        )
 
     async def voice_status(self) -> dict[str, Any] | None:
         """jasper-voice's STATUS over its control socket; None when down."""

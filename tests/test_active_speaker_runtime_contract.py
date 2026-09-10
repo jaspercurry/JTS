@@ -5435,3 +5435,71 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
     repinned = reconcile_statefile(_identity_cleared(verified), "repinned-reconcile")
     assert f"config_path: {staged_path}" in repinned
     assert str(baseline_path) not in repinned
+
+
+def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(
+    tmp_path: Path,
+) -> None:
+    """The statefile half of jasper-camilla's startup gate (#4416 R8).
+
+    Stamped on every apply, not only when the pointer moves: the pointer can be
+    right while the stamp is missing (a box upgraded past this) or stale (a
+    topology change that resolved to the same config), and a gate reading an
+    unstamped statefile allows.
+    """
+    from jasper.output_topology import (
+        read_topology_fingerprint_stamp,
+        statefile_topology_stamp_path,
+        topology_config_fingerprint,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    stamp = statefile_topology_stamp_path(statefile)
+    assert stamp == statefile.with_name("outputd-statefile.yml.topology")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    ) is True
+    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+        topology
+    )
+
+    # A second apply that rewrites nothing still re-proves, so it re-stamps.
+    stamp.unlink()
+    assert apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    ) is False
+    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+        topology
+    )
+
+
+def test_an_apply_that_writes_no_statefile_stamps_nothing(tmp_path: Path) -> None:
+    """A refused decision leaves no proof behind it — the gate would otherwise
+    read a stamp for a graph nobody wrote."""
+    from jasper.output_topology import statefile_topology_stamp_path
+
+    topology = _active_topology("mono", "active_2_way")
+    statefile = tmp_path / "outputd-statefile.yml"
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(tmp_path),
+    )
+
+    blocked = replace(decision, status="blocked", selected_config_path=None)
+    assert blocked.ok is False
+
+    assert apply_safe_graph_decision_to_statefile(
+        blocked, statefile_path=statefile, topology=topology
+    ) is False
+    assert not statefile_topology_stamp_path(statefile).exists()

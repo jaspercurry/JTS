@@ -47,6 +47,9 @@ from jasper.output_topology import (
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
+    read_topology_fingerprint_stamp,
+    topology_config_fingerprint,
+    topology_fingerprint_matches,
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
 )
@@ -1930,3 +1933,91 @@ def test_composite_repin_refuses_to_mutate_without_an_offer() -> None:
     topology = _dual_apple_active_topology()
     with pytest.raises(OutputTopologyError):
         repin_composite_child_serials(topology, _dual_apple_observation())
+
+
+def _fingerprint_topology() -> OutputTopology:
+    return _topology(
+        groups=[_passive_main("left", "left", 0), _passive_main("right", "right", 1)],
+        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
+    )
+
+
+def test_a_reworded_warning_cannot_move_the_config_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #2500 contract: the fingerprint reads no evaluation output.
+
+    `to_dict()` embeds the evaluation's `status` and `safety` on every caller,
+    so hashing it made a warning's PROSE — which determines no filter — rotate
+    every persisted anchor. This asserts the drift source moves and the
+    fingerprint does not.
+    """
+    topology = _fingerprint_topology()
+    before = topology_config_fingerprint(topology)
+    real = output_topology_mod.evaluate_output_topology
+
+    def _reworded(target: OutputTopology) -> dict:
+        evaluation = real(target)
+        safety = dict(evaluation["safety"])
+        safety["warnings"] = [
+            *safety.get("warnings", []),
+            {"severity": "warning", "code": "invented", "message": "new prose"},
+        ]
+        return {**evaluation, "status": "invented", "safety": safety}
+
+    monkeypatch.setattr(output_topology_mod, "evaluate_output_topology", _reworded)
+
+    assert topology.to_dict()["safety"]["warnings"][-1]["code"] == "invented"
+    assert topology_config_fingerprint(topology) == before
+
+
+@pytest.mark.parametrize(
+    ("mutate", "moves"),
+    [
+        # Identity and label determine no emitted filter; every anchor site
+        # compares `topology_id` on its own.
+        (lambda t: replace(t, topology_id="other"), False),
+        (lambda t: replace(t, name="Kitchen"), False),
+        # Everything that reaches the DSP config does move it.
+        (lambda t: replace(t, routing=replace(t.routing, mono_group_id="left")), True),
+        (
+            lambda t: replace(
+                t, hardware=replace(t.hardware, physical_output_count=4)
+            ),
+            True,
+        ),
+        (lambda t: replace(t, speaker_groups=t.speaker_groups[:1]), True),
+    ],
+)
+def test_the_config_fingerprint_moves_for_config_and_nothing_else(
+    mutate, moves: bool,
+) -> None:
+    topology = _fingerprint_topology()
+
+    changed = topology_config_fingerprint(mutate(topology))
+
+    assert (changed != topology_config_fingerprint(topology)) is moves
+
+
+def test_an_anchor_written_before_the_narrowing_still_names_its_topology() -> None:
+    """A persisted anchor must not read as stale purely because the hash
+    narrowed — the fix would otherwise cause the false refusals it prevents.
+    Remove with `_legacy_topology_config_fingerprint`."""
+    topology = _fingerprint_topology()
+    legacy = output_topology_mod._legacy_topology_config_fingerprint(topology)
+
+    assert legacy != topology_config_fingerprint(topology)
+    assert topology_fingerprint_matches(legacy, topology)
+    assert topology_fingerprint_matches(topology_config_fingerprint(topology), topology)
+    assert not topology_fingerprint_matches("a" * 64, topology)
+    assert not topology_fingerprint_matches(None, topology)
+    assert not topology_fingerprint_matches("", topology)
+
+
+def test_an_unreadable_or_empty_stamp_reads_as_unknown(tmp_path: Path) -> None:
+    """Unknown, never a wrong answer: the gate allows on None and refuses only
+    on two known, different values."""
+    assert read_topology_fingerprint_stamp(tmp_path / "absent") is None
+    (tmp_path / "empty").write_text("\n", encoding="utf-8")
+    assert read_topology_fingerprint_stamp(tmp_path / "empty") is None
+    assert read_topology_fingerprint_stamp(tmp_path) is None

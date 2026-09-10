@@ -73,6 +73,9 @@ from jasper.fanin_coupling import (
     resolve_outputd_ring_slots,
 )
 from jasper.log_event import log_event
+# The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
+# spine below starts it before restarting outputd — see :func:`_converge_ring`.
+from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 from jasper import env_load, fanin_coupling, ring_assets
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
@@ -90,11 +93,6 @@ logger = logging.getLogger(__name__)
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
-# Root oneshot that re-detects output hardware and re-emits the route floor
-# actions into outputd.env. It is the single writer of
-# ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the spine below starts it
-# before restarting outputd — see :func:`_converge_ring`.
-AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 # Legacy env keys of deleted selectors. Nothing writes either; each is retained
 # ONLY so a reconcile pass can UNSET a stale value off a migrating box's env
@@ -212,9 +210,11 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
 
 # How long a blocking START of jasper-camilla may take.
 #
-# jasper-camilla.service is Type=simple, but it declares Requires= AND After=
+# jasper-camilla.service is Type=simple, but it declares Wants= AND After=
 # jasper-audio-hardware-reconcile.service, a Type=oneshot whose RemainAfterExit
-# is unset. That reconciler is therefore inactive between runs and RE-RUNS IN
+# is unset. Wants= is queued and awaited exactly like Requires= here; only the
+# failure propagation differs (#4416 R8), so the bound below is unchanged. That
+# reconciler is therefore inactive between runs and RE-RUNS IN
 # FULL on every camilla start, with PID 1 holding camilla's start job until the
 # oneshot reports terminal. On a Pi Zero 2 W a camilla restart measures ~30 s,
 # of which the re-queued reconciler is ~26 s; on a Pi 5, ~4 s.
@@ -269,8 +269,8 @@ def _stop_camilla(reason: str) -> tuple[bool, str]:
     broker ``MANAGED_UNITS`` member (polkit-granted for ``manage-units``, which
     covers stop/start) — no new grant is needed.
 
-    The 8 s bound is deliberately NOT the start bound's derivation: a stop does
-    not pull ``Requires=``, so the critical-path dependency term that dominates
+    The 8 s bound is deliberately NOT the start bound's derivation: a stop pulls
+    none of the start's dependencies, so the critical-path term that dominates
     :data:`_CAMILLA_START_TIMEOUT_SEC` cannot apply. What is left is camilla's
     own stop, measured at 23-30 ms.
 
@@ -288,7 +288,7 @@ def _start_camilla(reason: str) -> tuple[bool, str]:
     so this runs AFTER the ``Type=notify`` fan-in restart has returned.
 
     Bounded by :data:`_CAMILLA_START_TIMEOUT_SEC`, which carries the re-queued
-    hardware-reconciler oneshot camilla ``Requires=``; see that constant.
+    hardware-reconciler oneshot camilla ``Wants=``; see that constant.
     """
     return _restart_unit(
         CAMILLA_UNIT, verb="start", reason=reason,
