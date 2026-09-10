@@ -197,8 +197,8 @@ def test_main_wires_the_capture_threads_to_the_process_stats_and_shutdown():
     queues the AEC loop drains.
 
     Every queue is positional, so a dropped or reordered one type-checks and
-    runs: passing `None` for `raw0_q` leaves the OUT_PORT_RAW0 leg silently
-    dark with no cue (AGENTS #6), and no other test opens a real card.
+    runs: passing `None` for `raw0_q` leaves the "raw0" leg silently dark
+    with no cue (AGENTS #6), and no other test opens a real card.
     """
     tree = ast.parse(BRIDGE_SOURCE.read_text())
 

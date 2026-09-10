@@ -73,7 +73,7 @@
 
 #![forbid(unsafe_code)]
 
-use jasper_clock::{Dll, DllConfig, DllSnapshot};
+use jasper_clock::{Dll, DllConfig};
 
 /// Half-width of the interpolation kernel, in input frames. The kernel spans
 /// `[-RADIUS_FRAMES, +RADIUS_FRAMES]` around the fractional read position.
@@ -816,12 +816,6 @@ impl RateController {
     /// safety clamp hard enough to require anti-windup.
     pub fn anti_windup_count(&self) -> u64 {
         self.anti_windup_count
-    }
-
-    /// The shared-DLL telemetry snapshot (the consistent `clock.rate_diff`
-    /// shape every DLL site publishes on `/state` / doctor).
-    pub fn dll_snapshot(&self) -> DllSnapshot {
-        self.dll.snapshot()
     }
 
     /// Whether the underlying loop is currently locked.

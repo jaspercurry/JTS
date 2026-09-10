@@ -513,14 +513,19 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return out
 
 
-def format_env_text(values: Mapping[str, str]) -> str:
+def format_env_text(values: Mapping[str, str], *, owner: str | None = None) -> str:
     """Render ``values`` as systemd ``EnvironmentFile`` text, one line per key.
 
     Unquoted ``KEY=value``, matching systemd's own parsing. Raises
     ``ValueError`` for a value carrying a newline rather than emitting a line
-    that would split into a bogus second assignment.
+    that would split into a bogus second assignment. ``owner``, when given,
+    prepends a ``# Written by {owner}.`` header line — a systemd
+    ``EnvironmentFile=`` parser and :func:`jasper.env_file.parse_env_lines`
+    both skip ``#`` lines, so this never changes the parsed values.
     """
     lines: list[str] = []
+    if owner is not None:
+        lines.append(f"# Written by {owner}.\n")
     for key, value in values.items():
         if "\n" in value or "\r" in value:
             raise ValueError(f"env value for {key} contains newline")

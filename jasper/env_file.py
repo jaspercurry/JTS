@@ -198,6 +198,7 @@ def write_env_file(
     values: Mapping[str, str],
     *,
     mode: int = 0o600,
+    owner: str | None = None,
 ) -> None:
     """Atomically publish ``values`` as the file's COMPLETE contents.
 
@@ -210,12 +211,16 @@ def write_env_file(
     secrets; pass a group-readable mode for the ones a non-root daemon has to
     read off disk. Raises ``ValueError`` for a value carrying a newline, which
     systemd would read as a second assignment.
+
+    ``owner``, when given, is the operator-facing writer name AGENTS.md's Map
+    section requires in a ``/var/lib/jasper/*.env`` file's header (e.g. "the
+    /sound AirPlay wizard"); omit it for a file outside that invariant.
     """
     # lazy: import cost — env_file is a leaf every parse-only reader imports,
     # and this pulls in tempfile/fcntl for the writers alone (ADR-0226).
     from jasper.atomic_io import atomic_write_text, format_env_text
 
-    atomic_write_text(path, format_env_text(values), mode=mode)
+    atomic_write_text(path, format_env_text(values, owner=owner), mode=mode)
 
 
 def delete_env_file(path: str | os.PathLike[str]) -> None:

@@ -199,7 +199,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             return
         value = "yes" if mode == "free-running" else "no"
         try:
-            write_env_file(cfg["state_path"], {ENV_VAR: value}, mode=0o644)
+            write_env_file(
+                cfg["state_path"], {ENV_VAR: value}, mode=0o644,
+                owner="JTS AirPlay mode control",
+            )
         except OSError as e:
             logger.exception("could not write airplay mode env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")

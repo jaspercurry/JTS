@@ -56,7 +56,10 @@ def _write_mode(mode: str) -> None:
         value = "no"
     else:
         raise ValueError(f"unknown mode {mode!r}")
-    write_env_file(MODE_ENV_FILE, {ENV_VAR: value}, mode=0o644)
+    write_env_file(
+        MODE_ENV_FILE, {ENV_VAR: value}, mode=0o644,
+        owner="JTS AirPlay mode control",
+    )
 
 
 def _apply_and_restart() -> int:

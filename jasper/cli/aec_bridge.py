@@ -77,7 +77,6 @@ from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
-    DEFAULT_AEC3_SWEEP_VARIANTS,
 )
 from jasper.watchdog import Heartbeat
 from jasper.log_event import log_event
@@ -138,44 +137,7 @@ from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 from ..logging_setup import configure_logging
 
-AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
-
-OUT_PORT = leg_default_port("on")
 OUT_RATE = 16000
-
-# Chip-direct mic stream, pre-AEC3 — exactly the near-end input AEC3
-# consumes in default production (chip ch 1, raw-ish when SHF_BYPASS=1), on
-# its own port and in the same 1280-sample / 16 kHz mono int16 packet shape
-# as the primary leg. jasper-voice's wake loop ORs detections across the
-# post-AEC (OUT_PORT) and chip-direct legs, which catch mostly-disjoint sets
-# of utterances. It consumes this leg only when the reconciler configures
-# `JASPER_MIC_DEVICE_RAW`; otherwise the extra packets are ignored.
-OUT_PORT_RAW = leg_default_port("off")
-# 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the chip-direct
-# stream on OUT_PORT_RAW (chip channel 1 = ASR beam, with chip BF+NS+AGC+HPF
-# applied), channel 2 is the raw mic 0 ADC output with NO chip DSP whatsoever
-# — not even MIC_GAIN, i.e. what a mic without an XMOS chip would deliver.
-# Read by the wake-corpus recorder as the mic-agnostic baseline. Same packet
-# shape as the other legs; always emitted, at ~0.25% of one core.
-OUT_PORT_RAW0 = leg_default_port("raw0")
-# Corpus-only experiment streams, off by default so production bridge cost
-# does not move. When enabled for wake-corpus recording, the bridge emits:
-#   - ref: the 16 kHz mono reference frame AEC3 actually consumed
-#   - usb_raw: a cheap USB mic's raw mono capture
-#   - usb_webrtc: that same USB mic through a second WebRTC AEC3 chain
-#   - usb_dtln: the cheap USB mic through a second DTLN-aec chain
-#
-# jasper-voice never consumes these.
-OUT_PORT_REF = leg_default_port("ref")
-OUT_PORT_USB_RAW = leg_default_port("usb_raw")
-OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
-OUT_PORT_USB_DTLN = leg_default_port("usb_dtln")
-OUT_PORT_CHIP_AEC_150 = leg_default_port("chip_aec_150")
-OUT_PORT_CHIP_AEC_210 = leg_default_port("chip_aec_210")
-OUT_PORT_AEC3_SWEEP = {
-    variant.leg: variant.default_port
-    for variant in AEC3_SWEEP_VARIANTS
-}
 
 # Drop-frame threshold: if queues fill faster than they drain (CPU
 # starvation, clock drift past the margin), log and drop rather than block.
@@ -428,10 +390,10 @@ def _aec_loop(  # noqa: PLR0915
         if config.emit_usb_host_mic
         else None
     )
-    # Chip-direct mic (pre-AEC3) and truly-raw mic 0, batched and packetized
-    # identically to the primary AEC ON stream (see OUT_PORT_RAW /
-    # OUT_PORT_RAW0). Each leg gets its own socket so a sendto failure on one
-    # cannot affect the others.
+    # Chip-direct mic (pre-AEC3) and truly-raw mic 0 ("off" / "raw0" legs),
+    # batched and packetized identically to the primary AEC ON stream. Each
+    # leg gets its own socket so a sendto failure on one cannot affect the
+    # others.
     raw_emitter = add_emitter("off", config.out_port_raw)
     raw0_emitter = add_emitter("raw0", config.out_port_raw0)
     chip_aec_emitters: dict[str, LegEmitter] = {}
@@ -1240,7 +1202,7 @@ def main() -> int:
     ref_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     mic_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     # Filled by the same mic callback that fills mic_q, drained
-    # independently by the AEC loop for the OUT_PORT_RAW0 leg.
+    # independently by the AEC loop for the "raw0" leg.
     raw0_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     chip_aec_qs: dict[str, Queue[bytes]] | None = (
         {beam.token: Queue(maxsize=QUEUE_MAXSIZE) for beam in chip_beam_plan.legs}

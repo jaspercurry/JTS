@@ -184,56 +184,6 @@ impl DllConfig {
     }
 }
 
-/// An immutable snapshot of a [`Dll`]'s observable state. The single shape
-/// every consumer publishes on `/state` / doctor (DRY telemetry, increment 4);
-/// it mirrors PipeWire's `clock.rate_diff` plus the error statistics and the
-/// resync/lock counters JTS surfaces.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DllSnapshot {
-    /// Correction ratio (1.0 = no correction). `> 1.0` runs faster.
-    pub ratio: f64,
-    /// `(ratio - 1) * 1e6` — the rate difference in ppm (`clock.rate_diff`).
-    pub ratio_ppm: f64,
-    /// Running mean of recent errors (exponential, the same averaging the
-    /// adaptive bandwidth uses).
-    pub error_mean: f64,
-    /// Running variance of recent errors.
-    pub error_var: f64,
-    /// Current loop bandwidth after adaptive retuning.
-    pub bandwidth: f64,
-    /// Whether the loop is currently locked (acquired AND low residual error).
-    pub locked: bool,
-    /// Total error samples fed since construction / last reset.
-    pub updates: u64,
-    /// Times the loop crossed from unlocked → locked.
-    pub lock_count: u64,
-    /// Times the loop crossed from locked → unlocked.
-    pub unlock_count: u64,
-    /// Times a `max_resync` hard-jump re-initialised the loop.
-    pub resync_count: u64,
-}
-
-impl DllSnapshot {
-    /// A fresh / unfed loop: unity ratio (0 ppm), unlocked, all counters zero.
-    /// Useful as a telemetry placeholder before a DLL has been ticked (so a
-    /// `/state` reader sees a coherent "idle" rate_diff, not a partial/garbage
-    /// snapshot).
-    pub fn idle() -> Self {
-        Self {
-            ratio: 1.0,
-            ratio_ppm: 0.0,
-            error_mean: 0.0,
-            error_var: 0.0,
-            bandwidth: BW_MAX,
-            locked: false,
-            updates: 0,
-            lock_count: 0,
-            unlock_count: 0,
-            resync_count: 0,
-        }
-    }
-}
-
 /// Number of `update` calls a freshly-(re)initialised loop must run before its
 /// lock verdict is trusted. Below this the integrators are still filling and a
 /// transient low error would mislead a lock decision.
@@ -452,21 +402,9 @@ impl Dll {
         self.lock_count
     }
 
-    /// One immutable snapshot of every observable field. The single telemetry
-    /// shape consumers serialize (increment 4).
-    pub fn snapshot(&self) -> DllSnapshot {
-        DllSnapshot {
-            ratio: self.ratio,
-            ratio_ppm: self.ratio_ppm(),
-            error_mean: self.err_avg,
-            error_var: self.error_variance(),
-            bandwidth: self.bandwidth,
-            locked: self.locked,
-            updates: self.updates,
-            lock_count: self.lock_count,
-            unlock_count: self.unlock_count,
-            resync_count: self.resync_count,
-        }
+    /// Total error samples fed since construction / last reset.
+    pub fn updates(&self) -> u64 {
+        self.updates
     }
 }
 
@@ -749,11 +687,11 @@ mod tests {
             dll.update(1.0);
         }
         let ratio_before = dll.ratio();
-        let updates_before = dll.snapshot().updates;
+        let updates_before = dll.updates();
         let r = dll.update(f64::NAN);
         assert_eq!(r, ratio_before, "NaN returns the prior ratio unchanged");
         assert_eq!(
-            dll.snapshot().updates,
+            dll.updates(),
             updates_before,
             "NaN does not count as an update"
         );
@@ -820,15 +758,6 @@ mod tests {
         assert!((d.w2 - (w / 1.5)).abs() < 1e-15);
         // The bare update returns 1 - (z2 + z3) and is finite for a finite err.
         assert!(d.update(1.0).is_finite());
-    }
-
-    /// A fresh DLL's snapshot equals the `idle()` placeholder (unity ratio,
-    /// 0 ppm, unlocked, zero counters) — so a telemetry consumer reads the same
-    /// shape whether it holds a real loop or the placeholder.
-    #[test]
-    fn fresh_snapshot_matches_idle_placeholder() {
-        let dll = audio_dll();
-        assert_eq!(dll.snapshot(), DllSnapshot::idle());
     }
 
     /// Error statistics stay non-negative (variance) and finite under a noisy

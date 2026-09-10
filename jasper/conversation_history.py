@@ -434,7 +434,10 @@ def write_settings(
     values.pop(CAPTURE_ENABLED_ENV, None)
     values[DB_PATH_ENV] = current.db_path
 
-    env_file.write_env_file(settings_path, values, mode=SETTINGS_FILE_MODE)
+    env_file.write_env_file(
+        settings_path, values, mode=SETTINGS_FILE_MODE,
+        owner="the /assistant/chat wizard",
+    )
     return read_settings(path=settings_path, environ=base_env)
 
 

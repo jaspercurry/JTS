@@ -19,9 +19,9 @@ from jasper import wake_legs, wake_ports
 
 
 # The frozen wire contract: token -> udp_port. These values are baked
-# into the historical telemetry corpus, the fired_legs CSV, and
-# jasper.cli.aec_bridge's OUT_PORT* emit constants. Changing one is a
-# breaking change to on-disk data — this test exists to make that loud.
+# into the historical telemetry corpus, the fired_legs CSV, and every
+# port jasper.cli.aec_bridge emits on. Changing one is a breaking change
+# to on-disk data — this test exists to make that loud.
 _EXPECTED_TOKEN_PORTS = {
     "on": 9876,
     "off": 9877,

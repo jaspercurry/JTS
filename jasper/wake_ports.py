@@ -11,9 +11,10 @@ from jasper import wake_legs
 DEFAULT_AEC_UDP_HOST = "127.0.0.1"
 
 # Wire ports now have a single definition in jasper.wake_legs.REGISTRY
-# (which matches jasper.cli.aec_bridge's OUT_PORT* emit constants). These
-# module constants are kept as the stable import surface that build_ports()
-# and its callers (web/__main__, wake_corpus_setup, cli/wake_enroll) use.
+# (jasper.cli.aec_bridge emits on these same ports via leg_default_port).
+# These module constants are kept as the stable import surface that
+# build_ports() and its callers (web/__main__, wake_corpus_setup,
+# cli/wake_enroll) use.
 DEFAULT_AEC_ON_PORT = wake_legs.by_token("on").udp_port
 DEFAULT_AEC_OFF_PORT = wake_legs.by_token("off").udp_port
 DEFAULT_AEC_DTLN_PORT = wake_legs.by_token("dtln").udp_port
