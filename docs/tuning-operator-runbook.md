@@ -399,6 +399,16 @@ device. Copy the manifest and `output.f64le` to the laptop, then run
 Compare the same channels and stimulus windows across renders. These are
 digital band levels, not microphone SPL or isolated driver compression.
 
+Add `--bass-descriptor <descriptor.json> --bass-channels <output-indices>`
+to render four versions of that same signal: bass off, full requested boost,
+boost after volume taper, and the final output with compression. The descriptor
+and channels must match the graph. Copy the whole render directory to keep the
+three comparison outputs beside `output.f64le`; `dsp-levels` then reports the
+gain and loss at each step for the selected window. Downstream limiters remain
+in every render, so the compressor comparison is its net effect at the output,
+not an internal gain-reduction meter. Bands at the reader's floor have unknown
+gain. The requested shelf gain is not the gain at every bass frequency.
+
 ## Evidence and recovery
 
 Measurement records own numbers and identities. An optional
