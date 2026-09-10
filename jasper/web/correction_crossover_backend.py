@@ -142,10 +142,6 @@ class CrossoverLevelLease:
 
         self.session_id = "active-crossover"
         self.level_lock_store = LevelLockStore()
-        self._running: Any | None = None
-        self._last: Any | None = None
-        self._active_outcome: Any | None = None
-        self._outcomes: dict[str, Any] = {}
         self._level_result_lock = threading.RLock()
         self._targets: dict[str, dict[str, Any]] = {}
         self._restore_lock = asyncio.Lock()
@@ -290,10 +286,6 @@ class CrossoverLevelLease:
                 except OSError:
                     self._mark_volume_unresolved("volume_safety_clear_failed")
                     return UnresolvedVolumeRecoveryResult.FAILED
-                outcome = self._active_outcome or self._last
-                if outcome is not None and getattr(outcome, "ramp", None) is not None:
-                    outcome.ramp.restored = True
-                self._active_outcome = None
                 log_event(
                     logger,
                     "correction.crossover_level_volume_safety_recovered",
@@ -401,14 +393,6 @@ class CrossoverLevelLease:
         safety_timeout_s = self._ramp_config_for_geometry(geometry).safety_timeout
         return math.ceil((safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0)
 
-    async def cancel_level_match(self) -> bool:
-        """Ask the retained crossover ramp to stop through its safe restore."""
-
-        running = self._running
-        if running is None:
-            return False
-        return await running.cancel()
-
     def invalidate_comparison_context(self) -> None:
         """Drop a prior lock/setup before a newly acquired level run begins."""
 
@@ -416,13 +400,8 @@ class CrossoverLevelLease:
         from jasper.audio_measurement.level_match import LevelLockStore
 
         with self._level_result_lock:
-            if self._running is not None:
-                raise RuntimeError("cannot invalidate a running crossover level match")
             self._level_run_store.invalidate_succeeded_result()
             self.level_lock_store = LevelLockStore()
-            self._last = None
-            self._active_outcome = None
-            self._outcomes = {}
             self._targets = {}
             self.context_id = None
             self.noise_floor_db = None
@@ -434,54 +413,6 @@ class CrossoverLevelLease:
             logger,
             "correction.crossover_level_context_invalidated",
         )
-
-    def discard_driver_level_outcome(
-        self,
-        speaker_group_id: str,
-        role: str,
-        *,
-        capture_geometry: str,
-    ) -> None:
-        """Drop a level result that failed post-ramp identity validation."""
-
-        from jasper.active_speaker.capture_geometry import driver_level_geometry
-
-        geometry = driver_level_geometry(
-            speaker_group_id, role, capture_geometry
-        )
-        with self._level_result_lock:
-            discarded = self._outcomes.pop(geometry, None)
-            if self._last is discarded:
-                self._last = next(reversed(self._outcomes.values()), None)
-            if not self._outcomes:
-                self.context_id = None
-            self.level_lock_store.discard(geometry)
-            self._level_run_store.invalidate_succeeded_result(geometry=geometry)
-
-    def driver_level_locks(self) -> dict[str, dict[str, Any]]:
-        """Return complete normalized excitation evidence for durable storage."""
-
-        from jasper.audio_measurement.excitation import (
-            AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
-        )
-
-        locks: dict[str, dict[str, Any]] = {}
-        for target_id, target in self._targets.items():
-            outcome = self._outcomes.get(str(target.get("geometry") or ""))
-            locked = outcome.ramp.locked_main_volume_db if outcome is not None else None
-            if locked is None:
-                continue
-            locks[target_id] = {
-                "target_id": target_id,
-                "speaker_group_id": str(target.get("speaker_group_id") or ""),
-                "role": str(target.get("role") or ""),
-                "tone_frequency_hz": float(target["tone_frequency_hz"]),
-                "tone_peak_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
-                "commissioning_gain_db": float(target["commissioning_gain_db"]),
-                "locked_main_volume_db": float(locked),
-            }
-        return locks
-
 
     def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
         from jasper.active_speaker.crossover_eligibility import (
@@ -735,39 +666,12 @@ class CrossoverLevelLease:
             current_context_id is None
             or self.context_id == current_context_id
         )
-        locks = self.driver_level_locks()
-        missing = [target_id for target_id in self._targets if target_id not in locks]
-        from jasper.active_speaker.capture_geometry import driver_level_geometry
-
-        reference_axis_driver_locks: dict[str, float] = {}
-        for target_id, target in self._targets.items():
-            geometry = driver_level_geometry(
-                str(target.get("speaker_group_id") or ""),
-                str(target.get("role") or ""),
-                "reference_axis",
-            )
-            outcome = self._outcomes.get(geometry)
-            locked = (
-                outcome.ramp.locked_main_volume_db
-                if outcome is not None
-                else None
-            )
-            if (
-                not isinstance(locked, bool)
-                and isinstance(locked, (int, float))
-                and math.isfinite(float(locked))
-                and float(locked) <= 0
-            ):
-                reference_axis_driver_locks[target_id] = float(locked)
+        missing = list(self._targets)
         return {
-            "running": self._running is not None,
             "locks": self.level_lock_store.snapshot(),
-            "last": self._last.snapshot() if self._last is not None else None,
             "context_id": self.context_id,
             "valid": context_valid,
             "targets": list(self._targets.values()),
-            "driver_level_locks": locks,
-            "reference_axis_driver_locks": reference_axis_driver_locks,
             "unresolved_volume_safety": self.unresolved_volume_safety,
             "missing_targets": missing,
             "next_target": self._targets.get(missing[0]) if missing else None,

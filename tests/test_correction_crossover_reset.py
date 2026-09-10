@@ -120,22 +120,6 @@ def test_reset_measurement_journey_refuses_when_volume_safety_unresolved(
         assert (tmp_path / filename).exists()
 
 
-def test_reset_measurement_journey_refuses_while_level_match_still_running(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    _seed(monkeypatch, tmp_path)
-    fresh_lease = backend.CrossoverLevelLease()
-    fresh_lease._running = object()  # sentinel: a level match is in flight
-    monkeypatch.setattr(backend, "level_lease", lambda: fresh_lease)
-
-    with pytest.raises(backend.MeasurementJourneyResetRefused) as exc_info:
-        backend.reset_measurement_journey()
-
-    assert exc_info.value.reason == "measurement_in_progress"
-    for filename in _JOURNEY_ENVS.values():
-        assert (tmp_path / filename).exists()
-
-
 def test_handle_reset_maps_refusal_to_409(monkeypatch) -> None:
     def fake_reset() -> dict:
         raise backend.MeasurementJourneyResetRefused(
