@@ -31,6 +31,7 @@ import pytest
 import jasper.location_state as ls
 from jasper import env_file
 from jasper.web import _common, weather_setup
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 from ._web_test_helpers import (
     assert_canonical_page,
@@ -194,7 +195,7 @@ def test_render_banner_mirrors_flash_severity():
 def live_server(tmp_path, monkeypatch):
     """Run /assistant/weather/ on a random port against tmp state; suppress
     systemctl. Mirrors the other web fixture shapes."""
-    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
     state_path = str(tmp_path / "weather.env")
     transit_path = str(tmp_path / "transit.env")
 
@@ -256,6 +257,18 @@ def test_post_save_manual_coords_writes_and_redirects(live_server):
 
 def test_post_clear_redirects(live_server):
     post_with_csrf(live_server["url"], "/clear", {}, expect_status=303)
+
+
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_post_clear_describes_the_restart_it_actually_got(
+    live_server, monkeypatch, outcome,
+):
+    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: outcome)
+    jar = post_with_csrf(live_server["url"], "/clear", {}, expect_status=303)
+    flash = next(
+        urllib.parse.unquote(c.value) for c in jar if c.name == "jts_flash"
+    )
+    assert flash == "Cleared weather default." + RESTART_CLAUSE[outcome]
 
 
 def test_post_save_rejection_rerenders_with_submitted_values(live_server):

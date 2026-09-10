@@ -34,6 +34,7 @@ import httpx
 import pytest
 
 from jasper.web import home_assistant_setup as ha_setup
+from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 # Captured before any fixture swaps it out, so the one test that must
 # exercise the real verify path can put it back.
@@ -250,7 +251,7 @@ def wizard_server(tmp_path, monkeypatch):
     restarts: list[None] = []
     monkeypatch.setattr(
         ha_setup, "restart_voice_daemon",
-        lambda: restarts.append(None),
+        lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     # Default verify mock: success. Individual tests override.
     monkeypatch.setattr(
@@ -557,6 +558,21 @@ def test_disconnect_clears_token_keeps_recent_urls(wizard_server):
     assert ha_setup.ENV_RECENT_URLS in saved
     # Daemon restarted to clear the in-memory HAClient
     assert len(restarts) == 1
+
+
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_disconnect_describes_the_restart_it_actually_got(
+    wizard_server, monkeypatch, outcome,
+):
+    base_url, *_ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local", "token": "valid-token", "agent_id": "",
+    })
+    monkeypatch.setattr(ha_setup, "restart_voice_daemon", lambda: outcome)
+    status, _, loc = _post(f"{base_url}/disconnect", {})
+    assert status == 303
+    flash = urllib.parse.unquote((loc or "").split("#", 1)[-1])
+    assert flash == "Disconnected." + RESTART_CLAUSE[outcome]
 
 
 def test_reset_clears_url_keeps_recent_urls(wizard_server):

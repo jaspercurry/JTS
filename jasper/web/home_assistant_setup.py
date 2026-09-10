@@ -67,6 +67,8 @@ from .. import home_assistant as _ha_mod
 from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
+    RESTART_CLAUSE,
+    RestartOutcome,
     begin_request,
     csrf_field_html,
     dispatch_get,
@@ -1167,7 +1169,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
 
-        restart_voice_daemon()
+        outcome = restart_voice_daemon()
         # URL + token were validated against the live HA above; log the
         # connect. No URL/token in the line — the token is a secret and the
         # URL is mild network topology.
@@ -1175,16 +1177,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         instance = result.get("instance_name") or "Home Assistant"
         version = result.get("version")
         label = f"{instance}" + (f" ({version})" if version else "")
-        # restarting=1 is read by the connected-state page's JS — it
-        # shows a "Configuring…" banner that auto-clears once /verify
-        # returns OK (daemon back up + HA still reachable). The flash
-        # text travels in the cookie now, not the URL.
+        # restarting=1 is read by the connected-state page's JS — it shows a
+        # "Configuring…" banner that auto-clears once /verify returns OK
+        # (daemon back up + HA still reachable). Only set it when a restart
+        # actually happened, or the banner polls for one that never comes.
+        target = "./?restarting=1" if outcome is RestartOutcome.RAN else "./"
         send_see_other(
-            handler, "./?restarting=1",
-            flash=(
-                f"Connected to {label}. The speaker is restarting "
-                f"to pick up the change."
-            ),
+            handler, target,
+            flash=f"Connected to {label}.{RESTART_CLAUSE[outcome]}",
         )
 
     @form_guarded
@@ -1207,12 +1207,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
         else:
             delete_env_file(cfg["state_path"])
-        restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         log_event(logger, "ha.disconnect", client=handler.address_string())
-        send_see_other(
-            handler, "./",
-            flash="Disconnected. The speaker is restarting.",
-        )
+        send_see_other(handler, "./", flash=f"Disconnected.{clause}")
 
     _POST_ROUTES = {
         "/discover": _post_discover,

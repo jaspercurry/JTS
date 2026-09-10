@@ -64,6 +64,7 @@ from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ._common import (
+    RESTART_CLAUSE,
     access_log_line,
     begin_request,
     csrf_field_html,
@@ -137,10 +138,6 @@ def _delete_creds_file(path: str) -> None:
     # reset handler must not report a cleared secret that is still on disk.
     with suppress(FileNotFoundError):
         os.unlink(path)
-
-
-def _restart_voice_daemon() -> None:
-    restart_voice_daemon()
 
 
 # ----------------------------------------------------------------------
@@ -849,10 +846,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             flash_error(handler, "Auth exchange failed", e)
             return
-        _restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         # No account name / token in the line — personal data + secret.
         log_event(logger, "google.link", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Linked {account_name} successfully")
+        send_see_other(
+            handler, "./", flash=f"Linked {account_name} successfully.{clause}",
+        )
 
     @form_guarded
     def _post_setup_credentials(
@@ -880,10 +879,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write credentials file")
             flash_error(handler, "Could not save credentials", e)
             return
-        _restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         # Action + requester only — never the client_id/secret.
         log_event(logger, "google.credentials", client=handler.address_string())
-        send_see_other(handler, "./", flash="Credentials saved. Now add the redirect URL to your OAuth client.")
+        send_see_other(
+            handler, "./",
+            flash=(
+                "Credentials saved. Now add the redirect URL to your "
+                f"OAuth client.{clause}"
+            ),
+        )
 
     @form_guarded
     def _post_reset_credentials(
@@ -895,9 +900,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not delete credentials file")
             flash_error(handler, "Could not clear credentials", e)
             return
-        _restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         log_event(logger, "google.reset", client=handler.address_string())
-        send_see_other(handler, "./", flash="Credentials cleared.")
+        send_see_other(handler, "./", flash=f"Credentials cleared.{clause}")
 
     @form_guarded
     def _post_start(
@@ -962,9 +967,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     os.unlink(token_path)
                 except OSError:
                     pass
-            _restart_voice_daemon()
+            clause = RESTART_CLAUSE[restart_voice_daemon()]
             log_event(logger, "google.unlink", client=handler.address_string())
-            send_see_other(handler, "./", flash=f"Removed {name}")
+            send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
         else:
             send_see_other(handler, "./", flash="Account not found")
 

@@ -76,6 +76,7 @@ from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
+from tests._log_events import event_fields, event_records
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -1154,8 +1155,8 @@ def test_building_the_blocks_never_costs_the_capture(
 
     assert set(blocks) == survives
     assert all(isinstance(value, dict) for value in blocks.values())
-    assert caplog.text.count(
-        "event=correction.crossover_v2_capture_evidence_block_failed"
+    assert len(
+        event_records(caplog, "correction.crossover_v2_capture_evidence_block_failed")
     ) == lost
 
 
@@ -2531,7 +2532,7 @@ def test_a_refused_preflight_carries_the_predicates_own_sentence(caplog):
     assert preflight["message"] == (
         "protected speaker setup is not ready; finish it before measuring"
     )
-    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_stage2_preflight_refused")
 
 
 def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
@@ -2582,7 +2583,7 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     preflight = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]
     assert preflight["ok"] is False
     assert "could not check" in preflight["message"]
-    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_stage2_preflight_refused")
 
 
 def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
@@ -3564,7 +3565,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     # No outcome, and therefore no classification line: the round is graded as
     # not-applied, and there is nothing left that claims to know what it meant.
     assert "outcome" not in grade
-    assert "event=correction.crossover_v2_result_classified" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_result_classified")
 
 
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
@@ -4107,16 +4108,12 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
         v2host.persist_conductor_state(conductor, failure_code=None)
         v2host.persist_conductor_state(conductor, failure_code=None)
         v2status.crossover_v2_status_block()
-    lines = [
-        record.message for record in caplog.records
-        if "event=correction.crossover_v2_result_classified" in record.message
-    ]
-    assert len(lines) == 1
-    assert "outcome=verified_best_evaluated" in lines[0]
-    assert "absolute_passed=false" in lines[0]
-    assert "absolute_miss_db=4.3139" in lines[0]
-    assert "absolute_worst_hz=1590.4083" in lines[0]
-    assert "candidate_fingerprint=fp-p04" in lines[0]
+    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
+    assert fields["outcome"] == "verified_best_evaluated"
+    assert fields["absolute_passed"] == "false"
+    assert fields["absolute_miss_db"] == "4.3139"
+    assert fields["absolute_worst_hz"] == "1590.4083"
+    assert fields["candidate_fingerprint"] == "fp-p04"
 
 
 def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplog):
@@ -4131,7 +4128,8 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     )
     with caplog.at_level(logging.INFO, logger=v2host.__name__):
         v2host.persist_conductor_state(conductor, failure_code=None)
-    assert "outcome=inconclusive" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
+    assert fields["outcome"] == "inconclusive"
 
 
 _NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
@@ -4615,10 +4613,10 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
     assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
     # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
     # actually held at resolve time — here nothing at all.
-    assert "setup_mode=absent" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert fields["setup_mode"] == "absent"
 
 
 # --- mic_tier threading (#1668 PR-C) --------------------------------------
@@ -4791,9 +4789,9 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
             MeasurementGeometry(),
             phase="verify",
         )
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
-    assert "setup_mode=stored" in caplog.text
-    assert "setup_calibration_id=cal-stale" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert fields["setup_mode"] == "stored"
+    assert fields["setup_calibration_id"] == "cal-stale"
     # Redaction: the serial never reaches the journal.
     assert "SECRET-810" not in caplog.text
 
@@ -4978,7 +4976,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
         "applied": True, "calibration_id": record.calibration_id,
         "curve_fingerprint": json_fingerprint(record.curve.to_dict()),
     }
-    assert "crossover_v2_uncalibrated_capture" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
 
 
 def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
@@ -5034,8 +5032,8 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     assert out == "analysis"
     assert seen["calibration"] is None  # never mis-applied
     assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
-    assert "crossover_v2_uncalibrated_capture" in caplog.text
-    assert "calibration_device_identity_mismatch" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
+    assert event_records(caplog, "correction.calibration_device_identity_mismatch")
 
     # The household record was never re-persisted against the wrong device.
     from jasper.audio_measurement.household_mic import (
@@ -6622,8 +6620,8 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     assert "raise the crossover to at least" in str(excinfo.value)
     # The machine-readable half. The sentence above may be reworded; this slug
     # is what an operator greps a hearing-safety refusal out of the journal by.
-    assert "event=correction.crossover_v2_apply_refused" in caplog.text
-    assert "reason=crossover_below_declared_protection_floor" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_apply_refused")
+    assert fields["reason"] == "crossover_below_declared_protection_floor"
 
     draft = load_design_draft()
     assert draft["manual_settings"]["crossover_candidates"][0][
@@ -7605,8 +7603,8 @@ def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
     )
     with caplog.at_level(logging.WARNING):
         assert v2host._applied_profile_now() is None
-    assert "event=correction.crossover_v2_applied_profile_displaced" in caplog.text
-    assert "surface=commanded_axis" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_applied_profile_displaced")
+    assert fields["surface"] == "commanded_axis"
 
 
 def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
@@ -8236,16 +8234,12 @@ def test_a_corrupted_bank_refuses_the_automatic_way_back_loudly(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         assert rollback("realized_shape_differs_from_commanded") is False
 
-    refused_lines = [
-        record.getMessage() for record in caplog.records
-        if record.getMessage().startswith(
-            "event=correction.crossover_v2_delta_probe_restore_refused "
-        )
-    ]
-    assert len(refused_lines) == 1, refused_lines
+    fields = event_fields(
+        caplog, "correction.crossover_v2_delta_probe_restore_refused"
+    )
     # The fingerprint it aimed at rides the line, so a support read can tell
     # WHICH candidate could not come back.
-    assert "candidate_fingerprint=" in refused_lines[0]
+    assert "candidate_fingerprint" in fields
     assert (v2host.load_v2_state() or {})["applied"] is True
 
 
@@ -8921,7 +8915,9 @@ def test_a_pre_envelope_alignment_record_round_trips_through_the_prior(caplog):
     # Tolerated, not merely swallowed: no "unreadable" WARNING for the legacy
     # shape, which is what separates "read as absent" from "read as this
     # build's own kind and version 1."
-    assert "alignment_prescription_unreadable" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_alignment_prescription_unreadable"
+    )
 
 
 def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
@@ -8953,7 +8949,9 @@ def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
     assert rehydrated is not None
     assert rehydrated.fc_hz == 2400.0
     assert rehydrated.order == 4
-    assert "crossover_v2_topology_prescription_unreadable" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_topology_prescription_unreadable"
+    )
 
 
 def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(

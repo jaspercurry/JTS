@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from jasper.web import _common, wifi_setup
+from tests._log_events import event_fields, event_records
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -424,16 +425,6 @@ def _valid_post(path: str, body: bytes):
     )
 
 
-def _event_records(caplog, event: str):
-    logfmt_prefix = f"event={event}"
-    return [
-        record
-        for record in caplog.records
-        if record.getMessage().startswith(logfmt_prefix)
-        or record.getMessage().startswith(f'{{"event": "{event}"')
-    ]
-
-
 def test_get_root_renders_canonical_page():
     h, cap = _make_request("/")
     h.do_GET()
@@ -586,20 +577,21 @@ def test_post_connect_emits_one_redacted_action_event(
 
     assert captured["status"] == (200 if ok else 502)
     assert json.loads(h.wfile.getvalue())["message"] == backend_message
-    records = _event_records(caplog, "wifi.connect")
+    records = event_records(caplog, "wifi.connect")
     assert len(records) == 1
     record = records[0]
     assert record.levelno == (logging.INFO if ok else logging.WARNING)
+    fields = event_fields(caplog, "wifi.connect")
     if mode == "new":
-        assert record.getMessage() == (
-            "event=wifi.connect mode=new "
-            f'ssid="Home\\nGuest" ok={str(ok).lower()} client=127.0.0.1'
-        )
+        assert fields == {
+            "mode": "new", "ssid": "Home\nGuest",
+            "ok": str(ok).lower(), "client": "127.0.0.1",
+        }
     else:
-        assert record.getMessage() == (
-            "event=wifi.connect mode=saved "
-            f'profile="Saved Home" ok={str(ok).lower()} client=127.0.0.1'
-        )
+        assert fields == {
+            "mode": "saved", "profile": "Saved Home",
+            "ok": str(ok).lower(), "client": "127.0.0.1",
+        }
     assert record.getMessage().splitlines() == [record.getMessage()]
     assert psk not in caplog.text
     assert backend_message not in caplog.text
@@ -619,12 +611,11 @@ def test_post_forget_emits_one_action_event(monkeypatch, caplog, ok):
     h.do_POST()
 
     assert captured["status"] == (200 if ok else 502)
-    records = _event_records(caplog, "wifi.forget")
+    records = event_records(caplog, "wifi.forget")
     assert len(records) == 1
-    assert records[0].getMessage() == (
-        f'event=wifi.forget profile="Guest profile" ok={str(ok).lower()} '
-        "client=127.0.0.1"
-    )
+    assert event_fields(caplog, "wifi.forget") == {
+        "profile": "Guest profile", "ok": str(ok).lower(), "client": "127.0.0.1",
+    }
     assert records[0].levelno == (logging.INFO if ok else logging.WARNING)
     assert backend_message not in caplog.text
 
@@ -652,12 +643,11 @@ def test_post_radio_emits_one_action_event(
 
     assert captured["status"] == (200 if ok else 502)
     assert calls == [enabled]
-    records = _event_records(caplog, "wifi.radio")
+    records = event_records(caplog, "wifi.radio")
     assert len(records) == 1
-    assert records[0].getMessage() == (
-        f"event=wifi.radio enabled={str(enabled).lower()} "
-        f"ok={str(ok).lower()} client=127.0.0.1"
-    )
+    assert event_fields(caplog, "wifi.radio") == {
+        "enabled": str(enabled).lower(), "ok": str(ok).lower(), "client": "127.0.0.1",
+    }
     assert records[0].levelno == (logging.INFO if ok else logging.WARNING)
     assert backend_message not in caplog.text
 
@@ -690,15 +680,14 @@ def test_post_action_backend_exception_is_structured_and_generic(
         "ok": False,
         "message": "Wi-Fi action failed",
     }
-    records = _event_records(caplog, "wifi.post_dispatch_failed")
+    records = event_records(caplog, "wifi.post_dispatch_failed")
     assert len(records) == 1
-    assert records[0].getMessage() == (
-        "event=wifi.post_dispatch_failed action=connect "
-        f"error={type(error).__name__} "
-        "ok=false client=127.0.0.1"
-    )
+    assert event_fields(caplog, "wifi.post_dispatch_failed") == {
+        "action": "connect", "error": type(error).__name__,
+        "ok": "false", "client": "127.0.0.1",
+    }
     assert records[0].exc_info is None
-    assert _event_records(caplog, "wifi.connect") == []
+    assert not event_records(caplog, "wifi.connect")
     assert captured["responses"] == [502]
     assert private_message not in caplog.text
     assert "Traceback" not in caplog.text
@@ -810,8 +799,8 @@ def test_post_response_disconnect_keeps_single_primary_action_event(
 
     assert len(backend_calls) == 1
     assert response_attempts == [200]
-    assert len(_event_records(caplog, event)) == 1
-    assert _event_records(caplog, "wifi.post_dispatch_failed") == []
+    assert len(event_records(caplog, event)) == 1
+    assert not event_records(caplog, "wifi.post_dispatch_failed")
 
 
 def test_post_route_that_already_answered_cannot_write_a_second_body(monkeypatch):
@@ -852,8 +841,8 @@ def test_post_response_commit_guard_resets_for_keepalive(monkeypatch, caplog):
 
     assert backend_calls == [True, False]
     assert captured["responses"] == [200, 200]
-    assert len(_event_records(caplog, "wifi.radio")) == 2
-    assert _event_records(caplog, "wifi.post_dispatch_failed") == []
+    assert len(event_records(caplog, "wifi.radio")) == 2
+    assert not event_records(caplog, "wifi.post_dispatch_failed")
 
 
 def test_post_unknown_route_precedes_csrf_and_body_read(monkeypatch):
@@ -898,7 +887,13 @@ def test_post_connect_event_preserves_json_field_semantics(
     h.do_POST()
 
     assert captured["status"] == 200
-    records = _event_records(caplog, "wifi.connect")
+    # JASPER_LOG_JSON output is a JSON object, not logfmt -- the shared
+    # tests/_log_events parser only reads logfmt, so this one test (pinning
+    # the JSON sink itself) parses its own record rather than reusing it.
+    records = [
+        r for r in caplog.records
+        if r.getMessage().startswith('{"event": "wifi.connect"')
+    ]
     assert len(records) == 1
     payload = json.loads(records[0].getMessage())
     assert payload == {

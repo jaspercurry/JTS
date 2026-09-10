@@ -93,6 +93,7 @@ from ..env_file import read_env_file
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
+    RESTART_CLAUSE,
     RouteFn,
     begin_request,
     csrf_field_html,
@@ -940,7 +941,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write wake-model env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
-        restart_voice_daemon()
+        clause = RESTART_CLAUSE[restart_voice_daemon()]
         picked = new.get("JASPER_WAKE_MODEL", "")
         # Parity with the wake.layer/profile/sensitivity sub-actions above —
         # the primary model change was the one mutation this page didn't log.
@@ -960,7 +961,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         )
         send_see_other(
             handler, "./",
-            flash=f"Saved. Voice daemon restarting on {label}{extra}.",
+            flash=f"Saved {label}{extra}.{clause}",
         )
 
     _POST_ROUTES = {

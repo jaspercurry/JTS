@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
-from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_identity import (
+    FingerprintedRecord,
+    json_fingerprint,
+)
 from jasper.json_fields import finite_float
 
 from ..branch_chain import CrossoverSection
@@ -277,7 +280,7 @@ def _curve_json(curve: "ResponseCurve | None") -> Any:
 
 
 @dataclass(frozen=True, init=False)
-class CandidateAcousticContext:
+class CandidateAcousticContext(FingerprintedRecord):
     """One candidate preset's crossover corner and the sections that realize it.
 
     A context owns the corner AND the sections together, so a planner holding
@@ -415,9 +418,6 @@ class CandidateAcousticContext:
             },
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
 
 # --------------------------------------------------------------------------
 # trim strategy — a name may never say "rejected" while meaning "committed"
@@ -493,7 +493,7 @@ LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 
 @dataclass(frozen=True, init=False)
-class InterventionProposal:
+class InterventionProposal(FingerprintedRecord):
     """One complete, fingerprinted prescription: everything committed, together.
 
     Fields that are empty are empty HONESTLY rather than absent — an
@@ -689,9 +689,6 @@ class InterventionProposal:
             "accountability": dict(self.accountability),
             "diagnostic_findings": [dict(item) for item in self.diagnostic_findings],
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
 
 # --------------------------------------------------------------------------
@@ -1068,7 +1065,7 @@ PROPOSAL_FINGERPRINT_KINDS = frozenset({"candidate", "intervention_proposal"})
 
 
 @dataclass(frozen=True, init=False)
-class RoundReceipt:
+class RoundReceipt(FingerprintedRecord):
     """The immutable record one correction round leaves behind.
 
     #2291's receipt field list, bound together so a later round can treat the
@@ -1226,9 +1223,6 @@ class RoundReceipt:
             "evidence_identities": dict(self.evidence_identities),
             "created_at": self.created_at,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
 
 # --------------------------------------------------------------------------- #

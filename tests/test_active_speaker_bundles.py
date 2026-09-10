@@ -25,6 +25,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     create_admission_authority,
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
+from tests._log_events import event_fields
 from tests.active_speaker_fixtures import mono_output_topology
 
 
@@ -293,8 +294,8 @@ def test_open_bundle_returns_none_and_warns_on_write_failure(
                 _topology(), calibration_id="", sessions_dir=sessions_root
             )
         assert result is None
-        assert "event=active_speaker.bundle_write_failed" in caplog.text
-        assert "op=open_bundle" in caplog.text
+        fields = event_fields(caplog, "active_speaker.bundle_write_failed")
+        assert fields["op"] == "open_bundle"
     finally:
         sessions_root.chmod(0o700)
 
@@ -330,7 +331,7 @@ def test_attach_comparison_set_is_fail_soft_for_missing_bundle(
             comparison_set_fingerprint="f" * 64,
         )
     assert result is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
+    event_fields(caplog, "active_speaker.bundle_write_failed")
 
 
 @pytest.mark.parametrize("state", ["proposal_ready", "closed"])
@@ -529,7 +530,7 @@ def test_append_capture_rejects_missing_source(tmp_path: Path, caplog) -> None:
         )
 
     assert entry is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
+    event_fields(caplog, "active_speaker.bundle_write_failed")
     reloaded = bundles._read_info(bundle_dir)
     assert reloaded["captures"] == []
 
@@ -545,7 +546,7 @@ def test_append_capture_rejects_oversized_source(tmp_path: Path, caplog) -> None
         )
 
     assert entry is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
+    event_fields(caplog, "active_speaker.bundle_write_failed")
 
 
 def test_append_capture_rejects_source_that_is_not_a_filesystem_path(
@@ -568,8 +569,8 @@ def test_append_capture_rejects_source_that_is_not_a_filesystem_path(
         )
 
     assert entry is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
-    assert "op=append_capture" in caplog.text
+    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
+    assert fields["op"] == "append_capture"
     manifest = read_artifact_manifest(bundle_dir)
     assert not any(a["path"] == "captures/x.wav" for a in manifest["artifacts"])
     assert not (bundle_dir / "captures" / "x.wav").exists()
@@ -605,8 +606,8 @@ def test_append_capture_is_fail_soft_when_info_json_is_missing(
         )
 
     assert result is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
-    assert "op=append_capture" in caplog.text
+    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
+    assert fields["op"] == "append_capture"
     # The WAV copy ran to completion before the info.json step failed.
     assert list(bundle_dir.glob("captures/*.wav"))
 
@@ -880,8 +881,8 @@ def test_enforce_retention_is_fail_soft(tmp_path: Path, caplog, monkeypatch) -> 
     with caplog.at_level(logging.WARNING):
         bundles.enforce_retention(tmp_path)  # must not raise
 
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
-    assert "op=enforce_retention" in caplog.text
+    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
+    assert fields["op"] == "enforce_retention"
 
 
 def test_env_int_falls_back_on_invalid_or_non_positive(monkeypatch) -> None:
@@ -1126,8 +1127,8 @@ def test_append_repeat_capture_rejects_missing_source(tmp_path: Path, caplog) ->
         )
 
     assert entry is None
-    assert "event=active_speaker.bundle_write_failed" in caplog.text
-    assert "op=append_repeat_capture" in caplog.text
+    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
+    assert fields["op"] == "append_repeat_capture"
 
 
 def test_append_repeat_capture_is_fail_soft_when_info_json_is_missing(
@@ -1200,12 +1201,9 @@ def test_record_driver_repeat_aggregate_event_fields_match_bundle_promise(
             session_id="sess-9",
         )
 
-    assert "event=correction.crossover_repeats_aggregated" in caplog.text
-    for expected in (
-        "session=sess-9",
-        "group=mono",
-        "role=tweeter",
-        "accepted=3",
-        "rejected=0",
-    ):
-        assert expected in caplog.text
+    fields = event_fields(caplog, "correction.crossover_repeats_aggregated")
+    assert fields["session"] == "sess-9"
+    assert fields["group"] == "mono"
+    assert fields["role"] == "tweeter"
+    assert fields["accepted"] == "3"
+    assert fields["rejected"] == "0"

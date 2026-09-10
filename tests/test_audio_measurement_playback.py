@@ -21,6 +21,7 @@ import pytest
 
 from jasper.audio_measurement import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+from tests._log_events import event_fields, event_records
 
 from ._async_wait import wait_signalled
 
@@ -87,8 +88,8 @@ async def test_play_wav_uses_stable_argv_and_returns_completion(
         alsa_device="test_pcm",
         returncode=0,
     )
-    assert "event=audio_measurement.playback" in caplog.text
-    assert "result=completed" in caplog.text
+    fields = event_fields(caplog, "audio_measurement.playback")
+    assert fields["result"] == "completed"
 
 
 async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
@@ -260,8 +261,8 @@ async def test_verified_wav_open_cancellation_survives_late_close_failure(
         "suppressed verified WAV cleanup failure" in note
         for note in caught.value.__notes__
     )
-    assert "event=audio_measurement.verified_wav_source" in caplog.text
-    assert "result=cleanup_failed" in caplog.text
+    fields = event_fields(caplog, "audio_measurement.verified_wav_source")
+    assert fields["result"] == "cleanup_failed"
 
 
 async def test_verified_wav_close_failure_preserves_active_body_error(
@@ -295,8 +296,8 @@ async def test_verified_wav_close_failure_preserves_active_body_error(
         "suppressed verified WAV cleanup failure" in note
         for note in caught.value.__notes__
     )
-    assert "event=audio_measurement.verified_wav_source" in caplog.text
-    assert "result=cleanup_failed" in caplog.text
+    fields = event_fields(caplog, "audio_measurement.verified_wav_source")
+    assert fields["result"] == "cleanup_failed"
 
 
 async def test_verified_wav_close_failure_is_typed_without_primary_error(
@@ -371,7 +372,7 @@ async def test_verified_wav_internal_parse_cleanup_preserves_invalid_wav(
         "suppressed verified WAV cleanup failure" in note
         for note in caught.value.__notes__
     )
-    assert "event=audio_measurement.verified_wav_source" in caplog.text
+    assert event_records(caplog, "audio_measurement.verified_wav_source")
 
 
 async def test_verified_wav_directory_close_failure_closes_open_file(
@@ -511,7 +512,8 @@ async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
         playback.PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED
     )
     assert process.killed is True
-    assert "cleanup_state=kill_sent_reap_unconfirmed" in caplog.text
+    fields = event_fields(caplog, "audio_measurement.playback")
+    assert fields["cleanup_state"] == "kill_sent_reap_unconfirmed"
 
 
 async def test_process_wait_failure_is_not_suppressed(
@@ -598,7 +600,8 @@ async def test_play_wav_startup_failure_is_typed(
 
     assert caught.value.code is playback.PlaybackFailureCode.START_FAILED
     assert isinstance(caught.value.__cause__, FileNotFoundError)
-    assert "failure_code=start_failed" in caplog.text
+    fields = event_fields(caplog, "audio_measurement.playback")
+    assert fields["failure_code"] == "start_failed"
 
 
 async def test_play_wav_refuses_missing_file_before_spawn(

@@ -19,7 +19,10 @@ import logging
 import math
 from typing import Any, Mapping
 
-from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_identity import (
+    FingerprintedRecord,
+    json_fingerprint,
+)
 from jasper.audio_measurement.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
@@ -203,7 +206,7 @@ class RequestedDriverExcitationPlan:
 
 
 @dataclass(frozen=True, init=False)
-class PreparedDriverExcitationPlan:
+class PreparedDriverExcitationPlan(FingerprintedRecord):
     target_id: str
     target_role: str
     requested_plan: RequestedDriverExcitationPlan
@@ -314,7 +317,7 @@ class PreparedDriverExcitationPlan:
         return not self.refusals
 
     @property
-    def fingerprint(self) -> str:
+    def fingerprint(self) -> str:  # type: ignore[override]
         return json_fingerprint(self._core())
 
     def _core(self) -> dict[str, Any]:
@@ -331,9 +334,6 @@ class PreparedDriverExcitationPlan:
             "execution_allowed": self.execution_allowed,
             "accepts_protection_evidence": True,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
 
 def _target_for_request(

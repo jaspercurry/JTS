@@ -32,6 +32,7 @@ from jasper.web import (
     correction_runtime,
     correction_setup,
 )
+from tests._log_events import event_fields, event_records
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
@@ -282,15 +283,10 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
     assert b"400" in resp.split(b"\r\n", 1)[0]
-    records = [
-        r for r in caplog.records
-        if r.getMessage().startswith("event=correction.crossover_v2_refused")
-    ]
-    assert len(records) == 1
-    message = records[0].getMessage()
-    assert "route=/crossover/v2/session" in message
-    assert "code=" in message
-    assert 'reason="' in message
+    fields = event_fields(caplog, "correction.crossover_v2_refused")
+    assert fields["route"] == "/crossover/v2/session"
+    assert "code" in fields
+    assert " " in fields["reason"]
 
 
 def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
@@ -398,9 +394,9 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert body["next_action"] == dict(spec.next_action)
     assert body["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
     # And the code is on the journal line beside the reason.
-    assert any(
-        f"code={REASON_PROGRAM_PROFILE_NOT_CONFIRMED}" in r.getMessage()
-        for r in caplog.records
+    assert (
+        event_fields(caplog, "correction.crossover_v2_refused")["code"]
+        == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
     )
 
     def _refuse_uncoded(*_a, **_k):
@@ -438,10 +434,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
     assert b"400" in resp.split(b"\r\n", 1)[0]
     assert b"reconnect it and try again" in resp
     # And it is on the journal like every other refused start.
-    assert any(
-        r.getMessage().startswith("event=correction.crossover_v2_refused")
-        for r in caplog.records
-    )
+    assert event_records(caplog, "correction.crossover_v2_refused")
 
 
 def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
@@ -551,10 +544,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
         an unrelated backend probe logs its own ERROR during the drive, so a
         bare level list would assert something other than what it reads.
         """
-        return [
-            r.levelname for r in caplog.records
-            if r.getMessage().startswith(f"event={event}")
-        ]
+        return [r.levelname for r in event_records(caplog, event)]
 
     # The fault half: a bare ValueError, exactly what json's non-finite
     # refusal is.
@@ -565,9 +555,9 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
     assert b"400" in resp.split(b"\r\n", 1)[0]
-    assert "event=correction.crossover_v2_apply_fault" in caplog.text
-    assert "not JSON compliant" in caplog.text
-    assert "event=correction.crossover_v2_refused" not in caplog.text
+    fault_fields = event_fields(caplog, "correction.crossover_v2_apply_fault")
+    assert "not JSON compliant" in fault_fields["error"]
+    assert not event_records(caplog, "correction.crossover_v2_refused")
     assert _levels("correction.crossover_v2_apply_fault") == ["ERROR"]
 
     # The refusal half: same 400, recorded, one level down and under the
@@ -579,10 +569,10 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
     assert b"400" in resp.split(b"\r\n", 1)[0]
-    assert "event=correction.crossover_v2_refused" in caplog.text
-    assert "route=/crossover/v2/apply" in caplog.text
-    assert "nothing to apply" in caplog.text
-    assert "event=correction.crossover_v2_apply_fault" not in caplog.text
+    refused_fields = event_fields(caplog, "correction.crossover_v2_refused")
+    assert refused_fields["route"] == "/crossover/v2/apply"
+    assert "nothing to apply" in refused_fields["reason"]
+    assert not event_records(caplog, "correction.crossover_v2_apply_fault")
     assert _levels("correction.crossover_v2_refused") == ["WARNING"]
 
     # A malformed body takes the refusal arm too, because the sibling this
@@ -594,7 +584,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
     assert b"400" in resp.split(b"\r\n", 1)[0]
-    assert "event=correction.crossover_v2_refused" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_refused")
     assert _levels("correction.crossover_v2_refused") == ["WARNING"]
 
 
@@ -739,9 +729,9 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
             asyncio.run(correction_setup._restore_protected_neutral_program_graph())
         # The speaker is left running the persisted anchor's EXACT content.
         assert cam.active == anchor.read_text(encoding="utf-8")
-        assert any(f"event={event}" in r.getMessage() for r in caplog.records), (
-            [r.getMessage() for r in caplog.records]
-        )
+        assert event_records(caplog, event), [
+            r.getMessage() for r in caplog.records
+        ]
 
     unrelated = Cam("devices: {}\n")
     monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: unrelated)

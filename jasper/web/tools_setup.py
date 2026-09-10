@@ -66,6 +66,7 @@ from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
     JsonBodyError,
+    RestartOutcome,
     begin_request,
     bonded_follower_active,
     dispatch_get,
@@ -807,7 +808,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         log_event(logger, "tools.apply", client=handler.address_string())
         # jasper-voice re-filters the registry against tool_state.env on
         # restart (and re-writes the catalog JSON).
-        restart_voice_daemon()
+        outcome = restart_voice_daemon()
+        if outcome is not RestartOutcome.RAN:
+            send_proxy_json(handler, json.dumps({
+                "restarted": False, "reason": outcome.name.lower(),
+                "message": "Saved, but the assistant did not restart — "
+                           "save again, or check System.",
+            }).encode(), status=200)
+            return
         send_proxy_json(handler, json.dumps({
             "restarted": True,
             "message": "Restarting the assistant to apply your changes…",

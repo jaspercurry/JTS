@@ -39,6 +39,7 @@ from jasper.tool_state import (
     write_tool_state,
 )
 from jasper.web import tools_setup
+from jasper.web._common import RestartOutcome
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -746,10 +747,12 @@ def test_post_apply_restarts_once(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [_tool("spotify_play")])
     restarted = {"n": 0}
-    monkeypatch.setattr(
-        tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
-    )
+
+    def _restart_voice_daemon():
+        restarted["n"] += 1
+        return RestartOutcome.RAN
+
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
     monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
     h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
@@ -798,6 +801,31 @@ def test_post_apply_bonded_follower_does_not_restart(tmp_path, monkeypatch):
     assert restarted["n"] == 0
 
 
+@pytest.mark.parametrize(
+    "outcome, reason", [
+        (RestartOutcome.REFUSED, "refused"),
+        (RestartOutcome.SKIPPED, "skipped"),
+    ],
+)
+def test_post_apply_reports_a_non_ran_restart_honestly(
+    tmp_path, monkeypatch, outcome, reason,
+):
+    # A SKIPPED here means one of restart_voice_daemon's own gates (provider
+    # unset, bonded follower) flipped true between this route's earlier
+    # checks and the call — the response must not lie and claim a restart.
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("spotify_play")])
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: outcome)
+    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
+    h.do_POST()
+    assert h.status == 200
+    payload = json.loads(h.wfile.getvalue().decode())
+    assert payload["restarted"] is False
+    assert payload["reason"] == reason
+
+
 def test_post_apply_is_rate_limited(tmp_path, monkeypatch):
     """A second Apply inside the min-interval is throttled — no restart — so
     Apply-spam can't feed jasper-voice's StartLimitAction=reboot ladder."""
@@ -805,10 +833,12 @@ def test_post_apply_is_rate_limited(tmp_path, monkeypatch):
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("spotify_play")])
     restarted = {"n": 0}
-    monkeypatch.setattr(
-        tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
-    )
+
+    def _restart_voice_daemon():
+        restarted["n"] += 1
+        return RestartOutcome.RAN
+
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
     monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
     hc = _handler_cls(str(cat), str(state))
@@ -833,10 +863,12 @@ def test_post_apply_throttle_survives_ts_write_failure(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [_tool("spotify_play")])
     restarted = {"n": 0}
-    monkeypatch.setattr(
-        tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
-    )
+
+    def _restart_voice_daemon():
+        restarted["n"] += 1
+        return RestartOutcome.RAN
+
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
     monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
     # An unwritable ts path: the parent dir doesn't exist, so every write
@@ -864,7 +896,9 @@ def test_post_apply_ignores_non_finite_ts(tmp_path, monkeypatch):
     state = tmp_path / "s.env"
     ts = tmp_path / "apply.ts"
     _write_catalog(cat, [_tool("spotify_play")])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(
+        tools_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
+    )
     monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
     for bogus in ("inf", "nan", "-inf"):

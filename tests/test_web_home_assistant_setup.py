@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from jasper.web import home_assistant_setup as ha
+from jasper.web._common import RestartOutcome
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -383,7 +384,7 @@ def test_post_save_with_token_verifies_and_restarts(monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         ha, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
     )
 
     llat = "eyJ0eXAi" + "z" * 180
@@ -412,7 +413,7 @@ def test_post_disconnect_clears_and_restarts(monkeypatch):
     )
     monkeypatch.setattr(
         ha, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
     )
 
     body = b"csrf_token=" + token.encode()
