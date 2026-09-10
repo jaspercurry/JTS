@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 
@@ -12,17 +11,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 
 def _topology():
     return mono_output_topology(topology_name="Bench mono")
-
-
-def _locked_outcome(*, original: float, locked: float):
-    return SimpleNamespace(
-        ramp=SimpleNamespace(
-            state="locked",
-            original_main_volume_db=original,
-            locked_main_volume_db=locked,
-            restored=True,
-        )
-    )
 
 
 def _locks(topology):
@@ -78,71 +66,6 @@ def test_comparison_set_requires_all_drivers_and_recomputes_fingerprint(tmp_path
 
     malformed["fingerprint"] = comparison_set_fingerprint(malformed)
     assert comparison_set_valid(malformed) is False
-
-
-def test_lease_snapshot_requires_every_driver_before_ready():
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    lease = CrossoverLevelLease()
-    lease.context_id = "profile-1"
-    lease._targets = {
-        "mono:woofer": {
-            "target_id": "mono:woofer",
-            "speaker_group_id": "mono",
-            "role": "woofer",
-            "geometry": "near_field_driver:mono:woofer",
-            "tone_frequency_hz": 250.0,
-            "commissioning_gain_db": -3.0,
-        },
-        "mono:tweeter": {
-            "target_id": "mono:tweeter",
-            "speaker_group_id": "mono",
-            "role": "tweeter",
-            "geometry": "near_field_driver:mono:tweeter",
-            "tone_frequency_hz": 6250.0,
-            "commissioning_gain_db": -18.0,
-        },
-    }
-    lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
-        original=-30.0, locked=-10.0
-    )
-    assert lease.level_match_snapshot()["next_target"]["role"] == "tweeter"
-    lease._outcomes["near_field_driver:mono:tweeter"] = _locked_outcome(
-        original=-30.0, locked=-4.0
-    )
-    lease._outcomes["reference_axis_driver:mono:woofer"] = _locked_outcome(
-        original=-30.0, locked=-10.0
-    )
-    lease._outcomes["reference_axis_driver:mono:tweeter"] = _locked_outcome(
-        original=-30.0, locked=-4.0
-    )
-    assert lease.level_match_snapshot(current_context_id="profile-1")["ready"] is True
-    assert lease.level_match_snapshot()["next_target"] is None
-
-
-def test_discard_reference_axis_outcome_clears_runtime_and_lock_store():
-    from jasper.audio_measurement.level_match import MeasurementLevelLock
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    geometry = "reference_axis_driver:mono:woofer"
-    lease = CrossoverLevelLease()
-    lease._outcomes[geometry] = _locked_outcome(original=-30.0, locked=-3.5)
-    lease.level_lock_store.put(
-        MeasurementLevelLock(
-            geometry=geometry,
-            main_volume_db=-3.5,
-            gain_map_db=None,
-            settled_mic_dbfs=None,
-            noise_floor_dbfs=None,
-        )
-    )
-
-    lease.discard_driver_level_outcome(
-        "mono", "woofer", capture_geometry="reference_axis"
-    )
-
-    assert geometry not in lease._outcomes
-    assert lease.level_lock_store.get(geometry) is None
 
 
 @pytest.mark.parametrize(

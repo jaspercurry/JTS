@@ -138,16 +138,6 @@ def _tone_is_active(sample: dict[str, Any]) -> bool:
     )
 
 
-def _ramp_state(status: dict[str, Any]) -> tuple[bool, str | None]:
-    level = status.get("level_match")
-    if not isinstance(level, dict):
-        return False, None
-    last = level.get("last")
-    ramp = last.get("ramp") if isinstance(last, dict) else None
-    state = ramp.get("state") if isinstance(ramp, dict) else None
-    return bool(level.get("running")), str(state) if state else None
-
-
 def _remote_gain_archive_command(paths: list[str]) -> str:
     """Build one shell-safe command for ssh's remote-shell boundary."""
 
@@ -269,9 +259,7 @@ def main() -> int:
 
     started = time.monotonic()
     next_poll = started
-    saw_running = False
     saw_tone = False
-    terminal_at: float | None = None
     initial_state: dict[str, Any] | None = None
     initial_crossover: dict[str, Any] | None = None
     active_state_saved = False
@@ -428,15 +416,7 @@ def main() -> int:
                             _write_json(
                                 out_dir / "crossover_status_before.json", crossover
                             )
-                        running, ramp_state = _ramp_state(crossover)
-                        saw_running = saw_running or running
                         final_crossover = crossover
-                        if saw_running and not running and ramp_state:
-                            if terminal_at is None:
-                                terminal_at = time.monotonic()
-                                print(f"RAMP_TERMINAL state={ramp_state}", flush=True)
-                            elif time.monotonic() - terminal_at >= 3.0:
-                                stop_event.set()
                     except (OSError, ValueError, urllib.error.URLError):
                         pass
                 time.sleep(0.01)
@@ -458,7 +438,6 @@ def main() -> int:
                 "finished_at": _utc_now(),
                 "duration_s": time.monotonic() - started,
                 "frame_count": sum(len(block) for block in frames),
-                "saw_ramp_running": saw_running,
                 "saw_tone": saw_tone,
                 "callback_errors": callback_errors,
                 "gain_state_archive": archive_status,
