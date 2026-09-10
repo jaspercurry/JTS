@@ -80,6 +80,7 @@ async def play_responses(
     tts: TtsPlayout,
     *,
     barge_in_enabled: bool = False,
+    continuous: bool = False,
     report: PlaybackReport | None = None,
     admission_refusal: Callable[[], str | None] | None = None,
     on_response_started: Callable[[], Awaitable[None]] | None = None,
@@ -125,6 +126,18 @@ async def play_responses(
         await tts.end_segment()
         if barge_in_enabled:
             await tts.wait_drained()
+
+    if continuous:
+        while not turn.turn_lost():
+            await play_responses(
+                turn, tts, barge_in_enabled=barge_in_enabled, report=report,
+                admission_refusal=admission_refusal, on_response_started=on_response_started,
+                on_first_write=on_first_write,
+            )
+            if report.stop_reason != "barge_in":
+                return
+            report.stop_reason = None
+        return
 
     interrupt = asyncio.create_task(turn.wait_for_interrupt())
     playback = asyncio.create_task(play())

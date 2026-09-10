@@ -1414,3 +1414,14 @@ async def test_starting_another_writer_preserves_live_billable_interval(tmp_path
     finally:
         meter.mark_ended()
         await first.aclose()
+
+
+@pytest.mark.parametrize("seconds", [0.0, 12.5])
+def test_billable_activity_uses_final_provider_duration(tmp_path, seconds):
+    store = UsageStore(str(tmp_path / "usage.db"))
+    meter = BillableActivityMeter(store, "openai_live", 3.0)
+    meter.mark_started()
+    meter.mark_ended(seconds=seconds)
+    with sqlite3.connect(str(tmp_path / "usage.db")) as conn:
+        opened, closed = conn.execute("SELECT opened_at, closed_at FROM connection_intervals").fetchone()
+    assert (datetime.fromisoformat(closed) - datetime.fromisoformat(opened)).total_seconds() == seconds

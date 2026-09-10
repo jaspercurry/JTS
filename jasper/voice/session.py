@@ -177,13 +177,14 @@ class Interruptible(Protocol):
 
 @runtime_checkable
 class LiveTurn(Interruptible, Protocol):
-    """A single conversational turn within a long-lived voice connection.
+    """An acquired voice exchange, or a continuous wake conversation.
 
     The daemon acquires a turn from a `LiveConnection` on wake, streams
     user audio frames into it, awaits the model's response, and releases
     the turn when idle. The connection itself stays open across turns
-    (see `LiveConnection`); a turn is just the slice of activity between
-    `activity_start` and `activity_end`.
+    (see `LiveConnection`). Adapters declaring `continuous_input = True`
+    retain this object through follow-ups; `backend_pending` reports delegated
+    work and `discard_input()` synchronously revokes buffered microphone audio.
     """
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -307,16 +308,14 @@ CuePlayer = Callable[[str], Coroutine[Any, Any, object]]
 class LiveConnection(Protocol):
     """Provider-agnostic interface for a long-lived voice connection.
 
-    One instance per daemon: opened at startup, kept alive for the
-    daemon's lifetime via the provider's session-resumption mechanism,
-    closed at shutdown. Internally manages reconnection (including any
+    One instance per daemon. Adapters may keep a socket alive across turns
+    or prepare at startup and open only when a conversation is acquired,
+    as required for providers that bill connected silence. Internally manages reconnection (including any
     rotation the provider's session cap forces) and context-reset on
     long idle gaps.
 
-    Three implementations ship today: Gemini Live, OpenAI Realtime, and
-    Grok (a thin OpenAI subclass). A fourth provider plugs in by writing
-    another adapter against this Protocol — daemon code imports only
-    this interface and `LiveTurn`.
+    Gemini Live, OpenAI Realtime, Grok, and OpenAI Live implement this
+    interface. Provider wire details stay inside their adapters.
     """
 
     async def start(
@@ -324,7 +323,8 @@ class LiveConnection(Protocol):
         registry: ToolRegistry,
         system_instruction: "str | Callable[[], str]",
     ) -> None:
-        """Open the connection and start the background tasks
+        """Prepare for acquisition, opening a persistent socket if appropriate,
+        and start the background tasks
         (receive loop, reconnect supervisor). Returns once
         the initial handshake completes, or — when the provider rejects
         it terminally — returns with the connection paused

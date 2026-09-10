@@ -32,6 +32,7 @@ class InterruptReconcile(StrEnum):
     """
     NEEDS_CLIENT_TRUNCATE = "needs_client_truncate"
     SERVER_SELF_TRUNCATES = "server_self_truncates"
+    NATIVE_CONTINUOUS = "native_continuous"
     INHERITS = "inherits"
 
 
@@ -124,6 +125,8 @@ class ProviderCatalogEntry:
     # Only meaningful when ``interrupt_reconcile`` is ``INHERITS``: the
     # provider id whose reconciliation kind this one adopts (its adapter
     # subclasses that provider's adapter). Empty otherwise.
+    continuous_input: bool = False
+    barge_in_default: bool = False
     interrupt_reconcile_base: str = ""
     extras: tuple[ProviderExtra, ...] = ()
     pricing_url: str = ""
@@ -272,6 +275,32 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         # backport, not the stdlib. `openai` is listed separately because
         # openai_session defers it to `_resolve_connect_call`.
         runtime_imports=("jasper.voice.openai_session", "openai"),
+    ),
+    ProviderCatalogEntry(
+        id="openai_live",
+        barge_in_default=True,
+        continuous_input=True,
+        label="OpenAI Live",
+        vendor="OpenAI",
+        key_env="OPENAI_API_KEY",
+        key_prefix_hint="sk-...",
+        key_url="https://platform.openai.com/api-keys",
+        model_env="JASPER_OPENAI_LIVE_MODEL",
+        voice_env="JASPER_OPENAI_LIVE_VOICE",
+        cost_hint="$0.05 / minute while connected, plus backend tokens",
+        models=(ModelOption("gpt-live-1", "GPT-Live-1", ModelStatus.EXPERIMENTAL, default=True),),
+        voices=(VoiceOption("marin", "marin", default=True),),
+        interrupt_reconcile=InterruptReconcile.NATIVE_CONTINUOUS,
+        runtime_imports=("jasper.voice.openai_live_session", "openai"),
+        pricing_url="https://developers.openai.com/api/docs/guides/voice-latency-cost",
+        pricing_buckets=("flat_per_hour_usd",),
+        extras=(ProviderExtra(
+            name="backend_model", env="JASPER_OPENAI_LIVE_BACKEND_MODEL",
+            label="Task and tool model", default="gpt-5.4-mini",
+            options=(ProviderExtraOption("gpt-5.4-mini", "GPT-5.4 mini"),
+                     ProviderExtraOption("gpt-5.4", "GPT-5.4")),
+            hint="Chooses tools; JTS executes them locally. Billed separately from voice.",
+        ),),
     ),
     ProviderCatalogEntry(
         id="grok",

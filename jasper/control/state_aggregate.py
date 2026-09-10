@@ -87,6 +87,8 @@ def _remaining(deadline: float | None) -> float | None:
 
 _VOICE_STATUS_DIRECT_KEYS = (
     "endpointer",
+    "followup_timeout_sec",
+    "awaiting_followup",
     "last_turn_ms",
     "turn_event_id",
     "wake_event_store",

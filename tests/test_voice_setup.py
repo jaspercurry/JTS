@@ -82,20 +82,20 @@ def _form_for(active="openai", **kwargs) -> dict[str, str]:
     return f
 
 
-def test_catalog_defaults_are_listed_and_marked_tested():
+def test_catalog_defaults_are_listed_with_their_validation_status():
     """The wizard defaults should be conscious, audited catalog entries.
 
     The catalog is still not an allow-list, but the built-in defaults
     should not drift into an unlabelled or fallback-only state.
     """
-    defaults = _form_for()
+    defaults = _form_for(openai_live_model="gpt-live-1", openai_live_voice="marin")
     for provider in catalog.PROVIDERS:
         model_default = defaults[f"{provider.id}_model"]
         voice_default = defaults[f"{provider.id}_voice"]
         model = next((m for m in provider.models if m.default), None)
         assert model is not None, f"{provider.id} model default missing"
         assert model.id == model_default
-        assert model.status is catalog.ModelStatus.TESTED
+        assert model.status is (catalog.ModelStatus.EXPERIMENTAL if provider.id == "openai_live" else catalog.ModelStatus.TESTED)
         voice = next((v for v in provider.voices if v.default), None)
         assert voice is not None, f"{provider.id} voice default missing"
         assert voice.id == voice_default

@@ -46,6 +46,9 @@ from .voice.content_activity import ContentActivityTracker
 from .voice.conversation_capture import ConversationCapture
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
+from .voice.conversation import (
+    END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC, FollowupWindow, continuous_watchdog,
+)
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -143,6 +146,7 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "stopping",
     "research_window_wake",
     "barge_in",
+    "conversation_ended",
     "measurement_active",
 })
 
@@ -181,15 +185,6 @@ CAPTURE_RING_FRAMES = int(
 )
 
 
-# End-of-utterance: fire activity_end once the user has been silent
-# for this long AFTER they spoke. With manual VAD on the server
-# side, this marker is what actually closes the user's turn so the
-# model can respond. 0.8 s matches what mature open-source assistants
-# (Mycroft, Silero defaults, OpenAI Realtime, Vapi) cluster around,
-# and keeps perceived "I stopped talking → response starts" latency
-# low.
-END_OF_UTTERANCE_SILENCE_SEC = 0.8
-
 # Pre-roll: when wake fires, replay the most recent ~560 ms of mic
 # audio into the turn so the first phoneme of the user's command
 # isn't lost. openWakeWord fires when the END of "Hey Jarvis" passes
@@ -210,14 +205,6 @@ PRE_ROLL_FRAMES = 7
 # speech in the same session bottomed out at 0.19. 0.15 sits between
 # music transients and the softest real speech observed.
 END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.15
-
-# If `_user_speech_seen` never flips within this window (user said
-# the wake word and then nothing, or spoke too quietly for Silero
-# to register), abort the turn cleanly and un-duck immediately.
-# 5 s = 1.5 s grace + 3.5 s of "you can start now" — gives a slow
-# speaker time to begin without making genuine false-wakes drag
-# the duck out for too long.
-NO_SPEECH_ABORT_SEC = 5.0
 
 # End-of-turn timing — owned by TtsPlayout.expected_drain_at /
 # wait_drained. Drain tail configured via JASPER_TTS_DRAIN_TAIL_SEC.
@@ -654,6 +641,11 @@ class WakeLoop:
         self._ending: bool = False
         self._playback_report = PlaybackReport()
         self._bg_tasks: set[asyncio.Task] = set()
+        self._followup = FollowupWindow(cfg.followup_timeout_sec)
+        self._response_transition = False
+        self._turn_transition_lock = asyncio.Lock()
+        self._conversation_end_requested = False
+        self._continuous_speech_started = self._continuous_last_speech = 0.0
         self._bg_end_scheduled: bool = False
         self._fire_and_forget: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
@@ -873,9 +865,111 @@ class WakeLoop:
             return
         self._bg_end_scheduled = True
         self._create_fire_and_forget_task(
-            self._end_turn(self._turn_background_end_reason() or "ended"),
+            self._finish_response(self._turn_background_end_reason() or "ended"),
             name="voice-turn-background-end",
         )
+
+    def request_conversation_end(self) -> None:
+        if self._turn is None:
+            return
+        self._conversation_end_requested = True
+        self._turn.request_local_interrupt()
+        self._create_fire_and_forget_task(self._end_turn("conversation_ended"), name="conversation-end")
+
+    async def _finish_response(self, reason: str) -> None:
+        if self._ending or self._response_transition or self._turn is None:
+            return
+        if reason == "spend_cap_reached":
+            await self._end_turn(reason)
+            await self._play_cue(reason)
+            return
+        if (self._followup.deadline or self._manual_endpoint_this_turn or self._research.window_active
+                or self._followup.seconds <= 0 or reason not in {"ended", "barge_in"}
+                or self._turn.turn_lost() or self._conversation_end_requested
+                or not self._playback_report.accepted_audio
+                or getattr(self._turn, "continuous_input", False)):
+            await self._end_turn("conversation_ended" if self._conversation_end_requested else reason)
+            return
+        self._response_transition = True
+        try:
+            await cancel_tracked_tasks(set(self._bg_tasks))
+            self._bg_tasks.clear()
+            if self._ending or self._turn is None:
+                return
+            self._followup.open(time.monotonic())
+            self._reset_session_input()
+            self._bg_tasks = {asyncio.create_task(self._wait_for_followup())}
+            self._arm_turn_background_end()
+            log_event(logger, "conversation.followup", seconds=self._followup.seconds)
+        finally:
+            self._response_transition = False
+        if reason == "barge_in":
+            await self._resume_followup(reason)
+
+    async def _wait_for_followup(self) -> str:
+        while not self._followup.expired(time.monotonic()):
+            await asyncio.sleep(0.05)
+        return "followup_timeout"
+
+    async def _resume_followup(self, reason: str = "ended") -> None:
+        if self._ending or self._response_transition or not self._followup.deadline:
+            return
+        if not self._spend_cap.allowed():
+            await self._end_turn("spend_cap")
+            await self._play_cue("spend_cap_reached")
+            return
+        self._response_transition = True
+        self._frozen_pre_roll = tuple(self._pre_roll)
+        self._acquire_input_epoch = self._input_admit_after
+        self._acquire_buffer.clear()
+        self._acquiring = True
+        self._create_fire_and_forget_task(self._acquire_followup(reason), name="conversation-followup")
+
+    async def _acquire_followup(self, reason: str) -> None:
+        try:
+            async with self._turn_transition_lock:
+                if self._turn is None or self._ending:
+                    return
+                await cancel_tracked_tasks(set(self._bg_tasks))
+                self._bg_tasks.clear()
+                try:
+                    await await_output_cleanup_owned(
+                        self._record_and_release_turn(reason, self._turn_output_episode),
+                        task_name="followup-turn-release",
+                    )
+                finally:
+                    self._turn = None
+                    self._session_id = None
+                self._followup.deadline = 0.0
+                await self._begin_turn()
+                self._user_speech_seen = True
+                self._response_transition = False
+            await self._drain_acquire_audio()
+        except Exception as exc:  # noqa: BLE001
+            log_event(logger, "conversation.followup_failed", exc_type=type(exc).__name__)
+            await self._cleanup_after_failed_begin()
+            await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
+        finally:
+            if self._turn is None and self._turn_output_episode is not None:
+                await self._cleanup_after_failed_begin()
+            self._acquiring = False
+            self._acquire_buffer.clear()
+            self._frozen_pre_roll = None
+            self._response_transition = False
+
+    async def _handle_followup_frame(self, frame, now: float) -> None:
+        score = self._vad.predict(frame)
+        if score < END_OF_UTTERANCE_SPEECH_THRESHOLD:
+            self._speech_run_started_at = self._speech_run_max_silero = 0.0
+            return
+        # A word starting at the deadline gets time to meet the ordinary VAD gate.
+        self._followup.deadline = max(self._followup.deadline, now + SUSTAINED_SPEECH_TO_ARM_SEC)
+        if not self._speech_run_started_at:
+            self._speech_run_started_at = now
+        self._speech_run_max_silero = max(self._speech_run_max_silero, score)
+        if (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
+                and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
+            await self._resume_followup()
 
     async def play_cue(self, slug: str) -> str:
         return await self._assistant_output.play_cue_admitted(slug)
@@ -1295,6 +1389,8 @@ class WakeLoop:
         await self._assistant_output.prepare_loudness()
 
     def _invalidate_input(self, reason: str) -> None:
+        if self._turn is not None and (discard := getattr(self._turn, "discard_input", None)):
+            discard()
         self._input_admit_after = time.monotonic()
         self._input_invalidation_reason = reason
         self._input_suspended.update(self._legs)
@@ -1905,7 +2001,7 @@ class WakeLoop:
         """
         if self._manual_endpoint_this_turn:
             return "push_to_talk"
-        return "silero_aec"
+        return "continuous_audio" if getattr(self._turn, "continuous_input", False) else "silero_aec"
 
     def _corpus_endpointer_label(self, *, user_speech_seen: bool) -> str:
         """The wake-events ``endpointer`` value for the finished turn.
@@ -1917,7 +2013,7 @@ class WakeLoop:
         as a no-speech abort it never performed.
         """
         label = self._endpointer_label()
-        if label == "silero_aec" and not user_speech_seen:
+        if label in {"silero_aec", "continuous_audio"} and not user_speech_seen:
             return "no_speech_abort"
         return label
 
@@ -1928,6 +2024,11 @@ class WakeLoop:
         ):
             await self._end_session_input("push-to-talk hold cap")
             return
+        if getattr(self._turn, "continuous_input", False):
+            if not self._continuous_speech_started:
+                self._continuous_speech_started = time.monotonic()
+            self._continuous_last_speech = time.monotonic()
+            self._user_speech_seen = True
         await self._send_session_audio(frame)
 
     async def _handle_session_frame(self, frame, *, captured_at: float | None = None) -> None:
@@ -1935,10 +2036,21 @@ class WakeLoop:
             return
         if captured_at is not None:
             self._note_input_age(captured_at)
+        if self._response_transition:
+            return
+        if self._conversation_end_requested:
+            await self._end_turn("conversation_ended")
+            return
         if reason := self._turn_background_end_reason():
-            await self._end_turn(reason)
+            await self._finish_response(reason)
             return
         assert self._turn is not None
+        if self._followup.deadline:
+            await self._handle_followup_frame(frame, time.monotonic())
+            return
+        if getattr(self._turn, "continuous_input", False) and not self._manual_endpoint_this_turn:
+            await self._handle_continuous_frame(frame, captured_at=captured_at)
+            return
         if self._input_ended:
             if self._barge_in_active:
                 await self._handle_playback_frame(frame, captured_at=captured_at)
@@ -1979,6 +2091,36 @@ class WakeLoop:
                 elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
                     await self._end_session_input("end-of-utterance")
                     return
+        await self._send_session_audio(frame)
+
+    async def _handle_continuous_frame(self, frame, *, captured_at=None) -> None:
+        now = time.monotonic()
+        speaking = (self._turn.audio_chunks_pending() > 0
+                    or self._tts.expected_drain_at() > now)
+        if speaking and not self._barge_in_reference_available:
+            await self._turn.send_audio(bytes(frame.nbytes))
+            return
+        score = self._vad.predict(frame)
+        threshold = self._cfg.vad_barge_in_threshold if speaking else END_OF_UTTERANCE_SPEECH_THRESHOLD
+        self._max_silero_score_in_turn = max(self._max_silero_score_in_turn, score)
+        if score >= threshold:
+            if not self._speech_run_started_at:
+                self._speech_run_started_at = now
+            self._speech_run_max_silero = max(self._speech_run_max_silero, score)
+            if (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
+                    and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
+                if not self._continuous_speech_started or now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC:
+                    self._continuous_speech_started = self._speech_run_started_at
+                    if speaking and self._barge_in_active:
+                        self._turn.request_local_interrupt()
+                self._continuous_last_speech = now
+                self._user_speech_seen = True
+                self._input_ended = False
+        else:
+            self._speech_run_started_at = self._speech_run_max_silero = 0.0
+            if (self._user_speech_seen and not self._input_ended
+                    and now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC):
+                await self._end_session_input("continuous speech pause")
         await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
@@ -2289,6 +2431,8 @@ class WakeLoop:
                 ),
             },
             "spend_allowed": self._spend_cap.allowed(),
+            "followup_timeout_sec": self._followup.seconds,
+            "awaiting_followup": bool(self._followup.deadline),
             "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             # The provider's own reason for the outage that
@@ -2474,7 +2618,8 @@ class WakeLoop:
         pre_roll_frames = (
             tuple(self._pre_roll) if self._frozen_pre_roll is None else self._frozen_pre_roll
         ) if pre_roll else ()
-        await self._begin_turn_output_episode()
+        if self._turn_output_episode is None:
+            await self._begin_turn_output_episode()
         t_begin = time.monotonic()
         # sched_lag is wake→picked-up-by-the-loop; a turn no wake opened has
         # no lag to report and must not charge itself the episode await.
@@ -2497,6 +2642,7 @@ class WakeLoop:
         # the asyncio loop clock to match what the silence detector reads.
         self._user_speech_seen = False
         self._input_ended = False
+        self._continuous_speech_started = self._continuous_last_speech = 0.0
         self._turn_started_at_loop = (
             anchor_at or (self._input_admit_after if self._acquiring else 0.0)
             or asyncio.get_event_loop().time()
@@ -2559,13 +2705,20 @@ class WakeLoop:
             play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
                 report=self._playback_report,
+                continuous=getattr(self._turn, "continuous_input", False),
                 admission_refusal=self._assistant_output.admission_refusal,
                 on_response_started=self._turn_observer("first_response", event_stage="response_started"),
                 on_first_write=self._turn_observer("first_write"),
             )
         )
+        continuous = getattr(self._turn, "continuous_input", False)
         idle = asyncio.create_task(
-            idle_watchdog(
+            continuous_watchdog(
+                self._turn, self._tts, followup_seconds=self._followup.seconds,
+                stall_seconds=self._cfg.response_stall_timeout_sec,
+                user_activity=lambda: (self._continuous_speech_started, self._continuous_last_speech),
+                spend_allowed=self._spend_cap.allowed,
+            ) if continuous else idle_watchdog(
                 self._turn,
                 self._tts,
                 self._cfg.idle_timeout_sec,
@@ -2719,6 +2872,8 @@ class WakeLoop:
             self._turn = None
             self._session_id = None
             self._turn_output_episode = None
+            self._followup.deadline = 0.0
+            self._conversation_end_requested = False
             self._bg_tasks = set()
             self._bg_end_scheduled = False
             self._push_to_talk.active_source = None
@@ -2756,17 +2911,27 @@ class WakeLoop:
         return not suppressed
 
     async def _end_turn(self, reason: str = "ended") -> None:
+        if self._ending:
+            return
+        async with self._turn_transition_lock:
+            ended = await self._end_turn_owned(reason)
+        if ended:
+            await self._research.drain()
+
+    async def _end_turn_owned(self, reason: str) -> bool:
         # SESSION must cover the chirp and refusal cue so neither wakes itself.
         if self._ending or self._turn is None:
-            return
+            return False
         self._ending = True
+        if discard := getattr(self._turn, "discard_input", None):
+            discard()
         try:
             await await_output_cleanup_owned(
                 self._end_turn_inner(reason), task_name="turn-end-cleanup",
             )
         finally:
             self._ending = False
-        await self._research.drain()
+        return True
 
     async def _end_turn_inner(self, reason: str = "ended") -> None:
         episode = self._turn_output_episode

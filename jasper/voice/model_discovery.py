@@ -97,7 +97,7 @@ def _safe_get_json(
     return data
 
 
-def _openai_voice_model_ids(data: dict[str, Any]) -> tuple[str, ...]:
+def _openai_voice_model_ids(data: dict[str, Any], *, live: bool = False) -> tuple[str, ...]:
     ids: list[str] = []
     items = data.get("data", [])
     if not isinstance(items, list):
@@ -108,7 +108,7 @@ def _openai_voice_model_ids(data: dict[str, Any]) -> tuple[str, ...]:
         model_id = str(item.get("id") or "").strip()
         lower = model_id.lower()
         if (
-            "realtime" in lower
+            (lower.startswith("gpt-live-") if live else "realtime" in lower)
             and "whisper" not in lower
             and "translat" not in lower
             and "transcrib" not in lower
@@ -189,13 +189,13 @@ def fetch_provider_model_ids(
     own_client = http is None
     client = http or httpx.Client(timeout=_discovery_timeout())
     try:
-        if provider_id == "openai":
+        if provider_id in {"openai", "openai_live"}:
             data = _safe_get_json(
                 client,
                 "https://api.openai.com/v1/models",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
-            return _openai_voice_model_ids(data)
+            return _openai_voice_model_ids(data, live=provider_id == "openai_live")
         if provider_id == "gemini":
             models: list[str] = []
             page_token = ""
