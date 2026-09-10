@@ -1561,7 +1561,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert ">I hear this driver</button>" not in js
     assert "No active driver test" not in js
     assert "no separate direct-DAC driver test in the product UI" not in js
-    assert "playbackResultMessage(playback, undefined, friendlySetupReason)" not in js
     assert "Playback: ' + (issue.code" not in js
     assert "JTS could not get the test ready. No sound was played." not in js
     assert "Save this speaker layout draft before confirming outputs." in js

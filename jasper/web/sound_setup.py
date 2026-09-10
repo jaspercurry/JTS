@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import sys
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,8 +51,8 @@ from ._common import (
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
+    dispatch_get,
     dispatch_post,
-    guard_read_request,
     read_json_object,
     route_path,
     send_html_response,
@@ -463,30 +462,10 @@ def _make_handler(
             return read_json_object(self, max_bytes=max_bytes)
 
         def do_GET(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path not in {
-                "/",
-                "/state",
-                "/output-topology",
-                "/active-speaker/design-draft",
-                "/active-speaker/crossover-preview",
-                "/active-speaker/measurements",
-                "/active-speaker/baseline-profile",
-                "/active-speaker/tuning-handoff",
-                "/active-speaker/environment",
-                "/active-speaker/safe-playback",
-                "/active-speaker/calibration-level",
-                "/active-speaker/bringup-preflight",
-                "/active-speaker/startup-load",
-                "/active-speaker/commission-state",
-                "/active-speaker/commissioning-view",
-                "/active-speaker/staged-config",
-                "/active-speaker/channel-identity",
-            }:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
+            dispatch_get(self, _GET_ROUTES)
+
+        def _dispatch_get_route(self) -> None:
+            path = route_path(self.path)
             if path == "/":
                 ctx = begin_request(self)
                 self._send_html(
@@ -563,10 +542,10 @@ def _make_handler(
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
+            self._json_response_started = False
             dispatch_post(self, _POST_ROUTES, guard="header", run=_run_post_route)
 
         def _dispatch_post_route(self) -> None:
-            self._json_response_started = False
             path = route_path(self.path)
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
@@ -1161,11 +1140,28 @@ def _make_handler(
             return
         route(handler)
 
-    # Mutating routes this handler accepts. Membership drives the 404 via
-    # dispatch_post's route-table lookup; deleting an entry here 404s the
-    # path instead of silently orphaning a branch above. A dict literal (not
-    # a comprehension) on purpose: test_web_wizard_conventions.py's
-    # `_tabled_wizards()` finds this table by its AST shape.
+    # Dict literals, not comprehensions: test_web_wizard_conventions.py finds
+    # these tables by their AST shape.
+    _GET_ROUTES = {
+        "/": Handler._dispatch_get_route,
+        "/state": Handler._dispatch_get_route,
+        "/output-topology": Handler._dispatch_get_route,
+        "/active-speaker/design-draft": Handler._dispatch_get_route,
+        "/active-speaker/crossover-preview": Handler._dispatch_get_route,
+        "/active-speaker/measurements": Handler._dispatch_get_route,
+        "/active-speaker/baseline-profile": Handler._dispatch_get_route,
+        "/active-speaker/tuning-handoff": Handler._dispatch_get_route,
+        "/active-speaker/environment": Handler._dispatch_get_route,
+        "/active-speaker/safe-playback": Handler._dispatch_get_route,
+        "/active-speaker/calibration-level": Handler._dispatch_get_route,
+        "/active-speaker/bringup-preflight": Handler._dispatch_get_route,
+        "/active-speaker/startup-load": Handler._dispatch_get_route,
+        "/active-speaker/commission-state": Handler._dispatch_get_route,
+        "/active-speaker/commissioning-view": Handler._dispatch_get_route,
+        "/active-speaker/staged-config": Handler._dispatch_get_route,
+        "/active-speaker/channel-identity": Handler._dispatch_get_route,
+    }
+
     _POST_ROUTES = {
         "/apply": Handler._dispatch_post_route,
         "/audition": Handler._dispatch_post_route,
