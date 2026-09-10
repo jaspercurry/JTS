@@ -161,9 +161,13 @@ async def idle_watchdog(
       * `turn.server_turn_complete()` is True → server says "model is
         done speaking". Canonical clean close; the loop below holds the
         turn open while playout is still moving.
-      * No chunks received yet → model hasn't started speaking;
-        wait the full `timeout` for the first chunk to arrive (Live
-        API can take 3-5 s, sometimes longer).
+      * No chunks received yet → model hasn't started speaking; wait
+        the full `timeout` for the SERVER to say anything at all. The
+        activity anchor advances on every inbound message, so this
+        measures a silent socket, not a slow generation (Live API can
+        take 3-5 s to first audio, sometimes longer). Capped at
+        `response_stall_timeout` from turn open, so a server that
+        chatters without ever producing audio still releases the duck.
       * Chunks arriving but turn_complete hasn't fired → mid-response
         chunk gaps can be > 1.5 s during normal speech pauses, so a
         short timer here would race with real output. A separate,
@@ -181,7 +185,8 @@ async def idle_watchdog(
     frames. End-of-turn drain timing is logged by ``_end_turn`` itself
     so observability is symmetric across whichever side wins the race."""
     playout_pending: int | None = None
-    progressed_at = time.monotonic()
+    started_at = time.monotonic()
+    progressed_at = started_at
     while True:
         await asyncio.sleep(_WATCHDOG_POLL_SEC)
         if turn.turn_lost():
@@ -220,6 +225,21 @@ async def idle_watchdog(
             logger.info(
                 "idle timeout (pre-response phase, %.1fs); no chunks, ending turn",
                 float(timeout),
+            )
+            return
+        if not any_chunk_received and now - started_at > response_stall_timeout:
+            # The anchor above advances on every inbound message, so a
+            # server that keeps talking without ever sending audio — the
+            # recorded no-audio-after-a-tool-call shape (issue #4534) —
+            # can hold the duck open indefinitely. This is the same
+            # last-resort ceiling the mid-response branch already applies,
+            # measured from turn open instead of from the last message.
+            log_event(
+                logger,
+                "turn.pre_response_capped",
+                waited_s=round(now - started_at, 2),
+                silent_s=round(idle_for, 2),
+                level=logging.WARNING,
             )
             return
         if any_chunk_received:

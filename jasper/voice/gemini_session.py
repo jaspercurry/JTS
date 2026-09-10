@@ -709,6 +709,9 @@ class GeminiLiveConnection(BaseLiveConnection):
                     )
                     request_unplanned_reopen(self)
                     return
+                turn = self._active_turn
+                if turn is not None and self._owns_turn(turn):
+                    turn._note_activity()
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
                 if sru is not None:
@@ -750,7 +753,6 @@ class GeminiLiveConnection(BaseLiveConnection):
                 transcription = getattr(getattr(response, "server_content", None), "input_transcription", None)
                 if transcription is not None:
                     self._on_input_transcription(transcription)
-                turn = self._active_turn
                 if turn is not None and self._owns_turn(turn) and not turn._server_turn_complete:
                     await turn._on_response(response)
         except asyncio.CancelledError:

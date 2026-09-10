@@ -253,12 +253,14 @@ class BaseLiveTurn:
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.
 
-        Called on intermediate server events — a tool call arriving, one
-        tool of a round finishing, the tool response going out — where
-        the model is working but no audio has arrived yet. Without it the
-        daemon's idle watchdog measures across the whole dispatch and
-        fires mid-flight. The audio-chunk path does NOT call this: chunks
-        are hot and already read the loop clock inline.
+        Every adapter calls this once per inbound server message, plus on
+        the local tool milestones (a tool of a round finishing, the tool
+        response going out) that produce no message of their own. So the
+        anchor answers "when did this session last hear from the server",
+        and the watchdog's pre-response timer means "socket open but
+        server silent" rather than "no audio yet" — a slow generation
+        that is still emitting acknowledgements, output items or
+        transcript deltas no longer trips it. See issue #4532.
         """
         self._last_activity_at = asyncio.get_event_loop().time()
 

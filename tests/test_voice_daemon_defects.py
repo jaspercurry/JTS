@@ -522,3 +522,46 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
             worker_task.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
         await wl._cancel_fire_and_forget_tasks()
+
+
+class _ChatteringTurn:
+    """A server that keeps sending non-audio messages: the activity anchor
+    advances on every poll (issue #4532 makes any inbound message move it),
+    yet no audio chunk and no turn_complete ever arrive — the recorded
+    no-audio-after-a-tool-call shape of issue #4534."""
+
+    def turn_lost(self) -> bool:
+        return False
+
+    def last_activity_at(self) -> float:
+        return time.monotonic()
+
+    def server_turn_complete(self) -> bool:
+        return False
+
+    def last_chunk_at(self) -> float:
+        return 0.0
+
+    def audio_chunks_pending(self) -> int:
+        return 0
+
+
+async def test_idle_watchdog_caps_a_pre_response_phase_that_never_goes_silent(caplog):
+    """The silence timer alone cannot release the duck here, so the
+    absolute cap from turn open must. Without it the wake loop stays in
+    SESSION and the music stays attenuated for as long as the server
+    keeps talking."""
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await asyncio.wait_for(
+            idle_watchdog(
+                _ChatteringTurn(),
+                _DrainedTts(),
+                timeout=999.0,
+                response_stall_timeout=0.01,
+            ),
+            timeout=1.0,
+        )
+
+    fields = event_fields(caplog, "turn.pre_response_capped")
+    assert float(fields["silent_s"]) < 999.0
+    assert float(fields["waited_s"]) > 0.0

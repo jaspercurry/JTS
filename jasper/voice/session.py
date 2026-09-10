@@ -225,10 +225,13 @@ class LiveTurn(Interruptible, Protocol):
 
     def last_activity_at(self) -> float:
         """Loop time (asyncio.get_event_loop().time()) of the most recent
-        observed model activity for this turn — either an audio chunk or
-        turn_complete. Returns the turn-start time if neither has happened
-        yet. The idle watchdog uses this so it doesn't kill a turn while
-        the model is still streaming TTS."""
+        inbound server message for this turn, of any kind — an audio
+        chunk, an acknowledgement, an output item, a transcript delta,
+        turn_complete — plus the local tool milestones that produce no
+        message. Returns the turn-start time until the first one arrives.
+        The idle watchdog reads it as "when did the server last say
+        anything", so its pre-response timer fires on a silent socket
+        rather than on a slow generation. See issue #4532."""
         ...
 
     def last_chunk_at(self) -> float:

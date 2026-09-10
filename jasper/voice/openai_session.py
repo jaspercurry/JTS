@@ -1036,6 +1036,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             request_unplanned_reopen(self)
 
     async def _dispatch_event(self, etype: str, event) -> None:
+        turn = self._active_turn
+        if turn is not None and self._owns_turn(turn):
+            turn._note_activity()
         if etype == "error":
             detail = failure_detail(
                 RuntimeError(str(_event_field(event, "error"))), literals=self._secret_literals(),
@@ -1045,7 +1048,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if etype in ("session.created", "session.updated"):
             return
 
-        turn = self._active_turn
         if etype == "input_audio_buffer.committed":
             owner, self._pending_commit = self._pending_commit, None
             if owner is not None and self._owns_turn(owner):

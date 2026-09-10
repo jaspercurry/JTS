@@ -3119,3 +3119,41 @@ async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending
         assert not conn._reconnect_event.is_set()
     finally:
         await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("event", [
+    {"type": "response.created", "response": {"id": "resp_9"}},
+    {"type": "response.output_item.added", "response_id": "resp_1",
+     "item": {"id": "msg_9"}},
+    {"type": "response.content_part.added", "response_id": "resp_1",
+     "item_id": "msg_1"},
+    {"type": "session.updated", "session": {}},
+    {"type": "error", "error": {"message": "transient"}},
+])
+async def test_any_inbound_event_advances_the_idle_anchor(conn_cls, event):
+    """#4532: the pre-response idle timer must mean "socket open but
+    server silent", not "no audio yet".
+
+    Every event the server sends between ``response.create`` and the
+    first audio delta proves the session is alive, so each one moves
+    ``last_activity_at()`` — including the ones this dispatcher then
+    drops on the floor. Without that, a slow generation trips a tight
+    timeout mid-flight while its events are still arriving."""
+    factory = _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    await conn.start(ToolRegistry(), "")
+    try:
+        wire = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await _begin_response(conn, wire)
+        stale = asyncio.get_event_loop().time() - 100.0
+        turn._last_activity_at = stale
+
+        await conn._dispatch_event(event["type"], event)
+
+        assert turn.last_activity_at() > stale
+        assert turn.chunks_received() == 0
+        assert turn.server_turn_complete() is False
+    finally:
+        await conn.stop()

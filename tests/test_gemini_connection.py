@@ -1832,3 +1832,31 @@ async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, 
         assert (turn.usage().input_tokens, turn.usage().output_tokens) == (600, 70)
     finally:
         await conn.stop()
+
+
+async def test_a_non_audio_server_message_advances_the_idle_anchor():
+    """#4532: the pre-response idle timer must mean "socket open but
+    server silent", not "no audio yet".
+
+    A message that carries no audio, no tool call and no turn_complete
+    still proves the session is alive, so it moves
+    ``last_activity_at()``. Without that, a slow generation that is
+    emitting only bookkeeping messages trips the timer mid-flight.
+    Complements the tool-round pin above, which covers the local
+    milestones that produce no server message at all."""
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        sess = factory.sessions[0]
+        turn = await conn.acquire_turn()
+        anchor_before = turn.last_activity_at()
+        await asyncio.sleep(0.05)
+
+        sess.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="h1")))
+        await _wait_until(lambda: turn.last_activity_at() > anchor_before, timeout=2.0)
+
+        assert turn.chunks_received() == 0
+        assert turn.server_turn_complete() is False
+        await turn.release()
+    finally:
+        await conn.stop()
