@@ -2951,7 +2951,10 @@ def _provenance_note(measured_this_session: bool | None) -> str:
 
 
 def compact_cloud_status(
-    cloud_state: Any, *, current_session_id: str | None = None,
+    cloud_state: Any,
+    *,
+    current_session_id: str | None = None,
+    tier: Any = None,
 ) -> dict[str, Any] | None:
     """PR-4's ``/state`` projection of the durable ``cloud`` block — compact:
     per band, only ``passed``; the excluded-interval COUNT, not the
@@ -3058,13 +3061,45 @@ def compact_cloud_status(
     stamp existed (no ``session_id`` on the block) reads as unknown, not
     stale, so an upgrade does not manufacture a false "this is old" warning
     for data nobody ever mis-attributed.
+
+    ``positions_accepted``/``positions_required`` (#2100): the scoped first
+    step of the incomplete-stage-2 recovery fix. A household whose walk fails
+    partway through has always had this count in ``block["positions"]`` and
+    the durable ``tier`` — the gap was that nothing surfaced it, so recovery
+    looked like starting from zero rather than resuming a partial group.
+    Disclosure only: full invalidation across a new session is unchanged.
+    ``positions_required`` is ``None`` when the tier is missing or cannot be
+    resolved (a stale/unknown value) or for a phase this build's plan shape
+    does not size (``PHASE_LATERAL``) — never a fabricated count. A missing
+    tier is deliberately NOT resolved to Full here the way
+    :func:`~.crossover_v2.capture_plan.normalize_tier` resolves an absent
+    tier when starting a plan: this projection reports what the durable
+    state actually recorded, and a durable block written before tier
+    tracking existed does not let the household infer Full's counts.
     """
+    from .crossover_v2.capture_plan import PlanShapeError, resolve_plan_shape
+
+    plan_shape = None
+    if tier is not None:
+        try:
+            plan_shape = resolve_plan_shape(tier)
+        except PlanShapeError:
+            plan_shape = None
+    required_by_phase = (
+        {
+            PHASE_CLOUD_MEASURE: plan_shape.cloud_measure_positions,
+            PHASE_CLOUD_VERIFY: plan_shape.cloud_verify_positions,
+        }
+        if plan_shape is not None
+        else {}
+    )
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
     for phase, block in cloud_state.items():
         if not isinstance(block, Mapping):
             continue
+        positions = block.get("positions")
         geometry = block.get("geometry")
         geometry = geometry if isinstance(geometry, Mapping) else {}
         pipeline = block.get("pipeline")
@@ -3085,6 +3120,10 @@ def compact_cloud_status(
             "validity_floor_hz": None,
             "carve_outs": [],
             "provenance_note": _provenance_note(measured_this_session),
+            "positions_accepted": (
+                len(positions) if isinstance(positions, list) else None
+            ),
+            "positions_required": required_by_phase.get(str(phase)),
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")

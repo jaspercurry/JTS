@@ -177,7 +177,9 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
             "store_count": store_count,
         },
         "cloud": _projection.compact_cloud_status(
-            (state or {}).get("cloud"), current_session_id=session_id,
+            (state or {}).get("cloud"),
+            current_session_id=session_id,
+            tier=(state or {}).get("tier"),
         ),
         "cloud_chart": _projection.chart_cloud_status((state or {}).get("cloud")),
         "prediction": _projection.prediction_status(state),

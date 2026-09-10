@@ -488,6 +488,120 @@ def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
     }
 
 
+def test_startup_anchor_forwards_the_specific_stage_failure_code(monkeypatch):
+    """#2184: staging can fail for ~8 distinct reasons (stale preview,
+    active_playback_device_required, subwoofer_staging_unresolved, ...), each
+    already carrying its own code+message via ``_issue`` inside
+    ``stage_protected_startup_config``. The failure card must name that real
+    cause, not the one generic ``commission_startup_anchor_not_staged`` code
+    for all of them.
+    """
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web, "ensure_missing_software_guards", lambda: (topology, False),
+    )
+    specific_issue = {
+        "severity": "blocker",
+        "code": "active_playback_device_required",
+        "message": "no active playback device is assigned",
+    }
+    monkeypatch.setattr(
+        web,
+        "_stage_startup_config",
+        lambda *a, **kw: {"status": "blocked", "issues": [specific_issue]},
+    )
+
+    result = asyncio.run(
+        web._ensure_commission_startup_anchor(
+            group="mono",
+            role="woofer",
+            staged_config={"status": "blocked"},
+            current_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+            camilla_factory=lambda: object(),
+            preset=object(),
+            crossover_preview=None,
+        )
+    )
+
+    assert result["load"]["issues"] == [specific_issue]
+
+
+def test_startup_anchor_forwards_every_stage_blocker_not_only_the_first(monkeypatch):
+    """#2184 follow-up: a stage can fail more than one gate at once. Every
+    blocker must reach the household, headline (first) blocker still first,
+    rather than dropping the rest on the floor."""
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web, "ensure_missing_software_guards", lambda: (topology, False),
+    )
+    first_issue = {
+        "severity": "blocker",
+        "code": "active_playback_device_required",
+        "message": "no active playback device is assigned",
+    }
+    second_issue = {
+        "severity": "blocker",
+        "code": "subwoofer_staging_unresolved",
+        "message": "the subwoofer staging preset could not be resolved",
+    }
+    monkeypatch.setattr(
+        web,
+        "_stage_startup_config",
+        lambda *a, **kw: {
+            "status": "blocked",
+            "issues": [first_issue, second_issue],
+        },
+    )
+
+    result = asyncio.run(
+        web._ensure_commission_startup_anchor(
+            group="mono",
+            role="woofer",
+            staged_config={"status": "blocked"},
+            current_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+            camilla_factory=lambda: object(),
+            preset=object(),
+            crossover_preview=None,
+        )
+    )
+
+    assert result["load"]["issues"] == [first_issue, second_issue]
+
+
+def test_startup_anchor_falls_back_to_the_generic_code_with_no_stage_issue(
+    monkeypatch,
+):
+    """The fallback stays honest, never invented: a stage failure that
+    reported no issue at all (an older build, a seam that forgot to mint
+    one) still reaches the household as the generic
+    ``commission_startup_anchor_not_staged`` code rather than a KeyError or a
+    fabricated cause."""
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web, "ensure_missing_software_guards", lambda: (topology, False),
+    )
+    monkeypatch.setattr(
+        web, "_stage_startup_config", lambda *a, **kw: {"status": "blocked"},
+    )
+
+    result = asyncio.run(
+        web._ensure_commission_startup_anchor(
+            group="mono",
+            role="woofer",
+            staged_config={"status": "blocked"},
+            current_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+            camilla_factory=lambda: object(),
+            preset=object(),
+            crossover_preview=None,
+        )
+    )
+
+    assert result["load"]["issues"][0]["code"] == "commission_startup_anchor_not_staged"
+
+
 def test_startup_anchor_rejects_ambiguous_graph_source_before_fast_path():
     with pytest.raises(
         ValueError,
