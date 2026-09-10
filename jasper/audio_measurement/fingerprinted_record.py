@@ -13,9 +13,8 @@ from typing import Any
 class FingerprintedRecord(abc.ABC):
     """A frozen dataclass's `to_dict`: `_core()` plus its `fingerprint`.
 
-    Persisted receipts and evidence are read back through each type's
-    `from_mapping`, which expects exactly this shape -- changing it breaks
-    every already-written record.
+    Readers of persisted records depend on that exact key set -- changing
+    it breaks every already-written record.
     """
 
     __slots__ = ()
