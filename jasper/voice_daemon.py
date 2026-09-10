@@ -3052,6 +3052,39 @@ class WakeLoop:
         if error is not None and not isinstance(error, Exception):
             raise error
 
+    async def _release_and_capture(
+        self, turn: LiveTurn, *, session_id: int, mic_muted: bool,
+    ) -> None:
+        """Release the turn, then persist what it transcribed.
+
+        Transcript deltas keep arriving through the provider's close
+        handshake, so a capture read before `release()` returns loses the
+        tail of the assistant's line. The turn's own session id and mute
+        state are passed in: `_reset_turn` clears them, and the next turn
+        opens its session before it awaits this task.
+        """
+        try:
+            await self._release_turn(turn)
+        finally:
+            try:
+                capture = turn.capture()
+            except (RuntimeError, TypeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "turn.capture_failed",
+                    exc_type=type(exc).__name__,
+                    level=logging.WARNING,
+                )
+                capture = None
+            if capture is not None:
+                self._conversation_capture.record(
+                    capture.user_text,
+                    capture.assistant_text,
+                    data_json=capture.data,
+                    session_id=session_id,
+                    mic_muted=mic_muted,
+                )
+
     async def _record_and_release_turn(
         self, reason: str, episode: AssistantOutputEpisode | None,
     ) -> bool:
@@ -3091,38 +3124,25 @@ class WakeLoop:
                 )
             elif cleanup_base_error is None:
                 cleanup_base_error = error
+        session_id = self._session_id
+        assert session_id is not None
         self._pending_release = self._create_fire_and_forget_task(
-            self._release_turn(turn), name="turn-release",
+            self._release_turn(turn)
+            if research_window.job is not None
+            else self._release_and_capture(
+                turn, session_id=session_id, mic_muted=self._mic_muted,
+            ),
+            name="turn-release",
         )
 
         play_no_answer_cue = False
         usage = turn.usage()
-        assert self._session_id is not None
         cost = self._usage_store.close_session(
-            self._session_id,
+            session_id,
             usage.input_tokens,
             usage.output_tokens,
             usage=usage.breakdown,
         )
-        if research_window.job is None:
-            try:
-                capture = turn.capture()
-            except (RuntimeError, TypeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "turn.capture_failed",
-                    exc_type=type(exc).__name__,
-                    level=logging.WARNING,
-                )
-                capture = None
-            if capture is not None:
-                self._conversation_capture.record(
-                    capture.user_text,
-                    capture.assistant_text,
-                    data_json=capture.data,
-                    session_id=self._session_id,
-                    mic_muted=self._mic_muted,
-                )
         bytes_sent = turn.bytes_sent()
         chunks_received = turn.chunks_received()
         expected_research_silence_dismiss = (

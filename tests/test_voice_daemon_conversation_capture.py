@@ -66,6 +66,7 @@ async def test_end_turn_records_transcripts_through_single_write_path(
     _put_in_session(wl, _FakeTurn("what is the next train", "Four minutes."))
 
     await wl._end_turn_inner("test")
+    await wl._pending_release
 
     rows = store.recent(10)
     assert len(rows) == 1
@@ -95,6 +96,7 @@ async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
     )
 
     await wl._end_turn_inner("gemini")
+    await wl._pending_release
 
     rows = store.recent(10)
     assert len(rows) == 1
@@ -106,6 +108,28 @@ async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
         "transcripts_available": False,
         "tools": ["get_weather"],
     }
+
+
+async def test_capture_includes_transcript_from_the_close_handshake(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The provider keeps streaming transcript while it closes, so history
+    is snapshotted after `release()` returns rather than before it starts."""
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    turn = _FakeTurn("when is the next train", "Four minutes")
+
+    async def release() -> None:
+        turn._assistant_text = "Four minutes, from Union Square."
+
+    turn.release = release
+    _put_in_session(wl, turn)
+
+    await wl._end_turn_inner("test")
+    await wl._pending_release
+
+    (row,) = store.recent(10)
+    assert row.assistant_text == "Four minutes, from Union Square."
 
 
 async def test_research_readback_records_query_report_and_data_json(
