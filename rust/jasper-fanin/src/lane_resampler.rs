@@ -1466,7 +1466,20 @@ mod tests {
             let mut first_low = None;
             let mut resumed_at_low = false;
             let mut pending = 0;
-            for period in 1..=(RATE * 220 / PERIOD) {
+            // 280 s: the pause (170..180) and mid-pause r.reset() drop the lane's
+            // lock, so a non-compliant row's post-pause session restarts the
+            // probe from scratch at ~t=181 (relock is near-instant here — the
+            // reset-cleared ring only needs ~2577 frames, ~11 periods, to reach
+            // startup_prefill_frames() again). A full two-attempt probe cycle
+            // (AwaitLock settle + 4 s baseline + 15 s step, twice, plus the 10 s
+            // retry dwell) then takes ~54 s to a terminal Fail — measured via
+            // jasper-host-clock's own `RealLane` harness (deficit=0, matching a
+            // fresh relock) with `cargo test -p jasper-host-clock
+            // correction_mode_noncompliant...` -style instrumentation, giving a
+            // verdict at ~181+54=235 s. 220 s (the prior fix) landed short of
+            // that by ~15 s, leaving `probe_result()` at `None`; 280 s clears it
+            // with ~45 s of margin.
+            for period in 1..=(RATE * 280 / PERIOD) {
                 let seconds = period * PERIOD / RATE;
                 let paused = (170..180).contains(&seconds);
                 r.latency_context(
@@ -1543,7 +1556,11 @@ mod tests {
                     ProbeResult::Pass
                 } else {
                     ProbeResult::Fail
-                }
+                },
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 bursty={bursty}: no verdict by end of run (first_low={first_low:?}, \
+                 hold_fill_frames={})",
+                r.hold_fill_frames(),
             );
             assert_eq!(
                 clock.ladder(),
@@ -1551,7 +1568,9 @@ mod tests {
                     Ladder::L0Locked
                 } else {
                     Ladder::L2Fallback
-                }
+                },
+                "prefill={prefill} offset={offset} short_periods={short_periods}: \
+                 unexpected ladder state at end of run (first_low={first_low:?})"
             );
             assert_eq!(r.unlock_count.load(Ordering::Relaxed), 1);
             assert_eq!(r.decay.backoffs(), 0);
