@@ -546,13 +546,16 @@ def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
 
 @pytest.mark.parametrize("graph_kind", ["solo", "driver_domain"])
 @pytest.mark.parametrize(("clip_limit", "allowed"), [(-2.0, True), (1.0, False)])
+@pytest.mark.parametrize("boost_db", [4.0, 20.0])
 def test_desired_dynamic_graph_preserves_bass_owner_limiter_ceiling(
     graph_kind: str,
     clip_limit: float,
     allowed: bool,
+    boost_db: float,
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     descriptor = _dynamic_bass_descriptor()
+    descriptor["low_boost_db"] = boost_db
     applied = {"recomposition_snapshot": {"bass_extension": descriptor}}
     if graph_kind == "solo":
         text = _active_baseline_yaml(

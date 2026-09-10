@@ -13,7 +13,9 @@ from numbers import Real
 from typing import Any
 
 
-MAX_DYNAMIC_BOOST_DB = 12.0
+# CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
+# https://github.com/HEnquist/camilladsp/blob/v4.1.3/README.md#loudness
+NATIVE_LOUDNESS_BOOST_MAX_DB = 20.0
 LOUDNESS_TAPER_DB = 20.0
 REFERENCE_LEVEL_DB_MIN = -100.0
 REFERENCE_LEVEL_DB_MAX = 0.0
@@ -73,8 +75,8 @@ class DynamicBassDescriptor:
         }
         for name, number in values.items():
             object.__setattr__(self, name, number)
-        if not 0.0 < values["low_boost_db"] <= MAX_DYNAMIC_BOOST_DB:
-            raise ValueError(f"low_boost_db must be in (0, {MAX_DYNAMIC_BOOST_DB}]")
+        if not 0.0 < values["low_boost_db"] <= NATIVE_LOUDNESS_BOOST_MAX_DB:
+            raise ValueError(f"low_boost_db must be in (0, {NATIVE_LOUDNESS_BOOST_MAX_DB}]")
         if not REFERENCE_LEVEL_DB_MIN <= values["reference_level_db"] <= REFERENCE_LEVEL_DB_MAX:
             raise ValueError("reference_level_db is outside the Main-fader domain")
         if not DETECTOR_CORNER_HZ_MIN <= values["detector_lowpass_hz"] <= DETECTOR_CORNER_HZ_MAX:
