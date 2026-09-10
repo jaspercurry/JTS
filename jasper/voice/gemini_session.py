@@ -65,7 +65,8 @@ GOAWAY_DEFER_MIN_TIME_LEFT_SEC = 30.0
 def _is_progress_response(response) -> bool:
     """True when this message proves the turn is making progress, so it
     advances the pre-response idle anchor: audio, a tool call,
-    transcript text in either direction, or turn_complete.
+    transcript text in either direction, turn_complete, or
+    generation_complete.
 
     Connection bookkeeping — `session_resumption_update`, `go_away`, a
     bare usage snapshot — proves only that the socket is open and must
@@ -78,6 +79,7 @@ def _is_progress_response(response) -> bool:
         return False
     return bool(
         getattr(sc, "turn_complete", False)
+        or getattr(sc, "generation_complete", False)
         or getattr(getattr(sc, "input_transcription", None), "text", None)
         or getattr(getattr(sc, "output_transcription", None), "text", None)
     )

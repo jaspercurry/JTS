@@ -102,11 +102,18 @@ _NOISE_REDUCTION_WIRE_VALUES = frozenset(("near_field", "far_field"))
 # Inbound event types that prove the turn is making progress, so they
 # advance the pre-response idle anchor: the whole `response.*` namespace
 # (created, in_progress, output items, audio and text deltas, done), the
-# input transcription under `conversation.item.*`, and the commit
-# acknowledgement. Excluded on purpose — `error`, `session.*` and
-# `rate_limits.updated` prove only that the socket is open. See #4532.
-_PROGRESS_EVENT_PREFIXES = ("response.", "conversation.item.")
-_PROGRESS_EVENT_TYPES = frozenset(("input_audio_buffer.committed",))
+# input transcription completing or streaming, and the commit
+# acknowledgement. Excluded on purpose — `error`, `session.*`,
+# `rate_limits.updated`, `conversation.item.created/.deleted/.truncated`
+# (client-echoed acks of events we sent, e.g. the barge-in truncate) and
+# `conversation.item.input_audio_transcription.failed` prove only that
+# the socket is open. See #4532.
+_PROGRESS_EVENT_PREFIXES = ("response.",)
+_PROGRESS_EVENT_TYPES = frozenset((
+    "input_audio_buffer.committed",
+    "conversation.item.input_audio_transcription.completed",
+    "conversation.item.input_audio_transcription.delta",
+))
 
 
 def _is_progress_event(etype: str) -> bool:

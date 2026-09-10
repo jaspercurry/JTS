@@ -1842,6 +1842,7 @@ async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, 
     (_Resp(server_content=_ServerContent(
         output_transcription=_Transcription(text="it is"),
     )), True),
+    (_Resp(server_content=_ServerContent(generation_complete=True)), True),
     # Liveness only: the socket is open, the turn is not moving.
     (_Resp(session_resumption_update=_ResumptionUpdate(new_handle="h1")), False),
     (_Resp(), False),

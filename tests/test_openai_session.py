@@ -3138,6 +3138,9 @@ async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending
     ({"type": "session.updated", "session": {}}, False),
     ({"type": "rate_limits.updated", "rate_limits": []}, False),
     ({"type": "error", "error": {"message": "transient"}}, False),
+    # Client-echoed acks of events we sent (e.g. the barge-in truncate),
+    # not evidence the model itself is progressing.
+    ({"type": "conversation.item.truncated", "item_id": "item_9"}, False),
 ])
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
 async def test_only_progress_events_advance_the_idle_anchor(conn_cls, event, advances):

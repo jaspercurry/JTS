@@ -18,6 +18,7 @@ class Transcription:
 @dataclass
 class ServerContent:
     turn_complete: bool = False
+    generation_complete: bool = False
     interrupted: bool = False
     input_transcription: Transcription | None = None
     output_transcription: Transcription | None = None
