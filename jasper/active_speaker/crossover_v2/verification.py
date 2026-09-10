@@ -1716,6 +1716,9 @@ def _verify_frame_from_tracking(
     n_bins = frame.get("n_bins")
     if isinstance(n_bins, int):
         out["n_bins"] = n_bins
+    band_n_bins = frame.get("band_n_bins")
+    if isinstance(band_n_bins, int):
+        out["band_n_bins"] = band_n_bins
     band_hz = frame.get("band_hz")
     if (
         isinstance(band_hz, (list, tuple))

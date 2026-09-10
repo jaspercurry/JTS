@@ -566,6 +566,18 @@ _SUBSONIC_CASCADE = (
     (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3
 )
 
+#: Where `HEADROOM_MARGIN_DB` stops covering the grid's sampling residue, Hz.
+#:
+#: The 25 Hz linear tail (#2850) closed the residue from 14 kHz to 22 kHz to
+#: <=0.18 dB. Above ~22 kHz it still exceeds the margin (0.18 dB at 22 kHz,
+#: 1.04 dB at the fit engine's own rails near 23.5 kHz, 3.77 dB with unbounded
+#: Q -- the runtime contract bounds none), and the -1.0 dB per-driver
+#: soft-clip limiters are the backstop instead. Stated as ~22 kHz in
+#: `branch_chain.HEADROOM_MARGIN_DB`'s own comment, which is the owner of the
+#: number; this is the test-side name for it.
+_HEADROOM_UNDER_READ_FLOOR_HZ = 22_000.0
+
+
 def _old_gate_composed_db(filters, band_hz):
     """What the PRE-#2758 prescription gate read for these filters.
 
@@ -861,6 +873,84 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     # small class from turning "bounded" into "forbidden", and the SF-1 path is
     # what makes each refusal loud.
     assert near_unity_refusals <= max(1, near_unity // 50)
+
+
+def test_the_classifier_cannot_vouch_into_the_under_read_band():
+    """The tripwire for the ONE thing keeping the honest loop out of the
+    still-open ~22 kHz-Nyquist under-read band.
+
+    #2850's 25 Hz linear tail closed the residue from 14 kHz to 22 kHz to
+    <=0.18 dB; above ~22 kHz the grid's sampling residue still exceeds
+    ``HEADROOM_MARGIN_DB``, and R8's widened per-filter ceiling admits the
+    filter magnitudes that residue was measured at. What makes that
+    unreachable through the product loop is not the gate -- hand-inject a
+    23 kHz ``defect-boostable`` verdict and the gate takes it -- but the
+    CLASSIFIER, which cannot produce a verdict up there at all: a boost is
+    admitted only against a banked verdict near its centre, and the highest
+    frequency that can be banked is the classifiable band's top widened by
+    the verdict match tolerance.
+
+    So the protection is PRODUCER-side, it is arithmetic rather than a rule
+    anyone wrote down as one, and nothing else fails if it moves. Raising
+    ``TRUSTED_CEILING_HZ`` (or widening the match tolerance) far enough would
+    silently open the under-read band to the honest loop. This test is the
+    thing that fails first when that happens.
+    """
+    from jasper.active_speaker.crossover_v2.feature_classification import (
+        VERDICT_MATCH_TOLERANCE_OCTAVES,
+    )
+    from jasper.active_speaker.crossover_v2.feature_classifier import (
+        TRUSTED_CEILING_HZ, classifiable_band_hz,
+    )
+
+    # The floor is irrelevant to the ceiling this bounds; any value does.
+    classifiable_hi_hz = classifiable_band_hz((100.0, TRUSTED_CEILING_HZ))[1]
+    highest_vouchable_hz = classifiable_hi_hz * 2**VERDICT_MATCH_TOLERANCE_OCTAVES
+
+    # The safety assertion FIRST, so a ceiling change fails with the message
+    # that says what to do rather than with a drifted-decimal mismatch.
+    assert highest_vouchable_hz < _HEADROOM_UNDER_READ_FLOOR_HZ, (
+        f"the classifier can now vouch up to {highest_vouchable_hz:.1f} Hz, "
+        f"into the >= {_HEADROOM_UNDER_READ_FLOOR_HZ:.0f} Hz band where the "
+        "sampling residue exceeds HEADROOM_MARGIN_DB. The #2850 tail closed "
+        "14-22 kHz to <=0.18 dB residue but left ~22 kHz-Nyquist open (1.04 "
+        "dB at fit-engine rails, 3.77 dB with unbounded Q), where the -1.0 "
+        "dB per-driver soft-clip limiters remain the only backstop. The "
+        "producer-side protection that made R8's widened boost caps safe to "
+        "land with that band open has just been removed -- lower "
+        "TRUSTED_CEILING_HZ (or the match tolerance) back down, or close the "
+        "~22 kHz-Nyquist residue"
+    )
+    # Today's values, pinned after it so the margin above is legible rather
+    # than mysterious: 14254.4 Hz against a 22000 Hz floor is ~7.7 kHz of room.
+    assert classifiable_hi_hz == pytest.approx(12_699.2084, abs=1e-3)
+    assert highest_vouchable_hz == pytest.approx(14_254.3795, abs=1e-3)
+
+
+def test_a_rails_legal_pair_near_nyquist_still_under_reads_past_the_margin():
+    """The residual #2850 band, pinned rather than left to the tripwire alone.
+
+    A mixed-sign Peaking pair at the fit engine's own rails (``_PEAKING_Q_MAX``
+    8.0, ``PER_FILTER_BOOST_CAP_DB`` 12.0) sitting near Nyquist still under-reads
+    on the grid by more than ``HEADROOM_MARGIN_DB`` -- the linear tail's 14-22 kHz
+    fix does not reach ~23 kHz. If a future grid change closes this too, delete
+    this pin AND ``test_the_classifier_cannot_vouch_into_the_under_read_band``
+    together; they document the same residue from two sides.
+    """
+    filters = [
+        {"biquad_type": "Peaking", "freq": 23_549.9982, "q": 6.8434, "gain": 11.3035},
+        {"biquad_type": "Peaking", "freq": 23_531.7808, "q": 8.0, "gain": -11.8646},
+    ]
+    dense = np.linspace(23_000.0, 0.5 * RESPONSE_SAMPLE_RATE_HZ, 200_001)
+    truth_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+    ))
+
+    assert truth_db - branch_chain_peak_db(filters) > HEADROOM_MARGIN_DB - 0.05, (
+        "premise: a fit-rails-legal pair near Nyquist under-reads by more "
+        "than the margin -- if the grid closes this, delete this pin and "
+        "the classifier tripwire above together"
+    )
 
 
 @pytest.mark.parametrize(

@@ -34,12 +34,13 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 
 # Safety margin added to the realized branch peak when charging headroom, dB (#1808).
 # Covers the cascade's between-sample peak plus the emitter's 4-decimal YAML rounding;
-# worst measured residue 0.1913 dB between filter centres, and 0.4894 dB from 14 kHz to
-# Nyquist once ``CHAIN_GRID_HZ``'s linear tail closed #2850 (1.6116 dB before it on that
-# issue's own worst case, which EXCEEDED this margin and left the -1.0 dB per-driver
-# soft-clip limiters as the only backstop). A shelf cornered outside the audible band is
-# charged against its own asymptote sample (#2846). 1.0 dB equals
-# ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
+# worst measured residue 0.1913 dB between filter centres. ``CHAIN_GRID_HZ``'s linear
+# tail closes the #2850 under-read from 14 kHz to 22 kHz to <=0.18 dB residue; from
+# ~22 kHz to Nyquist the residue still EXCEEDS this margin (1.04 dB at the fit engine's
+# own rails, 3.77 dB with unbounded Q, which the runtime contract does not bound), and
+# the -1.0 dB per-driver soft-clip limiters REMAIN the backstop there. A shelf cornered
+# outside the audible band is charged against its own asymptote sample (#2846). 1.0 dB
+# equals ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
 HEADROOM_MARGIN_DB: float = 1.0
 
 # Below this the evaluated peak is treated as "never exceeds unity", dB. The digital

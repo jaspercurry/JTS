@@ -1587,6 +1587,11 @@ def plan_linearization(
     "correction.crossover_v2_realized_level_match",
     {
         "matched": committed_match.matched,
+        # `level_w_db`/`level_t_db` are read off the committed pair BEFORE
+        # `normalize_to_ceiling` (#2906); `trim_db` below is the post-normalize
+        # trim actually emitted. Labelled so the absolutes are not read as the
+        # emitted graph's own levels.
+        "level_frame": "committed_pair_pre_normalize",
         "level_w_db": round(float(committed_match.level_w_db), 3),
         "level_t_db": round(float(committed_match.level_t_db), 3),
         "difference_db": round(float(committed_match.difference_db), 3),

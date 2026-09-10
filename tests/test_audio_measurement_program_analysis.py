@@ -2140,8 +2140,8 @@ def test_alignment_anchor_resolves_below_one_sample(frac):
     assert argmax_gap.is_integer(), "premise: the bare argmax gap IS quantised"
 
     refined = (
-        program_analysis.response._envelope_peak_sample(tweeter_ir)
-        - program_analysis.response._envelope_peak_sample(woofer_ir)
+        program_analysis.response._rectified_peak_sample(tweeter_ir)
+        - program_analysis.response._rectified_peak_sample(woofer_ir)
     )
     # 0.05 samples is 1.04 us at 48 kHz — a twentieth of the argmax quantum.
     assert refined == pytest.approx(true_gap, abs=0.05)
@@ -3923,8 +3923,8 @@ def test_snap_production_path_preserves_parallax_contract(
         epsilon=epsilon,
     )
     measured_peak_gap_us = (
-        program_analysis.response._envelope_peak_sample(tweeter_full_ir)
-        - program_analysis.response._envelope_peak_sample(woofer_full_ir)
+        program_analysis.response._rectified_peak_sample(tweeter_full_ir)
+        - program_analysis.response._rectified_peak_sample(woofer_full_ir)
     ) / SR * 1e6
     inter_sweep_drift_us = (
         epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6

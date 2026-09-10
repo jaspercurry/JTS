@@ -451,8 +451,8 @@ def _estimate_alignment(
     anchor_delay_us: float | None = None
     if status == ALIGNMENT_OK:
         anchor_lag_samples = (
-            _envelope_peak_sample(tweeter_full_ir)
-            - _envelope_peak_sample(woofer_full_ir)
+            _rectified_peak_sample(tweeter_full_ir)
+            - _rectified_peak_sample(woofer_full_ir)
         )
         # Peak gap - inter-sweep drift, plus parallax, negated into the signed frame.
         inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
@@ -489,15 +489,16 @@ def _estimate_alignment(
     )
 
 
-def _envelope_peak_sample(ir: np.ndarray) -> float:
+def _rectified_peak_sample(ir: np.ndarray) -> float:
     """Sub-sample position of an IR's rectified peak, the parabolic estimator.
 
-    A bare ``argmax`` quantises the inter-driver anchor to one sample — 20.8 us
-    at 48 kHz, +/-15 deg at a 2 kHz Fc — which is large enough to flip
-    ``delay_role`` between sessions on the same hardware (#1869; measured
-    +/-2 samples of argmax jitter between bit-identical sweep repeats). The
-    3-point parabola over the same rectified IR is the estimator three siblings
-    in this package already use and refines within the same bin.
+    ``np.abs`` then a 3-point parabola over the argmax bin — a rectified peak,
+    not a Hilbert envelope. A bare ``argmax`` quantises the inter-driver
+    anchor to one sample — 20.8 us at 48 kHz, +/-15 deg at a 2 kHz Fc — which
+    is large enough to flip ``delay_role`` between sessions on the same
+    hardware (#1869; measured +/-2 samples of argmax jitter between
+    bit-identical sweep repeats). The same parabolic estimator three siblings
+    in this package already use, refining within the same bin.
     """
     magnitude = np.abs(np.asarray(ir, dtype=np.float64))
     return parabolic_peak(magnitude, int(np.argmax(magnitude)))
