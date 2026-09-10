@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from jasper.active_speaker.bass_comparison import compare_bass_takes
+from jasper.active_speaker.bass_fit import fit_bass_shape
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -886,3 +887,45 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     diagnostic = compare_bass_takes(before, after, change='diagnostic')
     assert diagnostic['available']
     assert 'pose_key' in diagnostic['context']['incompatible_fields']
+
+
+@pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
+def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale):
+    grid = np.geomspace(50, 200, 100)
+    baseline = {
+        'record_path': 'off.json',
+        'record': {'graph_scope': 'room_tune', 'graph_fingerprint': 'baseline',
+                   'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20},
+        'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
+        'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
+        'fundamental_qualified': ((grid < 90) | (grid > 110)).tolist(), 'harmonics': {},
+        'frequency_curve': {'freqs_hz': [300, 500, 1000], 'magnitude_db': [-20, -20, -20]},
+    }
+    pairs = []
+    for pose, gain in [(0, 4), (20, 2)]:
+        before = copy.deepcopy(baseline)
+        before['record']['position_deg'] = pose
+        after = copy.deepcopy(before)
+        after['record_path'] = f'boost-{pose}.json'
+        after['record'].update(graph_scope='bass_candidate', candidate_id='boost', graph_fingerprint='boosted')
+        after['fundamental_db'] = [-20 + gain] * len(grid)
+        pairs.append((before, after))
+    kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
+              'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
+              'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
+    result = fit_bass_shape(pairs, **kwargs)
+    repeated = fit_bass_shape([pairs[0]] * 5 + pairs[1:], **kwargs)
+    assert result['selected_scale'] == pytest.approx(expected_scale)
+    assert repeated['selected_scale'] == pytest.approx(result['selected_scale'])
+    assert repeated['position_count'] == 2
+    assert repeated['take_pair_count'] == 6
+    assert not any(90 <= f <= 110 for f in result['freqs_hz'])
+    assert all(0 <= choice['scale'] <= 1 for choice in result['choices'])
+    equal = copy.deepcopy(pairs[0])
+    for take in equal:
+        take['fundamental_db'] = (40 * np.log2(grid / 100)).tolist()
+    equal[0]['fundamental_qualified'] = [True] * len(grid)
+    assert fit_bass_shape([equal], **kwargs)['selected_scale'] == 0
+    pairs[1][0]['record']['level_db'] = -10
+    with pytest.raises(ValueError):
+        fit_bass_shape(pairs, **kwargs)

@@ -40,6 +40,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     compare.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
     compare.add_argument("--out")
     compare.set_defaults(func=_cmd_compare)
+    fit = sub.add_parser("bass-fit", help="fit one measured native bass shape to an explicit target (laptop)")
+    fit.add_argument("request", type=Path, help="JSON: candidate path, target curve, and exact before/after take pairs")
+    fit.add_argument("--out")
+    fit.add_argument("--descriptor-out", type=Path, help="write the fitted descriptor for compose --bass-extension-json")
+    fit.set_defaults(func=_cmd_fit)
 
 
 def _cmd_compare(args: argparse.Namespace) -> int:
@@ -54,3 +59,28 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     written = _write(payload, args.out, args.after.parent / ARTIFACT_BY_VIEW[args.command].artifact)
     return answer(args.command, out=written, available=payload["available"], context=payload["context"],
                   bands=payload["bands"], line=f"bass-compare -> {written}")
+
+
+def _cmd_fit(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.bass_fit import fit_bass_shape  # lazy: laptop array analysis
+    from jasper.active_speaker.bass_comparison import selected_take  # lazy: laptop array analysis
+    from jasper.active_speaker.candidate_bank import load_candidate_artifact  # lazy: candidate graph dependencies
+
+    def fit():
+        request = json.loads(args.request.read_text())
+        candidate = load_candidate_artifact(args.request.parent / request["candidate"])
+        if candidate is None or not candidate.bass_extension:
+            raise ValueError("bass_fit_candidate_unreadable")
+        def take(ref):
+            view = json.loads((args.request.parent / ref["view"]).read_text())
+            return selected_take(view, ref["take_id"])
+        return fit_bass_shape([(take(pair["before"]), take(pair["after"])) for pair in request["pairs"]],
+                              candidate_id=candidate.fingerprint, descriptor=candidate.bass_extension,
+                              target=request["target"], reference_band_hz=tuple(request.get("reference_band_hz", [300, 1000])))
+    payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, fit)
+    written = _write(payload, args.out, args.request.parent / ARTIFACT_BY_VIEW[args.command].artifact)
+    if args.descriptor_out:
+        selected = next(choice for choice in payload["choices"] if choice["scale"] == payload["selected_scale"])
+        _write(selected["descriptor"] or {}, str(args.descriptor_out), args.descriptor_out)
+    return answer(args.command, out=written, position_count=payload["position_count"], selected_scale=payload["selected_scale"],
+                  line=f"bass-fit -> {written}")

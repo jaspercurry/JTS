@@ -24,7 +24,7 @@ CHANGE_FIELDS = {
 }
 
 
-def _context(take: Mapping[str, Any]) -> dict[str, Any]:
+def bass_capture_context(take: Mapping[str, Any]) -> dict[str, Any]:
     record = take["record"]
     return {
         **capture_basis(record), "pose_key": doc_pose_key(record),
@@ -36,7 +36,7 @@ def _context(take: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _common(a: Mapping[str, Any], b: Mapping[str, Any], value: str, quality: str) -> tuple[np.ndarray, ...]:
+def common_bass_bins(a: Mapping[str, Any], b: Mapping[str, Any], value: str, quality: str) -> tuple[np.ndarray, ...]:
     def arrays(item: Mapping[str, Any]) -> tuple[np.ndarray, ...]:
         f, y, q = (np.asarray(item[key], dtype=float) for key in ("freqs_hz", value, quality))
         if (f.ndim != 1 or len(f) < 2 or f.shape != y.shape or f.shape != q.shape
@@ -55,21 +55,21 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
     interventions = CHANGE_FIELDS[change]
     required = tuple(dict.fromkeys((*CAPTURE_FIELDS, *GRAPH_FIELDS, "loudness_volume_db",
         "pose_key", "position_axis", "mark_distance_m", "speaker_candidate_id", "sweep_band_hz", "sweep_duration_s", "analysis_calibration")))
-    context = compare_capture_basis(_context(after), _context(before), interventions=interventions,
+    context = compare_capture_basis(bass_capture_context(after), bass_capture_context(before), interventions=interventions,
                                     required=tuple(key for key in required if key not in interventions))
     result: dict[str, Any] = {"schema": "jts_bass_comparison/1", "change": change, "context": context,
         "before": before["record_path"], "after": after["record_path"], "bands": []}
     if context["incompatible_fields"] and change != "diagnostic":
         result.update(available=False, reason="capture_context_changed")
         return result
-    f, a, b = _common(before, after, "fundamental_db", "fundamental_qualified")
+    f, a, b = common_bass_bins(before, after, "fundamental_db", "fundamental_qualified")
     records = (before["record"], after["record"])
     stimulus = [finite_float(record.get("stimulus_dbfs")) for record in records]
     volume = [finite_float(record.get("level_db")) for record in records]
     stimulus_delta = stimulus[1] - stimulus[0] if stimulus[0] is not None and stimulus[1] is not None else None
     input_delta = stimulus_delta + volume[1] - volume[0] if stimulus_delta is not None and volume[0] is not None and volume[1] is not None else None
     delta = b - a
-    harmonics = {order: _common(before["harmonics"][order], after["harmonics"][order], "relative_db", "qualified")
+    harmonics = {order: common_bass_bins(before["harmonics"][order], after["harmonics"][order], "relative_db", "qualified")
                  for order in before["harmonics"].keys() & after["harmonics"].keys()}
     for lo, hi in BASS_BANDS_HZ:
         mask = (f >= lo) & (f < hi)
