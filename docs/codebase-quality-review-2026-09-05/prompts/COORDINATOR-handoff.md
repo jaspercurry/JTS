@@ -30,7 +30,7 @@ Two owner rulings made during execution that sharpen the mandate:
 
 Audited tree `2d571e6b8` (`origin/main` at 2026-09-05 06:56 EDT). Evidence directory:
 [`docs/codebase-quality-review-2026-09-05/`](../README.md); report:
-[`docs/CODEBASE-QUALITY-REVIEW-2026-09-05.md`](../../CODEBASE-QUALITY-REVIEW-2026-09-05.md);
+[`docs/audits/2026-09-05-codebase-quality-review.md`](../../audits/2026-09-05-codebase-quality-review.md);
 published artifact "JTS Quality Review" (claude.ai/code/artifact/1c990d04-817e-466e-9a08-6f3f3bf798cc).
 
 The method was the five-phase comb from `docs/DEEP-AUDIT-PLAYBOOK.md`, preceded by a research pass

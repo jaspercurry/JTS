@@ -14,7 +14,7 @@ ALSA confs, 157 test functions and 24 two-route docs. The deep audit flagged
 the duplication; its verifier blocked immediate deletion because loopback was
 the shipped default for ring-ineligible topologies (composite/mono/roleful)
 and the only recovery from a failed ring arm
-([DEEP-AUDIT-2026-08-25.md](../DEEP-AUDIT-2026-08-25.md) §4.6). On
+([docs/audits/2026-08-25-deep-audit.md](../audits/2026-08-25-deep-audit.md) §4.6). On
 2026-08-25 a live box fell back to loopback via a defect in the ring arming
 convergence — a fallback masquerading as normal operation until an operator
 noticed the latency.

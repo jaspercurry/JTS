@@ -66,7 +66,7 @@ kernel releases it when the holder dies.
   has no test-without-taking mode; the cost is bounded by the writers' 10 s
   admission budget.
 - **Rejected: a shared duck lease** (`{owner, depth_db, expires_at}` in
-  `/run`), as ADR-0177 rejected it and `docs/DEEP-AUDIT-2026-08-25.md`
+  `/run`), as ADR-0177 rejected it and `docs/audits/2026-08-25-deep-audit.md`
   proposed it at ~200 lines. The lock is already there and already correct.
 - **Rejected: the swap taking a `VolumeOwner` claim** (#3308's first option).
   `VolumeOwner` is per-process; a claim would not answer the cross-process

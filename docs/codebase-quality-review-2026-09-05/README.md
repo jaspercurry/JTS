@@ -1,6 +1,6 @@
 # Evidence for the 2026-09-05 codebase quality review
 
-Frozen record behind [`../CODEBASE-QUALITY-REVIEW-2026-09-05.md`](../CODEBASE-QUALITY-REVIEW-2026-09-05.md).
+Frozen record behind [`../audits/2026-09-05-codebase-quality-review.md`](../audits/2026-09-05-codebase-quality-review.md).
 Audited tree `2d571e6b8`. Nothing here is current operating truth; disposition of each finding lives in
 the steward issues.
 
