@@ -54,5 +54,4 @@ direct/resampler counters; `/sys/class/udc/*/state` owns `host_connected`.
   second capture owner kept alive for a case that self-heals.
 - The old path is not a rollback target. Reviving it means reviving two
   actuator owners; rebuild against the then-current topology instead. The
-  removed code and its rationale are in
-  [historical/usbsink-implementation-appendix.md](../historical/usbsink-implementation-appendix.md).
+  removed code is in git history.

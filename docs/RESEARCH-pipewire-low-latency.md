@@ -9,6 +9,13 @@
 > Linux audio, so we mine its algorithms, not its architecture. The borrows are
 > surgical and algorithmic; the graph runtime is explicitly out of scope. The
 > adoption plan at the end is the actionable output.
+>
+> **Partly superseded by [ADR-0250](adr/0250-the-host-clock-dll-block-is-deleted-not-ticked.md).**
+> The `spa_dll` borrow below is written as though a DLL runs at the host-clock
+> boundary. It does not: `jasper-host-clock`'s sole live mode drives a
+> pure-integral law, and the unticked `Dll` instance and its `/state` fields
+> were deleted. Read the DLL sections as prior art, not as a description of the
+> shipped controller.
 
 ## TL;DR
 
@@ -175,10 +182,11 @@ per-input-resample direction this research validates (item 2 / Part 3),
 should a host ever ignore the gadget's async feedback and need mixer-side
 adaptive resampling.
 
-**Convergence with the audio-foundation review** (`docs/HANDOFF-audio-latency-foundation.md`):
-increment 2 *is* that review's **G2**; PipeWire's `RLIMIT_RTTIME` point is its
-**G4**. The two independent investigations point at the same small set — strong
-signal those are the real foundation wins.
+**Convergence with the 2026-06 audio-latency-foundation review** (deleted with
+the HANDOFF corpus, [ADR-0199](adr/0199-the-handoff-doc-corpus-is-deleted.md);
+in git history): increment 2 *is* that review's **G2**, and PipeWire's
+`RLIMIT_RTTIME` point is its **G4**. Two independent investigations landing on
+the same small set is the signal worth keeping.
 
 **Deliberately NOT borrowed** (separation of concerns / no re-architecture): the
 graph runtime — driver election, activation records, the eventfd cycle engine,

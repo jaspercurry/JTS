@@ -7,8 +7,55 @@ format. Release tags are cut manually by a maintainer.
 
 ## [Unreleased]
 
+### Added
+
+- Wide final-output edges: the InnoMaker HiFi AMP Pro and the base HiFiBerry
+  DAC8x declare an `S32_LE` DAC edge and the single Apple USB-C dongle declares
+  packed `S24_3LE`, so outputd's i32 program reaches the card without an
+  undithered 16-bit requantization.
+- Audio observability gauge set: fan-in and ring counters, coded
+  stall/degradation signal-path reasons, a restart-incident record, and one
+  reliability group behind them on `/state` and in `jasper-doctor`.
+- `jasper-mux` gained a `PREEMPT airplay` control verb — AirPlay only, because
+  its escalation is bounded — so a caller that needs AirPlay silenced asks mux
+  instead of reaching for the renderer itself.
+
+### Changed
+
+- Renderer ingress is snd-aloop lanes plus fan-in's direct capture of the UAC2
+  gadget, armed by the reconciler where the box is eligible (ADR-0281).
+- "What is audible now" has one answer: mux's existing `active_source` STATUS
+  field. `RendererClient.selected_source()` and `/state.active_source` consume
+  it instead of rebuilding the answer from the manual pin and the raw winner.
+- The fan-in, mux and TTS control sockets share one command vocabulary
+  (`jasper/platform/wire.py`) and one client
+  (`jasper/platform/uds.py` `daemon_command`).
+- `jasper/audio_io.py` is replaced outright by `jasper/mic_capture.py` and
+  `jasper/tts_playout.py`, one concern each and no compatibility shim.
+- Documentation: `docs/audio-paths.md` rewritten to the shipped topology, with
+  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0282 and
+  ADR-0281.
+
 ### Removed
 
+- The snd-aloop route between fan-in, CamillaDSP and outputd, and every piece
+  of machinery that migrated a live box between the two transports; a topology
+  the ring cannot serve now parks loudly instead of degrading (ADR-0100).
+- The per-renderer ring ingress program — `jasper/renderer_lanes.py`, its
+  `renderer_lanes.env`, the `jasper-audio-config renderer-lanes` verb, fan-in's
+  `ring_capture.rs`, and the `correction_ring_lane`/`shairport_ring_lane`
+  PCMs — plus the gate ladder, env snapshot/restore and staging arm that moved
+  a live box between ingress shapes.
+- The `JASPER_FANIN_CAMILLA_COUPLING` selector vocabulary; the reconciler now
+  unsets a persisted value, and fan-in's refusal of any other token stands
+  until its accept-set is removed too.
+- The `jasper-control` MPRIS module and `renderer.pause_airplay`; AirPlay stop
+  now goes through mux preemption like every other source.
+- Three escape-hatch environment variables — `JASPER_USBSINK_PREEMPT`,
+  `JASPER_MUX_SPOTIFY_PREEMPT_RESTART` and `JASPER_AIRPLAY_METADATA_GATE`.
+- `docs/audit-pending-followups.md` (its open items are now #4532, #4533 and
+  #4534) and the USB-sink implementation appendix, whose volume rationale moved
+  into ADR-0281.
 - Retired the unsupported bespoke ESP32 OLED/AMOLED dial and satellite-mic
   stack: embedded firmware, onboarding commands and UI, dial heartbeat/status
   surfaces, satellite diagnostics/capture tooling, firmware-build dependencies,

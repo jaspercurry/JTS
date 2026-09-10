@@ -63,6 +63,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
 | [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | accepted |
 | [0273](0273-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
+| [0281](0281-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
+| [0282](0282-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
 
 ## Volume & hearing
 
@@ -80,7 +82,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 
 | ADR | Decision | Status |
 |---|---|---|
-| [0107](0107-usb-gadget-audio-has-one-capture-pipeline.md) | USB gadget audio has one capture pipeline, and no hidden fallback | accepted |
+| [0107](0107-usb-gadget-audio-has-one-capture-pipeline.md) | USB gadget audio has one capture pipeline, and no hidden fallback | amended by 0281 |
 | [0108](0108-a-latency-claim-is-earned-by-a-measured-artifact.md) | A low-latency route claim is earned by a measured artifact, never by configuration | amended by 0185 |
 | [0109](0109-the-combo-host-clock-servo-observes-resampler-correction.md) | The combo host-clock servo observes resampler correction, not gadget fill | amended by 0250 |
 | [0118](0118-the-airplay-latency-offset-is-derived-never-hand-set.md) | The AirPlay backend latency offset is derived from the live chain, never hand-set | accepted |
