@@ -4,12 +4,23 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.bundles import open_bundle
+from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
+from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
+from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
+from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
+from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.frequency_view import (
     FrequencyViewError,
@@ -24,6 +35,7 @@ from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
+from jasper.cli._refusal import EXIT_UNREADABLE
 from jasper.cli.round_views import main as round_views_main
 from jasper.web import correction_measurements
 
@@ -655,3 +667,108 @@ def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, m
     assert len(run.series) == 2
     assert {r.details["take_id"] for r in run.series} == {"a", "b"}
     assert {r.details["graph_fingerprint"] for r in run.series} == {"played-a", "played-b"}
+
+@pytest.fixture
+def summed_capture_bundle(tmp_path):
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"), calibration_id="",
+        sessions_dir=tmp_path / "sessions",
+    )
+    bundle = Path(info["bundle_dir"])
+    evidence = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    calibration_root = tmp_path / "calibrations"
+    calibration = CalibrationRecord(
+        "recorded-mic", "minidsp", "minidsp_umik2", "Recorded microphone", "",
+        "", "", "a" * 64, None, "0deg", "correction", 0, 2,
+        CalibrationCurve([20, 20000], [2, 2]),
+    )
+    calibration_path = calibration_root / "minidsp" / "minidsp_umik2" / "recorded-mic.json"
+    calibration_path.parent.mkdir(parents=True)
+    calibration_path.write_text(json.dumps(calibration.to_dict()))
+    program = build_verify_program(
+        2500, sweep_band_hz=(20, 20000), gain_db=-14, downstream_gain_db=-20,
+        sweep_s=1.5, leading_pilot_gains_db=(-24, -14),
+    )
+    pcm = render_program_pcm(program)[:, 0]
+    signal = np.concatenate([np.zeros(800), pcm * 0.4 * 10 ** (-20 / 20), np.zeros(5000)])
+    signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
+    raw = np.column_stack([signal, np.zeros(signal.size)])
+    recording = WiredRecording(
+        ((raw * (2 ** 31 - 1)).astype("<i4").tobytes(),), signal.size,
+        0, 0, False, program.sample_rate_hz, 2,
+    )
+
+    class Recorder:
+        def start(self):
+            pass
+
+        def finish(self, **kwargs):
+            return recording
+
+        def abort(self):
+            pass
+
+    capture = WiredStimulusCapture(
+        WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
+        bundle, recorder_factory=lambda *_: Recorder(),
+    )
+    async def bank(take_id, *, setup=None, scope="room_tune", candidate="", retain_program=True):
+        async def play():
+            pass
+        configured = replace(capture, setup_reference=lambda: setup)
+        records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured)
+        await configured.around(play, program=program)
+        answer = configured.take_answer()
+        if not retain_program:
+            answer = replace(answer, program=None)
+        return await records.bank_answer({
+            "kind": "candidate" if candidate else "baseline", "take_id": take_id,
+            "measurement_status": "captured", "incident": "", "phase": "measurement",
+            "graph_scope": scope, "candidate_id": candidate, "graph_fingerprint": "a" * 16,
+            "level_db": -20, "stimulus_dbfs": -14, "position_deg": 0,
+        }, answer)
+
+    return bundle, calibration_root, program, bank
+
+
+def test_frequency_replays_recorded_program_and_calibration_without_changing_level(summed_capture_bundle, tmp_path):
+    bundle, calibration_root, program, bank = summed_capture_bundle
+    first = asyncio.run(bank("baseline"))
+    asyncio.run(bank("bass", scope="bass_candidate", candidate="bass-6db", setup={
+        "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
+    }))
+    before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
+    record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
+    assert ExcitationProgram.from_dict(record["program"]).program_id == program.program_id
+    destination = tmp_path / "frequency.json"
+    assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == EXIT_UNREADABLE
+    assert round_views_main([
+        "frequency", str(bundle), "--analyze-wavs", "--calibration-root", str(calibration_root),
+        "--out", str(destination),
+    ]) == 0
+    view = json.loads(destination.read_text())
+    baseline, bass = view["runs"][0]["series"]
+    assert baseline["candidate_id"] == ""
+    assert bass["candidate_id"] == "bass-6db"
+    assert [s["graph_scope"] for s in (baseline, bass)] == ["room_tune", "bass_candidate"]
+    assert [s["level_db"] for s in (baseline, bass)] == [-20, -20]
+    assert [s["stimulus_dbfs"] for s in (baseline, bass)] == [-14, -14]
+    assert bass["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
+    assert 20 <= min(baseline["freqs_hz"]) <= 22
+    frequencies = np.array(baseline["freqs_hz"])
+    band = (frequencies >= 40) & (frequencies <= 18000)
+    assert np.array(baseline["magnitude_db"])[band] == pytest.approx(20 * np.log10(0.4) - 20, abs=0.3)
+    assert np.array(bass["magnitude_db"]) - np.array(baseline["magnitude_db"]) == pytest.approx(2, abs=0.001)
+    assert before == {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("scope,retain_program,code", [
+    ("drivers", True, "measurement_analysis_program_unsupported"),
+    ("room_tune", False, "measurement_program_manifest_missing"),
+])
+def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, scope, retain_program, code):
+    bundle, _, _, bank = summed_capture_bundle
+    asyncio.run(bank("take", scope=scope, retain_program=retain_program))
+    with pytest.raises(MeasurementAnalysisRefused) as caught:
+        analyze_measurement_bundle(bundle)
+    assert caught.value.code == code

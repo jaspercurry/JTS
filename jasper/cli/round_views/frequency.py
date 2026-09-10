@@ -15,6 +15,7 @@ import argparse
 import json
 from pathlib import Path
 
+from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreError
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.frequency_plot import render_frequency_view
@@ -52,9 +53,15 @@ def _frequency_default_out(source: Path) -> Path:
     return source / name
 
 
-def _frequency_source(path: Path):
+def _frequency_source(path: Path, *, analyze_wavs: bool = False, calibration_root: Path | None = None):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
+    if analyze_wavs:
+        from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle  # lazy: laptop FFT analysis
+        try:
+            return analyze_measurement_bundle(path, calibration_root=calibration_root)
+        except CommissioningEvidenceStoreError as exc:
+            raise MeasurementAnalysisRefused(exc.code.value) from exc
     if path.is_file():
         document = json.loads(path.read_text())
         if not isinstance(document, dict):
@@ -104,10 +111,12 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     source_a = Path(args.source_a)
     # Resolving a source IS this verb's load stage, "that document holds no
     # curves" included: the fix is to name a different source.
-    run_a = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a)
+    run_a = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a,
+                  analyze_wavs=args.analyze_wavs, calibration_root=args.calibration_root)
     run_b = (
         stage(
-            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b)
+            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b),
+            analyze_wavs=args.analyze_wavs, calibration_root=args.calibration_root,
         )
         if args.source_b
         else None
@@ -148,6 +157,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "source_b", nargs="?", metavar="<source-b>",
         help="optional banked round, session bundle, or JSON document for B",
     )
+    frequency.add_argument("--analyze-wavs", action="store_true", help="analyze captured Room/bass WAVs on this computer (laptop recommended)")
+    frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs")
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
     add_image_args(frequency)
     frequency.set_defaults(func=_cmd_frequency)

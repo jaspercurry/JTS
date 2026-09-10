@@ -686,6 +686,7 @@ class WiredCaptureAnswer:
     capture_integrity: Mapping[str, Any] | None = None
     wav_path: str = ""
     wav_sha256: str = ""
+    program: Mapping[str, Any] | None = None
 
 
 def setup_from_hint(hint: Any) -> Mapping[str, Any] | None:

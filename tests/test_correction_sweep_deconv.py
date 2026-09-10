@@ -377,3 +377,21 @@ def test_magnitude_response_basic_shape():
 )
 def test_next_power_of_two(value: int, expected: int) -> None:
     assert deconv._next_power_of_two(value) == expected
+
+
+@pytest.mark.parametrize("silent", [False, True])
+def test_deconv_does_not_amplify_unexcited_noise(silent):
+    stimulus, _ = sweep.synchronized_swept_sine(
+        f1=500, f2=2000, duration_approx_s=1, sample_rate=48000,
+    )
+    if silent:
+        stimulus[:] = 0
+    captured = np.pad(stimulus * 0.04, (800, 1000))
+    captured += np.random.default_rng(9).normal(0, 1e-7, captured.size)
+    recovered = deconv.regularized_deconvolution_full(captured, stimulus, 48000)
+    assert np.all(np.isfinite(recovered))
+    frequencies = np.fft.rfftfreq(recovered.size, 1 / 48000)
+    spectrum = np.abs(np.fft.rfft(recovered))
+    assert np.max(spectrum[frequencies >= 5000]) < 0.001
+    if silent:
+        assert np.count_nonzero(recovered) == 0
