@@ -85,6 +85,7 @@ def test_graph_forms_delta_and_preserves_non_owner_channels() -> None:
     assert [step["type"] for step in graph.pipeline] == [
         "Mixer", "Filter", "Mixer", "Filter", "Processor", "Processor", "Mixer"
     ]
+    assert graph.filters["bass_ext_dynamic_loudness"]["parameters"]["fader"] == "Aux1"
     form = graph.mixers["bass_ext_dynamic_form_delta"]
     assert form["channels"] == {"in": 6, "out": 8}
     assert form["mapping"][4]["sources"] == [

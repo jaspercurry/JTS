@@ -72,7 +72,7 @@ def build_native_dynamic_bass_graph(
         f"{PREFIX}_loudness": {
             "type": "Loudness",
             "parameters": {
-                "fader": "Main",
+                "fader": "Aux1",
                 "reference_level": descriptor.reference_level_db,
                 "high_boost": 0.0,
                 "low_boost": descriptor.low_boost_db,

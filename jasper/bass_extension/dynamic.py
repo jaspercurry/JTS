@@ -116,10 +116,10 @@ def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
     }
 
 
-def loudness_boost_db(main_volume_db: float, descriptor: DynamicBassDescriptor) -> float:
+def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescriptor) -> float:
     """CamillaDSP v4.1.3's exact 20 dB Loudness interpolation law."""
 
-    level = _finite(main_volume_db, "main_volume_db")
+    level = _finite(canonical_volume_db, "canonical_volume_db")
     fraction = max(0.0, min(1.0, (descriptor.reference_level_db - level) / 20.0))
     return descriptor.low_boost_db * fraction
 
@@ -127,7 +127,7 @@ def loudness_boost_db(main_volume_db: float, descriptor: DynamicBassDescriptor) 
 def maximum_output_gain_db(
     main_volume_db: float, descriptor: DynamicBassDescriptor
 ) -> float:
-    """Bound dry plus any compressed delta, relative to unattenuated input."""
+    """Bound output when Main and the canonical Aux loudness level are equal."""
 
     level = _finite(main_volume_db, "main_volume_db")
     return level + loudness_boost_db(level, descriptor)
