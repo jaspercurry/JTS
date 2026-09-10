@@ -589,7 +589,7 @@ def check_room_correction_authority() -> CheckResult:
 
     Ruling S10 and ADR-0019: only the ABSENT denial lets the run proceed and
     bank nothing (`ok`, the disclosure this line exists for); every other
-    denial stops room correction outright, so it warns. Never FAIL (ADR-0196).
+    denial stops room correction outright, so it warns. Never FAIL.
     """
 
     from ...active_speaker._common import ROOM_AUTHORITY_RECEIPT_ABSENT
@@ -621,10 +621,10 @@ def check_room_correction_authority() -> CheckResult:
     detail = str(acoustic.get("detail") or "")
     cause = str(acoustic.get("cause") or "")
     if denial == ROOM_AUTHORITY_RECEIPT_ABSENT:
-        # The state every uncommissioned speaker is in, hence `ok`. ABSENT is
-        # also the module's catch-all default, so it covers a receipt that
-        # VANISHED under a verified lifecycle; forwarding `cause` keeps that
-        # sub-state visible without turning it into a nag.
+        # The state every uncommissioned speaker is in, hence `ok`. It is
+        # also the only denial the receipt authority itself emits: the
+        # applied automatic profile names no measured-candidate fingerprint.
+        # See ADR-0286.
         return CheckResult(
             label, "ok",
             f"room correction runs unbanked ({denial})"

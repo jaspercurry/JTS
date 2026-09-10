@@ -55,9 +55,6 @@ _RECEIPT_DETAIL_DEFAULT = (
     "as verified. Re-apply the crossover from the crossover review screen, or "
     "apply the current crossover as a manual profile."
 )
-_RECEIPT_DETAIL = {
-    ROOM_AUTHORITY_RECEIPT_ABSENT: _RECEIPT_DETAIL_DEFAULT,
-}
 
 _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
@@ -117,22 +114,6 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _receipt_denial(reason: str, cause: str) -> dict[str, Any]:
-    """One un-vouched room-authority answer, disclosed and never enforced.
-
-    Ruling S10: an unproven fact is a WARNING, not a stop. ``cause`` rides the
-    answer so the file or errno behind it reaches the operator. The four
-    denial classes stay distinguishable — see ADR-0196.
-    """
-    return {
-        "allowed": False,
-        "authority": "automatic_verified_receipt",
-        "reason": reason,
-        "cause": cause,
-        "receipt_fingerprint": None,
-    }
-
-
 def _v2_apply_room_authority(
     applied_profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -158,10 +139,13 @@ def _v2_apply_room_authority(
         _mapping(applied_profile).get("source")
     )
     if not fingerprint:
-        return _receipt_denial(
-            ROOM_AUTHORITY_RECEIPT_ABSENT,
-            "the applied automatic crossover names no measured candidate",
-        )
+        return {
+            "allowed": False,
+            "authority": "automatic_verified_receipt",
+            "reason": ROOM_AUTHORITY_RECEIPT_ABSENT,
+            "cause": "the applied automatic crossover names no measured candidate",
+            "receipt_fingerprint": None,
+        }
     return {
         "allowed": True,
         "authority": "automatic_verified_receipt",
@@ -307,7 +291,7 @@ def _acoustic_commissioning_status(
             if tuning_owner == "automatic"
             else ROOM_AUTHORITY_RECEIPT_ABSENT
         )
-        detail = _RECEIPT_DETAIL.get(reason, _RECEIPT_DETAIL_DEFAULT)
+        detail = _RECEIPT_DETAIL_DEFAULT
 
     allowed = reason is None
     return {
@@ -325,8 +309,8 @@ def _acoustic_commissioning_status(
         "status": "ready" if allowed else "incomplete",
         "allowed": allowed,
         "reason": reason,
-        # The reader's own structured cause — a store code, or an exception
-        # class with its errno and path. See ADR-0196.
+        # Only denial today: the applied automatic profile names no
+        # measured-candidate fingerprint. See ADR-0286.
         "cause": str(receipt_authority.get("cause") or "") if reason else "",
         "detail": detail,
         "setup_href": setup_href,

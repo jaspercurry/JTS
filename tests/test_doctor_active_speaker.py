@@ -704,20 +704,6 @@ def test_active_speaker_startup_hold_verdicts(
             "ok", active_speaker.REASON_ROOM_AUTHORITY_UNBANKED,
             id="never_minted_is_the_state_most_speakers_are_in",
         ),
-        # ABSENT is also the module's catch-all default, so a store code under a
-        # verified lifecycle (a receipt that VANISHED) arrives here too; it stays
-        # ok rather than turning the fleet's normal state into a nag (ADR-0196).
-        pytest.param(
-            {
-                "required": True,
-                "allowed": False,
-                "authority": None,
-                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
-                "cause": "missing",
-                "detail": "finish commissioning when convenient",
-            },
-            "ok", active_speaker.REASON_ROOM_AUTHORITY_UNBANKED, id="vanished_receipt",
-        ),
         pytest.param(
             {
                 "required": True,

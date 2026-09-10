@@ -1184,12 +1184,30 @@ def _applied_automatic_room_status(
 
 
 @pytest.mark.parametrize(
-    "journey_write",
+    "journey_write, expected_state_after_write",
     [
-        pytest.param(lambda _v2: None, id="apply_only"),
-        pytest.param(_new_session_first_persist, id="new_session_first_persist"),
-        pytest.param(_republish_door, id="republish"),
-        pytest.param(_start_over, id="start_over"),
+        pytest.param(
+            lambda _v2: None,
+            {"applied": True, "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT}},
+            id="apply_only",
+        ),
+        pytest.param(
+            _new_session_first_persist,
+            {"applied": False, "candidate": None},
+            id="new_session_first_persist",
+        ),
+        pytest.param(
+            _republish_door,
+            {"applied": False, "candidate": {"fingerprint": "1" * 64}},
+            id="republish",
+        ),
+        pytest.param(
+            _start_over,
+            # reset_v2_journey_state preserves `applied` when a candidate was
+            # already applied — only `candidate` clears (its own docstring).
+            {"applied": True, "candidate": None},
+            id="start_over",
+        ),
     ],
 )
 def test_room_authority_survives_every_later_v2_journey_write(
@@ -1197,17 +1215,25 @@ def test_room_authority_survives_every_later_v2_journey_write(
     tmp_path: Path,
     v2_journey: Any,
     journey_write: Callable[[Any], None],
+    expected_state_after_write: dict[str, Any],
 ) -> None:
     """The grant reads what is PLAYING, not the per-session journey document.
 
     ``handle_v2_apply`` is the only door onto an automatic crossover, so the
     applied profile's ``source.measured_candidate_fingerprint`` is the
-    authority. The durable v2 state is not: three ordinary writes clear its
-    ``applied``/``candidate`` fields while the same graph keeps playing, and a
-    gate reading it would revoke room correction mid-listen on every one.
+    authority. The durable v2 state is not: every later write moves its
+    ``applied``/``candidate`` fields off what apply recorded while the same
+    graph keeps playing, and a gate reading it would revoke room correction
+    mid-listen on every one.
     """
     _v2_apply(v2_journey)
     journey_write(v2_journey)
+
+    # Confirm the write actually moved the journey state as documented —
+    # otherwise a no-op write would let this guard pass for the wrong reason.
+    state = v2_journey.load_v2_state()
+    assert state["applied"] == expected_state_after_write["applied"]
+    assert state.get("candidate") == expected_state_after_write["candidate"]
 
     status = _applied_automatic_room_status(
         monkeypatch, tmp_path,
@@ -1230,8 +1256,8 @@ def test_room_authority_is_absent_when_no_measured_candidate_was_applied(
     tmp_path: Path,
     v2_journey: Any,
 ) -> None:
-    """An automatic profile can also be the product of a guided level match,
-    which no ``handle_v2_apply`` composed. It names no measured candidate, so
+    """An automatic profile can also be a legacy pre-#1499 record, saved
+    before fingerprint tracking existed. It names no measured candidate, so
     nothing may be banked — even with an applied v2 journey on the box.
     """
     _v2_apply(v2_journey)
