@@ -14,14 +14,21 @@ import subprocess
 import time
 from typing import Any, Mapping, Sequence
 
+# Unit names spelled ≥3 times across jasper/ product code (register.md §3).
+# Import these instead of re-spelling the literal.
+JASPER_VOICE_SERVICE = "jasper-voice.service"
+OUTPUTD_SERVICE = "jasper-outputd.service"
+FANIN_SERVICE = "jasper-fanin.service"
+LIBRESPOT_SERVICE = "librespot.service"
+
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
 # renders, under "JTS".
 JASPER_SERVICE_GROUPS = {
     "jasper-aec-bridge.service": "Mic",
-    "jasper-voice.service": "Voice",
+    JASPER_VOICE_SERVICE: "Voice",
     "jasper-camilla.service": "Audio",
-    "jasper-fanin.service": "Audio",
-    "jasper-outputd.service": "Audio",
+    FANIN_SERVICE: "Audio",
+    OUTPUTD_SERVICE: "Audio",
     "jasper-mux.service": "Audio",
     "jasper-usbgadget.service": "Audio",
     "jasper-usbsink.service": "Audio",
@@ -36,7 +43,7 @@ JASPER_SERVICE_GROUPS = {
 
 EXTRA_SERVICE_GROUPS = {
     "shairport-sync.service": "Audio",
-    "librespot.service": "Audio",
+    LIBRESPOT_SERVICE: "Audio",
     "bluealsa.service": "Audio",
     "bluealsa-aplay.service": "Audio",
     "nqptp.service": "Audio",

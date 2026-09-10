@@ -84,11 +84,12 @@ from jasper.fanin.ring_readiness import (
     ring_endpoint_anchor_converged,
 )
 from jasper.logging_setup import configure_logging
+from jasper.service_units import FANIN_SERVICE, OUTPUTD_SERVICE
 
 logger = logging.getLogger(__name__)
 
-FANIN_UNIT = "jasper-fanin.service"
-OUTPUTD_UNIT = "jasper-outputd.service"
+FANIN_UNIT = FANIN_SERVICE
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = "jasper-camilla.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
 # actions into outputd.env. It is the single writer of

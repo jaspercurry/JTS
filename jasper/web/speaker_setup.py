@@ -55,13 +55,18 @@ from ._common import (
 )
 from .chrome import canonical_banner, canonical_header, canonical_page
 from ._service_state import unit_active as _unit_active
+from ..service_units import (
+    FANIN_SERVICE,
+    JASPER_VOICE_SERVICE,
+    LIBRESPOT_SERVICE,
+)
 
 logger = logging.getLogger(__name__)
 
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 
 RESTART_UNITS = [
-    "jasper-voice.service",
+    JASPER_VOICE_SERVICE,
     "jasper-control.service",
     "jasper-mux.service",
 ]
@@ -70,7 +75,7 @@ RESTART_UNITS = [
 # `restart` starts an inactive unit even when it is disabled, so rename must
 # use systemd's active-only `try-restart` for this set.
 SOURCE_TRY_RESTART_UNITS = [
-    "librespot.service",
+    LIBRESPOT_SERVICE,
     "shairport-sync.service",
     "bluealsa.service",
     "bluealsa-aplay.service",
@@ -256,7 +261,7 @@ def _refresh_gadget_consumers_after_rebuild(name_changed: bool) -> bool:
     # outcome is best-effort, like the bluetooth/source restarts in
     # _apply_name, and does not change this function's own return.
     _restart_units(
-        ["jasper-fanin.service"],
+        [FANIN_SERVICE],
         verb="try-restart",
         no_block=False,
         timeout=_BLOCKING_RESTART_TIMEOUT_SEC,

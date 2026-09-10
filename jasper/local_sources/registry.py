@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..music_sources import Source
+from ..service_units import LIBRESPOT_SERVICE
 
 
 @dataclass(frozen=True)
@@ -74,12 +75,12 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     LocalSourceLifecycle(
         source=Source.SPOTIFY,
         default_enabled=True,
-        intent_unit="librespot.service",
-        runtime_units=("librespot.service",),
-        health_units=("librespot.service",),
-        park_units=("librespot.service",),
-        advertise_units=("librespot.service",),
-        audio_refresh_units=("librespot.service",),
+        intent_unit=LIBRESPOT_SERVICE,
+        runtime_units=(LIBRESPOT_SERVICE,),
+        health_units=(LIBRESPOT_SERVICE,),
+        park_units=(LIBRESPOT_SERVICE,),
+        advertise_units=(LIBRESPOT_SERVICE,),
+        audio_refresh_units=(LIBRESPOT_SERVICE,),
     ),
     LocalSourceLifecycle(
         source=Source.BLUETOOTH,

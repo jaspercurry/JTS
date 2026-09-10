@@ -76,6 +76,7 @@ from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.logging_setup import configure_logging
+from jasper.service_units import OUTPUTD_SERVICE, JASPER_VOICE_SERVICE
 
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")
@@ -129,10 +130,10 @@ ADAPTATION_CHUNKS = 60
 # sooner) and, failing that, continuous-noise adaptation.
 CHIRP_BUDGET_SECONDS = 85.0
 STOP_UNITS = (
-    "jasper-voice.service",
+    JASPER_VOICE_SERVICE,
     "jasper-aec-bridge.service",
     "jasper-aec-init.service",
-    "jasper-outputd.service",
+    OUTPUTD_SERVICE,
 )
 
 
@@ -747,7 +748,7 @@ class SystemIO:
         return dev
 
     def start_outputd(self) -> None:
-        _run(("systemctl", "start", "jasper-outputd.service"))
+        _run(("systemctl", "start", OUTPUTD_SERVICE))
 
     def queue(self, hardware: Hardware) -> QueueWindow:
         status, samples = aec_init.collect_reference_queue(

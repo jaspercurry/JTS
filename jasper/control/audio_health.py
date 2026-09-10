@@ -34,7 +34,12 @@ from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
     FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
 )
-from ..service_units import unit_failed, unit_not_running
+from ..service_units import (
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+    unit_failed,
+    unit_not_running,
+)
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..source_intent import read_source_intents
@@ -201,9 +206,9 @@ _MONITOR_ERRORS = (
 # key stem each one reports under (the stems `_likely_area` already classifies).
 # Public: `jasper.control.heal_supervisor` stands down when one is not active.
 RESTART_WATCH_UNITS = {
-    "jasper-fanin.service": "path.fanin",
+    FANIN_SERVICE: "path.fanin",
     CAMILLA_UNIT_FULL: "path.camilla",
-    "jasper-outputd.service": "path.outputd",
+    OUTPUTD_SERVICE: "path.outputd",
 }
 
 _LABEL_TO_SOURCE = {

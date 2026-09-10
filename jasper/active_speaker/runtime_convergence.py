@@ -32,8 +32,9 @@ from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
 )
+from jasper.service_units import OUTPUTD_SERVICE
 
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 
 
 @dataclass(frozen=True)
