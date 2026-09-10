@@ -816,3 +816,33 @@ def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle
     assert round_views_main([
         "frequency", str(bundle), "--analyze-wavs", "--out", str(tmp_path / "refused.json"),
     ]) == EXIT_UNREADABLE
+
+
+@pytest.mark.parametrize('summed_capture_bundle', [20000, 200], indirect=True)
+def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
+    summed_capture_bundle, tmp_path,
+):
+    bundle, calibration_root, program, bank = summed_capture_bundle
+    asyncio.run(bank('baseline'))
+    asyncio.run(bank('repeat'))
+    before = {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
+    destination = tmp_path / 'bass.json'
+    assert round_views_main([
+        'bass', str(bundle), '--calibration-root', str(calibration_root), '--out', str(destination),
+    ]) == 0
+    view = json.loads(destination.read_text())
+    first, repeat = view['takes']
+    assert first['program_id'] == program.program_id
+    assert first['record']['take_id'] == 'baseline'
+    assert repeat['record']['take_id'] == 'repeat'
+    assert first['fundamental_db'] == repeat['fundamental_db']
+    assert first['actual_dsp_drive'] is None
+    frequencies = np.array(first['freqs_hz'])
+    assert frequencies.max() > 190
+    assert np.array(first['fundamental_qualified'])[frequencies > 125].any()
+    for order, harmonic in first['harmonics'].items():
+        beyond = np.array(harmonic['freqs_hz']) > program.segment('sweep_verify').f2_hz / int(order)
+        assert not np.array(harmonic['qualified'])[beyond].any()
+        assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
+        assert harmonic['received_db_spl'] is None
+    assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}

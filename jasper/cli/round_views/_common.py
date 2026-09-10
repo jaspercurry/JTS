@@ -107,6 +107,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "windows": ViewArtifact("window_view.json", (TAKES_THIS_ROUND, "--capture-id", "<take-id>")),
     "frequency": ViewArtifact("frequency_view.json"),
+    "bass": ViewArtifact("bass_view.json"),
     "delay-landscape": ViewArtifact("delay_landscape.json", TAKES_BUNDLE_AND_FC),
     "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
