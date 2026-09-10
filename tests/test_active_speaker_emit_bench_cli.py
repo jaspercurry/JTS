@@ -65,7 +65,7 @@ def _args(tmp_path: Path, *extra: str, fits: object | None = None) -> list[str]:
     ]
 
 
-def test_dry_run_emits_and_derives_both_arms_but_renders_nothing(
+def test_dry_run_emits_and_derives_both_candidates_but_renders_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``--dry-run`` is a preflight, not an echo of the arguments.
@@ -79,7 +79,7 @@ def test_dry_run_emits_and_derives_both_arms_but_renders_nothing(
     assert rc == 0
     assert "tweeter: 1 filter(s) Lowshelf@8400Hz/-11.0dB" in out
     assert "analysis band:" in out
-    assert "derived both arms:" in out
+    assert "derived both candidates:" in out
     assert "no binary resolved, nothing rendered" in out
 
     bundle = tmp_path / "bundle"
@@ -242,10 +242,10 @@ def test_a_filesystem_failure_in_the_render_path_exits_2_not_1(
 
     #2020 measured this end to end: a directory at the declared destination
     made ``render_config``'s ``unlink`` raise a bare ``PermissionError`` that
-    escaped ``_render_arm``, ``run_emit_loop``, and this CLI's refusal handler,
+    escaped ``_render_candidate``, ``run_emit_loop``, and this CLI's refusal handler,
     landing at exit 1 — "at least one graded branch did not match". Nothing had
     been rendered. ``render.py`` now converts ``OSError`` at the source, so
-    ``_render_arm``'s existing ``except RenderError`` refuses as
+    ``_render_candidate``'s existing ``except RenderError`` refuses as
     ``EmitLoopError`` and this CLI maps it to REFUSED / exit 2.
 
     This is the only case here that runs the real render path rather than

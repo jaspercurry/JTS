@@ -21,16 +21,16 @@ The run, in order
    linearization under test, once carrying none. Everything else is identical,
    so the two configs differ only in the filters being graded.
 2. Generate one stimulus: silence, a synchronized swept sine, silence. Written
-   once and captured by both arms, so the excitation cancels out of the A/B
+   once and captured by both candidates, so the excitation cancels out of the A/B
    along with everything else the two configs share.
 3. Derive both into offline-renderable configs and refuse on any admission
    failure before a render starts.
 4. Render each through the pinned binary with a determinism receipt — the A/B
    difference is only a measurement if each render is reproducible, and that is
    an assumption worth proving rather than assuming.
-5. Per branch: extract its channel from each arm's interleaved output, bound the
+5. Per branch: extract its channel from each candidate's interleaved output, bound the
    always-on soft clip's contribution, deconvolve both against one window taken
-   from the control arm, and grade the difference against the fit's own claim.
+   from the control candidate, and grade the difference against the fit's own claim.
 
 :func:`plan_emit_loop` is steps 1 and 3 on their own — everything reachable
 without a binary — so the CLI's ``--dry-run`` proves the same emit and
@@ -159,12 +159,12 @@ STIMULUS_SWEEP_SECONDS: float = 10.0
 #: The deconvolution caps its FFT input at
 #: :data:`jasper.audio_measurement.deconv.DEFAULT_MAX_CAPTURE_SECONDS` to bound
 #: the working set on a 1 GB Pi, and past that cap it TRUNCATES — with a
-#: warning, but it still returns a curve. A truncated arm would be graded as a
+#: warning, but it still returns a curve. A truncated candidate would be graded as a
 #: measurement, so this refuses instead. The default stimulus sits at about
 #: 11.3 s, a third of the way to the bound.
 MAX_STIMULUS_SECONDS: float = DEFAULT_MAX_CAPTURE_SECONDS
 
-#: Equal fader gain, dB, in both arms cancels from their measured difference.
+#: Equal fader gain, dB, in both candidates cancels from their measured difference.
 RENDER_FADER_DB: float = 0.0
 
 #: Process-local bounds for each render.
@@ -182,12 +182,12 @@ DEFAULT_RENDER_BOUNDS = RenderBounds(
     nice=10,
 )
 
-#: Determinism PAIRS a run performs — two arms, each rendered twice.
+#: Determinism PAIRS a run performs — two candidates, each rendered twice.
 #:
 #: The free-space guard is sized in pairs, not renders, because
 #: :func:`~jasper.active_speaker.bench.render.estimate_render_bytes` already
 #: carries a x2 for exactly one such pair being on disk at once. 2 pairs x 2 =
-#: the four ``.raw`` files a completed run retains (both arms' first render AND
+#: the four ``.raw`` files a completed run retains (both candidates' first render AND
 #: both repeats, all four kept as evidence — the repeats' SHA-256 is what the
 #: determinism receipt asserts against, so a reviewer can re-verify it).
 RENDER_PAIRS_PER_RUN: int = 2
@@ -198,8 +198,8 @@ class EmitLoopError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class RenderArm:
-    """One arm of the A/B: its config text, its derivation, and its render."""
+class RenderCandidate:
+    """One candidate of the A/B: its config text, its derivation, and its render."""
 
     name: str
     config_path: Path
@@ -260,8 +260,8 @@ class EmitLoopReport:
     """
 
     branches: tuple[BranchComparison, ...]
-    treated: RenderArm
-    control: RenderArm
+    treated: RenderCandidate
+    control: RenderCandidate
     binary: dict[str, Any]
     stimulus: dict[str, Any]
     expected_offset_db: float
@@ -404,8 +404,8 @@ def _derive(
             processing_precision=DEPLOYED_PROCESSING_PRECISION,
         )
     except EmitDerivationError as exc:
-        log_event(logger, "emit_loop.refused", arm=name, stage="derive", reason=str(exc))
-        raise EmitLoopError(f"{name} arm could not be derived: {exc}") from exc
+        log_event(logger, "emit_loop.refused", candidate=name, stage="derive", reason=str(exc))
+        raise EmitLoopError(f"{name} candidate could not be derived: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -413,7 +413,7 @@ class EmitLoopPlan:
     """Everything a run needs, built and proved WITHOUT rendering anything.
 
     The shared front half of :func:`run_emit_loop` and the CLI's ``--dry-run``.
-    Both arms are emitted through the real emitter and derived through the real
+    Both candidates are emitted through the real emitter and derived through the real
     derivation, and both derived configs are written to ``work_dir`` — so every
     refusal that does not require a binary (an emitter validation refusal, a
     stage outside the offline allowlist, a hard-clip limiter, a stimulus past
@@ -453,7 +453,7 @@ def plan_emit_loop(
     sweep_seconds: float = STIMULUS_SWEEP_SECONDS,
     emit_kwargs: Mapping[str, Any] | None = None,
 ) -> EmitLoopPlan:
-    """Emit both arms, derive both, write both configs. No binary, no render.
+    """Emit both candidates, derive both, write both configs. No binary, no render.
 
     Raises:
       EmitLoopError: on any refusal reachable without a binary.
@@ -463,7 +463,7 @@ def plan_emit_loop(
     if "linearization" in extra:
         raise EmitLoopError(
             "emit_kwargs must not carry 'linearization' — the loop sets it per "
-            "arm, and a caller-supplied one would make the two arms differ by "
+            "candidate, and a caller-supplied one would make the two candidates differ by "
             "something other than the filters under test"
         )
     work_dir = Path(work_dir)
@@ -491,7 +491,7 @@ def plan_emit_loop(
         raise EmitLoopError(
             f"a {stimulus_seconds:.1f} s stimulus is past the deconvolution's "
             f"{MAX_STIMULUS_SECONDS:.0f} s FFT cap, which truncates rather than "
-            "refuses — a truncated arm would be graded as a measurement. Shorten "
+            "refuses — a truncated candidate would be graded as a measurement. Shorten "
             "the sweep."
         )
 
@@ -501,7 +501,7 @@ def plan_emit_loop(
         channels=geometry.capture_channels,
         bits_per_sample=16,
     )
-    arms: dict[str, DerivedRenderConfig] = {}
+    candidates: dict[str, DerivedRenderConfig] = {}
     for name, text in (("control", control_text), ("treated", treated_text)):
         derived = _derive(
             name,
@@ -512,32 +512,32 @@ def plan_emit_loop(
             playback_path=work_dir / f"{name}.raw",
         )
         (work_dir / f"{name}.yml").write_text(derived.yaml_text, encoding="utf-8")
-        arms[name] = derived
+        candidates[name] = derived
 
     return EmitLoopPlan(
         roles=tuple(roles),
         work_dir=work_dir,
-        treated=arms["treated"],
-        control=arms["control"],
+        treated=candidates["treated"],
+        control=candidates["control"],
         geometry=geometry,
         sweep_meta=meta,
         capture_header=capture_header,
         stimulus_path=stimulus_path,
         stimulus_seconds=stimulus_seconds,
         expected_offset_db=(
-            arms["treated"].program_headroom_db - arms["control"].program_headroom_db
+            candidates["treated"].program_headroom_db - candidates["control"].program_headroom_db
         ),
     )
 
 
-def _render_arm(
+def _render_candidate(
     name: str,
     plan: EmitLoopPlan,
     derived: DerivedRenderConfig,
     *,
     binary: BinaryIdentity,
     bounds: RenderBounds,
-) -> RenderArm:
+) -> RenderCandidate:
     """Render the same config twice and retain both files for comparison.
 
     The output destination is part of the config text, so both runs must write
@@ -549,7 +549,7 @@ def _render_arm(
     first_output_path = work_dir / f"{name}.first.raw"
     repeat_output_path = work_dir / f"{name}.repeat.raw"
 
-    # These arm-derived names belong to this loop, so an existing slot is a
+    # These candidate-derived names belong to this loop, so an existing slot is a
     # prior run's output, not another caller's artifact.
     for slot in (first_output_path, repeat_output_path):
         try:
@@ -562,11 +562,11 @@ def _render_arm(
             # match", for a run that never rendered anything. Refusing here
             # keeps it exit 2, "no verdict was reached", which is true.
             log_event(
-                logger, "emit_loop.refused", arm=name, stage="prepare",
+                logger, "emit_loop.refused", candidate=name, stage="prepare",
                 slot=str(slot), reason=str(exc),
             )
             raise EmitLoopError(
-                f"{name} arm's preserved output slot {slot} could not be "
+                f"{name} candidate's preserved output slot {slot} could not be "
                 f"cleared: {exc}"
             ) from exc
 
@@ -581,20 +581,20 @@ def _render_arm(
             fader_db=RENDER_FADER_DB,
         )
     except RenderError as exc:
-        log_event(logger, "emit_loop.refused", arm=name, stage="render", reason=str(exc))
-        raise EmitLoopError(f"{name} arm could not be rendered: {exc}") from exc
+        log_event(logger, "emit_loop.refused", candidate=name, stage="render", reason=str(exc))
+        raise EmitLoopError(f"{name} candidate could not be rendered: {exc}") from exc
 
     first, second = receipt.first, receipt.second
     log_event(
         logger,
         "emit_loop.render",
-        arm=name,
+        candidate=name,
         config_sha256=receipt.config_sha256[:12],
         output_sha256=first.output_sha256[:12],
         deterministic=receipt.deterministic,
         duration_s=round(first.duration_s, 3),
     )
-    return RenderArm(
+    return RenderCandidate(
         name=name,
         config_path=config_path,
         output_path=first_output_path,
@@ -632,7 +632,7 @@ def run_emit_loop(
     emitter validates away or clamps shows up as a disagreement rather than
     disappearing from both sides at once.
 
-    ``emit_kwargs`` are threaded to BOTH arms identically. Anything asymmetric
+    ``emit_kwargs`` are threaded to BOTH candidates identically. Anything asymmetric
     would break the cancellation the whole method rests on, so ``linearization``
     is the one key this function sets itself and it refuses a caller that tries
     to pass it here.
@@ -665,7 +665,7 @@ def run_emit_loop(
     if written_header != plan.capture_header:
         raise EmitLoopError(
             f"the written stimulus header {written_header} is not the one both "
-            f"arms were derived against ({plan.capture_header})"
+            f"candidates were derived against ({plan.capture_header})"
         )
 
     try:
@@ -683,8 +683,8 @@ def run_emit_loop(
     except RenderError as exc:
         raise EmitLoopError(str(exc)) from exc
 
-    control = _render_arm("control", plan, plan.control, binary=binary, bounds=bounds)
-    treated = _render_arm("treated", plan, plan.treated, binary=binary, bounds=bounds)
+    control = _render_candidate("control", plan, plan.control, binary=binary, bounds=bounds)
+    treated = _render_candidate("treated", plan, plan.treated, binary=binary, bounds=bounds)
 
     band_hz = analysis_band_hz(meta)
     branches = tuple(
@@ -741,21 +741,21 @@ def _stimulus_record(
 def _grade_branch(
     role: str,
     *,
-    treated: RenderArm,
-    control: RenderArm,
+    treated: RenderCandidate,
+    control: RenderCandidate,
     sweep: np.ndarray,
     sample_rate: int,
     band_hz: tuple[float, float],
     expected_offset_db: float,
     claimed_filters: Sequence[Mapping[str, Any]],
 ) -> BranchComparison:
-    """One role: extract both arms, bound the soft clip, deconvolve, grade."""
+    """One role: extract both candidates, bound the soft clip, deconvolve, grade."""
 
     control_branch = control.derived.branch(role)
     treated_branch = treated.derived.branch(role)
     if control_branch.channels != treated_branch.channels:
         raise EmitLoopError(
-            f"branch {role!r} sits on different channels in the two arms "
+            f"branch {role!r} sits on different channels in the two candidates "
             f"({control_branch.channels} vs {treated_branch.channels}) — the A/B "
             "would compare two different signals"
         )
@@ -864,7 +864,7 @@ __all__ = [
     "EmitLoopError",
     "EmitLoopPlan",
     "EmitLoopReport",
-    "RenderArm",
+    "RenderCandidate",
     "plan_emit_loop",
     "run_emit_loop",
 ]

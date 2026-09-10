@@ -13,7 +13,7 @@ files under ``--out``.
 It must run on the speaker, because the binary's identity is resolved from the
 running ``jasper-camilla.service`` unit (R5) — there is no ``--binary`` override
 to bypass that, deliberately. On a laptop, ``--dry-run`` emits and derives both
-arms and writes both derived configs without resolving a binary or rendering
+candidates and writes both derived configs without resolving a binary or rendering
 anything: every refusal that does not need a binary (an emitter validation
 refusal, a stage outside the offline allowlist, a hard-clip limiter, a stimulus
 past the FFT cap) surfaces there, on the laptop, instead of on the Pi.
@@ -118,7 +118,7 @@ def _print_derivation(plan: EmitLoopPlan) -> None:
     """What the emit + derive preflight proved, without any binary."""
 
     print(
-        f"derived both arms: capture {plan.geometry.capture_channels}ch @ "
+        f"derived both candidates: capture {plan.geometry.capture_channels}ch @ "
         f"{plan.geometry.sample_rate_hz} Hz -> playback "
         f"{plan.geometry.playback_channels}ch"
     )
@@ -128,7 +128,7 @@ def _print_derivation(plan: EmitLoopPlan) -> None:
             f"limiter {branch.limiter_clip_limit_dbfs:+.2f} dBFS  "
             f"{len(branch.names)} stage(s)"
         )
-    print(f"emitter level move between arms: {plan.expected_offset_db:+.3f} dB")
+    print(f"emitter level move between candidates: {plan.expected_offset_db:+.3f} dB")
     for path in plan.config_paths:
         print(f"  wrote {path}")
     print(f"  stimulus the run will write: {plan.stimulus_path} (not written here)")
@@ -137,7 +137,7 @@ def _print_derivation(plan: EmitLoopPlan) -> None:
 def _print_report(report: EmitLoopReport) -> None:
     print()
     print(f"binary: {report.binary['binary_path']} ({report.binary['version_output']})")
-    print(f"emitter level move between arms: {report.expected_offset_db:+.3f} dB")
+    print(f"emitter level move between candidates: {report.expected_offset_db:+.3f} dB")
     for branch in report.branches:
         valid = branch.valid_band_hz
         span = f"{valid[0]:.0f}–{valid[1]:.0f} Hz" if valid else "no valid bins"
@@ -206,7 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help=(
-            "emit and derive both arms and write both configs, then stop; "
+            "emit and derive both candidates and write both configs, then stop; "
             "resolve no binary and render nothing"
         ),
     )
