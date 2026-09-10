@@ -118,18 +118,6 @@ def test_capture_is_truncated_before_float64_normalization(monkeypatch):
     assert normalized_sizes == [1_000, 100]
 
 
-def test_threshold_env_knob(monkeypatch):
-    # The gate is a deploy-time knob so on-device tuning needs no code change.
-    monkeypatch.setenv("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "0.65")
-    assert alignment._env_threshold() == 0.65
-    monkeypatch.setenv("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "1.5")  # out of range
-    assert alignment._env_threshold() == 0.40
-    monkeypatch.setenv("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "nonsense")
-    assert alignment._env_threshold() == 0.40
-    monkeypatch.delenv("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", raising=False)
-    assert alignment._env_threshold() == 0.40
-
-
 def test_threshold_is_honored():
     rng = np.random.default_rng(4)
     stim = _stimulus(rng)

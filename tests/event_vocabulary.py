@@ -36,7 +36,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "ramp_cancelled",
     "ramp_cap_settling",
     "ramp_clip_abort",
-    "ramp_env_config_invalid",
     "ramp_error",
     "ramp_feed_lost",
     "ramp_locked",
