@@ -46,6 +46,10 @@ POSITION_GATE_TERMINAL_CODES = frozenset({
 POSITION_READY_ENDPOINT = "/sound/speaker/crossover/v2/position-ready"
 
 
+def _prompt_of(screen: dict[str, Any]) -> dict[str, str]:
+    return {name: str(screen.get(name) or "") for name in ("progress", "title", "body")}
+
+
 class PositionGate:
     """Thread-safe capture admission shared by human and external movers.
 
@@ -84,18 +88,25 @@ class PositionGate:
         if not 1 <= config <= batch_size or batch_start + config - 1 != index:
             raise CaptureBeginRefused(POSITION_TARGET_MISSING_CODE, "Invalid pose batch identity.")
         batch = (batch_start, batch_size, target, vertical)
-        prompt = {name: str(screen.get(name) or "") for name in ("progress", "title", "body")}
+
         # What a granted begin is about to record. Configs 2..N of a pose batch
         # are granted without a hold of their own, so this is the only thing
-        # that moves while the microphone stays where it is.
-        granted = {
-            "index": index, "attempt": attempt, "prompt": prompt,
-            "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
-        }
+        # that moves while the microphone stays where it is. Called only where
+        # it is published: the deferred-hold path retries this every 1.5 s.
+        def granted() -> dict[str, Any]:
+            return {
+                "index": index, "attempt": attempt, "prompt": _prompt_of(screen),
+                "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
+            }
+
         now = self._clock()
         with self._lock:
             if key in self._released:
-                self._current = granted
+                # ``_pending`` and ``_current`` are never both set: a reader
+                # pairing a live hold with an executing entry would describe a
+                # state the gate does not hold.
+                if self._pending is None:
+                    self._current = granted()
                 return
             opened = self._opened_at
             waited = 0.0 if opened is None else now - opened
@@ -121,7 +132,7 @@ class PositionGate:
             if self._last == (index - 1, attempt - 1, batch) and self._pending is None:
                 self._released.add(key)
                 self._last = (index, attempt, batch)
-                self._current = granted
+                self._current = granted()
                 return
             if self._pending is None:
                 self._opened_at = now
@@ -129,7 +140,7 @@ class PositionGate:
                 self._pending = {
                     "index": index, "attempt": attempt, "degrees": target,
                     "vertical_deg": vertical, "role": role,
-                    "prompt": prompt,
+                    "prompt": _prompt_of(screen),
                     "hand_released": (
                         screen[POSITION_HAND_RELEASED_KEY] == "true"
                         if POSITION_HAND_RELEASED_KEY in screen else
@@ -155,14 +166,15 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
-    def pending(self) -> dict[str, Any] | None:
-        with self._lock:
-            return deepcopy(self._pending)
+    def published(self) -> dict[str, dict[str, Any] | None]:
+        """The hold awaiting a release and the entry a grant is executing.
 
-    def current(self) -> dict[str, Any] | None:
-        """The entry a grant is executing, cleared when a fresh hold opens."""
+        One acquisition for both: read separately, a runner re-entering its
+        grant between them pairs a stale hold with a fresh executing entry, a
+        state the gate itself never holds.
+        """
         with self._lock:
-            return deepcopy(self._current)
+            return {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}
 
     def note_session_ceiling_expired(self) -> None:
         """Latch the session volume owner's ceiling finding, including after drain."""

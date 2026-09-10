@@ -105,8 +105,9 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
         return None
     # A gated session's live position hold AND the entry its last grant is
     # executing, merged in here rather than pushed into the slot by the gate:
-    # the gate owns both facts and this is a read, so there is one writer and no
-    # window in which the slot advertises a hold the gate has already released.
+    # the gate owns both facts and hands them over under one lock, so there is
+    # one writer and no window in which the slot advertises a hold the gate has
+    # already released or pairs it with an entry already executing.
     #
     # THREE guards keep a hold from outliving its session, and none of them is
     # the envelope: ``_set_capture_slot`` drops ``_capture_position_gate`` as
@@ -118,15 +119,13 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
         gate = _capture_position_gate
     if gate is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES:
         try:
-            pending = gate.pending()
-            current = gate.current()
+            published = gate.published()
         except (OSError, RuntimeError, ValueError):
             logger.warning("could not read the position gate", exc_info=True)
-            pending = current = None
-        if pending:
-            capture["position_pending"] = pending
-        if current:
-            capture["position_current"] = current
+            published = {}
+        for key in ("pending", "current"):
+            if published.get(key):
+                capture[f"position_{key}"] = published[key]
     return capture
 
 

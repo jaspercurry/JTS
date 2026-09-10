@@ -1147,7 +1147,7 @@ def test_the_real_gate_publishes_the_retakes_own_target(monkeypatch):
         """
         asked_at = None
         while not stop.is_set():
-            pending = gate.pending()
+            pending = gate.published()["pending"]
             if pending is None:
                 stop.wait(0.01)
                 continue

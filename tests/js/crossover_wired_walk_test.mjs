@@ -9,8 +9,20 @@
 // then the two holds this panel must NOT serve: one a driver releases, and a
 // capture session, whose phone owns the tap.
 
-import assert from "node:assert/strict";
+import strict from "node:assert/strict";
 import { crossoverMainModule } from "./_dom.mjs";
+
+// The reported count is DERIVED, never typed: a hand-bumped literal drifts from
+// what ran, and the Python bridge only checks it is >= 1.
+let passed = 0;
+const counted = (fn) => (...args) => { const out = fn(...args); passed += 1; return out; };
+const assert = new Proxy(strict, {
+  apply: (target, _this, args) => counted(target)(...args),
+  get: (target, prop) => {
+    const value = Reflect.get(target, prop);
+    return typeof value === "function" ? counted(value.bind(target)) : value;
+  },
+});
 
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
@@ -202,6 +214,26 @@ assert.equal(
 assert.equal(elements.get("crossover-walk-headline").textContent, NEXT_PROMPT.title);
 assert.equal(walkAction().children[0].tag, "button");
 
+// -- a fresh hold beside a STALE executing entry ---------------------------- //
+// The gate never publishes both, so a poll carrying both straddled a release.
+// The hold wins — its own progress line and its own button — and a repeat poll
+// must not re-key that button under a finger already on it.
+const straddled = {
+  status: "awaiting_capture",
+  source: "wired",
+  position_pending: NEXT_PENDING,
+  position_current: batchCurrent(3),
+};
+render(envelope(straddled));
+assert.equal(
+  elements.get("crossover-walk-progress").textContent, NEXT_PROMPT.progress,
+);
+const heldRelease = walkAction().children[0];
+assert.equal(heldRelease.tag, "button");
+assert.equal(heldRelease.textContent, NEXT_PENDING.action.label);
+render(envelope(straddled));
+assert.equal(walkAction().children[0], heldRelease);
+
 // -- state: the SCREEN takes the control back ------------------------------- //
 // The closing screen's Save / Record-again are `show_during_capture` primaries.
 // One primary at a time: the walkthrough stands down rather than competing.
@@ -305,4 +337,4 @@ render(envelope({
 }));
 assertWiredStatus();
 
-console.log(JSON.stringify({ ok: true, passed: 58 }));
+console.log(JSON.stringify({ ok: true, passed }));
