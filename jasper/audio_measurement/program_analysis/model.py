@@ -368,13 +368,14 @@ CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 # SAME commanded step between the lo/hi pilots, so a real wiring fault can
 # only mute or misdirect that step (hardware-measured wiring shapes moved
 # `CHANNEL_MAP_MIN_ISOLATION_DB`'s cross rise by only +/-0.4 dB) -- it cannot
-# invert it by tens of dB. Set at double `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`:
-# comfortably above any hardware-measured wiring effect, comfortably below the
-# 77 dB gap the 2026-08-16 incident measured (+10 dB commanded, -67 dB
-# captured). NOT gated on pilot SNR validity -- the incident's own SNR
-# reading was itself corrupted by the same wrong window, so waiting on it
-# would blind this exact case. PROVISIONAL.
-DELTA_IMPLAUSIBLE_GAP_DB = 2.0 * CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+# invert it by tens of dB. Set at double `CHANNEL_MAP_TARGET_RISE_DB +
+# CHANNEL_MAP_MIN_ISOLATION_DB` (the discriminator's own two hardware-derived
+# margins stacked): comfortably above any hardware-measured wiring effect,
+# comfortably below the 77 dB gap the 2026-08-16 incident measured (+10 dB
+# commanded, -67 dB captured). NOT gated on pilot SNR validity -- the
+# incident's own SNR reading was itself corrupted by the same wrong window,
+# so waiting on it would blind this exact case. PROVISIONAL.
+DELTA_IMPLAUSIBLE_GAP_DB = 2.0 * (CHANNEL_MAP_TARGET_RISE_DB + CHANNEL_MAP_MIN_ISOLATION_DB)
 
 # VERIFY tracking-error smoothing: 1/6-octave (design §5.2).
 VERIFY_TRACKING_SMOOTHING_FRACTION = 6
