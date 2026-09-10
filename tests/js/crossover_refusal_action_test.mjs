@@ -44,11 +44,7 @@ const ids = [
   "crossover-action",
   "crossover-capture",
   "crossover-walk",
-  "crossover-units-imperial",
-  "crossover-units-metric",
   "crossover-walk-progress",
-  "crossover-walk-diagram",
-  "crossover-walk-caption",
   "crossover-walk-headline",
   "crossover-walk-detail",
   "crossover-walk-action",
@@ -86,24 +82,12 @@ globalThis.__postJSON = async () => {
   return { ...baseEnvelope };
 };
 
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
 const { render, runAction, setStatus } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/main.js"),
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
       "getJSON", "postJSON", "jtsConfirm", "renderCloud", "redrawCloudChart",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render", "runAction", "setStatus"],

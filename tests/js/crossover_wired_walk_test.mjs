@@ -26,17 +26,6 @@ globalThis.__postJSON = async (path, body) => {
 };
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
-// #3629: the walk's per-position picture and units toggle. This file pins
-// the release-hold state machine, not the picture/units logic (which has its
-// own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs) -- so these stub through unchanged.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
 
 const { render } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/main.js"),
@@ -44,8 +33,6 @@ const { render } = await loadEsm(
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
       "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
-      "positionDiagram", "positionCaption",
-      "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render"],

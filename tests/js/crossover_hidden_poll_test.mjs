@@ -21,11 +21,6 @@ const ids = [
   "crossover-review-body",
   "crossover-action",
   "crossover-capture",
-  // #3629: the units toggle is wired at module load time (alongside Start
-  // Over / Stop below), unconditionally -- these two must exist even though
-  // this file never exercises renderWalk() itself.
-  "crossover-units-imperial",
-  "crossover-units-metric",
   "crossover-capture-status",
   "crossover-capture-stop",
   "capture-status",
@@ -54,24 +49,11 @@ globalThis.clearTimeout = (id) => {
 globalThis.__getJSON = async () => ({});
 globalThis.__postJSON = async () => ({});
 
-// #3629: the walk's per-position picture and units toggle -- pinned in
-// their own tests/js/crossover_position_diagram_test.mjs and
-// tests/js/crossover_units_test.mjs, so this file stubs them through.
-globalThis.__positionDiagram = () => ({tag: "svg"});
-globalThis.__positionCaption = () => "";
-globalThis.__UNIT_IMPERIAL = "imperial";
-globalThis.__UNIT_METRIC = "metric";
-globalThis.__currentUnits = () => "imperial";
-globalThis.__setUnits = () => {};
-globalThis.__formatDistances = (text) => text;
-
 const { schedulePoll } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/main.js"),
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals(["getJSON", "postJSON",
-      "positionDiagram", "positionCaption", "UNIT_IMPERIAL", "UNIT_METRIC", "currentUnits", "setUnits", "formatDistances",
-    ]),
+    prelude: aliasGlobals(["getJSON", "postJSON"]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["schedulePoll"],
   },
