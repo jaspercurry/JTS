@@ -17,13 +17,12 @@ rule 11).
 The critical regression this file guards against: `--all` silently
 falling back to the changed-files scoping (a copy/paste that reuses the
 diff instead of `git ls-files`, or a future edit that merges the two
-branches carelessly). The smoke test below plants a match OUTSIDE the
-branch diff and asserts `--all` still finds it -- it would fail under
-that regression, because the file would vanish from `--all`'s output
-exactly as it already vanishes from the default scope's.
+branches carelessly). The smoke tests below plant a match OUTSIDE the
+branch diff and assert `--all` still finds it while the default scope
+still misses it -- either direction would fail under that regression.
 
-This is advisory tooling (not wired into any CI lane): the smoke test
-below is the one that would catch the script silently losing its
+This is advisory tooling (not wired into any CI lane): the smoke tests
+below are the ones that would catch the script silently losing its
 scoping distinction, not a full behavioral spec of its output shape.
 
 These tests spawn real `git` and `bash` subprocesses (one script
@@ -110,6 +109,25 @@ def branch_repo(make_repo) -> Path:
         },
         {"changed_with_match.py": "# currently a stub\n"},
     )
+
+
+def test_default_scope_misses_a_match_outside_the_branch_diff(branch_repo, tmp_path):
+    """#2325's regression, in the direction --all does not cover: the
+    default (no-arg) scope must stay confined to the branch's own diff,
+    never picking up untouched_with_match.py from origin/main."""
+    result = _run(branch_repo)
+
+    assert result.returncode == 0, result.stderr
+    assert "changed_with_match.py" in result.stdout
+    assert "untouched_with_match.py" not in result.stdout
+
+    # No commits yet -> no merge base with origin/main -> the pre-existing
+    # graceful skip, not a crash.
+    empty_repo = tmp_path / "empty"
+    empty_repo.mkdir()
+    _git(empty_repo, "init", "-q", "-b", "main")
+    empty_result = _run(empty_repo)
+    assert empty_result.returncode == 0, empty_result.stderr
 
 
 def test_all_mode_catches_a_match_outside_the_branch_diff(branch_repo):
