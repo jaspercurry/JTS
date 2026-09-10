@@ -26,6 +26,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
+from jasper.audio_measurement.evidence_identity import FingerprintedRecord
 from jasper.json_fields import finite_float
 
 MIN_CAPTURE_COUNT = 5
@@ -189,7 +190,7 @@ def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class NullWalkSpec:
+class NullWalkSpec(FingerprintedRecord):
     """A geometry-seeded, single-cycle-safe relative-delay search."""
 
     crossover_fc_hz: float
@@ -253,7 +254,7 @@ class NullWalkSpec:
         return self.steps_each_side
 
     @property
-    def fingerprint(self) -> str:
+    def fingerprint(self) -> str:  # type: ignore[override]
         return _payload_fingerprint(self._core())
 
     def fine_grid_coordinate(self, index: Any) -> float:
@@ -345,9 +346,6 @@ class NullWalkSpec:
             "fine_grid_index_max": self.fine_grid_index_max,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> NullWalkSpec:
         """Strictly reconstruct the bounded schema-v2 spec projection."""
@@ -385,7 +383,7 @@ class NullWalkSpec:
 
 
 @dataclass(frozen=True, init=False)
-class BoundedNullWalkSchedule:
+class BoundedNullWalkSchedule(FingerprintedRecord):
     """Deterministic coarse scan plus explicit local fine-grid refinement.
 
     The schedule describes only which coordinates a host may measure. It does
@@ -504,9 +502,6 @@ class BoundedNullWalkSchedule:
             "refinement_delays_us": list(self.refinement_delays_us),
             "scheduled_delays_us": list(self.scheduled_delays_us),
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(

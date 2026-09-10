@@ -10,7 +10,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from jasper.audio_measurement.evidence_identity import ArtifactIdentity, json_fingerprint
+from jasper.audio_measurement.evidence_identity import (
+    ArtifactIdentity,
+    FingerprintedRecord,
+    json_fingerprint,
+)
 from jasper.audio_measurement.excitation_artifacts import GenerationAdmissionArtifact
 
 GENERATED_EXCITATION_WAV_SCHEMA_VERSION = 1
@@ -25,7 +29,7 @@ def _sha256(value: object, *, field_name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class GeneratedExcitationWav:
+class GeneratedExcitationWav(FingerprintedRecord):
     """Exact persisted WAV identity bound to one generation and plan.
 
     The feature-owned deterministic generator issues this value and persists
@@ -62,9 +66,6 @@ class GeneratedExcitationWav:
             "excitation_plan_fingerprint": self.excitation_plan_fingerprint,
             "artifact": self.artifact.to_dict(),
         }
-
-    def to_dict(self) -> dict[str, object]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: object) -> GeneratedExcitationWav:

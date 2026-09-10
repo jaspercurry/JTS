@@ -33,6 +33,7 @@ from typing import Any, cast
 from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
+    FingerprintedRecord,
     json_fingerprint,
 )
 from jasper.log_event import log_event
@@ -173,7 +174,7 @@ class CommissioningAttemptHandle:
 
 
 @dataclass(frozen=True)
-class CommissioningLiveMutation:
+class CommissioningLiveMutation(FingerprintedRecord):
     """One bounded run-owned execution issuance around a live DSP mutation.
 
     ``issuance_id`` distinguishes retries of the same semantic operation.  The
@@ -384,9 +385,6 @@ class CommissioningLiveMutation:
             "terminal_evidence_fingerprint": self.terminal_evidence_fingerprint,
             "terminal_owner_generation": self.terminal_owner_generation,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> CommissioningLiveMutation:
