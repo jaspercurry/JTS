@@ -656,6 +656,44 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
     assert bool(probed) is (load_state == "loaded")
 
 
+def test_one_unparseable_block_does_not_widen_into_a_roster_wide_none(monkeypatch):
+    """A batched `User` reply the parser cannot split must not cost the OTHER
+    units their user.
+
+    `read_unit_property` answers None for the whole batch when the block count
+    does not match the units asked for, so one unit's malformed block would
+    otherwise make every renderer probe run as the doctor's own user instead of
+    the unit's `User=` — the exact substitution AGENTS.md non-negotiable 5
+    forbids. The per-unit re-read is what keeps the failure to the one unit."""
+    _seed_unit_states(**{
+        unit: {"load_state": "loaded"} for unit in renderers._RENDERER_UNITS
+    })
+    per_unit = {
+        "shairport-sync.service": "shairport-sync",
+        "librespot.service": "pi",
+        "bluealsa-aplay.service": "",  # genuinely root
+    }
+    batched: list[tuple[str, ...]] = []
+
+    def fake_read(prop, units, *, timeout):
+        batched.append(tuple(units))
+        if len(units) > 1:
+            return None  # wrong block count: one unit's reply did not parse
+        return [per_unit[units[0]]]
+
+    monkeypatch.setattr(_evidence, "read_unit_property", fake_read)
+    assert [
+        renderers._systemd_unit_user(unit) for unit in renderers._RENDERER_UNITS
+    ] == [
+        ("shairport-sync", "loaded"),
+        ("pi", "loaded"),
+        (None, "loaded"),
+    ]
+    # The batch stays the fast path: it is attempted once (memoized), and only
+    # its failure costs one call per unit.
+    assert batched.count(renderers._RENDERER_UNITS) == 1
+
+
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     """The exact bug PR #223 fixes: configs look right, services look
     active, but shairport-sync's runtime user can't open the device.

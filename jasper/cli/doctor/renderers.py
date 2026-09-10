@@ -866,10 +866,23 @@ _RENDERER_UNITS = (
 def _renderer_unit_property(prop: str, unit: str) -> Optional[str]:
     """One systemd property for one renderer unit, asked for the whole roster
     at once so ``evidence.unit_property``'s memo answers all three units from
-    a single ``systemctl show`` per property (ADR-0233 rule 4)."""
+    a single ``systemctl show`` per property (ADR-0233 rule 4).
+
+    A batched reply whose block count does not match the roster answers None
+    for EVERY unit, so one unparseable block would otherwise widen into a
+    roster-wide None — and for ``User`` that None makes the renderer probe run
+    as the doctor's own user instead of the unit's ``User=`` (AGENTS.md
+    non-negotiable 5). The per-unit re-read is the narrowing: the batch stays
+    the fast path and only a failed batch costs one call per unit.
+    """
     units = _RENDERER_UNITS if unit in _RENDERER_UNITS else (unit,)
     values = evidence.unit_property(prop, units)
-    return values[units.index(unit)] if values else None
+    if values is not None:
+        return values[units.index(unit)]
+    if units == (unit,):
+        return None
+    values = evidence.unit_property(prop, (unit,))
+    return values[0] if values is not None else None
 
 
 def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
