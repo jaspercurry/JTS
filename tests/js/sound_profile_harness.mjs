@@ -8591,7 +8591,7 @@ async function testInstallationUsesTheExistingDraftSaveAndReload() {
       const body = options.method === 'POST' ? JSON.parse(options.body) : {};
       if (options.method === 'POST') posts.push(body);
       return Promise.resolve(response({status: 'ready_for_review', revision: 1, summary: {},
-        operator_inputs: body.operator_inputs || {}, manual_settings: body.manual_settings,
+        operator_inputs: body.operator_inputs || {}, manual_settings: body.manual_settings || {driver_spacing_mm: 150},
         installation}));
     },
   }));
@@ -8604,6 +8604,9 @@ async function testInstallationUsesTheExistingDraftSaveAndReload() {
   harness.dispatchClick({'data-act': 'save-driver-design'});
   for (let i = 0; i < 5; i++) await harness.flush();
   const saved = posts[0]?.manual_settings?.drivers?.[0]?.installation;
+  if (posts[0]?.manual_settings?.driver_spacing_mm !== 150) {
+    fail('Saving installation inputs must preserve declared driver spacing', {posts});
+  }
   if (JSON.stringify(saved) !== JSON.stringify({amplifier_model: '<TPA3255>', supply_voltage_v: 36, passive_radiator_added_mass_g: 0})) {
     fail('Optional installation inputs must save through the draft, including explicit zero mass', {posts});
   }

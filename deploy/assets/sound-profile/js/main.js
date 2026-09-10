@@ -994,7 +994,7 @@ import {
       return candidate;
     }).filter(Boolean);
     return drivers.length || candidates.length
-      ? {drivers: drivers, crossover_candidates: candidates}
+      ? Object.assign({}, (driverResearch.designDraft || {}).manual_settings, {drivers: drivers, crossover_candidates: candidates})
       : null;
   }
   function applyDriverSafetyToSetting(driver, setting) {
