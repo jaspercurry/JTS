@@ -75,6 +75,7 @@ from jasper.audio_measurement.calibration import (
     parse_calibration_sensitivity,
 )
 from jasper.audio_measurement.ramp import LevelSample, capped_gap_step_db
+from tests._log_events import event_field_maps, event_fields, event_records
 
 # The real header of the household UMIK-2 (serial 810-8494), verbatim, plus two
 # curve rows so the file is a realistic whole.
@@ -1669,13 +1670,9 @@ def test_the_unreachable_refusal_shows_the_level_of_the_signal_it_played(
         )
 
     assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
-    refusal = next(
-        record.getMessage()
-        for record in caplog.records
-        if "event=active_speaker.seat_level_refused" in record.getMessage()
-    )
-    assert "stimulus_rms_dbfs=-33.58" in refusal
-    assert "stimulus_peak_dbfs=-20.00" in refusal
+    fields = event_fields(caplog, "active_speaker.seat_level_refused")
+    assert fields["stimulus_rms_dbfs"] == "-33.58"
+    assert fields["stimulus_peak_dbfs"] == "-20.00"
     # …and the operator reading a terminal gets the same arithmetic in prose.
     assert "-33.6 dBFS RMS" in (result.detail or "")
     assert "13.6 dB crest" in (result.detail or "")
@@ -2600,30 +2597,25 @@ def test_the_per_sample_series_is_one_debug_line_per_window(tmp_path, caplog):
             levels=RUN86_LEVELS,
             target=RUN86_TARGET,
         )
-    lines = [
-        record.getMessage()
-        for record in caplog.records
-        if "event=active_speaker.seat_level_window_samples" in record.getMessage()
-    ]
+    records = event_records(caplog, "active_speaker.seat_level_window_samples")
+    lines = event_field_maps(caplog, "active_speaker.seat_level_window_samples")
 
     # Every window of every reading and not one more: the ambient reading (a
     # still room, so the minimum two) plus each climb reading's own count.
     windows = [step["windows"] for step in result.ramp["steps"]]
     assert windows == [2] * len(windows), "this fixture's levels never move"
     assert len(lines) == 2 + sum(windows)
-    assert sum("window=ambient" in line for line in lines) == 2
-    assert sum("window=-50.00" in line for line in lines) == 2
+    assert sum(line["window"] == "ambient" for line in lines) == 2
+    assert sum(line["window"] == "-50.00" for line in lines) == 2
     # ...and the two windows of one reading are told apart by their attempt.
-    at_start = [line for line in lines if "window=-50.00" in line]
-    assert sorted(
-        int(line.split(" attempt=")[1].split(" ")[0]) for line in at_start
-    ) == [1, 2]
-    assert all("\n" not in line for line in lines)
+    at_start = [line for line in lines if line["window"] == "-50.00"]
+    assert sorted(int(line["attempt"]) for line in at_start) == [1, 2]
+    assert all("\n" not in record.getMessage() for record in records)
     # Each line carries its own samples as offset:level pairs, and the count it
     # claims is the count it printed.
     for line in lines:
-        claimed = int(line.split(" samples=")[1].split(" ")[0])
-        series = line.split('db_spl="')[1].rstrip('"')
+        claimed = int(line["samples"])
+        series = line["db_spl"]
         assert len(series.split(" ")) == claimed
         assert all(":" in pair for pair in series.split(" "))
 
@@ -2636,11 +2628,7 @@ def test_the_series_costs_nothing_when_debug_is_off(tmp_path, caplog):
             levels=RUN86_LEVELS,
             target=RUN86_TARGET,
         )
-    assert not [
-        record
-        for record in caplog.records
-        if "seat_level_window_samples" in record.getMessage()
-    ]
+    assert not event_records(caplog, "active_speaker.seat_level_window_samples")
 
 
 class FloodMic(ScriptedMic):
@@ -3681,23 +3669,19 @@ def test_each_fade_leg_announces_itself_on_one_journal_line(tmp_path, caplog):
         result, _volume, _tone, _mic = _settling_room_pass(tmp_path)
 
     assert result.ramp["ambient_remeasured"] is True
-    lines = [
-        r.getMessage()
-        for r in caplog.records
-        if "event=active_speaker.seat_level_fade " in r.getMessage()
-    ]
+    lines = event_field_maps(caplog, "active_speaker.seat_level_fade")
     assert len(lines) == 2, lines
     down, up = lines
-    assert "direction=down" in down and "direction=up" in up
-    assert f"to_db={slr.FADE_FLOOR_DB:.2f}" in down
-    assert f"from_db={slr.FADE_FLOOR_DB:.2f}" in up
+    assert down["direction"] == "down" and up["direction"] == "up"
+    assert down["to_db"] == f"{slr.FADE_FLOOR_DB:.2f}"
+    assert up["from_db"] == f"{slr.FADE_FLOOR_DB:.2f}"
     # The cost is on the line, so an operator never has to re-derive it, and both
     # legs are the same size -- they are each other's mirror.
     steps = slr.fade_steps(
         from_db=result.ramp["steps"][1]["volume_db"], to_db=slr.FADE_FLOOR_DB
     )
-    assert f"steps={steps}" in down and f"steps={steps}" in up
-    assert f"seconds={steps * slr.FADE_STEP_S:.2f}" in down
+    assert down["steps"] == str(steps) and up["steps"] == str(steps)
+    assert down["seconds"] == f"{steps * slr.FADE_STEP_S:.2f}"
 
 
 def test_the_faded_re_measure_still_returns_the_room_and_not_the_fade(tmp_path):
@@ -3815,13 +3799,8 @@ def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(
     # suite stayed green. An operator greps the journal precisely when the
     # terminal output is gone, so a line that quotes a level the pass was never
     # at sends them to the wrong volume with nothing to contradict it.
-    refusals = [
-        r.getMessage()
-        for r in caplog.records
-        if "event=active_speaker.seat_level_refused " in r.getMessage()
-    ]
-    assert len(refusals) == 1, refusals
-    assert f"at_db={stopped_at:.2f}" in refusals[0], refusals[0]
+    fields = event_fields(caplog, "active_speaker.seat_level_refused")
+    assert fields["at_db"] == f"{stopped_at:.2f}"
 
     # ...and the teardown leaves from there too, so its first act is not to
     # command the room back up toward the climb's number.
@@ -4085,16 +4064,12 @@ def test_the_re_measure_event_carries_the_delta_and_the_rise_it_produced(
             room_db_spl=60.0,
             target=RUN87_TARGET,
         )
-    line = next(
-        record.getMessage()
-        for record in caplog.records
-        if "seat_level_ambient_remeasured" in record.getMessage()
-    )
+    fields = event_fields(caplog, "active_speaker.seat_level_ambient_remeasured")
 
-    assert "remeasured_delta_db=+2.82" in line
+    assert fields["remeasured_delta_db"] == "+2.82"
     # The triggering reading's rise against the new floor is negative, and the
     # line says so rather than making a reader subtract two other fields.
-    assert "rise_after_remeasure_db=-9.79" in line
+    assert fields["rise_after_remeasure_db"] == "-9.79"
     assert [step["rise_db"] for step in higher.ramp["steps"]][0] == pytest.approx(
         -9.79, abs=0.02
     )

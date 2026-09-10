@@ -76,6 +76,7 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 
+from tests._log_events import event_fields, event_records
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_audio_measurement_program_analysis import (
     SR,
@@ -622,7 +623,9 @@ def test_the_read_back_still_refuses_a_mangled_record(caplog):
     """A hand-edited state file must not become half a provenance."""
     with caplog.at_level(logging.WARNING):
         assert alignment_prescription_from_mapping(_arm(-450.0, basis_artifacts=[])) is None
-    assert "alignment_prescription_unreadable" in caplog.text
+    assert event_records(
+        caplog, "correction.crossover_v2_alignment_prescription_unreadable"
+    )
     assert alignment_prescription_from_mapping(None) is None
 
 
@@ -1398,20 +1401,24 @@ def test_a_prescription_that_reaches_no_commitment_says_so_at_warning(caplog):
             tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=2000.0,
             explicit_alignment_delay_us=-450.0,
         )
-    assert "program_analysis.alignment_prescription_not_committed" in caplog.text
-    assert "prescribed_delay_us=-450.0" in caplog.text
+    fields = event_fields(
+        caplog, "program_analysis.alignment_prescription_not_committed"
+    )
+    assert fields["prescribed_delay_us"] == "-450.0"
     # What was committed INSTEAD — the half an operator has to act on, and the
     # half that reads `null` if the line is emitted before the objective
     # resolves (it was, for one review round).
-    assert "committed_delay_us=96.0" in caplog.text
-    assert f"objective={ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND}" in caplog.text
+    assert fields["committed_delay_us"] == "96.0"
+    assert fields["objective"] == str(ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND)
 
     # …and the control: a COMMITTED prescription says nothing, so the line
     # cannot become background noise an operator learns to ignore.
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         _low_snr_candidate_at(-450.0)
-    assert "alignment_prescription_not_committed" not in caplog.text
+    assert not event_records(
+        caplog, "program_analysis.alignment_prescription_not_committed"
+    )
 
 
 def test_the_selection_event_names_the_prescribed_delay(caplog):
@@ -1444,16 +1451,12 @@ def test_the_selection_event_names_the_prescribed_delay(caplog):
                 alignment_delay_bounds_us=(0.0, 1100.0),
                 explicit_alignment_delay_us=prescribed,
             )
-        return caplog.text
+        return event_fields(caplog, "program_analysis.alignment_selection")
 
-    prescribed_text = _emit(-450.0)
-    assert "program_analysis.alignment_selection" in prescribed_text
-    assert "prescribed_delay_us=-450.0" in prescribed_text
+    assert _emit(-450.0)["prescribed_delay_us"] == "-450.0"
 
-    automatic_text = _emit(None)
-    assert "program_analysis.alignment_selection" in automatic_text
     # logfmt renders an absent value as `null`, not `None`.
-    assert "prescribed_delay_us=null" in automatic_text
+    assert _emit(None)["prescribed_delay_us"] == "null"
 
 
 def test_the_selection_event_names_the_prescribed_basin(caplog):
@@ -1490,19 +1493,19 @@ def test_the_selection_event_names_the_prescribed_basin(caplog):
                 explicit_alignment_delay_us=prescribed,
                 explicit_alignment_polarity_sign=polarity_sign,
             )
-        return caplog.text
+        return event_fields(caplog, "program_analysis.alignment_selection")
 
-    assert "prescribed_polarity=null" in _emit(None, None)
-    assert "prescribed_polarity=unpinned" in _emit(-450.0, None)
+    assert _emit(None, None)["prescribed_polarity"] == "null"
+    assert _emit(-450.0, None)["prescribed_polarity"] == "unpinned"
 
     inverted = _emit(-450.0, -1)
-    assert "prescribed_polarity=inverted" in inverted
+    assert inverted["prescribed_polarity"] == "inverted"
     # The pin decided the commitment, and the line says so: the agreement is
     # honestly absent rather than claiming a comparison.
-    assert "polarity=inverted" in inverted
-    assert "polarity_agrees_with_sum=null" in inverted
+    assert inverted["polarity"] == "inverted"
+    assert inverted["polarity_agrees_with_sum"] == "null"
 
-    assert "prescribed_polarity=normal" in _emit(-450.0, 1)
+    assert _emit(-450.0, 1)["prescribed_polarity"] == "normal"
 
 
 def test_both_prescription_objectives_are_registered_in_the_vocabulary():
