@@ -20,8 +20,6 @@ from tests.systemd_unit_helpers import (
     values_for as _values_for,
 )
 
-from ._voice_runtime_text import voice_runtime_text
-
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-outputd.service"
@@ -191,27 +189,22 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
 # table (R22, #4416).
 
 
-def test_voice_daemon_maps_unconfigured_provider_to_ex_config():
-    source = voice_runtime_text()
-    assert "EX_CONFIG_EXIT = 78" in source
-    assert "VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT" in source
-    assert "except VoiceProviderNotConfigured as e:" in source
-    # Emitted via the canonical log_event emitter (renders
-    # `event=voice.unconfigured …` at runtime); the source carries the
-    # bare event name, the `event=` prefix is added by log_event.
-    assert '"voice.unconfigured"' in source
-    assert "sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)" in source
+def test_every_config_fault_parks_on_the_code_the_unit_calls_clean():
+    """The join this file owns. Which exception takes which exit, and what
+    it says on the way out, is pinned end to end by
+    tests/test_voice_input_gate.py; the unit lists 78 as a clean park just
+    above. Only the constants' VALUE ties the two halves together — a
+    daemon that parked on any other code would restart-loop into
+    StartLimitAction=reboot instead."""
+    # lazy: import cost — jasper.voice_daemon pulls numpy/onnx, and every
+    # other test in this file reads unit files only.
+    from jasper.voice_daemon import (
+        VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
+        VOICE_STARTUP_CONFIG_ERROR_EXIT,
+    )
 
-
-def test_voice_daemon_maps_vad_setup_failure_to_ex_config():
-    source = voice_runtime_text()
-    assert "EX_CONFIG_EXIT = 78" in source
-    assert "VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT" in source
-    assert "except SpeechVADSetupError as e:" in source
-    # Emitted via log_event (renders `event=voice.vad_setup_failed …`
-    # at runtime); the source carries the bare event name.
-    assert '"voice.vad_setup_failed"' in source
-    assert "sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)" in source
+    assert VOICE_PROVIDER_NOT_CONFIGURED_EXIT == 78
+    assert VOICE_STARTUP_CONFIG_ERROR_EXIT == 78
 
 
 def test_voice_unit_has_stage2_memory_high_throttle():

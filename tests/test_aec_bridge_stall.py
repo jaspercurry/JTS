@@ -50,7 +50,7 @@ from jasper.aec.bridge_engines import FRAME_SAMPLES
 from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 from jasper.cues.registry import (
     NO_ROOM_MIC_CUE_SLUG,
-    VOICE_NOT_SET_UP_CUE_SLUG,
+    VOICE_ASSETS_MISSING_CUE_SLUG,
 )
 from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
@@ -334,19 +334,19 @@ def _shape_corpus_usb_absent(monkeypatch, tmp_path):
             _shape_bad_ref_source,
             os.EX_CONFIG,
             "unsupported_reference_source",
-            VOICE_NOT_SET_UP_CUE_SLUG,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
         ),
         (
             _shape_no_beam_plan,
             os.EX_CONFIG,
             "no_validated_chip_beam_plan",
-            VOICE_NOT_SET_UP_CUE_SLUG,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
         ),
         (
             _shape_chip_aec_without_reference,
             os.EX_CONFIG,
             "chip_aec_without_chip_reference",
-            VOICE_NOT_SET_UP_CUE_SLUG,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
         ),
         (
             _shape_mic_absent,
@@ -358,7 +358,7 @@ def _shape_corpus_usb_absent(monkeypatch, tmp_path):
             _shape_corpus_usb_absent,
             os.EX_CONFIG,
             "corpus_usb_mic_unavailable",
-            VOICE_NOT_SET_UP_CUE_SLUG,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
         ),
     ],
     ids=lambda value: getattr(value, "__name__", value),
@@ -377,7 +377,10 @@ def test_permanent_faults_park_on_a_code_the_unit_holds(
     card was physically removed: a stale device name or a config fault fires
     no udev event at all. 66 speaks the mic-loss cue it shares with
     jasper-voice's own 66 park; the config faults — the corpus USB leg is an
-    opt-in capture flag, not the wake mic — speak the 78 one.
+    opt-in capture flag, not the wake mic — speak the 78 one. None of them is
+    a missing voice provider, so the 78 cue is the diagnostics one: the
+    /voice wizard cannot fix a reference source, a beam plan or absent
+    hardware, and it is the only sentence the household gets.
     """
     spy = _arm_park_cue(monkeypatch)
     shape(monkeypatch, tmp_path)

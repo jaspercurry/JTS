@@ -38,7 +38,6 @@ import pytest
 
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.mic_capture import InputDeviceUnavailable
-from jasper.config import VoiceProviderNotConfigured
 from jasper.env_load import ENV_FILES
 from jasper.mic_presence import (
     MIC_ABSENT_CHIP_AEC_VALIDATING,
@@ -51,11 +50,15 @@ from jasper.voice.input_presence import (
 )
 from jasper.cues.registry import (
     NO_ROOM_MIC_CUE_SLUG,
+    VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
+from jasper.config import VoiceConfigError, VoiceProviderNotConfigured
+from jasper.vad import SpeechVADSetupError
 from jasper.voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
+    VOICE_STARTUP_CONFIG_ERROR_EXIT,
 )
 from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
@@ -367,39 +370,62 @@ def _parking_daemon(
 
 
 @pytest.mark.parametrize(
-    ("exc", "code", "slug"),
+    ("exc", "code", "slug", "event"),
     [
         (
             InputDeviceUnavailable("Array", ValueError("absent")),
             VOICE_MIC_UNAVAILABLE_EXIT,
             NO_ROOM_MIC_CUE_SLUG,
+            "voice.mic_unavailable",
         ),
         (
             VoiceProviderNotConfigured("no voice provider configured"),
             VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
             VOICE_NOT_SET_UP_CUE_SLUG,
+            "voice.unconfigured",
+        ),
+        (
+            SpeechVADSetupError("silero_vad.onnx is missing"),
+            VOICE_STARTUP_CONFIG_ERROR_EXIT,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
+            "voice.vad_setup_failed",
+        ),
+        (
+            VoiceConfigError("JASPER_IDLE_TIMEOUT_SEC must be a number"),
+            VOICE_STARTUP_CONFIG_ERROR_EXIT,
+            VOICE_ASSETS_MISSING_CUE_SLUG,
+            "voice.config_invalid",
         ),
     ],
-    ids=("mic-unavailable", "not-set-up"),
+    ids=("mic-unavailable", "not-set-up", "vad-setup-failed", "config-invalid"),
 )
 def test_a_boot_park_is_announced_before_main_exits(
-    exc: Exception, code: int, slug: str, monkeypatch,
+    exc: Exception, code: int, slug: str, event: str, monkeypatch, caplog,
 ) -> None:
-    """Both park codes must reach systemd unchanged — a park that crashed
+    """Every park code must reach systemd unchanged — a park that crashed
     with a traceback would be exit 1 → Restart=on-failure → crash-loop — and
-    both must have said so out loud first. Every check that raises these runs
+    each must have said so out loud first. Every check that raises these runs
     before the daemon's own cue manager exists, so this is the largest window
     in which the speaker goes deaf with nothing spoken (non-negotiable 6).
-    The mic path reuses the cue ADR-0239 speaks for the same fact at
-    shutdown; only the unconfigured path needs its own."""
+    The slugs differ because the remedies do: the mic path reuses the cue
+    ADR-0239 speaks for the same fact at shutdown, an unusable provider sends
+    the household to the voice wizard, and the faults that wizard cannot fix
+    — a VAD asset that will not load, a rejected config value — send them to
+    System → Run diagnostics, the only page that can show either.
+
+    The event name is the other half: these park silently as far as a
+    support read is concerned unless the journal names which check refused,
+    and each name is what a `journalctl` filter is written against."""
     daemon_main, spy = _parking_daemon(exc, monkeypatch)
 
-    with pytest.raises(SystemExit) as raised:
-        daemon_main.main()
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        with pytest.raises(SystemExit) as raised:
+            daemon_main.main()
 
     assert raised.value.code == code
     # Recorded at all means recorded before the exit: nothing plays after it.
     assert spy.played == [slug]
+    assert event_fields(caplog, event)
 
 
 @pytest.mark.parametrize(
