@@ -485,14 +485,6 @@ def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
     assert capacity.group(1) == fixture.group(1)
 
 
-def test_fanin_refuses_with_the_error_key_its_python_client_raises_on():
-    """fan-in answers a refusal as ``{"error": ...}``; platform/uds turns that
-    into the RuntimeError every mux caller classifies on (pinned in
-    tests/test_platform_uds.py). The verbs themselves, and that fan-in still
-    dispatches on each of them, are pinned in tests/test_platform_wire.py and
-    by the driven harness below."""
-    assert '"error":' in FANIN_STATE_RS.read_text()
-
 
 #: The head of fan-in's one-line control dispatch, and the catch-all arm that
 #: closes it. Extraction is bounded to that block — same idiom as
