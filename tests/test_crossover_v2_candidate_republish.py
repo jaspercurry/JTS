@@ -315,10 +315,7 @@ def test_a_room_set_never_travels_with_a_tune_change(bank, change):
 
     if change is None:
         child = compose_candidate(base_row, {})
-        assert child.room_correction == {}
-        assert child.analysis["room_source"] == {
-            "dropped_from_base": base.fingerprint,
-        }
+        assert child.room_correction == base.room_correction
         return
     with pytest.raises(CandidateBankRefusal) as refusal:
         compose_candidate(

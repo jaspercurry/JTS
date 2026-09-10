@@ -20,6 +20,7 @@ from .measured_crossover_candidate import (
 )
 
 COMPOSITION_KIND = "jts_candidate_composition"
+_INHERIT = object()
 
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
@@ -38,7 +39,7 @@ def compose_candidate(
     room_correction: Mapping[str, Any] | None = None,
     room_prescription_sha256: str = "",
     room_measured_basis: Mapping[str, Any] | None = None,
-    bass_extension: Mapping[str, Any] | None = None,
+    bass_extension: Mapping[str, Any] | object = _INHERIT,
 ) -> MeasuredCrossoverCandidate:
     """Replace each selected role's filters and trim; retain other base settings.
 
@@ -85,7 +86,17 @@ def compose_candidate(
                 filters, sections=sections.get(role, ()), trim_db=trims[role],
             ),
         }
-    room = dict(room_correction or {})
+    tune_changed = bool(roles or alignment is not None or blend is not None)
+    room = dict(
+        room_correction
+        if room_correction is not None
+        else ({} if tune_changed else base.candidate.room_correction)
+    )
+    bass = dict(
+        base.candidate.bass_extension
+        if bass_extension is _INHERIT and not tune_changed
+        else ({} if bass_extension is _INHERIT else bass_extension)
+    )
     analysis: dict[str, Any] = {
         "kind": COMPOSITION_KIND,
         "measurement_status": "unmeasured",
@@ -109,7 +120,7 @@ def compose_candidate(
                 "match" if measured_candidate == base.fingerprint else "different"
             ),
         }
-    elif base.candidate.room_correction:
+    elif tune_changed and base.candidate.room_correction:
         analysis["room_source"] = {"dropped_from_base": base.fingerprint}
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND,
@@ -120,7 +131,7 @@ def compose_candidate(
         linearization=linearization,
         blend_correction=blend.candidate.blend_correction,
         room_correction=room,
-        bass_extension=dict(bass_extension or {}),
+        bass_extension=bass,
     )
     # The room set is emitted here so the emitter's headroom charge runs at
     # compose rather than at apply.

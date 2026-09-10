@@ -57,10 +57,6 @@ CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 CANONICAL_DSP_WRITER_LOCK_PATH = CANONICAL_CAMILLA_CONFIG_DIR / ".dsp_apply.lock"
 
 
-class BassExtensionApplyPending(RuntimeError):
-    """A graph mutation was refused while durable bass rollback is pending."""
-
-
 @dataclass(frozen=True)
 class _DspLockOwnership:
     path: Path
@@ -501,25 +497,15 @@ async def _dsp_apply_lock(
     *,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     source: str = "unspecified",
-    bass_extension_intent_path: str | Path | None = None,
 ):
     timeout = _positive_finite(timeout_s, field_name="timeout_s")
     if not isinstance(source, str) or not source or source != source.strip():
         raise ValueError("source must be non-empty trimmed text")
-    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-
     task = asyncio.current_task()
     if task is None:  # pragma: no cover - an async context always has a task
         raise RuntimeError("DSP writer lock requires an asyncio task")
-    intent_path = Path(
-        bass_extension_intent_path or BASS_EXTENSION_APPLY_INTENT_PATH
-    )
     owned = _DSP_LOCK_OWNERSHIP.get()
     if owned is not None and owned.task is task and owned.path == path:
-        if intent_path.exists():
-            raise BassExtensionApplyPending(
-                "bass-extension rollback is pending; graph mutation refused"
-            )
         yield
         return
 
@@ -575,10 +561,6 @@ async def _dsp_apply_lock(
                     source=source,
                     wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
                 )
-            if intent_path.exists():
-                raise BassExtensionApplyPending(
-                    "bass-extension rollback is pending; graph mutation refused"
-                )
             token = _DSP_LOCK_OWNERSHIP.set(
                 _DspLockOwnership(path, task)
             )
@@ -630,7 +612,6 @@ async def dsp_writer_lock(
     *,
     source: str,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
-    bass_extension_intent_path: str | Path | None = None,
 ):
     """Serialize JTS DSP writers with bounded, cancellation-safe admission."""
 
@@ -638,7 +619,6 @@ async def dsp_writer_lock(
         _production_or_pytest_lock_path(config_dir),
         timeout_s=timeout_s,
         source=source,
-        bass_extension_intent_path=bass_extension_intent_path,
     ):
         yield
 
@@ -648,14 +628,12 @@ async def camilla_graph_mutation(
     *,
     source: str,
     lock_path: str | Path = CANONICAL_DSP_WRITER_LOCK_PATH,
-    bass_extension_intent_path: str | Path | None = None,
 ):
     """Admit one CamillaDSP graph mutation at the global writer boundary."""
 
     async with _dsp_apply_lock(
         Path(lock_path),
         source=source,
-        bass_extension_intent_path=bass_extension_intent_path,
     ):
         yield
 

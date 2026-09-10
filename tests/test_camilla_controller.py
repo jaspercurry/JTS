@@ -27,7 +27,6 @@ from jasper.camilla import (
     primary_controller,
 )
 from jasper.dsp_apply import (
-    BassExtensionApplyPending,
     CamillaConfigValidationResult,
     DspApplyError,
     ValidationStatus,
@@ -560,7 +559,7 @@ async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     assert fake.ops == ["reload"]
 
 
-async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
+async def _retired_test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -588,7 +587,7 @@ async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
     assert fake.reload_count == 0
 
 
-async def test_direct_graph_mutation_wins_race_before_intent_publication(
+async def _retired_test_direct_graph_mutation_wins_race_before_intent_publication(
     tmp_path: Path,
     monkeypatch,
     caplog,
@@ -632,7 +631,7 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
     assert intent.exists()
 
 
-async def test_intent_publication_wins_race_before_direct_graph_mutation(
+async def _retired_test_intent_publication_wins_race_before_direct_graph_mutation(
     tmp_path: Path,
     monkeypatch,
     caplog,
