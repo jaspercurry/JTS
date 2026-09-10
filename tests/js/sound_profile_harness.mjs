@@ -8502,7 +8502,8 @@ async function testIssueListEscapesUntrustedVerdictMessages() {
 // prompt server-side on the copy, and the copy goes STALE — visibly — when the
 // declarations move past the revision it was minted against.
 async function testTuningHandoffCardMintsAndGoesStale() {
-  async function run(pageRevision, mintRevision) {
+  const programs = ["speaker", "room", "bass"].map(id => ({id, title: id, description: id}));
+  async function run(pageRevision, mintRevision, programId = "speaker") {
     const mints = [];
     const harness = setupHarness(baseFetch({
       "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
@@ -8510,7 +8511,7 @@ async function testTuningHandoffCardMintsAndGoesStale() {
         status: "ready_for_review", revision: pageRevision, summary: {}, operator_inputs: {},
       })),
       "./active-speaker/baseline-profile": () => Promise.resolve(response({
-        status: "applied",
+        status: "applied", tuning_programs: programs,
         permissions: { may_compile: false, may_apply: false },
         config: { basename: "active_speaker_baseline.yml" },
         issues: [],
@@ -8522,17 +8523,23 @@ async function testTuningHandoffCardMintsAndGoesStale() {
           status: "ready",
           reason: null,
           binding: { hostname: "jts3.local", design_draft_revision: mintRevision },
-          prompt: "MINTED HANDOFF PROMPT",
+          programs: programs.map(p => ({...p, prompt: "MINTED HANDOFF PROMPT " + p.id})),
         }));
       },
     }));
     await loadAndSetActiveState(harness);
-    harness.dispatchClick({ "data-act": "copy-tuning-handoff" });
+    harness.dispatchClick({ "data-act": "copy-tuning-handoff", "data-program": programId });
     await harness.flush();
     await harness.flush();
     return { mints, harness };
   }
 
+  for (const program of programs) {
+    const copied = await run(3, 3, program.id);
+    const html = copied.harness.elements.get("view-body").innerHTML;
+    if (!html.includes("MINTED HANDOFF PROMPT " + program.id)) fail("copy selected the wrong program", {html});
+    if ((html.match(/data-act="copy-tuning-handoff"/g) || []).length !== 3) fail("expected three program actions", {html});
+  }
   const fresh = await run(3, 3);
   if (fresh.mints.length !== 1) {
     fail("the copy must mint the prompt from the box, once", { mints: fresh.mints });

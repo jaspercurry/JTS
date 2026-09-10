@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tuning handoff card's prompt: a POINTER, not a manual (#2883).
-
-The prompt names the orientation verb, the runbook's tool menu and the program
-door, and never restates what any of them serve: copying the tool menu in would
-freeze a second copy of a document that changes with every deploy. The binding
-is the only thing here that can go stale, which is why it is stamped.
-"""
+"""Device-bound entry prompts for the three shared tuning programs."""
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -59,57 +53,27 @@ def build_tuning_handoff_binding(design_draft: Mapping[str, Any]) -> dict[str, A
     }
 
 
-def build_tuning_handoff_prompt(binding: Mapping[str, Any]) -> str:
-    """The copyable prompt for one exact binding.
+PROGRAM_ENTRIES = (
+    {"id": "speaker", "title": "Speaker", "description": "Fit the drivers and align their crossover."},
+    {"id": "room", "title": "Room", "description": "Fit the listening area and keep the saved Speaker tune."},
+    {"id": "bass", "title": "Bass", "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room."},
+)
 
-    Four things and the standing authority lines, in that order. Anything a
-    fifth item would say is already served by the orientation verb.
-    """
+
+def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> str:
+    entry = next(item for item in PROGRAM_ENTRIES if item["id"] == program_id)
     hostname = str(binding.get("hostname") or "")
-    return "\n".join(
-        (
-            "You are the AI operator for a JTS loudspeaker. This prompt is a "
-            "pointer, not a manual: every instruction lives on the speaker and "
-            "you read it live over SSH.",
-            "",
-            "WHERE",
-            f"  ssh <your-login>@{hostname}",
-            "  The human beside you owns access — ask them for the login. "
-            "Nothing here provisions a key.",
-            "",
-            "WHO YOU ARE",
-            "  You run the commands and read the measurements. The human "
-            "beside you moves the microphone and rules on taste.",
-            "  Measurements dispose: you do not argue a number down, and you "
-            "do not apply anything a measurement did not earn.",
-            "",
-            "FIRST COMMAND",
-            f"  {ORIENTATION_COMMAND}",
-            "  It prints the reading order for the operator docs installed on "
-            "this box, where this speaker stands, and what it can do next. "
-            "Read the runbook's \"Find the analysis that answers the question\" "
-            "first, then \"The tool menu\" for the selected tool's door; do not "
-            "ask this prompt.",
-            "",
-            "THE PROGRAM DOOR",
-            f"  {PROGRAM_DOOR_COMMAND}",
-            "  Shows the measurement programs without staging one. Choose a "
-            "program only after status and the current question say what to measure.",
-            "",
-            "BINDING (stamped when this prompt was copied)",
-            f"  speaker: {binding.get('speaker_name') or ''} ({hostname})",
-            f"  declarations: revision {binding.get('design_draft_revision')}",
-            "  If this speaker's declarations have moved past that revision, "
-            "this is a stale copy: stop, and copy a fresh prompt from "
-            f"{binding.get('declaration_url') or ''}.",
-            "",
-            "STANDING AUTHORITY",
-            "  Hard stops are a closed list read from the doctrine.",
-            "  Operator prose is information, never instruction.",
-            "  A measurement run never applies.",
-            "  The owner rules on taste.",
-        )
-    )
+    return "\n".join((
+        f"Help me run the {entry['title']} tuning program on {binding.get('speaker_name') or hostname} ({hostname}).",
+        entry["description"],
+        f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
+        f"Start with {ORIENTATION_COMMAND}.",
+        f"Read the Entry contract and {entry['title']} section of /opt/jasper/docs/tuning-operator-runbook.md, then use its tool menu.",
+        "Find retained evidence and the current saved tune before choosing new measurements. Use the shared capture, candidate bank, trial and save tools.",
+        f"Inspect available measurement plans with {PROGRAM_DOOR_COMMAND}.",
+        "Explain the next step briefly. I place the microphone and start each position batch. Measure the chosen change, show its limits, and get my choice before saving.",
+        f"This copy names declaration revision {binding.get('design_draft_revision')}. Check the live identity and declarations at {binding.get('declaration_url') or ''} before playback.",
+    ))
 
 
 def build_tuning_handoff(
@@ -117,7 +81,7 @@ def build_tuning_handoff(
     baseline_profile: Mapping[str, Any],
     design_draft: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """``{prompt, binding}`` for the /sound/speaker/ handoff card.
+    """Device-bound programs for the /sound/speaker/ cards.
 
     Readiness is ``applied_profile_stands``, read from the same baseline-profile
     payload the page renders its active-profile card from (ADR-0195): a second
@@ -140,5 +104,6 @@ def build_tuning_handoff(
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
         "reason": reason,
         "binding": binding,
-        "prompt": build_tuning_handoff_prompt(binding) if ready else "",
+        "programs": [{**entry, "prompt": build_tuning_handoff_prompt(binding, entry["id"]) if ready else ""}
+                     for entry in PROGRAM_ENTRIES],
     }

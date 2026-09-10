@@ -7993,7 +7993,7 @@ def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
 
     assert payload["status"] == expected_status
     assert payload["reason"] == expected_reason
-    assert bool(payload["prompt"]) is has_prompt
+    assert all(bool(entry["prompt"]) is has_prompt for entry in payload["programs"])
     # The binding is minted either way: the card names the speaker while it is
     # still holding the prompt back.
     assert payload["binding"]["hostname"] == "jts7.local"
@@ -8001,8 +8001,9 @@ def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
     assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
 
 
+@pytest.mark.parametrize("program_id", ["speaker", "room", "bass"])
 def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
-    monkeypatch,
+    monkeypatch, program_id,
 ):
     """Hostname-derived, revision-stamped, and closed against credentials.
 
@@ -8020,7 +8021,8 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         baseline_profile={"applied_profile_stands": True},
         design_draft={"revision": 5},
     )
-    prompt = payload["prompt"]
+    entry = next(entry for entry in payload["programs"] if entry["id"] == program_id)
+    prompt = entry["prompt"]
 
     assert set(payload["binding"]) == {
         "speaker_name",
@@ -8059,6 +8061,6 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
-    assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
-        payload["binding"]
-    )
+    assert [entry["id"] for entry in payload["programs"]] == ["speaker", "room", "bass"]
+    for entry in payload["programs"]:
+        assert entry["prompt"] == tuning_handoff.build_tuning_handoff_prompt(payload["binding"], entry["id"])

@@ -14,10 +14,11 @@
 2. Code owns calculations, graph composition, protected capture, and evidence.
    The LLM chooses experiments and interprets results. The human places the mic,
    starts each pose batch, reports physical changes, and judges listening.
-3. Speaker linearization starts from the base tune. Every measurement graph
-   excludes household preference EQ and room correction. A candidate adds the
-   changes under test. Temporary playback retains household settings and
-   restores normal playback; it does not adopt a saved tune.
+3. Speaker starts from the base tune. Room starts from the accepted Speaker
+   tune with Room and bass off. Bass starts from accepted Speaker plus Room,
+   with extension off. A candidate adds only its layer's proposed change.
+   Measurement excludes preference EQ. Temporary playback restores the saved
+   stack and volume; save is a separate action.
 4. Inspect and enrich a round before freezing its packet. Use that exact packet
    for both `propose` and `stage`. New evidence needs a new snapshot and a
    prescription bound to it.
@@ -33,9 +34,12 @@ The [methodology](tuning-methodology.md) provides optional science guidance.
 Use a tool's `--help` for its current fields and limits. Full evidence belongs
 in artifacts; stdout is the compact answer.
 
-## One possible flow
+## Speaker
 
-Choose the order from the evidence and the next question.
+Inputs are the current driver declarations, base design, microphone calibration,
+and retained Speaker evidence. Fit reliable driver response, then compare the
+complete crossover sum and nearby positions. Use gates only where their valid
+band supports the claim. Choose the order from the next question.
 
 1. **Orient.** Read `jasper-crossover-prescriber status <round-dir>` for a known
    round. Confirm the speaker, base design, and returned paths.
@@ -256,8 +260,12 @@ span still cannot answer, retain that limitation and use measured full sums.
 
 ## Room
 
-The room is measured on the seat cloud, through the applied tune, ungated
-(methodology §11). In order:
+Inputs are the accepted Speaker candidate, its gated reference and trusted
+frequency band, the actual listening placement, and an explicit room target.
+Record the Speaker reference even when older captures lack its identity.
+Measure the seat cloud through Speaker with Room and bass off, ungated
+(methodology §11). The current fitter corrects below its disclosed ceiling;
+higher-frequency deficits need separate speaker-informed evidence. In order:
 
 1. `jasper-angle-capture plan --program room`: the default listening-area
    cloud. `--size quick --mover arm` selects the three-position arm smoke test;
@@ -293,6 +301,10 @@ The room is measured on the seat cloud, through the applied tune, ungated
    round's numbers beside it. Comparisons use shared frequency coverage and
    disclose their level alignment and capture compatibility. A regressed band
    is a disclosure; restore follows the same adoption path.
+9. Save the chosen measured candidate through `jasper-round apply
+   --expected-fingerprint <fingerprint>`; inspect the saved stack and its evidence links.
+   Confirm that Speaker filters and alignment remain as accepted. Use
+   [Evidence and recovery](#evidence-and-recovery) to resume or restore.
 
 Plan defaults and ordered positions live in
 [`measurement_plans.json`](../jasper/active_speaker/measurement_plans.json).
@@ -317,7 +329,33 @@ These views do not authorize correction above the current ceiling.
 If the speaker's trusted floor exceeds that ceiling, the gap remains ungraded;
 use a longer valid gate or another suitable measurement to assess it.
 
-## Evidence and recovery
+## Bass
+
+Inputs are accepted Speaker plus Room, a smooth bass target, and any compatible
+retained bass captures. Start with `status` and `inventory`; correct remaining
+Room peaks in Room before fitting extension.
+
+1. Plan `jasper-angle-capture plan --program bass`. The shared cloud is the
+   normal listening-area plan; `--size quick` gives the smaller trial. Stage
+   useful off/candidate choices at each held position, then open and bank a
+   round through the same placement/start flow as Room.
+2. Run `bass` and `bass-compare` below. Inspect frequency plots, noise,
+   harmonics and repeat variation before deciding which bands need more data.
+   `bass-fit` suggests a bounded native shape from matched measured changes.
+3. Compose against the accepted Room candidate with `--bass-extension-json`
+   and linked `--observation-ref` evidence. Trial useful changes with short
+   focused sweeps and small input steps. Hold volume fixed while varying
+   stimulus demand; hold stimulus fixed while varying canonical volume.
+4. Use native replay when deliberate DSP reduction is unclear. Inspect a short
+   varying-demand signal, a full-band capture and listening for transitions.
+   Record the tested levels, positions, gain and harmonic tradeoffs. Uncertain
+   results suggest a next measurement, not a physical output limit.
+5. Save the chosen measured candidate with `jasper-round apply --expected-fingerprint
+   <fingerprint>`. Check the saved Speaker and Room layers, normal playback,
+   restored volume and microphone position. Reuse sufficient existing evidence;
+   another full round is optional. Recovery uses the shared section below.
+
+### Bass analysis tools
 
 `jasper-round-views bass <round-dir> --calibration-root <copied-registry>`
 replays retained summed captures on the laptop. It writes `bass_view.json`
@@ -360,6 +398,8 @@ device. Copy the manifest and `output.f64le` to the laptop, then run
 `dsp-levels <dsp_replay.json> --raw <output.f64le> --window-s <start> <stop>`.
 Compare the same channels and stimulus windows across renders. These are
 digital band levels, not microphone SPL or isolated driver compression.
+
+## Evidence and recovery
 
 Measurement records own numbers and identities. An optional
 `<round-dir>/agent_notes.md` holds the question, hypotheses, interpretation,
