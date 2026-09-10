@@ -150,6 +150,84 @@ def _volume_slider_script(js: str) -> str:
     return js[start:end]
 
 
+def _volume_slider_dom_harness() -> str:
+    """JS preamble shared by the volume-slider Node harnesses below: a
+    minimal #vol-control/#vol-fill/#vol-percent DOM stand-in plus
+    pointer-event/assert/delay helpers. A harness embeds this verbatim
+    (via an f-string substitution, so its braces are not re-escaped) and
+    adds its own `fetch` stub and assertions.
+    """
+    return """
+function makeElement(id) {
+  const el = {
+    id,
+    style: {},
+    textContent: '',
+    attrs: {},
+    classes: new Set(),
+    listeners: {},
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    removeAttribute(name) { delete this.attrs[name]; },
+    getAttribute(name) { return this.attrs[name] || null; },
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    },
+    getBoundingClientRect() {
+      return { left: 100, top: 20, width: 200, height: 56 };
+    },
+    focus() { this.focused = true; },
+    setPointerCapture(pointerId) { this.captured = pointerId; },
+    releasePointerCapture(pointerId) { this.released = pointerId; },
+  };
+  el.classList = {
+    toggle(name, force) {
+      if (force) el.classes.add(name);
+      else el.classes.delete(name);
+    },
+  };
+  return el;
+}
+
+const elements = {
+  'vol-control': makeElement('vol-control'),
+  'vol-fill': makeElement('vol-fill'),
+  'vol-percent': makeElement('vol-percent'),
+};
+
+elements['vol-control'].setAttribute('aria-valuenow', '50');
+elements['vol-control'].setAttribute('aria-valuetext', '50%');
+elements['vol-fill'].style.width = '50%';
+elements['vol-percent'].textContent = '50%';
+
+function pointerEvent(type, clientX) {
+  return {
+    type,
+    clientX,
+    pointerId: 7,
+    pointerType: 'touch',
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+  };
+}
+
+function dispatch(type, e) {
+  for (const fn of elements['vol-control'].listeners[type] || []) {
+    fn(e);
+  }
+}
+
+function assertEqual(actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(`${message}: expected ${expected}, got ${actual}`);
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+"""
+
+
 def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
     js = _landing_js()
 
@@ -235,7 +313,8 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     assert "typeof safety.safety_muted === 'boolean'" in script
     assert "typeof safety.volume_allowed === 'boolean'" in script
     assert "var safetyMuted = false" in script
-    assert "if (safetyMuted || heldOwner !== null) return;" in script
+    assert "function controlLocked()" in script
+    assert "return safetyMuted || heldOwner !== null;" in script
     assert "aria-disabled" in script
     assert "hit.classList.toggle('safety-muted', disabled);" in script
     assert "volume-safety-note" in script
@@ -389,12 +468,20 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
-    """A 409 from /volume/set (jasper.control.measurement_hold) names the
-    incumbent in the status slot and locks the fader until the hold's own
-    expiry lapses — see jasper/control/handlers/volume.py's
-    `_refuse_authoritative_write`, whose body carries `owner` and
-    `measurement`."""
+def test_volume_slider_measurement_hold_state_machine(tmp_path: Path) -> None:
+    """The measurement-hold lock is SERVER-derived on every /volume poll
+    tick, never a local deadline — see poll()'s `holdOwnerFrom` and
+    jasper/control/handlers/volume.py's `_refuse_authoritative_write`, whose
+    409 body carries `owner` and `measurement`. Three transitions of the
+    one state machine, pinned in sequence:
+
+    (a) a 409 naming an owner locks the fader and shows who holds it;
+    (b) the very next poll tick reporting the hold gone re-enables the
+        fader and restores the percent — no local timer, no new endpoint;
+    (c) a 409 carrying no owner (a different conflict, e.g. the
+        active-speaker-setup block) falls back to the existing
+        `markWriteFailed()` dash instead of locking the fader.
+    """
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for the landing-page pointer harness")
@@ -405,73 +492,29 @@ def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
         const vm = require('node:vm');
         const script = {json.dumps(slider)};
         const posted = [];
-
-        function makeElement(id) {{
-          const el = {{
-            id,
-            style: {{}},
-            textContent: '',
-            attrs: {{}},
-            classes: new Set(),
-            listeners: {{}},
-            setAttribute(name, value) {{ this.attrs[name] = String(value); }},
-            removeAttribute(name) {{ delete this.attrs[name]; }},
-            getAttribute(name) {{ return this.attrs[name] || null; }},
-            addEventListener(type, fn) {{
-              (this.listeners[type] ||= []).push(fn);
-            }},
-            getBoundingClientRect() {{
-              return {{ left: 100, top: 20, width: 200, height: 56 }};
-            }},
-            focus() {{ this.focused = true; }},
-            setPointerCapture(pointerId) {{ this.captured = pointerId; }},
-            releasePointerCapture(pointerId) {{ this.released = pointerId; }},
-          }};
-          el.classList = {{
-            toggle(name, force) {{
-              if (force) el.classes.add(name);
-              else el.classes.delete(name);
-            }},
-          }};
-          return el;
+        const pollers = [];
+        let volumeGets = 0;
+        {_volume_slider_dom_harness()}
+        function keyEvent(key) {{
+          return {{ key, preventDefault() {{ this.defaultPrevented = true; }} }};
         }}
 
-        const elements = {{
-          'vol-control': makeElement('vol-control'),
-          'vol-fill': makeElement('vol-fill'),
-          'vol-percent': makeElement('vol-percent'),
-        }};
-
-        elements['vol-control'].setAttribute('aria-valuenow', '50');
-        elements['vol-control'].setAttribute('aria-valuetext', '50%');
-        elements['vol-fill'].style.width = '50%';
-        elements['vol-percent'].textContent = '50%';
-
-        function event(type, clientX) {{
+        function heldBody() {{
           return {{
-            type,
-            clientX,
-            pointerId: 7,
-            pointerType: 'touch',
-            defaultPrevented: false,
-            preventDefault() {{ this.defaultPrevented = true; }},
+            error: 'a measurement is in progress (owner=audio_measurement)',
+            owner: 'audio_measurement',
+            measurement: {{
+              active: true, owner: 'audio_measurement', mode: 'gate',
+              expires_in_s: 42.0, held_for_s: 3.2,
+            }},
           }};
         }}
 
-        function dispatch(type, e) {{
-          for (const fn of elements['vol-control'].listeners[type] || []) {{
-            fn(e);
-          }}
-        }}
-
-        function assertEqual(actual, expected, message) {{
-          if (actual !== expected) {{
-            throw new Error(`${{message}}: expected ${{expected}}, got ${{actual}}`);
-          }}
-        }}
-
-        function delay(ms) {{
-          return new Promise((resolve) => setTimeout(resolve, ms));
+        function ownerlessConflictBody() {{
+          return {{
+            error: 'speaker output is not ready',
+            active_speaker_setup: {{ detail: 'not confirmed' }},
+          }};
         }}
 
         (async () => {{
@@ -483,26 +526,31 @@ def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
             fetch: async (url, options = {{}}) => {{
               if (url === '/volume/set') {{
                 posted.push(JSON.parse(options.body));
+                // (a) the first write lands on a live measurement's hold;
+                // (c) every write after the fader unlocks hits a DIFFERENT
+                // conflict — no owner — which must not read as a hold.
+                const body = posted.length === 1 ? heldBody() : ownerlessConflictBody();
+                return {{ ok: false, status: 409, json: async () => body }};
+              }}
+              if (url === '/volume') {{
+                volumeGets += 1;
+                // First tick is the boot poll; the second stands in for
+                // the hold's own release() landing server-side.
                 return {{
-                  ok: false,
-                  status: 409,
+                  ok: true,
                   json: async () => ({{
-                    error: 'a measurement is in progress (owner=audio_measurement)',
-                    owner: 'audio_measurement',
+                    percent: volumeGets < 2 ? 50 : 55,
                     measurement: {{
-                      active: true,
-                      owner: 'audio_measurement',
-                      mode: 'gate',
-                      expires_in_s: 42.0,
-                      held_for_s: 3.2,
+                      active: false, owner: null, mode: null,
+                      expires_in_s: null, held_for_s: null,
                     }},
                   }}),
                 }};
               }}
-              return {{ ok: true, json: async () => ({{ percent: 50 }}) }};
+              return {{ ok: true, json: async () => ({{}}) }};
             }},
             jsonHeaders: () => ({{ 'Content-Type': 'application/json' }}),
-            startPolling(fn) {{ fn(); return () => {{}}; }},
+            startPolling(fn) {{ pollers.push(fn); fn(); return () => {{}}; }},
             setTimeout,
             Promise,
             Date,
@@ -513,9 +561,9 @@ def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
           vm.runInNewContext(script, context, {{ timeout: 1000 }});
           await delay(0);
 
-          dispatch('pointerdown', event('pointerdown', 150));
+          // (a) named-owner 409 locks the fader and shows the incumbent.
+          dispatch('pointerdown', pointerEvent('pointerdown', 150));
           await delay(200);
-
           assertEqual(posted.length, 1, 'one write attempted');
           assertEqual(
             elements['vol-percent'].textContent,
@@ -523,20 +571,40 @@ def test_volume_slider_surfaces_measurement_hold_state(tmp_path: Path) -> None:
             'held status text names the owner',
           );
           assertEqual(
-            elements['vol-control'].classes.has('safety-muted'),
-            true,
+            elements['vol-control'].classes.has('safety-muted'), true,
             'fader visually disabled while held',
           );
           assertEqual(
-            elements['vol-control'].getAttribute('aria-disabled'),
-            'true',
+            elements['vol-control'].getAttribute('aria-disabled'), 'true',
             'fader marked aria-disabled while held',
           );
 
-          const retry = event('pointerdown', 260);
-          dispatch('pointerdown', retry);
-          assertEqual(retry.defaultPrevented, true, 'pointerdown blocked while held');
-          assertEqual(posted.length, 1, 'no further write while held');
+          // (b) the next poll tick reporting the hold gone re-enables the
+          // fader and restores the percent — no local deadline involved.
+          await pollers[0]();
+          assertEqual(
+            elements['vol-control'].classes.has('safety-muted'), false,
+            'fader re-enabled the tick the server reports the hold gone',
+          );
+          assertEqual(
+            elements['vol-control'].getAttribute('aria-disabled'), null,
+            'aria-disabled cleared once unheld',
+          );
+          assertEqual(elements['vol-percent'].textContent, '55%', 'percent restored from the server');
+
+          // (c) a 409 WITHOUT an owner is a different conflict; it falls
+          // back to the ordinary write-failed dash, never the hold lock.
+          dispatch('keydown', keyEvent('ArrowUp'));
+          await delay(200);
+          assertEqual(posted.length, 2, 'second write attempted after unlock');
+          assertEqual(
+            elements['vol-percent'].textContent, '\u2014',
+            'ownerless conflict falls back to the write-failed dash',
+          );
+          assertEqual(
+            elements['vol-control'].classes.has('safety-muted'), false,
+            'ownerless conflict does not lock the fader',
+          );
         }})().catch((err) => {{
           console.error(err && err.stack ? err.stack : err);
           process.exit(1);
