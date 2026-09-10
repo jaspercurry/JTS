@@ -613,7 +613,7 @@ def test_the_spec_verdict_carries_every_band_and_the_span_it_graded():
     assert evidence["graded_band_hz"] == [357.14, 20000.0]
     assert evidence["trusted_ceiling_hz"] == 20000.0
     assert [
-        (b["f_lo_hz"], b["f_hi_hz"], b["graded_lo_hz"], b["graded_hi_hz"], b["passed"])
+        (b["f_lo_hz"], b["f_hi_hz"], b["graded_lo_hz"], b["graded_hi_hz"], b["within_target"])
         for b in evidence["bands"]
     ] == [
         (250.0, 2000.0, 357.14, 2000.0, True),
@@ -677,10 +677,10 @@ def test_a_report_with_nothing_evaluable_is_unevaluable():
                 n_bins=0,
                 n_excluded=0,
                 evaluable=False,
-                passed=None,
+                within_target=None,
             ),
         ),
-        overall_passed=False,
+        overall_within_target=False,
         excluded_intervals=(),
         best_effort_above_hz=16000.0,
         smoothing_fraction=3,
@@ -691,7 +691,7 @@ def test_a_report_with_nothing_evaluable_is_unevaluable():
 
 
 def test_the_spec_verdict_reads_the_reports_own_pass_rather_than_re_grading():
-    """Hand a report whose ``overall_passed`` disagrees with its bands.
+    """Hand a report whose ``overall_within_target`` disagrees with its bands.
 
     If this module ever recomputed the verdict from the band metrics, it
     would answer FAILED here. It must answer what the evaluator said.
@@ -710,10 +710,10 @@ def test_the_spec_verdict_reads_the_reports_own_pass_rather_than_re_grading():
                 n_bins=40,
                 n_excluded=0,
                 evaluable=True,
-                passed=False,
+                within_target=False,
             ),
         ),
-        overall_passed=True,
+        overall_within_target=True,
         excluded_intervals=(),
         best_effort_above_hz=16000.0,
         smoothing_fraction=3,
@@ -1387,7 +1387,7 @@ def test_each_failing_spec_band_rides_the_receipt_as_its_own_target():
 
 def test_a_passing_or_unevaluable_band_is_not_a_target():
     """A band that passed has nothing to aim at, and one that could not be
-    measured has nothing to aim WITH — ``passed=False, evaluable=False`` means
+    measured has nothing to aim WITH — ``within_target=False, evaluable=False`` means
     "not measured", not "failed"."""
 
     verdict = _quality(spec_report=_report_with_two_failing_bands())
@@ -1407,22 +1407,22 @@ def _report_with_two_failing_bands():
     return types.SimpleNamespace(bands=(
         types.SimpleNamespace(
             f_lo_hz=20.0, f_hi_hz=250.0, tolerance_db=3.0, evaluable=False,
-            passed=None, max_deviation_db=None, max_deviation_hz=None,
+            within_target=None, max_deviation_db=None, max_deviation_hz=None,
             graded_lo_hz=20.0, graded_hi_hz=250.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5, evaluable=True,
-            passed=False, max_deviation_db=4.70, max_deviation_hz=331.8,
+            within_target=False, max_deviation_db=4.70, max_deviation_hz=331.8,
             graded_lo_hz=250.0, graded_hi_hz=2000.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0, evaluable=True,
-            passed=True, max_deviation_db=0.4, max_deviation_hz=4000.0,
+            within_target=True, max_deviation_db=0.4, max_deviation_hz=4000.0,
             graded_lo_hz=2000.0, graded_hi_hz=8000.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=8000.0, f_hi_hz=16000.0, tolerance_db=2.0, evaluable=True,
-            passed=False, max_deviation_db=-2.63, max_deviation_hz=14072.0,
+            within_target=False, max_deviation_db=-2.63, max_deviation_hz=14072.0,
             graded_lo_hz=8000.0, graded_hi_hz=20000.0,
         ),
     ))
@@ -1447,14 +1447,14 @@ def _headroom_band(*, lo, hi, level_db=None, ripple_db=None, evaluable=True):
         f_lo_hz=lo, f_hi_hz=hi, tolerance_db=3.0,
         max_deviation_db=None if level_db is None else level_db,
         max_deviation_hz=None, rms_deviation_db=None,
-        n_bins=10, n_excluded=0, evaluable=evaluable, passed=True,
+        n_bins=10, n_excluded=0, evaluable=evaluable, within_target=True,
         level_deviation_db=level_db, max_ripple_db=ripple_db,
     )
 
 
 def _headroom_report(*bands):
     return FlatSpecReport(
-        reference_db=0.0, bands=tuple(bands), overall_passed=True,
+        reference_db=0.0, bands=tuple(bands), overall_within_target=True,
         excluded_intervals=(), best_effort_above_hz=16000.0,
         smoothing_fraction=3,
     )

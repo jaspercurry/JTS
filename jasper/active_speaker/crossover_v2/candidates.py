@@ -116,7 +116,7 @@ class SpeculativeClose:
     A speculative build must land here and never in ``_candidate``, which is
     ``confirm_cloud_measure_group``'s fire-once guard: writing it there closes
     the retake window in the instant it opens. It reaches ``_candidate`` only
-    through the household's own confirmation. ``level_frame_finding`` (#1866)
+    through the household's own confirmation. ``accountability_finding`` (#1866)
     is present only when THIS build's frame gate took the finding+proceed path.
     """
 
@@ -124,6 +124,6 @@ class SpeculativeClose:
     predicted_sum: Any
     analysis: Any
     cloud: CloudFitEvidence | None
-    level_frame_finding: Mapping[str, Any] | None = None
+    accountability_finding: Mapping[str, Any] | None = None
     linearization: LinearizationState = field(default_factory=LinearizationState)
     """What THIS build's linearization produced — see :class:`LinearizationState`."""

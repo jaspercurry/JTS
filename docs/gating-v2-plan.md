@@ -300,9 +300,9 @@ with every recorded floor). Between `1/T` and `2/T`, derived
 quantities carry a graded uncertainty ±2 dB at `1/T` tapering
 linearly-in-log-f to ±0.5 dB at `2/T`; above `2/T` full confidence.
 `flat_spec` gains a **`marginal` disclosure flag, not a third verdict
-value**: `BandResult.passed` stays `bool | None` with its existing
+value**: `BandResult.within_target` stays `bool | None` with its existing
 meanings (`None` = unevaluable) and is still computed at nominal
-tolerance, so `overall_passed` composition is untouched and
+tolerance, so `overall_within_target` composition is untouched and
 prediction 6's "changes zero pass verdicts" holds *by construction*;
 a band whose worst deviation lies within the graded uncertainty of
 its tolerance additionally carries `marginal: True`, rendered loudly

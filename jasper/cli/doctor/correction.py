@@ -723,7 +723,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
         entry = cloud[phase]
         if not isinstance(entry, dict):
             continue
-        overall = entry.get("overall_passed")
+        overall = entry.get("overall_within_target")
         spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
         if phase == PHASE_CLOUD_VERIFY and overall is False:
             any_fail = True

@@ -441,6 +441,87 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
     assert handed["stimulus"].rms_dbfs == pytest.approx(-3.01, abs=0.05)
 
 
+def test_a_cancel_before_the_player_binds_still_stops_the_tone(
+    tmp_path, monkeypatch, capsys
+):
+    """#2938: `cancel_tone()` can fire while `_play()` is still awaiting
+    `exec_correction_play` -- the only moment between nothing running and the
+    process handle existing. Before the fix this was a silent no-op: the
+    handle was still `None`, so the terminate call landed on nothing and the
+    stimulus ran to completion. The pending cancel must be honored the
+    instant the handle binds instead."""
+    stimulus = _stereo_wav(tmp_path / "check.wav", peak_int16=32767)
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+
+    terminated = False
+    waited = False
+
+    class _FakeProcess:
+        returncode = None
+
+        def terminate(self) -> None:
+            nonlocal terminated
+            terminated = True
+
+        async def wait(self) -> None:
+            nonlocal waited
+            waited = True
+
+    async def _fake_exec_correction_play(*args, **kwargs):
+        return _FakeProcess()
+
+    async def _fake_ramp(*, play_continuous_tone, cancel_tone, **kwargs):
+        # The race this test pins: the cancel arrives before the play
+        # coroutine has anything to cancel yet.
+        cancel_tone()
+        await play_continuous_tone()
+        from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+        return SeatLevelResult(
+            status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
+        )
+
+    monkeypatch.setattr(
+        "jasper.audio_measurement.correction_lane.exec_correction_play",
+        _fake_exec_correction_play,
+    )
+    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
+    monkeypatch.setattr(
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
+        lambda *a, **k: SimpleNamespace(
+            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller",
+        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
+    )
+
+    code = seat_level.main(
+        [
+            "--stimulus-wav",
+            str(stimulus),
+            "--calibration-file",
+            str(cal),
+            "--target-db-spl",
+            "77.5",
+        ]
+    )
+
+    assert code == 0
+    assert terminated is True
+    assert waited is False
+
+
 def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
     """The B1 root cause, isolated: the preset resolver must produce a preset.
 

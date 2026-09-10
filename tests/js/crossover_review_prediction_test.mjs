@@ -66,8 +66,8 @@ const CLOUD_MEASURE = "cloud_measure";
 const CLOUD_VERIFY = "cloud_verify";
 
 const SPEC_BANDS = [
-  { f_lo_hz: 250, f_hi_hz: 500, passed: false, max_deviation_db: -9.04, tolerance_db: 3 },
-  { f_lo_hz: 500, f_hi_hz: 2000, passed: true, max_deviation_db: 1.1, tolerance_db: 3 },
+  { f_lo_hz: 250, f_hi_hz: 500, within_target: false, max_deviation_db: -9.04, tolerance_db: 3 },
+  { f_lo_hz: 500, f_hi_hz: 2000, within_target: true, max_deviation_db: 1.1, tolerance_db: 3 },
 ];
 
 // The review envelope: a pre-apply cloud, a prediction, and NO cloud_verify —
@@ -83,7 +83,7 @@ const reviewEnvelope = {
   prediction: {
     curve: { freqs_hz: [300, 1000], magnitude_db: [-30.1, -30.4], display: { deviation_db: [0.1, -0.2], untrusted_intervals_hz: [] } },
     spec_bands: SPEC_BANDS,
-    overall_passed: false,
+    overall_within_target: false,
     reference_db: -30.2,
   },
 };
@@ -128,7 +128,7 @@ renderCloud(els, {
   prediction: {
     curve: { freqs_hz: [300, 1000], magnitude_db: [-30.1, -30.4], display: { deviation_db: [null, null], untrusted_intervals_hz: [] } },
     spec_bands: [],
-    overall_passed: null,
+    overall_within_target: null,
     reference_db: null,
   },
 });
@@ -145,7 +145,7 @@ renderCloud(els, {
   cloud: null,
   cloud_chart: null,
   prediction: {
-    curve: null, spec_bands: SPEC_BANDS, overall_passed: false, reference_db: -30.2,
+    curve: null, spec_bands: SPEC_BANDS, overall_within_target: false, reference_db: -30.2,
   },
 });
 check(

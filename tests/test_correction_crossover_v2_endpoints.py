@@ -1312,14 +1312,14 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         "available": True,
         "geometry": {"locked": True, "reason": "geometry_locked"},
         "null_registry": {"classification": "position_invariant"},
-        "spec": {"overall_passed": False},
+        "spec": {"overall_within_target": False},
         "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-1.0, -2.0]},
     }
     verify_result = {
         "available": True,
         "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
         "null_registry": {"classification": "insufficient_evidence"},
-        "spec": {"overall_passed": True},
+        "spec": {"overall_within_target": True},
         "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-0.5, -0.6]},
     }
     publish_cloud(PHASE_CLOUD_MEASURE, measure_result)
@@ -1360,11 +1360,11 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         (artifacts_dir / f"{PHASE_CLOUD_VERIFY}.json").read_text()
     )
     assert verify_on_disk["geometry"]["locked"] is False
-    assert verify_on_disk["spec"]["overall_passed"] is True
+    assert verify_on_disk["spec"]["overall_within_target"] is True
 
 
 def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
-    """PR-4's ``/state`` surface: per band, only ``passed``; the
+    """PR-4's ``/state`` surface: per band, only ``within_target``; the
     excluded-interval COUNT, not the intervals; the geometry verdict's two
     household-relevant bits. The full per-null τ/r/evidence numbers stay in
     the durable state's own ``pipeline`` sub-key (not re-derived here) and
@@ -1380,20 +1380,20 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
                     "available": True,
                     "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
                     "spec": {
-                        "overall_passed": False,
+                        "overall_within_target": False,
                         "reference_db": -27.27,
                         "bands": [
-                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
                              "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
                              "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
                              "tolerance_db": 1.5},
-                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
                              "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
                              "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
                              "tolerance_db": 2.0},
                             # The top band graded past its NOMINAL 16 kHz edge:
                             # this session's microphone is trusted to 20 kHz.
-                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
                              "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
                              "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
                              "tolerance_db": 2.5},
@@ -1432,7 +1432,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
         "positions. Spreading the microphone further apart next time may "
         "help JTS tell the speaker's own sound apart from the room's."
     )
-    assert measure["overall_passed"] is False
+    assert measure["overall_within_target"] is False
     assert measure["excluded_interval_count"] == 2
     # Per-band ``max_deviation_db``/``tolerance_db`` ride along
     # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
@@ -1444,15 +1444,15 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # band's graded edge no longer equals its nominal one -- a row printing
     # only ``f_hi_hz`` here would say 16 kHz about a band graded to 20.
     assert measure["spec_bands"] == [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
          "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
          "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
          "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
          "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
          "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
          "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
          "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
          "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
          "tolerance_db": 2.5},
@@ -1474,7 +1474,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # a fabricated-clean claim for a pipeline that never ran.
     verify = cloud[PHASE_CLOUD_VERIFY]
     assert verify["geometry_locked"] is False
-    assert verify["overall_passed"] is None
+    assert verify["overall_within_target"] is None
     assert verify["excluded_interval_count"] is None
     assert verify["spec_bands"] == []
     assert verify["geometry_guidance"] == ""
@@ -1508,7 +1508,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
                     "available": True,
                     "merged_excluded_bands_hz": [],
                     "spec": {
-                        "overall_passed": True,
+                        "overall_within_target": True,
                         "reference_db": 10 ** 400,
                         "bands": [],
                     },
@@ -1519,7 +1519,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
 
     measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["reference_db"] is None
-    assert measure["overall_passed"] is True
+    assert measure["overall_within_target"] is True
 
 
 def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():
@@ -1551,7 +1551,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
     measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["geometry_locked"] is True
     assert measure["excluded_interval_count"] is None
-    assert measure["overall_passed"] is None
+    assert measure["overall_within_target"] is None
     assert measure["spec_bands"] == []
     assert measure["geometry_guidance"] == (
         "The measured echo pattern did not change between microphone "
@@ -1577,7 +1577,7 @@ def test_cloud_summary_stamps_the_producing_session_id():
         group_geometry=lambda phase: {"locked": True, "reason": "geometry_locked"},
         group_position_takes=lambda phase: [],
         group_cloud_result=lambda phase: {
-            "available": True, "spec": {"overall_passed": True},
+            "available": True, "spec": {"overall_within_target": True},
         },
     )
     summary = v2host._cloud_summary(fake)
@@ -1593,7 +1593,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     or there is no stamp at all (a durable state written before this marker
     existed — unknown, not stale, so an upgrade cannot manufacture a false
     warning for data nobody ever mis-attributed)."""
-    pipeline = {"available": True, "spec": {"overall_passed": True, "bands": []}}
+    pipeline = {"available": True, "spec": {"overall_within_target": True, "bands": []}}
     stamped_state = {
         PHASE_CLOUD_VERIFY: {
             "geometry": {"locked": False},
@@ -1670,8 +1670,8 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
                 "geometry_guidance": "Spread the mic further.",
                 "merged_excluded_bands_hz": [[8000.0, 9000.0]],
                 "spec": {
-                    "overall_passed": False,
-                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False}],
+                    "overall_within_target": False,
+                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False}],
                 },
             },
         },
@@ -1727,7 +1727,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     compact = v2status.crossover_v2_status_block()["cloud"]
     assert compact is not None
     assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-    assert compact[PHASE_CLOUD_MEASURE]["overall_passed"] is False
+    assert compact[PHASE_CLOUD_MEASURE]["overall_within_target"] is False
 
     # Surface 3: the envelope.
     monkeypatch.setattr(
@@ -1780,7 +1780,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
                 "positions": [
                     {"position_id": "cloud_measure_09", "index": 9, "attempt": 9}
                 ],
-                "pipeline": {"available": True, "spec": {"overall_passed": False}},
+                "pipeline": {"available": True, "spec": {"overall_within_target": False}},
             },
         },
     })
@@ -2770,7 +2770,7 @@ def test_a_resolvable_context_renders_a_quiet_review_screen():
             candidate={"fingerprint": "fp-1", "trims_db": {"woofer": -2.0}},
             prediction={
                 "curve": {"freqs_hz": [100.0], "magnitude_db": [80.0]},
-                "spec_bands": [], "overall_passed": True, "reference_db": 80.0,
+                "spec_bands": [], "overall_within_target": True, "reference_db": 80.0,
             },
         )
         v2host.attach_stage2_preflight(status)
@@ -3276,12 +3276,12 @@ def test_the_prediction_reaches_the_status_block_with_its_verdict():
 
     prediction = v2status.crossover_v2_status_block()["prediction"]
     stored = conductor.measure_predicted_spec_report
-    assert prediction["overall_passed"] == stored["overall_passed"]
+    assert prediction["overall_within_target"] == stored["overall_within_target"]
     assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
     # The per-band vocabulary matches the compact cloud block's, key for key,
     # so the review screen can draw both curves in one tolerance corridor.
     assert [set(b) for b in prediction["spec_bands"]] == [
-        {"f_lo_hz", "f_hi_hz", "passed", "max_deviation_db", "tolerance_db"}
+        {"f_lo_hz", "f_hi_hz", "within_target", "max_deviation_db", "tolerance_db"}
     ] * len(stored["bands"])
     assert prediction["curve"]["freqs_hz"]
 
@@ -3468,7 +3468,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
 
     Three absences, three honest shapes: no priors at all ⇒ no block; a curve
     with no stored report (a state written before D4, or a prediction the
-    evaluator refused) ⇒ the curve with ``overall_passed`` **None** and no
+    evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
     bands — never ``False``, which would read as a measured failure, and never
     ``True``, which the compact-cloud rule already forbids fabricating."""
     v2host.save_v2_state({"session_id": "cap_x", "verify_priors": None})
@@ -3489,7 +3489,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     })
     prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
-    assert prediction["overall_passed"] is None
+    assert prediction["overall_within_target"] is None
     assert prediction["spec_bands"] == []
     assert prediction["reference_db"] is None
 
@@ -3508,7 +3508,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     any later refusal between the stash and ``commit_intervention_proposal``
     reproduces the shape.
 
-    The rendering is what must not regress. ``overall_passed`` is a REAL
+    The rendering is what must not regress. ``overall_within_target`` is a REAL
     ``False``, not the ``None`` that means unknown, and there is no curve to
     draw beside it — the state a review screen is most likely to get wrong.
 
@@ -3530,7 +3530,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     # The pre-burn-down pairing, stated directly: item 2 graded the prediction
     # and stashed the report, then refused before any curve was committed.
     conductor._measure_predicted_spec_report = {
-        "overall_passed": False,
+        "overall_within_target": False,
         "reference_db": 0.0,
         "bands": [{
             "f_lo_hz": 200.0, "f_hi_hz": 2000.0, "tolerance_db": 3.0,
@@ -3561,7 +3561,7 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
     prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"] is None
     # A graded miss, NOT an ungradeable unknown.
-    assert prediction["overall_passed"] is False
+    assert prediction["overall_within_target"] is False
     assert prediction["spec_bands"]
     assert prediction["reference_db"] is not None
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -3793,7 +3793,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
                 "geometry": {"locked": False},
                 "pipeline": {
                     "available": True,
-                    "spec": {"overall_passed": False, "bands": []},
+                    "spec": {"overall_within_target": False, "bands": []},
                     "merged_excluded_bands_hz": [],
                 },
                 "session_id": "cap_graded_cloud",
@@ -3861,7 +3861,7 @@ def _honest_result_state(
             },
         },
         "verify_priors": {"predicted_spec": {
-            "overall_passed": False, "bands": [],
+            "overall_within_target": False, "bands": [],
             "comparison": {
                 "reason": (
                     "improved" if improvement >= 0.5
@@ -3961,7 +3961,7 @@ def _no_sweep_state(*, fc_selection=None):
             },
         },
         "verify_priors": {"predicted_spec": {
-            "overall_passed": False, "bands": [],
+            "overall_within_target": False, "bands": [],
             "comparison": {
                 "reason": "improved", "baseline_rms_db": 2.0,
                 "selected_rms_db": 1.2, "improvement_db": 0.8, "required_db": 0.5,
@@ -4144,7 +4144,7 @@ def _closed_cloud_group(*, passed, flatness=_NO_GAUGE):
     """A closed post-apply group in DURABLE shape, as the conductor writes it."""
     pipeline = {
         "available": True,
-        "spec": {"overall_passed": passed, "bands": []},
+        "spec": {"overall_within_target": passed, "bands": []},
         # Four excluded intervals — the jts3 2026-08-07 shape.
         "merged_excluded_bands_hz": [
             [1400.0, 1900.0], [3000.0, 3200.0], [5000.0, 5400.0], [9000.0, 9600.0],
@@ -4171,7 +4171,7 @@ _GRADED_AND_FAILED_FLATNESS = {
 def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     """#2160 — the jts3 2026-08-07 shape, reproduced.
 
-    ``overall_passed=False`` reaches ``GRADE_GRADED`` because a
+    ``overall_within_target=False`` reaches ``GRADE_GRADED`` because a
     graded-and-failed group IS graded, and every consuming surface read that
     state name as a clean result: doctor printed ``applied and graded
     (state=graded, verify=pass)`` beside a cloud line reading ``spec=fail
@@ -4258,7 +4258,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             id="an-ungradeable-group-is-not-a-failure",
         ),
         # Unmeasurable is claimed only on POSITIVE evidence: a state written
-        # before the gauge shipped carries a real ``overall_passed=False`` and
+        # before the gauge shipped carries a real ``overall_within_target=False`` and
         # no ``flatness``, and downgrading that on the ABSENCE of an instrument
         # is the fabricated reading pointed the other way.
         pytest.param(

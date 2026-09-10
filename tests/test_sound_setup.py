@@ -4492,6 +4492,38 @@ def test_sound_channel_protection_route_accepts_software_guard_request(
     }
 
 
+def test_sound_channel_protection_present_false_gets_the_same_guard_upgrade(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """#2162: writing ``protection_present: false`` through the
+    channel-protection route must not bypass the software-guard upgrade the
+    topology-save path applies (`_save_output_topology_payload`) -- a
+    channel stuck at ``required_missing`` is a ``tweeter_protection_unverified``
+    blocker ``safe_graph_for_current_topology`` refuses, and deploys fail."""
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(protection_status="present")
+    )
+
+    payload = sound_setup._active_speaker_channel_protection_save_payload({
+        "speaker_group_id": "mono",
+        "role": "tweeter",
+        "protection_present": False,
+    })
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    tweeter = saved["speaker_groups"][0]["channels"][1]
+
+    # Upgraded, not stuck at the raw write -- the same outcome
+    # `_save_output_topology_payload` produces for the identical request.
+    assert tweeter["protection_status"] == "software_guard_requested"
+    blockers = {
+        issue["code"] for issue in payload["output_topology"]["evaluation"]["blockers"]
+    }
+    assert "tweeter_protection_unverified" not in blockers
+
+
 @pytest.mark.parametrize(
     "raw",
     [

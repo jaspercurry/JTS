@@ -8,7 +8,7 @@ Three views, all derived from a report
 :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` already
 produced. Nothing here grades anything — no pass/fail, no tolerance, no
 re-deciding band membership, the reference frame or the trusted floor
-(that stays ``FlatSpecReport.overall_passed``, #1868). They remove two
+(that stays ``FlatSpecReport.overall_within_target``, #1868). They remove two
 properties of the shipped pooling: a linear grid read by a logarithmic ear
 (:func:`log_pooled_residual`) and every position pooled equally regardless
 of role (:func:`role_split_flatness`, :func:`directivity_table`). Which

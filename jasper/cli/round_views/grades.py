@@ -59,20 +59,20 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     # reason `seats._cmd_agreement` states: an UNEVALUABLE band (no
     # non-excluded bin survived) is not a failing one, and collapsing them
     # would report a band nobody could measure as one that measured badly.
-    n_failed = sum(1 for band in report.bands if band.passed is False)
-    n_unevaluable = sum(1 for band in report.bands if band.passed is None)
+    n_failed = sum(1 for band in report.bands if band.within_target is False)
+    n_unevaluable = sum(1 for band in report.bands if band.within_target is None)
     ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
     epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
     return answer(
         args.command, out=written, graded=True, bands=len(report.bands),
         outside_target=n_failed, unevaluable=n_unevaluable,
-        overall_passed=report.overall_passed, round_ordinal=grade.round_ordinal,
+        overall_within_target=report.overall_within_target, round_ordinal=grade.round_ordinal,
         round_ordinal_epoch=grade.round_ordinal_epoch,
         graph_fingerprint=grade.graph_fingerprint or None,
         line=(
             f"entry-state: {len(report.bands)} band(s), {n_failed} outside target, "
             f"{n_unevaluable} unevaluable; "
-            f"overall_passed={report.overall_passed} "
+            f"overall_within_target={report.overall_within_target} "
             f"round={ordinal} epoch={epoch} "
             f"graph={grade.graph_fingerprint or '(not recorded)'}"
             f"{f' -> {written}' if written else ''}"

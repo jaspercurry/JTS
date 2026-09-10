@@ -2205,8 +2205,9 @@ def assemble_cloud_group_result(
       inflate it. Each band discloses ``graded_lo_hz``/``graded_hi_hz`` beside
       its nominal row.
     * A band left entirely outside the trusted range is ``evaluable=False``,
-      never ``passed=False`` — there is no evidence there, which is not a
-      failure. ``overall_passed`` still treats unevaluable as not-passed.
+      never ``within_target=False`` — there is no evidence there, which is not
+      a failure. ``overall_within_target`` still treats unevaluable as not-
+      within-target.
     * A ``None`` floor or ceiling clamps NOTHING and is reported as ``None``,
       rather than withholding the evidence above an unverified edge.
 
@@ -2279,7 +2280,7 @@ def assemble_cloud_group_result(
         )
         # Hand the LIVE report to a caller that needs the object rather than
         # the serialized copy below: ``to_dict`` flattens away
-        # ``overall_passed`` and each band's ``evaluable``/``passed``, and
+        # ``overall_within_target`` and each band's ``evaluable``/``within_target``, and
         # re-evaluating from ``combined`` would be a second owner of the merged
         # honesty mask. A sink rather than a second return value, because every
         # other caller reads the dict.

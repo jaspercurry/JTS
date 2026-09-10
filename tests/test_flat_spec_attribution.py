@@ -175,11 +175,11 @@ def _verdict_tuple(name: str) -> tuple:
                 (
                     b.f_lo_hz, b.f_hi_hz, b.tolerance_db,
                     b.max_deviation_db, b.max_deviation_hz, b.rms_deviation_db,
-                    b.n_bins, b.n_excluded, b.evaluable, b.passed,
+                    b.n_bins, b.n_excluded, b.evaluable, b.within_target,
                 )
                 for b in report.bands
             ),
-            report.overall_passed,
+            report.overall_within_target,
             (
                 gauge.max_db, gauge.max_hz, gauge.max_band_hz, gauge.tolerance_db,
                 gauge.rms_db, gauge.n_bins, gauge.n_excluded,
@@ -207,8 +207,8 @@ def _verdict_tuple(name: str) -> tuple:
 #
 #   (reference_db,
 #    ((f_lo, f_hi, tolerance, max_dev_db, max_dev_hz, rms_dev_db,
-#      n_bins, n_excluded, evaluable, passed), ... one per SPEC_BANDS entry),
-#    overall_passed,
+#      n_bins, n_excluded, evaluable, within_target), ... one per SPEC_BANDS entry),
+#    overall_within_target,
 #    (gauge max_db, max_hz, max_band_hz, tolerance_db, rms_db,
 #     n_bins, n_excluded, evaluable, passed))
 #
@@ -290,8 +290,8 @@ def test_the_pointer_names_the_band_that_is_actually_dark():
 
     # ...and the two dark bands are the ones that fail, while the flat
     # woofer band passes.
-    assert woofer.passed is True
-    assert mid.passed is False and top.passed is False
+    assert woofer.within_target is True
+    assert mid.within_target is False and top.within_target is False
 
     # The frame is the woofer band itself, so it can no longer be dragged
     # away from it by a different driver's deficit.
@@ -328,7 +328,7 @@ def test_darkening_only_the_tweeter_leaves_the_untouched_woofers_number_alone():
         tilt = spec_band_tilt(report)
         assert tilt.step_db == pytest.approx(depth_db, abs=0.25)
         # ...and the woofer band never fails for someone else's deficit.
-        assert report.bands[0].passed is True
+        assert report.bands[0].within_target is True
 
     # Byte-identical, not merely "close": the reference is pooled over bins
     # none of which moved, so nothing charged to the woofer moved either.
@@ -359,17 +359,17 @@ def test_no_graded_number_moved_on_any_corpus_shape(shape):
     expected_reference_db, expected_bands, expected_overall, expected_gauge = (
         VERDICT_GOLDEN[shape]
     )
-    reference_db, bands, overall_passed, gauge = _verdict_tuple(shape)
+    reference_db, bands, overall_within_target, gauge = _verdict_tuple(shape)
 
     assert reference_db == pytest.approx(
         expected_reference_db, abs=_VERDICT_TOLERANCE_DB
     )
-    assert overall_passed is expected_overall
+    assert overall_within_target is expected_overall
     assert len(bands) == len(expected_bands)
     for band, expected in zip(bands, expected_bands):
         # Discrete first, so a failure names the verdict rather than a digit.
         assert band[8] is expected[8], "evaluable"
-        assert band[9] is expected[9], "passed"
+        assert band[9] is expected[9], "within_target"
         assert (band[0], band[1], band[2]) == (expected[0], expected[1], expected[2])
         assert (band[4], band[6], band[7]) == (expected[4], expected[6], expected[7])
         for index in (3, 5):
@@ -507,12 +507,12 @@ def test_the_tilt_needs_two_bands_and_never_fabricates_a_step():
     band = BandResult(
         f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
         max_deviation_db=1.0, max_deviation_hz=400.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, passed=True,
+        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
         level_deviation_db=1.0, max_ripple_db=0.0, max_ripple_hz=400.0,
     )
     tilt = spec_band_tilt(
         FlatSpecReport(
-            reference_db=-30.0, bands=(band,), overall_passed=True,
+            reference_db=-30.0, bands=(band,), overall_within_target=True,
             excluded_intervals=(), best_effort_above_hz=16000.0,
             smoothing_fraction=3,
         )
@@ -531,17 +531,17 @@ def test_a_band_with_no_measured_level_is_skipped_not_defaulted_to_zero():
     levelled = BandResult(
         f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
         max_deviation_db=1.0, max_deviation_hz=400.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, passed=True,
+        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
         level_deviation_db=4.0, max_ripple_db=0.0, max_ripple_hz=400.0,
     )
     legacy = BandResult(
         f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0,
         max_deviation_db=1.0, max_deviation_hz=3000.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, passed=True,
+        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
     )
     tilt = spec_band_tilt(
         FlatSpecReport(
-            reference_db=-30.0, bands=(levelled, legacy), overall_passed=True,
+            reference_db=-30.0, bands=(levelled, legacy), overall_within_target=True,
             excluded_intervals=(), best_effort_above_hz=16000.0,
             smoothing_fraction=3,
         )
@@ -558,7 +558,7 @@ def test_an_exact_tie_between_pairs_resolves_to_the_lowest_pair():
         return BandResult(
             f_lo_hz=lo, f_hi_hz=hi, tolerance_db=1.5,
             max_deviation_db=level_db, max_deviation_hz=lo, rms_deviation_db=0.0,
-            n_bins=10, n_excluded=0, evaluable=True, passed=True,
+            n_bins=10, n_excluded=0, evaluable=True, within_target=True,
             level_deviation_db=level_db, max_ripple_db=0.0, max_ripple_hz=lo,
         )
 
@@ -569,7 +569,7 @@ def test_an_exact_tie_between_pairs_resolves_to_the_lowest_pair():
             reference_db=0.0,
             bands=(_band(250.0, 2000.0, 2.0), _band(2000.0, 8000.0, 0.0),
                    _band(8000.0, 16000.0, 2.0)),
-            overall_passed=True, excluded_intervals=(),
+            overall_within_target=True, excluded_intervals=(),
             best_effort_above_hz=16000.0, smoothing_fraction=3,
         )
     )
@@ -632,14 +632,14 @@ def test_an_ungradeable_report_reports_no_split_rather_than_zero():
         return BandResult(
             f_lo_hz=lo, f_hi_hz=hi, tolerance_db=tolerance_db,
             max_deviation_db=None, max_deviation_hz=None, rms_deviation_db=None,
-            n_bins=12, n_excluded=12, evaluable=False, passed=None,
+            n_bins=12, n_excluded=12, evaluable=False, within_target=None,
         )
 
     gauge = spec_flatness_gauge(
         FlatSpecReport(
             reference_db=-30.0,
             bands=tuple(_unevaluable(*band) for band in SPEC_BANDS),
-            overall_passed=False, excluded_intervals=(),
+            overall_within_target=False, excluded_intervals=(),
             best_effort_above_hz=16000.0, smoothing_fraction=3,
         )
     )
@@ -658,7 +658,7 @@ def test_the_no_tilt_default_is_a_null_object_not_a_reading():
     )
     bare = spec_flatness_gauge(
         FlatSpecReport(
-            reference_db=0.0, bands=(), overall_passed=False,
+            reference_db=0.0, bands=(), overall_within_target=False,
             excluded_intervals=(), best_effort_above_hz=16000.0,
             smoothing_fraction=3,
         )

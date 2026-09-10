@@ -258,7 +258,7 @@ def _patch_v2_state(monkeypatch, state):
 def _cloud_group(*, passed, locked=False, excluded=(), flatness=None):
     pipeline: dict[str, object] = {
         "available": True,
-        "spec": {"overall_passed": passed, "bands": []},
+        "spec": {"overall_within_target": passed, "bands": []},
         "merged_excluded_bands_hz": list(excluded),
     }
     if flatness is not None:

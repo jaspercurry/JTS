@@ -724,7 +724,7 @@ def _failing_spec_report(analysis):
         np.asarray(analysis.summed_response.magnitude_db, dtype=float) * 8.0,
         np.zeros(hz.size, dtype=bool),
     )
-    assert report.overall_passed is False
+    assert report.overall_within_target is False
     return report
 
 

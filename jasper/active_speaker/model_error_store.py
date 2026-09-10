@@ -169,7 +169,7 @@ def load_state(path: str | Path | None = None) -> dict[str, Any]:
         raw = json.loads(resolved.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return _base_state(resolved)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         log_event(
             logger,
             "active_speaker.model_error_store_unreadable",

@@ -72,7 +72,7 @@ def _report(
             n_bins=n_bins,
             n_excluded=excluded,
             evaluable=rms is not None,
-            passed=None if rms is None else True,
+            within_target=None if rms is None else True,
             graded_lo_hz=graded_lo,
         )
         for (f_lo, f_hi, graded_lo, n_bins), rms in zip(CORPUS_BANDS, rms_per_band, strict=True)
@@ -80,7 +80,7 @@ def _report(
     return FlatSpecReport(
         reference_db=-24.0,
         bands=bands,
-        overall_passed=False,
+        overall_within_target=False,
         excluded_intervals=intervals,
         best_effort_above_hz=16000.0,
         smoothing_fraction=3,
@@ -440,8 +440,8 @@ def test_no_view_publishes_a_verdict() -> None:
     ]
     for payload in payloads:
         blob = json.dumps(payload)
-        assert '"passed"' not in blob
-        assert '"overall_passed"' not in blob
+        assert '"within_target"' not in blob
+        assert '"overall_within_target"' not in blob
         assert '"tolerance_db"' not in blob
 
 

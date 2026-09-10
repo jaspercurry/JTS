@@ -1835,14 +1835,14 @@ def test_the_entry_grade_carries_a_per_band_table(tmp_path):
         row[2] for row in flat_spec.SPEC_BANDS
     ]
     assert all(band.evaluable for band in report.bands)
-    assert report.overall_passed is True
+    assert report.overall_within_target is True
 
 
 def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
     """Discriminating: the grade tracks the curve, not the fixture.
 
     A treble shelf far outside the top band's tolerance must fail THAT band and
-    leave the others passing — a door returning a canned "passed" report, or
+    leave the others passing — a door returning a canned "within_target" report, or
     grading somebody else's curve, cannot produce this shape.
     """
     curve = _flat_curve()
@@ -1852,11 +1852,11 @@ def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
     report = entry_state_grade(banked).report
 
     assert report is not None
-    assert report.overall_passed is False
+    assert report.overall_within_target is False
     by_edge = {band.f_lo_hz: band for band in report.bands}
-    assert by_edge[8000.0].passed is False
+    assert by_edge[8000.0].within_target is False
     assert all(
-        band.passed is True for lo, band in by_edge.items() if lo != 8000.0
+        band.within_target is True for lo, band in by_edge.items() if lo != 8000.0
     )
 
 
@@ -1880,7 +1880,7 @@ def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
         _round_with_entry_baseline(tmp_path / "b", magnitude_db=curve, excluded=spike)
     )
 
-    assert entry_state_grade(unmasked).report.overall_passed is False
+    assert entry_state_grade(unmasked).report.overall_within_target is False
     masked_report = entry_state_grade(masked).report
     assert masked_report is not None
     # The masked band has no evidence left, so it is UNEVALUABLE — never a
@@ -1888,8 +1888,8 @@ def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
     # it rather than restating it.
     by_edge = {band.f_lo_hz: band for band in masked_report.bands}
     assert by_edge[8000.0].evaluable is False
-    assert by_edge[8000.0].passed is None
-    assert by_edge[250.0].passed is True
+    assert by_edge[8000.0].within_target is None
+    assert by_edge[250.0].within_target is True
 
 
 def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
@@ -2529,7 +2529,7 @@ def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
     # RoundCapturesRefused this round actually hit.
     assert stamped.bands[0].gate_sensitivity_detail["reason"] == REFUSE_NO_CAPTURES
     assert stamped.gate_sweep_frame is None
-    assert stamped.overall_passed == report.overall_passed
+    assert stamped.overall_within_target == report.overall_within_target
 
 
 def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
@@ -2573,9 +2573,9 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     assert np.isfinite(low["gate_sensitivity_db"])
     # The verdict is the round's OWN, re-read and not re-graded.
     banked = load_banked_round(round_dir).graded_report
-    assert spec["overall_passed"] == banked.overall_passed
+    assert spec["overall_within_target"] == banked.overall_within_target
     assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
-    assert low["passed"] == banked.bands[0].passed
+    assert low["within_target"] == banked.bands[0].within_target
 
 
 # --------------------------------------------------------------------------- #
