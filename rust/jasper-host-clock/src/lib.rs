@@ -23,56 +23,24 @@
 //!
 //! # Two controllers in cascade
 //!
-//! With the feature enabled, the fan-in `lane_resampler` (fast inner loop) and
-//! this pitch servo (slow outer loop) both discipline the same audio chain: the
-//! inner loop absorbs residual + jitter, the outer loop removes the standing
-//! rate offset at its source (the host). The inner loop's constants below are
-//! what the outer law's gain was chosen against:
+//! With the feature enabled, the fan-in `lane_resampler` (fast inner loop,
+//! `jasper_clock::DllConfig::for_rate(256, 48000)`, bandwidth clamped to
+//! `[0.016, 0.128] Hz`) absorbs residual + jitter, while this pitch servo
+//! (slow outer loop, [`CORRECTION_INTEGRAL_GAIN`] ticked once per
+//! [`TICK_INTERVAL_MS`]) removes the standing rate offset at the host.
+//! Deliberately not a DLL — ADR-0109 owns that decision and the limit cycle
+//! it was reproduced against. The slow settle avoids ringing against
+//! `usbaudio2.sys`'s ~163 ppm reaction deadband.
 //!
-//! ## Inner loop
+//! On entering `L0_LOCKED` the commanded bias is seeded with
+//! `-baseline_slope` (feed-forward) so the slow integral trim, alone too
+//! slow to null a standing offset before the 3×256-frame gadget ring rails,
+//! only has to remove the residual.
 //!
-//! `rust/jasper-fanin/src/lane_resampler.rs` builds
-//! `jasper_resampler::RateController::with_max_resync(max_ppm, period_frames,
-//! sample_rate, Some(0.0))`, whose loop is
-//! `jasper_clock::DllConfig::for_rate(256, 48000)` (JASPER_FANIN_PERIOD_FRAMES
-//! defaults to 256; sample_rate 48000). It is updated once per rendered period,
-//! i.e. every `256 / 48000 s ≈ 5.33 ms`. In the spa_dll formulation the config
-//! `bw` IS the closed-loop bandwidth in Hz, adaptively clamped to
-//! `[BW_MIN, BW_MAX] = [0.016, 0.128] Hz` (jasper-clock `lib.rs`). Its locked
-//! floor is **0.016 Hz**; its acquiring maximum is **0.128 Hz**.
-//!
-//! ## Outer loop (this module)
-//!
-//! A pure-integral law ([`CORRECTION_INTEGRAL_GAIN`]) ticked once per
-//! [`TICK_INTERVAL_MS`], deliberately NOT a DLL — ADR-0109 owns that decision
-//! and the limit cycle it was reproduced against, and that constant carries the
-//! plant analysis and the measured stability margin. The slow settle is
-//! deliberate: PipeWire's docs warn UAC2 pitch oscillates at a normal DLL
-//! bandwidth, and Windows `usbaudio2.sys` reacts with a ~163 ppm deadband, so a
-//! wide/fast outer loop would ring against the host.
-//!
-//! ## Feed-forward so the slow loop does not rail the 3-period ring
-//!
-//! The slow trim alone would take far longer to null a standing offset than the
-//! tiny 3×256-frame gadget ring can absorb, so the probe's neutral baseline
-//! phase measures the raw host rate offset and, on entering `L0_LOCKED`, seeds
-//! the commanded bias with `-baseline_slope` (feed-forward). Coarse correction
-//! is immediate; the integral trim only removes the residual.
-//!
-//! ## The falsifier
-//!
-//! `fill_variance` (EW variance of the gadget fill) and `fill_slope_ppm` are
-//! published every MEASURED tick so a soak can DETECT a cascade limit-cycle: a
-//! two-controller oscillation shows up as periodic fill variance. If a soak
-//! ever shows one, lower [`CORRECTION_INTEGRAL_GAIN`] or disable — the
-//! mechanism ships default-OFF for exactly this reason.
-//!
-//! A tick with [`Obs::steady`] false is NOT measured, so `fill_frames`,
-//! `fill_slope_ppm`, `fill_variance` and `correction_ppm` hold their
-//! previous values — a soak reading them as live would mistake a hold for a
-//! flat trace. The status fragment's `hold` object tells the two apart; it
-//! counts only while a session is active, since an idle lane is not playing at
-//! all and has no declared ramp to hold for.
+//! `fill_variance` and `fill_slope_ppm` are published every MEASURED tick so
+//! a soak can detect a two-controller limit cycle (periodic fill variance);
+//! a tick with [`Obs::steady`] false holds its previous values instead
+//! (the `hold` status field distinguishes a hold from a flat trace).
 //!
 //! # Cross-platform conditions
 //!
@@ -81,16 +49,10 @@
 //!   ~163 ppm reaction deadband and IGNORES commanded values outside roughly
 //!   nominal ±1 sample/interval, so the steady-state commanded bias MUST stay
 //!   inside a ±1000 ppm validity window (enforced by [`MAX_BIAS_PPM`]).
-//! - Both react slowly ⇒ the deliberately slow outer loop above (one tick per
-//!   [`TICK_INTERVAL_MS`], gain [`CORRECTION_INTEGRAL_GAIN`]).
 //!
-//! The host OS or the playing application can change between sessions (a Mac
-//! unplugged and a Windows box plugged in; an app that opens the endpoint in a
-//! mode that pins the rate), so compliance is re-measured on every
-//! `(host_connected && playing)` edge rather than trusted once at boot.
-//!
-//! Prior art: Pavel Hofman's `gaudio_ctl` demonstrates the gadget-side pitch
-//! actuator.
+//! Compliance is re-measured on every `(host_connected && playing)` edge
+//! (not trusted once at boot) since the host OS or app can change between
+//! sessions.
 
 // ---- Pinned non-env constants (tests assert these) -------------------------
 
@@ -189,26 +151,16 @@ const _: () = assert!(CORRECTION_INTEGRAL_GAIN > 0.0 && CORRECTION_INTEGRAL_GAIN
 /// Fixed, not env-tunable.
 pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
 
-/// CORRECTION-mode probe: how far the baseline observable must be from zero (in
-/// ppm, toward a rail) before the probe steps AWAY from that rail instead of
-/// always stepping `+probe_ppm`.
+/// CORRECTION-mode probe: how far the baseline observable must be from zero
+/// (in ppm, toward a rail) before the probe steps AWAY from that rail
+/// instead of always stepping `+probe_ppm`. Below this deadband the probe
+/// keeps the default `+probe_ppm` step (the common near-zero Mac case).
 ///
-/// The inner resampler's correction authority is only ±500 ppm. If the host's
-/// crystal already sits near one rail (say +450 ppm, so baseline correction
-/// ≈ +450), a fixed `+probe_ppm` step pushes a compliant host past +500 where the
-/// inner correction CLAMPS — so the observable can only move the ~50 ppm of
-/// remaining headroom and the response_ratio false-negatives (+0.19–0.33 against
-/// the real loop, FAIL, feature silently dead for that host). Worse, a
-/// headroom-normalized verdict then over-credits a NON-compliant near-rail host
-/// (its natural crystal drift pushes correction the same
-/// way). The physical fix: step AWAY from the nearer rail — command the host
-/// SLOWER when its baseline correction is strongly positive, FASTER when strongly
-/// negative — so a compliant response always has authority to show and a non-
-/// compliant host's natural drift runs OPPOSITE the step (clearly negative ratio).
-/// The verdict then normalizes by the SIGNED step actually applied, so compliant
-/// → +1 in either direction. This deadband keeps the default `+probe_ppm` step for
-/// near-zero baselines (the common Mac case) and only flips direction when the
-/// baseline is genuinely near a rail.
+/// The inner resampler's correction authority is only ±500 ppm, so a fixed
+/// `+probe_ppm` step on a host already near a rail would clamp the
+/// observable and false-negative a compliant host. Stepping away from the
+/// nearer rail instead keeps headroom for a compliant response to show,
+/// while a non-compliant host's own drift then runs opposite the step.
 pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
 
 // The ladder's nominal frame rate, in Hz: it scales its per-tick frame count as
