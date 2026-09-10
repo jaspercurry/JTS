@@ -12,8 +12,10 @@
 **This is a frozen snapshot.** It is not edited after landing work — see
 `docs/DEEP-AUDIT-PLAYBOOK.md`'s "immutable snapshot vs live ledger" rule.
 Disposition of every finding below lives in GitHub issues labelled
-`audit-2026-09-09` (plus the generic `audit` label), never in edits to this
-file. See [docs/audits/README.md](README.md) for how the archive works.
+`audit-2026-09-09` (plus the generic `audit` label), tracked on issue
+#4775, never in edits to this file. Evidence tarball: release tag
+[`audit-evidence-2026-09-09`](https://github.com/jaspercurry/JTS/releases/tag/audit-evidence-2026-09-09).
+See [docs/audits/README.md](README.md) for how the archive works.
 
 ---
 
@@ -26,7 +28,7 @@ frozen finding plus what landed against it in the 2026-09-10 landing lane.
 | id | file:function | what | fix size | landed as | status |
 |---|---|---|---:|---|---|
 | F-T27-1 / R-008 | `jasper/voice/output_gate.py:89-107 begin_turn` | Two awaits have no timeout; a measurement pause can hold the wake path deaf up to 120 s with no cue. | +20 | — | **Deferred.** Three designs failed adversarial review (preempt-without-cancel interleaves two TTS segments; duck-restore gated on `is_current` leaves music ducked; a flat 10 s bound breaks turns that used to succeed). Owner ruling: belongs to a future barge-in change, not opened now. |
-| F-T33-1 | `jasper/voice/daemon_main.py:1261-1270` | `SpeechVADSetupError` exits 78 with no `_announce_park_at_boot`; the unit makes 78 a permanent, silent park. | +1 | `audit/voice-deafness-cues` (PR #4694) | **Pushed, not merged.** Commit `11cc6a80a` adds `_announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)` before the exit and splits R-008 out of the same branch. Owner parked the PR in draft; un-drafting lands only the two boot-park cues. |
+| F-T33-1 | `jasper/voice/daemon_main.py:1261-1270` | `SpeechVADSetupError` exits 78 with no `_announce_park_at_boot`; the unit makes 78 a permanent, silent park. | +1 | `audit/voice-deafness-cues` (PR #4694) | **In review (out of draft 2026-09-10).** Commit `11cc6a80a` adds `_announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)` before the exit and splits R-008 out of the same branch. |
 | F-T30-1 / R-005 | `jasper/wake_corpus/recording_backend.py:1452` | `_stop_retry_attempts` increments forever; `min()` bounds only the delay, not the count. | ~-250 | PR #4671 (`claude/triage-0909-voice`) | **Fixed independently.** `STOP_RETRY_MAX_ATTEMPTS` and an abandonment path landed 2026-09-09 via commit `4d38711ce`, ancestor of audit SHA `53a883808` on the receiving end (fix lands after the audited commit, from an unrelated voice-triage lane, not the audit-landing wave). |
 | R-012 / F-T20-8 | `jasper/identity/speaker_name_discovery.py:148-210 find_bluetooth_conflicts` | Four D-Bus calls with no timeout run on the `/speaker/` POST handler thread. | +2 | PR #4687 | **Merged.** `asyncio.timeout` around the body; new `identity.bluetooth_scan_timeout` event. |
 | F-S5-1 | `jasper/peering/state.py:288-294,409-413`, `peering/daemon.py:290-296` | Three terminal paths return `[]` with an RPC in flight; the future expires into `decision="WIN"`, so both speakers answer one wake. | +9/-3 | PR #4688 | **Merged.** Every terminal path resolves `StandDown`; epoch guard dropped. |
@@ -35,7 +37,7 @@ frozen finding plus what landed against it in the 2026-09-10 landing lane.
 | F-S4-1 | `jasper/control/handlers/volume.py:108,151,295` | Three volume handlers and the voice tools bypass the measurement hold; only `/volume/set` with a `source` field declined. | +20/-2 | PR #4689 | **Merged.** Measurement hold declines every authoritative level write across all three handlers; mute stays open; own `volume.write_refused_measurement_hold` vocabulary. |
 
 Six of eight now land in `main`. F-T30-1 landed by coincidence from an
-unrelated lane. F-T33-1's cue landed on a pushed branch still in draft.
+unrelated lane. F-T33-1's cue is in review (out of draft 2026-09-10).
 F-T27-1 / R-008 is the one deliberately open decision — see §5.
 
 ---
