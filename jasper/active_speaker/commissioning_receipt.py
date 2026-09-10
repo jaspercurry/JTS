@@ -25,6 +25,7 @@ from jasper.audio_measurement.evidence_identity import (
     CaptureIdentity,
     EvidenceIdentityError,
     ExactDspStateIdentity,
+    FingerprintedRecord,
     NormalizedActiveRawIdentity,
     json_fingerprint,
 )
@@ -224,7 +225,7 @@ def _admission_id_from_role_path(
 
 
 @dataclass(frozen=True)
-class RequiredVerificationTarget:
+class RequiredVerificationTarget(FingerprintedRecord):
     """One topology-derived fixed reference-axis verification target."""
 
     speaker_group_id: str
@@ -267,9 +268,6 @@ class RequiredVerificationTarget:
             "placement_fingerprint": self.placement_fingerprint,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "RequiredVerificationTarget":
         value = _strict_serialized_object(
@@ -297,7 +295,7 @@ class RequiredVerificationTarget:
 
 
 @dataclass(frozen=True)
-class RequiredTargetPlan:
+class RequiredTargetPlan(FingerprintedRecord):
     """Canonical exact target set derived from one immutable topology."""
 
     topology: OutputTopology
@@ -393,9 +391,6 @@ class RequiredTargetPlan:
             "topology_fingerprint": self.topology_fingerprint,
             "targets": [target.to_dict() for target in self.targets],
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_topology(
@@ -515,7 +510,7 @@ class RequiredTargetPlan:
 
 
 @dataclass(frozen=True)
-class AppliedCandidateProof:
+class AppliedCandidateProof(FingerprintedRecord):
     """Positive candidate→applied fresh-readback and protection authority.
 
     Expected and observed graphs are typed, versioned normalized ``active_raw``
@@ -593,9 +588,6 @@ class AppliedCandidateProof:
             "protection_proof_fingerprint": self.protection_proof_fingerprint,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "AppliedCandidateProof":
         fields = frozenset(
@@ -643,7 +635,7 @@ class AppliedCandidateProof:
 
 
 @dataclass(frozen=True)
-class CommissioningRollbackEvidence:
+class CommissioningRollbackEvidence(FingerprintedRecord):
     """Typed mutation outcome and exact-state rollback evidence.
 
     ``attempted`` means the mutation call began without a confirmed applied
@@ -828,9 +820,6 @@ class CommissioningRollbackEvidence:
             "failure_code": self.failure_code,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningRollbackEvidence":
         fields = frozenset(
@@ -906,7 +895,7 @@ def commissioning_context_fingerprint(
 
 
 @dataclass(frozen=True)
-class AdmittedCaptureProof:
+class AdmittedCaptureProof(FingerprintedRecord):
     """Typed positive admission proof for one exact captured artifact set.
 
     The trusted host issues this only after parsing the shared excitation
@@ -1078,9 +1067,6 @@ class AdmittedCaptureProof:
             "generation_artifact": self.generation_artifact.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "AdmittedCaptureProof":
         value = _strict_serialized_object(
@@ -1120,7 +1106,7 @@ class AdmittedCaptureProof:
 
 
 @dataclass(frozen=True)
-class PostApplyTargetVerification:
+class PostApplyTargetVerification(FingerprintedRecord):
     """Typed passing verdict over one exact three-capture target set."""
 
     speaker_group_id: str
@@ -1308,9 +1294,6 @@ class PostApplyTargetVerification:
             "admitted_captures": [proof.to_dict() for proof in self.admitted_captures],
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "PostApplyTargetVerification":
         value = _strict_serialized_object(
@@ -1385,7 +1368,7 @@ def _required_target_key(
 
 
 @dataclass(frozen=True)
-class CommissioningHardwareIdentity:
+class CommissioningHardwareIdentity(FingerprintedRecord):
     """The hardware a receipt's proof was taken on, as a portable key.
 
     Ruling S10 consequence (2): proof travels with the PROJECT, not the box.
@@ -1440,9 +1423,6 @@ class CommissioningHardwareIdentity:
             "mic_calibration_sha256": self.mic_calibration_sha256,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningHardwareIdentity":
         value = _strict_serialized_object(
@@ -1468,7 +1448,7 @@ class CommissioningHardwareIdentity:
 
 
 @dataclass(frozen=True)
-class CommissioningProofProvenance:
+class CommissioningProofProvenance(FingerprintedRecord):
     """When, on what build, from which bytes, and on what hardware.
 
     Every field states a fact about the PAST. Nothing here is consulted to
@@ -1528,9 +1508,6 @@ class CommissioningProofProvenance:
             "hardware_identity": self.hardware_identity.to_dict(),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningProofProvenance":
         value = _strict_serialized_object(
@@ -1565,7 +1542,7 @@ class CommissioningProofProvenance:
 
 
 @dataclass(frozen=True)
-class CommissioningEligibilityReceipt:
+class CommissioningEligibilityReceipt(FingerprintedRecord):
     """Positive authority: every exact topology target passed post-apply proof."""
 
     target_plan: RequiredTargetPlan
@@ -1782,9 +1759,6 @@ class CommissioningEligibilityReceipt:
             "rollback": self.rollback.to_dict(),
             "provenance": self.provenance.to_dict(),
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningEligibilityReceipt":

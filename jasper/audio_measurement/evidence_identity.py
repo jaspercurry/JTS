@@ -12,6 +12,7 @@ feature evidence.
 
 from __future__ import annotations
 
+import abc
 import hashlib
 import json
 import math
@@ -87,6 +88,25 @@ def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class FingerprintedRecord(abc.ABC):
+    """A frozen dataclass's `to_dict`: `_core()` plus its `fingerprint`.
+
+    Persisted receipts and evidence are read back through each type's
+    `from_mapping`, which expects exactly this shape -- changing it breaks
+    every already-written record.
+    """
+
+    __slots__ = ()
+    fingerprint: str
+
+    @abc.abstractmethod
+    def _core(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
