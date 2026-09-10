@@ -188,9 +188,10 @@ def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
 
         return _stop
 
-    def stop_safe() -> dict:
+    def stop_safe(reason: str = "operator_stop") -> dict:
+        tone = sound_active_speaker._active_speaker_stop_commission_tone(reason=reason)
         recorded.append("safe")
-        return {"status": "idle"}
+        return {"status": "idle", "commission_tone": tone}
 
     monkeypatch.setattr(
         sound_active_speaker, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
@@ -2193,6 +2194,53 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
     assert stopped["calibration_level"]["status"] == "reset_failed"
+
+
+def test_active_speaker_stop_route_stops_audible_commission_tone(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """#2912 gap 3: the household stop route must reach the audible commission
+    tone, not just the no-audio safety session."""
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
+        str(tmp_path / "calibration-level.json"),
+    )
+
+    tone_stops: list[str] = []
+    monkeypatch.setattr(
+        sound_active_speaker,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: tone_stops.append(reason)
+        or {"status": "stopped", "reason": reason},
+    )
+
+    stopped = sound_setup._active_speaker_stop_payload()
+
+    assert tone_stops == ["operator_stop"]
+    assert stopped["commission_tone"] == {
+        "status": "stopped",
+        "reason": "operator_stop",
+    }
+
+    # A topology-mutation caller (save/reset/repin) passes its own reason
+    # instead of relying on the "operator_stop" default, and the tone still
+    # stops exactly once.
+    tone_stops.clear()
+    stopped_for_save = sound_setup._active_speaker_stop_payload(
+        reason="output_topology_save"
+    )
+
+    assert tone_stops == ["output_topology_save"]
+    assert stopped_for_save["commission_tone"] == {
+        "status": "stopped",
+        "reason": "output_topology_save",
+    }
 
 
 def _active_speaker_mono_topology_payload(
