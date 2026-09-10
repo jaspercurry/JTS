@@ -62,6 +62,7 @@ from jasper.attribution.session_identity import (
     read_session_identity,
     stamp_session_identity,
 )
+from tests._log_events import event_fields, event_records
 
 _SESSION = SessionIdentity(
     session_id="7f54494228cc",
@@ -592,11 +593,11 @@ def test_an_attributable_record_with_an_unusable_band_is_refused_loudly(
         )
 
     assert findings == ()
-    assert "attribution.carve_out_promotion_refused" in caplog.text
-    assert "no usable band" in caplog.text
+    fields = event_fields(caplog, "attribution.carve_out_promotion_refused")
+    assert "no usable band" in fields["error"]
     # The offending values are quoted, so a reader does not have to re-derive
     # which edge was bad from the record.
-    assert "f_lo_hz=" in caplog.text and "f_hi_hz=" in caplog.text
+    assert "f_lo_hz=" in fields["error"] and "f_hi_hz=" in fields["error"]
 
 
 @pytest.mark.parametrize(
@@ -1158,14 +1159,14 @@ def test_a_malformed_banked_record_is_refused_loudly_not_raised(
 
     caplog.set_level(logging.WARNING, logger="jasper.attribution.promotion")
     assert _level_frame_finding(f_hi_hz=None) is None
-    assert "event=attribution.level_frame_promotion_refused" in caplog.text
-    assert "no usable band" in caplog.text
+    fields = event_fields(caplog, "attribution.level_frame_promotion_refused")
+    assert "no usable band" in fields["error"]
 
     caplog.clear()
     # A non-finite evidence value is the other reachable shape: ``Finding``
     # refuses it, and the refusal is reported rather than swallowed.
     assert _level_frame_finding(disagreement_db=float("nan")) is None
-    assert "event=attribution.level_frame_promotion_refused" in caplog.text
+    assert event_records(caplog, "attribution.level_frame_promotion_refused")
 
     # Not a mapping at all — the seam's own degenerate input.
     assert promote_level_frame_disagreement(

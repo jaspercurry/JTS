@@ -49,6 +49,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
 )
 from jasper.web import correction_crossover_v2 as v2host
+from tests._log_events import event_field_maps, event_fields
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
 
@@ -280,8 +281,10 @@ def test_an_unreadable_surface_nulls_only_itself_and_names_itself_once(caplog) -
     assert observed.graph_config_path == ANCHOR_PATH
     assert observed.graph_fingerprint
     assert observed.session_volume_db == -20.0
-    assert "event=active_speaker.capture_provenance" in caplog.text
-    assert "unreadable=main_volume_db" in caplog.text
+    (fields,) = event_field_maps(
+        caplog, "active_speaker.capture_provenance", result="incomplete"
+    )
+    assert fields["unreadable"] == "main_volume_db"
 
 
 def test_a_closed_session_volume_is_an_answer_not_an_unreadable_field(caplog) -> None:
@@ -318,7 +321,8 @@ def test_a_raising_surface_cannot_escape_into_the_capture(caplog) -> None:
 
     assert observed.graph_fingerprint is None
     assert observed.graph_kind == GRAPH_KIND_PROGRAM_ROUTING
-    assert "unreadable=graph.fingerprint" in caplog.text
+    fields = event_fields(caplog, "active_speaker.capture_provenance")
+    assert fields["unreadable"] == "graph.fingerprint"
 
 
 def test_an_unforeseen_exception_type_still_cannot_reach_the_capture(
@@ -348,7 +352,8 @@ def test_an_unforeseen_exception_type_still_cannot_reach_the_capture(
         )
 
     assert recorder.take() is None
-    assert "result=failed" in caplog.text
+    fields = event_fields(caplog, "active_speaker.capture_provenance")
+    assert fields["result"] == "failed"
 
 
 def test_no_recorder_is_a_silent_no_op_not_a_provenance_failure(caplog) -> None:
@@ -406,7 +411,8 @@ def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
         )
 
     assert recorder.take() is None
-    assert "result=failed" in caplog.text
+    fields = event_fields(caplog, "active_speaker.capture_provenance")
+    assert fields["result"] == "failed"
 
 
 # --------------------------------------------------------------------------- #
@@ -659,7 +665,9 @@ def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
     assert provenance["main_volume_db"] is None
     # The capture itself is intact — the rest of the record still landed.
     assert provenance["graph"]["kind"] == "tuning_measurement"
-    assert "result=volume_disagreement" in caplog.text
+    assert event_field_maps(
+        caplog, "active_speaker.capture_provenance", result="volume_disagreement"
+    )
 
 
 def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
