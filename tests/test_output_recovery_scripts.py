@@ -282,4 +282,36 @@ def test_unpark_copies_the_record_to_last_with_unparked_at_then_removes_it(
     assert fields["exit_status"] == "78"
     assert fields["reason"] == "recent"
     assert int(fields["unparked_at"]) > 0
-    assert f"event=outputd.unparked state={last}" in result.stderr
+    assert f"event=outputd.unparked state={last} preserved=1" in result.stderr
+
+
+def test_unpark_journals_preserved_0_when_the_last_write_fails(
+    tmp_path: Path,
+) -> None:
+    """preserved= reflects the ACTUAL .last write result, not an assumption:
+    a directory the script cannot write into must still remove the live park
+    record (fail-open) but journal preserved=0, not silently claim success."""
+    park_dir = tmp_path / "state"
+    park_dir.mkdir()
+    park = park_dir / "failure-reconcile.park"
+    park.write_text("parked_at=1000\nexit_status=78\nreason=recent\n")
+    env = os.environ.copy()
+    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
+    park_dir.chmod(0o500)  # read+execute, no write: tmp/.last/mv all fail
+
+    try:
+        result = subprocess.run(
+            [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+        )
+    finally:
+        park_dir.chmod(0o700)  # tmp_path cleanup needs write back
+
+    # The dir has no write bit: the final `rm -f` on the live record also
+    # fails silently (fail-open), so the record survives — a subsequent boot
+    # can still retry the copy rather than the record vanishing unpreserved.
+    assert park.exists()
+    assert not (park_dir / "failure-reconcile.park.last").exists()
+    assert (
+        f"event=outputd.unparked state={park_dir / 'failure-reconcile.park.last'} "
+        "preserved=0" in result.stderr
+    )

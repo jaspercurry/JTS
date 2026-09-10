@@ -851,6 +851,39 @@ def test_outputd_failure_reconcile_park_verdicts(
     assert result.speaker_silent is silent
 
 
+def test_outputd_failure_reconcile_park_ok_surfaces_last_park_age(
+    tmp_path, monkeypatch,
+):
+    """The healthy row names the most recently retired park (R15, #4416) when
+    jasper-outputd-unpark left a `.last` sibling; a fresh box with no `.last`
+    at all still reads as plain "carries no park record", nothing tolerated
+    as a KeyError."""
+    target = tmp_path / "failure-reconcile.park"
+    (tmp_path / "failure-reconcile.park.last").write_text(
+        "parked_at=1000\nexit_status=78\nreason=recent\nunparked_at=1200\n"
+    )
+    monkeypatch.setenv("JASPER_OUTPUTD_RECONCILE_PARK_STATE", str(target))
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake({
+            "jasper-outputd.service": _RUNNING,
+        }),
+    )
+
+    result = resilience.check_outputd_failure_reconcile_park()
+
+    assert result.status == "ok"
+    assert "last park" in result.detail
+
+
+def test_outputd_failure_reconcile_park_ok_tolerates_no_last_park(
+    tmp_path, monkeypatch,
+):
+    result = _park_check(monkeypatch, tmp_path, record=None, unit=_RUNNING)
+
+    assert result.status == "ok"
+    assert "last park" not in result.detail
+
+
 def test_outputd_failure_reconcile_park_skips_without_systemctl(
     tmp_path, monkeypatch,
 ):

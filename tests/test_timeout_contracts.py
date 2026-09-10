@@ -84,14 +84,16 @@ ALLOWLIST: dict[str, str] = {
         "interactive commissioning tool; `amixer sget` readback has no "
         "bound today. Operator present at the terminal."
     ),
-    "jasper/control/restart_broker.py:370": (
+    "jasper/control/restart_broker.py:387": (
         "_spawn_detached's Popen is fired-and-forgotten by the broker itself "
         "(a systemctl transition that can kill the broker before it answers) "
         "-- but its handle is captured into `proc` to hand to a daemon reaper "
-        "thread that calls proc.communicate() for the exit code/stderr, so "
-        "this walk cannot see it as fire-and-forget. The reaper thread is "
-        "daemon=True and the broker process itself does not block on it; a "
-        "wedged child leaks one thread, not a caller."
+        "thread, so this walk cannot see it as fire-and-forget. Its bound now "
+        "lives in _journal_detached_result's proc.communicate(timeout="
+        "_EXEC_TIMEOUT_CEILING_SEC), which kills the child and journals "
+        "restart_broker.deferred_reap_timeout on expiry -- a wedged child no "
+        "longer leaks the reaper thread forever, just delays its exit by the "
+        "ceiling."
     ),
     "jasper/cli/wake_enroll.py:246": (
         "systemctl(action, unit) restarts jasper-voice (Type=notify) "

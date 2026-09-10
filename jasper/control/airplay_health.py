@@ -50,12 +50,14 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_INTERVAL_SEC = 5.0
 JOURNAL_INTERVAL_SEC = 30.0
-# R21 (#4416): one journalctl fork per scanned unit per scan (JOURNAL_UNITS
-# below) adds up on an idle box with no AirPlay session in sight. Once no
-# session has been active for JOURNAL_IDLE_THRESHOLD_SEC, scans widen to
+# R21 (#4416): a journalctl fork per scan adds up on an idle box with no
+# AirPlay session in sight. Once no session has been active for
+# JOURNAL_IDLE_THRESHOLD_SEC, SHAIRPORT's scan widens to
 # JOURNAL_IDLE_INTERVAL_SEC; the connect-grace re-arm on the next
 # idle->active transition (_tick) puts the 30 s cadence right back for the
-# session that follows.
+# session that follows. CAMILLA's scan is unaffected — its short-read storm
+# detector fires on any source's audio path, not only AirPlay's, so it
+# always runs at JOURNAL_INTERVAL_SEC.
 JOURNAL_IDLE_THRESHOLD_SEC = 5 * 60.0
 JOURNAL_IDLE_INTERVAL_SEC = 120.0
 MPRIS_INTERVAL_SEC = 30.0
@@ -107,7 +109,6 @@ except (ValueError, OSError, AttributeError):
 SHAIRPORT_UNIT = "shairport-sync"
 CAMILLA_UNIT = "jasper-camilla"
 # Every unit one journalctl fork per scan covers.
-JOURNAL_UNITS = (SHAIRPORT_UNIT, CAMILLA_UNIT)
 CAMILLA_SHORT_READ_RE = re.compile(
     r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
 )
@@ -708,10 +709,17 @@ class AirPlayHealthSampler:
         self._current_camilla: dict[str, Any] | None = None
         self._current_link: dict[str, Any] | None = None
         self._last_sample_at: float | None = None
-        self._last_journal_scan_at = 0.0
+        # R21 (#4416) split the merged journal scan in two: the idle-widened
+        # cadence below is AirPlay-specific (shairport journal lines), so it
+        # must not also widen the camilla scan — camilla's short-read storm
+        # detector is unrelated to AirPlay activity and stays on the base
+        # cadence.
+        self._last_shairport_scan_at = 0.0
+        self._last_camilla_scan_at = 0.0
+        self._shairport_journal_since = self._time()
+        self._camilla_journal_since = self._time()
         self._last_mpris_sample_at = 0.0
         self._last_camilla_sample_at = 0.0
-        self._journal_since = self._time()
         self._last_fanin_counts: dict[str, Any] | None = None
         self._last_link_counts: dict[str, Any] | None = None
         self._last_receiver_counts: dict[str, Any] | None = None
@@ -812,18 +820,24 @@ class AirPlayHealthSampler:
         )
         suppress_events = suppress_base or in_connect_grace
 
-        # R21 (#4416): no session in sight for a while widens the scan
-        # cadence — the next idle->active transition re-arms the connect
-        # grace above, which covers the 30 s cadence resuming for it.
-        journal_interval = (
+        # R21 (#4416): no AirPlay session in sight for a while widens
+        # SHAIRPORT's scan cadence — the next idle->active transition
+        # re-arms the connect grace above, which covers the 30 s cadence
+        # resuming for it. Camilla's scan feeds the short-read storm
+        # detector, which fires on any source's audio path, so it stays on
+        # the base cadence regardless of AirPlay activity.
+        shairport_interval = (
             self._journal_idle_interval
             if now - self._last_airplay_active_at >= self._journal_idle_threshold
             else self._journal_interval
         )
         if suppress_events:
             self._advance_journal_cursor(now)
-        elif now - self._last_journal_scan_at >= journal_interval:
-            self._scan_journals(now)
+        else:
+            if now - self._last_shairport_scan_at >= shairport_interval:
+                self._scan_journal_unit(SHAIRPORT_UNIT, now)
+            if now - self._last_camilla_scan_at >= self._journal_interval:
+                self._scan_journal_unit(CAMILLA_UNIT, now)
 
         if suppress_until is not None:
             reason: str | None = "maintenance"
@@ -1383,31 +1397,45 @@ class AirPlayHealthSampler:
         self._last_camilla_sample_at = now
 
     def _advance_journal_cursor(self, now: float) -> None:
-        self._journal_since = max(self._journal_since, now)
-        self._last_journal_scan_at = now
+        self._shairport_journal_since = max(self._shairport_journal_since, now)
+        self._camilla_journal_since = max(self._camilla_journal_since, now)
+        self._last_shairport_scan_at = now
+        self._last_camilla_scan_at = now
 
-    def _scan_journals(self, now: float) -> None:
-        scan_window = (
-            now - self._last_journal_scan_at if self._last_journal_scan_at else 0.0
-        )
+    def _scan_journal_unit(self, unit: str, now: float) -> None:
+        """Scan one unit's journal on its own cadence/cursor.
+
+        Split from a single merged scan (R21, #4416) so shairport's
+        idle-widened cadence never delays the camilla scan that feeds the
+        short-read storm detector — that detector fires on any source's
+        audio path, unrelated to whether an AirPlay session is in sight.
+        """
+        is_camilla = unit == CAMILLA_UNIT
+        last_scan_at = self._last_camilla_scan_at if is_camilla else self._last_shairport_scan_at
+        since = self._camilla_journal_since if is_camilla else self._shairport_journal_since
+        scan_window = now - last_scan_at if last_scan_at else 0.0
         material_short_reads = 0
         try:
-            entries = self._journal_reader(JOURNAL_UNITS, self._journal_since, now)
+            entries = self._journal_reader((unit,), since, now)
         except Exception:  # noqa: BLE001
             logger.debug("journal scan failed", exc_info=True)
             entries = []
-        for unit, line in entries:
-            event = classify_journal_line(unit, line)
+        for scanned_unit, line in entries:
+            event = classify_journal_line(scanned_unit, line)
             if event is not None:
                 self._record_event(now, event)
                 if event.get("type") == "camilla_short_read":
                     material_short_reads += 1
-        self._journal_since = now
-        self._last_journal_scan_at = now
-        material_per_min = (
-            material_short_reads / scan_window * 60.0 if scan_window > 0 else 0.0
-        )
-        self._update_storm_state(now, material_per_min, scan_window)
+        if is_camilla:
+            self._camilla_journal_since = now
+            self._last_camilla_scan_at = now
+            material_per_min = (
+                material_short_reads / scan_window * 60.0 if scan_window > 0 else 0.0
+            )
+            self._update_storm_state(now, material_per_min, scan_window)
+        else:
+            self._shairport_journal_since = now
+            self._last_shairport_scan_at = now
 
     # ---- storm-triggered forensic capture (Tier 1 + Tier 2) ----
 

@@ -205,7 +205,7 @@ class _FinishedPopen:
 
     returncode = 0
 
-    def communicate(self) -> tuple[str, str]:
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
         return "", ""
 
 
@@ -609,6 +609,40 @@ def test_the_reaper_journals_only_a_nonzero_detached_spawn(
         assert "Interactive authentication required" in denials[0].getMessage()
 
 
+def test_the_reaper_kills_and_journals_a_wedged_detached_child(monkeypatch, caplog):
+    """A detached child that never exits must not hang the reaper thread
+    forever: proc.communicate() carries the broker's own exec ceiling, and a
+    TimeoutExpired kills the child and journals the fact instead of leaking
+    the thread silently."""
+    killed = []
+
+    class _WedgedPopen:
+        returncode = None
+
+        def communicate(self, timeout: float | None = None):
+            if not killed:
+                raise subprocess.TimeoutExpired(cmd="systemctl", timeout=timeout)
+            return "", ""
+
+        def kill(self) -> None:
+            killed.append(True)
+
+    monkeypatch.setattr(
+        restart_broker, "threading", SimpleNamespace(Thread=_InlineThread),
+    )
+    with caplog.at_level(logging.WARNING, logger=restart_broker.logger.name):
+        restart_broker._journal_detached_result(
+            _WedgedPopen(), "reboot", "-",
+        )
+
+    assert killed == [True]
+    timeouts = [
+        r for r in caplog.records
+        if getattr(r, "jasper_event", "") == "restart_broker.deferred_reap_timeout"
+    ]
+    assert len(timeouts) == 1
+
+
 def test_a_detached_spawn_does_not_wait_for_its_child(monkeypatch):
     """The whole point of the detached path is that the broker answers before
     the transition lands. Reaping stderr must stay off-thread, or a systemctl
@@ -619,7 +653,7 @@ def test_a_detached_spawn_does_not_wait_for_its_child(monkeypatch):
     class _SlowPopen:
         returncode = 0
 
-        def communicate(self) -> tuple[str, str]:
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
             release.wait(10)
             reaped.set()
             return "", ""

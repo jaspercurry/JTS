@@ -623,3 +623,51 @@ def test_bluetooth_adapter_udev_rule_re_triggers_source_intent_reconcile() -> No
     assert 'DEVTYPE=="host"' in run_line
     assert 'ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"' in run_line
     assert "99-jasper-bluetooth-adapter.rules" in installer_text()
+
+
+# `udevadm info -q all -p /sys/class/bluetooth/hci0` on jts3 (2026-09-10) --
+# the real controller node the rule above has to match. Captured verbatim so
+# a future kernel/bluez rename of these keys fails this test instead of only
+# showing up as a rule that silently stops firing on real hardware.
+_JTS3_HCI0_UEVENT = """\
+P: /devices/platform/soc@107c000000/107d50c000.serial/107d50c000.serial:0/107d50c000.serial:0.0/serial0/serial0-0/bluetooth/hci0
+M: hci0
+R: 0
+J: +bluetooth:hci0
+U: bluetooth
+T: host
+E: DEVPATH=/devices/platform/soc@107c000000/107d50c000.serial/107d50c000.serial:0/107d50c000.serial:0.0/serial0/serial0-0/bluetooth/hci0
+E: SUBSYSTEM=bluetooth
+E: DEVTYPE=host
+E: USEC_INITIALIZED=6509200
+E: SYSTEMD_ALIAS=/sys/subsystem/bluetooth/devices/hci0
+E: SYSTEMD_WANTS=bluetooth.target
+E: SYSTEMD_USER_WANTS=bluetooth.target
+E: TAGS=:systemd:
+E: CURRENT_TAGS=:systemd:
+"""
+
+
+def test_bluetooth_adapter_udev_rule_matches_the_observed_hci0_uevent() -> None:
+    """The rule's match keys (SUBSYSTEM, DEVTYPE) must be exactly the keys
+    jts3's real `hci0` node reports -- not merely internally consistent with
+    themselves. Parses _JTS3_HCI0_UEVENT's `E: KEY=value` lines the way udev
+    itself would and checks the rule's literals against them."""
+    observed = dict(
+        line[len("E: "):].split("=", 1)
+        for line in _JTS3_HCI0_UEVENT.splitlines()
+        if line.startswith("E: ") and "=" in line
+    )
+    assert observed["SUBSYSTEM"] == "bluetooth"
+    assert observed["DEVTYPE"] == "host"
+
+    rule = (ROOT / "deploy/udev/99-jasper-bluetooth-adapter.rules").read_text(
+        encoding="utf-8",
+    )
+    run_line = next(
+        line
+        for line in rule.splitlines()
+        if "SYSTEMD_WANTS" in line and not line.lstrip().startswith("#")
+    )
+    assert f'SUBSYSTEM=="{observed["SUBSYSTEM"]}"' in run_line
+    assert f'DEVTYPE=="{observed["DEVTYPE"]}"' in run_line

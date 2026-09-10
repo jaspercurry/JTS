@@ -319,6 +319,8 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
 
     def journal(units, since: float, until: float) -> list[tuple[str, str]]:
         journal_calls.append((units, since, until))
+        if "shairport-sync" not in units:
+            return []
         return [("shairport-sync", "recovering from a previous underrun")]
 
     sampler = AirPlayHealthSampler(
@@ -361,12 +363,18 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
 def test_journal_scan_widens_after_no_airplay_session_for_5_minutes() -> None:
     """R21 (#4416): an idle box forks journalctl every JOURNAL_INTERVAL_SEC
     forever. Once no session has been seen for JOURNAL_IDLE_THRESHOLD_SEC,
-    the scan cadence widens to JOURNAL_IDLE_INTERVAL_SEC."""
+    SHAIRPORT's scan cadence widens to JOURNAL_IDLE_INTERVAL_SEC. CAMILLA's
+    scan feeds the short-read storm detector, which fires on any source's
+    audio path (not only AirPlay's), so it stays on the base cadence."""
     now = [1000.0]
-    journal_calls: list[float] = []
+    shairport_calls: list[float] = []
+    camilla_calls: list[float] = []
 
     def journal(units, since, until) -> list[tuple[str, str]]:
-        journal_calls.append(now[0])
+        if "shairport-sync" in units:
+            shairport_calls.append(now[0])
+        if "jasper-camilla" in units:
+            camilla_calls.append(now[0])
         return []
 
     sampler = AirPlayHealthSampler(
@@ -380,31 +388,37 @@ def test_journal_scan_widens_after_no_airplay_session_for_5_minutes() -> None:
         time_fn=lambda: now[0],
     )
 
-    sampler._tick()  # t=1000, idle_for=0: default 30 s cadence, scans.
-    assert len(journal_calls) == 1
+    sampler._tick()  # t=1000, idle_for=0: default 30 s cadence, both scan.
+    assert len(shairport_calls) == 1
+    assert len(camilla_calls) == 1
 
     now[0] += 305.0  # t=1305, idle_for=305 >= the 300 s threshold: widened.
-    sampler._tick()  # 305 >= 120 s widened interval -> scans.
-    assert len(journal_calls) == 2
+    sampler._tick()  # shairport: 305 >= 120 s widened -> scans.
+    assert len(shairport_calls) == 2
+    assert len(camilla_calls) == 2  # camilla: unaffected, still base cadence.
 
-    now[0] += 100.0  # t=1405, only 100 s since the last scan.
-    sampler._tick()  # 100 < 120 s widened interval -> no scan.
-    assert len(journal_calls) == 2
+    now[0] += 100.0  # t=1405, only 100 s since shairport's last scan.
+    sampler._tick()  # shairport: 100 < 120 s widened -> no scan.
+    assert len(shairport_calls) == 2
+    assert len(camilla_calls) == 3  # camilla: 100 >= 30 s base -> scans.
 
-    now[0] += 30.0  # t=1435, 130 s since the last scan.
-    sampler._tick()  # 130 >= 120 s widened interval -> scans.
-    assert len(journal_calls) == 3
+    now[0] += 30.0  # t=1435, 130 s since shairport's last scan.
+    sampler._tick()  # shairport: 130 >= 120 s widened -> scans.
+    assert len(shairport_calls) == 3
+    assert len(camilla_calls) == 4  # camilla: 30 >= 30 s base -> scans.
 
 
 def test_journal_scan_returns_to_default_cadence_once_a_session_starts() -> None:
-    """The idle->active transition resets the idle clock, so the next scan
-    after a session starts is back on the 30 s cadence, not still widened."""
+    """The idle->active transition resets the idle clock, so SHAIRPORT's next
+    scan after a session starts is back on the 30 s cadence, not still
+    widened."""
     now = [1000.0]
-    journal_calls: list[float] = []
+    shairport_calls: list[float] = []
     mpris = {"playing": False}
 
     def journal(units, since, until) -> list[tuple[str, str]]:
-        journal_calls.append(now[0])
+        if "shairport-sync" in units:
+            shairport_calls.append(now[0])
         return []
 
     sampler = AirPlayHealthSampler(
@@ -421,16 +435,16 @@ def test_journal_scan_returns_to_default_cadence_once_a_session_starts() -> None
     sampler._tick()  # t=1000, scans.
     now[0] += 305.0  # t=1305, idle -> widened cadence.
     sampler._tick()  # 305 >= 120 -> scans.
-    assert len(journal_calls) == 2
+    assert len(shairport_calls) == 2
 
     mpris["playing"] = True
     now[0] += 30.0  # t=1335: the MPRIS resample (30 s interval) sees the
     sampler._tick()  # session start; idle_for resets to 0, still 30 >= 30.
-    assert len(journal_calls) == 3
+    assert len(shairport_calls) == 3
 
     now[0] += 35.0  # t=1370, 35 s since the last scan.
     sampler._tick()  # 35 >= the DEFAULT 30 s (not still 120 s) -> scans.
-    assert len(journal_calls) == 4
+    assert len(shairport_calls) == 4
 
 
 def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
@@ -440,6 +454,8 @@ def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
     frames = [0, 240000]
 
     def journal(_units, _since: float, _now: float) -> list[tuple[str, str]]:
+        if "jasper-camilla" not in _units:
+            return []
         return [
             ("jasper-camilla", "Capture read 768 frames instead of the requested 1024"),
             ("jasper-camilla", "Capture read 960 frames instead of the requested 1024"),
@@ -554,6 +570,8 @@ def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:
     now = [5000.0]
 
     def journal(_units, _since: float, _now: float) -> list[tuple[str, str]]:
+        if "jasper-camilla" not in _units:
+            return []
         return [(
             "jasper-camilla",
             "Capture read 586 frames instead of the requested 1024",

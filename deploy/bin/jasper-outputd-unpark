@@ -30,13 +30,17 @@ if [[ ! -e "$PARK_RECORD" ]]; then
     exit 0
 fi
 
+preserved=0
 tmp="${LAST_RECORD}.tmp.$$"
-{
+if {
     cat "$PARK_RECORD" 2>/dev/null
     printf 'unparked_at=%s\n' "$(now_sec)"
-} >"$tmp" 2>/dev/null || true
-mv -f "$tmp" "$LAST_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
-log state="$LAST_RECORD"
+} >"$tmp" 2>/dev/null && mv -f "$tmp" "$LAST_RECORD" 2>/dev/null; then
+    preserved=1
+else
+    rm -f "$tmp" 2>/dev/null || true
+fi
+log state="$LAST_RECORD" preserved="$preserved"
 
 rm -f "$PARK_RECORD" 2>/dev/null || true
 exit 0

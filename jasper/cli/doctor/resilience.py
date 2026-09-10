@@ -728,9 +728,11 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             "unrelated failure would otherwise read as this park.",
             reason=REASON_OUTPUTD_PARK_RECORD_STALE,
         )
-    return CheckResult(
-        label, "ok", f"{reader.UNIT} is running and carries no park record",
-    )
+    last_park = state.get("last_park")
+    detail = f"{reader.UNIT} is running and carries no park record"
+    if isinstance(last_park, dict):
+        detail += f" (last park {_parked_ago(last_park.get('parked_at'))})"
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check()
