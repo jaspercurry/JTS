@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
+
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
@@ -755,6 +757,7 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
     from jasper.measurement_window import MeasurementWindowError
 
     reasons: dict[type, str] = {
+        StimulusCaptureStopped: "measurement_capture_stopped",
         SessionGraphError: REFUSE_GRAPH_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
@@ -786,6 +789,8 @@ async def _measured(
             reason = next(
                 code for cls, code in reasons.items() if isinstance(exc, cls)
             )
+            if isinstance(exc, StimulusCaptureStopped):
+                reason = exc.code
             # A cancellation is CONVERTED rather than re-raised: the operator
             # interrupting a long batch most needs the ids of what banked, and
             # the door's give-back still runs shielded on the way out.

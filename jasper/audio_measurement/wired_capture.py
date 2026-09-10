@@ -438,7 +438,6 @@ class WiredRecorder:
                     self.spl_monitor.observe(data, length, self._channels)
                     if self.spl_monitor.error is not None:
                         raise self.spl_monitor.error
-                self._first_chunk.set()
                 if self._frames >= self._max_frames:
                     # Budget guard, not a normal stop — tripping this means the caller's
                     # play/tail schedule broke. BOOKED as a discontinuity (unknowable size,
@@ -447,13 +446,21 @@ class WiredRecorder:
                     self._truncated = True
                     self._gap_count += 1
                     self._gap_frames += 1
+                    if self.spl_monitor is not None:
+                        raise WiredCaptureError("SPL monitoring exhausted the capture budget")
+                    self._first_chunk.set()
                     return
+                self._first_chunk.set()
         except WiredCaptureError as exc:
             self._reader_error = exc
             # Wake a start() still waiting on the first chunk so it fails now, not at timeout.
             self._first_chunk.set()
 
     # -- caller side -------------------------------------------------------- #
+
+    @property
+    def failure(self) -> WiredCaptureError | None:
+        return self._reader_error
 
     def start(self, *, ready_timeout_s: float = START_TIMEOUT_S) -> None:
         """Blocks until capture is confirmed live — the pre-roll guarantee: a caller that

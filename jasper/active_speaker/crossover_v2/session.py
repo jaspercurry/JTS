@@ -34,6 +34,7 @@ from .measure_spec import (
 
 from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
+from .program_transaction import StimulusCaptureStopped
 from .spatial import take_id_for
 
 __all__ = [
@@ -479,9 +480,9 @@ class TuningSession:
                 level_db=self.measurement_level_db,
                 stimulus_dbfs=stimulus_dbfs,
             )
-        except PlaybackInterrupted as exc:
+        except (PlaybackInterrupted, StimulusCaptureStopped) as exc:
             self.last_playback = exc.playback
-            if not exc.wav_path:
+            if isinstance(exc, StimulusCaptureStopped) or not exc.wav_path:
                 raise
             interruption = exc
             outcome = PlaybackOutcome(
