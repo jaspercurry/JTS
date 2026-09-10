@@ -49,6 +49,7 @@ from .voice.provider_state import read_barge_in_enabled
 from .voice.conversation import (
     END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC, FollowupWindow, continuous_watchdog,
 )
+from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -836,6 +837,14 @@ class WakeLoop:
         )
 
     async def _cancel_fire_and_forget_tasks(self) -> None:
+        """Sweep tracked side-work, giving a turn release its close first.
+
+        A cancelled release never reaches the provider's `session.close`,
+        and a live session left open keeps billing per connected minute.
+        """
+        if (release := self._pending_release) is not None:
+            self._pending_release = None
+            await asyncio.wait({release}, timeout=SESSION_CLOSE_TIMEOUT_SEC)
         await cancel_tracked_tasks(self._fire_and_forget)
 
     def _arm_turn_background_end(self) -> None:

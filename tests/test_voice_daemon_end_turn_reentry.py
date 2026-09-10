@@ -398,6 +398,30 @@ async def test_closure_completes_without_waiting_for_the_provider_release():
     assert order[-1] == "release_done"
 
 
+async def test_shutdown_waits_out_a_pending_provider_release():
+    """The daemon's task sweep gives an in-flight release time to reach
+    `session.close`: a cancelled one leaves the provider session open, and
+    a live session bills per connected minute."""
+    wl = _make_wakeloop()
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    closed = asyncio.Event()
+
+    async def release():
+        await asyncio.sleep(0.05)
+        closed.set()
+
+    wl._turn.release = release
+
+    await wl._end_turn("conversation_ended")
+    pending = wl._pending_release
+    assert pending is not None
+
+    await wl._cancel_fire_and_forget_tasks()
+
+    assert closed.is_set()
+    assert not pending.cancelled()
+
+
 @pytest.mark.parametrize("phase", ["outcome", "peering", "segment", "drain", "restore", "meter"])
 @pytest.mark.parametrize("cancellation", ["caller", "operation"])
 async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
