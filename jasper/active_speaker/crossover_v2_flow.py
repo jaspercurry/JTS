@@ -4137,7 +4137,11 @@ class CrossoverV2Session:
             floor_basis=(floor.get("basis") if isinstance(floor, Mapping) else None),
             provenance=str(decision.get("provenance") or ""),
         )
-        if not verdict.accepted:
+        # An accepted verdict does not imply a comparable record (#2082): the
+        # legacy ``capture_integrity=None`` shape is defensive-only today, but
+        # banking an incomparable record into history would make the NEXT
+        # attempt's predecessor comparison fail permanently.
+        if not verdict.accepted or not record.integrity.comparable:
             return
 
         self._attempt_history = prospective[-AttemptBudget().hard_cap_attempts:]
