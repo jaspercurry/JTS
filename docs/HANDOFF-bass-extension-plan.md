@@ -33,7 +33,7 @@ bass profile file, apply transaction, or background controller.
   on the extra signal. It does not add a cutoff to the original speaker path.
 - Existing output limiters and the non-positive volume ceiling remain in place.
 
-The first descriptor permits at most 6 dB of low shelf boost. Its admission gain
+The descriptor permits at most 12 dB of low shelf boost. Its admission gain
 reserve is a filter gain bound, not a waveform peak or driver excursion model.
 Group playback is not supported with dynamic bass until canonical volume reaches
 every output endpoint; static speaker tuning retains its existing behavior.
@@ -79,5 +79,5 @@ The speaker measurement-quality floor is not the Room sweep floor.
 - Show a measured before/after graph, report the tested level range, and return
   the arm to center.
 
-Copyable UI prompts and program-specific runbook work are deferred to a ticket
-at the end of this task. They are not part of the bass implementation.
+Copyable UI prompts and program-specific runbook work are deferred to
+[issue #4768](https://github.com/jaspercurry/JTS/issues/4768).

@@ -30,16 +30,17 @@ def _descriptor(**changes) -> DynamicBassDescriptor:
     return DynamicBassDescriptor(**values)
 
 
-def test_native_loudness_law_withdraws_over_twenty_db() -> None:
-    descriptor = _descriptor()
+@pytest.mark.parametrize("boost_db", [6.0, 12.0])
+def test_native_loudness_law_withdraws_over_twenty_db(boost_db: float) -> None:
+    descriptor = _descriptor(low_boost_db=boost_db)
 
-    assert loudness_boost_db(-30.0, descriptor) == 6.0
-    assert loudness_boost_db(-16.0, descriptor) == 3.0
+    assert loudness_boost_db(-30.0, descriptor) == boost_db
+    assert loudness_boost_db(-16.0, descriptor) == boost_db / 2.0
     assert loudness_boost_db(-6.0, descriptor) == 0.0
     assert loudness_boost_db(0.0, descriptor) == 0.0
 
 
-@pytest.mark.parametrize("boost_db", [0.1, 1.0, 3.0, 6.0])
+@pytest.mark.parametrize("boost_db", [0.1, 1.0, 3.0, 6.0, 12.0])
 def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
     descriptor = _descriptor(low_boost_db=boost_db)
     frequencies = np.geomspace(0.01, 23000.0, 4096)
@@ -54,7 +55,7 @@ def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"low_boost_db": 6.01}, "low_boost_db"),
+        ({"low_boost_db": 12.01}, "low_boost_db"),
         ({"detector_lowpass_hz": 201.0}, "detector_lowpass_hz"),
         ({"compressor_threshold_dbfs": 0.1}, "compressor_threshold_dbfs"),
         ({"delta_highpass_hz": 90.0}, "delta_highpass_hz"),
