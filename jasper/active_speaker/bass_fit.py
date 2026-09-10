@@ -20,6 +20,11 @@ from .crossover_v2.round_captures import doc_pose_key
 from .measurement_bass import BASS_BANDS_HZ
 
 
+class BassFitCoverageUnavailable(ValueError):
+    def __init__(self) -> None:
+        super().__init__("bass_fit_common_coverage_unavailable")
+
+
 def fit_bass_shape(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
     candidate_id: str, descriptor: Mapping[str, Any], target: Mapping[str, Any],
@@ -45,12 +50,13 @@ def fit_bass_shape(
         context = bass_capture_context(before)
         across = compare_capture_basis(context, first, interventions=("pose_key",),
                                        required=tuple(key for key in first if key != "pose_key"))
-        if not match["available"] or across["incompatible_fields"]:
+        if match["context"]["incompatible_fields"] or across["incompatible_fields"]:
             raise ValueError("bass_fit_capture_context_changed")
         curve = before["frequency_curve"]
         rf, ry = np.asarray(curve["freqs_hz"]), np.asarray(curve["magnitude_db"])
         anchor = (rf >= reference_band_hz[0]) & (rf <= reference_band_hz[1]) & np.isfinite(ry)
-        if not anchor.any():
+        if (not before["sweep_band_hz"][0] <= reference_band_hz[0] < reference_band_hz[1] <= before["sweep_band_hz"][1]
+                or not anchor.any()):
             raise ValueError("bass_fit_reference_band_unavailable")
         reference = float(np.median(ry[anchor]))
         # Use the full qualification masks when resampling so holes stay holes.
@@ -88,7 +94,7 @@ def fit_bass_shape(
     a, b = np.asarray(baseline), np.asarray(treated)
     valid = np.isfinite(a).all(axis=0) & np.isfinite(b).all(axis=0)
     if valid.sum() < 2:
-        raise ValueError("bass_fit_common_coverage_unavailable")
+        raise BassFitCoverageUnavailable()
     delta = b[:, valid] - a[:, valid]
     error = desired[valid] - a[:, valid]
     energy = float(np.sum(delta ** 2))
@@ -99,6 +105,7 @@ def fit_bass_shape(
         rms = np.sqrt(np.mean((prediction - desired[valid]) ** 2, axis=1))
         choices.append({"scale": scale, "descriptor": {**settings, "low_boost_db": scale * settings["low_boost_db"]} if scale else None,
                         "mean_pose_rms_db": float(np.mean(rms)), "per_pose_rms_db": rms.tolist(),
+                        "max_abs_error_db": float(np.max(np.abs(prediction - desired[valid]))),
                         "predicted_median_db": np.median(prediction, axis=0).tolist()})
     return {"schema": "jts_bass_fit/1", "candidate_id": candidate_id, "source_descriptor": settings,
             "sources": sources, "positions": positions, "position_count": len(positions), "take_pair_count": len(pairs),

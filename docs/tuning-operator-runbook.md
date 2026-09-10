@@ -389,6 +389,22 @@ also depends on the signal. The descriptor retains the measured taper settings.
 Compose it against the accepted Room candidate, link the fit and comparisons
 with `--observation-ref`, then measure before saving.
 
+`bass-fit-table <request.json>` uses the same request plus an explicit
+`tolerance_db`. Pairs may span operating levels; each pair must hold its level,
+bass reference, pose, and stimulus. The table groups by recorded Main and bass
+reference, fits each group with `bass-fit`'s analysis, and reports missing
+frequency coverage and the largest error across the position curves. The target
+curve's first frequency is the requested extension; 60 Hz is not built in.
+Stimulus and baseline setup must remain comparable across levels. Captures with
+recorded integrity failures cannot support the table.
+
+`target_met` requires complete qualified frequency coverage, error within the
+stated tolerance, and a measured choice. A measured passing choice takes
+precedence over the fitter's predicted optimum. An intermediate fitted descriptor is
+`measurement_required`; gaps are `insufficient_evidence`. Context uncertainties
+remain in each fit. The artifact describes the tested stimulus and operating
+range; it is not a runtime volume schedule or a hardware-headroom estimate.
+
 To separate deliberate DSP reduction from acoustic compression, use
 `dsp-replay <exact-graph.yml> <PCM16-stimulus.wav> --main-db <db>
 --bass-reference-db <db> --out <render-dir>`. It uses the installed native
@@ -481,7 +497,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|windows\|spec-sweep\|gate-sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|windows\|spec-sweep\|gate-sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|bass\|bass-compare\|bass-fit\|bass-fit-table\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
