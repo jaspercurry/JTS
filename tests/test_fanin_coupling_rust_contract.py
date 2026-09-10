@@ -26,8 +26,9 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
     RING_SLOTS_MIN,
+    RING_WIRE_FORMAT,
     RING_WIRE_FORMAT_ENV_VAR,
-    RING_WIRE_FORMATS,
+    RING_WIRE_FORMAT_WIDE,
     resolve_ring_slots,
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
@@ -163,27 +164,31 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     )
 
 
-def test_shm_ring_wire_format_env_var_name_agrees():
-    """The Ring-A wire FORMAT key is the third cross-language env name.
+def test_rust_refuses_the_narrow_ring_wire_format_token():
+    """Rust's accept-set for the wire-format key is ``None`` | ``""`` | S32_LE.
 
-    Its two siblings above (path, slots) have been pinned since the ring
-    shipped; the wire format arrived later and did not get the same treatment.
-    It is the same drift axis and a worse one to get wrong: the header compares
-    ``sample_format`` field-by-field, so a Python side reading one key name
-    while the daemon reads another does not mis-declare a wire — it silently
-    reads the DEFAULT wire while the reconciler's four-ends gate reports
-    agreement, and the ioplug attach is the first thing to notice.
+    The two vocabularies diverge here on purpose:
+    :func:`jasper.fanin_coupling.resolve_ring_wire_format` still normalizes
+    ``S16_LE``, because the Python reconciler renders the ioplug conf.d and the
+    C plugin still parses that token. fan-in does not — it creates Ring A
+    S32_LE unconditionally, so a declaration it cannot honour is a config-class
+    park (exit 78) rather than a narrowed program. Nothing else holds the two
+    ends of that divergence together, so a Rust accept arm that grew ``S16_LE``
+    back would resolve a wire no writer produces with no test failing.
     """
     text = _config_rs_text()
-    assert f'"{RING_WIRE_FORMAT_ENV_VAR}"' in text, (
-        f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    _, sep, after = text.partition(f'std::env::var("{RING_WIRE_FORMAT_ENV_VAR}")')
+    assert sep, f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    accept_block, sep, _ = after.partition("\n\n")
+    assert sep, "could not delimit the wire-format match block"
+    assert f'None | Some("") | Some("{RING_WIRE_FORMAT_WIDE}") => {{}}' in accept_block, (
+        "the Rust accept arm must serve the undeclared key (None), a cleared "
+        f"key (empty) and {RING_WIRE_FORMAT_WIDE} — and nothing else"
     )
-    # The two-token vocabulary is the other half of the contract: a value Python
-    # accepts must be a value Rust accepts, spelled identically.
-    for token in RING_WIRE_FORMATS:
-        assert f'"{token}"' in text, (
-            f"Rust must accept the {token} wire token Python's vocabulary declares"
-        )
+    assert RING_WIRE_FORMAT not in accept_block, (
+        f"{RING_WIRE_FORMAT} must stay REFUSED by fan-in; Python accepts the "
+        "token only to render the ioplug conf.d"
+    )
 
 
 _CHANNEL_DECLARATIONS = (
@@ -376,7 +381,7 @@ def test_fanin_mixer_publishes_slots_and_opens_no_playback_pcm():
     text = _mixer_rs_text()
     assert "RingOutput" in text
     assert "RingWriter" in text
-    assert ".publish(" in text
+    assert ".publish_bytes(" in text
     # The 128-frame slot is pinned via the shared RING_SLOT_FRAMES constant.
     assert "RING_SLOT_FRAMES" in text
 
@@ -467,22 +472,20 @@ def test_fanin_music_output_tap_stays_deleted():
 # or /state reader). One fact, one owner.
 
 
-def test_step_fills_output_buf_once_above_the_ring_publish():
-    """`step()`'s narrow saturate runs ONCE, above the ring publish.
+def test_step_fills_the_ring_payload_once_above_the_ring_publish():
+    """`step()` fills the ring payload ONCE, above the ring publish.
 
     The mutant this catches: moving (or duplicating)
-    `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)`
-    below or past the publish. `output_buf` is the NARROW ring wire's published
-    payload — `write_ring_period` publishes it slot by slot whenever the ring's
-    attached header is S16LE. A publish that ran before the saturate would leave
-    a narrow box publishing a stale (or, on the first period, all-zero) buffer
-    into Ring A, with CamillaDSP reading it and every counter healthy. That is
-    the whole fleet's narrow boxes going silent-or-stuttering from a mutant with
-    no error path.
+    `fill_ring_payload(&self.sum_buf, &mut self.ring_payload)` below or past the
+    publish. `ring_payload` is what `write_ring_period` publishes slot by slot.
+    A publish that ran before the fill would leave the box publishing a stale
+    (or, on the first period, all-zero) buffer into Ring A, with CamillaDSP
+    reading it and every counter healthy. That is the whole fleet going
+    silent-or-stuttering from a mutant with no error path.
 
     This is pinned in Python because `step()` has no hardware-free Rust test at
     all: it reads live ALSA inputs. The in-crate ring tests
-    (`wide_ring_slots_carry_the_left_justified_narrow_slots`) enter at
+    (`ring_slots_carry_the_published_period_sample_for_sample`) enter at
     `write_ring_period`, one call BELOW the ordering asserted here, so they
     cannot see what filled the buffer they are handed.
     """
@@ -493,23 +496,23 @@ def test_step_fills_output_buf_once_above_the_ring_publish():
     body, sep, _ = text[text.index(opener) :].partition("\n    }\n")
     # Containment: the slice must stop at step()'s OWN closing brace. A sentinel
     # that misses it lands on the next method's instead, and the assertions below
-    # would then read text that is not step()'s — a saturate in a later method or
+    # would then read text that is not step()'s — a fill in a later method or
     # a unit test could satisfy them while step() itself was gutted. (The count is
     # 1, not 0: the slice starts AT step()'s own opener. It counts `fn `, not
     # `pub fn `, because mixer.rs's methods are private.)
     assert sep, "could not find step()'s closing brace"
     assert body.count("fn ") == 1, "the step() slice ran past its own function"
 
-    saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)"
+    fill = "fill_ring_payload(&self.sum_buf, &mut self.ring_payload)"
     publish = "write_ring_period("
-    assert body.count(saturate) == 1, (
-        "step() must fill output_buf with exactly ONE saturate — a second one "
+    assert body.count(fill) == 1, (
+        "step() must fill the ring payload with exactly ONE call — a second one "
         "means the call was duplicated"
     )
     assert body.count(publish) == 1, "step() must publish to the ring exactly once"
-    assert body.index(saturate) < body.index(publish), (
-        "the saturate that fills output_buf must sit ABOVE the ring publish — "
-        "below it, a narrow box publishes a stale output_buf into Ring A"
+    assert body.index(fill) < body.index(publish), (
+        "the fill that builds the ring payload must sit ABOVE the ring publish — "
+        "below it, the box publishes a stale payload into Ring A"
     )
 
 

@@ -458,3 +458,23 @@ def test_capture_kwargs_take_their_format_from_the_resolver(monkeypatch):
     assert kwargs["capture_format"] == "S32_LE"
     assert kwargs["playback_format"] == "S32_LE"
     assert fc.content_lane_format_for_coupling() == "S32_LE"
+
+
+def test_the_assistant_width_defaults_to_the_declared_file(monkeypatch):
+    """The width defaults to a FILE-FRESH read of the same SSOT the daemons use.
+
+    Not ``os.environ``: ``jasper-voice`` and the socket-activated wizards never
+    loaded ``fanin.env``, which is the stale-``os.environ`` class AGENTS.md
+    canonizes.
+    """
+    import jasper.fanin_coupling as fc
+
+    seen = {"format": 0}
+
+    def _format() -> str:
+        seen["format"] += 1
+        return fc.RING_WIRE_FORMAT_WIDE
+
+    monkeypatch.setattr(fc, "read_declared_ring_wire_format", _format)
+    assert fc.assistant_wire_is_wide() is True
+    assert seen == {"format": 1}

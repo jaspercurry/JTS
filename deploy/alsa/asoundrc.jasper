@@ -82,12 +82,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #
 # WIDTH: snd-aloop pins BOTH halves of a cable to one format, so the slaves
 # below and jasper-fanin's capture opens must name the same one. That width is
-# not this file's to choose — it is the wire an undeclared box resolves
-# (`JASPER_FANIN_RING_WIRE_FORMAT` defaults to S32_LE), which
-# `mixer::lane_capture_format` resolves on the reader side. This file ships
-# rather than rendering per box, so pinning the narrow rollback means deploying
-# a narrowed source; jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared
-# box by name until then.
+# the program wire, S32_LE — `mixer::pcm_open::LANE_CAPTURE_FORMAT` on the
+# reader side. jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared box
+# by name.
 
 # Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
 # substream allocation and the reasoning behind it (8 pairs per card, pinned

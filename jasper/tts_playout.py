@@ -160,12 +160,12 @@ def _quantize_to_wire(arr, *, wide: bool):
 def tts_wire_is_wide() -> bool:
     """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
 
-    Delegates to :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the
-    Python mirror of the shared crate's ``TtsWireWidth::from_box_declaration``.
-    Both halves of the box's declaration are required — the ``S32_LE`` wire
-    format AND a coupling that leaves fan-in on the ring (an UNDECLARED one
-    does, ADR-0100) — and both are read file-fresh: ``jasper-voice`` never
-    loaded ``fanin.env``, so ``os.environ`` would be stale.
+    ONE RULE, ONE OWNER. Delegates to
+    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, which owns the
+    sender's width decision — ``jasper-fanin`` accepts either verb. The box's
+    declared ``S32_LE`` wire format is the whole verdict, and it is read
+    file-fresh: ``jasper-voice`` never loaded ``fanin.env``, so ``os.environ``
+    would be stale.
 
     A bad token resolves NARROW rather than raising: ``jasper-fanin`` already
     parks at exit 78 on an unrecognized value and the doctor surfaces it, while

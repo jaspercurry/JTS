@@ -44,47 +44,19 @@ pub mod loudness;
 /// Wire frames are interleaved stereo.
 pub const CHANNELS: u16 = 2;
 
-/// The numeric width one AUDIO payload carries — the assistant half of the
-/// campaign's single per-box wire resolution (U2 / #2223).
+/// The numeric width one AUDIO payload carries.
 ///
 /// SELF-DESCRIBING, NOT NEGOTIATED. The writer spells its width in the command
 /// verb (`AUDIO` / `AUDIO32`) and the reader parses exactly what arrived, so
-/// there is no round trip and no agreement step. Both ends nevertheless derive
-/// the SAME answer from the SAME two inputs, through the SAME rule —
-/// [`TtsWireWidth::from_box_declaration`], which `jasper-fanin`'s
-/// `Config::program_wire_is_wide` calls and
-/// `jasper.fanin_coupling.assistant_wire_is_wide` mirrors — so in a coherent box
-/// the declaration and the reader's own resolution agree by construction.
+/// there is no round trip, no agreement step, and nothing for the two ends to
+/// disagree about.
 ///
-/// WHY A DISAGREEMENT IS A WARNING AND NOT A PARK. A ring header or an ALSA
-/// open carries no width of its own, so guessing wrong there is a 96 dB level
-/// error and must fail closed (`jasper_fanin::mixer::program_width_disagreement`).
-/// This payload names its own width on the wire, so neither direction is a level
-/// error: a narrow payload entering a wide mix is `widen_i16_to_i32`, a wide
-/// payload entering a narrow mix is `narrow_i32_to_i16_round`, and both are the
-/// exact conversions those primitives exist for. What a mismatch DOES mean is
-/// config drift — the two processes read the box's declaration at different
-/// times and one of them is stale — so each daemon logs it once for its
-/// lifetime rather than muting the speaker's only voice path over a precision
-/// difference. This is PR #2330's round-3 lesson applied: check each axis at its
-/// own strength, and do not park a configuration that is merely suboptimal.
-///
-/// The drift window is bounded, but by TWO mechanisms rather than the one this
-/// used to name. A COUPLING flip is covered by `coupling_reconcile`, which
-/// `try-restart`s `jasper-voice` when the flip changes the resolved assistant
-/// width. The other way the answer moves is the RESOLVER'S DEFAULT changing —
-/// the ring wire's narrow→wide flip did exactly that, with no coupling flip and
-/// no reconciler transition — and what bounds THAT is the deploy itself: a
-/// default only moves in an install, and an install parks `jasper-voice` and
-/// restarts it through `jasper-aec-reconcile`, replacing the process that
-/// cached the old answer.
-///
-/// What neither covers is an operator hand-editing
-/// `JASPER_FANIN_RING_WIRE_FORMAT` on a live box without running the documented
-/// arm ladder. That box can sit mismatched until its next restart — which is
-/// tolerable precisely because of the paragraph above: the payload names its own
-/// width, so the cost is one unnecessary conversion and one warn per daemon
-/// lifetime, not a level error.
+/// BOTH WIDTHS STAY ON THE WIRE even though fan-in's program wire is `S32_LE`
+/// unconditionally: a narrow payload entering the wide program is
+/// `widen_i16_to_i32`, the exact conversion that primitive exists for, and
+/// fan-in applies it at ingest. So a narrow writer costs one shift per sample,
+/// not precision, and the narrow representation is what lets a narrow box
+/// allocate a narrow queue (see [`TtsAudioSamples`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsWireWidth {
     /// `AUDIO` — interleaved stereo S16LE, the narrow wire.
@@ -109,46 +81,6 @@ impl TtsWireWidth {
         match self {
             TtsWireWidth::Narrow => "AUDIO",
             TtsWireWidth::Wide => "AUDIO32",
-        }
-    }
-
-    /// THE BOX'S ASSISTANT WIRE WIDTH — the one rule, over BOTH halves of the
-    /// declaration.
-    ///
-    /// A wide wire needs the declared `S32_LE` ring wire format **and** the
-    /// `shm_ring` coupling. The format alone is not enough and the omission is
-    /// not academic: the coupling half is what says the wide payload has
-    /// anywhere to go, since fan-in publishes through the ring and nothing
-    /// else (ADR-0100), so a box that spelled `S32_LE` without the ring is
-    /// narrow. That is exactly the conjunction
-    /// `jasper_fanin::Config::program_wire_is_wide` has always applied; this is
-    /// that function's body, lifted here so the Python control plane can mirror
-    /// ONE rule instead of re-deriving it.
-    ///
-    /// SAY IT THAT WAY, not "an snd-aloop substream is an S16 device". That
-    /// earlier phrasing was over-broad and a reader could design around a limit
-    /// snd-aloop does not have: the **post-DSP content lane role** runs
-    /// `S32_LE` on every box in the fleet, on a substream pair
-    /// (`hw:Loopback,0/1,6`) on the same card. The claim is about the ROLE, not
-    /// the device — that same pair also carries the bonded active-follower
-    /// round-trip, which opens it raw at `S16_LE`.
-    ///
-    /// Callers pass their own already-parsed halves rather than tokens, because
-    /// both ends have them typed by the time they ask: fan-in has `Coupling` and
-    /// `RingWireFormat`, and Python has `resolve_coupling` /
-    /// `resolve_ring_wire_format`. Re-stringifying to cross this boundary would
-    /// add a parse that could disagree with the parse that produced it.
-    ///
-    /// `tests/test_ring_wire_format_contract.py` pins the VERDICT — all four
-    /// pairings — against this function's source, not just the token vocabulary.
-    pub fn from_box_declaration(
-        wire_format_is_wide: bool,
-        coupling_is_shm_ring: bool,
-    ) -> TtsWireWidth {
-        if wire_format_is_wide && coupling_is_shm_ring {
-            TtsWireWidth::Wide
-        } else {
-            TtsWireWidth::Narrow
         }
     }
 }
@@ -189,28 +121,13 @@ impl TtsAudioSamples {
     /// One sample promoted to the i32 program-spine scale.
     ///
     /// A narrow sample is widened with the shared `widen_i16_to_i32`; a wide
-    /// sample is already there. Callers that mix into an i32-spine program
-    /// (`jasper-outputd` always, `jasper-fanin` on a wide wire) use this so the
-    /// promotion has one implementation.
+    /// sample is already there. Both daemons mix into an i32-spine program, so
+    /// this is where the promotion has its one implementation.
     #[inline]
     pub fn spine_sample(&self, index: usize) -> i32 {
         match self {
             TtsAudioSamples::Narrow(s) => jasper_resampler::widen_i16_to_i32(s[index]),
             TtsAudioSamples::Wide(s) => s[index],
-        }
-    }
-
-    /// One sample reduced to the i16 sample scale.
-    ///
-    /// A narrow sample is returned untouched — that identity is what keeps the
-    /// narrow mix path byte-identical. A wide sample is narrowed with the
-    /// shared round-to-nearest saturating quantizer, which inverts
-    /// `widen_i16_to_i32` exactly.
-    #[inline]
-    pub fn narrow_sample(&self, index: usize) -> i16 {
-        match self {
-            TtsAudioSamples::Narrow(s) => s[index],
-            TtsAudioSamples::Wide(s) => jasper_resampler::narrow_i32_to_i16_round(s[index]),
         }
     }
 }
@@ -1521,68 +1438,14 @@ mod tests {
         let wide = TtsAudioSamples::Wide(vec![0x0000_4000, -0x0000_4000]);
         assert_eq!(wide.spine_sample(0), 0x0000_4000);
         assert_eq!(wide.spine_sample(1), -0x0000_4000);
-        // The narrow wire's own answer for that signal is silence (round to
-        // nearest of a quarter-step is zero), which is the contrast.
-        assert_eq!(wide.narrow_sample(0), 0);
-        assert_eq!(wide.narrow_sample(1), 0);
+        // The nearest thing the narrow wire can spell is silence, which is the
+        // contrast.
         let narrow = TtsAudioSamples::Narrow(vec![0, 0]);
         assert_eq!(narrow.spine_sample(0), 0);
         assert_ne!(
             narrow.spine_sample(0),
             wide.spine_sample(0),
             "an S16 payload cannot carry what the S32 one just did",
-        );
-    }
-
-    /// The two conversions are exact inverses on every promoted value, which is
-    /// what makes a width DISAGREEMENT a precision question and not a level
-    /// error — the reason this axis warns instead of parking.
-    #[test]
-    fn narrowing_a_promoted_payload_returns_the_original_sample() {
-        for probe in [0i16, 1, -1, 1234, -4321, i16::MAX, i16::MIN] {
-            let narrow = TtsAudioSamples::Narrow(vec![probe]);
-            let promoted = narrow.spine_sample(0);
-            assert_eq!(promoted, (probe as i32) << 16, "promotion must be << 16");
-            let wide = TtsAudioSamples::Wide(vec![promoted]);
-            assert_eq!(
-                wide.narrow_sample(0),
-                probe,
-                "narrowing must invert the promotion exactly",
-            );
-        }
-    }
-
-    /// THE VERDICT TABLE — all four pairings of the box's two declared halves.
-    ///
-    /// Only the conjunction is wide. The single most important row is
-    /// (wide format, loopback coupling) → **Narrow**: fan-in's aloop write is
-    /// pinned narrow (`from_box_declaration` above), so a box that declared a
-    /// wide format but never armed the ring must NOT speak `AUDIO32`. An
-    /// earlier revision of this PR keyed the Python side on the format token
-    /// alone and got that row wrong.
-    ///
-    /// `tests/test_ring_wire_format_contract.py` pins the Python mirror against
-    /// this same table, by reading this function's source.
-    #[test]
-    fn the_assistant_width_needs_both_halves_of_the_box_declaration() {
-        assert_eq!(
-            TtsWireWidth::from_box_declaration(true, true),
-            TtsWireWidth::Wide,
-            "wide format + shm_ring coupling is the ONLY wide pairing",
-        );
-        assert_eq!(
-            TtsWireWidth::from_box_declaration(true, false),
-            TtsWireWidth::Narrow,
-            "a declared-wide box that never armed the ring outputs to an S16 \
-             substream and must stay narrow",
-        );
-        assert_eq!(
-            TtsWireWidth::from_box_declaration(false, true),
-            TtsWireWidth::Narrow,
-        );
-        assert_eq!(
-            TtsWireWidth::from_box_declaration(false, false),
-            TtsWireWidth::Narrow,
         );
     }
 

@@ -161,9 +161,8 @@ impl DrainStats {
 /// One direct USB capture lane's runtime state (DEFAULT-OFF; only the usbsink
 /// lane when `JASPER_FANIN_USB_DIRECT=enabled`). Owns the `hw:UAC2Gadget`
 /// S32_LE capture PCM directly — the usbsink bridge hop + aloop cable are gone
-/// on this lane. On a narrow wire the lane's audio is narrowed to S16 and fed
-/// the SAME `LaneResampler` the aloop path would use; on a wide wire it is fed
-/// that resampler unnarrowed (#2223).
+/// on this lane. Its audio is fed unnarrowed to the SAME `LaneResampler` the
+/// aloop path uses (#2223).
 ///
 /// Presence is dynamic (a UAC2 gadget comes and goes with the host cable), so
 /// this is a small state machine: `Present` while the capture is open and
@@ -347,11 +346,9 @@ impl DirectOpener {
     }
 }
 
-/// Read the USB DIRECT lane: drain everything the gadget capture
-/// reports ready into the lane resampler (narrowing S32→S16 on a narrow wire and
-/// tapping the converted slice on the way; carrying the gadget's i32 untouched
-/// on a wide one), then render exactly one DAC-paced period into `read_buf` —
-/// or into `read_buf_wide` when this lane is spine-scale. Returns the number of
+/// Read the USB DIRECT lane: drain everything the gadget capture reports ready
+/// into the lane resampler, carrying the gadget's i32 untouched, then render
+/// exactly one DAC-paced period into `read_buf`. Returns the number of
 /// real (non-silence) frames rendered —
 /// `period_frames` when the resampler is locked, `0` while priming/absent.
 ///
@@ -481,27 +478,11 @@ pub(super) fn read_direct_and_render(
     // Render one DAC-paced period from whatever the resampler holds (silence
     // while Absent / priming). Advance the tap's capture cursor only by frames
     // actually read this period (done inside drain_direct_capture).
-    // Render into whichever buffer this lane's width owns. `read_buf_wide` is
-    // non-empty on a wide wire; on a narrow box this is the same
-    // `render_period` into the same `read_buf`.
-    let real_frames = if input.read_buf_wide.is_empty() {
-        match input.resampler.as_mut() {
-            Some(r) => r.render_period(&mut input.read_buf),
-            None => {
-                input.read_buf.fill(0);
-                0
-            }
-        }
-    } else {
-        // Keep the narrow buffer digitally silent on a wide lane so nothing
-        // downstream can read a stale i16 period from it.
-        input.read_buf.fill(0);
-        match input.resampler.as_mut() {
-            Some(r) => r.render_period_wide(&mut input.read_buf_wide),
-            None => {
-                input.read_buf_wide.fill(0);
-                0
-            }
+    let real_frames = match input.resampler.as_mut() {
+        Some(r) => r.render_period(&mut input.read_buf),
+        None => {
+            input.read_buf.fill(0);
+            0
         }
     };
     input.direct = Some(direct);
@@ -533,8 +514,7 @@ enum DirectDrainOutcome {
 }
 
 /// Drain all currently-available frames from the gadget capture into the lane
-/// resampler — narrowing S32→S16 on a narrow wire, carrying the samples
-/// untouched on a wide one — and tapping each read. Bounded by
+/// resampler, carrying the samples untouched, and tapping each read. Bounded by
 /// `RESAMPLER_MAX_READ_PERIODS`. EAGAIN stops the drain; EPIPE/ESTRPIPE recovers
 /// the PCM + resets the resampler; any other errno is a device loss.
 fn drain_direct_capture(
@@ -552,20 +532,16 @@ fn drain_direct_capture(
     // length as `narrow_scratch` below: the i32 read fills `scratch[..samples]`
     // and the narrow fills `narrow_scratch[..got]` with `got == samples`.
     let mut scratch = [0i32; direct_narrow_scratch_samples()];
-    // Dedicated i16 narrowing scratch, sized to match the i32 scratch. MUST NOT
-    // reuse `input.read_buf` (sized `period_frames × CHANNELS`) — see
-    // `direct_narrow_scratch_samples` for the OOB-on-small-period hazard. A
-    // single chunk read is capped at DIRECT_PERIOD_FRAMES frames (`to_read`
-    // below), so this fixed size always bounds `got`.
+    // Dedicated i16 narrowing scratch for the ARMED tap, sized to match the i32
+    // scratch. MUST NOT reuse `input.read_buf` (sized `period_frames ×
+    // CHANNELS`) — see `direct_narrow_scratch_samples` for the
+    // OOB-on-small-period hazard. A single chunk read is capped at
+    // DIRECT_PERIOD_FRAMES frames (`to_read` below), so this fixed size always
+    // bounds `got`.
     let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     let armed = tap.state.armed();
-    // This lane's width, read from the ONE place that decides it: whether the
-    // lane allocated a spine-scale period buffer at construction. No second
-    // flag, so "which buffer holds the period" and "was the capture narrowed"
-    // cannot disagree.
-    let wide = !input.read_buf_wide.is_empty();
     // Sample the drain-ENTRY avail exactly once per drain call. The first
     // `avail_update()` reading is the standing gadget-capture dwell — the
     // frames sitting readable when the mixer render cycle reaches this lane
@@ -648,31 +624,23 @@ fn drain_direct_capture(
                 Ok(n) => {
                     let got = n * channels;
                     // The tap's marker detector is an S16 contract by design, so
-                    // an ARMED tap gets a narrowed view of the chunk whatever the
-                    // lane's width. On the narrow route that view is the SAME
-                    // slice the resampler is fed (one conversion, not two); on
-                    // the wide route it is a diagnostic branch OFF the audio
-                    // path, computed only while armed so a disarmed wide lane
-                    // pays for no conversion at all.
-                    if armed || !wide {
+                    // an ARMED tap gets a narrowed view of the chunk. It is a
+                    // diagnostic branch OFF the audio path, computed only while
+                    // armed so a disarmed lane pays for no conversion at all.
+                    if armed {
                         let converted = &mut narrow_scratch[..got];
                         let _ = jasper_resampler::convert_s32_to_s16(&scratch[..got], converted);
-                    }
-                    if armed {
                         // read_ns is taken immediately after readi returned above.
                         let read_ns = monotonic_ns();
                         tap.tap_over_read(&narrow_scratch[..got], n, read_ns, ring_fill_before);
                     }
                     tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
                     input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
-                    // `Some` exactly when the view above was computed.
-                    let narrow_view = (armed || !wide).then(|| &narrow_scratch[..got] as &[i16]);
-                    push_capture_chunk(
-                        input.resampler.as_mut(),
-                        wide,
-                        &scratch[..got],
-                        narrow_view,
-                    );
+                    if let Some(r) = input.resampler.as_mut() {
+                        // No `>> 16` anywhere on this route (#2223), so a hi-res
+                        // host's low bits reach the sum.
+                        r.push_input(&scratch[..got]);
+                    }
                     remaining = remaining.saturating_sub(n);
                     read_budget_remaining = read_budget_remaining.saturating_sub(n);
                     if n < to_read {
@@ -699,56 +667,6 @@ fn drain_direct_capture(
         tap.detector = None;
     }
     DirectDrainOutcome::Ok
-}
-
-/// Hand ONE just-read gadget chunk to the lane resampler at this lane's width —
-/// the width fork, and the one place the gadget's low word lives or dies.
-///
-/// * NARROW wire (the shipped default): push the S16 view that
-///   `convert_s32_to_s16` already produced. The narrowing happens BEFORE the
-///   resampler; the byte-identity golden tests pin exactly this order.
-/// * WIDE wire: push the gadget's `i32` untouched. There is no `>> 16` anywhere
-///   on this route (#2223), so a hi-res host's low bits reach the sum.
-///
-/// **The ORDER is the contract, not an implementation detail.** Pushing the raw
-/// `i32` on the narrow route would not merely widen it — the lane would then
-/// resample at spine scale and narrow at its render instead, i.e.
-/// resample-then-narrow. That is a better-rounded signal and a DIFFERENT one,
-/// and it would silently change what every shipped box emits.
-///
-/// Extracted from the drain loop so that contract is reachable from a
-/// hardware-free test: the loop around it needs an open ALSA capture, this does
-/// not.
-///
-/// `narrow` is `Some` exactly when a narrowed view of this chunk was actually
-/// computed — always on the narrow route, and on the wide route only while the
-/// tap is armed. It is an `Option` rather than a slice the wide arm quietly
-/// ignores because those are two different facts: "a narrow view exists and I
-/// am not using it" and "no narrow view was computed" would otherwise read the
-/// same at this signature, and only one of them is true on a disarmed wide lane.
-/// When `Some`, it MUST be the `convert_s32_to_s16` of `raw`, same length.
-pub(super) fn push_capture_chunk(
-    resampler: Option<&mut LaneResampler>,
-    wide: bool,
-    raw: &[i32],
-    narrow: Option<&[i16]>,
-) {
-    // PANIC-AUDITED: both views are slices of one just-read chunk, cut at the same got
-    debug_assert!(narrow.is_none_or(|n| n.len() == raw.len()));
-    let Some(r) = resampler else {
-        return;
-    };
-    if wide {
-        r.push_input_wide(raw);
-    } else {
-        // The narrow route always computes the view before calling.
-        let Some(narrow) = narrow else {
-            // PANIC-AUDITED: debug-only so a release build drops a chunk, not the audio daemon
-            debug_assert!(false, "the narrow route must supply its narrowed view");
-            return;
-        };
-        r.push_input(narrow);
-    }
 }
 
 /// Record one drain-ENTRY avail sample into the lane's since-boot drain stats

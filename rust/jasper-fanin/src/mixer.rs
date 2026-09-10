@@ -14,10 +14,9 @@
 //! not producing returns `-EAGAIN` and the lane renders silence for that
 //! period, and an overrun is `try_recover`ed and rendered as silence too.
 //!
-//! Lane inputs are interleaved stereo, S16_LE or (on a box whose wire resolves
-//! wide) S32_LE. The sum accumulates into an **i64** scratch with
-//! `saturating_add`, so simultaneous full-scale lanes keep real headroom above
-//! full scale at either numeric scale — see [`ProgramWidth`] — before the
+//! Lane inputs are interleaved stereo S32_LE, the program wire's own scale. The
+//! sum accumulates into an **i64** scratch with `saturating_add`, so
+//! simultaneous full-scale lanes keep real headroom above full scale before the
 //! consumer clamps.
 
 mod direct_capture;
@@ -37,9 +36,9 @@ use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 
-use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
+use jasper_resampler::RMS_DBFS_FLOOR;
 
-use crate::config::{Config, RingWireFormat, MEASUREMENT_LANE, RING_SLOT_FRAMES};
+use crate::config::{Config, MEASUREMENT_LANE, RING_SLOT_FRAMES};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -48,8 +47,8 @@ use crate::watchdog::Heartbeat;
 use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
 use dsp::{
-    apply_gain_to_sum, duck_step_per_frame, fill_wide_ring_payload, mix_into, mix_into_wide,
-    ramp_program_duck, saturate_to_i16, WIDE_BYTES_PER_SAMPLE,
+    apply_gain_to_sum, duck_step_per_frame, fill_ring_payload, mix_into, ramp_program_duck,
+    saturate_to_i16, BYTES_PER_SAMPLE,
 };
 use lane_fade::LaneFade;
 use pcm_open::{errno_of, open_direct_capture, open_direct_input, open_input};
@@ -168,7 +167,8 @@ fn drain_avail_bucket(avail: i64) -> usize {
 /// direct-enabled box.
 const DRAIN_STATS_LOG_EVERY: u64 = 1 << 15;
 
-/// Length of the S16 narrowing scratch the direct drain uses per chunk read.
+/// Length of the S16 narrowing scratch the direct drain's TAP uses per chunk
+/// read (the audio path is never narrowed).
 ///
 /// The drain reads the gadget in chunks of at most [`DIRECT_PERIOD_FRAMES`]
 /// frames (`to_read` in `drain_direct_capture`), so one chunk yields at most
@@ -565,16 +565,6 @@ struct RingOutput {
     stall: RingStallTracker,
 }
 
-impl RingOutput {
-    /// Whether this ring's wire is S32LE, read from the geometry the writer
-    /// actually attached against rather than from a parallel flag. The header
-    /// is immutable for the ring file's life and attach already compared it
-    /// field-by-field, so this cannot drift from the bytes the reader expects.
-    fn wire_is_wide(&self) -> bool {
-        self.writer.geometry().sample_format == SAMPLE_FORMAT_S32LE
-    }
-}
-
 /// Whether a `RingWriter::create_or_attach` failure is CONFIG-class — the
 /// question that decides between an exit-78 PARK and the ordinary
 /// `Restart=on-failure` ladder.
@@ -618,16 +608,12 @@ fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
 /// The two events are distinct on purpose. `config_error` means "the geometry
 /// you declared cannot work"; `open_error` means "the ring could not be opened
 /// right now". Logging an EACCES as `config_error` sends an operator to audit a
-/// wire format that was never wrong.
-pub(crate) fn ring_open_error(
-    path: &str,
-    wire_format: &str,
-    error: std::io::Error,
-) -> anyhow::Error {
+/// geometry that was never wrong.
+pub(crate) fn ring_open_error(path: &str, error: std::io::Error) -> anyhow::Error {
     if ring_open_error_is_config_class(&error) {
         warn!(
-            "event=fanin.ring.config_error path={} wire_format={} detail={}",
-            path, wire_format, error,
+            "event=fanin.ring.config_error path={} detail={}",
+            path, error,
         );
         anyhow::Error::new(error).context(crate::ConfigClassError)
     } else {
@@ -642,103 +628,21 @@ pub(crate) fn ring_open_error(
     }
 }
 
-/// The three facts `program_width_disagreement` cross-checks — named so the
-/// call site cannot transpose two booleans silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProgramWidthAudit {
-    /// The width the mixer resolved from config and will run every stage at.
-    pub declared: ProgramWidth,
-    /// Whether the OUTPUT the mixer is about to publish through is a wide ring
-    /// (its own attached header, not config).
-    pub output_is_wide: bool,
-    /// Whether ANY constructed lane actually allocated a spine-scale period
-    /// buffer — the lane-side half of the width, observed rather than assumed.
-    pub any_lane_is_wide: bool,
-}
-
-/// Cross-check the program width against BOTH things that must agree with it,
-/// returning the CONFIG-CLASS error to fail construction with, or `None`.
-///
-/// The declared width is one derivation ([`ProgramWidth::from_config`]), but it
-/// is consumed in two places that could each drift from it independently — the
-/// OUTPUT (the ring publishes from its own attached header) and the LANES (each
-/// lane decides at construction whether to allocate a spine-scale period
-/// buffer). The two axes are checked DIFFERENTLY, and the asymmetry is the
-/// point:
-///
-/// * The OUTPUT axis is an EQUALITY. A narrow sum on a wide wire under-drives it
-///   by 96 dB; a wide sum on a narrow wire over-drives it by the same.
-/// * The LANE axis is a ONE-WAY IMPLICATION — `any_lane_is_wide` implies
-///   `declared_wide`, never the reverse. A spine-scale lane feeding a
-///   narrow-scale sum is the +96 dB fault worth parking for. The reverse, a
-///   wide sum with no wide lane, is **legal and must construct**: a box with
-///   no lanes at all still resolves a wide wire, and any i16 lane promotes at
-///   `mix_into`'s Wide arm. Requiring equality here would park a CORRECT box —
-///   exit 78, no audio path, no self-recovery.
-///
-/// The error carries the config-class marker because a width disagreement is
-/// permanent: nothing about restarting changes which wire the box resolved or
-/// which buffers its lanes allocated. Without [`crate::ConfigClassError`] the
-/// unit would take the `Restart=on-failure` ladder into
-/// `StartLimitAction=reboot`; with it, `park_on_config_class` exits 78 and the
-/// unit parks visibly.
-///
-/// Extracted rather than left inline for the reason [`ring_open_error`]'s own
-/// doc gives: `Mixer::new` cannot be constructed without ALSA, so a decision
-/// left in its body is unreachable from a hardware-free test.
-pub(crate) fn program_width_disagreement(audit: ProgramWidthAudit) -> Option<anyhow::Error> {
-    let declared_wide = matches!(audit.declared, ProgramWidth::Wide);
-    // Output: equality, both directions are faults.
-    let output_disagrees = declared_wide != audit.output_is_wide;
-    // Lane: implication only. A wide lane in a narrow sum is the +96 dB fault;
-    // a wide sum with no wide lane is the ordinary USB-off configuration.
-    let lane_disagrees = audit.any_lane_is_wide && !declared_wide;
-    if !output_disagrees && !lane_disagrees {
-        return None;
-    }
-    warn!(
-        "event=fanin.width_disagreement declared_wide={} output_wide={} lane_wide={} \
-         — refusing to mix lanes at mismatched numeric scales",
-        declared_wide, audit.output_is_wide, audit.any_lane_is_wide,
-    );
-    Some(
-        anyhow::anyhow!(
-            "fan-in program width disagreement: declared wide={} but the attached ring \
-             header says wide={} and the constructed lanes say wide={} — refusing to mix \
-             lanes at mismatched numeric scales",
-            declared_wide,
-            audit.output_is_wide,
-            audit.any_lane_is_wide,
-        )
-        .context(crate::ConfigClassError),
-    )
-}
-
 pub struct Mixer {
     inputs: Vec<Input>,
     output: RingOutput,
-    /// The numeric scale this run's program sum carries, resolved ONCE from the
-    /// box's wire (see [`ProgramWidth`]). Every stage between a lane's read and
-    /// the summed write consults this one value rather than re-deriving the
-    /// width from the transport.
-    program_width: ProgramWidth,
-    /// Per-period scratch: `period_frames * CHANNELS` samples in the scale
-    /// `program_width` names. `i64` so the mix keeps real headroom above full
-    /// scale at BOTH scales — see [`ProgramWidth`] for why that headroom is
-    /// audible rather than theoretical.
+    /// Per-period scratch: `period_frames * CHANNELS` samples at the i32 spine
+    /// scale. `i64` so the mix keeps real headroom above full scale: two
+    /// full-scale lanes would saturate in an `i32`, and the program duck's job
+    /// is to pull such a sum back into range before the write. Saturating back
+    /// into i32 is the consumer's job (`dsp::fill_ring_payload`).
     sum_buf: Vec<i64>,
-    /// Per-period output buffer (i16 interleaved). Same length as
-    /// sum_buf.
-    output_buf: Vec<i16>,
-    /// Per-period payload for an S32LE Ring A wire: `sum_buf` saturated into the
-    /// i32 spine range, little-endian. EMPTY (and therefore zero heap — a `Vec`
-    /// with no capacity does not allocate) on a narrow wire.
-    ///
-    /// Bytes rather than `Vec<i32>` because the wire is explicitly
-    /// LITTLE-endian: `to_le_bytes` states that, where reinterpreting an `i32`
-    /// slice would silently depend on the host's endianness. `4 * sum_buf.len()`
-    /// bytes when armed.
-    ring_wide_payload: Vec<u8>,
+    /// Per-period Ring A payload: `sum_buf` saturated into the i32 spine range,
+    /// little-endian. Bytes rather than `Vec<i32>` because the wire is
+    /// explicitly LITTLE-endian: `to_le_bytes` states that, where reinterpreting
+    /// an `i32` slice would silently depend on the host's endianness.
+    /// `4 * sum_buf.len()` bytes.
+    ring_payload: Vec<u8>,
     /// Per-period pre-duck program buffer for the assistant loudness
     /// meter. Same length as sum_buf.
     content_meter_buf: Vec<i16>,
@@ -782,8 +686,10 @@ pub struct Mixer {
     /// (no wall clock in the hot loop) to detect idle↔active transitions and to
     /// measure the post-activation delay.
     auto_trim_lane_state: Vec<AutoTrimLaneState>,
-    /// The impulse tap over the USB DIRECT capture ingress. Runs inline over the
-    /// converted S16 slice in `read_direct_and_render`, before `push_input`.
+    /// The impulse tap over the USB DIRECT capture ingress. Runs inline in
+    /// `read_direct_and_render`, before `push_input`, over its own S16 view of
+    /// the read (the marker detector is an S16 contract; the audio path is not
+    /// narrowed).
     /// Present regardless of the direct flag; its disarmed cost is one relaxed
     /// atomic load per direct read.
     direct_tap: DirectTapHook,
@@ -864,17 +770,14 @@ impl RingCounters {
 /// The shared ring counters (cloned Arcs) plus the observed wire geometry, for
 /// the STATUS endpoint's `ring` block.
 ///
-/// `wire_format` / `channels` are plain values, not atomics: they come off the
-/// header the writer attached against, which is immutable for the ring file's
-/// life, so there is nothing for a later period to update.
+/// `channels` is a plain value, not an atomic: it comes off the header the
+/// writer attached against, which is immutable for the ring file's life, so
+/// there is nothing for a later period to update.
 #[derive(Clone)]
 pub struct RingObservability {
     pub nominal_clock: Arc<AtomicBool>,
     pub path: String,
     pub slots: u32,
-    /// The OBSERVED wire vocabulary token (`S16_LE` / `S32_LE`), or `unknown`
-    /// for a header id this daemon has no token for.
-    pub wire_format: &'static str,
     /// The OBSERVED channel count from the attached header.
     pub channels: u32,
     pub occupancy: Arc<AtomicU64>,
@@ -886,18 +789,6 @@ pub struct RingObservability {
     pub last_stall_ms: Arc<AtomicU64>,
     /// See [`RingCounters::clockless_paces`].
     pub clockless_paces: Arc<AtomicU64>,
-}
-
-/// Render a ring header `sample_format` id as the wire vocabulary token
-/// [`RingObservability::wire_format`] publishes. The vocabulary itself lives
-/// once, in [`RingWireFormat`]. An unmappable id cannot reach a running ring
-/// (attach validates the accept-set first), so `unknown` is a placeholder
-/// rather than a state to act on.
-fn ring_wire_format_label(sample_format: u32) -> &'static str {
-    match RingWireFormat::from_sample_format_id(sample_format) {
-        Some(format) => format.as_str(),
-        None => "unknown",
-    }
 }
 
 /// The fan-in ring-stall EVENT threshold (issue #1524): how long the
@@ -1208,20 +1099,10 @@ pub struct Input {
     direct_opener: Option<direct_capture::DirectOpener>,
     pub label: String,
     pub pcm_name: String,
-    /// Per-input read buffer (i16 interleaved stereo). Reused as the
-    /// discard scratch by the catch-up drain — no per-period allocation.
-    ///
-    /// The lane's period lands HERE unless `read_buf_wide` is non-empty.
-    read_buf: Vec<i16>,
-    /// Per-input SPINE-SCALE read buffer (i32 interleaved stereo), allocated
-    /// on a wide wire and EMPTY — so zero heap, a `Vec` with no capacity does
-    /// not allocate — on a box pinned to the narrow wire (`spine_read_buf`).
-    ///
-    /// Non-empty is the lane's OWN width switch, and the mixer reads it exactly
-    /// that way (`read_buf_wide.is_empty()` picks the sum entry). One allocation
-    /// decision at construction is the whole mechanism; there is no second flag
-    /// that could disagree with which buffer actually holds the period.
-    read_buf_wide: Vec<i32>,
+    /// Per-input read buffer (i32 interleaved stereo, the program wire's spine
+    /// scale). Reused as the discard scratch by the catch-up drain — no
+    /// per-period allocation.
+    read_buf: Vec<i32>,
     pub xrun_count: Arc<AtomicU64>,
     /// `CLOCK_MONOTONIC` milliseconds of this lane's last xrun, or
     /// [`jasper_daemon::json::NEVER_MS`] until the first one. Bumped with `xrun_count` by
@@ -1282,10 +1163,6 @@ impl Mixer {
     /// of the summed music reference.
     pub fn new(config: &Config, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-        // The ONE width derivation for this run. Resolved before any lane is
-        // built because it decides the DIRECT lane's render width and whether it
-        // allocates a spine-scale read buffer at all.
-        let program_width = ProgramWidth::from_config(config);
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
@@ -1365,37 +1242,34 @@ impl Mixer {
         let geometry = Geometry {
             rate: config.sample_rate,
             channels: CHANNELS,
-            sample_format: config.ring_wire_format.sample_format_id(),
+            sample_format: SAMPLE_FORMAT_S32LE,
             period_frames: RING_SLOT_FRAMES,
             n_slots: config.ring_slots,
         };
         let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
-            .map_err(|e| ring_open_error(&config.ring_path, config.ring_wire_format.as_str(), e))
+            .map_err(|e| ring_open_error(&config.ring_path, e))
             .with_context(|| format!("opening fan-in→camilla SHM ring {}", config.ring_path))?;
         // NOTHING else is opened. The ring IS the program path: no ALSA playback
         // PCM is opened or fed (ADR-0100).
         let counters = RingCounters::new();
         let period_ns = (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
-        // The wire this ring OBSERVABLY carries, read back from the header the
-        // writer attached against — not echoed from config, so it is what the
-        // reader on the other end sees.
+        // The geometry this ring OBSERVABLY carries, read back from the header
+        // the writer attached against — not echoed from config, so it is what
+        // the reader on the other end sees.
         let attached = writer.geometry();
-        let wire_format = ring_wire_format_label(attached.sample_format);
         info!(
-            "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={} wire_format={} channels={}",
+            "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={} channels={}",
             config.ring_path,
             config.ring_slots,
             RING_SLOT_FRAMES,
             config.period_frames,
             config.period_frames / RING_SLOT_FRAMES,
-            wire_format,
             attached.channels,
         );
         let ring_observability = RingObservability {
             nominal_clock: Arc::clone(&counters.nominal_clock),
             path: config.ring_path.clone(),
             slots: config.ring_slots,
-            wire_format,
             channels: attached.channels,
             occupancy: Arc::clone(&counters.occupancy),
             published: Arc::clone(&counters.published),
@@ -1440,30 +1314,11 @@ impl Mixer {
             Arc::new(Mutex::new(TapConfig::default())),
             tap_sender,
         );
-        // Allocated ONCE, and only for a ring whose attached header says S32LE.
-        let output_is_wide = output.wire_is_wide();
-        let ring_wide_payload = if output_is_wide {
-            vec![0u8; period_samples * WIDE_BYTES_PER_SAMPLE]
-        } else {
-            Vec::new()
-        };
-        // FAIL CLOSED on a width disagreement, across BOTH axes (see
-        // `program_width_disagreement`).
-        let any_lane_is_wide = inputs.iter().any(|i| !i.read_buf_wide.is_empty());
-        if let Some(error) = program_width_disagreement(ProgramWidthAudit {
-            declared: program_width,
-            output_is_wide,
-            any_lane_is_wide,
-        }) {
-            return Err(error);
-        }
         Ok(Self {
             inputs,
             output,
-            program_width,
             sum_buf: vec![0i64; period_samples],
-            output_buf: vec![0i16; period_samples],
-            ring_wide_payload,
+            ring_payload: vec![0u8; period_samples * BYTES_PER_SAMPLE],
             content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
@@ -1647,10 +1502,10 @@ impl Mixer {
                 r.latency_context(connection_epoch, timing_failed);
             }
             let frames = if input.direct.is_some() {
-                // USB DIRECT lane: read hw:UAC2Gadget directly, narrow S32→S16,
-                // feed the SAME resampler, render one DAC-paced period. The aloop
+                // USB DIRECT lane: read hw:UAC2Gadget directly, feed the SAME
+                // resampler untouched, render one DAC-paced period. The aloop
                 // substream is never touched (`pcm` is None). The tap runs inline
-                // over the converted slice inside this call.
+                // over its own narrowed view inside this call.
                 read_direct_and_render(input, period_frames, &mut self.direct_tap)
             } else if input.resampler.is_some() {
                 // ARMED clock-crossing lane. The resampler OWNS rate
@@ -1683,11 +1538,7 @@ impl Mixer {
             // signal — they differ only in the full-scale normalizer — so mux's
             // activity gate and the STATUS `rms_dbfs` keep one meaning across
             // widths.
-            let lane_rms_dbfs = if input.read_buf_wide.is_empty() {
-                rms_dbfs_i16(&input.read_buf[..active])
-            } else {
-                jasper_resampler::rms_dbfs_i32(&input.read_buf_wide[..active])
-            };
+            let lane_rms_dbfs = jasper_resampler::rms_dbfs_i32(&input.read_buf[..active]);
             input
                 .rms_dbfs_x100
                 .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
@@ -1697,15 +1548,9 @@ impl Mixer {
             // the same periods the lane reads. Nothing is shaped here — the window
             // itself is applied after the gate below. The INFO line is bounded by
             // the state machine's own ARM_SILENCE_MS re-arm requirement.
-            let woke = if input.read_buf_wide.is_empty() {
-                input
-                    .lane_fade
-                    .observe(&input.read_buf[..active], self.period_frames)
-            } else {
-                input
-                    .lane_fade
-                    .observe(&input.read_buf_wide[..active], self.period_frames)
-            };
+            let woke = input
+                .lane_fade
+                .observe(&input.read_buf[..active], self.period_frames);
             if woke {
                 info!("event=fanin.lane_wake_ramp label={}", input.label);
             }
@@ -1743,47 +1588,23 @@ impl Mixer {
             // woke while mux still had it out keeps that ramp owed until `SELECT`
             // lands (mux arbitrates at 1 Hz). `false` means the lane is fully out
             // and contributes nothing this period.
-            let reaches_sum = if input.read_buf_wide.is_empty() {
-                input.lane_fade.shape_period(
-                    &mut input.read_buf[..active],
-                    self.period_frames,
-                    contributes,
-                )
-            } else {
-                input.lane_fade.shape_period(
-                    &mut input.read_buf_wide[..active],
-                    self.period_frames,
-                    contributes,
-                )
-            };
+            let reaches_sum = input.lane_fade.shape_period(
+                &mut input.read_buf[..active],
+                self.period_frames,
+                contributes,
+            );
             if !reaches_sum {
                 continue;
             }
             // Only sum the samples actually read. `read_input` zero-pads the tail
             // so reading the full period would also be safe; the explicit bound
             // just saves saturating_add calls on a silent input.
-            if input.read_buf_wide.is_empty() {
-                mix_into(
-                    &mut self.sum_buf[..active],
-                    &input.read_buf[..active],
-                    self.program_width,
-                );
-            } else {
-                // A spine-scale lane enters with no shift and no narrowing, so
-                // the low bits a hi-res source sent reach the summed write.
-                mix_into_wide(
-                    &mut self.sum_buf[..active],
-                    &input.read_buf_wide[..active],
-                    self.program_width,
-                );
-            }
+            // A lane enters with no shift and no narrowing, so the low bits a
+            // hi-res source sent reach the summed write.
+            mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
         if let Some(tts) = self.tts.as_mut() {
-            saturate_to_i16(
-                &self.sum_buf,
-                &mut self.content_meter_buf,
-                self.program_width,
-            );
+            saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
             tts.observe_content_period(&self.content_meter_buf);
         }
         // Apply the program-lane duck as a per-sample ramp toward the period
@@ -1792,11 +1613,7 @@ impl Mixer {
         if program_target == 1.0 && self.program_duck_current == 1.0 {
             // no duck — common path, nothing to do
         } else if program_target == self.program_duck_current {
-            apply_gain_to_sum(
-                &mut self.sum_buf,
-                self.program_duck_current,
-                self.program_width,
-            );
+            apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current);
         } else {
             self.program_duck_current = ramp_program_duck(
                 &mut self.sum_buf,
@@ -1805,33 +1622,20 @@ impl Mixer {
                 program_target,
                 self.program_duck_attack_step,
                 self.program_duck_release_step,
-                self.program_width,
             );
         }
         if let Some(tts) = self.tts.as_mut() {
-            tts.mix_period(&mut self.sum_buf, self.program_width);
+            tts.mix_period(&mut self.sum_buf);
         }
 
-        saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width);
-
-        // On an S32LE wire, build the wide slot payload from the SAME post-duck
-        // post-TTS sum. No scale change happens here — the promotion is per lane,
-        // in `mix_into`'s Wide arm — only the i64→i32 saturation and the explicit
-        // little-endian order. The ring's own attached header is the ONE
-        // predicate, the same `wire_is_wide()` that decides which payload
-        // `write_ring_period` publishes, so the fill and the publish cannot
-        // disagree about the wire.
-        if self.output.wire_is_wide() {
-            fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
-        }
+        // Build the slot payload from the SAME post-duck post-TTS sum. No scale
+        // change happens here — only the i64→i32 saturation and the explicit
+        // little-endian order.
+        fill_ring_payload(&self.sum_buf, &mut self.ring_payload);
         // Count only frames that actually ENTERED the ring — a fully-dropped
         // period (reader absent / stuck) adds nothing.
-        let published_frames = write_ring_period(
-            &mut self.output,
-            &self.output_buf,
-            &self.ring_wide_payload,
-            self.period_frames,
-        );
+        let published_frames =
+            write_ring_period(&mut self.output, &self.ring_payload, self.period_frames);
         for input in &mut self.inputs {
             if let Some(resampler) = &mut input.resampler {
                 resampler.output_published(published_frames);
@@ -1926,34 +1730,20 @@ impl Mixer {
 /// to a [`RingStallTracker`] and logs ONE edge-triggered
 /// `event=fanin.ring.stall_detected` / `stall_cleared`.
 ///
-/// **Which payload the ring gets.** The ring publishes `output_buf` on an S16LE
-/// wire and `wide_payload` on an S32LE one, chosen from the ring's OWN attached
-/// header — never a parallel flag, so the bytes published cannot disagree with
-/// the header the reader validated against. Exactly one of the two arguments is
-/// read per call. The ring publish is the whole of this function's output.
-fn write_ring_period(
-    ring: &mut RingOutput,
-    output_buf: &[i16],
-    wide_payload: &[u8],
-    period_frames: u32,
-) -> u32 {
+/// **Which payload the ring gets.** The ring publishes `payload`, the S32LE
+/// bytes `fill_ring_payload` built from this period's sum. The ring publish is
+/// the whole of this function's output.
+fn write_ring_period(ring: &mut RingOutput, payload: &[u8], period_frames: u32) -> u32 {
     let slots_per_step = period_frames / RING_SLOT_FRAMES;
     let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
-    // The ring's OWN attached geometry decides which payload is published.
-    let wide = ring.wire_is_wide();
     let mut dropped_this_period = false;
     let mut published_slots: u32 = 0;
     for slot in 0..slots_per_step as usize {
-        let start = slot * samples_per_slot;
-        let outcome = if wide {
-            let byte_start = start * WIDE_BYTES_PER_SAMPLE;
-            let slot_bytes = samples_per_slot * WIDE_BYTES_PER_SAMPLE;
-            ring.writer
-                .publish_bytes(&wide_payload[byte_start..byte_start + slot_bytes])
-        } else {
-            ring.writer
-                .publish(&output_buf[start..start + samples_per_slot])
-        };
+        let byte_start = slot * samples_per_slot * BYTES_PER_SAMPLE;
+        let slot_bytes = samples_per_slot * BYTES_PER_SAMPLE;
+        let outcome = ring
+            .writer
+            .publish_bytes(&payload[byte_start..byte_start + slot_bytes]);
         match outcome {
             PublishOutcome::Published => {
                 published_slots += 1;
@@ -2102,65 +1892,6 @@ impl Input {
     /// work loop reads it at the SUM stage via `lane_mix_contributes`.
     pub fn muted_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.muted)
-    }
-}
-
-/// The numeric scale fan-in's program sum carries this run — the ONE width
-/// decision every stage between a lane's read and the summed write consults
-/// (#2223).
-///
-/// # What the two scales mean
-///
-/// * [`ProgramWidth::Narrow`] — the sum is in the **i16 numeric scale**: full
-///   scale is ±32768, and every renderer lane's `i16` sample is added as-is.
-///   This is what the shipped default resolves to, and what `saturate_to_i16`
-///   writes out.
-/// * [`ProgramWidth::Wide`] — the sum is in the **i32 spine scale**: full scale
-///   is ±2^31, an `i16` lane is promoted by `widen_i16_to_i32` at its sum entry,
-///   and the USB DIRECT lane contributes its gadget samples untouched.
-///
-/// Promoting at each lane's SUM ENTRY (rather than left-justifying the finished
-/// narrow sum) is what lets a lane that HAS more than 16 significant bits keep
-/// them. For a lane that does not, the promotion is the same `<< 16` applied
-/// earlier, so its contribution is unchanged sample for sample.
-///
-/// # Why the accumulator is i64
-///
-/// The narrow sum has ~16 bits of headroom above full scale (two full-scale
-/// lanes legitimately reach 65534 in an `i32`), and the program duck can bring
-/// an over-full-scale sum back into range before the write — so that headroom is
-/// audible, not theoretical. A spine-scale sum in an `i32` would have NO
-/// headroom: two full-scale lanes would saturate at the mix, and a subsequent
-/// 25 dB duck would then be attenuating an already-clipped value. `i64` keeps
-/// the same headroom argument true at both widths (32 bits of it at spine
-/// scale), at the cost of 4 more bytes per sample of per-period scratch —
-/// 2 KiB at the default 256-frame stereo period, allocated once in
-/// `Mixer::new` — and no measurable arithmetic on a 64-bit ARM core. It also
-/// rules out clamp-before-shift: `widen_i16_to_i32` into an `i64` cannot wrap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProgramWidth {
-    /// The i16 numeric scale — an S16 wire, and the shipped default.
-    Narrow,
-    /// The i32 spine scale — an S32LE ring wire.
-    Wide,
-}
-
-impl ProgramWidth {
-    /// Resolve the width from THIS BOX's config — the single derivation, from
-    /// [`Config::program_wire_is_wide`], which owns what makes a wire wide.
-    fn from_config(config: &Config) -> Self {
-        ProgramWidth::from_wire_is_wide(config.program_wire_is_wide())
-    }
-
-    /// The pure mapping, split out from [`ProgramWidth::from_config`] so the
-    /// scale choice is testable without constructing a whole `Config`. The
-    /// boolean's own derivation stays in one place.
-    fn from_wire_is_wide(wire_is_wide: bool) -> Self {
-        if wire_is_wide {
-            ProgramWidth::Wide
-        } else {
-            ProgramWidth::Narrow
-        }
     }
 }
 
@@ -2346,20 +2077,6 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     }
 }
 
-/// Zero a lane's period buffer from `from_sample` on — whichever width the lane
-/// holds its period in.
-///
-/// Takes the two buffers rather than the `Input` so a caller can silence its
-/// lane while holding a borrow of another of the lane's fields; every read path
-/// silences with its PCM or its ring reader borrowed.
-pub(super) fn silence_period(narrow: &mut [i16], wide: &mut [i32], from_sample: usize) {
-    if wide.is_empty() {
-        narrow[from_sample..].fill(0);
-    } else {
-        wide[from_sample..].fill(0);
-    }
-}
-
 /// Shared taxonomy for every non-blocking ALSA read/query in this mixer.
 /// Callers decide whether a fatal error propagates (ordinary lanes) or means a
 /// hot-pluggable device disappeared (USB direct); the errno classification is
@@ -2452,19 +2169,11 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         return; // healthy lane — the overwhelmingly common path.
     }
 
-    // Discard whole periods into the lane's existing period scratch, at the
-    // width that lane holds. read_input overwrites the same buffer next, so
-    // trashing it here is safe.
-    let discarded_frames = if input.read_buf_wide.is_empty() {
-        match pcm.io_i16() {
-            Ok(io) => discard_periods(&io, &mut input.read_buf, to_drain),
-            Err(_) => return,
-        }
-    } else {
-        match pcm.io_i32() {
-            Ok(io) => discard_periods(&io, &mut input.read_buf_wide, to_drain),
-            Err(_) => return,
-        }
+    // Discard whole periods into the lane's existing period scratch. read_input
+    // overwrites the same buffer next, so trashing it here is safe.
+    let discarded_frames = match pcm.io_i32() {
+        Ok(io) => discard_periods(&io, &mut input.read_buf, to_drain),
+        Err(_) => return,
     };
     if discarded_frames == 0 {
         return;
@@ -2542,8 +2251,8 @@ fn trim_input(input: &mut Input) -> u64 {
 /// (armed + detector knobs, read lock-free), the last-armed [`TapConfig`] (read
 /// only on an arm-generation change), the bounded channel to the
 /// `fanin-tap-writer` thread, and the mixer-local detector state + cumulative
-/// capture cursor. Runs inline in `read_direct_and_render` over the converted
-/// S16 slice BEFORE `push_input`.
+/// capture cursor. Runs inline in `read_direct_and_render` BEFORE `push_input`,
+/// over an S16 view narrowed for the detector alone.
 ///
 /// Disarmed cost: one relaxed atomic load per direct read
 /// ([`TapState::armed`]) and nothing else.
@@ -2677,18 +2386,14 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
     // Non-direct lanes always have Some(pcm); the direct lane never reaches
     // this path. A None here means a silent lane — render silence.
     let Some(pcm) = input.pcm.as_ref() else {
-        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+        input.read_buf.fill(0);
         return Ok(0);
     };
-    // Read at the width this lane holds its period in. The PCM was opened at
-    // that same width (`lane_capture_format`), so the typed IO handle can never
-    // disagree with the wire.
-    let read = if input.read_buf_wide.is_empty() {
-        let io = pcm.io_i16().context("getting i16 IO handle for input")?;
-        io.readi(&mut input.read_buf)
-    } else {
+    // The PCM was opened S32_LE (`configure_pcm`), so the typed IO handle can
+    // never disagree with the wire.
+    let read = {
         let io = pcm.io_i32().context("getting i32 IO handle for input")?;
-        io.readi(&mut input.read_buf_wide)
+        io.readi(&mut input.read_buf)
     };
     match read {
         Ok(frames) => {
@@ -2699,11 +2404,7 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
             // `frames`, but a path that reads the whole buffer (RMS, the fade
             // tracker) must see zeros rather than stale data there.
             if frames < requested_frames {
-                silence_period(
-                    &mut input.read_buf,
-                    &mut input.read_buf_wide,
-                    frames * (CHANNELS as usize),
-                );
+                input.read_buf[frames * (CHANNELS as usize)..].fill(0);
             }
             Ok(frames)
         }
@@ -2711,7 +2412,7 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
             PcmIoFate::WouldBlock => {
                 // No data ready: the renderer is idle, or has not opened its
                 // substream yet.
-                silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+                input.read_buf.fill(0);
                 Ok(0)
             }
             PcmIoFate::Xrun => {
@@ -2722,7 +2423,7 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
                     input.label, count,
                 );
                 pcm.try_recover(e, true).context("recovering input xrun")?;
-                silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+                input.read_buf.fill(0);
                 Ok(0)
             }
             PcmIoFate::Fatal => Err(e).context(format!(
@@ -2764,7 +2465,7 @@ fn recover_resampler_input_xrun(
     // The aloop resampler lane always has Some(pcm); only the direct lane is
     // None, and it uses recover_direct_xrun instead.
     let Some(pcm) = input.pcm.as_ref() else {
-        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+        input.read_buf.fill(0);
         return Ok(());
     };
     pcm.try_recover(error, true)
@@ -2780,7 +2481,7 @@ fn recover_resampler_input_xrun(
     if let Some(r) = input.resampler.as_mut() {
         r.reset();
     }
-    silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+    input.read_buf.fill(0);
     Ok(())
 }
 
@@ -2803,10 +2504,9 @@ fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Re
     // The aloop resampler lane always has Some(pcm); the direct lane routes to
     // read_direct_and_render and never reaches here.
     if input.pcm.is_none() {
-        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+        input.read_buf.fill(0);
         return Ok(0);
     }
-    let wide = !input.read_buf_wide.is_empty();
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     if read_budget_remaining > 0 {
@@ -2852,17 +2552,10 @@ fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Re
                         .as_ref()
                         // PANIC-AUDITED: an aloop resampler lane always opens Some(pcm)
                         .expect("aloop resampler lane always has Some(pcm)");
-                    if wide {
-                        let io = pcm
-                            .io_i32()
-                            .context("getting i32 IO handle for resampler input")?;
-                        io.readi(&mut input.read_buf_wide[..samples_to_read])
-                    } else {
-                        let io = pcm
-                            .io_i16()
-                            .context("getting i16 IO handle for resampler input")?;
-                        io.readi(&mut input.read_buf[..samples_to_read])
-                    }
+                    let io = pcm
+                        .io_i32()
+                        .context("getting i32 IO handle for resampler input")?;
+                    io.readi(&mut input.read_buf[..samples_to_read])
                 };
                 match read_result {
                     Ok(0) => {
@@ -2873,11 +2566,7 @@ fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Re
                         input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
                         let samples = n * (CHANNELS as usize);
                         if let Some(r) = input.resampler.as_mut() {
-                            if wide {
-                                r.push_input_wide(&input.read_buf_wide[..samples]);
-                            } else {
-                                r.push_input(&input.read_buf[..samples]);
-                            }
+                            r.push_input(&input.read_buf[..samples]);
                         }
                         frames_remaining = frames_remaining.saturating_sub(n);
                         read_budget_remaining = read_budget_remaining.saturating_sub(n);
@@ -2913,20 +2602,11 @@ fn read_into_resampler_and_render(input: &mut Input, period_frames: usize) -> Re
         }
     }
 
-    // Same resampling kernel either way — only the emit tail's rails differ:
-    // `render_period_wide` rounds at i32 instead of dividing the spine-scale
-    // accumulator back down to i16.
     let real_frames = match input.resampler.as_mut() {
-        Some(r) => {
-            if wide {
-                r.render_period_wide(&mut input.read_buf_wide)
-            } else {
-                r.render_period(&mut input.read_buf)
-            }
-        }
+        Some(r) => r.render_period(&mut input.read_buf),
         None => {
             // Unreachable: only called when resampler.is_some().
-            silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
+            input.read_buf.fill(0);
             0
         }
     };
@@ -3313,18 +2993,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn direct_lane_narrows_via_shared_conversion() {
-        // The direct lane uses jasper_resampler's narrowing. The pinned
-        // sign-boundary vector is re-asserted here so a drift fails this suite too.
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(0), 0);
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(0x7fff_ffff), 0x7fff);
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(i32::MIN), i16::MIN);
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(-1), -1);
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_536), -1);
-        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_537), -2);
-    }
-
     // ---- B2: direct-drain narrowing scratch never overflows (OOB panic) ---
 
     #[test]
@@ -3640,7 +3308,7 @@ mod tests {
     // ALSA handle at all, so the ring publish + reader roundtrip is the whole
     // contract — there is nothing else for a test to stub out.
 
-    use jasper_ring::{RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
+    use jasper_ring::{RingReader, SlotRead};
     use jasper_tts_protocol::loudness::{gain_db_to_linear, AssistantLoudnessConfig};
     use jasper_tts_protocol::{QueuedTtsCommand, TtsCommand};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
@@ -3650,28 +3318,16 @@ mod tests {
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
     fn ring_geometry(n_slots: u32) -> Geometry {
-        ring_geometry_with_wire(n_slots, RingWireFormat::S16Le)
-    }
-
-    fn ring_geometry_with_wire(n_slots: u32, wire: RingWireFormat) -> Geometry {
         Geometry {
             rate: 48_000,
             channels: CHANNELS,
-            sample_format: wire.sample_format_id(),
+            sample_format: SAMPLE_FORMAT_S32LE,
             period_frames: RING_SLOT_FRAMES,
             n_slots,
         }
     }
 
     fn tmp_ring_output(n_slots: u32, tag: &str) -> (RingOutput, String) {
-        tmp_ring_output_with_wire(n_slots, tag, RingWireFormat::S16Le)
-    }
-
-    fn tmp_ring_output_with_wire(
-        n_slots: u32,
-        tag: &str,
-        wire: RingWireFormat,
-    ) -> (RingOutput, String) {
         let dir = std::env::temp_dir().join(format!(
             "jts-fanin-ring-{}-{}-{}",
             tag,
@@ -3680,8 +3336,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("program.ring").to_string_lossy().into_owned();
-        let writer =
-            RingWriter::create_or_attach(&path, ring_geometry_with_wire(n_slots, wire)).unwrap();
+        let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
         let counters = RingCounters::new();
         let ring = RingOutput {
             writer,
@@ -3693,10 +3348,19 @@ mod tests {
         (ring, path)
     }
 
-    /// The narrow ring publishes `output_buf`, so the wide payload argument is
-    /// empty on every S16LE call site — exactly what `step()` passes when the
-    /// wide buffer was never allocated.
-    const NO_WIDE_PAYLOAD: &[u8] = &[];
+    /// One period's mix sum rendered into the bytes `step()` publishes.
+    fn payload_of(sum: &[i64]) -> Vec<u8> {
+        let mut payload = vec![0u8; sum.len() * BYTES_PER_SAMPLE];
+        fill_ring_payload(sum, &mut payload);
+        payload
+    }
+
+    /// The i32 samples a reader takes off one slot of published bytes.
+    fn samples_of(slot: &[u8]) -> Vec<i32> {
+        slot.chunks_exact(BYTES_PER_SAMPLE)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    }
 
     fn cleanup_ring(path: &str) {
         let _ = std::fs::remove_file(path);
@@ -3707,8 +3371,8 @@ mod tests {
 
     /// Q2 (TTS/duck ride-along): the ring output receives the FINAL mixed period
     /// — post-duck AND post-TTS — verbatim. `step()` mixes TTS and applies the
-    /// duck into sum_buf BEFORE saturating into output_buf, and `write_ring_period`
-    /// publishes exactly that output_buf, so whatever the mix produced is what the
+    /// duck into sum_buf BEFORE filling the payload, and `write_ring_period`
+    /// publishes exactly that payload, so whatever the mix produced is what the
     /// ring reader sees. This test stands in a post-TTS-mixed period and asserts
     /// the reader reads back those exact bytes.
     #[test]
@@ -3717,36 +3381,47 @@ mod tests {
         let (mut ring, path) = tmp_ring_output(8, "tts_ridealong");
         let mut reader = RingReader::create_or_attach(&path, ring_geometry(8)).unwrap();
         // Prime the reader heartbeat so the writer takes the publish path.
-        let slot_samples = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
-        let mut slot_out = vec![0i16; slot_samples];
-        assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Empty);
+        let slot_bytes = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize) * BYTES_PER_SAMPLE;
+        let mut slot_out = vec![0u8; slot_bytes];
+        assert_eq!(
+            reader.try_consume_slot_bytes(&mut slot_out),
+            SlotRead::Empty
+        );
 
-        // Model step()'s output_buf: build a summed program, apply a duck, then
-        // add a TTS contribution — the SAME order step() uses — and saturate.
+        // Model step(): build a summed program, apply a duck, then add a TTS
+        // contribution — the SAME order step() uses — and fill the payload.
         let total = (period_frames as usize) * (CHANNELS as usize);
+        let lane = jasper_resampler::widen_i16_to_i32(10_000);
         let mut sum = vec![0i64; total];
-        mix_into(&mut sum, &vec![10_000i16; total], ProgramWidth::Narrow); // program lane
-        apply_gain_to_sum(&mut sum, 0.5, ProgramWidth::Narrow); // duck (TTS active)
+        mix_into(&mut sum, &vec![lane; total]); // program lane
+        apply_gain_to_sum(&mut sum, 0.5); // duck (TTS active)
+        let tts = jasper_resampler::widen_i16_to_i32(4_000) as i64;
         for s in sum.iter_mut() {
-            *s = s.saturating_add(4_000); // stand-in for tts.mix_period
+            *s = s.saturating_add(tts); // stand-in for tts.mix_period
         }
-        let mut output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut output_buf, ProgramWidth::Narrow); // expected: 5000 + 4000 = 9000
+        let payload = payload_of(&sum);
 
-        let published_frames =
-            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames);
+        let published_frames = write_ring_period(&mut ring, &payload, period_frames);
         // Two slots reached a live reader -> the full period is counted.
         assert_eq!(published_frames, period_frames);
 
         // The reader reads the two published slots back — byte-identical to the
-        // post-duck post-TTS output_buf.
-        let mut got = Vec::with_capacity(total);
+        // post-duck post-TTS payload.
+        let mut got: Vec<u8> = Vec::with_capacity(payload.len());
         for _ in 0..(period_frames / RING_SLOT_FRAMES) {
-            assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Filled);
+            assert_eq!(
+                reader.try_consume_slot_bytes(&mut slot_out),
+                SlotRead::Filled
+            );
             got.extend_from_slice(&slot_out);
         }
-        assert_eq!(got, output_buf, "ring must carry the final mixed period");
-        assert!(got.iter().all(|&s| s == 9_000), "post-duck+TTS value");
+        assert_eq!(got, payload, "ring must carry the final mixed period");
+        // 5000 + 4000 = 9000 on the i16 grid, at the wire's own scale.
+        let expected = jasper_resampler::widen_i16_to_i32(9_000);
+        assert!(
+            samples_of(&got).iter().all(|&s| s == expected),
+            "post-duck+TTS value",
+        );
         // Counters reflect two published slots (a live reader, no drops).
         assert_eq!(ring.counters.published.load(Ordering::Relaxed), 2);
         assert_eq!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed), 0);
@@ -3809,9 +3484,9 @@ mod tests {
 
         let (output, out_path) = tmp_ring_output(8, "duck_order");
         let mut reader = RingReader::create_or_attach(&out_path, ring_geometry(8)).unwrap();
-        let mut slot = vec![0i16; period_samples];
+        let mut slot = vec![0u8; period_samples * BYTES_PER_SAMPLE];
         // Prime the reader heartbeat so the writer takes the publish path.
-        assert_eq!(reader.try_consume_slot(&mut slot), SlotRead::Empty);
+        assert_eq!(reader.try_consume_slot_bytes(&mut slot), SlotRead::Empty);
 
         // A loud TTS period: it must ride above anything a duck applied AFTER
         // the TTS mix could produce (asserted on the reference below).
@@ -3826,7 +3501,6 @@ mod tests {
             path: out_path.clone(),
             nominal_clock: Arc::clone(&counters.nominal_clock),
             slots: 8,
-            wire_format: RingWireFormat::S16Le.as_str(),
             channels: CHANNELS,
             occupancy: Arc::clone(&counters.occupancy),
             published: Arc::clone(&counters.published),
@@ -3840,10 +3514,8 @@ mod tests {
         let mut mixer = Mixer {
             inputs: Vec::new(),
             output,
-            program_width: ProgramWidth::Narrow,
             sum_buf: vec![0i64; period_samples],
-            output_buf: vec![0i16; period_samples],
-            ring_wide_payload: Vec::new(),
+            ring_payload: vec![0u8; period_samples * BYTES_PER_SAMPLE],
             content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
@@ -3877,11 +3549,12 @@ mod tests {
         let mut tts_only = vec![0i64; period_samples];
         assert!(reference.prepare_period());
         reference.observe_content_period(&vec![0i16; period_samples]);
-        reference.mix_period(&mut tts_only, ProgramWidth::Narrow);
+        reference.mix_period(&mut tts_only);
         assert!(
             tts_only
                 .iter()
-                .any(|&t| t > ((i16::MAX as f32) * duck_gain) as i64),
+                .any(|&t| t
+                    > ((jasper_resampler::widen_i16_to_i32(i16::MAX) as f32) * duck_gain) as i64),
             "fixture: the TTS period must ride above a ducked full-scale sample, or a \
              duck applied after the TTS mix would be indistinguishable from one applied \
              before it"
@@ -3889,270 +3562,97 @@ mod tests {
 
         mixer.step().unwrap();
 
-        assert_eq!(reader.try_consume_slot(&mut slot), SlotRead::Filled);
-        let mut expected = vec![0i16; period_samples];
-        saturate_to_i16(&tts_only, &mut expected, ProgramWidth::Narrow);
+        assert_eq!(reader.try_consume_slot_bytes(&mut slot), SlotRead::Filled);
         assert_eq!(
-            slot, expected,
+            slot,
+            payload_of(&tts_only),
             "the ring must carry the UNATTENUATED TTS period"
         );
         assert!(
-            slot[TTS_FRAMES * (CHANNELS as usize)..]
+            samples_of(&slot)[TTS_FRAMES * (CHANNELS as usize)..]
                 .iter()
                 .all(|&s| s == 0),
             "past the TTS period nothing but the (silent) ducked sum is published"
         );
         // What a duck applied AFTER the TTS mix would have published instead.
-        let mut ducked_tts = vec![0i16; period_samples];
-        saturate_to_i16(
-            &tts_only
-                .iter()
-                .map(|&t| ((t as f32) * duck_gain).round() as i64)
-                .collect::<Vec<i64>>(),
-            &mut ducked_tts,
-            ProgramWidth::Narrow,
-        );
+        let ducked_tts: Vec<i64> = tts_only
+            .iter()
+            .map(|&t| ((t as f32) * duck_gain).round() as i64)
+            .collect();
         assert_ne!(
-            slot, ducked_tts,
+            slot,
+            payload_of(&ducked_tts),
             "the TTS period must not carry the program duck"
         );
 
         cleanup_ring(&out_path);
     }
 
-    // --- Ring A wide (S32LE) wire. The wide path keys on the ring's own
-    // ATTACHED header, never on a config default, so these tests build such a
-    // ring explicitly; everything above builds a narrow one just as explicitly.
-    // (The resolver's default is wide since the wide-wire flip — these fixtures
-    // do not inherit it either way, which is what keeps both paths covered.)
-
-    /// A period's worth of NARROW-scale mix sum, spanning the values the narrow
-    /// path has to get right: silence, both i16 rails, the 65534
-    /// two-full-scale-lanes sum that
-    /// `mix_into_saturates_at_i32_bounds_but_stays_room_for_i16_saturation`
-    /// blesses, its negative twin, and ordinary program levels.
+    /// A period's worth of mix sum spanning the values the publish has to get
+    /// right: silence, both spine rails, the two-full-scale-lanes sum that
+    /// legitimately exceeds the rails, its negative twin, and ordinary program
+    /// levels.
     fn representative_sum(total: usize) -> Vec<i64> {
-        let pattern = [0i64, 65_534, -65_536, 32_767, -32_768, 9_000, -9_000, 1];
+        let full = i32::MAX as i64;
+        let pattern = [
+            0i64,
+            2 * full,
+            2 * (i32::MIN as i64),
+            full,
+            i32::MIN as i64,
+            9_000 << 16,
+            -9_000 << 16,
+            1,
+        ];
         (0..total).map(|i| pattern[i % pattern.len()]).collect()
     }
 
-    /// The SAME period at the spine scale a wide box's sum would carry — every
-    /// lane's contribution `widen_i16_to_i32`'d at its sum entry. The promotion
-    /// is applied to the FINISHED narrow sum here only because these are
-    /// pure-function tests with no lanes; per sample it is the identical
-    /// `<< 16`, which is exactly why doing it per lane in `mix_into` changes
-    /// nothing for a lane that had no low bits to keep.
-    fn representative_wide_sum(total: usize) -> Vec<i64> {
-        representative_sum(total)
-            .into_iter()
-            .map(|s| s * (1i64 << 16))
-            .collect()
-    }
-
-    /// The value a period's `i`th sample must publish on a wide wire, given what
-    /// the SAME period publishes on a narrow one.
-    ///
-    /// Below full scale the two wires are the same number 16 bits apart. AT the
-    /// positive clip rail they differ by exactly one i16 LSB, and that is
-    /// correct rather than a rounding slip: the narrow wire's positive full
-    /// scale is `32767`, whose left-justification is `0x7FFF_0000`, while the
-    /// wide wire's own positive full scale is `i32::MAX` — one i16 step higher,
-    /// because two's complement has one more negative code than positive. A
-    /// wide wire that stopped at `0x7FFF_0000` would be refusing to use its own
-    /// top code. The negative rail has no such asymmetry (`i16::MIN << 16` IS
-    /// `i32::MIN`), and the difference only exists on samples that are already
-    /// clipping.
-    fn expected_wide_sample(narrow_sum_sample: i64, narrow_out_sample: i16) -> i32 {
-        if narrow_sum_sample > i16::MAX as i64 {
-            i32::MAX
-        } else {
-            (narrow_out_sample as i32) << 16
-        }
-    }
-
-    /// A wide period built ONLY from i16 lanes carries exactly the information
-    /// the narrow one does — every wide sample is the narrow sample moved 16
-    /// bits up (modulo the one-LSB clip-rail asymmetry
-    /// [`expected_wide_sample`] names), and narrowing it back returns the narrow
-    /// bytes with no drift at all. That is what makes the promotion a scale
-    /// change rather than a content change, and it is why flipping a box's wire
-    /// cannot alter how an S16-only program sounds.
-    ///
-    /// Where the wide path now DIFFERS is that a lane with more than 16
-    /// significant bits keeps them —
-    /// `a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload`
-    /// is that half of the claim.
+    /// End-to-end through the real ring: a mix sum published slot by slot and
+    /// read back by a real `RingReader`. This is the test the byte API's
+    /// correctness rides on — it fails if the payload is sliced at the wrong
+    /// stride, published with the wrong length, or computed in the wrong order.
     #[test]
-    fn wide_payload_is_information_equivalent_to_the_narrow_payload() {
-        let narrow_sum = representative_sum(64);
-        let wide_sum = representative_wide_sum(64);
-        let mut narrow = vec![0i16; narrow_sum.len()];
-        saturate_to_i16(&narrow_sum, &mut narrow, ProgramWidth::Narrow);
-        let mut wide = vec![0u8; wide_sum.len() * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&wide_sum, &mut wide);
-        let mut saw_clip_rail = false;
-        for (i, &n) in narrow.iter().enumerate() {
-            let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = wide
-                [i * WIDE_BYTES_PER_SAMPLE..(i + 1) * WIDE_BYTES_PER_SAMPLE]
-                .try_into()
-                .unwrap();
-            let published = i32::from_le_bytes(bytes);
-            assert_eq!(
-                published,
-                expected_wide_sample(narrow_sum[i], n),
-                "sample {i} (narrow sum {})",
-                narrow_sum[i],
-            );
-            if narrow_sum[i] > i16::MAX as i64 {
-                saw_clip_rail = true;
-                assert_eq!(
-                    (published as i64) - (((n as i32) << 16) as i64),
-                    65_535,
-                    "the clip-rail difference must be exactly one i16 LSB",
-                );
-            }
-        }
-        assert!(
-            saw_clip_rail,
-            "the representative period must exercise the positive clip rail"
-        );
-        // Narrowing the wide sum back returns the narrow bytes EXACTLY, clip
-        // rail included — `narrow_i32_to_i16_round` inverts the promotion.
-        let mut round_tripped = vec![0i16; wide_sum.len()];
-        saturate_to_i16(&wide_sum, &mut round_tripped, ProgramWidth::Wide);
-        assert_eq!(round_tripped, narrow);
-    }
-
-    /// End-to-end through the real ring: the SAME mix sum published onto an
-    /// S32LE ring and an S16LE ring, read back by a real `RingReader`, and the
-    /// wide slots must be exactly the narrow slots left-justified. This is the
-    /// test the byte API's correctness rides on — it fails if the wide payload
-    /// is sliced at the wrong stride, published with the wrong length, or
-    /// computed in the wrong order.
-    #[test]
-    fn wide_ring_slots_carry_the_left_justified_narrow_slots() {
+    fn ring_slots_carry_the_published_period_sample_for_sample() {
         let period_frames = 256u32; // 2 slots of 128 frames
         let total = (period_frames as usize) * (CHANNELS as usize);
         let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
         let slots = period_frames / RING_SLOT_FRAMES;
-        // The narrow box's sum and the SAME period as a wide box's sum would
-        // carry it — the promotion happens at each lane's sum entry now, so the
-        // two wires are fed from differently-scaled accumulators rather than
-        // from one accumulator converted twice.
         let sum = representative_sum(total);
-        let wide_sum = representative_wide_sum(total);
-        let mut output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut output_buf, ProgramWidth::Narrow);
-        let mut wide_payload = vec![0u8; total * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&wide_sum, &mut wide_payload);
+        let payload = payload_of(&sum);
 
-        // Narrow ring: publish output_buf, read i16 slots back.
-        let (mut narrow_ring, narrow_path) = tmp_ring_output(8, "wire_narrow");
-        let mut narrow_reader =
-            RingReader::create_or_attach(&narrow_path, ring_geometry(8)).unwrap();
-        let mut narrow_slot = vec![0i16; samples_per_slot];
+        let (mut ring, path) = tmp_ring_output(8, "wire");
+        let mut reader = RingReader::create_or_attach(&path, ring_geometry(8)).unwrap();
+        let mut slot = vec![0u8; samples_per_slot * BYTES_PER_SAMPLE];
         assert_eq!(
-            narrow_reader.try_consume_slot(&mut narrow_slot),
+            reader.try_consume_slot_bytes(&mut slot),
             SlotRead::Empty,
             "priming the reader heartbeat"
         );
         assert_eq!(
-            write_ring_period(
-                &mut narrow_ring,
-                &output_buf,
-                NO_WIDE_PAYLOAD,
-                period_frames
-            ),
+            write_ring_period(&mut ring, &payload, period_frames),
             period_frames
         );
-        let mut narrow_read = Vec::with_capacity(total);
+        let mut read: Vec<i32> = Vec::with_capacity(total);
         for _ in 0..slots {
-            assert_eq!(
-                narrow_reader.try_consume_slot(&mut narrow_slot),
-                SlotRead::Filled
-            );
-            narrow_read.extend_from_slice(&narrow_slot);
-        }
-        assert_eq!(narrow_read, output_buf);
-
-        // Wide ring: the ring's OWN header selects the wide payload. `output_buf`
-        // is still passed (it is the narrow wire's payload) and must go unread.
-        let (mut wide_ring, wide_path) =
-            tmp_ring_output_with_wire(8, "wire_wide", RingWireFormat::S32Le);
-        assert!(wide_ring.wire_is_wide());
-        let mut wide_reader = RingReader::create_or_attach(
-            &wide_path,
-            ring_geometry_with_wire(8, RingWireFormat::S32Le),
-        )
-        .unwrap();
-        let slot_bytes = samples_per_slot * WIDE_BYTES_PER_SAMPLE;
-        let mut wide_slot = vec![0u8; slot_bytes];
-        assert_eq!(
-            wide_reader.try_consume_slot_bytes(&mut wide_slot),
-            SlotRead::Empty,
-            "priming the reader heartbeat"
-        );
-        assert_eq!(
-            write_ring_period(&mut wide_ring, &output_buf, &wide_payload, period_frames),
-            period_frames
-        );
-        let mut wide_read: Vec<i32> = Vec::with_capacity(total);
-        for _ in 0..slots {
-            assert_eq!(
-                wide_reader.try_consume_slot_bytes(&mut wide_slot),
-                SlotRead::Filled
-            );
-            for chunk in wide_slot.chunks_exact(WIDE_BYTES_PER_SAMPLE) {
-                let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = chunk.try_into().unwrap();
-                wide_read.push(i32::from_le_bytes(bytes));
-            }
+            assert_eq!(reader.try_consume_slot_bytes(&mut slot), SlotRead::Filled);
+            read.extend_from_slice(&samples_of(&slot));
         }
 
-        assert_eq!(wide_read.len(), narrow_read.len());
-        for (i, (&w, &n)) in wide_read.iter().zip(narrow_read.iter()).enumerate() {
+        assert_eq!(read.len(), total);
+        for (i, (&got, &s)) in read.iter().zip(sum.iter()).enumerate() {
             assert_eq!(
-                w,
-                expected_wide_sample(sum[i], n),
-                "slot sample {i}: wide wire must carry the narrow wire's sample",
+                got as i64,
+                s.clamp(i32::MIN as i64, i32::MAX as i64),
+                "slot sample {i}",
             );
         }
-        // The 65534 over-rail sum actually appears in this period, so the clip
-        // behaviour is exercised end-to-end and not only in the pure unit test
-        // above.
+        // The over-rail sums actually appear in this period, so the saturation
+        // is exercised end-to-end and not only in the pure unit test.
         assert!(
-            wide_read.contains(&i32::MAX),
-            "the representative period must include the saturated full-scale rail"
-        );
-        cleanup_ring(&narrow_path);
-        cleanup_ring(&wide_path);
-    }
-
-    /// A narrow ring stays on the typed publish and reports itself narrow, so
-    /// the wide branch is unreachable on a narrow ring — whatever the box's
-    /// resolver would have answered. The header is the authority here, and
-    /// since the wide-wire flip that distinction is the whole point: a narrow
-    /// ring is now an operator's pin (or a pre-flip file), not the default.
-    #[test]
-    fn narrow_ring_reports_its_wire_and_takes_the_typed_publish() {
-        let (ring, path) = tmp_ring_output(2, "wire_default");
-        assert!(!ring.wire_is_wide());
-        assert_eq!(
-            ring.writer.geometry().sample_format,
-            SAMPLE_FORMAT_S16LE,
-            "this fixture builds a NARROW ring explicitly; the writer must \
-             report the header it attached, not a resolved default"
+            read.contains(&i32::MAX) && read.contains(&i32::MIN),
+            "the representative period must include both saturated rails"
         );
         cleanup_ring(&path);
-    }
-
-    /// STATUS reports the OBSERVED wire, mapped through the one vocabulary
-    /// owner. An id outside the accept-set cannot reach a live ring, so it
-    /// renders as `unknown` rather than guessing.
-    #[test]
-    fn ring_wire_format_label_names_the_observed_header_id() {
-        assert_eq!(ring_wire_format_label(SAMPLE_FORMAT_S16LE), "S16_LE");
-        assert_eq!(ring_wire_format_label(SAMPLE_FORMAT_S32LE), "S32_LE");
-        assert_eq!(ring_wire_format_label(99), "unknown");
     }
 
     /// The pacer is a FLOOR, not a rate governor. An instant period is slept out
@@ -4212,7 +3712,7 @@ mod tests {
         let (mut ring, path) = tmp_ring_output(2, "no_reader");
         // No reader attached: reader_pid == 0.
         let total = (period_frames as usize) * (CHANNELS as usize);
-        let output_buf = vec![7i16; total];
+        let payload = vec![7u8; total * BYTES_PER_SAMPLE];
 
         // Fill the ring, then publish several more periods. Each free-run-drops
         // the oldest; the pacer sleeps each period out to its deadline. Bound
@@ -4220,12 +3720,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut per_period_published = Vec::with_capacity(4);
         for _ in 0..4 {
-            per_period_published.push(write_ring_period(
-                &mut ring,
-                &output_buf,
-                NO_WIDE_PAYLOAD,
-                period_frames,
-            ));
+            per_period_published.push(write_ring_period(&mut ring, &payload, period_frames));
         }
         let elapsed = start.elapsed();
         // Accounting (nit-2): the first period fills the empty 2-slot ring and
@@ -4438,20 +3933,17 @@ mod tests {
         // in scope so its Drop (which clears reader_pid) does not fire early.
         let _reader = RingReader::create_or_attach(&path, ring_geometry(2)).unwrap();
         let total = (period_frames as usize) * (CHANNELS as usize);
-        let output_buf = vec![9i16; total];
+        let payload = vec![9u8; total * BYTES_PER_SAMPLE];
         // Fill the ring (first period publishes both slots to the live reader).
         assert_eq!(
-            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
+            write_ring_period(&mut ring, &payload, period_frames),
             period_frames,
         );
 
         // PRE-GRACE: the ring is full and the reader is wedged but within grace →
         // each publish pays the bounded ~21 ms wait, so the period is slow.
         let pre = std::time::Instant::now();
-        assert_eq!(
-            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
-            0
-        );
+        assert_eq!(write_ring_period(&mut ring, &payload, period_frames), 0);
         let pre = pre.elapsed();
         assert!(
             pre >= std::time::Duration::from_millis(5),
@@ -4466,10 +3958,7 @@ mod tests {
         // POST-GRACE: demotion → the period is now just the pacer sleep, an
         // order of magnitude below the pre-grace wall time.
         let post = std::time::Instant::now();
-        assert_eq!(
-            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
-            0
-        );
+        assert_eq!(write_ring_period(&mut ring, &payload, period_frames), 0);
         let post = post.elapsed();
         assert!(
             post * 2 < pre,
@@ -4576,48 +4065,50 @@ mod tests {
         out
     }
 
-    /// THE BYTE-IDENTITY GOLDEN for the narrow wire.
+    /// THE BYTE-IDENTITY GOLDEN for the program wire.
     ///
-    /// The gadget-shaped stream above driven through the DIRECT lane's NARROW
-    /// route — capture narrowing, resampler push, render, sum entry, summed
-    /// write — pinned to committed bytes. Every box in the fleet runs this path.
+    /// The gadget-shaped stream above driven through the DIRECT lane's whole
+    /// route — resampler push, render, sum entry, payload fill — pinned to
+    /// committed samples. Every box in the fleet runs this path.
     ///
-    /// The golden is committed evidence about the narrow route's bytes, not a
+    /// The golden is committed evidence about the route's samples, not a
     /// printout of what this code happens to produce, so a change to the route
     /// has to meet it rather than restate it.
     ///
-    /// What moves them: the capture narrowing itself; the narrowing ORDER
-    /// (narrow-then-resample — resampling first and narrowing after is
-    /// better-rounded but DIFFERENT, and is the mutation this exists to catch);
-    /// the resampler ring's storage scale or its narrowing back out; the sum's
-    /// scale; the i16 saturation.
+    /// What moves them: any narrowing or shift reintroduced at the capture
+    /// boundary or the render; the resampler ring's storage scale; the sum's
+    /// scale; the i64→i32 saturation; the payload's byte order.
     #[test]
-    fn the_narrow_direct_route_is_byte_identical_to_its_committed_golden() {
-        let output = narrow_direct_route_golden_output();
-        // Committed bytes for this fixture.
-        let expected: [i16; 24] = [
-            6921, 2186, 7688, 2077, 8462, 1983, 9211, 1903, 9904, 1838, 10513, 1786, 11015, 1747,
-            11390, 1721, 11624, 1707, 11709, 1704, 11644, 1713, 11434, 1731,
+    fn the_direct_route_is_byte_identical_to_its_committed_golden() {
+        let output = direct_route_golden_output();
+        // Committed samples for this fixture.
+        let expected: [i32; 24] = [
+            453583763, 143264454, 503897903, 136160263, 554607748, 130001019, 603660574, 124776517,
+            649073279, 120470397, 689020309, 117060255, 721914606, 114517801, 746477971, 112809037,
+            761797728, 111894479, 767367178, 111729406, 763108045, 112264149, 749373919, 113444399,
         ];
         assert_eq!(
             &output[..expected.len()],
             &expected,
-            "the narrow DIRECT route's summed write drifted from its pre-change golden"
+            "the DIRECT route's published period drifted from its committed golden"
         );
         // A second window, deeper into the period, so the pin is not only on the
         // ramp-adjacent leading samples.
-        let tail: [i16; 8] = [10327, -8137, 9893, -7973, 9338, -7805, 8683, -7635];
+        let tail: [i32; 8] = [
+            676817580, -533234671, 648401174, -522469089, 612021137, -511484259, 569057559,
+            -500361258,
+        ];
         assert_eq!(&output[200..208], &tail, "golden tail window drifted");
     }
 
-    /// Drive the DIRECT lane's narrow route over [`golden_gadget_stream`] and
-    /// return the summed write of a steady-state period.
+    /// Drive the DIRECT lane over [`golden_gadget_stream`] and return the
+    /// samples a steady-state period publishes.
     ///
     /// Deliberately built from the SAME primitives the daemon uses in the same
-    /// order — `convert_s32_to_s16` at the capture boundary, then `push_input`,
-    /// then `render_period`, then `mix_into`, then `saturate_to_i16` — so the
-    /// golden it feeds pins the real route rather than a paraphrase of it.
-    fn narrow_direct_route_golden_output() -> Vec<i16> {
+    /// order — `push_input`, then `render_period`, then `mix_into`, then
+    /// `fill_ring_payload` — so the golden it feeds pins the real route rather
+    /// than a paraphrase of it.
+    fn direct_route_golden_output() -> Vec<i32> {
         const PERIOD: u32 = 256;
         const CH: usize = CHANNELS as usize;
         let mut lane = LaneResampler::new(
@@ -4631,18 +4122,12 @@ mod tests {
             crate::lane_resampler::DecayParams::disabled(),
         )
         .expect("lane resampler builds");
-        let mut rendered = vec![0i16; PERIOD as usize * CH];
+        let mut rendered = vec![0i32; PERIOD as usize * CH];
         let mut phase = 0usize;
         // Feed a period per render, as the gadget does; prime deep enough to lock.
-        // The chunk goes in through the REAL width fork
-        // (`direct_capture::push_capture_chunk`), so this pins the narrowing
-        // ORDER the daemon uses rather than a restatement of it.
         let feed = |lane: &mut LaneResampler, phase: &mut usize, frames: usize| {
             let gadget = golden_gadget_stream(*phase + frames);
-            let raw = &gadget[*phase * CH..];
-            let mut narrowed = vec![0i16; raw.len()];
-            assert!(jasper_resampler::convert_s32_to_s16(raw, &mut narrowed));
-            direct_capture::push_capture_chunk(Some(lane), false, raw, Some(&narrowed));
+            lane.push_input(&gadget[*phase * CH..]);
             *phase += frames;
         };
         feed(
@@ -4655,196 +4140,20 @@ mod tests {
             assert_eq!(lane.render_period(&mut rendered), PERIOD as usize);
         }
         let mut sum = vec![0i64; rendered.len()];
-        mix_into(&mut sum, &rendered, ProgramWidth::Narrow);
-        let mut out = vec![0i16; rendered.len()];
-        saturate_to_i16(&sum, &mut out, ProgramWidth::Narrow);
-        out
+        mix_into(&mut sum, &rendered);
+        let payload = payload_of(&sum);
+        samples_of(&payload)
     }
 
-    /// The WIDTH FORK's two branches, asserted at the seam itself: the narrow
-    /// route hands the resampler the NARROWED view (narrow-then-resample), the
-    /// wide route hands it the raw gadget `i32`.
-    ///
-    /// Observed through what each lane then renders, because the fork's whole
-    /// output is what the resampler received. A narrow lane fed a hi-res chunk
-    /// renders the truncated high word; a wide lane fed the same chunk renders
-    /// the sample intact.
-    #[test]
-    fn the_width_fork_narrows_before_the_resampler_and_only_on_the_narrow_route() {
-        const PERIOD: u32 = 256;
-        const CH: usize = CHANNELS as usize;
-        // The probe is chosen so TRUNCATION AND ROUNDING DISAGREE: its low word
-        // is 0xC000, i.e. three quarters of a step, so `>> 16` keeps 0x1234
-        // while a round-to-nearest would give 0x1235. Without that the test
-        // would pass whether the chunk was narrowed before the resampler or
-        // resampled first and narrowed after — pinned for the wrong property.
-        let hires = 0x1234_C000u32 as i32;
-        assert_ne!(
-            jasper_resampler::s32_high_word_to_s16(hires),
-            jasper_resampler::narrow_i32_to_i16_round(hires),
-            "the probe must distinguish truncation from rounding, or this test \
-             cannot see the narrowing order at all",
-        );
-        let build = || {
-            LaneResampler::new(
-                CH,
-                PERIOD,
-                48_000,
-                512,
-                PERIOD as usize,
-                500.0,
-                8_192,
-                crate::lane_resampler::DecayParams::disabled(),
-            )
-            .expect("lane resampler builds")
-        };
-        let raw = vec![hires; (512 + 3 * PERIOD as usize + 17) * CH];
-        let mut narrowed = vec![0i16; raw.len()];
-        assert!(jasper_resampler::convert_s32_to_s16(&raw, &mut narrowed));
-
-        let mut narrow_lane = build();
-        let mut wide_lane = build();
-        direct_capture::push_capture_chunk(Some(&mut narrow_lane), false, &raw, Some(&narrowed));
-        direct_capture::push_capture_chunk(Some(&mut wide_lane), true, &raw, None);
-
-        let mut narrow_out = vec![0i16; PERIOD as usize * CH];
-        let mut wide_out = vec![0i32; PERIOD as usize * CH];
-        // Render twice: the first period after lock is scaled by the startup
-        // de-click ramp, so the steady-state period is the one that shows what
-        // the resampler was actually handed.
-        for _ in 0..2 {
-            assert_eq!(narrow_lane.render_period(&mut narrow_out), PERIOD as usize);
-            assert_eq!(wide_lane.render_period_wide(&mut wide_out), PERIOD as usize);
-        }
-
-        assert_eq!(
-            narrow_out[0],
-            jasper_resampler::s32_high_word_to_s16(hires),
-            "the narrow route must hand the resampler the narrowed chunk",
-        );
-        assert_eq!(
-            wide_out[0], hires,
-            "the wide route must hand the resampler the raw gadget sample",
-        );
-        // A `None` resampler is a silent no-op, not a panic — the lane can be
-        // Absent with no resampler built.
-        direct_capture::push_capture_chunk(None, false, &raw, Some(&narrowed));
-    }
-
-    /// Printer for [`the_narrow_direct_route_is_byte_identical_to_its_committed_golden`]'s
+    /// Printer for [`the_direct_route_is_byte_identical_to_its_committed_golden`]'s
     /// fixture, so the golden can be RE-captured against a known commit rather
     /// than hand-transcribed. Ignored by default; run with
-    /// `cargo test print_narrow_direct_golden -- --ignored --nocapture`.
+    /// `cargo test print_direct_golden -- --ignored --nocapture`.
     #[test]
     #[ignore]
-    fn print_narrow_direct_golden() {
-        let out = narrow_direct_route_golden_output();
+    fn print_direct_golden() {
+        let out = direct_route_golden_output();
         println!("HEAD24 {:?}", &out[..24]);
         println!("TAIL8 {:?}", &out[200..208]);
-    }
-
-    /// The width mapping itself: one boolean in, one scale out. The boolean's
-    /// own derivation (ring transport AND S32LE wire — the FORMAT half is now
-    /// true by default, so the transport is what gates it) is pinned where it
-    /// lives, next to the env parse — see config.rs
-    /// `the_program_width_needs_both_the_ring_transport_and_the_wide_format`
-    /// and `the_wide_program_path_follows_the_transport_not_a_declaration`.
-    #[test]
-    fn the_program_width_maps_the_one_resolved_wire_boolean() {
-        assert_eq!(ProgramWidth::from_wire_is_wide(true), ProgramWidth::Wide);
-        assert_eq!(ProgramWidth::from_wire_is_wide(false), ProgramWidth::Narrow);
-    }
-
-    // ---- SF-B: the width cross-check ---------------------------------------
-
-    /// Every COHERENT shape constructs — including the one that has no wide lane
-    /// at all on a wide wire.
-    #[test]
-    fn a_coherent_program_width_constructs() {
-        let coherent = [
-            // (declared, output_is_wide, any_lane_is_wide)
-            (ProgramWidth::Narrow, false, false),
-            (ProgramWidth::Wide, true, true),
-            // A wide wire with NO wide lane. Legal, and the common case — see
-            // the dedicated test below.
-            (ProgramWidth::Wide, true, false),
-        ];
-        for (declared, output_is_wide, any_lane_is_wide) in coherent {
-            assert!(
-                program_width_disagreement(ProgramWidthAudit {
-                    declared,
-                    output_is_wide,
-                    any_lane_is_wide,
-                })
-                .is_none(),
-                "{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must construct",
-            );
-        }
-    }
-
-    /// A WIDE WIRE WITH USB AUDIO INPUT OFF MUST START. This is not a corner
-    /// case — it is the shape an armed box has by default.
-    ///
-    /// The lane axis is an implication, not an equality, so a wide box with no
-    /// wide lane — `declared=Wide, output_is_wide=true, any_lane_is_wide=false`
-    /// — must construct: any i16 lane simply promotes at `mix_into`'s Wide arm.
-    ///
-    /// Requiring equality on the lane axis would exit 78 here: no audio path, no
-    /// self-recovery, operator-only — on a correct configuration, and reachable
-    /// by a household toggling USB off at `/sources/`. Fail-closed is right for
-    /// a fault and a liveness hazard when pointed at a legal state.
-    #[test]
-    fn a_wide_wire_with_usb_audio_input_off_constructs() {
-        assert!(
-            program_width_disagreement(ProgramWidthAudit {
-                declared: ProgramWidth::Wide,
-                output_is_wide: true,
-                any_lane_is_wide: false,
-            })
-            .is_none(),
-            "a wide box with USB Audio Input off must start, not park",
-        );
-    }
-
-    /// SF-B: every genuine disagreement fails construction — and does so as
-    /// CONFIG-CLASS.
-    ///
-    /// The marker is the load-bearing half. Without it the error reaches `main`
-    /// as an ordinary failure, the unit takes `Restart=on-failure`, and five
-    /// starts in five minutes reach `StartLimitAction=reboot` — a permanent,
-    /// unrepairable-by-restarting condition rebooting the Pi in a loop.
-    /// Asserting only "it returns Some" would pass with the marker deleted.
-    ///
-    /// `(Wide, output wide, no wide lane)` is deliberately NOT here — it is the
-    /// legal USB-off shape, pinned by
-    /// `a_wide_wire_with_usb_audio_input_off_constructs`.
-    #[test]
-    fn every_program_width_disagreement_parks_as_config_class() {
-        let cases = [
-            // (declared, output_is_wide, any_lane_is_wide)
-            // Header axis, both directions.
-            (ProgramWidth::Narrow, true, false),
-            (ProgramWidth::Narrow, true, true),
-            (ProgramWidth::Wide, false, false),
-            (ProgramWidth::Wide, false, true),
-            // Lane axis, the +96 dB direction: a spine-scale lane feeding a
-            // narrow-scale sum.
-            (ProgramWidth::Narrow, false, true),
-        ];
-        for (declared, output_is_wide, any_lane_is_wide) in cases {
-            let error = program_width_disagreement(ProgramWidthAudit {
-                declared,
-                output_is_wide,
-                any_lane_is_wide,
-            })
-            .unwrap_or_else(|| {
-                panic!("{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must fail")
-            });
-            assert!(
-                error.downcast_ref::<crate::ConfigClassError>().is_some(),
-                "{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must carry the \
-                 config-class marker, or a permanent fault reboot-loops the Pi",
-            );
-        }
     }
 }

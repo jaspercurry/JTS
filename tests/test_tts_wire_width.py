@@ -15,8 +15,7 @@ Two bars, and they are not the same kind of claim:
   signal — because "the bits survived" means nothing on its own.
 
 The width itself comes from ONE input, ``JASPER_FANIN_RING_WIRE_FORMAT``,
-classified identically in both languages
-(``tests/test_ring_wire_format_contract.py`` pins that half).
+classified by ``jasper.fanin_coupling.resolve_ring_wire_format``.
 """
 
 from __future__ import annotations
@@ -288,19 +287,16 @@ def _declare(monkeypatch, tmp_path, *, wire_format: str) -> None:
 def test_the_width_follows_the_declared_ring_wire_format(
     monkeypatch, tmp_path, wire_format, expected
 ):
-    """Mirrors ``the_assistant_width_needs_both_halves_of_the_box_declaration``
-    in rust/jasper-tts-protocol/src/lib.rs. The transport half is a hard-coded
-    ``true`` on the daemon side (ADR-0100 left one transport), so the format is
-    the whole verdict."""
+    """The declared ring wire format is the whole verdict: ADR-0100 left one
+    transport, so no transport half remains to disagree with it."""
     _declare(monkeypatch, tmp_path, wire_format=wire_format)
     assert tts_wire_is_wide() is expected
 
 
 def test_a_declared_wide_box_speaks_the_wide_verb(monkeypatch, tmp_path):
-    """`jasper-fanin` runs every box on the ring (`Config::program_wire_is_wide`
-    passes the transport half as a hard-coded `true`), so voice must speak
-    AUDIO32 to a wide-declared box or every assistant payload takes a needless
-    conversion at the mixer."""
+    """`jasper-fanin` runs every box on the ring — the ring is its only
+    transport (ADR-0100) — so voice must speak AUDIO32 to a wide-declared box
+    or every assistant payload takes a needless conversion at the mixer."""
     _declare(monkeypatch, tmp_path, wire_format="S32_LE")
     tts = TtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True

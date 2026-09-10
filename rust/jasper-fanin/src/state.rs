@@ -1045,10 +1045,9 @@ impl StateServer {
         // forever reads as "the mirror is writing nothing" rather than "there is
         // no mirror". The absent key is the honest signal.
         //
-        // `wire_format` / `channels` are the OBSERVED header tuple — read back
-        // from the geometry the writer attached against, not echoed from
-        // config — so a reader of /state can answer which wire this ring
-        // actually carries rather than which one was requested.
+        // `channels` is OBSERVED — read back from the geometry the writer
+        // attached against, not echoed from config — so a reader of /state sees
+        // what the ring actually carries rather than what was requested.
         let ring = &self.ring;
         buf.push(',');
         buf.push_str(r#""ring":{"#);
@@ -1061,8 +1060,6 @@ impl StateServer {
         push_kv_str(buf, "path", &ring.path);
         buf.push(',');
         push_kv_u64(buf, "slots", ring.slots as u64);
-        buf.push(',');
-        push_kv_str(buf, "wire_format", ring.wire_format);
         buf.push(',');
         push_kv_u64(buf, "channels", ring.channels as u64);
         buf.push(',');
@@ -1395,7 +1392,6 @@ mod tests {
                 nominal_clock: Arc::new(AtomicBool::new(false)),
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
-                wire_format: "S32_LE",
                 channels: 2,
                 occupancy: Arc::new(AtomicU64::new(6)),
                 published: Arc::new(AtomicU64::new(12345)),
@@ -1727,9 +1723,8 @@ mod tests {
         assert_eq!(ring["stall_active"], true, "stall_active: {ring}");
         assert_eq!(ring["last_stall_ms"], 1500, "last_stall_ms: {ring}");
         assert_eq!(ring["clockless_paces"], 7, "clockless_paces: {ring}");
-        // The OBSERVED wire tuple: which wire this ring is carrying, so /state
-        // can answer that without inferring it from config.
-        assert_eq!(ring["wire_format"], "S32_LE", "wire_format: {ring}");
+        // OBSERVED, so /state answers what the ring carries without inferring
+        // it from config.
         assert_eq!(ring["channels"], 2, "channels: {ring}");
     }
 

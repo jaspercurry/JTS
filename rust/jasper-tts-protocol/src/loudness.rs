@@ -650,9 +650,8 @@ pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
 /// Apply a linear gain to one sample at outputd's i32 program-spine width, in
 /// **f64**.
 ///
-/// The wide sibling of [`apply_gain_i16`], added rather than replacing it because
-/// `apply_gain_i16` is also imported by `jasper-fanin`, whose mixer is i16 —
-/// changing its signature would be a cross-daemon break for no benefit.
+/// The wide sibling of [`apply_gain_i16`], which still serves the narrow
+/// assistant payload this crate accepts.
 ///
 /// f64, not f32, and that is the entire reason this function exists separately
 /// instead of the caller reusing `apply_gain_i16`'s math at a wider type: an f32

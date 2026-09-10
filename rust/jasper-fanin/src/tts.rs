@@ -26,9 +26,9 @@ use log::{info, warn};
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
-    apply_gain, apply_gain_i16, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db,
-    AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, AssistantProfile,
-    HeldLoudnessReference, ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
+    apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
+    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, HeldLoudnessReference,
+    ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
 use jasper_tts_protocol::{
     command_name, serve_client, QueuedTtsCommand, TtsAudioSamples, TtsCommand, TtsCommandSink,
@@ -506,12 +506,6 @@ pub struct TtsMixer {
     /// speaks one width for a daemon's whole lifetime, so this is one line per
     /// lifetime, not per connection — the client reconnecting does not re-arm it.
     last_payload_width: Option<TtsWireWidth>,
-    /// This box's own program width, recorded by `mix_period`. `None` until the
-    /// first period is mixed — a daemon that has not mixed anything yet has no
-    /// opinion to compare a declaration against, and `Mixer::step` calls
-    /// `mix_period` every period unconditionally, so it is set long before a
-    /// client can connect and send audio.
-    program_width_hint: Option<TtsWireWidth>,
 }
 
 impl TtsMixer {
@@ -547,7 +541,6 @@ impl TtsMixer {
             loudness,
             ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
             last_payload_width: None,
-            program_width_hint: None,
         }
     }
 
@@ -595,65 +588,40 @@ impl TtsMixer {
         }
     }
 
-    /// Note the wire width a payload declared, warning when it disagrees with
-    /// this box's own resolved program width.
+    /// Note the wire width a payload declared, warning when it is not this
+    /// box's own — the program wire is S32_LE, so the assistant verb fan-in
+    /// expects is `AUDIO32`.
     ///
-    /// A disagreement is config drift, not a level error — the payload names
-    /// its own width and both conversions are exact — so it is observable
-    /// rather than fatal. See [`TtsWireWidth`] for why this axis is a warn
-    /// where the ring's is a park.
+    /// A narrow payload is not a level error — `widen_i16_to_i32` is exact and
+    /// the mix converts it — so this is observable rather than fatal: it says
+    /// jasper-voice resolved a width fan-in does not.
     ///
-    /// THE DEDUP LATCH IS ARMED ONLY AFTER A COMPLETED COMPARISON, and that
-    /// ordering is the whole point rather than a detail. An earlier revision
-    /// recorded `last_payload_width` first and then bailed when the hint was
-    /// still `None` (no period mixed yet). A payload that arrived in that window
-    /// would have latched the width WITHOUT ever being compared, and every
-    /// later payload of the same width would then short-circuit on the latch —
-    /// so the mismatch would go unlogged for the daemon's entire life, decided
-    /// by a race the reader cannot see. Now an uncompared payload leaves the
-    /// latch untouched and the next one is compared properly: structural, not
-    /// timing-dependent.
+    /// The latch dedups a per-command warn: in practice a client speaks one
+    /// width for a daemon's whole lifetime, so this is one line per lifetime,
+    /// not one per audio command (~4 Hz through a reply).
     fn note_payload_width(&mut self, declared: TtsWireWidth) {
         if self.last_payload_width == Some(declared) {
             return;
         }
-        // `None` is "no period mixed yet", not "narrow": a daemon with no
-        // opinion must not accuse a correct client of drifting — and must not
-        // latch this width as though it had been checked.
-        let Some(expected) = self.program_width_hint else {
-            return;
-        };
         self.last_payload_width = Some(declared);
-        if declared != expected {
+        if declared != TtsWireWidth::Wide {
             warn!(
                 "event=fanin.tts_wire_width_mismatch declared={} expected={} \
-                 action=converted note=jasper-voice and jasper-fanin disagree on \
-                 this box's assistant width; either the wire-format \
-                 declaration changed without restarting jasper-voice, or the box \
-                 resolves a wide wire it has not armed (the ring's wire format \
-                 defaults WIDE, so a narrow box has to declare narrow and \
-                 restarting voice will not change that) — compare \
-                 JASPER_FANIN_RING_WIRE_FORMAT in fanin.env",
+                 action=converted note=jasper-voice resolved a narrower assistant \
+                 wire than this box's program wire; restart jasper-voice after a \
+                 deploy so it picks the current width up",
                 declared.verb(),
-                expected.verb(),
+                TtsWireWidth::Wide.verb(),
             );
         }
     }
 
     /// Mix the queued assistant/cue audio into the program sum.
     ///
-    /// `width` is the sum's numeric scale ([`crate::mixer::ProgramWidth`]). The
-    /// payload carries its OWN width (`AUDIO` vs `AUDIO32`), so the two axes are
-    /// independent and this dispatches on the pair — see
-    /// [`QueuedAudioBlock::gained_contribution`] for the four cases and which
-    /// one is the shipped narrow path.
-    pub fn mix_period(&mut self, sum: &mut [i64], width: crate::mixer::ProgramWidth) {
-        // The sum's width is this box's program width; remember it so the
-        // ingest path can tell a drifted client from a coherent one.
-        self.program_width_hint = Some(match width {
-            crate::mixer::ProgramWidth::Narrow => TtsWireWidth::Narrow,
-            crate::mixer::ProgramWidth::Wide => TtsWireWidth::Wide,
-        });
+    /// The sum is at the i32 spine scale; the payload carries its OWN width
+    /// (`AUDIO` vs `AUDIO32`) and is promoted at its sum entry — see
+    /// [`QueuedAudioBlock::gained_contribution`].
+    pub fn mix_period(&mut self, sum: &mut [i64]) {
         let queued_samples_before = self.pending_samples;
         for frame_sum in sum.chunks_exact_mut(CHANNELS as usize) {
             let Some(front) = self.queue.front() else {
@@ -697,8 +665,7 @@ impl TtsMixer {
                     break;
                 };
                 for (channel, sample_sum) in frame_sum.iter_mut().enumerate() {
-                    let contribution =
-                        front.gained_contribution(front.cursor + channel, gain, width);
+                    let contribution = front.gained_contribution(front.cursor + channel, gain);
                     *sample_sum = sample_sum.saturating_add(contribution);
                 }
                 front.cursor += CHANNELS as usize;
@@ -1124,8 +1091,7 @@ impl TtsMixer {
 }
 
 struct QueuedAudioBlock {
-    /// The block's samples at the width the AUDIO/AUDIO32 verb declared. A
-    /// narrow box queues `Vec<i16>`, allocating exactly what it always did.
+    /// The block's samples at the width the AUDIO/AUDIO32 verb declared.
     samples: TtsAudioSamples,
     cursor: usize,
     base_gain_db: f32,
@@ -1138,48 +1104,19 @@ struct QueuedAudioBlock {
 }
 
 impl QueuedAudioBlock {
-    /// One gained sample, at the numeric scale of the sum it is about to enter.
+    /// One gained sample at the sum's spine scale.
     ///
-    /// TWO INDEPENDENT AXES: the payload's declared wire width and the sum's
-    /// [`ProgramWidth`](crate::mixer::ProgramWidth). A coherent box pairs them,
-    /// but they are resolved by two processes reading one file at two times, so
-    /// all four pairings are defined:
-    ///
-    /// | payload | sum | what happens | note |
-    /// |---|---|---|---|
-    /// | narrow | narrow | `apply_gain_i16` | **the shipped path, byte-identical** |
-    /// | narrow | wide | widen, then `apply_gain` in f64 | the gain-width fix |
-    /// | wide | wide | `apply_gain` in f64 | the full wide path |
-    /// | wide | narrow | round to i16, then `apply_gain_i16` | drift, lossless-narrowed |
-    ///
-    /// WHY THE ORDER CHANGES ON A WIDE SUM. Before this, a wide sum received
-    /// `widen_i16_to_i32(apply_gain_i16(sample, gain))` — gain FIRST at i16,
-    /// promotion after. That rounds every gained sample back onto the S16 grid
-    /// before the promotion can carry it, and the assistant gain is usually a
-    /// deep attenuation: at −40 dB a full-scale i16 sample lands near 328, so
-    /// the product keeps about 9 of its 16 bits and the rest are rounding.
-    /// Widening first and gaining in f64 keeps them — the same order, the same
-    /// `apply_gain`, and the same f64-mantissa reason `jasper-outputd`'s
-    /// `AssistantSource::read_period_into` already uses.
-    ///
-    /// The narrow arm is `apply_gain_i16` on the same `i16` the wire delivered,
-    /// unchanged and un-reordered, which is what makes a narrow box's emitted
-    /// bytes identical to before this existed.
+    /// The payload is promoted FIRST (`widen_i16_to_i32` for a narrow one, a
+    /// no-op for a wide one) and gained in f64 after. Gaining at i16 first would
+    /// round every gained sample back onto the S16 grid before the promotion
+    /// could carry it, and the assistant gain is usually a deep attenuation: at
+    /// −40 dB a full-scale i16 sample lands near 328, so the product would keep
+    /// about 9 of its 16 bits and the rest would be rounding. This is the same
+    /// order, the same `apply_gain`, and the same f64-mantissa reason
+    /// `jasper-outputd`'s `AssistantSource::read_period_into` already uses.
     #[inline]
-    fn gained_contribution(
-        &self,
-        index: usize,
-        gain: f32,
-        width: crate::mixer::ProgramWidth,
-    ) -> i64 {
-        match width {
-            crate::mixer::ProgramWidth::Narrow => {
-                apply_gain_i16(self.samples.narrow_sample(index), gain) as i64
-            }
-            crate::mixer::ProgramWidth::Wide => {
-                apply_gain(self.samples.spine_sample(index), gain) as i64
-            }
-        }
+    fn gained_contribution(&self, index: usize, gain: f32) -> i64 {
+        apply_gain(self.samples.spine_sample(index), gain) as i64
     }
 }
 
@@ -1519,6 +1456,9 @@ mod tests {
 
     use jasper_tts_protocol::read_command;
 
+    /// One i16 LSB at spine scale, for tolerances stated in i16 steps.
+    const I16_STEP: i64 = jasper_resampler::SPINE_SCALE_F64 as i64;
+
     static TEST_LOGGER: TestLogger = TestLogger;
     static LOG_INIT: Once = Once::new();
 
@@ -1705,11 +1645,14 @@ mod tests {
         let mut sum = vec![0i64; 4];
 
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
 
         // First-use quiet-room speech lands exactly on the envelope. The
         // ordinary music-relative assistant offset does not apply here.
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-17.0)) as i64;
+        let expected = apply_gain(
+            jasper_resampler::widen_i16_to_i32(10_000),
+            gain_db_to_linear(-17.0),
+        ) as i64;
         assert_eq!(sum, vec![expected, -expected, expected, -expected]);
         assert_eq!(metrics.pending_frames(), 0);
         assert!(metrics.loudness_snapshot().decision_seen);
@@ -1846,9 +1789,12 @@ mod tests {
 
         let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
 
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-13.0)) as i64;
+        let expected = apply_gain(
+            jasper_resampler::widen_i16_to_i32(10_000),
+            gain_db_to_linear(-13.0),
+        ) as i64;
         assert_eq!(sum, vec![expected, -expected]);
         let loudness = metrics.loudness_snapshot();
         assert!(loudness.decision_seen);
@@ -1899,8 +1845,11 @@ mod tests {
         }
         let mut prior = [0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut prior, crate::mixer::ProgramWidth::Narrow);
-        assert_eq!(prior, [30_000, 30_000]);
+        mixer.mix_period(&mut prior);
+        assert_eq!(
+            prior,
+            [jasper_resampler::widen_i16_to_i32(30_000) as i64; 2]
+        );
 
         for command in [
             TtsCommand::PrepareAssistant {
@@ -1922,9 +1871,13 @@ mod tests {
         }
         let mut capped = vec![0i64; 128 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut capped, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut capped);
 
-        let cap = apply_gain_i16(30_000, gain_db_to_linear(-3.0)).abs() as i64;
+        let cap = apply_gain(
+            jasper_resampler::widen_i16_to_i32(30_000),
+            gain_db_to_linear(-3.0),
+        )
+        .abs() as i64;
         assert!(
             capped.iter().all(|sample| sample.abs() <= cap),
             "every rendered frame must respect the new segment's -3 dB cap"
@@ -1996,8 +1949,10 @@ mod tests {
 
         let mut first = vec![0i64; 4_800 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut first, crate::mixer::ProgramWidth::Narrow);
-        assert!(first.iter().all(|sample| *sample == 10_000));
+        mixer.mix_period(&mut first);
+        assert!(first
+            .iter()
+            .all(|sample| *sample == jasper_resampler::widen_i16_to_i32(10_000) as i64));
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2012,15 +1967,21 @@ mod tests {
         .unwrap();
         let mut second = vec![0i64; 4_800 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut second, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut second);
 
         assert!(
-            (second[0] - 10_000).abs() <= 1,
+            (second[0] - jasper_resampler::widen_i16_to_i32(10_000) as i64).abs() <= I16_STEP,
             "ramp starts without a step discontinuity"
         );
-        assert!(second[200] > 10_000, "ramp makes audible progress");
-        let expected_last = apply_gain_i16(10_000, gain_db_to_linear(1.56)) as i64;
-        assert!((second[second.len() - 1] - expected_last).abs() <= 2);
+        assert!(
+            second[200] > jasper_resampler::widen_i16_to_i32(10_000) as i64,
+            "ramp makes audible progress"
+        );
+        let expected_last = apply_gain(
+            jasper_resampler::widen_i16_to_i32(10_000),
+            gain_db_to_linear(1.56),
+        ) as i64;
+        assert!((second[second.len() - 1] - expected_last).abs() <= 2 * I16_STEP);
         let reference = reference_rx
             .try_recv()
             .expect("completed assistant reference");
@@ -2089,7 +2050,7 @@ mod tests {
 
         let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
         assert!(reference_rx.try_recv().is_err());
 
         // A remote update after playout but before provider SEGMENT_END must not
@@ -2167,7 +2128,7 @@ mod tests {
 
         let mut audible = [0i64; CHANNELS as usize];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut audible, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut audible);
         assert!(audible.iter().all(|sample| *sample != 0));
 
         tx.send(QueuedTtsCommand {
@@ -2183,7 +2144,7 @@ mod tests {
         .unwrap();
         let mut muted_tail = [1i64; 3 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut muted_tail, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut muted_tail);
         assert!(muted_tail.iter().all(|sample| *sample == 1));
 
         tx.send(QueuedTtsCommand {
@@ -2291,7 +2252,7 @@ mod tests {
         }
         let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2355,7 +2316,7 @@ mod tests {
 
         let mut sum = [0i64; 4];
         assert!(!mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
 
         let ack = ack_rx.try_recv().unwrap();
         assert_eq!(ack.pending_frames, 2);
@@ -2402,7 +2363,7 @@ mod tests {
         for _ in 0..3 {
             assert!(mixer.prepare_period());
             sum.iter_mut().for_each(|s| *s = 0);
-            mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+            mixer.mix_period(&mut sum);
         }
 
         // Barge-in: synchronous flush mid-segment.
@@ -2568,7 +2529,7 @@ mod tests {
         );
         let mut sum = [0i64; 4];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
         assert!(metrics.program_duck_active());
 
         run_tts_client_payload(
@@ -2664,7 +2625,7 @@ mod tests {
 
         let mut sum = [0i64; 4];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
         assert!(mixer.prepare_period());
         assert!(metrics.program_duck_active());
     }
@@ -2702,7 +2663,7 @@ mod tests {
         assert!(mixer.prepare_period());
         assert!(metrics.program_duck_active());
         let mut sum = [0i64; 4];
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
         assert_eq!(mixer.pending_frames(), 0);
         assert!(!mixer.prepare_period());
         assert!(!metrics.program_duck_active());
@@ -2878,114 +2839,10 @@ mod tests {
         assert!(!mixer.content_meter_paused);
     }
 
-    /// SF-A: THE TTS WIDE-SCALE BRIDGE. Every other test in this file mixes at
-    /// `Narrow`, so before this the `Wide` arm of `mix_period`'s sum entry had
-    /// no coverage at all — replacing `widen_i16_to_i32(gained)` with `gained`
-    /// left the whole suite green while a wide box would have spoken 96 dB under
-    /// its own program.
-    ///
-    /// The assertion is the bridge's actual contract, stated against the shared
-    /// primitives rather than as a magic number: the SAME queued audio, mixed at
-    /// both widths from identical mixer state, must land at the SAME LEVEL —
-    /// within half an i16 step of `widen_i16_to_i32(narrow)`. That kills a
-    /// dropped promotion, a wrong shift, and a gain applied on only one arm,
-    /// without re-deriving what the assistant's gain should be (which the
-    /// loudness tests above already own).
-    ///
-    /// **Why the bound rather than the exact identity it started as.** Until
-    /// U2 PR-2 both arms gained at i16 and the wide one was EXACTLY the
-    /// promotion of the narrow one. The wide arm now gains AFTER the promotion,
-    /// in f64, so it keeps the sub-LSB remainder the i16 gain rounded away —
-    /// the whole point of that change. The bound is half a step, which is
-    /// exactly what a rounding difference can be and is 2^15 times tighter than
-    /// a dropped promotion, so the 96 dB failure this test was written for
-    /// still fails it. The exact value is pinned separately below.
-    #[test]
-    fn tts_enters_a_wide_sum_at_the_promoted_scale_and_a_narrow_one_unchanged() {
-        // One mixer per width, built and driven identically, so the only
-        // difference between the two runs is the ProgramWidth argument.
-        let run = |width: crate::mixer::ProgramWidth| -> Vec<i64> {
-            let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
-            let mut mixer = TtsMixer::new(TtsInput {
-                rx,
-                flush_rx,
-                metrics: metrics.clone(),
-                max_pending_frames: 48_000,
-                program_duck_db: -25.0,
-                cue_duck_db: -6.0,
-                assistant_loudness: AssistantLoudnessConfig::default(),
-                assistant_reference: None,
-                assistant_reference_tx: None,
-            });
-            tx.send(QueuedTtsCommand {
-                epoch: 0,
-                command: TtsCommand::Audio(vec![10_000, -10_000, 4_321, -4_321]),
-            })
-            .unwrap();
-            let mut sum = vec![0i64; 4];
-            assert!(mixer.prepare_period());
-            mixer.mix_period(&mut sum, width);
-            drop(flush_tx);
-            sum
-        };
-
-        let narrow = run(crate::mixer::ProgramWidth::Narrow);
-        let wide = run(crate::mixer::ProgramWidth::Wide);
-
-        // The bridge must actually have carried audio — an all-zero pair would
-        // satisfy the identity below vacuously.
-        assert!(
-            narrow.iter().any(|&s| s != 0),
-            "the narrow run must produce audible samples for this test to mean anything"
-        );
-
-        let gain = gain_db_to_linear(-17.0);
-        let probe = [10_000i16, -10_000, 4_321, -4_321];
-        for (i, (&n, &w)) in narrow.iter().zip(wide.iter()).enumerate() {
-            let promoted = jasper_resampler::widen_i16_to_i32(
-                i16::try_from(n).expect("a narrow-scale TTS contribution fits in i16"),
-            ) as i64;
-            // LEVEL: the two arms agree to within one i16 rounding step. A
-            // dropped promotion is 2^16 times smaller and fails this by orders
-            // of magnitude.
-            assert!(
-                (w - promoted).abs() <= 32_768,
-                "sample {i}: the wide arm must land at the narrow arm's LEVEL \
-                 (got {w}, narrow promotes to {promoted})",
-            );
-            // VALUE: and it is exactly the shared wide gain applied to the
-            // shared promotion — the order this PR establishes.
-            assert_eq!(
-                w,
-                apply_gain(jasper_resampler::widen_i16_to_i32(probe[i]), gain) as i64,
-                "sample {i}: the wide arm must widen first, then gain in f64",
-            );
-            // Stated as the failure it guards: dropping the promotion leaves the
-            // assistant 96 dB (2^16) under the program it speaks over.
-            if n != 0 {
-                assert_ne!(
-                    w, n,
-                    "sample {i}: the Wide arm must not pass the i16 through"
-                );
-            }
-        }
-        // The probe must DISTINGUISH the two gain orders, or the value
-        // assertion above pins nothing that the old order did not also satisfy.
-        assert!(
-            probe.iter().any(|&s| {
-                apply_gain(jasper_resampler::widen_i16_to_i32(s), gain) as i64
-                    != jasper_resampler::widen_i16_to_i32(apply_gain_i16(s, gain)) as i64
-            }),
-            "the probe agrees under both gain orders and guards nothing",
-        );
-    }
-
     // ------------------------------------------------------------------
-    // U2 PR-2 — the assistant lane at both wire widths.
-    //
-    // Two independent axes meet in `mix_period`: the PAYLOAD's declared width
-    // (`AUDIO` / `AUDIO32`) and the SUM's `ProgramWidth`. Each test below names
-    // which pairing it drives.
+    // The assistant lane at both payload widths. The sum is always spine-scale;
+    // the PAYLOAD still declares its own width (`AUDIO` / `AUDIO32`) and is
+    // promoted at its sum entry, so both verbs are covered here.
     // ------------------------------------------------------------------
 
     fn wire_width_mixer() -> (
@@ -3008,15 +2865,15 @@ mod tests {
         (tx, flush_tx, mixer)
     }
 
-    /// NARROW PAYLOAD, NARROW SUM — the shipped path on every box in the fleet.
+    /// NARROW PAYLOAD — the `AUDIO` verb, promoted at its sum entry.
     ///
-    /// The expectations are LITERALS, not a recomputation of the code under
-    /// test: 10_000 gained at the first-use quiet-room envelope (-17.0 dB) is
-    /// 1413, and that number is what a narrow box has always summed. A change
-    /// to the gain order, the gain arithmetic, or the payload representation
-    /// moves it.
+    /// The expectation is a LITERAL, not a recomputation of the code under
+    /// test: 10_000 promoted and gained at the first-use quiet-room envelope
+    /// (-17.0 dB). A change to the gain order, the gain arithmetic, or the
+    /// payload representation moves it.
     #[test]
-    fn the_narrow_assistant_lane_is_byte_identical_to_its_committed_golden() {
+    fn the_assistant_lane_is_byte_identical_to_its_committed_golden() {
+        const GOLDEN: i64 = 92_572_051;
         let (tx, flush_tx, mut mixer) = wire_width_mixer();
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -3025,67 +2882,21 @@ mod tests {
         .unwrap();
         let mut sum = vec![0i64; 4];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
-        assert_eq!(sum, vec![1_413, -1_413, 1_413, -1_413]);
+        mixer.mix_period(&mut sum);
+        assert_eq!(sum, vec![GOLDEN, -GOLDEN, GOLDEN, -GOLDEN]);
         // The literal and the primitive agree, so a reader can see where it
         // came from without the assertion above depending on the primitive.
         assert_eq!(
             sum[0],
-            apply_gain_i16(10_000, gain_db_to_linear(-17.0)) as i64,
+            apply_gain(
+                jasper_resampler::widen_i16_to_i32(10_000),
+                gain_db_to_linear(-17.0),
+            ) as i64,
         );
         drop(flush_tx);
     }
 
-    /// NARROW PAYLOAD, NARROW SUM, at the level where the arms diverge.
-    ///
-    /// The end-to-end golden above pins the shipped path, but it does NOT
-    /// distinguish `apply_gain_i16` from routing the narrow arm through the
-    /// spine and back — mutation testing showed a spine round-trip passing it,
-    /// because the two agree on very nearly every value. This probe is one of
-    /// the few where they do not, found by exhaustive search over the reachable
-    /// gain range, and the test asserts the disagreement before it asserts the
-    /// answer.
-    ///
-    /// What is being frozen is the shipped arithmetic INCLUDING its rounding in
-    /// the last place. `apply_gain_i16` rounds an `f32` product; a spine round
-    /// trip rounds twice at higher precision and lands one step away. Neither
-    /// is "wrong"; one of them is what the fleet emits.
-    #[test]
-    fn the_narrow_arm_gains_at_i16_and_not_through_a_spine_round_trip() {
-        let gain = gain_db_to_linear(-59.2);
-        let block = QueuedAudioBlock {
-            samples: TtsAudioSamples::Narrow(vec![456, 456]),
-            cursor: 0,
-            base_gain_db: -59.2,
-            peak_cap_gain_db: 0.0,
-            peak_cap_linear: 1.0,
-            decision: None,
-            segment_serial: 0,
-            assistant_reference_eligible: false,
-            completes_assistant_reference: false,
-        };
-        let via_spine = jasper_resampler::narrow_i32_to_i16_round(apply_gain(
-            jasper_resampler::widen_i16_to_i32(456),
-            gain,
-        )) as i64;
-        assert_eq!(
-            apply_gain_i16(456, gain) as i64,
-            0,
-            "the shipped narrow arithmetic",
-        );
-        assert_eq!(via_spine, 1, "what a spine round trip would produce");
-        assert_ne!(
-            apply_gain_i16(456, gain) as i64,
-            via_spine,
-            "the probe must distinguish the two, or this test guards nothing",
-        );
-        assert_eq!(
-            block.gained_contribution(0, gain, crate::mixer::ProgramWidth::Narrow),
-            0,
-        );
-    }
-
-    /// NARROW PAYLOAD, WIDE SUM — the gain-width fix.
+    /// NARROW PAYLOAD — the gain-width fix.
     ///
     /// The same i16 wire sample, the same gain, but widened BEFORE the multiply
     /// instead of after. The assertion that matters is the CONTRAST: the result
@@ -3094,7 +2905,7 @@ mod tests {
     /// gain is where this bites — at -17 dB a full-scale i16 sample keeps ~13
     /// of its 16 bits, and the rest were rounding.
     #[test]
-    fn a_wide_sum_gains_before_the_promotion_keeping_bits_the_i16_gain_rounded_away() {
+    fn the_sum_gains_after_the_promotion_keeping_bits_the_i16_gain_rounded_away() {
         let (tx, flush_tx, mut mixer) = wire_width_mixer();
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -3103,13 +2914,14 @@ mod tests {
         .unwrap();
         let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
+        mixer.mix_period(&mut sum);
 
         let gain = gain_db_to_linear(-17.0);
         let widen_then_gain = apply_gain(jasper_resampler::widen_i16_to_i32(10_000), gain) as i64;
-        let gain_then_widen =
-            jasper_resampler::widen_i16_to_i32(apply_gain_i16(10_000, gain)) as i64;
-        assert_eq!(sum[0], widen_then_gain, "wide sum must gain at spine width");
+        let gain_then_widen = jasper_resampler::widen_i16_to_i32(
+            jasper_tts_protocol::loudness::apply_gain_i16(10_000, gain),
+        ) as i64;
+        assert_eq!(sum[0], widen_then_gain, "the sum must gain at spine width");
         assert_ne!(
             widen_then_gain, gain_then_widen,
             "this probe must distinguish the two orders, or the test guards nothing",
@@ -3127,13 +2939,13 @@ mod tests {
         drop(flush_tx);
     }
 
-    /// WIDE PAYLOAD, WIDE SUM — the full wide path.
+    /// WIDE PAYLOAD — the `AUDIO32` verb's whole point.
     ///
     /// A quarter of one i16 LSB is a signal the narrow wire has no code for at
     /// all. Through the wide payload it reaches the sum as a nonzero value;
     /// the same sound offered to the narrow wire is silence.
     #[test]
-    fn a_sub_16_bit_assistant_sample_reaches_the_wide_sum_and_dies_on_the_narrow_wire() {
+    fn a_sub_16_bit_assistant_sample_reaches_the_sum_and_dies_on_the_narrow_verb() {
         const QUARTER_LSB: i32 = 0x0000_4000;
         let (tx, flush_tx, mut mixer) = wire_width_mixer();
         tx.send(QueuedTtsCommand {
@@ -3143,7 +2955,7 @@ mod tests {
         .unwrap();
         let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
+        mixer.mix_period(&mut sum);
 
         let gain = gain_db_to_linear(-17.0);
         assert_eq!(sum[0], apply_gain(QUARTER_LSB, gain) as i64);
@@ -3153,41 +2965,14 @@ mod tests {
             sum[0]
         );
         assert_eq!(sum[1], -sum[0]);
-        // The contrast: that same sound on the narrow wire is the zero sample,
-        // and zero gained by anything is zero.
+        // The contrast: that same sound sent as `AUDIO` is the zero sample, and
+        // zero gained by anything is zero.
         assert_eq!(
             jasper_resampler::narrow_i32_to_i16_round(QUARTER_LSB),
             0,
             "a quarter step is not on the S16 grid",
         );
-        assert_eq!(apply_gain_i16(0, gain), 0);
-        drop(flush_tx);
-    }
-
-    /// WIDE PAYLOAD, NARROW SUM — the drift pairing.
-    ///
-    /// Reachable only when `jasper-voice` and `jasper-fanin` resolved different
-    /// values for the box's one wire declaration. It is a precision question,
-    /// not a level error: the payload is narrowed with the exact inverse of the
-    /// promotion, so a promoted-narrow payload mixes to the byte-identical
-    /// narrow result. That is why this axis warns rather than parking.
-    #[test]
-    fn a_wide_payload_on_a_narrow_sum_lands_where_the_narrow_payload_would_have() {
-        let promoted: Vec<i32> = [10_000i16, -10_000]
-            .iter()
-            .map(|s| jasper_resampler::widen_i16_to_i32(*s))
-            .collect();
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::AudioWide(promoted),
-        })
-        .unwrap();
-        let mut sum = vec![0i64; 2];
-        assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
-        // The same literal golden the narrow-payload test pins.
-        assert_eq!(sum, vec![1_413, -1_413]);
+        assert_eq!(jasper_tts_protocol::loudness::apply_gain_i16(0, gain), 0);
         drop(flush_tx);
     }
 
@@ -3233,10 +3018,6 @@ mod tests {
     fn a_width_mismatch_warns_exactly_once_for_the_daemon_lifetime() {
         capture_logs();
         let (tx, flush_tx, mut mixer) = wire_width_mixer();
-        let mut sum = vec![0i64; 2];
-        // Give the daemon its opinion first: one period mixed at Wide.
-        mixer.prepare_period();
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
 
         // Six narrow payloads from a drifted client, drained across three
         // periods — the shape a real reply has.
@@ -3250,7 +3031,7 @@ mod tests {
             }
             mixer.prepare_period();
             let mut period = vec![0i64; 2];
-            mixer.mix_period(&mut period, crate::mixer::ProgramWidth::Wide);
+            mixer.mix_period(&mut period);
         }
 
         let lines: Vec<String> = captured_logs()
@@ -3266,88 +3047,28 @@ mod tests {
         assert!(line.contains("declared=AUDIO"), "{line}");
         assert!(line.contains("expected=AUDIO32"), "{line}");
         assert!(line.contains("action=converted"), "{line}");
-        // The remediation names the one lever that can still be wrong. A
-        // coupling declaration cannot produce a width disagreement any more:
-        // the served set is unset/empty/shm_ring, and anything else parks the
-        // daemon at exit 78 before a payload is ever mixed (ADR-0100).
-        assert!(
-            line.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
-            "the remediation must name the wire-format lever: {line}",
-        );
         drop(flush_tx);
     }
 
-    /// R-SF2 (the ordering half): a payload that arrives BEFORE the daemon has
-    /// an opinion must not silence the warning for the rest of the process.
-    ///
-    /// The latch is the dedup for a per-command warn. If it were armed before
-    /// the comparison, a payload landing while `program_width_hint` is still
-    /// `None` would latch its width uncompared, and every later payload of that
-    /// width would short-circuit on the latch — the mismatch never logged, for
-    /// the daemon's whole life, decided by a race no reader can see. This drives
-    /// exactly that interleaving.
-    #[test]
-    fn a_payload_seen_before_the_first_mix_does_not_silence_the_warning() {
-        capture_logs();
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
-
-        // Audio arrives and is INGESTED before any period is mixed, so the
-        // width hint is still None when `note_payload_width` runs.
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::Audio(vec![1_000, -1_000]),
-        })
-        .unwrap();
-        mixer.prepare_period();
-        assert!(
-            captured_logs()
-                .iter()
-                .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
-            "a daemon with no opinion yet must not accuse anyone",
-        );
-
-        // Now the daemon forms its opinion, and the SAME width arrives again.
-        let mut sum = vec![0i64; 2];
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::Audio(vec![1_000, -1_000]),
-        })
-        .unwrap();
-        mixer.prepare_period();
-
-        let hits = captured_logs()
-            .into_iter()
-            .filter(|line| line.contains("event=fanin.tts_wire_width_mismatch"))
-            .count();
-        assert_eq!(
-            hits, 1,
-            "the uncompared payload must not have latched the width",
-        );
-        drop(flush_tx);
-    }
-
-    /// The coherent box is silent. Without this the two tests above would pass
-    /// on a daemon that warned unconditionally.
+    /// The coherent box is silent. Without this the test above would pass on a
+    /// daemon that warned unconditionally.
     #[test]
     fn a_matching_payload_width_logs_nothing() {
         capture_logs();
         let (tx, flush_tx, mut mixer) = wire_width_mixer();
         let mut sum = vec![0i64; 2];
-        mixer.prepare_period();
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1_000, -1_000]),
+            command: TtsCommand::AudioWide(vec![1_000, -1_000]),
         })
         .unwrap();
         mixer.prepare_period();
-        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        mixer.mix_period(&mut sum);
         assert!(
             captured_logs()
                 .iter()
                 .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
-            "a coherent narrow box must not warn",
+            "a coherent box must not warn",
         );
         drop(flush_tx);
     }

@@ -159,23 +159,6 @@ pub struct Config {
     /// backstop. Env: `JASPER_FANIN_RING_SLOTS`.
     pub ring_slots: u32,
 
-    /// The sample format Ring A's wire carries. Default
-    /// [`RingWireFormat::S32Le`] — narrow is a width regression on the hop the
-    /// ring replaces, so the wide wire is what an undeclared box gets and
-    /// `S16_LE` is an operator's rollback pin. Env:
-    /// `JASPER_FANIN_RING_WIRE_FORMAT` (`S16_LE` | `S32_LE`); a present but
-    /// unrecognized value fails loud in `Config::from_env` as a config-class
-    /// fault (exit 78, the unit parks) rather than resolving to a default the
-    /// operator did not ask for.
-    ///
-    /// Ring A's wire is declared independently by each end that touches it —
-    /// fan-in through this key, the ioplug through its conf.d `format` field,
-    /// and the emitted CamillaDSP capture stanza. Attach compares
-    /// `sample_format` field-by-field, so a value here that the other ends do
-    /// not also declare makes the ring open fail loudly rather than misreading
-    /// bytes.
-    pub ring_wire_format: RingWireFormat,
-
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
     /// (USB) lane (`src/lane_resampler.rs`). When off, the per-lane read path is
     /// the strict one-period read + catch-up drain. When on, the lane named by
@@ -244,11 +227,9 @@ pub struct Config {
     /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
     /// snd-aloop substream; the mixer opens `usb_direct_device`
     /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
-    /// `LaneResampler`. A wide-wire box hands the resampler the gadget's `i32`
-    /// untouched; only a box an operator has PINNED narrow (see
-    /// [`Config::ring_wire_format`], whose default is `S32Le`) narrows to S16
-    /// first. Either way this deletes the usbsink bridge hop and the aloop cable
-    /// — ~25 ms measured — from the USB path. Direct mode IMPLIES a resampler on
+    /// `LaneResampler` the gadget's `i32` untouched. This deletes the usbsink
+    /// bridge hop and the aloop cable — ~25 ms measured — from the USB path.
+    /// Direct mode IMPLIES a resampler on
     /// that lane regardless of `input_resampler_enabled` (see
     /// [`Config::lane_wants_resampler`]). Env: `JASPER_FANIN_USB_DIRECT` (only
     /// the literal `enabled` arms it).
@@ -316,152 +297,6 @@ impl Config {
     /// config-level predicate.
     pub fn host_clock_servo_armed(&self) -> bool {
         self.host_clock_enabled && self.usb_direct_enabled
-    }
-}
-
-/// The sample format Ring A's wire carries — the ONE place in this daemon that
-/// owns the wire-format vocabulary. Both directions live here (token → header
-/// id for the geometry fan-in builds, header id → token for what STATUS
-/// reports), so the spelling fan-in accepts and the spelling it publishes can
-/// never drift apart.
-///
-/// The tokens are the SAME ones the other ends of the wire spell: the ioplug's
-/// conf.d `format` field (`c/jts-ring-ioplug/pcm_jts_ring.c`) and Python's
-/// `jasper.fanin_coupling.RING_WIRE_FORMAT`. The match is EXACT (not
-/// case-folded) because the ioplug's own `strcmp` is exact: accepting a
-/// spelling the ioplug rejects would let fan-in build a geometry no reader can
-/// declare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RingWireFormat {
-    /// Interleaved signed 16-bit little-endian — `jasper_ring`'s
-    /// `SAMPLE_FORMAT_S16LE`.
-    S16Le,
-    /// Interleaved signed 32-bit little-endian — `jasper_ring`'s
-    /// `SAMPLE_FORMAT_S32LE`.
-    S32Le,
-}
-
-impl RingWireFormat {
-    /// Normalize a raw `JASPER_FANIN_RING_WIRE_FORMAT` value.
-    ///
-    /// Unset or empty resolves to [`RingWireFormat::S32Le`] — empty is how the
-    /// env-file writers in this repo clear a key (disable-clears-stale), so a
-    /// cleared key and an absent key mean the same thing. A present but
-    /// unrecognized value is a config-class fault and FAILS LOUD: silently
-    /// resolving a typo to the default would arm a wire the operator did not
-    /// ask for, and the ring's own attach-time validation could not tell the
-    /// difference.
-    ///
-    /// THE DEFAULT IS WIDE because narrow is a width REGRESSION on the hop the
-    /// ring replaces: the loopback CamillaDSP -> outputd hop already carries
-    /// S32_LE, so arming a ring at S16_LE would narrow a hop that was wide
-    /// before the arm. Nothing WRITES `JASPER_FANIN_RING_WIRE_FORMAT`, so an
-    /// operator's `S16_LE` is a rollback lever no boot, deploy or udev pass can
-    /// overwrite. Python's
-    /// `jasper.fanin_coupling.resolve_ring_wire_format` defaults identically and
-    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
-    pub fn from_env_value(raw: Option<&str>) -> Result<Self> {
-        match raw.map(str::trim) {
-            None | Some("") => Ok(RingWireFormat::S32Le),
-            Some("S16_LE") => Ok(RingWireFormat::S16Le),
-            Some("S32_LE") => Ok(RingWireFormat::S32Le),
-            Some(other) => Err(anyhow::anyhow!(
-                "JASPER_FANIN_RING_WIRE_FORMAT={} unsupported (S16_LE|S32_LE) — \
-                 the token must match the ioplug conf.d `format` field exactly",
-                other,
-            )
-            .context(crate::ConfigClassError)),
-        }
-    }
-
-    /// The `jasper_ring` header id for this wire — what the geometry fan-in
-    /// creates or attaches against declares in `sample_format`.
-    pub fn sample_format_id(self) -> u32 {
-        match self {
-            RingWireFormat::S16Le => jasper_ring::SAMPLE_FORMAT_S16LE,
-            RingWireFormat::S32Le => jasper_ring::SAMPLE_FORMAT_S32LE,
-        }
-    }
-
-    /// The reverse of [`RingWireFormat::sample_format_id`]: `None` for an id
-    /// this daemon has no token for.
-    pub fn from_sample_format_id(id: u32) -> Option<Self> {
-        if id == jasper_ring::SAMPLE_FORMAT_S16LE {
-            Some(RingWireFormat::S16Le)
-        } else if id == jasper_ring::SAMPLE_FORMAT_S32LE {
-            Some(RingWireFormat::S32Le)
-        } else {
-            None
-        }
-    }
-
-    /// The wire vocabulary token — the spelling every end of the ring uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RingWireFormat::S16Le => "S16_LE",
-            RingWireFormat::S32Le => "S32_LE",
-        }
-    }
-}
-
-impl Config {
-    /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
-    /// per-box width decision the whole daemon reads (#2223).
-    ///
-    /// The TRANSPORT half of the conjunction is `true` on every box: the ring is
-    /// the only fan-in → CamillaDSP transport (ADR-0100). What decides the width
-    /// is the WIRE FORMAT half, which `JASPER_FANIN_RING_WIRE_FORMAT` resolves to
-    /// `S32_LE` when unset ([`RingWireFormat::from_env_value`]). The ring's own
-    /// attached header is the RUNTIME authority for what
-    /// `write_ring_period` publishes; this is the same fact resolved from config
-    /// at construction, which is when the lane buffers and the direct lane's
-    /// render width have to be sized. The two cannot drift: `create_or_attach`
-    /// validates the header field-by-field against the geometry built from this
-    /// same config and fails the open on a mismatch, and `Mixer::new`
-    /// cross-checks them explicitly before mixing a single period.
-    ///
-    /// THE CONJUNCTION ITSELF LIVES IN THE SHARED CRATE
-    /// ([`jasper_tts_protocol::TtsWireWidth::from_box_declaration`]) and this
-    /// calls it rather than restating it. The same rule decides the ASSISTANT
-    /// wire's width, and the Python control plane
-    /// (`jasper.fanin_coupling.assistant_wire_is_wide`) mirrors that one
-    /// function — so "both ends derive the same answer" is a call graph, not a
-    /// claim. `tests/test_ring_wire_format_contract.py` pins the verdict table
-    /// across the two languages.
-    pub fn program_wire_is_wide(&self) -> bool {
-        matches!(
-            jasper_tts_protocol::TtsWireWidth::from_box_declaration(
-                matches!(self.ring_wire_format, RingWireFormat::S32Le),
-                true,
-            ),
-            jasper_tts_protocol::TtsWireWidth::Wide,
-        )
-    }
-
-    /// The `event=fanin.tts_wire.resolved` startup line — this box's resolved
-    /// ASSISTANT wire width and the declared wire format that produced it.
-    ///
-    /// The mismatch warn fires at most once for the daemon's lifetime and may
-    /// have scrolled out of the journal window; this line is always emitted,
-    /// even with the TTS socket disabled, so it is the durable half of "is a
-    /// mismatch converting right now, and which half made it narrow".
-    /// `jasper-voice` publishes its own `event=tts_wire.resolved`; the two
-    /// compared are the whole diagnosis.
-    ///
-    /// Rendered here rather than formatted at the call site so the fields are
-    /// reachable from a test — an inline `info!` in `main()` is unguardable.
-    pub fn assistant_wire_resolved_line(&self) -> String {
-        let width = if self.program_wire_is_wide() {
-            jasper_tts_protocol::TtsWireWidth::Wide
-        } else {
-            jasper_tts_protocol::TtsWireWidth::Narrow
-        };
-        format!(
-            "event=fanin.tts_wire.resolved verb={} wire_format={} sample_bytes={}",
-            width.verb(),
-            self.ring_wire_format.as_str(),
-            width.sample_bytes(),
-        )
     }
 
     /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
@@ -551,17 +386,33 @@ impl Config {
             }
         }
 
+        // Fan-in creates the ring S32_LE unconditionally, so this key selects
+        // nothing either — but the Python reconciler still reads it to render
+        // the ioplug conf.d, so a stale `S16_LE` would leave the two halves of
+        // the box describing different wires. Refuse the declaration instead.
+        // Unset / empty is "no declaration" (empty is how this repo's env
+        // writers clear a key). The token is compared exactly, as spelled in
+        // the ALSA `format` field.
+        let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
+        match ring_wire_format.as_deref().map(str::trim) {
+            None | Some("") | Some("S32_LE") => {}
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "JASPER_FANIN_RING_WIRE_FORMAT={other} unsupported (S32_LE) — \
+                     fan-in publishes the program wire S32_LE unconditionally, so \
+                     a narrower declaration would shear against the ring header \
+                     rather than narrow the program",
+                )
+                .context(crate::ConfigClassError));
+            }
+        }
+
         // Every rejection in this Ring A block carries `ConfigClassError`, so main()
         // exits 78 and the unit PARKS (RestartPreventExitStatus=78). A bad ring
         // geometry is identical on every restart, and the restart burst on this
         // unit escalates to StartLimitAction=reboot — a typo here would
         // otherwise reboot the speaker every few minutes.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_wire_format = RingWireFormat::from_env_value(
-            std::env::var("JASPER_FANIN_RING_WIRE_FORMAT")
-                .ok()
-                .as_deref(),
-        )?;
         let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)
             .map_err(|e| e.context(crate::ConfigClassError))?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
@@ -895,7 +746,6 @@ impl Config {
             ),
             ring_path,
             ring_slots,
-            ring_wire_format,
             input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
@@ -1054,6 +904,7 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
@@ -2212,6 +2063,38 @@ mod tests {
         }
     }
 
+    /// Which `JASPER_FANIN_RING_WIRE_FORMAT` declarations this daemon will
+    /// serve, now that fan-in creates the ring S32_LE unconditionally.
+    ///
+    /// The REFUSAL is the load-bearing half: the Python reconciler still reads
+    /// this key to render the ioplug conf.d, so a box still carrying `S16_LE`
+    /// must PARK — exit 78 via [`crate::ConfigClassError`] — rather than let the
+    /// two halves of the box describe different wires.
+    #[test]
+    fn only_an_s32_wire_declaration_or_none_is_served() {
+        for (raw, served) in [
+            (None, true),
+            (Some(""), true),
+            (Some(" S32_LE "), true),
+            (Some("S16_LE"), false),
+            (Some("s32_le"), false),
+        ] {
+            with_env(
+                &[("JASPER_FANIN_RING_WIRE_FORMAT", raw)],
+                || match Config::from_env() {
+                    Ok(_) => assert!(served, "{raw:?} must be refused"),
+                    Err(err) => {
+                        assert!(!served, "{raw:?} must be served: {err:#}");
+                        assert!(
+                            err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                            "{raw:?} must park the unit (exit 78), not restart-loop it",
+                        );
+                    }
+                },
+            );
+        }
+    }
+
     #[test]
     fn ring_defaults_parse() {
         with_env(
@@ -2224,142 +2107,6 @@ mod tests {
                 assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
                 assert_eq!(cfg.ring_slots, 2);
                 assert_eq!(cfg.period_frames, 256);
-            },
-        );
-    }
-
-    /// DEFAULT BAR: with `JASPER_FANIN_RING_WIRE_FORMAT` unset the resolved wire
-    /// is the WIDE one. Narrow is a width regression on the hop the ring
-    /// replaces (the loopback CamillaDSP -> outputd hop already carries S32_LE),
-    /// so the fleet converges without declaring anything and `S16_LE` becomes an
-    /// operator's rollback pin. Cleared-to-empty means the same as unset (that
-    /// is how this repo's env-file writers disable a key).
-    ///
-    /// Python's `resolve_ring_wire_format` answers identically;
-    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
-    #[test]
-    fn ring_wire_format_defaults_to_wide() {
-        assert_eq!(
-            RingWireFormat::from_env_value(None).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("  ")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::S32Le.sample_format_id(),
-            jasper_ring::SAMPLE_FORMAT_S32LE
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
-            RingWireFormat::S16Le
-        );
-    }
-
-    #[test]
-    fn ring_wire_format_accepts_both_wire_tokens() {
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
-            RingWireFormat::S16Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some(" S32_LE ")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::S32Le.sample_format_id(),
-            jasper_ring::SAMPLE_FORMAT_S32LE
-        );
-    }
-
-    /// An unknown token FAILS LOUD rather than silently resolving to the
-    /// default — and carries the config-class marker, so the unit parks at
-    /// exit 78 instead of restart-looping into StartLimitAction=reboot.
-    ///
-    /// The match is EXACT, matching the ioplug's own `strcmp`: a case-folded
-    /// spelling fan-in accepted but the ioplug rejected would let fan-in build
-    /// a geometry no reader on the other end can declare.
-    #[test]
-    fn ring_wire_format_rejects_unknown_and_mis_cased_tokens() {
-        for bad in ["S24_3LE", "s32_le", "S32LE", "FLOAT_LE", "32", "yes"] {
-            let err = RingWireFormat::from_env_value(Some(bad))
-                .expect_err("an unsupported wire token must fail loud");
-            let msg = format!("{:#}", err);
-            assert!(
-                msg.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
-                "expected a wire-format error naming the key, got: {}",
-                msg,
-            );
-            assert!(
-                err.downcast_ref::<crate::ConfigClassError>().is_some(),
-                "an unparseable wire is config-class (park at 78), got: {}",
-                msg,
-            );
-        }
-    }
-
-    /// The vocabulary has ONE owner: every token round-trips token → header id
-    /// → token, so the spelling fan-in accepts is the spelling STATUS reports.
-    #[test]
-    fn ring_wire_format_round_trips_through_the_header_id() {
-        for format in [RingWireFormat::S16Le, RingWireFormat::S32Le] {
-            assert_eq!(
-                RingWireFormat::from_sample_format_id(format.sample_format_id()),
-                Some(format),
-            );
-            assert_eq!(
-                RingWireFormat::from_env_value(Some(format.as_str())).unwrap(),
-                format,
-            );
-        }
-        assert_eq!(RingWireFormat::from_sample_format_id(0), None);
-        assert_eq!(RingWireFormat::from_sample_format_id(3), None);
-    }
-
-    #[test]
-    fn shm_ring_wire_format_reaches_the_config() {
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("unset wire format must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("the operator's narrow pin must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S16Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S32_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("S32_LE must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("bogus")),
-            ],
-            || {
-                Config::from_env().expect_err("an unknown wire token must fail the whole parse");
             },
         );
     }
@@ -2452,48 +2199,5 @@ mod tests {
                 );
             },
         );
-    }
-
-    /// The per-box program width (#2223) follows the WIRE FORMAT alone: the
-    /// transport half of the conjunction is `true` on every box (ADR-0100).
-    ///
-    /// The unset row matters most. The wire resolver defaults WIDE, so an
-    /// undeclared box arms the widened source path (spine-scale lane buffers, the
-    /// `AUDIO32` assistant verb, the wide earcon bake) with no declaration at
-    /// all, and an operator's `S16_LE` is the pin that narrows it.
-    #[test]
-    fn the_program_width_follows_the_declared_wire_format() {
-        for (wire, expected) in [
-            (None, true),
-            (Some("S32_LE"), true),
-            (Some("S16_LE"), false),
-        ] {
-            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", wire)], || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(cfg.program_wire_is_wide(), expected, "wire={wire:?}");
-            });
-        }
-    }
-
-    /// The STARTUP WIDTH LINE, asserted by CONTENT rather than by presence: a
-    /// line that said only "narrow" would leave a support read unable to tell a
-    /// narrow-format box from a wide-format one, which is the distinction the
-    /// line exists to draw.
-    #[test]
-    fn the_startup_width_line_names_the_verdict_and_the_declared_format() {
-        for (wire, verb, sample_bytes) in [("S32_LE", "AUDIO32", "4"), ("S16_LE", "AUDIO", "2")] {
-            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", Some(wire))], || {
-                let line = Config::from_env()
-                    .expect("defaults must parse")
-                    .assistant_wire_resolved_line();
-                assert!(line.starts_with("event=fanin.tts_wire.resolved "), "{line}",);
-                assert!(line.contains(&format!("verb={verb}")), "{line}");
-                assert!(line.contains(&format!("wire_format={wire}")), "{line}");
-                assert!(
-                    line.contains(&format!("sample_bytes={sample_bytes}")),
-                    "{line}",
-                );
-            });
-        }
     }
 }

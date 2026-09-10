@@ -120,16 +120,28 @@ RING_WIRE_FORMAT = "S16_LE"
 RING_WIRE_FORMAT_WIDE = "S32_LE"
 RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 
-# THE BOX'S DECLARED RING WIRE — one key, read identically by both languages
-# (Rust in ``jasper_fanin::config``'s ``RingWireFormat::from_env_value``). It is
-# the ONLY input to the wire's format axis; every other end of the ring is
-# derived from it and compared anyway by ``ring_edge_width_ready``, because the
-# ends land in files written at different times.
+# THE BOX'S DECLARED RING WIRE — one key, read by both languages but a choice
+# on neither. ``jasper-fanin`` creates Ring A ``S32_LE`` unconditionally and
+# ``jasper_fanin::config`` REFUSES any other declared value as a config-class
+# fault (exit 78); Python reads it in :func:`resolve_ring_wire_format`, and
+# :func:`resolve_ring_wire` resolves the box's answer through that to render
+# the ioplug conf.d. It is the ONLY input to the wire's format axis, so the
+# control plane and the daemon cannot disagree about what this box's ring
+# carries.
 #
-# THE KEY HAS NO WRITER, AND THAT IS WHAT MAKES IT A ROLLBACK LEVER: the only
-# reason to set it is to pin a box NARROW, and a lever a reconciler could rewrite
-# on the next pass would not be one. ``tests/test_ring_wire_format_contract.py``
-# pins the empty writer set.
+# Every other end of the ring is DERIVED from that answer rather than declaring
+# its own: the conf.d ``format`` field (rendered by
+# ``jasper-audio-hardware-reconcile`` from ``resolve_ring_wire``), outputd's
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` (same writer, via
+# ``content_lane_format_for_coupling``), and CamillaDSP's emitted capture/
+# playback ``format:``. They are compared anyway
+# (``ring_edge_width_ready``) because they land in files written at DIFFERENT
+# times — a half-applied render is exactly what that comparison catches.
+#
+# THE KEY HAS NO WRITER. Every production site under jasper/, deploy/ and
+# scripts/ that names it is a READ, a gate's error string, or prose, so only a
+# hand edit reaches it — and a hand-edited ``S16_LE`` parks fan-in at exit 78
+# rather than narrowing anything.
 RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
 
 # Ring A's channel count. fan-in's mixer is stereo and not configurable
@@ -344,23 +356,31 @@ class RingWire:
 def resolve_ring_wire_format(raw: str | None) -> str:
     """Normalize a raw :data:`RING_WIRE_FORMAT_ENV_VAR` value to a wire token.
 
-    The Python half of a two-language parse: ``jasper-fanin`` normalizes the same
-    key in ``RingWireFormat::from_env_value`` (``rust/jasper-fanin/src/config.rs``)
-    and must classify every input the same way.
+    THE PYTHON HALF OF A TWO-LANGUAGE PARSE, AND THE WIDER HALF. This
+    normalizer serves the ioplug conf.d render, and the C plugin parses both
+    tokens, so ``S16_LE`` stays in the vocabulary here. ``jasper-fanin`` accepts
+    only ``S32_LE`` and parks at exit 78 on anything else
+    (``rust/jasper-fanin/src/config.rs``); that asymmetry is deliberate and is
+    pinned by ``tests/test_fanin_coupling_rust_contract.py``'s
+    ``test_rust_refuses_the_narrow_ring_wire_format_token``.
 
-    - unset, or empty after trimming → :data:`RING_WIRE_FORMAT_WIDE`. Empty is
-      how this repo's env-file writers clear a key. The default is WIDE because
-      narrow would be a width regression on the hop the ring replaces, which
-      already carries :data:`DEFAULT_PLAYBACK_FORMAT`;
+    - unset, or empty after trimming → :data:`RING_WIRE_FORMAT_WIDE`. Empty
+      is how this repo's env-file writers CLEAR a key, so a cleared key and an
+      absent key mean one thing. The default is WIDE because narrow is a width
+      REGRESSION on the hop the ring replaces: the loopback CamillaDSP→outputd
+      hop already carries
+      :data:`DEFAULT_PLAYBACK_FORMAT` (S32_LE),
+      so arming a ring at S16_LE would narrow a hop that was wide before the
+      arm. Nothing in this repo WRITES this key — see
+      :data:`RING_WIRE_FORMAT_ENV_VAR`;
     - exactly ``S16_LE`` / ``S32_LE`` after trimming → that token. The match is
       case-SENSITIVE because the C ioplug's own ``strcmp`` is: accepting a
       spelling the ioplug rejects would resolve a wire no reader can open;
-    - anything else → :class:`ValueError`. Fail loud, never fall back: fan-in
-      treats the same value as a config-class fault and parks at exit 78, so a
-      Python fallback would give one typo two verdicts.
-
-    ``tests/test_ring_wire_format_contract.py`` pins this against the Rust
-    source.
+    - anything else → :class:`ValueError`. FAIL LOUD, never fall back: silently
+      resolving a typo to narrow would emit and render a wire the operator did
+      not ask for, while fan-in — which treats the same value as a config-class
+      fault and parks at exit 78 — would refuse to start. One typo, two verdicts
+      is worse than one refusal.
     """
     if raw is None:
         return RING_WIRE_FORMAT_WIDE
@@ -405,10 +425,10 @@ def read_declared_ring_wire_format() -> str:
 def assistant_wire_is_wide(*, wire_format: str | None = None) -> bool:
     """Whether THIS BOX's ASSISTANT IPC wire is wide (S32 at the i32 spine scale).
 
-    The Python mirror of ``Config::program_wire_is_wide``, which calls
-    ``jasper_tts_protocol::TtsWireWidth::from_box_declaration``;
-    :mod:`tests.test_ring_wire_format_contract` pins the two by reading the Rust
-    source.
+    THE SENDER'S OWN RULE. `jasper-fanin` accepts both assistant verbs (`AUDIO`
+    and `AUDIO32`) and promotes a narrow payload at its sum entry, so no Rust
+    side resolves a per-box assistant width: this predicate decides only which
+    verb Python's playout spells.
 
     ``wire_format`` defaults to a FILE-FRESH read
     (:func:`read_declared_ring_wire_format`) because the callers never loaded
