@@ -145,17 +145,17 @@ def _fake_ss(*lines: str, returncode: int = 0):
             doctor_web.REASON_CAMILLAGUI_LOOPBACK_ONLY,
         ),
         (
-            ("LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",), "warn",
+            ("LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",), "fail",
             doctor_web.REASON_CAMILLAGUI_EXPOSED,
         ),
-        # A loopback row alongside a wildcard one (mid-restart) still warns:
+        # A loopback row alongside a wildcard one (mid-restart) still fails:
         # "inspect only the first row" would pass this.
         (
             (
                 "LISTEN 0 128   127.0.0.1:5005   0.0.0.0:*",
                 "LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",
             ),
-            "warn",
+            "fail",
             doctor_web.REASON_CAMILLAGUI_EXPOSED,
         ),
         (
@@ -163,7 +163,7 @@ def _fake_ss(*lines: str, returncode: int = 0):
             doctor_web.REASON_CAMILLAGUI_LOOPBACK_ONLY,
         ),
         (
-            ("LISTEN 0 128         [::]:5005      [::]:*",), "warn",
+            ("LISTEN 0 128         [::]:5005      [::]:*",), "fail",
             doctor_web.REASON_CAMILLAGUI_EXPOSED,
         ),
         # Not listening at all — never installed, or administratively stopped.

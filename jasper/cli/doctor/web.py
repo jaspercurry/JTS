@@ -337,9 +337,8 @@ def check_camillagui_loopback() -> CheckResult:
     `ssh -L 5005:localhost:5005 <pi-host>`.
 
     Probes the live kernel-level bind via `_camillagui_listen_addresses`, not
-    the unit file, so a restart that fails to re-bind is caught. Warn, not
-    fail: a silently degraded security posture that has not broken product
-    function. Not currently listening is ok — neither "never installed" nor
+    the unit file, so a restart that fails to re-bind is caught. Not
+    currently listening is ok — neither "never installed" nor
     "administratively stopped" is a live exposure."""
     label = "CamillaGUI socket bind"
     addresses = _camillagui_listen_addresses()
@@ -357,7 +356,7 @@ def check_camillagui_loopback() -> CheckResult:
     if non_loopback:
         shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in non_loopback)
         return CheckResult(
-            label, "warn",
+            label, "fail",
             f"listening on {shown}, not loopback-only — an unauthenticated, "
             "root-backed CamillaDSP config editor is LAN-reachable (#2319); "
             "redeploy, or `systemctl restart camillagui.socket`, to "

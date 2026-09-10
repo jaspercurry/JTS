@@ -374,7 +374,7 @@ def _classify_readable_inputs(
 def _household_secret_verdict(
     st: os.stat_result, uid: int, gids: frozenset[int], user: str
 ) -> CheckResult:
-    """OK/WARN for a PRESENT household_secret, identity-parameterized for tests.
+    """OK/FAIL for a PRESENT household_secret, identity-parameterized for tests.
     Present-but-unreadable = the M2M ``/grouping/set`` gate is silently open."""
     label = "household secret readable"
     if _process_can_read(st, uid, gids):
@@ -386,7 +386,7 @@ def _household_secret_verdict(
         )
     return CheckResult(
         label,
-        "warn",
+        "fail",
         f"present but UNREADABLE by {user} ({_describe('household_secret', st)}) — "
         "the device-to-device /grouping/set auth gate has silently fail-safe-OPENED "
         "(household_credential.verify treats an unreadable secret as 'not paired' "
