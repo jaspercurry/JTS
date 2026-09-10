@@ -21,6 +21,8 @@ import pytest
 import yaml
 
 from jasper.active_speaker.bench import render
+from jasper.active_speaker.bench.replay import replay_levels
+from jasper.audio_measurement.bundles import sha256_file
 
 
 class _FakeCompleted:
@@ -28,6 +30,24 @@ class _FakeCompleted:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path):
+    rate = 48000
+    tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
+    signal = np.concatenate([tone * .1, tone * .2])
+    raw = tmp_path / 'output.f64le'
+    np.column_stack([signal, signal / 2]).astype('<f8').tofile(raw)
+    manifest = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
+                'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': 'graph', 'stimulus_sha256': 'stimulus',
+                'main_db': -20, 'bass_reference_db': -20}
+    result = replay_levels(manifest, raw, (1, 2))
+    band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == [50., 63.])
+    assert band['level_dbfs'] == pytest.approx(20 * np.log10(.2 / np.sqrt(2)), abs=.01)
+    assert result['window_s'] == [1, 2]
+    raw.write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        replay_levels(manifest, raw, (1, 2))
 
 
 def _stub_subprocess_run(
@@ -146,8 +166,9 @@ def test_resolve_render_binary_refuses_when_resolved_path_missing(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("loudness_db", [None, -18.0])
 def test_render_config_argv_carries_the_bracketed_fader_gain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, loudness_db: float | None,
 ) -> None:
     """B1/B-A: the render argv MUST carry ``--gain=<fader_db>`` as ONE
     ``=``-joined token — R4(c) always resolves to "reproduce the recorded
@@ -186,8 +207,11 @@ def test_render_config_argv_carries_the_bracketed_fader_gain(
         output_path=output_path,
         bounds=bounds,
         fader_db=-6.5,
+        loudness_fader_db=loudness_db,
     )
     expected = ("/opt/camilladsp/camilladsp", "--gain=-6.5", str(config_path))
+    if loudness_db is not None:
+        expected = (*expected[:-1], "--gain1=-18.0", expected[-1])
     assert result.argv == expected
     assert seen_argv == [expected]
     # Never two separate tokens ("--gain", "-6.5") — the documented-broken form.

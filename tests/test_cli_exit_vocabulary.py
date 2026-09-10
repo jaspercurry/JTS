@@ -282,6 +282,8 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "bass": _NO_CAPTURES,
     "bass-compare": _NO_CAPTURES,
     "bass-fit": _NO_CAPTURES,
+    "dsp-replay": _NO_CAPTURES,
+    "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,

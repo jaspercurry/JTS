@@ -27,6 +27,8 @@ from jasper.active_speaker.bench.derivation import (
 )
 from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
 from jasper.active_speaker.bench.render import DEPLOYED_PROCESSING_PRECISION
+from jasper.bass_extension.dynamic import DynamicBassDescriptor
+from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
 from tests.test_active_speaker_profile import _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -80,6 +82,18 @@ def test_filters_mixers_and_pipeline_round_trip_verbatim() -> None:
     assert derived["filters"] == source["filters"]
     assert derived["mixers"] == source["mixers"]
     assert derived["pipeline"] == source["pipeline"]
+
+
+def test_whole_graph_render_keeps_native_bass_and_protection():
+    source = yaml.safe_load(_emit())
+    source = apply_dynamic_bass_graph(source, bass_channels=(0,), descriptor=DynamicBassDescriptor(
+        low_boost_db=8, reference_level_db=0, detector_lowpass_hz=120, compressor_threshold_dbfs=-30,
+    ))
+    derived = yaml.safe_load(_derive(yaml.safe_dump(source), roles=None).yaml_text)
+    assert {k: v for k, v in derived.items() if k != 'devices'} == {k: v for k, v in source.items() if k != 'devices'}
+    assert derived['devices']['capture']['type'] == 'WavFile'
+    assert derived['devices']['playback']['type'] == 'File'
+    assert derived['devices']['volume_limit'] == source['devices']['volume_limit'] == 0
 
 
 def test_emitted_linearization_filters_appear_in_the_derived_config() -> None:

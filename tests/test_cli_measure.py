@@ -1107,6 +1107,7 @@ def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys
         assert result["measurement_loudness_volume_db"] == volume
         record = json.loads((Path(result["bundle_dir"]) / ARTIFACTS / result["record_ids"][0]).read_text())
         assert record["level_db"] == volume
+        assert record["loudness_volume_db"] == volume
     else:
         assert code == EXIT_REFUSED
         assert result["reason"] == "measurement_volume_invalid"

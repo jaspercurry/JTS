@@ -92,6 +92,8 @@ class ViewArtifact(NamedTuple):
 #: ``repeat-floor`` is absent because it publishes to ``--install`` or
 #: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
+    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
+    "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
     "bass-fit": ViewArtifact("bass_fit.json", ("<fit-request.json>",)),
     "packet": ViewArtifact("packet.json", producer="jasper-crossover-prescriber packet"),
     "entry": ViewArtifact("entry_state_grade.json"),

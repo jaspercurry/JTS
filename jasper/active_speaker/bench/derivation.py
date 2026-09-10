@@ -203,7 +203,7 @@ def _assert_graph_preserved(source_text: str, derived: Mapping[str, Any]) -> Non
     """
 
     reparsed = _parse(source_text)
-    for key in ("filters", "mixers", "pipeline"):
+    for key in ("filters", "mixers", "processors", "pipeline"):
         if reparsed.get(key) != derived.get(key):
             raise EmitDerivationError(
                 f"derived {key} block differs from the emitted {key} block"
@@ -459,28 +459,16 @@ def _derive_devices(
 def derive_offline_render_config(
     emitted_text: str,
     *,
-    roles: Sequence[str],
+    roles: Sequence[str] | None,
     capture_filename: str,
     capture_header: ArtifactHeader,
     playback_filename: str,
     processing_precision: str,
 ) -> DerivedRenderConfig:
-    """Make one emitter-generated config renderable offline.
+    """Preserve the graph while replacing its devices with files.
 
-    ``emitted_text`` MUST be the exact text
-    :func:`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`
-    returned. This function never reads a config from disk and never talks to a
-    running daemon: the subject of the bench is what the emitter wrote, so
-    anything else would be grading a different artifact.
-
-    ``roles`` is the preset's driver roles
-    (:func:`jasper.active_speaker.profile.required_driver_roles`) — the roles a
-    branch is wanted for, in report order. Each one must resolve to exactly one
-    pipeline step or this refuses.
-
-    Raises:
-      EmitDerivationError: on any refusal. Every failure path here is a refusal
-        before a render, never a degraded render.
+    ``roles=None`` retains a whole native graph, including dynamic processors.
+    Named roles also apply the linear bench's attribution checks.
     """
 
     live = _parse(emitted_text)
@@ -493,11 +481,12 @@ def derive_offline_render_config(
         raise EmitDerivationError("emitted config has no pipeline list")
     if not isinstance(filters, Mapping):
         raise EmitDerivationError("emitted config has no filters mapping")
-    if not roles:
+    if roles is not None and not roles:
         raise EmitDerivationError("roles must be non-empty")
 
     assert_no_async_resampler(devices)
-    _assert_stage_allowlist(pipeline, filters)
+    if roles is not None:
+        _assert_stage_allowlist(pipeline, filters)
 
     derived_devices, device_diff, sample_rate, playback_channels = _derive_devices(
         devices,
@@ -512,7 +501,7 @@ def derive_offline_render_config(
         derived[key] = derived_devices if key == "devices" else value
     _assert_graph_preserved(emitted_text, derived)
 
-    branches = _branch_steps(emitted_text, pipeline, roles)
+    branches = _branch_steps(emitted_text, pipeline, roles) if roles is not None else ()
     for branch in branches:
         if branch.channels[-1] >= playback_channels:
             raise EmitDerivationError(
