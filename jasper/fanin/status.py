@@ -19,7 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.platform.status_socket import FANIN_STATUS_SOCKET, read_status_socket
+from jasper.platform.status_socket import (
+    FANIN_STATUS_SOCKET,
+    read_status_socket_or_none,
+)
 
 
 # The STATUS input-lane ``source`` value on the USB DIRECT lane. The vocabulary
@@ -97,10 +100,12 @@ def read_fanin_status(
 ) -> dict[str, Any] | None:
     if timeout_sec <= 0 or max_bytes <= 0:
         return None
-    try:
-        return read_status_socket(socket_path, timeout=timeout_sec, max_bytes=max_bytes)
-    except (OSError, ValueError):
-        return None
+    return read_status_socket_or_none(
+        socket_path,
+        timeout=timeout_sec,
+        max_bytes=max_bytes,
+        event="fanin.status_unavailable",
+    )
 
 
 def fanin_inputs_by_label(

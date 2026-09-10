@@ -32,7 +32,8 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
-    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
+    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET,
+    read_status_socket_or_none,
 )
 from ..service_units import unit_failed, unit_not_running
 from ..fanin.latency_mode import PRESETS, classify_runtime
@@ -251,10 +252,12 @@ def _read_local_status(
     max_bytes: int = MAX_STATUS_BYTES,
 ) -> dict[str, Any] | None:
     """Read one local daemon STATUS response, byte/time bounded and fail-soft."""
-    try:
-        return read_status_socket(socket_path, timeout=timeout_sec, max_bytes=max_bytes)
-    except (OSError, ValueError):
-        return None
+    return read_status_socket_or_none(
+        socket_path,
+        timeout=timeout_sec,
+        max_bytes=max_bytes,
+        event="audio_health.local_status_unavailable",
+    )
 
 
 def _read_mux_status(
