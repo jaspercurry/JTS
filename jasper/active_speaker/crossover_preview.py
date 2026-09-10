@@ -71,7 +71,17 @@ def _as_mapping(raw: Any) -> Mapping[str, Any] | None:
     return raw if isinstance(raw, Mapping) else None
 
 
-def _design_draft_fingerprint(design_draft: Mapping[str, Any]) -> str:
+def _manual_crossover_settings(design_draft: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    manual = _as_mapping(design_draft.get("manual_settings"))
+    if manual is None:
+        return None
+    return {**{key: value for key, value in manual.items() if value is not None}, "drivers": [
+        {key: value for key, value in driver.items() if key != "installation"}
+        for driver in manual.get("drivers", [])
+    ]}
+
+
+def crossover_design_fingerprint(design_draft: Mapping[str, Any]) -> str:
     """Return a stable content fingerprint for freshness checks."""
 
     stable = {
@@ -79,7 +89,7 @@ def _design_draft_fingerprint(design_draft: Mapping[str, Any]) -> str:
         "topology": design_draft.get("topology"),
         "operator_inputs": design_draft.get("operator_inputs"),
         "driver_research": design_draft.get("driver_research"),
-        "manual_settings": design_draft.get("manual_settings"),
+        "manual_settings": _manual_crossover_settings(design_draft),
     }
     raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -186,7 +196,7 @@ def _merged_design_inputs(design_draft: Mapping[str, Any]) -> Mapping[str, Any] 
     """Return research-shaped inputs with operator settings taking precedence."""
 
     research = _as_mapping(design_draft.get("driver_research"))
-    manual = _as_mapping(design_draft.get("manual_settings"))
+    manual = _manual_crossover_settings(design_draft)
     if research is None and manual is None:
         return None
 
@@ -637,7 +647,7 @@ def build_crossover_preview(
             "design_draft_status": draft_status,
             "topology_id": topology.topology_id if topology else None,
             "design_draft_updated_at": design_draft.get("updated_at"),
-            "design_draft_fingerprint": _design_draft_fingerprint(design_draft),
+            "design_draft_fingerprint": crossover_design_fingerprint(design_draft),
         },
         "drivers": {role: dict(driver) for role, driver in drivers.items()},
         "summary": {
@@ -736,7 +746,7 @@ def _validate_preview_freshness(
         )
 
     expected = source.get("design_draft_fingerprint")
-    actual = _design_draft_fingerprint(current_design_draft)
+    actual = crossover_design_fingerprint(current_design_draft)
     if expected != actual:
         return _stale_preview(
             preview,
