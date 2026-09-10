@@ -40,7 +40,9 @@ User=jasper-web
 Group=jasper
 SupplementaryGroups=audio jts-ring
 
-# OOM wizard tier — see jasper/_oom_adj.py
+# OOM wizard tier — see jasper/_oom_adj.py. The correction-lane aplay children
+# inherit this +200, and that is the intended victim ordering: a measurement
+# pass dies before the daemons that keep music playing.
 OOMScoreAdjust=200
 
 CapabilityBoundingSet=

@@ -11,7 +11,6 @@ field parsers, and the reconciler kick and trailing-apply scheduling.
 from __future__ import annotations
 
 import json
-import subprocess
 
 import pytest
 
@@ -22,6 +21,8 @@ from tests.control_server_fixtures import (
     _grouping_test_setup,
     _isolate_household_secret,
     _post,
+    _record_broker,
+    _recording_popen,
     server_with_coordinator,
 )
 
@@ -319,10 +320,13 @@ def test_grouping_set_trim_only_falls_back_to_reconciler_on_live_apply_failure(
     assert _GROUPING_KICK in popens
 
 
+_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
+
+
 def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path):
     import jasper.control.handlers.grouping as srv_mod
 
-    run_calls = []
+    broker_calls = _record_broker(monkeypatch)
     timers = []
     marks = []
     launches = []
@@ -349,11 +353,6 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
             assert not self.cancelled
             self.callback()
 
-    def fake_run(cmd, **kwargs):
-        run_calls.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(
         srv_mod,
         "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
@@ -367,20 +366,7 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
         timer_factory=FakeTimer,
     )
 
-    assert run_calls == [(
-        [
-            "systemctl",
-            "restart",
-            "--no-block",
-            "jasper-grouping-reconcile-trailing.service",
-        ],
-        {
-            "check": True,
-            "stdout": srv_mod.subprocess.DEVNULL,
-            "stderr": srv_mod.subprocess.DEVNULL,
-            "timeout": 5.0,
-        },
-    )]
+    assert broker_calls == [("restart", [_TRAILING_UNIT])]
     assert len(timers) == 1
     assert timers[0].delay == pytest.approx(53.0)
     assert delay_file.read_text() == "53\n"
@@ -391,22 +377,16 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
     assert launches == []
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        subprocess.CalledProcessError(1, "systemctl"),
-        subprocess.TimeoutExpired("systemctl", 5.0),
-    ],
-    ids=["exit_nonzero", "timed_out"],
-)
 def test_grouping_trailing_scheduler_falls_back_to_process_timer(
-    monkeypatch, tmp_path, failure,
+    monkeypatch, tmp_path,
 ):
     import jasper.control.handlers.grouping as srv_mod
 
+    broker_calls = _record_broker(monkeypatch, ok=False)
     timers = []
     marks = []
     launches = []
+    popens: list[list[str]] = []
     delay_file = tmp_path / "grouping-reconcile-trailing-delay"
 
     class FakeTimer:
@@ -430,10 +410,7 @@ def test_grouping_trailing_scheduler_falls_back_to_process_timer(
             assert not self.cancelled
             self.callback()
 
-    def fake_run(_cmd, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
     monkeypatch.setattr(
         srv_mod,
         "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
@@ -447,6 +424,9 @@ def test_grouping_trailing_scheduler_falls_back_to_process_timer(
         timer_factory=FakeTimer,
     )
 
+    assert broker_calls == [("restart", [_TRAILING_UNIT])]
+    # A restart the broker reports as failed may still have landed in PID 1.
+    assert popens == [["systemctl", "stop", "--no-block", _TRAILING_UNIT]]
     assert len(timers) == 1
     assert timers[0].delay == pytest.approx(12.0)
     assert delay_file.read_text() == "12\n"
