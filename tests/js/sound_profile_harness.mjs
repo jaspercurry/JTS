@@ -30,6 +30,7 @@ const runner = buildFunction(
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",
+      "seat-level.js",
     ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
   ],

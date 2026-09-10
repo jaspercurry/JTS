@@ -166,6 +166,39 @@
   margin-top: 0.4rem;
 }
 
+/* The walk's per-position picture (#3629, #1941 R11): speaker + mark + the
+ * mic's target spot, drawn by position-diagram.js. Sits centred, at a fixed
+ * small size -- it is a supporting glance, not the page's subject (the prose
+ * beside it stays the authoritative instruction). */
+.position-diagram-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 0.1rem 0;
+}
+.position-diagram {
+  width: 140px;
+  height: auto;
+}
+.position-diagram__speaker {
+  fill: var(--text);
+}
+.position-diagram__mark {
+  fill: var(--muted);
+}
+.position-diagram__arrow {
+  stroke: var(--primary);
+  stroke-width: 1.5;
+}
+.position-diagram__arrowhead {
+  fill: var(--primary);
+}
+.position-diagram__mic {
+  fill: var(--primary);
+}
+.position-diagram-caption {
+  text-align: center;
+}
+
 .candidate-provenance {
   overflow-wrap: anywhere;
 }

@@ -35,7 +35,11 @@ export const CROSSOVER_IDS = [
   "crossover-action",
   "crossover-capture",
   "crossover-walk",
+  "crossover-units-imperial",
+  "crossover-units-metric",
   "crossover-walk-progress",
+  "crossover-walk-diagram",
+  "crossover-walk-caption",
   "crossover-walk-headline",
   "crossover-walk-detail",
   "crossover-walk-action",
@@ -121,12 +125,19 @@ export function elementWithLiveText(id = "") {
 // `factory` (default: `element`) and returns the backing Map so the caller
 // can `.get(id)` directly. `extra` is spread last, so it can override
 // `addEventListener`/`createElement`/add `createTextNode` etc. per harness.
+//
+// `createElementNS` returns a `FakeElement` too -- /assets/shared/js/dom.js's
+// `svg()` only ever reaches it via `setAttribute`/`appendChild` for a caller
+// that (like position-diagram.js) never threads text children through `svg()`
+// itself; a harness building SVG with text children needs its own `Node`
+// stub (see tests/js/dom_test.mjs) and can still override this via `extra`.
 export function installFixedDocument(ids, { factory = element, ...extra } = {}) {
   const elements = new Map(ids.map((id) => [id, factory(id)]));
   globalThis.document = {
     visibilityState: "visible",
     addEventListener() {},
     createElement: (tag) => factory(tag),
+    createElementNS: (_ns, tag) => new FakeElement(tag),
     getElementById: (id) => elements.get(id),
     ...extra,
   };
