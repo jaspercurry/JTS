@@ -9,7 +9,7 @@
 
 This is the reviewed prerequisite amendment to Wave 4 commissioning. The JTS3
 crossover substrate burn-in is complete, as recorded in
-[`tuning-operator-runbook.md`](../tuning-operator-runbook.md).
+[`tuning-operator-runbook.md`](../../tuning-operator-runbook.md).
 The remaining result is **not established**: no retained bundle binds a
 target-specific limiter setting to the exact downstream sample point, the
 active target/candidate graph, replayable digital evidence, and passing
@@ -65,7 +65,7 @@ it does not use an undefined `limiter_engaged` predicate.
 ## What Wave 0 can be reused
 
 The Wave 0 memo at
-[`docs/research/2026-07-16-bass-extension-spikes/README.md`](../research/2026-07-16-bass-extension-spikes/README.md)
+[`docs/research/2026-07-16-bass-extension-spikes/README.md`](../../research/2026-07-16-bass-extension-spikes/README.md)
 retains transition, reload-persistence, and harmonic-extraction results. Those
 results justify the silent `PatchConfig`/exact-restore bench mechanism and the
 harmonic-analysis implementation. They do not contain an admitted bass ladder,

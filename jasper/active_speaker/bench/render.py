@@ -4,10 +4,8 @@
 
 """Binary resolution and bounded-subprocess offline render invocation.
 
-Implements R5 (binary identity, resolved from the running unit), R8
-(per-shape determinism receipts), and R9 (the execution contract: isolation,
-ordering, bounds) of
-``docs/bass-extension-waves/limiter-tap-realization.md``.
+Native-render derivation: see
+``docs/historical/bass-extension-waves/limiter-tap-realization.md``.
 
 This module owns its own binary resolution and subprocess shape. It does
 **not** import :mod:`jasper.dsp_apply` — that module's ``_camilladsp_binary``

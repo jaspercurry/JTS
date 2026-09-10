@@ -9,7 +9,7 @@
 > cross-referenced by file name. Per its own Registration rule this document
 > carries no status banner: current program status lives solely in the plan's
 > Wave status table
-> ([`HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md)).
+> ([`HANDOFF-bass-extension-plan.md`](../../HANDOFF-bass-extension-plan.md)).
 
 ## Why this amendment exists (the stop-and-report)
 
@@ -312,10 +312,10 @@ since this amendment was accepted.** "Fan-in narrows every input to S16 at the
 mix" is no longer true of the box: a box whose program wire resolves wide sums at
 the i32 spine scale — which is every ring-armed box since the ring wire's
 default went wide on 2026-08-15
-([`60-jts-ring.conf`](../../deploy/alsa/conf.d/60-jts-ring.conf) declares that
+([`60-jts-ring.conf`](../../../deploy/alsa/conf.d/60-jts-ring.conf) declares that
 wire). What still carries this requirement is the BENCH LANE, which
 is narrow by its own decision: renderer ingress is the snd-aloop substreams in
-[`asoundrc.jasper`](../../deploy/alsa/asoundrc.jasper), which fan-in reads as
+[`asoundrc.jasper`](../../../deploy/alsa/asoundrc.jasper), which fan-in reads as
 S16_LE, so the stimulus path stays 48 kHz S16_LE. The module
 docstring quoted here has been re-worded to match ("Renderer lane inputs are
 S16_LE interleaved stereo; the USB DIRECT lane …").

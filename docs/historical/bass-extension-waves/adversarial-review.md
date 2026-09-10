@@ -26,7 +26,7 @@ a Should-fix.
 ## The review prompt
 
 Use
-[`.claude/commands/adversarial-review.md`](../../.claude/commands/adversarial-review.md)
+[`.claude/commands/adversarial-review.md`](../../../.claude/commands/adversarial-review.md)
 verbatim — it is the canonical JTS review-gate prompt (the two
 invariants, Method, the product-grade lens, severity taxonomy,
 JTS-specific checklist, docs checks, and final response format). Do
