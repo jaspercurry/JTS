@@ -117,6 +117,13 @@ class _FakeWakeLoop:
         self.record_research_delivery = lambda *a, **k: None
         self.announce_timer = lambda *a, **k: None
         self.announce_research_ready = lambda *a, **k: None
+        self.measurement_hold = SimpleNamespace(
+            adopt_live_window=self._adopt_live_window,
+        )
+
+    async def _adopt_live_window(self) -> bool:
+        self._trace.append(("measurement_adopt", "run"))
+        return False
 
     def set_research_scheduler(self, *_a, **_kw) -> None:
         return None
@@ -341,6 +348,7 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     )
 
     async def _serve_while_connecting(_connect, _serve) -> None:
+        trace.append(("serve", "run"))
         return None
 
     patch("_serve_while_connecting", _serve_while_connecting)
@@ -443,6 +451,20 @@ async def test_schedulers_stop_before_the_playout_they_announce_through(
     assert teardown_trace.index_of("timer_scheduler", "exit") < tts_at
     assert teardown_trace.index_of("research_scheduler", "exit") < tts_at
     assert teardown_trace.index_of("startup_tasks", "exit") < tts_at
+
+
+async def test_a_live_measurement_hold_is_adopted_before_the_first_mic_frame(
+    teardown_trace,
+) -> None:
+    """Issue #4789: a daemon restarted mid-sweep asks jasper-control for the
+    hold that outlived it BEFORE it starts consuming mic frames, or it wakes
+    through the rest of the window the sweep is still measuring."""
+    await _run_daemon_once(teardown_trace)
+
+    assert (
+        teardown_trace.index_of("measurement_adopt", "run")
+        < teardown_trace.index_of("serve", "run")
+    )
 
 
 async def test_the_connection_stops_before_the_playout_it_speaks_through(

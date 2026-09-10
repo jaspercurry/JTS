@@ -433,4 +433,10 @@ def read_measurement_hold() -> dict[str, Any] | None:
         hold = get_measurement()
     except (ControlError, ValueError, UnicodeDecodeError):
         return None
+    # The shape check makes this function's OWN return contract true rather
+    # than borrowing its collaborator's: callers read the result with
+    # ``.get()``, and jasper-voice reads it at startup, where an
+    # ``AttributeError`` would be permanent deafness rather than one bad read.
+    if not isinstance(hold, dict):
+        return None
     return hold or None

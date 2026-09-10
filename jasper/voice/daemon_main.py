@@ -1230,6 +1230,9 @@ async def run() -> None:
         _arelease(
             stack, "control_socket", control_socket_mod.close, control_socket,
         )
+        # Before the first mic frame: a restart mid-sweep must come up with
+        # wake already off, not listen until the coordinator's next renewal.
+        await wake_loop.measurement_hold.adopt_live_window()
         await _serve_while_connecting(
             connect_live_session, wake_loop.run,
         )

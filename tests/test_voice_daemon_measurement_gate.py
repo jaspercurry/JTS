@@ -38,7 +38,11 @@ import pytest
 from jasper.tts_playout import TtsPlayout
 from jasper.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
+from jasper.mic_mute_persistence import read_mic_muted, write_mic_muted
 from jasper.timers import Timer
+from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
+from jasper.voice_daemon import _InputAdmissionClosed
+from tests._async_wait import wait_signalled
 from tests._cue_spy import SpyCues
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests
@@ -345,3 +349,258 @@ async def test_measurement_between_frames_discards_old_input_and_resets_history(
     assert wl._pre_roll[0] is fresh
     wl._handle_wake_frame.assert_awaited_once_with(fresh, leg="on")
     detector.reset.assert_called_once_with()
+
+
+async def test_wake_mid_acquire_is_dropped_when_a_measurement_opens(caplog):
+    """A wake that cleared `_check_input_admission` and is queued behind
+    paused output admission is abandoned the moment the window opens.
+
+    `AssistantOutputGate.begin_turn` has no bound, so this wake used to sit
+    there for the whole window — deaf and uncued — and then open a turn into
+    the room the sweep had only just finished measuring (issue #4789).
+    """
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+    assert await wl._output_gate.pause_admission() is True
+    acquire = asyncio.create_task(wl._begin_turn_output_episode())
+    await asyncio.sleep(0)
+    assert not acquire.done()
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+        with pytest.raises(_InputAdmissionClosed) as refused:
+            await asyncio.wait_for(acquire, timeout=1.0)
+
+    assert refused.value.result == "MEASURING"
+    assert event_fields(caplog, "wake.late_cancel") == {
+        "reason": "measurement_active",
+        "phase": "output_episode",
+    }
+    assert wl._turn_output_episode is None
+    assert not wl._output_gate.is_active
+    await wl.measurement_hold.resume()
+
+
+async def test_a_released_window_does_not_revive_the_dropped_wake():
+    """Concurrent actor: the coordinator releases while the wake is still
+    mid-arbitration. The wake stays dropped, and the gate is left free for
+    the next one rather than owned by a turn nobody is waiting for."""
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+    assert await wl._output_gate.pause_admission() is True
+    acquire = asyncio.create_task(wl._begin_turn_output_episode())
+    await asyncio.sleep(0)
+
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    assert await wl.measurement_hold.resume() == "ok"
+
+    with pytest.raises(_InputAdmissionClosed):
+        await asyncio.wait_for(acquire, timeout=1.0)
+    assert not wl._output_gate.is_active
+    assert not wl._output_gate.admission_paused
+
+
+async def test_turn_episode_is_taken_when_no_measurement_opens():
+    """Control: outside a window the turn still gets its episode, and a
+    second take reuses the one it already owns."""
+    wl = wake_loop_for_tests()
+
+    await wl._begin_turn_output_episode()
+    first = wl._turn_output_episode
+    assert first is not None
+    assert wl._output_gate.is_active
+
+    await wl._begin_turn_output_episode()
+    assert wl._turn_output_episode is first
+
+
+@pytest.mark.parametrize(
+    ("hold", "reason"),
+    [
+        (None, "unavailable"),
+        ({"active": False}, "inactive"),
+        ({"active": True, "owner": "crossover_v2"}, "no_lease"),
+        ({"active": True, "owner": "crossover_v2", "expires_in_s": 0.0}, "no_lease"),
+        ({"active": True, "owner": "crossover_v2", "expires_in_s": "soon"}, "no_lease"),
+    ],
+)
+async def test_a_daemon_with_no_usable_hold_starts_listening(
+    monkeypatch, caplog, hold, reason,
+):
+    """Every fail-open startup leaves wake alive AND says so.
+
+    A hold with no remaining lease is not adopted at all: its backstop could
+    not be bounded, so gating on it would be a fresh silent-deafness window
+    rather than a recovered one. The event is the only way the degraded case
+    is visible, so it is pinned with the state.
+    """
+    wl = wake_loop_for_tests()
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold", lambda: hold,
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await wl.measurement_hold.adopt_live_window() is False
+
+    assert event_fields(caplog, "measurement.hold_adopt_skipped")["reason"] == reason
+    assert not wl._measurement_active.is_set()
+    assert wl.session_status()["measurement_active"] is False
+
+
+async def test_a_daemon_restarted_mid_window_comes_up_suspended(monkeypatch):
+    """The in-memory gate does not survive a restart; jasper-control's hold
+    does. A daemon that comes back inside a sweep re-arms from it, and the
+    coordinator's MEASURE_RESUME still restores wake afterwards."""
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold",
+        lambda: {"active": True, "owner": "crossover_v2", "expires_in_s": 90.0},
+    )
+
+    assert await wl.measurement_hold.adopt_live_window() is True
+    assert wl._measurement_active.is_set()
+    assert wl._output_gate.admission_paused
+    assert wl.session_status()["measurement_active"] is True
+    assert await wl.manual_session_start() == "MEASURING"
+
+    assert await wl.measurement_hold.resume() == "ok"
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+    assert wl.session_status()["measurement_active"] is False
+
+
+@pytest.mark.parametrize(
+    ("expires_in_s", "backstop_s"),
+    [(7.0, 7.0), (600.0, MEASUREMENT_AUTOCLEAR_SEC)],
+)
+async def test_an_adopted_backstop_is_clipped_to_the_lease_that_is_left(
+    monkeypatch, expires_in_s: float, backstop_s: float,
+):
+    """A hold adopted at startup auto-clears with its OWN lease, not 120 s.
+
+    install.sh restarts jasper-voice and jasper-control at different points
+    of a deploy, so the hold read at startup can already be finished —
+    teardown sent MEASURE_RESUME and released it. Arming the full
+    MEASUREMENT_AUTOCLEAR_SEC against such a hold would be two silent minutes
+    with no coordinator alive to send RESUME, so the backstop is the smaller
+    of the two.
+    """
+    import jasper.voice.measurement_hold as measurement_hold_mod
+
+    slept: list[float] = []
+    armed = asyncio.Event()
+    expire = asyncio.Event()
+
+    async def recording_safety_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        armed.set()
+        await expire.wait()
+
+    monkeypatch.setattr(
+        measurement_hold_mod, "_measurement_safety_sleep", recording_safety_sleep,
+    )
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold",
+        lambda: {
+            "active": True, "owner": "crossover_v2", "expires_in_s": expires_in_s,
+        },
+    )
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+
+    assert await wl.measurement_hold.adopt_live_window() is True
+    safety = wl.measurement_hold._safety_task
+    await wait_signalled(armed, "adopted measurement backstop", producer=safety)
+    assert slept == [backstop_s]
+
+    expire.set()
+    assert safety is not None
+    await safety
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+
+
+async def test_an_adopted_renewal_keeps_the_full_backstop(monkeypatch):
+    """The lease clip bounds only the OPENING transition, never a renewal.
+
+    A coordinator MEASURE_PAUSE can renew a hold that is already open (via a
+    normal pause) right before adopt_live_window reads it; adopt then lands
+    on the renewal branch of _pause_detailed. If it applied its own
+    (possibly short) lease clip there, it would replace the coordinator's
+    fresh 120 s backstop with the adopted lease's stale remainder (#4826).
+    """
+    import jasper.voice.measurement_hold as measurement_hold_mod
+
+    slept: list[float] = []
+    armed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def recording_safety_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        armed.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        measurement_hold_mod, "_measurement_safety_sleep", recording_safety_sleep,
+    )
+    wl = wake_loop_for_tests(cues=_RefusingCues())
+
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    opening_safety = wl.measurement_hold._safety_task
+    await wait_signalled(
+        armed, "opening backstop", producer=opening_safety,
+    )
+    assert slept == [MEASUREMENT_AUTOCLEAR_SEC]
+
+    armed.clear()
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold",
+        lambda: {"active": True, "owner": "crossover_v2", "expires_in_s": 7.0},
+    )
+    assert await wl.measurement_hold.adopt_live_window() is True
+    renewal_safety = wl.measurement_hold._safety_task
+    await wait_signalled(
+        armed, "renewed backstop", producer=renewal_safety,
+    )
+    assert slept == [MEASUREMENT_AUTOCLEAR_SEC, MEASUREMENT_AUTOCLEAR_SEC]
+
+    release.set()
+    assert renewal_safety is not None
+    await renewal_safety
+    assert not wl._measurement_active.is_set()
+
+
+@pytest.mark.parametrize("muted_before", [False, True])
+async def test_a_window_restores_the_mute_choice_the_user_holds_at_release(
+    monkeypatch, tmp_path, muted_before: bool,
+):
+    """Wake comes back to the USER's mute choice, including one made mid-sweep.
+
+    The persisted mute state is the "was it on before?" record and belongs to
+    the mic switch alone: the window neither reads its own state out of it nor
+    writes to it, so a measurement can never leave the mic switch lying.
+    """
+    writes: list[bool] = []
+
+    def spy_write(path: str, muted: bool) -> None:
+        writes.append(muted)
+        write_mic_muted(path, muted)
+
+    monkeypatch.setattr("jasper.voice_daemon.write_mic_muted", spy_write)
+    wl = wake_loop_for_tests(cues=SpyCues())
+    wl._cfg.mic_mute_state_path = str(tmp_path / "mute.env")
+    if muted_before:
+        assert await wl.mute_mic() == "ok"
+    before = len(writes)
+
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    assert wl._measurement_active.is_set()
+
+    # Concurrent actor: the user flips the mic switch while the sweep runs.
+    toggled = not muted_before
+    assert await (wl.mute_mic() if toggled else wl.unmute_mic()) == "ok"
+
+    assert await wl.measurement_hold.resume() == "ok"
+
+    assert wl._mic_muted is toggled
+    assert wl.session_status()["mic_muted"] is toggled
+    assert read_mic_muted(wl._cfg.mic_mute_state_path) is toggled
+    # The switch wrote once; opening and closing the window wrote nothing.
+    assert writes[before:] == [toggled]

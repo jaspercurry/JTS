@@ -6,7 +6,8 @@
 
 The window itself is owned by ``jasper.measurement_window``; this is the
 voice daemon's copy of "a measurement is live", driven by the MEASURE_PAUSE /
-MEASURE_RESUME control-socket commands. It closes assistant output admission,
+MEASURE_RESUME control-socket commands and, at startup, by
+:meth:`MeasurementHold.adopt_live_window`. It closes assistant output admission,
 gates the mic, hands the volume-owner lease over, pauses the outputd content
 meter, and keeps a crash backstop armed so a coordinator that dies mid-sweep
 cannot strand the speaker silent.
@@ -19,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from ..control.measurement_hold import read_measurement_hold
 from ..log_event import log_event
 
 if TYPE_CHECKING:
@@ -79,7 +82,9 @@ MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC = (
 # interval must stay under this one with room for a retry, or a healthy
 # long window would un-gate mid-sweep and let household music back into the
 # capture. Pinned against the refresh interval by
-# tests/test_voice_daemon_measurement_inflight.py.
+# tests/test_voice_daemon_measurement_inflight.py. It is the CEILING, not the
+# only value: a lease adopted at startup gets the smaller of this and what is
+# left of jasper-control's TTL (:meth:`MeasurementHold.adopt_live_window`).
 MEASUREMENT_AUTOCLEAR_SEC = 120.0
 
 # Replacing a measurement lease joins the prior crash-recovery task so a stale
@@ -94,6 +99,22 @@ _measurement_safety_sleep = asyncio.sleep
 # Same-purpose seam for aggregate-deadline arithmetic. Keeping it local avoids
 # patching ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
 _measurement_monotonic = time.monotonic
+
+
+def _remaining_lease_sec(value: object) -> float | None:
+    """jasper-control's ``expires_in_s`` as a usable lease, or ``None``.
+
+    ``None`` covers every shape that cannot bound a backstop — absent, a
+    lapsed or zero remainder, a non-number, a bool, NaN/inf — and its callers
+    read that as "there is no lease to adopt".
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0.0:
+        return None
+    return seconds
 
 
 class MeasurementHold:
@@ -113,16 +134,102 @@ class MeasurementHold:
         self._safety_task: asyncio.Task | None = None
         self._lease_generation = 0
 
-    async def pause_response(self) -> dict[str, object]:
+    async def adopt_live_window(self) -> bool:
+        """Come up already paused when a measurement is running (issue #4789).
+
+        ``WakeLoop._measurement_active`` is in-memory, so a daemon restarted
+        mid-sweep listens again until the coordinator's next MEASURE_PAUSE
+        renewal — up to ``MEASUREMENT_LEASE_REFRESH_SEC`` of wake alive inside
+        a window that is supposed to have none. jasper-control's hold is the
+        copy of that same fact that survived the restart, so ask it once, at
+        startup, before any mic frame is read.
+
+        Unavailable (``read_measurement_hold`` returns ``None`` for both an
+        unreachable control socket and a malformed response body — it cannot
+        tell them apart any cheaper than jasper-control already does),
+        nothing-held, and a hold carrying no remaining lease all mean "stay
+        listening", logged as ``measurement.hold_adopt_skipped`` so the
+        degraded startup is visible: the coordinator's renewal, not this, is
+        the guarantee it re-arms.
+
+        An adopted lease's crash backstop is clipped to what is LEFT of
+        jasper-control's TTL. install.sh restarts jasper-voice and
+        jasper-control at different points of a deploy, so the hold this reads
+        can already be stale — teardown sent MEASURE_RESUME and released it —
+        and adopting that with the full MEASUREMENT_AUTOCLEAR_SEC would gate
+        the speaker for two silent minutes with no coordinator alive to send
+        RESUME. There is no voice-side renewal to re-read against: a live
+        coordinator renews through MEASURE_PAUSE, which re-arms the full
+        backstop on its own.
+        """
+
+        hold = await asyncio.to_thread(read_measurement_hold)
+        if hold is None:
+            self._log_adopt_skipped("unavailable")
+            return False
+        if not hold.get("active"):
+            self._log_adopt_skipped("inactive")
+            return False
+        expires_in_s = _remaining_lease_sec(hold.get("expires_in_s"))
+        if expires_in_s is None:
+            self._log_adopt_skipped(
+                "no_lease",
+                owner=str(hold.get("owner")),
+                expires_in_s=hold.get("expires_in_s"),
+            )
+            return False
+        try:
+            result = (
+                await self.pause_response(
+                    autoclear_sec=min(MEASUREMENT_AUTOCLEAR_SEC, expires_in_s),
+                )
+            ).get("result")
+        except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+            result = type(error).__name__
+        armed = result == "ok"
+        log_event(
+            logger,
+            "measurement.hold_adopted",
+            owner=str(hold.get("owner")),
+            expires_in_s=expires_in_s,
+            result=result,
+            level=logging.INFO if armed else logging.WARNING,
+        )
+        return armed
+
+    @staticmethod
+    def _log_adopt_skipped(reason: str, **detail: Any) -> None:
+        """Name a startup that stayed listening, so fail-open is not silent.
+
+        ``fields=`` rather than keywords: ``detail`` is arbitrary
+        caller-supplied data (its keys vary per ``reason``), and could someday
+        include one that collides with a reserved ``log_event`` parameter
+        (``level``, ``exc_info``) — routing it through ``fields`` sidesteps
+        that regardless of what ``detail`` holds.
+        """
+
+        log_event(
+            logger,
+            "measurement.hold_adopt_skipped",
+            fields={"reason": reason, **detail},
+        )
+
+    async def pause_response(
+        self,
+        *,
+        autoclear_sec: float = MEASUREMENT_AUTOCLEAR_SEC,
+    ) -> dict[str, object]:
         """Open/renew a pause and include additive drain evidence on the wire."""
 
-        result, drained = await self._pause_detailed()
+        result, drained = await self._pause_detailed(autoclear_sec)
         response: dict[str, object] = {"result": result}
         if drained is not None:
             response["drained"] = drained
         return response
 
-    async def _pause_detailed(self) -> tuple[str, bool | None]:
+    async def _pause_detailed(
+        self, autoclear_sec: float = MEASUREMENT_AUTOCLEAR_SEC,
+    ) -> tuple[str, bool | None]:
         """Open or renew a measurement window and drain in-flight output.
 
         Refuses with `BUSY` while a voice session is active — yanking it would
@@ -137,7 +244,7 @@ class MeasurementHold:
         drain defers to audio that already owned the gate and never cancels
         it, so no wake-blocking cue is cut short; audio outliving the timeout
         is refused at the emission seam instead (issue #1913,
-        ``WakeLoop._output_admission_refusal``).
+        ``AssistantOutputGate.admission_refusal``).
 
         Idempotent: the drain runs only on the opening transition, so the
         coordinator's lease renewals stay latency-free.
@@ -200,13 +307,16 @@ class MeasurementHold:
                     # armed before any external await.
                     self._set_active_local(True, trigger="pause")
                     self._wake_loop._content_activity.pause()
-                    self._arm_safety_locked()
+                    self._arm_safety_locked(autoclear_sec)
                 else:
                     # Replacement first, so the active measurement never has a
                     # crash-backstop gap; generation + slot make the old task
                     # stale immediately.
                     previous = self._safety_task
-                    self._arm_safety_locked()
+                    # A renewal always re-arms the full backstop: the caller's
+                    # autoclear_sec (e.g. an adopted lease's clip) applies only to
+                    # the opening transition above, never to a renewal.
+                    self._arm_safety_locked(MEASUREMENT_AUTOCLEAR_SEC)
                     deferred_cancel |= (
                         await self._cancel_safety_locked(
                             previous,
@@ -293,21 +403,23 @@ class MeasurementHold:
                 f"MEASURE_PAUSE {phase} exceeded aggregate deadline"
             ) from None
 
-    def _arm_safety_locked(self) -> None:
+    def _arm_safety_locked(
+        self, autoclear_sec: float = MEASUREMENT_AUTOCLEAR_SEC,
+    ) -> None:
         """Install one generation-bound crash backstop without awaiting."""
 
         self._lease_generation += 1
         generation = self._lease_generation
         task = asyncio.create_task(
-            self._auto_clear(generation),
+            self._auto_clear(generation, autoclear_sec),
             name=f"measurement-auto-clear-{generation}",
         )
         # Deliberately not in WakeLoop._bg_tasks: those drive turn completion.
         self._safety_task = task
 
-    async def _auto_clear(self, generation: int) -> None:
+    async def _auto_clear(self, generation: int, autoclear_sec: float) -> None:
         try:
-            await _measurement_safety_sleep(MEASUREMENT_AUTOCLEAR_SEC)
+            await _measurement_safety_sleep(autoclear_sec)
         except asyncio.CancelledError:
             return
         async with self._transition_lock:
@@ -321,7 +433,7 @@ class MeasurementHold:
             logger.warning(
                 "measurement window auto-clearing after %.0f s — "
                 "coordinator likely crashed without sending MEASURE_RESUME",
-                MEASUREMENT_AUTOCLEAR_SEC,
+                autoclear_sec,
             )
             try:
                 await self._restore_state(trigger="auto_clear")
