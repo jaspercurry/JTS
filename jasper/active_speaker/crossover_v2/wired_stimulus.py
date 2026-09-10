@@ -15,13 +15,18 @@ play-seam capture half that drives the recorder around a program.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import await_restore_task_resilient
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.playback import (
+    PlaybackError, PlaybackObservation, WavPlaybackCancelled,
+    WavPlaybackCancelledBeforeSpawn,
+)
+from jasper.log_event import log_event
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
@@ -30,10 +35,26 @@ from jasper.active_speaker.bundles import (
 from jasper.audio_measurement.bundles import read_artifact_manifest
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
-    WiredCaptureError, WiredMicDevice, make_wired_recorder, mint_wired_answer,
+    WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
+    make_wired_recorder,
+    mint_wired_answer,
 )
 
-from .program_transaction import StimulusCaptureError
+from .program_transaction import StimulusCaptureError, StimulusCaptureStopped
+
+logger = logging.getLogger(__name__)
+
+
+def _capture_stopped(
+    cause: WiredCaptureError, playback: PlaybackObservation,
+) -> StimulusCaptureStopped:
+    if isinstance(cause, WiredSplCeilingExceeded):
+        log_event(
+            logger, "active_speaker.measurement_spl_ceiling_stop", level=logging.ERROR,
+            observed_db_spl=round(cause.observed_db_spl, 2),
+            ceiling_db_spl=cause.ceiling_db_spl, weighting="Z",
+        )
+    return StimulusCaptureStopped(getattr(cause, "code", "wired_capture_failed"), str(cause), playback)
 
 
 def place_wired_answer(
@@ -66,16 +87,21 @@ class WiredStimulusCapture:
     bundle_dir: Path
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
+    spl_monitor: WiredSplMonitor | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
 
     async def around(self, play: Callable[[], Awaitable[None]], *, program: Any) -> str:
         self._pending.clear()
+        if self.spl_monitor is not None:
+            self.spl_monitor.reset()
         rate = int(program.sample_rate_hz)
         budget = float(program.total_samples) / rate + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
         recorder = (
             self.recorder_factory(rate, budget) if self.recorder_factory
             else make_wired_recorder(self.device, sample_rate_hz=rate, max_capture_s=budget)
         )
+        if self.spl_monitor is not None:
+            recorder.spl_monitor = self.spl_monitor
         started = asyncio.create_task(asyncio.to_thread(recorder.start))
         played = False
         try:
@@ -91,9 +117,16 @@ class WiredStimulusCapture:
                     except asyncio.CancelledError:
                         continue
                 raise
+            except WiredSplCeilingExceeded as exc:
+                raise _capture_stopped(exc, PlaybackObservation(emission="not_started")) from exc
             except (WiredCaptureError, OSError, ValueError) as exc:
+                if self.spl_monitor is not None and isinstance(exc, WiredCaptureError):
+                    raise _capture_stopped(exc, PlaybackObservation(emission="not_started")) from exc
                 raise StimulusCaptureError("the measurement recorder never rolled") from exc
-            await play()
+            if self.spl_monitor is None:
+                await play()
+            else:
+                await self._guarded_play(play, recorder)
             played = True
         finally:
             if not played:
@@ -103,6 +136,8 @@ class WiredStimulusCapture:
                 recording = await asyncio.to_thread(recorder.finish, tail_s=WIRED_POST_ROLL_S)
                 answer = await asyncio.to_thread(self._mint_and_place, recording, str(program.phase))
             except (WiredCaptureError, OSError, ValueError) as exc:
+                if self.spl_monitor is not None and isinstance(exc, WiredCaptureError):
+                    raise _capture_stopped(exc, PlaybackObservation(emission="completed")) from exc
                 raise StimulusCaptureError("the capture could not be placed") from exc
             self._pending.append(answer)
             return answer.wav_path
@@ -117,11 +152,67 @@ class WiredStimulusCapture:
                 PlaybackObservation(emission="completed"), wav_path=finishing.result(),
             ) from exc
 
+    async def _guarded_play(self, play: Callable[[], Awaitable[None]], recorder: Any) -> None:
+        if recorder.failure is not None:
+            raise _capture_stopped(recorder.failure, PlaybackObservation(emission="not_started"))
+        observation = PlaybackObservation()
+
+        async def _play() -> None:
+            nonlocal observation
+            try:
+                await play()
+            except (WavPlaybackCancelled, PlaybackError) as exc:
+                observation = exc.observation
+                raise
+            except WavPlaybackCancelledBeforeSpawn:
+                observation = PlaybackObservation(emission="not_started")
+                raise
+            else:
+                observation = PlaybackObservation(emission="completed")
+
+        async def _watch() -> WiredCaptureError:
+            while recorder.failure is None:
+                await asyncio.sleep(0.01)
+            return recorder.failure
+
+        playing = asyncio.create_task(_play())
+        watching = asyncio.create_task(_watch())
+        failure = None
+        try:
+            try:
+                done, _ = await asyncio.wait((playing, watching), return_when=asyncio.FIRST_COMPLETED)
+                if watching in done:
+                    failure = watching.result()
+                else:
+                    await playing
+            finally:
+                for task in (playing, watching):
+                    if not task.done():
+                        task.cancel()
+
+                async def _drain() -> None:
+                    await asyncio.gather(playing, watching, return_exceptions=True)
+
+                await await_restore_task_resilient(asyncio.create_task(_drain()))
+        except asyncio.CancelledError as exc:
+            raise PlaybackInterrupted(observation) from exc
+        if failure is not None:
+            raise _capture_stopped(failure, observation)
+
     def _mint_and_place(self, recording: Any, phase: str) -> WiredCaptureAnswer:
         answer = mint_wired_answer(
             recording, device=self.device,
             setup=self.setup_reference() if self.setup_reference else None,
         )
+        if self.spl_monitor is not None:
+            answer = replace(answer, capture_integrity={
+                **(answer.capture_integrity or {}),
+                "spl": {
+                    "weighting": "Z",
+                    "max_window_db_spl": round(self.spl_monitor.max_window_db_spl, 2),
+                    "ceiling_db_spl": self.spl_monitor.ceiling_db_spl,
+                },
+            })
         return place_wired_answer(self.bundle_dir, answer, phase=phase, group=phase)
 
     def take_answer(self) -> WiredCaptureAnswer | None:

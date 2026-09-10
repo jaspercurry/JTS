@@ -20,7 +20,10 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     POLARITY_INVERTED,
 )
-from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus
+from jasper.active_speaker.crossover_v2.program_transaction import (
+    ProgramForStimulus, StimulusCaptureStopped,
+)
+from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.active_speaker.round_bank import bank_round
 from jasper.cli import measure
 from jasper.cli.measure import (
@@ -88,6 +91,22 @@ class FakeCam:
 
 def _args(*argv: str):
     return build_parser().parse_args(["--kind", MEASURE_KIND_CANDIDATE, *argv])
+
+
+def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
+    spec = spec_from_args(_args(
+        "--graph-scope", "speaker_tune",
+        "--sweep-band-hz", "20", "20000",
+        "--spl-ceiling-db-spl", "80",
+    ))
+    assert spec.sweep_band_hz == (20.0, 20_000.0)
+    assert spec.spl_ceiling_db_spl == 80.0
+
+
+def test_direct_driver_capture_refuses_lf_summed_band_override():
+    with pytest.raises(MeasureFlagError) as caught:
+        spec_from_args(_args("--sweep-band-hz", "20", "20000"))
+    assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
 # --------------------------------------------------------------------------- #
@@ -946,6 +965,41 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
     assert detail["stopped_at"]["candidate_id"] == "second"
     assert detail["stopped_at"]["index"] == 1
     assert len(detail["record_ids"]) == 1
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+@pytest.mark.parametrize("reason", ["spl_ceiling_exceeded", "wired_capture_failed"])
+def test_capture_stop_ends_ladder_and_batch_and_restores_tune(
+    speaker, monkeypatch, tmp_path, capsys, reason,
+):
+    capture = speaker["capture"]
+    original = capture.around
+    stopped_playback = PlaybackObservation(
+        emission="possible", cleanup_state="killed_and_reaped", returncode=-9,
+    )
+
+    async def around(play, *, program):
+        if not speaker["played"]:
+            return await original(play, program=program)
+        await play()
+        raise StimulusCaptureStopped(reason, "capture stopped", stopped_playback)
+
+    monkeypatch.setattr(capture, "around", around)
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(tmp_path, [
+            {"level_ladder_dbfs": [-40, -30, -20]},
+            {"level_ladder_dbfs": [-10]},
+        ]),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["detail"]["reason"] == reason
+    assert payload["detail"]["playback"] == stopped_playback.as_dict()
+    assert payload["detail"]["stopped_at"]["index"] == 0
+    assert len(payload["detail"]["record_ids"]) == 1
+    assert len(speaker["played"]) == 2
+    assert speaker["cam"].loaded[-1] == speaker["cam"].entry_path.read_text()
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
