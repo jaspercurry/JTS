@@ -28,20 +28,19 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
+    Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
 )
 
 import yaml
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
-from jasper.bass_extension.apply_intent import decode_apply_intent
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
+from jasper.bass_extension.dynamic_graph import validated_base_graph
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
 
-if TYPE_CHECKING:
-    from jasper.bass_extension.profile import BassExtensionProfile
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.output_topology import (
     SUB_CROSSOVER_HZ_HI,
@@ -131,7 +130,6 @@ GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
 GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
 GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
-_BASS_PROFILE_EVIDENCE_OMITTED = object()
 GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 # The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
 # whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
@@ -1671,7 +1669,6 @@ def _baseline_gain_limiter_safe(
     *,
     gain_name: str,
     limiter_name: str,
-    exact_baseline_limiter: bool = False,
 ) -> bool:
     gain_params = _filter_params(payload, gain_name)
     gain = _strict_finite_number(gain_params.get("gain"))
@@ -1685,11 +1682,7 @@ def _baseline_gain_limiter_safe(
         and gain_params.get("mute") is False
         and _filter_type(payload, limiter_name) == "Limiter"
         and clip_limit is not None
-        and (
-            clip_limit == BASELINE_LIMITER_CLIP_LIMIT_DB
-            if exact_baseline_limiter
-            else clip_limit <= 0.0
-        )
+        and clip_limit <= 0.0
         and limiter_params.get("soft_clip") is True
     )
 
@@ -1970,7 +1963,6 @@ def _baseline_output_chain(
     assignment: OutputAssignment,
     channel: int,
     bass_management_highpass: bool,
-    bass_extension: bool = False,
     notes: list[dict[str, str]] | None = None,
 ) -> tuple[tuple[str, str], ...] | None:
     """Prove the exact emitter-owned chain before the canonical limiter.
@@ -1984,7 +1976,6 @@ def _baseline_output_chain(
     if assignment.role == "subwoofer":
         expected = (
             _sub_lowpass_name(),
-            *(("bass_ext_lt", "bass_ext_subsonic") if bass_extension else ()),
             _sub_baseline_gain_name(),
             _sub_baseline_limiter_name(),
         )
@@ -2001,7 +1992,6 @@ def _baseline_output_chain(
                     payload,
                     gain_name=_sub_baseline_gain_name(),
                     limiter_name=_sub_baseline_limiter_name(),
-                    exact_baseline_limiter=bass_extension,
                 )
             )
             else None
@@ -2052,13 +2042,6 @@ def _baseline_output_chain(
     )
     if not linearization_ok:
         return None
-    if bass_extension:
-        if tuple(chain[cursor : cursor + 2]) != (
-            "bass_ext_lt",
-            "bass_ext_subsonic",
-        ):
-            return None
-        cursor += 2
     protection_index = 0
     while cursor < len(chain):
         direction = next((
@@ -2092,7 +2075,6 @@ def _baseline_output_chain(
             payload,
             gain_name=expected_tail[1],
             limiter_name=limiter_name,
-            exact_baseline_limiter=bass_extension,
         )
     ):
         return None
@@ -2640,7 +2622,6 @@ def _active_graph_evidence(
     # summed-isolation tail proved below. They otherwise differ only in the
     # pre-split prefix, branched inside the `is_baseline_like` block.
     is_baseline_like = is_baseline or is_driver_domain
-    bass_owner_channels: set[int] = set()
     if is_baseline_like:
         if bass_profile_summary is None:
             issues.append(_issue(
@@ -2656,8 +2637,6 @@ def _active_graph_evidence(
                     bass_evidence.reason or "bass_extension_block_invalid",
                     "baseline-shaped graph does not match its evaluated bass-extension profile",
                 ))
-            if bass_evidence.expected:
-                bass_owner_channels = set(bass_evidence.reference_channels)
     mixer_names = _pipeline_mixer_names(payload)
     active_way_counts = {
         way_count
@@ -3084,7 +3063,6 @@ def _active_graph_evidence(
                 bass_management_highpass=(
                     contract.subwoofer_present and index in mains_low_outputs
                 ),
-                bass_extension=index in bass_owner_channels,
                 notes=chain_notes,
             )
             if crossovers is None:
@@ -3758,94 +3736,6 @@ def _normalized_graph_fingerprint(text: str) -> str | None:
         return None
 
 
-def _evaluated_profile_summary(
-    *,
-    topology: OutputTopology,
-    applied_baseline_state: Mapping[str, Any] | None,
-    profile_bytes: bytes | None,
-) -> dict[str, Any]:
-    """Translate exact profile bytes into disk-free graph evidence."""
-
-    if profile_bytes is None:
-        return {"authority_valid": True, "runtime_block_required": False}
-    raw = _json_mapping(profile_bytes)
-    if raw is None:
-        return {"authority_valid": True, "runtime_block_required": False}
-    try:
-        from jasper.bass_extension.profile import (
-            BassExtensionProfile,
-            evaluate_loaded_bass_extension_profile,
-        )
-
-        profile = BassExtensionProfile.from_dict(raw)
-        evaluation = evaluate_loaded_bass_extension_profile(
-            profile,
-            topology=topology,
-            applied_baseline_state=applied_baseline_state,
-        )
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return {"authority_valid": True, "runtime_block_required": False}
-    if evaluation.status != "accepted":
-        return {"authority_valid": True, "runtime_block_required": False}
-    adapter_id = str(profile.enclosure["adapter_id"])
-    if adapter_id != "sealed_v1":
-        return {"authority_valid": True, "runtime_block_required": False}
-    natural = profile.targets[-1]
-    protected = all(target.subsonic is not None for target in profile.targets)
-    return {
-        "authority_valid": protected,
-        "runtime_block_required": True,
-        "bass_owner_channels": list(profile.bass_owner["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": (
-                dict(natural.subsonic) if natural.subsonic is not None else None
-            ),
-        },
-    }
-
-
-def _snapshot_profile_summary(
-    *,
-    topology: OutputTopology,
-    graph_text: str,
-    applied_baseline_state: Mapping[str, Any] | None,
-    profile_bytes: bytes | None,
-    intent_bytes: bytes | None,
-    selected_config_path: str | None,
-) -> dict[str, Any]:
-    if intent_bytes is None:
-        return _evaluated_profile_summary(
-            topology=topology,
-            applied_baseline_state=applied_baseline_state,
-            profile_bytes=profile_bytes,
-        )
-    try:
-        intent = decode_apply_intent(_json_mapping(intent_bytes))
-    except ValueError:
-        return {"authority_valid": False, "runtime_block_required": False}
-    graph_fingerprint = _normalized_graph_fingerprint(graph_text)
-    if graph_fingerprint is None or selected_config_path != intent.config_path:
-        return {"authority_valid": False, "runtime_block_required": False}
-    matching_profiles = []
-    if intent.predecessor_graph_fingerprint == graph_fingerprint:
-        matching_profiles.append(intent.predecessor_profile_bytes)
-    if intent.desired_graph_fingerprint == graph_fingerprint:
-        matching_profiles.append(intent.desired_profile_bytes)
-    # A no-block replacement can legitimately have identical predecessor and
-    # desired graph fingerprints.  The exact persisted profile bytes select
-    # the corresponding evaluation without widening authority to a third pair.
-    if profile_bytes not in matching_profiles:
-        return {"authority_valid": False, "runtime_block_required": False}
-    return _evaluated_profile_summary(
-        topology=topology,
-        applied_baseline_state=applied_baseline_state,
-        profile_bytes=profile_bytes,
-    )
-
-
 def _classify_bass_extension_snapshot(
     topology: OutputTopology,
     *,
@@ -3853,8 +3743,6 @@ def _classify_bass_extension_snapshot(
     config_path: str | None,
     applied_baseline_bytes: bytes | None,
     applied_baseline_state: Mapping[str, Any] | None,
-    profile_bytes: bytes | None,
-    intent_bytes: bytes | None,
     staged_metadata_bytes: bytes | None,
 ) -> GraphSafety:
     applied = (
@@ -3868,26 +3756,35 @@ def _classify_bass_extension_snapshot(
     # in-memory composition calls retain ``staged_config=None`` and their
     # independent graph-only proof.
     staged = _json_mapping(staged_metadata_bytes) or {}
-    bass_summary = _snapshot_profile_summary(
-        topology=topology,
-        graph_text=graph_text,
-        applied_baseline_state=applied,
-        profile_bytes=profile_bytes,
-        intent_bytes=intent_bytes,
-        selected_config_path=config_path,
-    )
+    snapshot = (applied or {}).get("recomposition_snapshot") or {}
+    descriptor = snapshot.get("bass_extension") or {}
+    if descriptor:
+        try:
+            descriptor = validate_dynamic_bass_descriptor(descriptor)
+            contract = classify_output_contract(topology)
+            channels = tuple(sorted(
+                _subwoofer_output_indexes(contract) or _mains_lowest_driver_indexes(contract)
+            ))
+            # Startup/parked graphs have their own proof and contain no extension.
+            source = str(classify_camilla_config_text(graph_text).get("source") or "")
+            if source in (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE):
+                base = validated_base_graph(yaml.safe_load(graph_text), descriptor, channels)
+                header = "\n".join(line for line in graph_text.splitlines() if line.startswith("#"))
+                graph_text = header + "\n" + yaml.safe_dump(base, sort_keys=False)
+        except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError):
+            return _unsafe_boundary("bass_extension_block_invalid", "bass graph differs from the saved tune")
     graph = classify_camilla_graph(
         config_path,
         topology,
         text=graph_text,
         staged_config=staged,
-        bass_profile_summary=bass_summary,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
     )
     return replace(
         graph,
         details={
             **graph.details,
-            "bass_extension_profile_summary": dict(bass_summary),
+            "bass_extension": dict(descriptor),
         },
     )
 
@@ -3926,55 +3823,34 @@ def classify_bass_extension_graph(
     graph_text: str | None = None,
     applied_baseline_path: Path | None = None,
     applied_baseline_state: Mapping[str, Any] | None = None,
-    profile_path: Path | None = None,
-    intent_path: Path | None = None,
     staged_metadata_path: Path | None = None,
-    desired_profile: "BassExtensionProfile | None | object" = (
-        _BASS_PROFILE_EVIDENCE_OMITTED
-    ),
 ) -> GraphSafety:
     """Canonical synchronous graph/evidence boundary."""
 
     if evidence_source == "desired":
-        from jasper.bass_extension.profile import BassExtensionProfile
-
         if (
             any(path is not None for path in (
                 statefile_path, candidate_path, applied_baseline_path,
-                profile_path, intent_path, staged_metadata_path,
+                staged_metadata_path,
             ))
             or candidate_kind is not None
             or not isinstance(graph_text, str)
             or not isinstance(applied_baseline_state, Mapping)
-            or not (
-                desired_profile is None
-                or isinstance(desired_profile, BassExtensionProfile)
-            )
         ):
             return _unsafe_boundary("bass_extension_source_invalid", "desired evidence is incomplete")
-        desired_bytes = None
-        if desired_profile is not None:
-            desired_bytes = (
-                json.dumps(desired_profile.to_dict(), indent=2, sort_keys=True) + "\n"
-            ).encode("utf-8")
         return _classify_bass_extension_snapshot(
             topology,
             graph_text=graph_text,
             config_path=None,
             applied_baseline_bytes=None,
             applied_baseline_state=applied_baseline_state,
-            profile_bytes=desired_bytes,
-            intent_bytes=None,
             staged_metadata_bytes=None,
         )
 
     if (
         graph_text is not None
         or applied_baseline_state is not None
-        or desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
         or applied_baseline_path is None
-        or profile_path is None
-        or intent_path is None
         or staged_metadata_path is None
     ):
         return _unsafe_boundary("bass_extension_source_invalid", "persisted evidence paths are incomplete")
@@ -3992,8 +3868,6 @@ def classify_bass_extension_graph(
     for _attempt in range(2):
         try:
             applied1 = _read_optional_bytes(applied_baseline_path)
-            intent1 = _read_optional_bytes(intent_path)
-            profile1 = _read_optional_bytes(profile_path)
             staged1 = _read_optional_bytes(staged_metadata_path)
             if evidence_source == "persisted_boot":
                 assert statefile_path is not None
@@ -4020,15 +3894,11 @@ def classify_bass_extension_graph(
                 if selected2_s != str(selected_path):
                     continue
             staged2 = _read_optional_bytes(staged_metadata_path)
-            profile2 = _read_optional_bytes(profile_path)
-            intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
         except (OSError, UnicodeError, ValueError):
             continue
         if not all((
             applied1 == applied2,
-            intent1 == intent2,
-            profile1 == profile2,
             staged1 == staged2,
             selected1 == selected2,
         )):
@@ -4052,8 +3922,6 @@ def classify_bass_extension_graph(
             config_path=str(selected_path),
             applied_baseline_bytes=applied1,
             applied_baseline_state=None,
-            profile_bytes=profile1,
-            intent_bytes=intent1,
             staged_metadata_bytes=staged1,
         )
     return _unsafe_boundary("bass_extension_snapshot_unstable", "graph authority changed while it was read")
@@ -4066,8 +3934,6 @@ async def classify_active_bass_extension_graph(
     read_active_graph_text: Callable[[], Awaitable[str | None]],
     canonicalize_graph_text: Callable[[str], Awaitable[str | None]],
     applied_baseline_path: Path,
-    profile_path: Path,
-    intent_path: Path,
     staged_metadata_path: Path,
 ) -> GraphSafety:
     """Canonical live-active boundary with readback inside the sandwich.
@@ -4089,8 +3955,6 @@ async def classify_active_bass_extension_graph(
     for _attempt in range(2):
         try:
             applied1 = _read_optional_bytes(applied_baseline_path)
-            intent1 = _read_optional_bytes(intent_path)
-            profile1 = _read_optional_bytes(profile_path)
             staged1 = _read_optional_bytes(staged_metadata_path)
             selector1 = statefile_path.read_bytes()
             selected1_s = parse_camilla_statefile_config_path(selector1.decode("utf-8"))
@@ -4133,8 +3997,6 @@ async def classify_active_bass_extension_graph(
             selector2 = statefile_path.read_bytes()
             selected2_s = parse_camilla_statefile_config_path(selector2.decode("utf-8"))
             staged2 = _read_optional_bytes(staged_metadata_path)
-            profile2 = _read_optional_bytes(profile_path)
-            intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
         except (OSError, UnicodeError, ValueError):
             reason = "the graph authority could not be re-read"
@@ -4143,9 +4005,7 @@ async def classify_active_bass_extension_graph(
             selected2_s != str(selected_path)
             or not all((
                 applied1 == applied2,
-                intent1 == intent2,
-                profile1 == profile2,
-                staged1 == staged2,
+                        staged1 == staged2,
                 selected1 == selected2,
             ))
         ):
@@ -4170,8 +4030,6 @@ async def classify_active_bass_extension_graph(
             config_path=str(selected_path),
             applied_baseline_bytes=applied1,
             applied_baseline_state=None,
-            profile_bytes=profile1,
-            intent_bytes=intent1,
             staged_metadata_bytes=staged1,
         )
     return _unsafe_boundary("bass_extension_active_snapshot_unstable", reason)
@@ -4245,8 +4103,6 @@ def outputd_active_lane_decision(
     topology: OutputTopology | None = None,
     topology_path: str | Path | None = None,
     applied_baseline_path: str | Path | None = None,
-    profile_path: str | Path | None = None,
-    intent_path: str | Path | None = None,
     staged_metadata_path: str | Path | None = None,
 ) -> OutputdActiveLaneDecision:
     """Decide whether outputd may open its active content lane.
@@ -4269,8 +4125,6 @@ def outputd_active_lane_decision(
 
     from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
-    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
 
     primary_statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
     _selected, primary_problem = _config_path_from_statefile_with_reason(
@@ -4291,8 +4145,6 @@ def outputd_active_lane_decision(
         "applied_baseline_path": Path(
             applied_baseline_path or baseline_profile_state_path()
         ),
-        "profile_path": Path(profile_path or DEFAULT_PROFILE_PATH),
-        "intent_path": Path(intent_path or BASS_EXTENSION_APPLY_INTENT_PATH),
         "staged_metadata_path": Path(
             staged_metadata_path or default_staged_path()
         ),
@@ -4529,8 +4381,6 @@ def safe_graph_for_current_topology(
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     parked_config_path: str | Path | None = None,
     applied_baseline_path: str | Path | None = None,
-    profile_path: str | Path | None = None,
-    intent_path: str | Path | None = None,
     staged_metadata_path: str | Path | None = None,
     staged_startup_hold_path: str | Path | None = None,
     consider_applied_baseline: bool = True,
@@ -4555,8 +4405,6 @@ def safe_graph_for_current_topology(
 
     from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
-    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
 
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
@@ -4571,14 +4419,10 @@ def safe_graph_for_current_topology(
         )
     statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
     applied_path = Path(applied_baseline_path or baseline_profile_state_path())
-    bass_path = Path(profile_path or DEFAULT_PROFILE_PATH)
-    apply_intent_path = Path(intent_path or BASS_EXTENSION_APPLY_INTENT_PATH)
     staged_path_authority = Path(staged_metadata_path or default_staged_path())
 
     authority = {
         "applied_baseline_path": applied_path,
-        "profile_path": bass_path,
-        "intent_path": apply_intent_path,
         "staged_metadata_path": staged_path_authority,
     }
     if current_config_path:

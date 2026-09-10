@@ -24,10 +24,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 import yaml as yaml_parser
 
 from jasper.atomic_io import atomic_write_text
-from jasper.bass_extension.profile import (
-    BassExtensionProfile,
-    evaluate_bass_extension_profile,
-)
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
@@ -114,7 +111,6 @@ SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
-_DEFAULT_PERSISTED_BASS_PROFILE = object()
 
 # Sensitivity deltas below this magnitude (dB) are treated as level-matched and
 # get no derived trim, so the least-sensitive (reference) driver and any ties
@@ -188,32 +184,11 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
 }
 
 
-def _bass_extension_graph_summary(
-    profile: BassExtensionProfile | None,
-) -> dict[str, Any]:
-    """Freeze authority evidence beside one just-emitted composition."""
-
-    if (
-        profile is None
-        or profile.status != "accepted"
-        or profile.enclosure["adapter_id"] != "sealed_v1"
-    ):
-        return {"authority_valid": True, "runtime_block_required": False}
-    natural = profile.targets[-1]
-    protected = all(target.subsonic is not None for target in profile.targets)
-    return {
-        "authority_valid": protected,
-        "runtime_block_required": True,
-        "bass_owner_channels": list(profile.bass_owner["channels"]),
-        "natural": {
-            "fp_hz": natural.fp_hz,
-            "qp": natural.qp,
-            "boost_headroom_db": natural.boost_headroom_db,
-            "subsonic": (
-                dict(natural.subsonic) if natural.subsonic is not None else None
-            ),
-        },
-    }
+def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    source = load_applied_baseline_profile_state() if profile is None else profile
+    snapshot = source.get("recomposition_snapshot") or {}
+    raw = snapshot.get("bass_extension") or {}
+    return validate_dynamic_bass_descriptor(raw) if raw else {}
 
 
 def _utc_now() -> str:
@@ -2071,7 +2046,6 @@ def build_baseline_profile_candidate(
         validate_camilla_config
     ),
     created_at: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> dict[str, Any]:
     """Build or write a baseline candidate from current accepted evidence.
 
@@ -2688,6 +2662,7 @@ def build_baseline_profile_candidate(
     # ``candidate_room_peqs``. ``getattr`` with a default for the same eras as
     # its neighbours above; the helper needs the candidate's layout, so it only
     # runs once the field is known to be there.
+    bass_extension = dict(getattr(measured_candidate, "bass_extension", None) or {})
     room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
     room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
     if preserved_applied_profile is not None:
@@ -2789,14 +2764,8 @@ def build_baseline_profile_candidate(
             str(automatic_candidate["detail"]),
         ))
     provisional = bool(correction_meta.get("provisional"))
-    if driver_domain and bass_extension_profile is None:
-        applied_bass_anchor = load_applied_baseline_profile_state()
-        evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=applied_bass_anchor,
-        )
-        if evaluation.status == "accepted":
-            bass_extension_profile = evaluation.profile
+    if driver_domain and not bass_extension:
+        bass_extension = applied_bass_extension()
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2825,7 +2794,7 @@ def build_baseline_profile_candidate(
                 enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-                bass_extension_profile=bass_extension_profile,
+                bass_extension=bass_extension,
             )
         else:
             yaml = emit_active_speaker_baseline_config(
@@ -2841,7 +2810,7 @@ def build_baseline_profile_candidate(
                 enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-                bass_extension_profile=bass_extension_profile,
+                bass_extension=bass_extension,
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
@@ -3051,16 +3020,10 @@ def build_baseline_profile_candidate(
             # correction on the next preference-EQ save.
             "blend_correction": blend_correction,
             **({"room_correction": room_correction} if room_correction else {}),
+            **({"bass_extension": bass_extension} if bass_extension else {}),
             **candidate_graph_context,
         },
     }
-    if driver_domain:
-        # The bond precheck consumes this immutable sidecar in the independent
-        # whole-graph verifier. It comes from the already-evaluated profile
-        # passed to the emitter, never from filter-name inference or caller I/O.
-        payload["bass_extension_profile_summary"] = (
-            _bass_extension_graph_summary(bass_extension_profile)
-        )
     payload = finalize(payload)
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
@@ -3149,9 +3112,6 @@ def recompose_applied_baseline_yaml(
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     playback_device: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None | object = (
-        _DEFAULT_PERSISTED_BASS_PROFILE
-    ),
     drop_measured_correction: bool = False,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
@@ -3195,14 +3155,6 @@ def recompose_applied_baseline_yaml(
     )
     if snapshot is None:
         return None, hardware_issues
-    if bass_extension_profile is _DEFAULT_PERSISTED_BASS_PROFILE:
-        evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=applied_profile,
-        )
-        bass_extension_profile = (
-            evaluation.profile if evaluation.status == "accepted" else None
-        )
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
@@ -3345,11 +3297,7 @@ def recompose_applied_baseline_yaml(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
-        bass_extension_profile=(
-            bass_extension_profile
-            if isinstance(bass_extension_profile, BassExtensionProfile)
-            else None
-        ),
+        bass_extension=applied_bass_extension(applied_profile),
         linearization=linearization,
         blend_correction=blend_correction,
         protection_sections_by_role=(
@@ -3965,7 +3913,6 @@ async def _apply_baseline_profile_locked(
     def build_candidate(
         *,
         write: bool,
-        bass_extension_profile: BassExtensionProfile | None = None,
     ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
@@ -3984,7 +3931,6 @@ async def _apply_baseline_profile_locked(
             preserved_applied_profile=preserved_applied_profile,
             measured_candidate=measured_candidate,
             validate=validate,
-            bass_extension_profile=bass_extension_profile,
         )
 
     def matches_expected(candidate: Mapping[str, Any]) -> bool:
@@ -4018,25 +3964,11 @@ async def _apply_baseline_profile_locked(
         }
 
     reviewed_candidate = build_candidate(write=False)
-    candidate_bass_emission_profile = None
-    candidate_bass_proof_profile = None
-    if not driver_domain:
-        bass_evaluation = evaluate_bass_extension_profile(
-            topology=topology,
-            applied_baseline_state=reviewed_candidate,
-        )
-        candidate_bass_proof_profile = bass_evaluation.profile
-        if bass_evaluation.status == "accepted":
-            candidate_bass_emission_profile = bass_evaluation.profile
-
     if expected_candidate_fingerprint is not None:
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
 
-    candidate = build_candidate(
-        write=True,
-        bass_extension_profile=candidate_bass_emission_profile,
-    )
+    candidate = build_candidate(write=True)
     if expected_candidate_fingerprint is not None and not matches_expected(candidate):
         return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
@@ -4083,7 +4015,6 @@ async def _apply_baseline_profile_locked(
                 evidence_source="desired",
                 graph_text=candidate_graph_text,
                 applied_baseline_state=candidate,
-                desired_profile=candidate_bass_proof_profile,
             )
             proof_detail = (
                 graph_proof.issues[0].get("message")
