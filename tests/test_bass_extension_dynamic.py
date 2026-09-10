@@ -49,6 +49,8 @@ def test_main_plus_bounded_native_boost_never_exceeds_zero_db() -> None:
         ({"detector_lowpass_hz": 201.0}, "detector_lowpass_hz"),
         ({"compressor_threshold_dbfs": 0.1}, "compressor_threshold_dbfs"),
         ({"delta_highpass_hz": 90.0}, "delta_highpass_hz"),
+        ({"low_boost_db": "6"}, "real number"),
+        ({"compressor_factor": True}, "real number"),
     ],
 )
 def test_descriptor_refuses_values_outside_runtime_bounds(change, message) -> None:
@@ -167,4 +169,30 @@ def test_projection_refuses_a_changed_native_definition() -> None:
     decorated["filters"]["bass_ext_dynamic_loudness"]["parameters"]["low_boost"] = 9.0
 
     with pytest.raises(ValueError, match="do not match"):
+        validated_base_graph(decorated, _descriptor(), (0, 2))
+
+
+def test_projection_refuses_split_step_metadata_drift() -> None:
+    decorated = apply_dynamic_bass_graph(_base_graph(), _descriptor(), (0, 2))
+    block_end = next(
+        index
+        for index, step in enumerate(decorated["pipeline"])
+        if step == {"type": "Mixer", "name": "bass_ext_dynamic_reduce"}
+    )
+    decorated["pipeline"][block_end + 1]["bypassed"] = True
+
+    with pytest.raises(ValueError, match="different metadata"):
+        validated_base_graph(decorated, _descriptor(), (0, 2))
+
+
+def test_projection_requires_the_owner_limiter_immediately_after_block() -> None:
+    decorated = apply_dynamic_bass_graph(_base_graph(), _descriptor(), (0, 2))
+    block_end = next(
+        index
+        for index, step in enumerate(decorated["pipeline"])
+        if step == {"type": "Mixer", "name": "bass_ext_dynamic_reduce"}
+    )
+    decorated["pipeline"][block_end + 1]["names"].insert(0, "woofer_lowpass")
+
+    with pytest.raises(ValueError, match="immediately before"):
         validated_base_graph(decorated, _descriptor(), (0, 2))

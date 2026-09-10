@@ -305,6 +305,19 @@ def validated_base_graph(
         or not isinstance(after.get("names"), list)
     ):
         raise ValueError("dynamic pipeline block does not split the bass-owner chain")
+    before_metadata = {key: value for key, value in before.items() if key != "names"}
+    after_metadata = {key: value for key, value in after.items() if key != "names"}
+    if before_metadata != after_metadata:
+        raise ValueError("split bass-owner steps have different metadata")
+    filters = result["filters"]
+    limiter_names = [
+        name
+        for name in after["names"]
+        if isinstance(filters.get(name), Mapping)
+        and filters[name].get("type") == "Limiter"
+    ]
+    if len(limiter_names) != 1 or after["names"][0] != limiter_names[0]:
+        raise ValueError("dynamic block must be immediately before the owner limiter")
     restored = {**before, "names": [*before["names"], *after["names"]]}
     pipeline[start - 1 : start + len(fragment) + 1] = [restored]
     return result

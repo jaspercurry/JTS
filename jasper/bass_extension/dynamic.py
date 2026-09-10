@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any
 
 
@@ -35,6 +36,8 @@ _OPTIONAL_FIELDS = {
 
 
 def _finite(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a real number")
     number = float(value)
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
@@ -67,6 +70,8 @@ class DynamicBassDescriptor:
                 "compressor_release_s",
             )
         }
+        for name, number in values.items():
+            object.__setattr__(self, name, number)
         if not 0.0 < values["low_boost_db"] <= MAX_DYNAMIC_BOOST_DB:
             raise ValueError(f"low_boost_db must be in (0, {MAX_DYNAMIC_BOOST_DB}]")
         if not REFERENCE_LEVEL_DB_MIN <= values["reference_level_db"] <= REFERENCE_LEVEL_DB_MAX:
@@ -87,6 +92,7 @@ class DynamicBassDescriptor:
                 raise ValueError(
                     "delta_highpass_hz must be in the measured band below detector_lowpass_hz"
                 )
+            object.__setattr__(self, "delta_highpass_hz", corner)
 
 
 def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
