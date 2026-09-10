@@ -2195,6 +2195,39 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["calibration_level"]["status"] == "reset_failed"
 
 
+def test_active_speaker_stop_route_stops_audible_commission_tone(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """#2912 gap 3: the household stop route must reach the audible commission
+    tone, not just the no-audio safety session."""
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
+        str(tmp_path / "calibration-level.json"),
+    )
+
+    tone_stops: list[str] = []
+    monkeypatch.setattr(
+        sound_active_speaker,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: tone_stops.append(reason)
+        or {"status": "stopped", "reason": reason},
+    )
+
+    stopped = sound_setup._active_speaker_stop_payload()
+
+    assert tone_stops == ["operator_stop"]
+    assert stopped["commission_tone"] == {
+        "status": "stopped",
+        "reason": "operator_stop",
+    }
+
+
 def _active_speaker_mono_topology_payload(
     *,
     protection_status: str,

@@ -997,14 +997,16 @@ def _active_speaker_calibration_level_payload(
 
 
 def _active_speaker_stop_payload() -> dict[str, Any]:
-    """Stop any no-audio active-speaker safety session."""
+    """Stop the no-audio safety session and the audible commission tone."""
 
     from jasper.active_speaker.calibration_level import update_calibration_level_state
     from jasper.active_speaker.playback import stop_tone_playback
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
 
     playback = stop_tone_playback(reason="operator_stop")
+    tone_stop = _active_speaker_stop_commission_tone(reason="operator_stop")
     state = dict(stop_safe_playback_session())
+    state["commission_tone"] = tone_stop
     try:
         state["calibration_level"] = update_calibration_level_state(
             action="stop", run_id=state.get("session_id")
@@ -1030,6 +1032,7 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
         session_id=str(state.get("session_id")),
         playback_status=str(playback.get("status")),
         audio_emitted=str(bool(playback.get("audio_emitted"))),
+        tone_stop_status=str(tone_stop.get("status")),
         level_status=str(state.get("calibration_level", {}).get("status")),
     )
     return state
