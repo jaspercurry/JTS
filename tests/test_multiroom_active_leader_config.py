@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,10 +29,11 @@ import jasper.output_topology as output_topology_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
 from jasper.multiroom import active_leader_config as alc
+from jasper.multiroom.active_profile import build_grouped_profile
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 from jasper.sound.profile import SoundProfile
-from tests.test_bass_extension_profile import _profile
+from tests.test_bass_extension_dynamic import _descriptor
 
 # Reuse the commissioning-evidence fixtures from the baseline-profile tests so
 # the leader's camilla#2 arm is exercised against the SAME evidence shape the
@@ -167,15 +168,6 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    sealed = replace(
-        _profile(topology=topology),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "evaluate_bass_extension_profile",
-        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
-    )
 
     bake_path, crossover_path = asyncio.run(
         alc.precheck_active_leader(_cfg("left"), validate=_valid_config)
@@ -194,15 +186,6 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert leader_capture["device"] == GROUPING_RING_PCM
     assert leader_capture["format"] == GROUPING_RING_FORMAT
     assert "active_baseline_headroom" not in crossover_yaml  # leader bakes B/C
-    crossover_doc = yaml.safe_load(crossover_yaml)
-    woofer_chain = next(
-        step["names"]
-        for step in crossover_doc["pipeline"]
-        if step.get("type") == "Filter" and step.get("channels") == [0]
-    )
-    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
-        "bass_ext_subsonic"
-    ) < woofer_chain.index("as_woofer_delay")
 
     # camilla#1 program bake: File sink writing the snapfifo, NO Layer A.
     bake_doc = yaml.safe_load(Path(bake_path).read_text(encoding="utf-8"))
@@ -317,7 +300,7 @@ def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> N
 
 
 @pytest.mark.parametrize("role", ["leader", "follower"])
-@pytest.mark.parametrize("unsupported_stage", [None, "blend", "headroom"])
+@pytest.mark.parametrize("unsupported_stage", [None, "blend", "headroom", "dynamic_bass"])
 def test_pair_preserves_applied_tune_without_old_measurements(
     monkeypatch, tmp_path, role, unsupported_stage,
 ):
@@ -334,6 +317,8 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     assert applied["permissions"]["may_apply"]
     applied["status"] = "applied"
     snapshot = applied["recomposition_snapshot"]
+    if unsupported_stage == "dynamic_bass":
+        snapshot["bass_extension"] = asdict(_descriptor())
     snapshot["linearization"] = {
         "woofer": [{"biquad_type": "Peaking", "freq": 910.0, "q": 1.23, "gain": -7.0}],
         "tweeter": [{"biquad_type": "Highshelf", "freq": 8500.0, "q": 0.707, "gain": 8.0}],
@@ -347,7 +332,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     if unsupported_stage == "headroom":
         snapshot["corrections"]["tweeter"]["gain_db"] = 0.0
     solo, issues = baseline_profile_mod.recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied,
     )
     assert not issues
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
@@ -360,8 +345,21 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         with pytest.raises(error_type) as exc:
             asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
         assert exc.value.reason == "baseline_not_ready"
+        assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
         assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
         assert not Path(fc.FOLLOWER_CONFIG_PATH).exists()
+        if unsupported_stage == "dynamic_bass":
+            result = build_grouped_profile(
+                topology, state_path=fc.FOLLOWER_STATE_PATH,
+                config_path=fc.FOLLOWER_CONFIG_PATH,
+                program_channel="right", trim_db=-4.0, validate=_valid_config,
+            )
+            assert result["status"] == "blocked"
+            assert not result["permissions"]["may_apply"]
+            assert [issue["code"] for issue in result["issues"]] == [
+                "grouping_dynamic_bass_volume_unsupported",
+            ]
+            assert not Path(fc.FOLLOWER_CONFIG_PATH).exists()
         return
     asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
     path = alc.CROSSOVER_CONFIG_PATH if role == "leader" else fc.FOLLOWER_CONFIG_PATH
@@ -437,16 +435,15 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
 
 
 def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
-    """The crossover re-proves, but camilla#1's program bake does NOT — refuse to
-    bond. Selective re-proof keyed on the config path."""
+    """A refused program bake prevents the leader from bonding."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
-    def _selective(*, config_path=None, **k):
-        ok = str(config_path) == alc.CROSSOVER_CONFIG_PATH
+    def _selective(_topology, *, graph_text, **_kwargs):
+        ok = yaml.safe_load(graph_text)["devices"]["playback"]["type"] != "File"
         return SimpleNamespace(
             allowed=ok,
             classification=(
@@ -457,7 +454,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
             issues=[] if ok else [{"code": "forced_bake"}],
         )
 
-    monkeypatch.setattr(runtime_contract_mod, "classify_camilla_graph", _selective)
+    monkeypatch.setattr(runtime_contract_mod, "classify_bass_extension_graph", _selective)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))

@@ -16,11 +16,12 @@ so a restart or ``kill -9`` restores the applied graph by doing nothing
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
 from jasper.log_event import log_event
 
@@ -78,6 +79,7 @@ class OpenMeasurementDoor:
     claim: Any
     plan: Any
     measurement_volume_db: float
+    measurement_loudness_volume_db: float
     graph_fingerprint: str
     #: The tuning-scope hash of the graph this door opened ON — the round's
     #: comparability anchor, banked at entry (#3489). Distinct from
@@ -165,7 +167,26 @@ async def measurement_door(
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         volume_open = False
+        camilla = camilla_factory()
+        loudness_entry: float | None = None
+        loudness_changed = False
+
+        async def set_loudness(db: float) -> float:
+            if not await camilla.set_loudness_volume_db(db, immediate=True):
+                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
+            actual = await camilla.get_loudness_volume_db()
+            if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
+                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
+            return actual
+
+        async def restore_loudness() -> None:
+            if loudness_changed and loudness_entry is not None:
+                await set_loudness(loudness_entry)
+
         try:
+            loudness_entry = await camilla.get_loudness_volume_db()
+            if loudness_entry is None or not math.isfinite(loudness_entry):
+                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference is unreadable")
             try:
                 opened = await plan.open(measurement_volume_db, volume_door)
             except SessionVolumePlanError as exc:
@@ -180,6 +201,8 @@ async def measurement_door(
                     "speaker was put back",
                 )
             volume_open = True
+            loudness_changed = True
+            held_loudness = await set_loudness(measurement_volume_db)
             fingerprint = await graph.install()
             log_event(
                 logger,
@@ -187,6 +210,7 @@ async def measurement_door(
                 action="open",
                 fingerprint=fingerprint,
                 measurement_volume_db=f"{measurement_volume_db:.2f}",
+                measurement_loudness_volume_db=f"{held_loudness:.2f}",
             )
             yield OpenMeasurementDoor(
                 graph=graph,
@@ -195,6 +219,7 @@ async def measurement_door(
                 measurement_volume_db=measurement_volume_db,
                 graph_fingerprint=fingerprint,
                 entry_scope_fingerprint=graph.entry_scope_fingerprint,
+                measurement_loudness_volume_db=held_loudness,
             )
         except BaseException as raised:  # noqa: BLE001 - CancelledError is the point
             # Held so the give-back can ATTACH its own failures to it rather
@@ -220,6 +245,7 @@ async def measurement_door(
                         else "measurement_door_open_failed"
                     ),
                     body_error=body_error,
+                    restore_loudness=restore_loudness,
                 )
             )
 
@@ -231,13 +257,13 @@ async def _give_back(
     volume_door: Any,
     *,
     reason: str,
+    restore_loudness: Callable[[], Awaitable[None]],
     body_error: BaseException | None = None,
 ) -> None:
-    """Graph, then claim, then the plan's snapshot — reverse order of taking.
+    """Restore the graph and loudness reference, then release the Main claim.
 
     Every step runs even when an earlier one raises: a graph that will not come
-    back must not strand the fader at measurement level. All three are
-    idempotent and safe against nothing-held.
+    back must not strand the fader at measurement level. Cleanup is idempotent.
 
     ``body_error`` is the exception already in flight, if any. A cleanup failure
     is ATTACHED to it rather than raised over it, because an ``__aexit__`` that
@@ -248,6 +274,7 @@ async def _give_back(
     first: BaseException | None = None
     for step in (
         graph.restore,
+        restore_loudness,
         claim.release,
         lambda: plan.close(volume_door, reason=reason),
     ):

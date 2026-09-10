@@ -375,39 +375,10 @@ def _source_payload(
     measured_candidate_fingerprint: str | None = None,
     driver_protection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
+    """Fingerprint source inputs, not emitted bytes.
 
-    ``build_baseline_profile_candidate`` names every solo candidate
-    ``<stem>_candidate_<fingerprint12><suffix>`` from the ``fingerprint`` below,
-    so this payload decides that filename (it also gates the ``write=False``
-    cache hit there, which separately compares ``candidate_graph_context``).
-    What it covers is exactly what it is handed: the topology's config
-    fingerprint, the design draft's and crossover preview's identities, the
-    measurement summary's identity, and — when the caller has one — the measured
-    candidate's own fingerprint.
-
-    **It is a source fingerprint, not a content hash of the emitted graph.**
-    ``bass_extension_profile`` goes straight into
-    ``emit_active_speaker_baseline_config`` and never reaches here, and neither
-    do ``candidate_graph_context``'s graph fields — resolved playback device,
-    capture device and format, domain, program channel, pair trim — since that
-    dict is assembled after this call returns (only its
-    ``measured_candidate_fingerprint`` is also a keyword argument here). Two
-    candidates differing only in one of those land on the SAME filename
-    carrying DIFFERENT bytes.
-
-    **So a candidate's path must never be read as its graph identity.** PR
-    #2311's adversarial gate refuted a double-load guard that made exactly that
-    inference — same filename as the live config, therefore skip the CamillaDSP
-    load. It reproduced the unsafe direction (household disables bass boost, the
-    UI reports the apply applied, the speaker keeps running the boosted graph)
-    and the guard was dropped. If a "skip the redundant load" optimization is
-    ever wanted again, its oracle has to be the LIVE graph —
-    :meth:`jasper.camilla.CamillaController.get_active_config_raw` normalized —
-    never the path. That method's own docstring says the same thing for a second
-    reason: ``set_active_config_raw`` deliberately leaves the persisted
-    ``config_file_path`` unchanged, so after any audition the path reports the
-    durable anchor rather than what is running.
+    Graph context can change while this fingerprint and path remain fixed.
+    Confirm the live normalized graph; a matching path is not proof of content.
     """
     measurement_summary = (
         measurements.get("summary")

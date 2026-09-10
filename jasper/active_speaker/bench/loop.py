@@ -9,7 +9,7 @@ pieces meet. It owns the stimulus, the work-directory layout, the order of
 operations, and the typed report; it owns no config semantics (that is
 :mod:`~jasper.active_speaker.bench.derivation`), no signal math (that is
 :mod:`~jasper.active_speaker.bench.compare`), no binary identity or subprocess
-shape (that is :mod:`jasper.bass_extension.bench.render`), and no verdict
+shape (that is :mod:`jasper.active_speaker.bench.render`), and no verdict
 vocabulary (that is :mod:`jasper.active_speaker.delta_probe`).
 
 **Units.** Frequencies in hertz; levels in decibels (peaks in dBFS relative to
@@ -82,16 +82,6 @@ from jasper.audio_measurement.sweep import (
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
-from jasper.bass_extension.bench.derivation import ArtifactHeader
-from jasper.bass_extension.bench.render import (
-    DEPLOYED_PROCESSING_PRECISION,
-    BinaryIdentity,
-    RenderBounds,
-    RenderError,
-    check_free_space,
-    estimate_render_bytes,
-    render_with_determinism_receipt,
-)
 from jasper.log_event import log_event
 
 from .compare import (
@@ -108,11 +98,21 @@ from .compare import (
     windowed_magnitude_db,
 )
 from .derivation import (
+    ArtifactHeader,
     DerivedRenderConfig,
     DeviceGeometry,
     EmitDerivationError,
     derive_offline_render_config,
     device_geometry,
+)
+from .render import (
+    DEPLOYED_PROCESSING_PRECISION,
+    BinaryIdentity,
+    RenderBounds,
+    RenderError,
+    check_free_space,
+    estimate_render_bytes,
+    render_with_determinism_receipt,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,13 +164,7 @@ STIMULUS_SWEEP_SECONDS: float = 10.0
 #: 11.3 s, a third of the way to the bound.
 MAX_STIMULUS_SECONDS: float = DEFAULT_MAX_CAPTURE_SECONDS
 
-#: The ``--gain`` every render carries, dB.
-#:
-#: A candidate config is not a running graph, so unlike the sibling bench there
-#: is no recorded fader reading to reproduce — 0 dB is the neutral value. What
-#: makes the choice safe rather than merely conventional is that it is
-#: IDENTICAL across the A/B: whatever the fader does, it does to both arms and
-#: cancels out of their difference.
+#: Equal fader gain, dB, in both arms cancels from their measured difference.
 RENDER_FADER_DB: float = 0.0
 
 #: Process-local bounds for each render.
@@ -191,7 +185,7 @@ DEFAULT_RENDER_BOUNDS = RenderBounds(
 #: Determinism PAIRS a run performs — two arms, each rendered twice.
 #:
 #: The free-space guard is sized in pairs, not renders, because
-#: :func:`~jasper.bass_extension.bench.render.estimate_render_bytes` already
+#: :func:`~jasper.active_speaker.bench.render.estimate_render_bytes` already
 #: carries a x2 for exactly one such pair being on disk at once. 2 pairs x 2 =
 #: the four ``.raw`` files a completed run retains (both arms' first render AND
 #: both repeats, all four kept as evidence — the repeats' SHA-256 is what the
@@ -342,7 +336,7 @@ def _write_stimulus_wav(
     signal into every branch.
 
     16-bit, matching the artifact geometry
-    :class:`~jasper.bass_extension.bench.derivation.ArtifactHeader` admits.
+    :class:`~jasper.active_speaker.bench.derivation.ArtifactHeader` admits.
     """
 
     from scipy.io import wavfile
@@ -544,48 +538,10 @@ def _render_arm(
     binary: BinaryIdentity,
     bounds: RenderBounds,
 ) -> RenderArm:
-    """Render one arm twice, proving the render repeats byte-for-byte.
+    """Render the same config twice and retain both files for comparison.
 
-    ONE derivation — ``derived``, built by :func:`plan_emit_loop` and written to
-    ``<name>.yml`` — rendered twice by
-    :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`,
-    the same helper the sibling bass-extension campaign renders through, so the
-    determinism proof has one implementation rather than two that can drift.
-
-    **Why ONE config and not two.** R8 defines a *shape* as the exact byte
-    content of a derived config, keyed by its SHA-256, and asks that each shape
-    be rendered twice. An earlier version of this function derived the emitted
-    text a second time so the repeat could write somewhere else — a CamillaDSP
-    render's destination is not an argument, it is
-    ``devices.playback.filename`` INSIDE the config, so a second destination
-    meant a second config. Those two configs differed by that one line, which
-    made them two distinct shapes with two distinct SHA-256s: the receipt
-    recorded the first shape's hash and the first config's argv while the second
-    render consumed the OTHER shape, so it asserted that shape X repeats on
-    evidence that included a render of shape Y. Rendering one config twice is
-    what actually satisfies R8 — and it, not the move-aside below, is the whole
-    of the improvement.
-
-    Both renders therefore write to the single ``<name>.raw`` that one config
-    declares, and the helper moves each output aside — to ``<name>.first.raw``,
-    then ``<name>.repeat.raw``. That move PRESERVES render 1's bytes so the two
-    can be compared at all; it proves nothing on its own, because
-    :func:`~jasper.bass_extension.bench.render.render_config` already unlinks
-    its destination before every render, so the destination is absent when
-    either render starts and was equally absent under the two-config design.
-    Same binary, same stimulus, same graph, same config bytes: byte-identical
-    output, or the instrument does not repeat and nothing measured with it is a
-    measurement.
-
-    :attr:`RenderArm.output_path` is therefore the preserved FIRST render,
-    ``<name>.first.raw``; the declared ``<name>.raw`` has been moved away by the
-    time this returns and does not exist on a completed run.
-
-    The helper raises :class:`~jasper.bass_extension.bench.render.RenderError`
-    for a guard failure, a failed render, AND a non-deterministic one, so all
-    three refuse here as a single ``stage="render"`` refusal carrying the
-    helper's own message — which names non-determinism explicitly when that is
-    what happened.
+    The output destination is part of the config text, so both runs must write
+    the same path. The renderer moves each result aside before the next run.
     """
 
     work_dir = plan.work_dir
@@ -593,17 +549,8 @@ def _render_arm(
     first_output_path = work_dir / f"{name}.first.raw"
     repeat_output_path = work_dir / f"{name}.repeat.raw"
 
-    # Clear OUR two preserved slots so a second run into the same work directory
-    # is not refused by its own leftovers. This does not defeat the helper's
-    # slot guard, it scopes it: that guard knows only that a bundle path was
-    # used before, and it defends the bass-extension campaign, where MANY
-    # shapes share one bundle under caller-chosen names — so there the caller
-    # is the only one who can say whether a collision is reuse or two shapes
-    # fighting over a name. This loop renders exactly two shapes and derives
-    # both names from the arm, so here the answer is always reuse.
-    # `render_config` already unlinks its own declared destination for the same
-    # reason; this restores that parity for the two paths the determinism
-    # helper adds on top of it.
+    # These arm-derived names belong to this loop, so an existing slot is a
+    # prior run's output, not another caller's artifact.
     for slot in (first_output_path, repeat_output_path):
         try:
             slot.unlink(missing_ok=True)

@@ -45,18 +45,25 @@ def build_grouped_profile(
             validate=validate or validate_camilla_config,
         )
 
-    bass = baseline_profile.applied_bass_extension(applied)
     text, issues = baseline_profile.recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension=bass,
+        topology, applied_profile=applied,
         playback_device=resolve_active_playback_device(topology)[0],
     )
     result: dict[str, Any] = {
         "status": "blocked",
         "permissions": {"may_apply": False},
         "issues": issues,
-        "bass_extension": bass,
+        "recomposition_snapshot": applied.get("recomposition_snapshot"),
     }
     if text is None:
+        return result
+    # Remove when the bond delivers canonical volume to each output endpoint.
+    if baseline_profile.applied_bass_extension(applied):
+        issues.append({
+            "severity": "blocker",
+            "code": "grouping_dynamic_bass_volume_unsupported",
+            "message": "Pairing does not yet share the volume setting needed for dynamic bass extension.",
+        })
         return result
 
     graph = yaml.safe_load(text)

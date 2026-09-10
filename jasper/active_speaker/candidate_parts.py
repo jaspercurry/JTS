@@ -7,17 +7,29 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
+
+import yaml
+
+from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.output_topology import OutputTopology
 
 from .branch_chain import branch_headroom_db, sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal
+from .baseline_profile import applied_baseline_hardware_match, recompose_applied_baseline_yaml
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
+    MeasuredCrossoverCandidateError,
     candidate_room_peqs,
     compile_candidate_config,
+    driver_corrections,
     prove_candidate_config,
 )
+
+from .profile import ActiveSpeakerPreset
 
 COMPOSITION_KIND = "jts_candidate_composition"
 _INHERIT = object()
@@ -25,6 +37,70 @@ _INHERIT = object()
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
     return {"fingerprint": parent.fingerprint, "artifact_path": str(parent.path)}
+
+
+def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any], trim_db: float) -> dict[str, Any]:
+    if (
+        not isinstance(filters, Sequence) or isinstance(filters, (str, bytes))
+        or any(not isinstance(item, Mapping) for item in filters)
+    ):
+        raise CandidateBankRefusal("composition_filters_invalid", f"invalid filters for {role}")
+    return {
+        "filters": [dict(item) for item in filters],
+        "headroom_cost_db": branch_headroom_db(filters, sections=sections.get(role, ()), trim_db=trim_db),
+    }
+
+
+def candidate_from_applied_profile(
+    topology: OutputTopology, applied_profile: Mapping[str, Any],
+) -> MeasuredCrossoverCandidate:
+    """Recover an authored candidate only when it reproduces the saved tune."""
+    snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
+    if snapshot is None:
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
+    preset = ActiveSpeakerPreset.from_mapping(dict(snapshot["preset"]))
+    corrections = snapshot["corrections"]
+    sections = sections_by_role(preset.crossover_regions)
+    candidate = MeasuredCrossoverCandidate(
+        program_id="jts_saved_tune",
+        analysis={"measurement_status": "unmeasured", "saved_snapshot_sha256": json_fingerprint(snapshot)},
+        source_preset=preset,
+        role_attenuations_db={role: values["gain_db"] for role, values in corrections.items()},
+        linearization={
+            role: _linearization_entry(filters, role=role, sections=sections, trim_db=corrections[role]["gain_db"])
+            for role, filters in snapshot.get("linearization", {}).items()
+        },
+        blend_correction=snapshot.get("blend_correction", ()),
+        room_correction=snapshot.get("room_correction", applied_profile.get("room_correction", {})),
+        bass_extension=snapshot.get("bass_extension", {}),
+    )
+    if driver_corrections(candidate) != corrections:
+        # The current candidate model can refine one region; verify its inverse
+        # through the same correction reducer instead of inventing another one.
+        for role, values in corrections.items():
+            for polarity in ("keep", "invert"):
+                try:
+                    aligned = replace(candidate, alignment=MeasuredCrossoverAlignment(
+                        values["delay_ms"] * 1000, role, polarity,
+                    ))
+                except MeasuredCrossoverCandidateError:
+                    continue
+                if driver_corrections(aligned) == corrections:
+                    candidate = aligned
+                    break
+            if driver_corrections(candidate) == corrections:
+                break
+        else:
+            raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "saved driver corrections cannot be represented")
+    emitted = compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
+    saved, issues = recompose_applied_baseline_yaml(topology, applied_profile=applied_profile, playback_device="null")
+    if saved is None:
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
+    desired, actual = yaml.safe_load(saved), yaml.safe_load(emitted)
+    if any(desired.get(key) != actual.get(key) for key in ("filters", "mixers", "processors", "pipeline")):
+        raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "candidate would change saved processing or protection")
+    prove_candidate_config(candidate, emitted)
+    return candidate
 
 
 def compose_candidate(
@@ -41,17 +117,15 @@ def compose_candidate(
     room_measured_basis: Mapping[str, Any] | None = None,
     bass_extension: Mapping[str, Any] | object = _INHERIT,
 ) -> MeasuredCrossoverCandidate:
-    """Replace each selected role's filters and trim; retain other base settings.
+    """Replace selected parts and preserve downstream layers when the tune stays.
 
-    ``room_correction`` is a room prescription door's own output, carried onto
-    the child whole: the door is the only writer, and the candidate re-derives
-    the room layer's limits from it at construction. It cannot travel with a
-    tune change -- a room set is fitted to the tune it was measured through, so
-    ``roles``, ``alignment`` or ``blend`` beside it is refused; and a base's own
-    room set is dropped rather than inherited, disclosed as
-    ``analysis["room_source"]["dropped_from_base"]`` (ADR-0256: a room session
-    under a moved tune is disclosed-stale).
+    A speaker-layer change drops inherited Room and bass settings. An explicit
+    room prescription beside a speaker change is refused because its measured
+    basis no longer matches.
     """
+    tune_changed = bool(roles or alignment is not None or blend is not None)
+    if bass_extension is not _INHERIT and not isinstance(bass_extension, Mapping):
+        raise CandidateBankRefusal("composition_bass_invalid", "bass extension must be an object")
     if room_correction and (roles or alignment is not None or blend is not None):
         raise CandidateBankRefusal(
             "composition_room_with_tune_change",
@@ -73,20 +147,13 @@ def compose_candidate(
     linearization: dict[str, Any] = {}
     for role, source in sources.items():
         trims[role] = source.candidate.role_attenuations_db[role]
-        entry = source.candidate.linearization.get(role, {})
+        if role not in source.candidate.linearization:
+            continue
+        entry = source.candidate.linearization[role]
         filters = entry.get("filters", []) if isinstance(entry, Mapping) else None
-        if (
-            not isinstance(filters, Sequence) or isinstance(filters, (str, bytes))
-            or any(not isinstance(item, Mapping) for item in filters)
-        ):
-            raise CandidateBankRefusal("composition_filters_invalid", f"invalid filters for {role}")
-        linearization[role] = {
-            "filters": [dict(item) for item in filters],
-            "headroom_cost_db": branch_headroom_db(
-                filters, sections=sections.get(role, ()), trim_db=trims[role],
-            ),
-        }
-    tune_changed = bool(roles or alignment is not None or blend is not None)
+        linearization[role] = _linearization_entry(
+            filters, role=role, sections=sections, trim_db=trims[role],
+        )
     room = dict(
         room_correction
         if room_correction is not None
@@ -94,7 +161,7 @@ def compose_candidate(
     )
     bass = dict(
         base.candidate.bass_extension
-        if bass_extension is _INHERIT and not tune_changed
+        if bass_extension is _INHERIT and not tune_changed and room_correction is None
         else ({} if bass_extension is _INHERIT else bass_extension)
     )
     analysis: dict[str, Any] = {

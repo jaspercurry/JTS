@@ -61,12 +61,12 @@ from jasper.audio_measurement.deconv import (
 )
 from jasper.audio_measurement.frame_fit import FrameComparison, fit_frame
 from jasper.audio_measurement.sweep import SweepMeta
-from jasper.bass_extension.bench.render import RenderError, extract_channel
+from .render import RenderError, extract_channel
 
 #: The only render output precision this bench decodes: the deployed
 #: ``linux_aarch64`` CamillaDSP v4.1.3 (built without the ``32bit`` Cargo
 #: feature) writes 8-byte little-endian floats
-#: (:data:`jasper.bass_extension.bench.render.DEPLOYED_PROCESSING_PRECISION`).
+#: (:data:`jasper.active_speaker.bench.render.DEPLOYED_PROCESSING_PRECISION`).
 #: Anything else refuses rather than decoding at a guessed width.
 DECODABLE_PRECISION = "F64_LE"
 _PRECISION_BYTES = 8
@@ -124,7 +124,7 @@ def decode_render_channel(
     raw_path: Path, *, channel_index: int, channel_count: int, precision: str
 ) -> np.ndarray:
     """One branch's samples, float64, out of an interleaved raw render output. Thin adapter
-    over :func:`jasper.bass_extension.bench.render.extract_channel` (which owns the
+    over :func:`jasper.active_speaker.bench.render.extract_channel` (which owns the
     de-interleave); this owns only the byte width and dtype, refusing any precision it
     cannot decode exactly.
     """
@@ -208,7 +208,7 @@ def soft_clip_error_bound_db(
     1.53% low (0.000765 dB on a 0.05 dB budget; 0.148% at the bench's
     default stimulus level) -- pinned in
     ``tests/test_active_speaker_emit_bench_compare.py`` against
-    :func:`jasper.bass_extension.bench.render.reference_soft_clip`.
+    :func:`jasper.active_speaker.bench.render.reference_soft_clip`.
     Disclosed rather than corrected: recovering the pre-clip peak would buy
     back eight ten-thousandths of a dB on a bound separating 0.05 dB from
     1.7 dB -- false precision, and the per-frequency-vs-peak conservatism

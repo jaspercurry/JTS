@@ -124,10 +124,10 @@ def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescrip
     return descriptor.low_boost_db * fraction
 
 
-def maximum_output_gain_db(
-    main_volume_db: float, descriptor: DynamicBassDescriptor
-) -> float:
-    """Bound output when Main and the canonical Aux loudness level are equal."""
-
-    level = _finite(main_volume_db, "main_volume_db")
-    return level + loudness_boost_db(level, descriptor)
+def dynamic_bass_gain_reserve_db(descriptor: DynamicBassDescriptor) -> float:
+    """Bound the static filter/delta gain; the final limiter owns sample peaks."""
+    # Native slope-12 shelf: |H-1| <= sqrt((2+sqrt(5))/4) * (10**(B/20)-1).
+    # A Butterworth delta high-pass and gain-only compression cannot enlarge its L2 norm.
+    delta_ratio = math.sqrt((2.0 + math.sqrt(5.0)) / 4.0)
+    delta_gain = 10.0 ** (descriptor.low_boost_db / 20.0) - 1.0
+    return 20.0 * math.log10(1.0 + delta_ratio * delta_gain)

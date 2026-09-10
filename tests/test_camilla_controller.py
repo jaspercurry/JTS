@@ -31,17 +31,16 @@ from jasper.dsp_apply import (
     DspApplyError,
     ValidationStatus,
     apply_dsp_config,
-    dsp_writer_lock,
 )
 
-from ._async_wait import wait_signalled, wait_writer_lock_waiting
+from ._async_wait import wait_signalled
 from ._log_events import event_fields, event_records
 
 
 class _FakeVolume:
     def __init__(self, ops: list[str]) -> None:
         self.values: list[float] = []
-        self.external_values: list[tuple[int, float]] = []
+        self.fader_values: list[tuple[int, float]] = []
         self.mutes: list[bool] = []
         self.muted = False
         self._ops = ops
@@ -56,10 +55,16 @@ class _FakeVolume:
         self.values.append(float(value))
         self._ops.append(f"vol={value:g}")
 
+    def volume(self, fader: int) -> float:
+        return next((value for index, value in reversed(self.fader_values) if index == fader), 0.0)
+
+    def set_volume(self, fader: int, value: float) -> None:
+        self.fader_values.append((fader, float(value)))
+        self._ops.append(f"fader{fader}={value:g}")
+
     def set_volume_external(self, fader: int, value: float) -> None:
-        self.external_values.append((fader, float(value)))
-        self._ops.append(f"external{fader}={value:g}")
-        self._ops.append(f"external{fader}={value:g}")
+        self.fader_values.append((fader, float(value)))
+        self._ops.append(f"immediate{fader}={value:g}")
 
     def set_main_mute(self, value: bool) -> None:
         self.muted = bool(value)
@@ -199,14 +204,15 @@ async def test_set_volume_db_rejects_non_finite_strict():
         await cam.set_volume_db(float("inf"))
 
 
-@pytest.mark.asyncio
-async def test_set_loudness_volume_uses_aux1_external_reference():
+@pytest.mark.parametrize("immediate", [False, True])
+async def test_loudness_volume_uses_aux1_target_without_changing_main(immediate):
     fake = _FakeClient()
     cam = _controller(fake)
 
-    assert await cam.set_loudness_volume_db(-18.0)
-    assert "external1=-18" in fake.ops
-    assert fake.volume.external_values == [(1, -18.0)]
+    assert await cam.set_loudness_volume_db(-18.0, immediate=immediate)
+    assert await cam.get_loudness_volume_db() == -18.0
+    assert ("immediate1=-18" if immediate else "fader1=-18") in fake.ops
+    assert fake.volume.fader_values == [(1, -18.0)]
     assert fake.volume.values == []
 
 
@@ -402,21 +408,7 @@ async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
 
 
 async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> None:
-    """A filter-parameter patch touches the fader zero times.
-
-    Two shipped callers, both bounded. ``multiroom.runtime_balance.apply_local_trim``
-    is the per-speaker balance trim, where a ``GRAPH_SWAP_DUCK_DB`` fade plus
-    ``MAIN_VOLUME_RAMP_SETTLE_S`` muted the speaker for half a second on every
-    slider nudge. ``bass_extension.bench.activation.temporary_bass_activation``
-    — reached from the shipped ``jasper-bass-extension-bench`` console script —
-    patches one limiter ``clip_limit`` and has already faded to floor and
-    proved it first, so the duck was redundant there rather than protective.
-
-    The writer lock is NOT dropped with it —
-    ``test_all_graph_mutations_enter_the_lowest_admission_context`` still
-    requires this method to enter the admission context, because a patch does
-    mutate the running graph and must serialize against every other DSP writer.
-    """
+    """Parameter patches keep the fader steady and retain the DSP writer lock."""
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
 
@@ -574,119 +566,10 @@ async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     assert fake.ops == ["reload"]
 
 
-async def _retired_test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    intent = tmp_path / "bass-intent.json"
-    intent.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
-        intent,
-    )
-    fake = _FakeClient()
-    cam = _controller(fake, tmp_path)
-
-    with pytest.raises(BassExtensionApplyPending):
-        await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
-    with pytest.raises(BassExtensionApplyPending):
-        await cam.set_active_config_raw("---\nfilters: {}\n")
-    with pytest.raises(BassExtensionApplyPending):
-        await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
-    with pytest.raises(BassExtensionApplyPending):
-        await cam.reload()
-
-    assert fake.file_paths == []
-    assert fake.active_raw_values == []
-    assert fake.queries == []
-    assert fake.reload_count == 0
 
 
-async def _retired_test_direct_graph_mutation_wins_race_before_intent_publication(
-    tmp_path: Path,
-    monkeypatch,
-    caplog,
-) -> None:
-    caplog.set_level("INFO")
-    intent = tmp_path / "bass-intent.json"
-    monkeypatch.setattr(
-        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
-        intent,
-    )
-    fake = _FakeClient()
-    cam = _controller(fake, tmp_path)
-    mutation_entered = asyncio.Event()
-    release_mutation = asyncio.Event()
-
-    async def blocked_call(fn):
-        mutation_entered.set()
-        await release_mutation.wait()
-        return fn(fake)
-
-    cam._call = blocked_call  # type: ignore[method-assign]
-
-    async def publish_intent() -> None:
-        async with dsp_writer_lock(
-            tmp_path,
-            source="bass_extension.apply",
-        ):
-            intent.write_text("{}\n", encoding="utf-8")
-
-    mutation = asyncio.create_task(cam.reload())
-    await wait_signalled(mutation_entered, "direct graph mutation entered", producer=mutation)
-    publisher = asyncio.create_task(publish_intent())
-    await wait_writer_lock_waiting(caplog, "bass_extension.apply")
-    assert not intent.exists()
-
-    release_mutation.set()
-    assert await mutation is True
-    await publisher
-
-    assert fake.reload_count == 1
-    assert intent.exists()
 
 
-async def _retired_test_intent_publication_wins_race_before_direct_graph_mutation(
-    tmp_path: Path,
-    monkeypatch,
-    caplog,
-) -> None:
-    caplog.set_level("INFO")
-    intent = tmp_path / "bass-intent.json"
-    monkeypatch.setattr(
-        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
-        intent,
-    )
-    fake = _FakeClient()
-    cam = _controller(fake, tmp_path)
-    publication_entered = asyncio.Event()
-    release_publication = asyncio.Event()
-
-    async def publish_intent() -> None:
-        async with dsp_writer_lock(
-            tmp_path,
-            source="bass_extension.apply",
-        ):
-            intent.write_text("{}\n", encoding="utf-8")
-            publication_entered.set()
-            await release_publication.wait()
-
-    publisher = asyncio.create_task(publish_intent())
-    await wait_signalled(
-        publication_entered,
-        "intent publication took the writer lock",
-        producer=publisher,
-    )
-    mutation = asyncio.create_task(cam.reload())
-    await wait_writer_lock_waiting(caplog, "camilla.reload")
-    assert not mutation.done()
-
-    release_publication.set()
-    await publisher
-    with pytest.raises(BassExtensionApplyPending):
-        await mutation
-
-    assert fake.reload_count == 0
 
 
 class _FakeWebSocket:

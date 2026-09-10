@@ -517,10 +517,12 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
 
 def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
-    config_dir: str, graph: Any,
+    config_dir: str, graph: Any, measurement_profile: Any = None,
 ) -> Any:
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
-    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+    from jasper.active_speaker.measurement_emit import measurement_bass_extension
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
@@ -549,6 +551,17 @@ def _bind_compose(
         except MeasurementFaderDrift as exc:
             raise ProgramPlaybackError(str(exc)) from exc
 
+    def bass_for_spec(spec: Any) -> Mapping[str, Any]:
+        if measurement_profile is None:
+            return {}
+        candidate = (
+            find_banked_candidate(spec.candidate_id).candidate
+            if spec.graph_scope in CANDIDATE_SCOPES else None
+        )
+        return measurement_bass_extension(
+            measurement_profile, scope=spec.graph_scope, candidate=candidate,
+        )
+
     return bind_program_composer(
         program_for_spec=program_for_spec, store=store,
         capture_session_id=session_id, cam_factory=cam_factory,
@@ -557,6 +570,7 @@ def _bind_compose(
         session_volume_db=box.session_volume_db,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
+        bass_extension_for_spec=bass_for_spec,
     )
 
 
@@ -659,15 +673,16 @@ async def _measure(
     store: Any = None
     bundle_dir: Path | None = None
     try:
+        measurement_profile = MeasurementGraphProfile(
+            preset=box.preset,
+            topology=box.topology,
+            role_channels={"woofer": 0, "tweeter": 1},
+            playback_device=box.playback_device,
+            protection_sections_by_role=box.protection_sections_by_role,
+            applied_profile=load_applied_baseline_profile_state(),
+        )
         async with measurement_door(
-            profile=MeasurementGraphProfile(
-                preset=box.preset,
-                topology=box.topology,
-                role_channels={"woofer": 0, "tweeter": 1},
-                playback_device=box.playback_device,
-                protection_sections_by_role=box.protection_sections_by_role,
-                applied_profile=load_applied_baseline_profile_state(),
-            ),
+            profile=measurement_profile,
             measurement_volume_db=box.session_volume_db,
             camilla_factory=cam_factory,
             action="measuring",
@@ -709,6 +724,7 @@ async def _measure(
                     cam_factory=cam_factory,
                     config_dir=config_dir,
                     graph=door.graph,
+                    measurement_profile=measurement_profile,
                 ),
                 capture_stimulus=capture,
             )
@@ -733,6 +749,8 @@ async def _measure(
     finally:
         bundle_closed = bundle_dir is None or mark_state(bundle_dir, "closed") is not None
     report = _report(outcomes, store=store, session_id=session_id)
+    report["measurement_volume_db"] = box.session_volume_db
+    report["measurement_loudness_volume_db"] = door.measurement_loudness_volume_db
     if not bundle_closed:
         report["status"] = "incomplete"
         report["bundle_failure"] = REFUSE_STORE_LOST
@@ -920,9 +938,12 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except MeasureFlagError as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_UNREADABLE)
     try:
-        payload = asyncio.run(_measure(
-            specs, read_box_declaration(), mic_serial=args.mic_serial,
-        ))
+        box = read_box_declaration()
+        if args.volume_db is not None:
+            if not math.isfinite(args.volume_db) or not -100 <= args.volume_db <= 0:
+                raise BoxNotMeasurable("measurement_volume_invalid", "volume must be within -100..0 dB")
+            box = replace(box, session_volume_db=args.volume_db)
+        payload = asyncio.run(_measure(specs, box, mic_serial=args.mic_serial))
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:
@@ -983,6 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
+    parser.add_argument("--volume-db", type=float, help="temporary Main and bass reference level; defaults to the saved measurement level")
     parser.add_argument("--graph-scope", choices=[scope for scope in GRAPH_SCOPES if scope != "candidate_branches"], default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here

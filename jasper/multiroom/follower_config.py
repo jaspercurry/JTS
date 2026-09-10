@@ -149,7 +149,7 @@ async def precheck_active_follower(
     from .active_profile import build_grouped_profile  # lazy: optional tuning dependencies
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_camilla_graph,
+        classify_bass_extension_graph,
     )
     from jasper.output_topology import (
         OutputTopologyError,
@@ -200,14 +200,11 @@ async def precheck_active_follower(
             "this speaker as an active speaker before bonding it",
         )
 
-    # Re-prove the complete emitted Layer-A graph independently. The emit gates
-    # cover tweeter HP and the bass-owner pair; this verifier also proves every
-    # driver crossover/gain/limiter chain before the candidate can be loaded.
-    graph = classify_camilla_graph(
-        topology=topology,
-        text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
-        config_path=FOLLOWER_CONFIG_PATH,
-        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
+        applied_baseline_state=candidate,
     )
     if (
         not graph.allowed

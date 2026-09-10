@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from dataclasses import replace
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +22,6 @@ import yaml
 from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
-import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -60,7 +58,6 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_PERIOD_FRAMES,
 )
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_bass_extension_profile import _profile
 
 _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH = fc._prove_live_bass_extension_graph
 
@@ -159,15 +156,6 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    sealed = replace(
-        _profile(topology=topology),
-        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
-    )
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "evaluate_bass_extension_profile",
-        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
-    )
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     real_write_stash = fc._write_stash
 
@@ -196,15 +184,6 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     assert capture["device"] == GROUPING_RING_PCM
     assert capture["format"] == GROUPING_RING_FORMAT
     assert "active_baseline_headroom" not in yaml_text  # no leader-baked program domain
-    document = yaml.safe_load(yaml_text)
-    woofer_chain = next(
-        step["names"]
-        for step in document["pipeline"]
-        if step.get("type") == "Filter" and step.get("channels") == [0]
-    )
-    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
-        "bass_ext_subsonic"
-    ) < woofer_chain.index("as_woofer_delay")
     # The prior solo-active config was stashed for the unbond restore.
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"

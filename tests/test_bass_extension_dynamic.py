@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
+
+from jasper.camilla_config_contract import FilterSpec
+from jasper.sound.profile import _filter_response_complex
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,
     loudness_boost_db,
-    maximum_output_gain_db,
+    dynamic_bass_gain_reserve_db,
     validate_dynamic_bass_descriptor,
 )
 from jasper.bass_extension.dynamic_graph import (
@@ -35,11 +39,16 @@ def test_native_loudness_law_withdraws_over_twenty_db() -> None:
     assert loudness_boost_db(0.0, descriptor) == 0.0
 
 
-def test_main_plus_bounded_native_boost_never_exceeds_zero_db() -> None:
-    descriptor = _descriptor()
+@pytest.mark.parametrize("boost_db", [0.1, 1.0, 3.0, 6.0])
+def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
+    descriptor = _descriptor(low_boost_db=boost_db)
+    frequencies = np.geomspace(0.01, 23000.0, 4096)
+    shelf = np.asarray(_filter_response_complex(
+        FilterSpec("native_low", "Lowshelf", 70.0, boost_db), frequencies,
+    ))
+    gain_envelope = 1.0 + np.abs(shelf - 1.0)
 
-    levels = [value / 10.0 for value in range(-1500, 1)]
-    assert max(maximum_output_gain_db(level, descriptor) for level in levels) <= 0.0
+    assert np.max(gain_envelope) <= 10.0 ** (dynamic_bass_gain_reserve_db(descriptor) / 20.0)
 
 
 @pytest.mark.parametrize(
@@ -83,7 +92,7 @@ def test_graph_forms_delta_and_preserves_non_owner_channels() -> None:
     )
 
     assert [step["type"] for step in graph.pipeline] == [
-        "Mixer", "Filter", "Mixer", "Filter", "Processor", "Processor", "Mixer"
+        "Mixer", "Filter", "Mixer", "Filter", "Mixer", "Filter", "Processor", "Processor", "Mixer"
     ]
     assert graph.filters["bass_ext_dynamic_loudness"]["parameters"]["fader"] == "Aux1"
     form = graph.mixers["bass_ext_dynamic_form_delta"]

@@ -490,8 +490,8 @@ class VolumeCoordinator:
             # protocol surfaces. Push-mode 0% is the exception: still
             # assert Camilla main_mute as the content/music mute guarantee.
             if await self._camilla_carries_level(source):
-                await self._set_loudness_level(target_level)
                 await self._set_camilla(target_level)
+                await self._set_loudness_level(target_level)
             else:
                 pin_db = 0.0 if target_level > 0 else percent_to_db(0)
                 await self._set_camilla_db(
@@ -598,6 +598,7 @@ class VolumeCoordinator:
         async with self._mutation():
             self._refresh_from_disk()
             self._refuse_level_write_while_measuring()
+            previous_level = self._effective_level()
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
             self._mute_token = None
@@ -610,7 +611,9 @@ class VolumeCoordinator:
                 await self._set_camilla_main_mute(
                     True, context="set_listening_level_intent",
                 )
-            await self._dispatch(target, persist=True, source=source)
+            await self._dispatch(
+                target, persist=True, source=source, previous_level=previous_level,
+            )
         await self.publish_volume_context(phase="converged")
         return target
 
@@ -624,6 +627,7 @@ class VolumeCoordinator:
             self._refresh_from_disk()
             target = max(0, min(100, self._level + int(delta)))
             self._refuse_level_write_while_measuring()
+            previous_level = self._effective_level()
             self._level = target
             self._pre_mute_level = None
             self._mute_token = None
@@ -636,7 +640,9 @@ class VolumeCoordinator:
                 await self._set_camilla_main_mute(
                     True, context="adjust_listening_level_intent",
                 )
-            await self._dispatch(target, persist=True, source=source)
+            await self._dispatch(
+                target, persist=True, source=source, previous_level=previous_level,
+            )
         await self.publish_volume_context(phase="converged")
         return target
 
@@ -813,6 +819,7 @@ class VolumeCoordinator:
             )
             return False
         publish_needed = False
+        loudness_first = False
         async with self._mutation(refresh=False):
             # A cross-process operation may have held the lease after the
             # optimistic check above. Revalidate source ownership at the
@@ -828,6 +835,8 @@ class VolumeCoordinator:
                     level,
                     active.value,
                 )
+                return False
+            if level > 0 and self._measurement_holds_fader():
                 return False
             # Source observers live in jasper-voice while HTTP/accessory mute
             # may have landed through jasper-control. Inspect the persisted mute
@@ -933,6 +942,9 @@ class VolumeCoordinator:
                     )
                     return False
                 self._refresh_from_disk()
+                loudness_first = level >= self._effective_level()
+                if loudness_first:
+                    await self._set_loudness_level(level)
                 if level == self._level and self._pre_mute_level is None:
                     if await self._camilla_carries_level(source):
                         publish_needed = await self._sync_camilla_observed_level(
@@ -971,7 +983,8 @@ class VolumeCoordinator:
                             include_live_guard=True,
                         )
                     publish_needed = True
-        await self._set_loudness_level(level)
+            if not loudness_first:
+                await self._set_loudness_level(level)
         if publish_needed:
             # Camilla/socket reads and IPC happen after releasing the mutation
             # lock; volume commands must not queue behind observability work.
@@ -1082,6 +1095,7 @@ class VolumeCoordinator:
         persist: bool,
         user_change: bool = True,
         source: Source | None = None,
+        previous_level: int | None = None,
     ) -> None:
         """Push `level` to the active source (or camilla if idle)
         and (optionally) persist. Caller holds the mutation lock. Live user
@@ -1102,8 +1116,10 @@ class VolumeCoordinator:
         uses CamillaDSP as the AirPlay speaker-volume surface.
         """
         source = source if source is not None else await self._active_source()
+        loudness_first = previous_level is None or level >= previous_level
         try:
-            await self._set_loudness_level(level)
+            if loudness_first:
+                await self._set_loudness_level(level)
             if source == Source.AIRPLAY:
                 await self._set_airplay(level)
             elif source == Source.SPOTIFY:
@@ -1152,6 +1168,8 @@ class VolumeCoordinator:
                 # observed-only — see observe_source_volume above and
                 # ADR-0281).
                 await self._set_camilla(level)
+            if not loudness_first:
+                await self._set_loudness_level(level)
         finally:
             if persist:
                 self._persistence.save_listening_level(
@@ -1905,6 +1923,7 @@ class VolumeCoordinator:
         self._lapse_stranded_measurement_flag()
         if self._voice_session_active or self._measurement_active:
             return
+        await self._reconcile_loudness_level()
         try:
             source = source if source is not None else await self._active_source()
         except Exception:  # noqa: BLE001
@@ -2124,16 +2143,28 @@ class VolumeCoordinator:
         return volume_mode(source) == VolumeMode.CAMILLA_MASTER
 
     async def _set_loudness_level(self, level: int) -> bool:
-        """Mirror source-neutral listening intent to Camilla's Aux1 reference.
-
-        Aux1 is statefile-persisted and cheap to update even when the loaded
-        graph has no Loudness listener. Keeping it current lets a later graph
-        activation start from the canonical level instead of stale fader state.
-        """
+        if self._measurement_holds_fader():
+            return False
         return await self._camilla.set_loudness_volume_db(
             percent_to_db(max(0, min(100, int(level)))),
             best_effort=True,
         )
+
+    async def _reconcile_loudness_level(self) -> None:
+        self._refresh_from_disk()
+        target = percent_to_db(self._effective_level())
+        current = await self._camilla.get_loudness_volume_db(best_effort=True)
+        if current is None or abs(current - target) <= 0.01:
+            return
+        async with self._mutation():
+            async with self._reconcile_write_lock:
+                if (
+                    self._voice_session_active
+                    or self._measurement_active
+                    or self._graph_mutation_in_progress()
+                ):
+                    return
+                await self._set_loudness_level(self._effective_level())
 
     async def _camilla_locked(self) -> bool | None:
         if self._camilla_volume_locked:

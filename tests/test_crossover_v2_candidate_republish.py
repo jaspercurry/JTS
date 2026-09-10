@@ -24,10 +24,12 @@ import asyncio
 import json
 import os
 import shutil
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.candidate_bank import (
@@ -39,13 +41,13 @@ from jasper.active_speaker.candidate_bank import (
 from jasper.active_speaker.candidate_trials import require_candidate_trial
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.bundles import latest_bundle, open_bundle
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.session_graph import _fingerprint as graph_fingerprint
 from jasper.active_speaker.round_bank import bank_round
 from jasper.audio_measurement.bundles import record_artifact
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
 from jasper.cli import crossover_prescriber
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
@@ -301,9 +303,8 @@ def test_compose_requires_explicit_structural_sources_and_matching_roles(bank, c
 def test_a_room_set_never_travels_with_a_tune_change(bank, change):
     """A room set is fitted to the tune it was measured through (ADR-0256).
 
-    So a compose that moves the tune under a prescribed room set is refused,
-    and one that inherits nothing carries no room set forward -- it discloses
-    that the base's own was dropped rather than silently reusing it.
+    A new room prescription cannot accompany a speaker change. A composition
+    without a speaker change retains the saved room correction.
     """
 
     base = _candidate(room_correction=_room_correction())
@@ -997,3 +998,114 @@ def test_a_room_candidate_needs_a_trial_through_its_room_graph(bank, captured_sc
         with pytest.raises(CandidateBankRefusal) as refusal:
             require_candidate_trial(child)
         assert refusal.value.code == "candidate_trial_required"
+
+
+@pytest.fixture
+def saved_tune():
+    from tests.test_active_speaker_audition import _applied_profile
+
+    topology = mono_output_topology()
+    applied = deepcopy(_applied_profile(topology))
+    snapshot = applied["recomposition_snapshot"]
+    snapshot["corrections"] = {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.11, "inverted": False},
+        "tweeter": {"gain_db": -10.8, "delay_ms": 0.0, "inverted": True},
+    }
+    snapshot["room_correction"] = _room_correction()
+    snapshot["measured_candidate_fingerprint"] = None
+    return topology, applied
+
+
+@pytest.mark.parametrize("change, code", [
+    ("topology", "composition_saved_tune_unavailable"),
+    ("delay", "composition_saved_tune_unrepresentable"),
+    ("protection", "composition_saved_tune_unrepresentable"),
+])
+def test_saved_candidate_refuses_unrepresentable_upstream_tune(saved_tune, change, code):
+    topology, applied = saved_tune
+    snapshot = applied["recomposition_snapshot"]
+    if change == "topology":
+        snapshot["topology_fingerprint"] = "old-hardware"
+    elif change == "delay":
+        snapshot["corrections"]["tweeter"]["delay_ms"] = 0.22
+    else:
+        snapshot["driver_protection"] = {"targets": [
+            {"role": role, "target_fingerprint": role, "required_protection_filters": ([{
+                "kind": "highpass", "cutoff_hz": 40,
+                "minimum_slope_db_per_octave": 24,
+            }] if role == "woofer" else [])}
+            for role in ("woofer", "tweeter")
+        ]}
+    with pytest.raises(CandidateBankRefusal) as refused:
+        candidate_from_applied_profile(topology, applied)
+    assert refused.value.code == code
+
+
+@pytest.mark.parametrize("base_kind", ["saved", "banked"])
+def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, saved_tune, tmp_path, monkeypatch, capsys, base_kind):
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+    from jasper.bass_extension.dynamic_graph import validated_base_graph
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+
+    topology, applied = saved_tune
+    original = deepcopy(applied)
+    monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(crossover_prescriber, "load_applied_baseline_profile_state", lambda: applied)
+    bass = tmp_path / "bass.json"
+    bass.write_text(json.dumps(BASS_EXTENSION))
+    base = "saved" if base_kind == "saved" else publish_authored_candidate(
+        candidate_from_applied_profile(topology, applied), root=bank,
+    ).fingerprint
+    assert crossover_prescriber.main([
+        "compose", "--root", str(bank), "--base", base,
+        "--bass-extension-json", str(bass),
+    ]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
+    snapshot = applied["recomposition_snapshot"]
+    assert driver_corrections(child) == snapshot["corrections"]
+    assert child.alignment == MeasuredCrossoverAlignment(110, "woofer", "invert")
+    assert child.room_correction == snapshot["room_correction"]
+    assert child.analysis["measurement_status"] == "unmeasured"
+    assert child.bass_extension["low_boost_db"] == BASS_EXTENSION["low_boost_db"]
+    profile = MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
+        {"woofer": 0, "tweeter": 1}, "null", applied_profile=applied,
+    )
+    baseline = yaml.safe_load(compile_tuning_graph(profile, scope="room_tune"))
+    proposed = yaml.safe_load(compile_tuning_graph(profile, scope="bass_candidate", candidate=child))
+    assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
+    assert applied == original
+    assert v2host.load_v2_state() is None
+
+
+@pytest.mark.parametrize("change", [None, "bass_off", "speaker", "room"])
+def test_composition_keeps_only_still_applicable_downstream_layers(bank, change):
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+
+    base = replace(_candidate(room_correction=_room_correction()), bass_extension=BASS_EXTENSION)
+    row = publish_authored_candidate(replace(base, analysis={"measurement_status": "unmeasured"}), root=bank)
+    child = compose_candidate(
+        row, {"woofer": row} if change == "speaker" else {},
+        room_correction=base.room_correction if change == "room" else None,
+        **({"bass_extension": {}} if change == "bass_off" else {}),
+    )
+    assert bool(child.bass_extension) is (change is None)
+    assert bool(child.room_correction) is (change != "speaker")
+    assert child.linearization == base.linearization
+
+
+@pytest.mark.parametrize("document", [[], {"low_boost_db": 4}, {"low_boost_db": "bad"}])
+def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, document):
+    base = _candidate()
+    _publish(bank, base)
+    path = tmp_path / "bass.json"
+    path.write_text(json.dumps(document))
+    assert crossover_prescriber.main([
+        "compose", "--root", str(bank), "--base", base.fingerprint,
+        "--bass-extension-json", str(path),
+    ]) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason"] in {"composition_bass_invalid", "bass_extension_invalid"}
+    assert len(banked_candidates(root=bank)) == 1

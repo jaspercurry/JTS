@@ -50,10 +50,7 @@ _OVERLAP_SAMPLES = 8192
 # this many frames.
 MAX_STIMULUS_SAMPLES = 48_000 * 60
 
-# CamillaDSP filter types this module models EXACTLY; anything else refuses. DERIVED
-# from the offline-render allowlist. ``Conv`` is the one subtraction: the bench path can
-# convolve a shipped FIR; this module models from config text alone, with no
-# coefficients to read.
+# Types modelled from configuration alone; FIR convolution needs external data.
 _MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Delay", "Gain", "Limiter"})
 
 # Biquad shapes the shared RBJ evaluator implements; anything outside falls through to

@@ -2444,7 +2444,6 @@ def _derived_marker(graph_yaml, topology, *, cap=8):
         evidence_source="desired",
         graph_text=graph_yaml,
         applied_baseline_state={},
-        desired_profile=None,
     )
     _width, _problem, device = _outputd_endpoint_width(graph, cap)
     return device
@@ -3053,10 +3052,6 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.promote_applied_baseline_candidate",
         lambda *a, **k: None,
-    )
-    monkeypatch.setattr(
-        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
-        lambda **k: SimpleNamespace(status="rejected", profile=None),
     )
 
     def _recompose(topology, **kwargs):

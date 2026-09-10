@@ -700,10 +700,21 @@ class CamillaController:
                 return False
             raise
 
+    async def get_loudness_volume_db(
+        self, *, best_effort: bool = False,
+    ) -> float | None:
+        try:
+            return float(await self._call(lambda c: c.volume.volume(1)))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug("camilla unavailable; loudness reference unreadable: %s", e)
+                return None
+            raise
+
     async def set_loudness_volume_db(
-        self, db: float, *, best_effort: bool = False,
+        self, db: float, *, best_effort: bool = False, immediate: bool = False,
     ) -> bool:
-        """Set Aux1's external-volume reference without attenuating audio."""
+        """Set Aux1; a held measurement may establish its fixed reference immediately."""
         try:
             target = _coerce_main_volume_db(db)
         except ValueError as e:
@@ -713,7 +724,7 @@ class CamillaController:
             raise
         try:
             await self._call(
-                lambda c: c.volume.set_volume_external(1, target)
+                lambda c: (c.volume.set_volume_external if immediate else c.volume.set_volume)(1, target)
             )
             return True
         except CamillaUnavailable as e:

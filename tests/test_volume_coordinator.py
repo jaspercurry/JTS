@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -94,6 +95,7 @@ class _FakeCamilla:
         self.set_calls: list[float] = []
         self.mute_calls: list[bool] = []
         self.loudness_calls: list[float] = []
+        self.loudness_db = 0.0
         self.events: list[tuple[str, float | bool]] = []
         self.get_calls: int = 0
         # When True, every best_effort call is a no-op (writes return
@@ -131,6 +133,13 @@ class _FakeCamilla:
         self.events.append(("volume", db))
         return True
 
+    async def get_loudness_volume_db(self, *, best_effort: bool = False) -> float | None:
+        if self.unavailable:
+            if best_effort:
+                return None
+            raise CamillaUnavailable("test fake offline")
+        return self.loudness_db
+
     async def set_loudness_volume_db(
         self, db: float, *, best_effort: bool = False,
     ) -> bool:
@@ -139,6 +148,7 @@ class _FakeCamilla:
                 return False
             raise CamillaUnavailable("test fake offline")
         self.loudness_calls.append(db)
+        self.loudness_db = db
         return True
 
     async def set_main_mute(
@@ -408,6 +418,84 @@ async def test_push_volume_also_updates_source_neutral_loudness_reference(tmp_pa
     await coord.set_listening_level(50)
 
     assert cam.loudness_calls == [percent_to_db(50)]
+
+
+async def test_observed_loudness_write_cannot_outlive_its_volume_mutation(tmp_path):
+    coord, cam, persistence = _coord(tmp_path, selected=Source.SPOTIFY.value, level=60)
+    started, release = asyncio.Event(), asyncio.Event()
+    write = cam.set_loudness_volume_db
+
+    async def delayed_aux(db, *, best_effort=False):
+        if db == percent_to_db(30):
+            started.set()
+            await release.wait()
+        return await write(db, best_effort=best_effort)
+
+    cam.set_loudness_volume_db = delayed_aux
+    observed = asyncio.create_task(coord.observe_source_volume(Source.SPOTIFY, 30))
+    await wait_signalled(started, "observation reached Aux", producer=observed)
+    changed = asyncio.create_task(coord.set_listening_level(90))
+    await asyncio.sleep(0)
+    assert not changed.done()
+    release.set()
+    await asyncio.gather(observed, changed)
+
+    _assert_persisted(persistence, level=90)
+    assert cam.loudness_calls == [percent_to_db(30), percent_to_db(90)]
+
+
+@pytest.mark.parametrize("source", [Source.IDLE, Source.SPOTIFY])
+async def test_reconcile_recovers_aux_failure_from_another_coordinator(tmp_path, source):
+    control, cam, persistence = _coord(tmp_path, selected=source.value, level=60)
+    write = cam.set_loudness_volume_db
+    attempts = 0
+
+    async def fail_once(db, *, best_effort=False):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        return await write(db, best_effort=best_effort)
+
+    cam.set_loudness_volume_db = fail_once
+    await control.set_listening_level(85)
+    main_writes = list(cam.set_calls)
+    observer = VolumeCoordinator(
+        camilla=cam, persistence=persistence,
+        backend=_FakeBackend(selected=source.value),
+    )
+
+    await observer.maybe_reconcile_camilla()
+    await observer.maybe_reconcile_camilla()
+
+    assert cam.loudness_db == percent_to_db(85)
+    assert attempts == 2
+    assert cam.set_calls == main_writes
+
+
+@pytest.mark.parametrize("source", [Source.IDLE, Source.SPOTIFY])
+@pytest.mark.parametrize("target", [30, 90])
+async def test_bass_reference_follows_lowering_and_precedes_raising(tmp_path, source, target):
+    coord, cam, _ = _coord(tmp_path, selected=source.value, level=60)
+    events = []
+    aux = cam.set_loudness_volume_db
+    method = "_set_spotify" if source == Source.SPOTIFY else "_set_camilla"
+    carrier = getattr(coord, method)
+
+    async def write_aux(db, *, best_effort=False):
+        events.append("aux")
+        return await aux(db, best_effort=best_effort)
+
+    async def write_carrier(level):
+        events.append("carrier")
+        return await carrier(level)
+
+    cam.set_loudness_volume_db = write_aux
+    setattr(coord, method, write_carrier)
+
+    await coord.set_listening_level(target)
+
+    assert events == (["carrier", "aux"] if target < 60 else ["aux", "carrier"])
 
 
 async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
@@ -2209,6 +2297,27 @@ async def test_the_level_doors_refuse_every_write_while_measuring(tmp_path, door
     _assert_persisted(persistence, level=60)
 
 
+@pytest.mark.parametrize("source", [Source.USBSINK, Source.SPOTIFY])
+@pytest.mark.parametrize("observed", [0, 40])
+async def test_source_observation_preserves_measurement_reference_except_emergency_mute(
+    tmp_path, source, observed,
+):
+    coord, cam, _ = _coord(tmp_path, selected=source.value, level=60, db=-20.0)
+    cam.loudness_db = -20.0
+    await coord.note_measurement_active(True)
+
+    accepted = await coord.observe_source_volume(source, observed)
+
+    assert accepted is (observed == 0)
+    assert cam.loudness_calls == []
+    assert cam.loudness_db == -20.0
+    if observed == 0:
+        assert cam.muted is True
+    else:
+        assert cam.set_calls == []
+        assert coord.get_listening_level() == 60
+
+
 @pytest.mark.parametrize(
     "door",
     [
@@ -2810,10 +2919,15 @@ class _MinimalCamillaClient:
     """Just enough pycamilladsp surface to run a REAL `CamillaController`."""
 
     def __init__(self, db: float) -> None:
-        self.volume = self
+        self.volume = SimpleNamespace(
+            main_volume=self.main_volume, main_mute=self.main_mute,
+            set_main_volume=self.set_main_volume, set_main_mute=self.set_main_mute,
+            set_volume=self.set_volume, volume=self._fader_volume,
+        )
         self.config = self
         self.general = self
         self.db = float(db)
+        self.loudness_db = 0.0
         self.muted = False
         self.reload_count = 0
 
@@ -2826,8 +2940,11 @@ class _MinimalCamillaClient:
     def set_main_volume(self, value: float) -> None:
         self.db = float(value)
 
-    def set_volume_external(self, fader: int, value: float) -> None:
-        pass
+    def set_volume(self, fader: int, value: float) -> None:
+        self.loudness_db = value
+
+    def _fader_volume(self, fader: int) -> float:
+        return self.loudness_db
 
     def set_main_mute(self, value: bool) -> None:
         self.muted = bool(value)

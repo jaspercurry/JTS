@@ -37,12 +37,14 @@ import yaml
 
 from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.log_event import log_event
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.output_topology import OutputTopology
 
 from .driver_safety import evaluate_driver_safety_profile
 from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from .graph_safety import protection_requirement_present, view_from_yaml_dict
 from .measurement import active_driver_targets
+from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 from .runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     classify_bass_extension_graph,
@@ -741,7 +743,8 @@ def readmit_summed_program_from_wav(
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     input_caps: list[float] = []
     bass_channels = set(graph.details.get("bass_output_channels", ()))
-    bass_boost_db = float((graph.details.get("bass_extension") or {}).get("low_boost_db", 0.0))
+    descriptor = graph.details.get("bass_extension")
+    bass_boost_db = dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
     declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
@@ -772,11 +775,11 @@ def readmit_summed_program_from_wav(
             if branches and segment.channel != channels_by_role[role]:
                 continue
             low, high = segment_emitted_band_hz(segment)
-            low_ok = low >= band.lower_hz or any(
+            low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= protected_floor_hz or any(
                 requirement["kind"] == "highpass"
                 and requirement["cutoff_hz"] >= protected_floor_hz
                 for requirement in requirements
-            )
+            ))
             high_ok = high <= band.upper_hz or any(
                 requirement["kind"] == "lowpass"
                 and requirement["cutoff_hz"] <= band.upper_hz
