@@ -653,7 +653,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 
     Stage 2 never runs CHECK — its conductor is constructed with CHECK already
     accepted, so ``_consume_check`` is unreachable — which means no verdict, no
-    artifact and no screen would notice if its ``publish_check`` were dropped,
+    artifact and no screen would notice if its ``records.check`` were dropped,
     swapped for the other publisher, or left pointing at another session's
     bundle. The seam is the only place that binding is observable, so the seam
     is what this reads: call what the conductor holds and require the artifact
@@ -673,7 +673,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 
     conductor, _state = open_stage_under_test(monkeypatch)
 
-    conductor._seams.publish_check(
+    conductor._seams.records.check(
         GainPlan(
             gain_db={"woofer": -11.0}, predicted_peak_dbfs=-11.0, snr_floor_ok=True,
         ),
@@ -1119,7 +1119,7 @@ def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
     read nothing, every round receipt would report ``committed: None`` and the
     candidate-ran question would be permanently unanswerable.
     """
-    import dataclasses
+    from tests.crossover_v2_fixtures import with_records
 
     conductor, _state = _stage_1(monkeypatch)
     assert conductor.measure_alignment_objective == ""
@@ -1129,8 +1129,8 @@ def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
     # the session-state write it is about; the ordering the seam guarantees
     # (every attribute write completes before the first side effect) is
     # ``test_crossover_v2_conductor``'s to pin, not this file's.
-    conductor._seams = dataclasses.replace(
-        conductor._seams, publish_candidate=lambda _candidate: None,
+    conductor._seams = with_records(
+        conductor._seams, candidate=lambda _candidate: None,
     )
     # A REAL candidate, not a stub: the point is that the objective is read off
     # the frozen ``analysis`` evidence ``planning.analysis_json`` writes, so a
@@ -1554,8 +1554,8 @@ def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
     _seed_applied_stage_1_state()
     stage_2_conductor, _state2 = _stage_2(monkeypatch)
 
-    assert callable(_flow_seams(stage_1_conductor).publish_findings)
-    assert _flow_seams(stage_2_conductor).publish_findings is None
+    assert callable(_flow_seams(stage_1_conductor).records.findings)
+    assert _flow_seams(stage_2_conductor).records.findings is None
 
 
 def test_stage_2_rollback_refuses_cleanly_with_no_prior_candidate(monkeypatch):

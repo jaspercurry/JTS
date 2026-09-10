@@ -280,7 +280,7 @@ def exclusion_evidence_json(
     ``cloud_result`` must be read by the caller at CALL time: only its CURRENT
     value describes the cloud retained at confirm, since a retake re-closes the
     group (#1872). ``cloud_measure.json``'s own copy can lag it — the evidence
-    store's ``publish_cloud`` write is a per-phase singleton, and that gap is
+    store's ``records.cloud`` write is a per-phase singleton, and that gap is
     accepted (forensic artifact vs. product). ``validity_floor_hz`` and
     ``gated_spec_curve`` (#1787) ride here for the room layer, not the fit;
     the curve adds roughly 15-20 KB of JSON per candidate (<=512 points), so

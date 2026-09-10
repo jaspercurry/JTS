@@ -60,6 +60,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     V2_FIRST_BEGIN_TIMEOUT_S,
     CrossoverV2Session,
     V2FlowSeams,
+    V2RecordPublishers,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_session_spec,
@@ -1700,8 +1701,10 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            publish_check=lambda *a, **k: None,
-            publish_candidate=lambda *a, **k: None,
+            records=V2RecordPublishers(
+                check=lambda *a, **k: None,
+                candidate=lambda *a, **k: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
         ),
@@ -1799,8 +1802,10 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            publish_check=lambda *a, **k: None,
-            publish_candidate=lambda *a, **k: None,
+            records=V2RecordPublishers(
+                check=lambda *a, **k: None,
+                candidate=lambda *a, **k: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
         ),
@@ -1845,8 +1850,10 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            publish_check=lambda *a, **k: None,
-            publish_candidate=lambda *a, **k: None,
+            records=V2RecordPublishers(
+                check=lambda *a, **k: None,
+                candidate=lambda *a, **k: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
         ),
@@ -2999,8 +3006,10 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            publish_check=lambda *a, **k: None,
-            publish_candidate=lambda *a, **k: None,
+            records=V2RecordPublishers(
+                check=lambda *a, **k: None,
+                candidate=lambda *a, **k: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
         ),
@@ -7632,7 +7641,11 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     between each apply and the next, and pins that the pointer survives
     it."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
-    from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2Session,
+        V2FlowSeams,
+        V2RecordPublishers,
+    )
 
     from tests.crossover_v2_fixtures import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
 
@@ -7654,8 +7667,10 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
             session_volume_db=SESSION_VOLUME_DB,
             seams=V2FlowSeams(
                 analyze=lambda *a, **k: None,
-                publish_check=lambda *a, **k: None,
-                publish_candidate=lambda *a, **k: None,
+                records=V2RecordPublishers(
+                    check=lambda *a, **k: None,
+                    candidate=lambda *a, **k: None,
+                ),
                 apply_complete=v2host._applied_gate,
                 apply_failed=v2host._apply_failure_gate,
             ),
@@ -8273,8 +8288,10 @@ def test_a_persist_after_a_rollback_keeps_the_reverted_candidate_applied(
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            publish_check=lambda *a, **k: None,
-            publish_candidate=lambda *a, **k: None,
+            records=V2RecordPublishers(
+                check=lambda *a, **k: None,
+                candidate=lambda *a, **k: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
         ),

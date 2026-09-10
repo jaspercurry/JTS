@@ -1284,6 +1284,7 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
     from jasper.active_speaker.crossover_v2_flow import (
         CrossoverV2Session,
         V2FlowSeams,
+        V2RecordPublishers,
         build_v2_verify_index_phase_map,
     )
     from jasper.audio_measurement import program_analysis as pa_mod
@@ -1330,8 +1331,10 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
             analyze=v2host.bind_production_analyze(
                 resolve_calibration=_resolver, meta={},
             ),
-            publish_check=lambda plan, ambient: None,
-            publish_candidate=lambda cand: None,
+            records=V2RecordPublishers(
+                check=lambda plan, ambient: None,
+                candidate=lambda cand: None,
+            ),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
             applied_boosts=lambda: False,

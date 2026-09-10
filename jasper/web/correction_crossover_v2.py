@@ -4047,7 +4047,7 @@ def bind_v2_stage_seams(
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
     so ``authorize_begin``'s apply-observed short-circuit runs first), and
-    ``publish_cloud`` does nothing for a single-entry recovery re-verify.
+    ``records.cloud`` does nothing for a single-entry recovery re-verify.
     ``bank_take`` is no longer in that company: a recovery re-verify IS an
     accepted VERIFY capture, so it banks a take like any other, and that is
     the wanted behaviour rather than an accident of binding — the round whose
@@ -4068,7 +4068,7 @@ def bind_v2_stage_seams(
     declaring them would put the journal's account of stage shape back out of
     one owner's hands.
     """
-    from jasper.active_speaker.crossover_v2_flow import V2FlowSeams
+    from jasper.active_speaker.crossover_v2_flow import V2FlowSeams, V2RecordPublishers
 
     capabilities = opening.capabilities
     missing = opening.missing
@@ -4103,29 +4103,34 @@ def bind_v2_stage_seams(
             meta=refs, provenance=provenance, carry=banked_provenance,
             evidence=banked_evidence,
         ),
-        publish_check=publish_check,
-        publish_candidate=publish_candidate,
+        # ADR-0227 §12 FOLD: one seam, discriminated by kind, over the same
+        # four binders this always called — only the V2FlowSeams shape they
+        # land in changed.
+        records=V2RecordPublishers(
+            check=publish_check,
+            candidate=publish_candidate,
+            cloud=bind_cloud_publisher(
+                evidence_store, capture_session_id, refs, run_async
+            ),
+            # #2291's round receipt. Bound on both stages rather than gated on a
+            # capability: only the stage that GRADES a round ever calls it, and a
+            # binding that exists everywhere cannot be the reason a receipt went
+            # unwritten on the stage that needed it.
+            round_receipt=bind_round_receipt(
+                evidence_store, capture_session_id, refs, run_async
+            ),
+            findings=(
+                bind_findings_publisher(
+                    evidence_store, capture_session_id, refs, run_async
+                )
+                if CAPABILITY_FINDINGS in capabilities.provides else None
+            ),
+        ),
         apply_complete=_applied_gate,
         apply_failed=_apply_failure_gate,
         bank_take=bind_position_retention(
             evidence_store, refs,
             provenance=banked_provenance, evidence=banked_evidence,
-        ),
-        publish_cloud=bind_cloud_publisher(
-            evidence_store, capture_session_id, refs, run_async
-        ),
-        # #2291's round receipt. Bound on both stages rather than gated on a
-        # capability: only the stage that GRADES a round ever calls it, and a
-        # binding that exists everywhere cannot be the reason a receipt went
-        # unwritten on the stage that needed it.
-        publish_round_receipt=bind_round_receipt(
-            evidence_store, capture_session_id, refs, run_async
-        ),
-        publish_findings=(
-            bind_findings_publisher(
-                evidence_store, capture_session_id, refs, run_async
-            )
-            if CAPABILITY_FINDINGS in capabilities.provides else None
         ),
         rollback=(
             bind_delta_probe_rollback(run_async, camilla_factory)

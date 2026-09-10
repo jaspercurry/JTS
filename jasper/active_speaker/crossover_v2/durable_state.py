@@ -1482,7 +1482,7 @@ def build_conductor_state(
         if state["cloud"] is None and isinstance(prior.get("cloud"), Mapping):
             state["cloud"] = dict(prior["cloud"])
         # The cloud bundle-artifact fingerprints ride inside ``evidence``: a
-        # group-phase-less session never wires its ``publish_cloud`` seam, so
+        # group-phase-less session never wires its ``records.cloud`` seam, so
         # this key has to be restored from ``prior``.
         prior_evidence = prior.get("evidence")
         if (
