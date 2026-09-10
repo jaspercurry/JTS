@@ -19,8 +19,8 @@ drift: the daemon's hardcoded ``on`` / ``off`` / ``dtln`` slots and
 ``jasper.wake_ports.build_ports``'s larger ``on/off/dtln/raw0/ref/usb_*``
 port map. This registry unifies them. ``jasper.wake_ports`` now derives
 its port constants from here, so each wire port has exactly one
-definition (matching ``jasper.cli.aec_bridge``'s ``OUT_PORT*`` emit
-constants).
+definition — ``jasper.cli.aec_bridge`` reads every emit port off this
+registry too, through ``jasper.aec.bridge_config.leg_default_port``.
 
 Design intent (mirrors ``jasper.transit.base``): keep this file as small
 as the contract and **import-cheap** — the AEC bridge and capture
@@ -84,14 +84,20 @@ class LegSpec:
 
 # Ordered registry. Production wake legs first (matching the daemon's
 # "on" -> "off" -> "dtln" -> "chip_aec_150" -> "chip_aec_210" priority),
-# then corpus-only legs. Ports match jasper.cli.aec_bridge's OUT_PORT*
-# emit constants (so the file is grouped by wake_input, not by port — the
+# then corpus-only legs. jasper.cli.aec_bridge emits every leg on the port
+# declared here (so the file is grouped by wake_input, not by port — the
 # chip legs' ports 9887/9888 sit above the corpus ports by design).
 REGISTRY: tuple[LegSpec, ...] = (
     # --- production wake-detection legs (OR-gated by WakeLoop) ---
     # Always-built software legs: the AEC reference is mic-independent, so
     # these run against any mic (aec3, chip-direct raw, DTLN).
     LegSpec("aec3", "on", 9876, LegKind.SOFTWARE_AEC, wake_input=True),
+    # Chip-direct mic stream, pre-AEC3 — exactly the near-end input AEC3
+    # consumes in default production (chip ch 1, raw-ish when SHF_BYPASS=1),
+    # in the same 1280-sample / 16 kHz mono int16 packet shape as "on".
+    # WakeLoop ORs detections across "on" and this leg, which catch
+    # mostly-disjoint sets of utterances. Consumed only when the reconciler
+    # configures JASPER_MIC_DEVICE_RAW; otherwise the packets are ignored.
     LegSpec("chip_direct", "off", 9877, LegKind.CHIP_DSP, wake_input=True),
     LegSpec("dtln", "dtln", 9878, LegKind.NEURAL_AEC, wake_input=True),
     # Hardware-conditional extra chip-AEC beam legs — the XVF3800's fixed
@@ -103,7 +109,20 @@ REGISTRY: tuple[LegSpec, ...] = (
     LegSpec("chip_aec_150", "chip_aec_150", 9887, LegKind.HARDWARE_AEC, wake_input=True),
     LegSpec("chip_aec_210", "chip_aec_210", 9888, LegKind.HARDWARE_AEC, wake_input=True),
     # --- corpus-only legs (recorder + offline tooling; not wake inputs) ---
+    # Truly-raw mic 0 (chip channel 2). Unlike "off" (chip channel 1 = ASR
+    # beam, with chip BF+NS+AGC+HPF applied), channel 2 is the raw mic 0
+    # ADC output with NO chip DSP whatsoever — not even MIC_GAIN, i.e. what
+    # a mic without an XMOS chip would deliver. Read by the wake-corpus
+    # recorder as the mic-agnostic baseline; always emitted, at ~0.25% of
+    # one core.
     LegSpec("raw0", "raw0", 9879, LegKind.RAW, wake_input=False),
+    # Corpus-only experiment streams, off by default so production bridge
+    # cost does not move. When enabled for wake-corpus recording, the
+    # bridge emits: "ref" the 16 kHz mono reference frame AEC3 actually
+    # consumed, "usb_raw" a cheap USB mic's raw mono capture, "usb_webrtc"
+    # that same USB mic through a second WebRTC AEC3 chain, "usb_dtln" the
+    # cheap USB mic through a second DTLN-aec chain. jasper-voice never
+    # consumes these.
     LegSpec("reference", "ref", 9880, LegKind.REFERENCE, wake_input=False),
     LegSpec("usb_raw", "usb_raw", 9881, LegKind.RAW, wake_input=False),
     LegSpec("usb_aec3", "usb_webrtc", 9882, LegKind.SOFTWARE_AEC, wake_input=False),

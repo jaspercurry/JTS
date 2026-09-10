@@ -64,6 +64,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_MODEL_ERROR,
     classify_delta_probe,
 )
+from tests._log_events import event_fields, event_records
 
 # --------------------------------------------------------------------------- #
 # the incident's own numbers
@@ -774,7 +775,8 @@ def test_a_capture_composed_at_another_corner_has_no_nameable_previous_graph(cap
             _incident_analysis(), FC_HZ * 1.2,
         )
     assert moved is None
-    assert "reason=crossover_corner_moved" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
+    assert fields["reason"] == "crossover_corner_moved"
     assert session._commanded_delta_for(
         _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ * 1.2,
     ) is None
@@ -794,7 +796,8 @@ def test_a_profile_that_cannot_name_its_corner_is_refused_too(caplog):
         assert session._previous_graph_predicted_sum(
             _incident_analysis(), FC_HZ,
         ) is None
-    assert "reason=applied_profile_names_no_corner" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
+    assert fields["reason"] == "applied_profile_names_no_corner"
 
 
 def test_one_applied_profile_is_disclosed_once_across_repeated_reads(caplog):
@@ -816,7 +819,7 @@ def test_one_applied_profile_is_disclosed_once_across_repeated_reads(caplog):
             assert session._previous_graph_predicted_sum(
                 _incident_analysis(), FC_HZ,
             ) is not None
-    assert caplog.text.count("event=correction.crossover_v2_previous_graph ") == 1
+    assert len(event_records(caplog, "correction.crossover_v2_previous_graph")) == 1
 
 
 def test_an_unbound_applied_profile_seam_leaves_the_commanded_axis_unavailable(caplog):
@@ -838,8 +841,8 @@ def test_an_unbound_applied_profile_seam_leaves_the_commanded_axis_unavailable(c
         assert session._previous_graph_predicted_sum(
             _incident_analysis(), FC_HZ,
         ) is None
-    assert "event=correction.crossover_v2_previous_graph_unavailable" in caplog.text
-    assert "reason=no_applied_profile_seam" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
+    assert fields["reason"] == "no_applied_profile_seam"
 
     assert session._commanded_delta_for(
         _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ,
@@ -1287,10 +1290,8 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
     assert without is not None
     assert without.boost_over_declared_bound is False
     assert without.boost_overshoot_db is None
-    assert (
-        "event=correction.crossover_v2_declared_transfer_unavailable" in caplog.text
-    )
-    assert "reason=no_declared_transfer" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_declared_transfer_unavailable")
+    assert fields["reason"] == "no_declared_transfer"
 
 
 # --------------------------------------------------------------------------- #
@@ -1410,7 +1411,8 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     assert clipped.status is SafetyStatus.UNSAFE
     assert clipped.reason == SAFETY_CLIPPED_CAPTURE
     # ...and the journal put the half-grade in front of whoever reads the round.
-    assert "verdict=safety_only" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe")
+    assert fields["verdict"] == "safety_only"
 
 
 def test_an_alternative_fc_round_that_is_clean_is_not_reported_as_fully_graded():
@@ -1509,8 +1511,8 @@ def test_an_anchor_measured_through_another_program_is_refused(caplog):
     # ...and it is named, in the OWNER's own vocabulary rather than a second
     # spelling of it, because a refused anchor that says nothing is the same
     # silence the refusal exists to prevent.
-    assert "crossover_v2_delta_probe_no_entry_anchor" in caplog.text
-    assert f"reason={BENEFIT_PROGRAM_MISMATCH}" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
+    assert fields["reason"] == BENEFIT_PROGRAM_MISMATCH
 
 
 def test_an_anchor_captured_at_another_mark_is_refused_too(caplog):
@@ -1559,8 +1561,9 @@ def test_an_anchor_captured_at_another_mark_is_refused_too(caplog):
     assert probe.safety_anchored is False
     assert probe.boost_over_declared_bound is False
     assert probe.boost_overshoot_db is None
-    assert f"reason={BENEFIT_MARK_MISMATCH}" in caplog.text
-    assert "baseline_reference_mark=a_mark_from_another_position" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
+    assert fields["reason"] == BENEFIT_MARK_MISMATCH
+    assert fields["baseline_reference_mark"] == "a_mark_from_another_position"
 
 
 def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
@@ -1598,8 +1601,8 @@ def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
 
     assert probe is not None
     assert probe.safety_anchored is False
-    assert "crossover_v2_delta_probe_no_entry_anchor" in caplog.text
-    assert "reason=no_entry_baseline" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
+    assert fields["reason"] == "no_entry_baseline"
 
 
 def test_the_ordinary_round_is_untouched_by_the_state_axis_only_path():
@@ -1637,9 +1640,7 @@ def test_neither_axis_leaves_the_probe_absent_exactly_as_before(caplog):
 
     with caplog.at_level(logging.WARNING):
         assert _alternative_fc_probe(hot_db=4.0, declared=False) is None
-    assert (
-        "event=correction.crossover_v2_declared_transfer_unavailable" in caplog.text
-    )
+    assert event_records(caplog, "correction.crossover_v2_declared_transfer_unavailable")
 
 
 def _probe_from_repeat_round_session(*, hot_db: float):
@@ -1673,12 +1674,12 @@ def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(capl
     good = _summed(APPLIED_GRAPH)
     with caplog.at_level(logging.WARNING):
         assert _commanded_delta((np.zeros(4), "not a curve"), good) is None
-    assert "event=correction.crossover_v2_commanded_delta_failed" in caplog.text
-    assert "applied_points=2048" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_commanded_delta_failed")
+    assert fields["applied_points"] == "2048"
 
     # ...and a MISSING curve stays silent here, because it is not this
     # function's fact to report.
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         assert _commanded_delta(None, good) is None
-    assert "crossover_v2_commanded_delta_failed" not in caplog.text
+    assert not event_records(caplog, "correction.crossover_v2_commanded_delta_failed")

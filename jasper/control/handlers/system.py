@@ -39,6 +39,7 @@ from ...fanin.latency_mode import (
 from ...install_profile import system_capabilities_for_profile
 from ...local_sources import local_source_park_units
 from ...log_event import log_event
+from ...service_units import JASPER_VOICE_SERVICE
 from .. import debug_control
 from .. import restart_broker
 from .. import server as _server
@@ -657,7 +658,7 @@ class SystemRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-            units = ["jasper-voice.service"]
+            units = [JASPER_VOICE_SERVICE]
             restart_units = units
             action = "restart-voice"
         elif self.path == "/system/restart/audio":

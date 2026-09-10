@@ -65,7 +65,10 @@ def set_enabled(enabled: bool) -> dict:
     """Persist intent; the systemd path unit owns sampler start/recovery."""
     path = Path(ENABLED_FILE)
     if enabled:
-        write_env_file(str(path), {"JASPER_USB_GADGET_FORENSICS": "1"}, mode=0o640)
+        write_env_file(
+            str(path), {"JASPER_USB_GADGET_FORENSICS": "1"}, mode=0o640,
+            owner="JTS /system USB gadget forensics control",
+        )
     else:
         path.unlink(missing_ok=True)
     return snapshot()

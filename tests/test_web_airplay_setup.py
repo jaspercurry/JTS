@@ -159,7 +159,7 @@ def test_post_save_writes_mode_and_restarts(monkeypatch):
     token = "y" * 64
     calls = {"write": [], "restart": 0}
 
-    def fake_write(path, data, mode=0o644):
+    def fake_write(path, data, mode=0o644, owner=None):
         calls["write"].append((path, dict(data), mode))
 
     monkeypatch.setattr(airplay_setup, "write_env_file", fake_write)
@@ -187,7 +187,7 @@ def test_post_save_synced_writes_no(monkeypatch):
     calls = {"write": []}
     monkeypatch.setattr(
         airplay_setup, "write_env_file",
-        lambda path, data, mode=0o644: calls["write"].append(dict(data)),
+        lambda path, data, mode=0o644, owner=None: calls["write"].append(dict(data)),
     )
     monkeypatch.setattr(airplay_setup, "_restart_shairport", lambda: None)
 

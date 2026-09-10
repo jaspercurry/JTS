@@ -21,6 +21,7 @@ from ._shared import (
     _parse_systemd_environment,
     _run,
 )
+from ...service_units import JASPER_VOICE_SERVICE
 
 # Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
 # pin status + reason, never `detail` prose). Named by the fact a consumer
@@ -724,7 +725,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
 
     unit_env: dict[str, str] | None = None
     error = ""
-    values = evidence.unit_property("Environment", ("jasper-voice.service",))
+    values = evidence.unit_property("Environment", (JASPER_VOICE_SERVICE,))
     if values is None:
         error = "systemctl unavailable"
     else:

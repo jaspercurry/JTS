@@ -81,6 +81,7 @@ from jasper.audio_measurement.program import (
     RoleBand,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
     CAPS,
     CLOUD_MAP,
@@ -658,11 +659,8 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     assert first_close["group_complete"] == PHASE_CLOUD_MEASURE
     assert len(published) == 1
     assert published[0][0] == PHASE_CLOUD_MEASURE
-    assert (
-        caplog.text.count("event=correction.crossover_v2_cloud_group_complete")
-        == 1
-    )
-    assert caplog.text.count("event=correction.crossover_v2_cloud_spec") == 1
+    assert len(event_records(caplog, "correction.crossover_v2_cloud_group_complete")) == 1
+    assert len(event_records(caplog, "correction.crossover_v2_cloud_spec")) == 1
     first_pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
     assert first_pipeline is not None
     assert first_pipeline["validity_floor_hz"] == pytest.approx(140.0)
@@ -700,11 +698,8 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     # SECOND ``cloud_group_complete`` and ``cloud_spec``, not a missing or
     # stale one. This is the "normal cloud_spec/cloud_group_complete flow"
     # shape: a re-close is a real close, logged like one.
-    assert (
-        caplog.text.count("event=correction.crossover_v2_cloud_group_complete")
-        == 1
-    )
-    assert caplog.text.count("event=correction.crossover_v2_cloud_spec") == 1
+    assert len(event_records(caplog, "correction.crossover_v2_cloud_group_complete")) == 1
+    assert len(event_records(caplog, "correction.crossover_v2_cloud_spec")) == 1
 
     # The RECOMPUTE happened: the group's pipeline result now reports the
     # RETAKEN position's floor, not the stale first-close one.
@@ -721,10 +716,7 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     # fact nothing else states — the artifact now lags the fresh pipeline
     # result above).
     assert len(published) == 1, "a second close must not attempt a second publish"
-    assert (
-        caplog.text.count("event=correction.crossover_v2_cloud_publish_skipped")
-        == 1
-    )
+    assert len(event_records(caplog, "correction.crossover_v2_cloud_publish_skipped")) == 1
 
     # End-to-end: the FIT itself, and the candidate it produces, must also
     # see the retaken cloud — not just the pipeline's own bookkeeping.

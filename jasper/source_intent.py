@@ -72,6 +72,7 @@ from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.logging_setup import configure_logging
+from jasper.service_units import FANIN_SERVICE, LIBRESPOT_SERVICE
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     # unit: (TimeoutStartSec, TimeoutStopSec)
     "shairport-sync.service": (30.0, 5.0),
     "nqptp.service": (2.0, 5.0),
-    "librespot.service": (2.0, 5.0),
+    LIBRESPOT_SERVICE: (2.0, 5.0),
     "bluealsa.service": (5.0, 5.0),
     "bluealsa-aplay.service": (2.0, 5.0),
     "bt-agent.service": (2.0, 10.0),
@@ -159,7 +160,7 @@ _FANIN_RESTART_BACKOFF_SEC = 5.0
 _USB_GADGET_START_DEPENDENCY_SEC: dict[str, float] = {
     "jasper-usb-network-plan.service": 10.0,
     "jasper-audio-hardware-reconcile.service": 50.0,
-    "jasper-fanin.service": (
+    FANIN_SERVICE: (
         _SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _FANIN_RESTART_BACKOFF_SEC
     ),
 }
@@ -227,7 +228,7 @@ def _unit_action_timeout_sec(unit: str, verb: str) -> float:
 # direct-lane settling, and failed-USB rollback.
 _WORST_CASE_ORDINARY_START_ACTIONS = (
     ("shairport-sync.service", "start"),
-    ("librespot.service", "start"),
+    (LIBRESPOT_SERVICE, "start"),
     (_BLUETOOTH_SERVICE, "start"),
     ("bluealsa.service", "start"),
     ("bluealsa-aplay.service", "start"),
@@ -238,7 +239,7 @@ _WORST_CASE_ORDINARY_START_ACTIONS = (
 _WORST_CASE_ORDINARY_STOP_ACTIONS = (
     ("shairport-sync.service", "stop"),
     ("nqptp.service", "stop"),
-    ("librespot.service", "stop"),
+    (LIBRESPOT_SERVICE, "stop"),
     ("bt-agent.service", "stop"),
     ("bluealsa-aplay.service", "stop"),
     ("bluealsa.service", "stop"),

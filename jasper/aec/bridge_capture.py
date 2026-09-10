@@ -85,8 +85,8 @@ def mic_thread(
     makes them raw-ish.
 
     When `raw0_q` is provided, channel 2 (raw mic 0, no chip DSP) is ALSO
-    extracted onto that queue for the OUT_PORT_RAW0 leg. Independent queue
-    and extraction so a backlog on one cannot stall the other.
+    extracted onto that queue for the "raw0" leg. Independent queue and
+    extraction so a backlog on one cannot stall the other.
     """
     mic_drop_log = DropLogDebouncer()
 

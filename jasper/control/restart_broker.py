@@ -86,6 +86,12 @@ from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.service_units import (
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+    JASPER_VOICE_SERVICE,
+    LIBRESPOT_SERVICE,
+)
 
 logger = logging.getLogger(__name__)
 _SELF_UNIT = "jasper-control.service"
@@ -104,7 +110,7 @@ DEFAULT_SOCKET_PATH = os.environ.get(
 # (".service"); the broker normalizes bare names before checking.
 MANAGED_UNITS = frozenset({
     # Tier-A daemons (debug-restart, /speaker rename, /rooms, /voice, /spotify)
-    "jasper-voice.service",
+    JASPER_VOICE_SERVICE,
     "jasper-control.service",
     "jasper-web.service",
     "jasper-mux.service",
@@ -117,14 +123,14 @@ MANAGED_UNITS = frozenset({
     "jasper-grouping-reconcile.service",
     "jasper-grouping-reconcile-trailing.service",
     "jasper-camilla.service",
-    "jasper-outputd.service",
+    OUTPUTD_SERVICE,
     # jasper.fanin.coupling_reconcile restarts fan-in to apply a coupling or
     # USB-combo flip. Caught on jts 2026-06-27 (then via the since-deleted
     # adaptive output-buffer arm): the restart was rejected ("not in allowlist")
     # because fan-in had never been broker-restarted before — the unit tests
     # mocked the broker so they never hit this. Keep in lockstep with the
     # polkit grant.
-    "jasper-fanin.service",
+    FANIN_SERVICE,
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
     # /system/diagnostics card — the non-root jasper-control `systemctl start`s
     # it via its polkit manage-units grant.
@@ -132,7 +138,7 @@ MANAGED_UNITS = frozenset({
     # AirPlay / Spotify / USB renderers (/sources, /airplay, mux, correction)
     "shairport-sync.service",
     "nqptp.service",
-    "librespot.service",
+    LIBRESPOT_SERVICE,
     "jasper-usbsink.service",
     # The UAC2 host-volume observer. jasper.local_sources.registry declares it a
     # USB-sink runtime/park/audio-refresh unit, so every restart path the

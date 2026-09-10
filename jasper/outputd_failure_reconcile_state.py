@@ -20,11 +20,11 @@ import os
 from typing import Any, Mapping
 
 from .control import park_record
-from .service_units import unit_failed, unit_unstable
+from .service_units import OUTPUTD_SERVICE, unit_failed, unit_unstable
 
 #: The unit whose ``ExecStopPost=`` writes the record and ``ExecStartPost=``
 #: removes it.
-UNIT = "jasper-outputd.service"
+UNIT = OUTPUTD_SERVICE
 
 #: Must equal ``PARK_RECORD``'s default in the script and the path the unit's
 #: ``ExecStartPost=`` removes; pinned against both by

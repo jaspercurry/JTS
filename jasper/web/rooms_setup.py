@@ -324,7 +324,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
 
     try:
         # mode=0o644 — no secrets, just config.
-        write_env_file(env_path, values, mode=0o644)
+        write_env_file(env_path, values, mode=0o644, owner="JTS /rooms peering wizard")
     except OSError as e:
         log_event(logger, "rooms.peering.save.error", level=logging.ERROR, exc_info=True)
         _send_json(

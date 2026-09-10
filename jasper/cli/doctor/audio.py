@@ -33,6 +33,7 @@ from ._shared import (
     _parked_follower_result,
     _run,
 )
+from ...service_units import JASPER_VOICE_SERVICE
 
 # Closed vocabulary for this module's `CheckResult.reason`: one snake_case
 # constant per distinct outcome branch below. Every `warn`/`fail` carries one;
@@ -305,7 +306,7 @@ def check_loopback() -> CheckResult:
 
 def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active."""
-    return evidence.unit_active("jasper-voice.service") is True
+    return evidence.unit_active(JASPER_VOICE_SERVICE) is True
 
 @doctor_check(label="mic capture", needs_cfg=True, exclusive_group="audio-probe")
 def check_mic_capture(cfg: Config) -> CheckResult:

@@ -101,6 +101,7 @@ from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command, fanin_command, local_status_json
 from .renderer import RendererClient
+from .service_units import LIBRESPOT_SERVICE
 from .source_events import start_source_event_tasks
 from .source_state import (
     airplay_playing_observed as airplay_playing,
@@ -1666,7 +1667,7 @@ class Mux:
         """
         resp = await asyncio.to_thread(
             restart_broker.manage_units,
-            "librespot.service", verb="try-restart",
+            LIBRESPOT_SERVICE, verb="try-restart",
             reason="spotify Tier-2 recovery", no_block=False, timeout=8.0,
         )
         if not resp.get("ok"):

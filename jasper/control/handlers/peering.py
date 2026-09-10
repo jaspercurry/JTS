@@ -22,7 +22,7 @@ from ...platform.control_client import (
     ControlError,
     request as control_request,
 )
-from ...service_units import read_unit_states
+from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
 from ..supervisor_runtime import signal_on_control_loop, spawn_on_control_loop
 from ._base import ControlHandlerMixin, logger
 
@@ -109,7 +109,7 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # second hop (see PeeringRoutes._maybe_forward_pair_action_to_leader's loop
 # breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_VOICE_UNIT = "jasper-voice.service"
+_VOICE_UNIT = JASPER_VOICE_SERVICE
 _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
     "activating",
     "deactivating",

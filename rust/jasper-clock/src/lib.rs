@@ -184,56 +184,6 @@ impl DllConfig {
     }
 }
 
-/// An immutable snapshot of a [`Dll`]'s observable state. The single shape
-/// every consumer publishes on `/state` / doctor (DRY telemetry, increment 4);
-/// it mirrors PipeWire's `clock.rate_diff` plus the error statistics and the
-/// resync/lock counters JTS surfaces.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DllSnapshot {
-    /// Correction ratio (1.0 = no correction). `> 1.0` runs faster.
-    pub ratio: f64,
-    /// `(ratio - 1) * 1e6` — the rate difference in ppm (`clock.rate_diff`).
-    pub ratio_ppm: f64,
-    /// Running mean of recent errors (exponential, the same averaging the
-    /// adaptive bandwidth uses).
-    pub error_mean: f64,
-    /// Running variance of recent errors.
-    pub error_var: f64,
-    /// Current loop bandwidth after adaptive retuning.
-    pub bandwidth: f64,
-    /// Whether the loop is currently locked (acquired AND low residual error).
-    pub locked: bool,
-    /// Total error samples fed since construction / last reset.
-    pub updates: u64,
-    /// Times the loop crossed from unlocked → locked.
-    pub lock_count: u64,
-    /// Times the loop crossed from locked → unlocked.
-    pub unlock_count: u64,
-    /// Times a `max_resync` hard-jump re-initialised the loop.
-    pub resync_count: u64,
-}
-
-impl DllSnapshot {
-    /// A fresh / unfed loop: unity ratio (0 ppm), unlocked, all counters zero.
-    /// Useful as a telemetry placeholder before a DLL has been ticked (so a
-    /// `/state` reader sees a coherent "idle" rate_diff, not a partial/garbage
-    /// snapshot).
-    pub fn idle() -> Self {
-        Self {
-            ratio: 1.0,
-            ratio_ppm: 0.0,
-            error_mean: 0.0,
-            error_var: 0.0,
-            bandwidth: BW_MAX,
-            locked: false,
-            updates: 0,
-            lock_count: 0,
-            unlock_count: 0,
-            resync_count: 0,
-        }
-    }
-}
-
 /// Number of `update` calls a freshly-(re)initialised loop must run before its
 /// lock verdict is trusted. Below this the integrators are still filling and a
 /// transient low error would mislead a lock decision.
@@ -260,8 +210,6 @@ pub struct Dll {
     locked: bool,
     updates: u64,
     updates_since_retune: u64,
-    lock_count: u64,
-    unlock_count: u64,
     resync_count: u64,
 }
 
@@ -286,17 +234,15 @@ impl Dll {
             locked: false,
             updates: 0,
             updates_since_retune: 0,
-            lock_count: 0,
-            unlock_count: 0,
             resync_count: 0,
         }
     }
 
     /// Re-initialise the loop, discarding integrator and statistics state but
-    /// keeping the configuration and the lifetime counters (`lock_count`,
-    /// `resync_count`, …). This is `spa_dll_init` + a bandwidth reset — call it
-    /// on a hard discontinuity (xrun recovery, device re-open) so the loop
-    /// re-locks from scratch instead of slewing from a stale operating point.
+    /// keeping the configuration and the lifetime counter (`resync_count`).
+    /// This is `spa_dll_init` + a bandwidth reset — call it on a hard
+    /// discontinuity (xrun recovery, device re-open) so the loop re-locks
+    /// from scratch instead of slewing from a stale operating point.
     pub fn reset(&mut self) {
         let initial_bw = clamp_bw(self.config.initial_bw);
         self.dll = SpaDll::new();
@@ -307,10 +253,7 @@ impl Dll {
         self.err_var = 0.0;
         self.ratio = 1.0;
         self.bandwidth = initial_bw;
-        if self.locked {
-            self.locked = false;
-            self.unlock_count += 1;
-        }
+        self.locked = false;
         self.updates = 0;
         self.updates_since_retune = 0;
     }
@@ -393,9 +336,8 @@ impl Dll {
     }
 
     /// Lock verdict: acquired (past warmup) AND the recent error is small
-    /// relative to the period. Edge-triggers the lock/unlock counters.
+    /// relative to the period.
     fn update_lock(&mut self) {
-        let was_locked = self.locked;
         // "Small" = within ~0.1% of a period of residual error. The DLL drives
         // the *steady-state* error to zero, so a locked loop sits well inside
         // this; an acquiring or disturbed loop does not.
@@ -404,11 +346,6 @@ impl Dll {
         let low_error =
             self.err_avg.abs() < lock_threshold && self.err_var.max(0.0).sqrt() < lock_threshold;
         self.locked = acquired && low_error;
-        if self.locked && !was_locked {
-            self.lock_count += 1;
-        } else if !self.locked && was_locked {
-            self.unlock_count += 1;
-        }
     }
 
     /// Current correction ratio (1.0 = no correction).
@@ -445,28 +382,6 @@ impl Dll {
     /// Times a `max_resync` hard-jump re-initialised the loop.
     pub fn resync_count(&self) -> u64 {
         self.resync_count
-    }
-
-    /// Times the loop crossed unlocked → locked.
-    pub fn lock_count(&self) -> u64 {
-        self.lock_count
-    }
-
-    /// One immutable snapshot of every observable field. The single telemetry
-    /// shape consumers serialize (increment 4).
-    pub fn snapshot(&self) -> DllSnapshot {
-        DllSnapshot {
-            ratio: self.ratio,
-            ratio_ppm: self.ratio_ppm(),
-            error_mean: self.err_avg,
-            error_var: self.error_variance(),
-            bandwidth: self.bandwidth,
-            locked: self.locked,
-            updates: self.updates,
-            lock_count: self.lock_count,
-            unlock_count: self.unlock_count,
-            resync_count: self.resync_count,
-        }
     }
 }
 
@@ -749,12 +664,11 @@ mod tests {
             dll.update(1.0);
         }
         let ratio_before = dll.ratio();
-        let updates_before = dll.snapshot().updates;
+        let updates_before = dll.updates;
         let r = dll.update(f64::NAN);
         assert_eq!(r, ratio_before, "NaN returns the prior ratio unchanged");
         assert_eq!(
-            dll.snapshot().updates,
-            updates_before,
+            dll.updates, updates_before,
             "NaN does not count as an update"
         );
         let r = dll.update(f64::INFINITY);
@@ -820,15 +734,6 @@ mod tests {
         assert!((d.w2 - (w / 1.5)).abs() < 1e-15);
         // The bare update returns 1 - (z2 + z3) and is finite for a finite err.
         assert!(d.update(1.0).is_finite());
-    }
-
-    /// A fresh DLL's snapshot equals the `idle()` placeholder (unity ratio,
-    /// 0 ppm, unlocked, zero counters) — so a telemetry consumer reads the same
-    /// shape whether it holds a real loop or the placeholder.
-    #[test]
-    fn fresh_snapshot_matches_idle_placeholder() {
-        let dll = audio_dll();
-        assert_eq!(dll.snapshot(), DllSnapshot::idle());
     }
 
     /// Error statistics stay non-negative (variance) and finite under a noisy
