@@ -63,19 +63,24 @@ certified reflection-free, and the full-range flat goal remains unmet.
 
 [#4700](https://github.com/jaspercurry/JTS/pull/4700) is deployed on JTS3
 (`84ed269ad`; PR open). Room adoption now ends with its exact measured-trial
-proof, without entering speaker VERIFY. The selected correction is applied;
-the saved and running graphs match the trial (`1a5facbf5a2f7fb9`). Speaker EQ,
-crossover, timing and protection are unchanged. Normal volume is restored,
-the arm is at 0°, and correction diagnostics report no failures or warnings.
+proof, without entering speaker VERIFY. The selected correction was applied
+with a saved and running graph matching the trial (`1a5facbf5a2f7fb9`). The
+later HP40 removal below changes that graph; the trial remains historical
+evidence, not a measurement of the new response.
 
-**Bass target:** the owner now chooses to retain HP40 and aim for useful
-linearity down to 40 Hz. That target was not achieved. The 40–50 Hz response
-is weak and inconsistent. Raw-audio inspection puts the 40 Hz band only
-about 2–7 dB above the preceding background, so it does not establish the
-driver's bass limit. Improve LF measurement contrast and diagnose the installed
-system before boosting it. The saved 40 Hz setting has no cited source;
-Dayton specifies Fs=40 Hz, not a recommended HP40. Do not label it a verified
-manufacturer limit. This is basic bass setup, separate from optional extension.
+**Bass update, 2026-09-10:** the owner explicitly removed HP40. JTS3's saved
+and live graph is now `353bb0e92ecc77d12`; exact graph comparison found only
+the woofer LR4 40 Hz high-pass removed. Speaker EQ, crossover, timing, Room EQ,
+other protection and volume are unchanged. The canonical boot copy and
+recomposition agree. The old completed Room trial was cleared, with its
+measurement evidence retained. The changed graph has not been re-measured.
+The radiator is the owner's identified Dayton Epique E180HE-PR 7 inch.
+
+The earlier 40 Hz band was only about 2–7 dB above background; it does not
+establish a physical limit. Measure the HP40-free baseline before sizing
+extension. Neither the speaker measurement floor nor Fs declares a playback
+cutoff. The optional program follows the measured behavior and boundaries in
+§1d and §3; full cabinet models are not its required input.
 
 **Next:** finish capture-only Room measurements (2.7b), then diagnose the
 low-bass response and complete the full listening-area proof (1.6/2.4).
@@ -207,6 +212,31 @@ power, driver margin or realized DSP. A later live trial needs its own bounded
 filter contract and matched-level listening. Missing identity is disclosed;
 it removes the associated attribution claim rather than inventing provenance.
 
+### 1d. Dynamic bass: measured limits and smooth withdrawal
+
+Owner clarification, 2026-09-10: at low and moderate levels, request the
+measured extension. As volume rises, gradually reduce extra boost and let
+the deepest extension roll off sooner. Actual signal demand caps bass output
+within the tested limits while the rest of the spectrum can keep rising.
+Volume scheduling alone cannot handle bass-heavy material at a fixed volume.
+Use smooth transitions and release, including when restoring extension;
+the fast cap must still handle peaks. Verify both level ramps and bass bursts.
+
+Use microphone response, distortion and compression-versus-level evidence
+through the accepted tune. Sealed, ported and passive-radiator cabinets share
+this workflow and runtime contract. Hardware facts and adapter models can
+refine the estimate; a full cabinet model or mandatory close measurement is
+not an entry requirement. Publish tested coverage and unknowns, not inferred
+excursion or temperature measurements. Current sealed-only emission is an
+implementation limit, not the product contract; prove each emitted variant.
+
+Start with one bounded bass EQ family and bass-band gain control. A limiter
+on the whole woofer channel, which also carries midrange, is a backstop rather
+than the normal extension control. Reuse native DSP processing where its
+behavior fits; a general multiband processor is not required by this plan.
+Borrow measured profiles and band-specific compression from the researched
+Microsoft approach, without making a sealed-box transform mandatory.
+
 ## 2. Principles (each has an ADR or a doctrine line)
 
 - **One loop, one toolbox.** Speaker, room and bass are programs, views and
@@ -262,6 +292,23 @@ candidate identity, trial, adoption and restore. Programs own capture purpose, p
 targets and candidate vocabulary. Bass owns its protection evidence and level
 policy, not another apply path. One emitter owns the complete graph and boost
 budget. Saved speaker tunes are inputs to Room, not files Room retunes.
+
+The bass implementation has four boundaries inside those existing owners:
+
+| Boundary | Input → output; sole responsibility |
+|---|---|
+| Shared measurement engine | Program plan → identified raw takes and analyses. Owns capture, calibration, poses and evidence storage for all three programs. |
+| Bass candidate | Compatible evidence + declared limits → one saved family with tested frequency/level coverage, thresholds, units and source graph identity. This is the limits authority; UI and runtime consume it. |
+| Bass policy and DSP | Canonical volume + saved family → requested extension through a pure selector. Actual band signal + the same limits → fast bass gain control in DSP. Neither writes calibration facts or retunes the speaker/Room layers. |
+| Shared graph/apply owner | Accepted speaker, bass, Room and preference layers → one composed graph, complete-chain headroom budget, validated apply/readback and restore. No direct graph writes from a program or volume watcher. |
+
+Keep policy selection separate from real-time signal processing; the LLM is
+outside both playback loops. Runtime gain state is transient, not a second
+limits profile. Add a module only for an actual distinct responsibility; no
+new daemon, parallel state store, generic plugin layer or second capture loop.
+Behavior tests must cover smooth withdrawal/restoration, a bass burst at fixed
+volume, unchanged upper-band gain during bass capping, complete-chain digital
+headroom, and preservation of accepted layers through apply/recompose/restore.
 
 ## 4. Current integration facts (main `b4e4ddda4`, 2026-09-09)
 
@@ -384,7 +431,7 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 |---|---|---|---|
 | 4.1 | Supervised limiter bench campaign on jts3 per `limiter-evidence-protocol.md`; one accepted, replayable bundle. | H | owner present, **NN** |
 | 4.1b | **The contract revision (added 2026-09-09).** The limiter-evidence protocol blocks all wave-4 production wiring until an ADR names the accepted bundle's exact `evidence_fingerprint`, records an independent review at zero blockers, and authorizes a named trusted caller; the tap-realization amendment separately forbids "a scheduler" by name. 4.2 and 4.3 cannot start before this merges. | A | owner sign-off |
-| 4.2 | Runtime scheduler after 4.1b and 5.1: pure target selection, instant retreat, gated re-extend, patching named rung filters from tested level limits. Use the canonical fader's dB; no new daemon or added latency. | R | **NN**, adversarial review |
+| 4.2 | Runtime after 4.1b and 5.1: implement §1d through the boundaries in §3. Pure volume selection requests extension; DSP caps actual bass demand. Smooth withdrawal and restoration consume one saved limits profile. Name and verify DSP timing/latency; the software volume watcher is not the peak limiter. | R | **NN**, adversarial review |
 | 4.3 | First production caller lands (the engine's apply of a scheduled candidate). | C | code-review |
 
 ### Wave 5 — one budget, one sequence (join)
