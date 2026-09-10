@@ -11,7 +11,7 @@ Type=oneshot
 # is group-readable by the non-root jasper-control without being
 # world-readable (the doctor JSON can name configured subsystems).
 Group=jasper
-# 175 checks / concurrency 8 = ~22 waves x the 15 s per-check ceiling ~= 330 s,
+# 172 checks / concurrency 8 = ~22 waves x the 15 s per-check ceiling ~= 330 s,
 # plus the exclusive-lane probes (audio-probe) which run serialized outside
 # that, so ~600 s leaves headroom on a Zero 2 W without letting a wedged probe
 # leave the oneshot activating forever.

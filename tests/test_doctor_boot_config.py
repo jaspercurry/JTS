@@ -111,7 +111,7 @@ def test_i2s_dac_check_skips_a_usb_profile(monkeypatch, tmp_path):
 
     result = check_i2s_dac_overlay_persists()
 
-    assert result.status == "ok"
+    assert result.status == "skipped"
     assert result.reason == REASON_SKIPPED
 
 
@@ -122,7 +122,7 @@ def test_i2s_dac_check_skips_an_unregistered_device_id(monkeypatch, tmp_path):
 
     result = check_i2s_dac_overlay_persists()
 
-    assert result.status == "ok"
+    assert result.status == "skipped"
     assert result.reason == REASON_SKIPPED
 
 
@@ -132,7 +132,7 @@ def test_i2s_dac_check_skips_with_no_saved_topology(monkeypatch, tmp_path):
 
     result = check_i2s_dac_overlay_persists()
 
-    assert result.status == "ok"
+    assert result.status == "skipped"
     assert result.reason == REASON_SKIPPED
 
 

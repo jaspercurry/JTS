@@ -40,7 +40,7 @@ REASON_I2S_HAT_BLOCK_MALFORMED = "i2s_hat_block_malformed"
 
 
 def _skipped(detail: str) -> CheckResult:
-    return CheckResult(CHECK_NAME, "ok", f"skipped — {detail}", reason=REASON_SKIPPED)
+    return CheckResult(CHECK_NAME, "skipped", detail, reason=REASON_SKIPPED)
 
 
 @doctor_check()

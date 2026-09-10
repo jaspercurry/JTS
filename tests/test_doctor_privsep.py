@@ -161,13 +161,13 @@ def test_mixed_present_and_absent_only_checks_present(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 # household_secret verdict — the fail-safe-open observability case
 # --------------------------------------------------------------------------- #
-def test_household_secret_present_unreadable_warns_gate_open(tmp_path: Path):
+def test_household_secret_present_unreadable_fails_gate_open(tmp_path: Path):
     secret = tmp_path / "household_secret"
     st = _make(secret, 0o600)
     result = privsep._household_secret_verdict(
         st, uid=999_999, gids=frozenset({777_777}), user="jasper-control"
     )
-    assert result.status == "warn"
+    assert result.status == "fail"
     assert result.reason == privsep.REASON_HOUSEHOLD_SECRET_UNREADABLE
 
 

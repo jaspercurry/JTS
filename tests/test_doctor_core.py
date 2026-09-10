@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import re
 import stat
 import sys
 import threading
@@ -668,6 +669,16 @@ def test_oneshot_unit_runs_doctor_with_out():
     assert settings["MemoryMax"].endswith("M")
     # On-demand only — never enabled (no [Install] section header).
     assert "[Install]" not in lines
+
+
+def test_oneshot_timeout_comment_check_count_matches_registry():
+    """The '<N> checks / concurrency 8' timeout-math comment must track the
+    registry so a check addition/removal doesn't leave the TimeoutStartSec
+    budget explained by a stale count."""
+    text = UNIT.read_text(encoding="utf-8")
+    m = re.search(r"# (\d+) checks / concurrency", text)
+    assert m, "expected a '<N> checks / concurrency' comment in the unit"
+    assert int(m.group(1)) == len(doctor.registered_checks())
 
 
 def test_oneshot_in_managed_units_and_polkit_allowlist():
