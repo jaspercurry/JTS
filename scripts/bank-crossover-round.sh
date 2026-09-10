@@ -160,6 +160,14 @@ repeat_floor_status="$(pull_optional repeat-floor /var/lib/jasper/active_speaker
 declared_geometry_status="$(pull_optional declared-geometry /var/lib/jasper/measurement_geometry.json declared-geometry.json)"
 
 # --------------------------------------------------------------------- #
+# 3e. CamillaDSP durable statefile — banked beside applied-profile.json so
+#     incumbent.identity.applied_profile_displacement (#2537, #3316) can be
+#     read offline, against the config this Pi was ACTUALLY playing at bank
+#     time. NOT part of the round's identity — reported, not gated.
+# --------------------------------------------------------------------- #
+statefile_status="$(pull_optional camilla-statefile /var/lib/camilladsp/outputd-statefile.yml camilla-statefile.yml)"
+
+# --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
 #    Same per-unit + combined shape as fetch-pi-logs.sh, scoped to this
 #    round's units instead of the whole install.
@@ -212,6 +220,7 @@ echo "  design-draft:    $design_draft_status" >&2
 echo "  applied-profile: $applied_profile_status" >&2
 echo "  repeat-floor:    $repeat_floor_status" >&2
 echo "  declared-geom:   $declared_geometry_status" >&2
+echo "  camilla-state:   $statefile_status" >&2
 echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )); then

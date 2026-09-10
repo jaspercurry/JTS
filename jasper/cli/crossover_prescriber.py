@@ -402,6 +402,11 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
             if args.declared_geometry
             else inputs.declared_geometry_path
         ),
+        # No default, same reason as ``state_path``: the CamillaDSP statefile
+        # is live, mutable system state, and a defaulted read would make two
+        # honest rebuilds of the same round disagree on the packet's
+        # fingerprint depending purely on when each ran (#3316).
+        statefile_path=None,
     )
 
 

@@ -92,8 +92,9 @@ def _ssot_documents(
     applied_profile_path: Path | None,
     repeat_floor_path: Path | None,
     declared_geometry_path: Path | None,
+    statefile_path: Path | None,
 ) -> tuple[tuple[str, Path | None], ...]:
-    """``(banked filename, source path)`` for the five documents beside the
+    """``(banked filename, source path)`` for the six documents beside the
     bundle, defaulting to each document's own on-box SSOT constant.
 
     Both halves come from ``round_inputs``, the reader that opens them, so
@@ -120,6 +121,10 @@ def _ssot_documents(
         (
             reader.DECLARED_GEOMETRY_FILENAME,
             declared_geometry_path or reader.DECLARED_GEOMETRY_DEFAULT_PATH,
+        ),
+        (
+            reader.STATEFILE_FILENAME,
+            statefile_path or reader.STATEFILE_DEFAULT_PATH,
         ),
     )
 
@@ -203,6 +208,7 @@ def bank_round(
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
     declared_geometry_path: Path | None = None,
+    statefile_path: Path | None = None,
 ) -> BankedRound:
     """Bank one live session bundle and its SSOT documents into the campaign home.
 
@@ -261,6 +267,7 @@ def bank_round(
         applied_profile_path,
         repeat_floor_path,
         declared_geometry_path,
+        statefile_path,
     )
     target.mkdir(parents=True)
     try:
