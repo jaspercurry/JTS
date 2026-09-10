@@ -136,6 +136,7 @@ _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "exclusion_evidence": dict,
     "blend_correction": list,
     "room_correction": dict,
+    "bass_extension": dict,
 }
 
 _ROOM_CORRECTION_KEYS = frozenset({
@@ -452,6 +453,7 @@ class MeasuredCrossoverCandidate:
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     blend_correction: Sequence[Mapping[str, Any]] = ()
     room_correction: Mapping[str, Any] = field(default_factory=dict)
+    bass_extension: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -590,6 +592,8 @@ class MeasuredCrossoverCandidate:
             core["blend_correction"] = [dict(f) for f in self.blend_correction]
         if self.room_correction:
             core["room_correction"] = dict(self.room_correction)
+        if self.bass_extension:
+            core["bass_extension"] = dict(self.bass_extension)
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -608,6 +612,7 @@ class MeasuredCrossoverCandidate:
             "exclusion_evidence": dict(self.exclusion_evidence),
             "blend_correction": [dict(f) for f in self.blend_correction],
             "room_correction": dict(self.room_correction),
+            "bass_extension": dict(self.bass_extension),
             "fingerprint": self.fingerprint,
         }
 
@@ -704,6 +709,11 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "room_correction_malformed", "candidate room_correction is malformed"
             )
+        bass_extension_raw = raw.get("bass_extension", {})
+        if not isinstance(bass_extension_raw, Mapping):
+            _refuse(
+                "bass_extension_malformed", "candidate bass_extension is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -721,6 +731,7 @@ class MeasuredCrossoverCandidate:
                 exclusion_evidence=dict(exclusion_evidence_raw),
                 blend_correction=list(blend_correction_raw),
                 room_correction=dict(room_correction_raw),
+                bass_extension=dict(bass_extension_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(

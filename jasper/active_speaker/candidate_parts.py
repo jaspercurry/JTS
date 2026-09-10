@@ -38,6 +38,7 @@ def compose_candidate(
     room_correction: Mapping[str, Any] | None = None,
     room_prescription_sha256: str = "",
     room_measured_basis: Mapping[str, Any] | None = None,
+    bass_extension: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Replace each selected role's filters and trim; retain other base settings.
 
@@ -119,6 +120,7 @@ def compose_candidate(
         linearization=linearization,
         blend_correction=blend.candidate.blend_correction,
         room_correction=room,
+        bass_extension=dict(bass_extension or {}),
     )
     # The room set is emitted here so the emitter's headroom charge runs at
     # compose rather than at apply.
