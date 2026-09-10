@@ -64,9 +64,9 @@ from pathlib import Path
 
 import numpy as np
 
-# Reuse the shared primitives from wake_enroll: write_wav, the UDP
-# port defaults, the systemctl + sudo guards. Avoids drift between
-# two near-identical recording CLIs.
+# Reuse the shared primitives from wake_enroll: the UDP port defaults,
+# the systemctl + sudo guards. Avoids drift between two near-identical
+# recording CLIs.
 from jasper.cli.wake_enroll import (
     CHANNELS,
     DEFAULT_AEC_DTLN_PORT,

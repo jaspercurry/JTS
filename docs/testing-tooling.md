@@ -986,6 +986,9 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
 
 # per-seat sign/magnitude testimony for every feature in the trusted sweep
 jasper-round-views agreement <round-dir>
+
+# fit the bass plant on the round's seat-cube median, size the extension family
+jasper-round-views bass-fit <round-dir>
 ```
 
 - **Input shapes.** Every subcommand reads either a *banked round directory*
