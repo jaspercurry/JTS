@@ -1042,10 +1042,20 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         if offset % 3 == 0:
             with pytest.raises(CaptureBeginDeferred):
                 gate.gate(index, index, entry)
+            # A fresh hold is the end of the batch before it: the entry that
+            # batch was executing must not still be the one published.
+            assert gate.current() is None
             pending = gate.pending()
             grants.append((pending["degrees"], pending["vertical_deg"]))
             gate.release(**{name: pending["action"]["body"][name] for name in ("index", "attempt")})
         gate.gate(index, index, entry)
+        # Every grant publishes what it is recording — the released config and
+        # the ones the batch shortcut admits under it alike, since only this
+        # moves while the microphone stays put.
+        assert gate.current()["index"] == index
+        assert gate.current()["batch"] == {
+            "start": index - offset % 3, "size": 3, "ordinal": offset % 3 + 1,
+        }
         assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 3 + 1)
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "3"
         assert entry.screen[POSITION_BATCH_START_KEY] == str(index - offset % 3)
@@ -1053,6 +1063,8 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         if offset % 3:
             assert entry.screen["auto_advance"] == flow.AUTO_ADVANCE_COUNTDOWN
     assert len(grants) == len(set(grants)) == 3
+    gate.abandon_hold()
+    assert gate.current() is None
 
 
 def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():

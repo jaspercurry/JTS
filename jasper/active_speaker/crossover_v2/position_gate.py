@@ -58,6 +58,7 @@ class PositionGate:
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
         self._pending: dict[str, Any] | None = None
+        self._current: dict[str, Any] | None = None
         self._released: set[tuple[int, int]] = set()
         self._opened_at: float | None = None
         self._session_ceiling_expired = False
@@ -83,15 +84,25 @@ class PositionGate:
         if not 1 <= config <= batch_size or batch_start + config - 1 != index:
             raise CaptureBeginRefused(POSITION_TARGET_MISSING_CODE, "Invalid pose batch identity.")
         batch = (batch_start, batch_size, target, vertical)
+        prompt = {name: str(screen.get(name) or "") for name in ("progress", "title", "body")}
+        # What a granted begin is about to record. Configs 2..N of a pose batch
+        # are granted without a hold of their own, so this is the only thing
+        # that moves while the microphone stays where it is.
+        granted = {
+            "index": index, "attempt": attempt, "prompt": prompt,
+            "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
+        }
         now = self._clock()
         with self._lock:
             if key in self._released:
+                self._current = granted
                 return
             opened = self._opened_at
             waited = 0.0 if opened is None else now - opened
             if waited > REMOTE_POSITION_HOLD_BUDGET_S or self._session_ceiling_expired:
                 expired_hold = waited > REMOTE_POSITION_HOLD_BUDGET_S
                 self._pending = None
+                self._current = None
                 self._opened_at = None
                 self._last = None
                 log_event(
@@ -110,16 +121,15 @@ class PositionGate:
             if self._last == (index - 1, attempt - 1, batch) and self._pending is None:
                 self._released.add(key)
                 self._last = (index, attempt, batch)
+                self._current = granted
                 return
             if self._pending is None:
                 self._opened_at = now
+                self._current = None
                 self._pending = {
                     "index": index, "attempt": attempt, "degrees": target,
                     "vertical_deg": vertical, "role": role,
-                    "prompt": {
-                        name: str(screen.get(name) or "")
-                        for name in ("progress", "title", "body")
-                    },
+                    "prompt": prompt,
                     "hand_released": (
                         screen[POSITION_HAND_RELEASED_KEY] == "true"
                         if POSITION_HAND_RELEASED_KEY in screen else
@@ -149,6 +159,11 @@ class PositionGate:
         with self._lock:
             return deepcopy(self._pending)
 
+    def current(self) -> dict[str, Any] | None:
+        """The entry a grant is executing, cleared when a fresh hold opens."""
+        with self._lock:
+            return deepcopy(self._current)
+
     def note_session_ceiling_expired(self) -> None:
         """Latch the session volume owner's ceiling finding, including after drain."""
         with self._lock:
@@ -159,6 +174,7 @@ class PositionGate:
         with self._lock:
             abandoned = self._pending
             self._pending = None
+            self._current = None
             self._opened_at = None
             self._last = None
             self._released.clear()

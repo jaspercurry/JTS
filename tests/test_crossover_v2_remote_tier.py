@@ -1501,8 +1501,18 @@ def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
         assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
         # Another flow's reader must never see this session's hold.
         assert correction_capture._get_capture_slot_for("sync:") is None
+        # A hold is not an execution: nothing is recording while the gate waits.
+        assert "position_current" not in capture
         gate.release(2, 2)
-        assert "position_pending" not in correction_capture._get_capture_slot_for("crossover_v2:")
+        capture = correction_capture._get_capture_slot_for("crossover_v2:")
+        assert "position_pending" not in capture
+        assert "position_current" not in capture
+        # The runner's re-entry into its own grant is what publishes the entry
+        # now being recorded, batch identity included.
+        gate.gate(2, 2, _entry(-22, POSITION_ROLE_OFFAX))
+        current = correction_capture._get_capture_slot_for("crossover_v2:")["position_current"]
+        assert (current["index"], current["attempt"]) == (2, 2)
+        assert current["batch"] == {"start": 2, "size": 1, "ordinal": 1}
 
 
 def test_a_finished_session_stops_advertising_its_hold():

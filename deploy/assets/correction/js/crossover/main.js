@@ -671,8 +671,8 @@ let lastWalkKey = null;
 // tap-preserving discipline as actionRowKey. renderWalk runs on every 1.5 s
 // poll, and rebuilding the release button under a finger that is already
 // down is how hardware round 4 lost taps on the action row.
-function walkKey(prompt, pending, yielded) {
-  return JSON.stringify({prompt, pending: pending || null, yielded, busy});
+function walkKey(prompt, pending, yielded, progress) {
+  return JSON.stringify({prompt, pending: pending || null, yielded, busy, progress});
 }
 
 // The walkthrough: which spot, in the capture plan's own words, and the
@@ -730,11 +730,20 @@ function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
   const held = walking ? capture.position_pending : null;
   const pending = held && held.hand_released ? held : null;
+  // The entry the gate is EXECUTING, and the only thing that moves during a
+  // pose batch: configs 2..N are granted under the first config's release, so
+  // no second hold is published and the retained prompt would otherwise freeze
+  // the progress line for the whole batch. Cleared server-side when a fresh
+  // hold opens, so the next pose's line is never a leftover.
+  const current = walking ? capture.position_current : null;
   if (pending && pending.prompt) walkPrompt = pending.prompt;
   if (pending) walkGeometry = {degrees: pending.degrees, vertical_deg: pending.vertical_deg};
   if (!walking) { walkPrompt = null; walkGeometry = null; }
   const show = Boolean(walking && walkPrompt && !yielded);
-  const key = walkKey(show ? walkPrompt : null, show ? pending : null, yielded);
+  const progress = show
+    ? ((current && current.prompt && current.prompt.progress) || walkPrompt.progress || '')
+    : '';
+  const key = walkKey(show ? walkPrompt : null, show ? pending : null, yielded, progress);
   if (key === lastWalkKey) return;
   lastWalkKey = key;
   els.walk.hidden = !show;
@@ -742,7 +751,7 @@ function renderWalk(capture, {active, yielded}) {
     els.walkAction.replaceChildren();
     return;
   }
-  els.walkProgress.textContent = walkPrompt.progress || '';
+  els.walkProgress.textContent = progress;
   els.walkHeadline.textContent = formatDistances(walkPrompt.title || '');
   els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
   els.walkDetail.hidden = !walkPrompt.body;
