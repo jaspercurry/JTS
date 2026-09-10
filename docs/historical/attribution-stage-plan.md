@@ -653,7 +653,7 @@ scriptable, no phone, no relay, no human mid-loop.
 
 **The carrier, decided.** The harness is an **operator CLI** whose graph
 lifecycle is the shape of
-[`jasper/bass_extension/bench/activation.py`](../../jasper/bass_extension/bench/activation.py)
+[`jasper/bass_extension/bench/activation.py`](https://github.com/jaspercurry/JTS/blob/a745ebcebb2b5c247b52f958e1fec8ae5e634d10/jasper/bass_extension/bench/activation.py)
 — `activate → prove → yield for measurement → restore`, where the
 predecessor is snapshotted and fingerprinted first, only the *running*
 config is mutated (never the on-disk file, so `reload()` is always a valid

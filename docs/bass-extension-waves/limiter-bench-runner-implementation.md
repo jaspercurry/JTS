@@ -4,8 +4,8 @@
 > 2026-07-20 (PRs [#1627](https://github.com/jaspercurry/JTS/pull/1627) and
 > [#1629](https://github.com/jaspercurry/JTS/pull/1629)), written to
 > commission the limiter bench runner in a fresh session. **The runner it
-> commissions exists**: the code is
-> [`jasper/bass_extension/bench/`](../../jasper/bass_extension/bench/) and
+> commissioned is preserved** at
+> [`jasper/bass_extension/bench/`](https://github.com/jaspercurry/JTS/tree/a745ebcebb2b5c247b52f958e1fec8ae5e634d10/jasper/bass_extension/bench/) and
 > its tests are `tests/test_bass_extension_bench_*.py`. Preserved for
 > primary-source archaeology — read it for what the runner was asked to be
 > and why, not as a live work order, and not for current state: specific
