@@ -294,15 +294,17 @@ JASPER_PYTHON=/opt/jasper/.venv/bin/python
 echo "== jasper-control /state =="
 curl -fsS --max-time 10 http://127.0.0.1:8780/state 2>&1
 echo
-for sock in /run/jasper-fanin/control.sock /run/jasper-outputd/control.sock; do
-    echo "== STATUS ${sock} =="
-    sudo -n "$JASPER_PYTHON" - "$sock" 2>&1 <<'PY'
+# One interpreter for both sockets: every jasper import costs seconds and
+# tens of MB on the 415 MB Zero 2 W (ADR-0226).
+sudo -n "$JASPER_PYTHON" - /run/jasper-fanin/control.sock \
+    /run/jasper-outputd/control.sock 2>&1 <<'PY'
 import json, sys
 from jasper.platform.status_socket import read_status_socket_or_none
-print(json.dumps(read_status_socket_or_none(sys.argv[1]), indent=2, sort_keys=True))
+for sock in sys.argv[1:]:
+    print(f"== STATUS {sock} ==")
+    print(json.dumps(read_status_socket_or_none(sock), indent=2, sort_keys=True))
+    print()
 PY
-    echo
-done
 # The rate-storm forensic artifact (jasper/control/airplay_health.py writes it
 # and nothing else reads it) — newest capture only, tail-bounded.
 newest_storm="$(ls -1t /var/lib/jasper/rate-storms/storm-*.csv 2>/dev/null | head -1)"
