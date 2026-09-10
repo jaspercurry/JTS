@@ -13,6 +13,7 @@ to latest-source-wins rather than getting stuck on a bogus source.
 from __future__ import annotations
 
 import json
+import stat
 
 import pytest
 
@@ -94,6 +95,14 @@ def test_write_is_atomic_no_partial_on_existing(tmp_path):
     write_mode(path, Source.AIRPLAY)
     leftovers = [p.name for p in tmp_path.iterdir() if p.name != "mux_mode.json"]
     assert leftovers == [], f"unexpected leftover files: {leftovers}"
+
+
+def test_write_mode_matches_the_heal_allowlist_mode(tmp_path):
+    """deploy/lib/install/env-migrations.sh heals mux_mode.json to
+    `f:0660` (group-jasper writable) — the writer must not fight that."""
+    path = tmp_path / "mux_mode.json"
+    write_mode(path, Source.AIRPLAY)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o660
 
 
 def test_write_failure_does_not_raise(tmp_path):

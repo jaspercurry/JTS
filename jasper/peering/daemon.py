@@ -97,8 +97,9 @@ class PeeringDaemon:
         # Future that resolves to "WIN" or "LOSE". Created on each
         # ARBITRATE RPC, resolved when StartSession/StandDown fires.
         self._pending_decision: Optional[asyncio.Future[str]] = None
-        # Tracks the in-flight arbitration's epoch so we can correlate
-        # the StartSession/StandDown back to the RPC.
+        # Epoch of the in-flight arbitration, echoed to voice in the
+        # ARBITRATE reply so its SESSION_STARTED/ENDED name the same
+        # session. Only one arbitration is ever in flight.
         self._pending_epoch: Optional[str] = None
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._running = False
@@ -346,14 +347,20 @@ class PeeringDaemon:
                 self._cancel_timer(tid)
 
     def _resolve_pending(self, decision: str) -> None:
-        """Resolve the in-flight ARBITRATE RPC future. No-op if nothing
-        is pending (e.g. _execute fired StartSession after the RPC
-        already timed out and another arbitration is in flight)."""
-        if (
-            self._pending_decision is not None
-            and not self._pending_decision.done()
-        ):
-            self._pending_decision.set_result(decision)
+        """Resolve the in-flight ARBITRATE RPC future."""
+        if self._pending_decision is None:
+            return
+        if self._pending_decision.done():
+            # The state machine decided after the RPC failed open —
+            # voice already acted on the fail-open WIN.
+            log_event(
+                logger,
+                "peering.arbitrate.late_resolution",
+                decision=decision,
+                epoch=self._pending_epoch or "",
+            )
+            return
+        self._pending_decision.set_result(decision)
 
     def _spawn_send(self, payload: bytes) -> None:
         # stop() clears _running before it yields to cancellation. Refuse any

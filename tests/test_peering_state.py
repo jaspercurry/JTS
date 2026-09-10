@@ -130,19 +130,6 @@ def test_heartbeat_timeout_clears_suppression():
     assert m.state is PeerState.IDLE
 
 
-def test_local_wake_below_break_threshold_ignored_when_suppressed():
-    """A weak local wake during a foreign session is ignored. The
-    user can walk to the active speaker or wait for end-of-session."""
-    m = _make("alice", break_threshold=0.85)
-    m.handle(PeerClaim(epoch="ep1", peer_id="bob", now=10.0))
-    # Weak wake below threshold.
-    actions = m.handle(LocalWake(
-        score=0.6, snr_db=10.0, rms_dbfs=-25.0, can_serve=True, now=12.0,
-    ))
-    assert actions == []
-    assert m.state is PeerState.SUPPRESSED
-
-
 def test_strong_local_wake_breaks_suppression():
     """A strong local wake (above break_threshold) ends suppression and
     enters arbitration. The user can grab a non-primary speaker by

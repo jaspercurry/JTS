@@ -8,10 +8,9 @@ since wave 5b the process fader OWNER with it —
 
 `CamillaController._graph_mutation` ducks the main fader across a swap and
 releases it to ``min(canonical, current + own depth)``. With no canonical
-target registered, that release falls back to the entry snapshot — which an
-interleaved `CueDuck` may already have ducked — and the fader strands tens of
-dB quiet inside the band `maybe_reconcile_camilla` deliberately refuses to
-heal.
+target registered, that release falls back to the entry snapshot — which
+ignores a volume change that lands inside the swap's duck window — and the
+fader strands tens of dB quiet.
 
 Every swap that ducks uses the canonical target, with no exception. The
 crossover-v2 measurement path used to declare its own reference (#2929); wave
@@ -70,7 +69,8 @@ _ENTRY_POINTS = {
     "jasper/web/correction_setup.py": "main",
     # `jasper-control` — the live pair-balance trim patches the graph.
     "jasper/control/server.py": "main",
-    # `jasper-voice` — bass-extension reloads, and the process CueDuck runs in.
+    # `jasper-voice` — bass-extension reloads, and the process the fader owner
+    # and its duck holders live in.
     "jasper/voice/daemon_main.py": "run",
     # `python -m jasper.multiroom.reconcile` — the bonded-pipe apply and the
     # solo restore both swap the graph (leader_config / follower_config /

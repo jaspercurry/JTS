@@ -177,7 +177,9 @@ def enqueue_reference_frames(
         else drop_log.flush(now)
     )
     if report is not None:
-        logger.warning(drop_message, *report)
+        # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key is
+        # the record's file:line, so the caller's must survive.
+        logger.warning(drop_message, *report, stacklevel=2)
 
 
 def outputd_ref_udp_thread(
