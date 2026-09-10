@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import signal
 import stat
-from collections.abc import Iterable, Mapping
+from collections.abc import Coroutine, Iterable, Mapping
 from pathlib import Path
 from typing import Any, assert_never
 
@@ -63,6 +65,7 @@ from jasper.active_speaker.commission_ramp import (
     load_ramp_state,
     ramp_audible_step,
     record_ramp_operator_ack,
+    remute_stepped_driver,
 )
 from jasper.active_speaker.measurement import confirmed_driver_roles
 from jasper.active_speaker.commission_wiring import (
@@ -839,9 +842,85 @@ def _cmd_commission_rollback(args: argparse.Namespace) -> int:
     return 0 if rollback.get("status") in {"rolled_back", "blocked"} else 1
 
 
+#: Signals that end an audible commissioning step THROUGH the re-mute rather
+#: than around it. SIGHUP is the remote spelling: sshd hangs up the process
+#: group when the transport goes away, and Python's default for it is death
+#: without unwinding. Mirrors ``arm_walk.PARK_ON_SIGNALS``.
+REMUTE_ON_SIGNALS: tuple[signal.Signals, ...] = (
+    signal.SIGHUP,
+    signal.SIGINT,
+    signal.SIGTERM,
+)
+#: 128 + signum, the shell's own spelling for "ended by this signal", so the
+#: three endings stay distinguishable in a trail.
+SIGNAL_EXIT_BASE = 128
+
+
+async def _stoppable_ramp_step(
+    step: Coroutine[Any, Any, dict[str, Any]],
+    *,
+    load_config: Any,
+) -> tuple[dict[str, Any], int]:
+    """Run one audible ramp step with the stop signals wired to the re-mute.
+
+    The step un-mutes a driver part-way through and can raise it to 0 dBFS, so
+    a process killed mid-call used to leave it there with nothing to roll it
+    back. The first SIGHUP/SIGINT/SIGTERM cancels the step and re-mutes exactly
+    once -- :func:`remute_stepped_driver` is idempotent and publishes its own
+    failures instead of raising, so the stop path cannot itself fail loudly --
+    then the verb exits ``SIGNAL_EXIT_BASE + signum``.
+    """
+
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(step)
+    stopped: int | None = None
+
+    def _stop(signum: int) -> None:
+        nonlocal stopped
+        if stopped is not None:
+            return
+        stopped = signum
+        task.cancel()
+
+    installed: list[signal.Signals] = []
+    for sig in REMUTE_ON_SIGNALS:
+        try:
+            loop.add_signal_handler(sig, _stop, int(sig))
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(sig)
+    stopped_by: int
+    try:
+        return await task, 0
+    except asyncio.CancelledError:
+        if stopped is None:
+            raise
+        stopped_by = stopped
+    except KeyboardInterrupt:
+        # Reached only where no handler could be installed (a loop that is not
+        # the main thread's): the interpreter raises inside the step instead.
+        stopped_by = int(signal.SIGINT)
+    finally:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(sig)
+    remute = await remute_stepped_driver(
+        load_config=load_config, reason=f"cli_signal_{stopped_by}"
+    )
+    return (
+        {"status": "stopped", "signal": stopped_by, "remute": remute},
+        SIGNAL_EXIT_BASE + stopped_by,
+    )
+
+
 def _print_ramp_step_summary(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     print(f"Stage-5 ramp step: {status}")
+    if status == "stopped":
+        remute = payload.get("remute") or {}
+        print(f"  stopped by signal {payload.get('signal')}")
+        print(f"  re-muted: {remute.get('status')}")
+        return
     print(
         f"  target: group={payload.get('speaker_group_id')} role={payload.get('role')}"
     )
@@ -875,34 +954,39 @@ def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
     preset, crossover_preview = _resolve_commission_inputs(args)
     cam = _camilla_controller()
 
-    async def _run() -> dict[str, Any]:
+    async def _run() -> tuple[dict[str, Any], int]:
         current_config_path, current_config_error = await read_current_config_path(cam)
         evidence_path = write_commission_path_safety(
             topology, staged, current_config_path, current_config_error
         )
         load_config, read_running_config, get_current_config_path = commission_seams(cam)
-        return await ramp_audible_step(
-            topology,
-            speaker_group_id=args.group,
-            role=args.role,
-            load_config=load_config,
-            read_running_config=read_running_config,
-            get_current_config_path=get_current_config_path,
-            preset=preset,
-            crossover_preview=crossover_preview,
-            path_safety_evidence_path=evidence_path,
-            staged_config=staged,
-            confirmed_roles=confirmed_driver_roles(
+        return await _stoppable_ramp_step(
+            ramp_audible_step(
                 topology,
                 speaker_group_id=args.group,
+                role=args.role,
+                load_config=load_config,
+                read_running_config=read_running_config,
+                get_current_config_path=get_current_config_path,
+                preset=preset,
+                crossover_preview=crossover_preview,
+                path_safety_evidence_path=evidence_path,
+                staged_config=staged,
+                confirmed_roles=confirmed_driver_roles(
+                    topology,
+                    speaker_group_id=args.group,
+                ),
             ),
+            load_config=load_config,
         )
 
-    payload = asyncio.run(_run())
+    payload, signal_exit = asyncio.run(_run())
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
         _print_ramp_step_summary(payload)
+    if signal_exit:
+        return signal_exit
     return 0 if payload.get("status") == "stepped" else 1
 
 

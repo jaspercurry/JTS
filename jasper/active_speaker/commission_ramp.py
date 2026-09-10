@@ -20,9 +20,11 @@ re-asserted against the RUNNING graph, not just the file. Level bounds are
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -42,6 +44,7 @@ from .camilla_yaml import (
 )
 from .graph_evidence import driver_limiter_name
 from .safe_playback import (
+    DEFAULT_ARM_TTL_SEC,
     arm_safe_playback_session,
     load_safe_playback_state,
     playback_target_signature,
@@ -67,11 +70,23 @@ RAMP_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE"
 RAMP_BACKEND = "commission_gain_ramp"
 COMMISSION_RAMP_MAX_LEVEL_DBFS = 0.0
 
+# Seconds between the audible-window watchdog's reads of the shared ramp and
+# safe_playback state files; an ack from any process ends the window this fast.
+REMUTE_WATCH_POLL_S = 1.0
+# Hard ceiling on one watchdog's life: the safe_playback arm TTL the window is
+# measured against, plus a poll of slack. A window that reaches it re-mutes.
+REMUTE_WATCH_CEILING_S = float(DEFAULT_ARM_TTL_SEC) + REMUTE_WATCH_POLL_S
+
 # Low-frequency first: a driver is ramped audible only after its lower siblings
 # are floor-confirmed.
 RAMP_ROLE_ORDER = ("woofer", "mid", "tweeter")
 
 _EPS = 1e-6
+
+# asyncio holds only weak references to tasks, so the audible-window watchdogs
+# are parked here for their bounded life or the GC may collect the only thing
+# standing between a stepped driver and a re-mute.
+_AUDIBLE_WINDOW_WATCHDOGS: set[asyncio.Task[dict[str, Any]]] = set()
 
 PathLoader = Callable[[str], Awaitable[bool]]
 RunningConfigReader = Callable[[], Awaitable[str | None]]
@@ -842,6 +857,13 @@ async def ramp_audible_step(
         },
         state_path=ramp_state_path_override,
     )
+    _arm_audible_window_watchdog(
+        load_config=load_config,
+        ramp_state_path_override=ramp_state_path_override,
+        commission_load_state_path=commission_load_state_path,
+        safe_playback_state_path=safe_playback_state_path,
+        validate=validate,
+    )
     log_event(
         logger,
         "active_speaker.stage5_ramp",
@@ -1139,6 +1161,150 @@ async def abort_ramp(
         "ramp": ramp_payload,
         "safe_playback": _safe_summary(safe),
     }
+
+
+async def remute_stepped_driver(
+    *,
+    load_config: PathLoader,
+    reason: str,
+    ramp_state_path_override: str | Path | None = None,
+    commission_load_state_path: str | Path | None = None,
+    safe_playback_state_path: str | Path | None = None,
+    validate: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Re-mute a driver an audible step left un-muted. Idempotent, never raises.
+
+    The one seam every unplanned stop shares -- the CLI's signal handlers and
+    :func:`watch_audible_window`. A call made once the commissioning load is no
+    longer armed touches the graph not at all, so two stops racing each other
+    cannot re-apply the anchor twice; a re-mute that fails is published as
+    ``result=remute_failed`` rather than raised, because a signal path has
+    nowhere to raise to.
+    """
+
+    try:
+        commission = load_commission_load_state(state_path=commission_load_state_path)
+        if commission.get("status") != "loaded":
+            return {"status": "already_remuted", "reason": reason, "rollback": None}
+        aborted = await abort_ramp(
+            load_config=load_config,
+            ramp_state_path_override=ramp_state_path_override,
+            commission_load_state_path=commission_load_state_path,
+            safe_playback_state_path=safe_playback_state_path,
+            validate=validate,
+        )
+    except Exception as exc:  # noqa: BLE001 - the caller may be a signal path.
+        log_event(
+            logger,
+            "active_speaker.stage5_ramp",
+            level=logging.ERROR,
+            result="remute_failed",
+            reason=reason,
+            error=type(exc).__name__,
+        )
+        return {
+            "status": "remute_failed",
+            "reason": reason,
+            "error": type(exc).__name__,
+            "rollback": None,
+        }
+
+    rollback = aborted.get("rollback") or {}
+    remuted = rollback.get("status") == "rolled_back"
+    log_event(
+        logger,
+        "active_speaker.stage5_ramp",
+        level=logging.INFO if remuted else logging.ERROR,
+        result="remuted" if remuted else "remute_failed",
+        reason=reason,
+        rollback=str(rollback.get("status")),
+    )
+    return {
+        "status": "remuted" if remuted else "remute_failed",
+        "reason": reason,
+        "rollback": rollback,
+        "ramp": aborted.get("ramp"),
+        "safe_playback": aborted.get("safe_playback"),
+    }
+
+
+async def watch_audible_window(
+    *,
+    load_config: PathLoader,
+    ramp_state_path_override: str | Path | None = None,
+    commission_load_state_path: str | Path | None = None,
+    safe_playback_state_path: str | Path | None = None,
+    validate: Callable[..., Any] | None = None,
+    poll_s: float = REMUTE_WATCH_POLL_S,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Hold one stepped driver's audible window and re-mute when it lapses.
+
+    The safe_playback TTL used to only refuse the NEXT ack, which left a step
+    nobody acknowledged audible for as long as the process lived. Here the same
+    deadline is an action. Bounded twice over: the watch ends the moment the
+    pending step is gone (an ack, an abort or a rollback from ANY process), and
+    it never outlives :data:`REMUTE_WATCH_CEILING_S`. Cancellation -- a caller
+    whose loop ends with the step, as the CLI's does -- leaves the window
+    unwatched and says so rather than re-muting a driver the operator is still
+    listening to.
+    """
+
+    started = monotonic()
+    try:
+        while True:
+            ramp_state = load_ramp_state(state_path=ramp_state_path_override)
+            if not isinstance(ramp_state.get("pending"), dict):
+                return {"status": "released", "remute": None}
+            safe = load_safe_playback_state(state_path=safe_playback_state_path)
+            lapsed = safe.get("status") != "armed"
+            if lapsed or monotonic() - started >= REMUTE_WATCH_CEILING_S:
+                reason = (
+                    "safe_playback_ttl_lapsed" if lapsed else "audible_window_ceiling"
+                )
+                remute = await remute_stepped_driver(
+                    load_config=load_config,
+                    reason=reason,
+                    ramp_state_path_override=ramp_state_path_override,
+                    commission_load_state_path=commission_load_state_path,
+                    safe_playback_state_path=safe_playback_state_path,
+                    validate=validate,
+                )
+                return {"status": "lapsed", "remute": remute}
+            await sleep(poll_s)
+    except asyncio.CancelledError:
+        log_event(
+            logger,
+            "active_speaker.stage5_ramp",
+            level=logging.WARNING,
+            result="window_unwatched",
+        )
+        raise
+
+
+def _arm_audible_window_watchdog(
+    *,
+    load_config: PathLoader,
+    ramp_state_path_override: str | Path | None,
+    commission_load_state_path: str | Path | None,
+    safe_playback_state_path: str | Path | None,
+    validate: Callable[..., Any] | None,
+) -> asyncio.Task[dict[str, Any]]:
+    """Give the window this step just opened a watcher on the caller's loop."""
+
+    task = asyncio.ensure_future(
+        watch_audible_window(
+            load_config=load_config,
+            ramp_state_path_override=ramp_state_path_override,
+            commission_load_state_path=commission_load_state_path,
+            safe_playback_state_path=safe_playback_state_path,
+            validate=validate,
+        )
+    )
+    _AUDIBLE_WINDOW_WATCHDOGS.add(task)
+    task.add_done_callback(_AUDIBLE_WINDOW_WATCHDOGS.discard)
+    return task
 
 
 # --- helpers -----------------------------------------------------------------

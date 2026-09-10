@@ -1073,3 +1073,146 @@ def test_clear_pending_ramp_step_bare_keeps_group_and_ordering_memory(tmp_path):
     assert cleared["speaker_group_id"] == "left"
     assert cleared["confirmed_roles"] == ["woofer"]
     assert load_ramp_state(state_path=path)["confirmed_roles"] == ["woofer"]
+
+
+# --- the audible window: the step nobody acknowledged (#2912 gap 2) ----------
+
+
+def _expire_safe_session(safe_path) -> None:
+    """Age the operator-confirmation session past its TTL without an ack."""
+    state = json.loads(safe_path.read_text(encoding="utf-8"))
+    state["expires_at"] = "2000-01-01T00:00:00Z"
+    safe_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _watch(tmp_path, cam, state_path, **kwargs):
+    return asyncio.run(
+        commission_ramp_mod.watch_audible_window(
+            load_config=cam.apply_running_config,
+            ramp_state_path_override=tmp_path / "ramp.json",
+            commission_load_state_path=state_path,
+            safe_playback_state_path=tmp_path / "safe.json",
+            validate=_valid_config,
+            **kwargs,
+        )
+    )
+
+
+def test_audible_window_watchdog_remutes_when_the_ttl_lapses(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+    _expire_safe_session(tmp_path / "safe.json")
+
+    async def _never(_seconds):
+        raise AssertionError("a lapsed window is seen on the first read")
+
+    out = _watch(tmp_path, cam, state_path, sleep=_never)
+
+    assert out["status"] == "lapsed"
+    assert out["remute"]["status"] == "remuted"
+    assert out["remute"]["reason"] == "safe_playback_ttl_lapsed"
+    assert cam.loaded_paths[-1] == staged_path
+    assert load_commission_load_state(state_path=state_path)["status"] == "rolled_back"
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is None
+
+
+def test_audible_window_watchdog_releases_on_an_acknowledgement(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+    loaded_before = list(cam.loaded_paths)
+    polls = []
+
+    async def _ack_between_polls(seconds):
+        polls.append(seconds)
+        commission_ramp_mod.clear_pending_ramp_step(state_path=tmp_path / "ramp.json")
+
+    out = _watch(tmp_path, cam, state_path, sleep=_ack_between_polls)
+
+    assert out["status"] == "released"
+    assert out["remute"] is None
+    assert len(polls) == 1
+    assert cam.loaded_paths == loaded_before  # nothing re-applied
+
+
+def test_audible_window_watchdog_is_bounded_by_its_ceiling(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+    clock = {"t": 0.0}
+
+    async def _advance(seconds):
+        clock["t"] += seconds
+
+    out = _watch(
+        tmp_path,
+        cam,
+        state_path,
+        sleep=_advance,
+        monotonic=lambda: clock["t"],
+    )
+
+    assert out["status"] == "lapsed"
+    assert out["remute"]["reason"] == "audible_window_ceiling"
+    assert clock["t"] >= commission_ramp_mod.REMUTE_WATCH_CEILING_S
+    assert cam.loaded_paths[-1] == staged_path
+
+
+def test_remute_stepped_driver_is_idempotent(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    def _remute():
+        return asyncio.run(
+            commission_ramp_mod.remute_stepped_driver(
+                load_config=cam.apply_running_config,
+                reason="test",
+                ramp_state_path_override=tmp_path / "ramp.json",
+                commission_load_state_path=state_path,
+                safe_playback_state_path=tmp_path / "safe.json",
+                validate=_valid_config,
+            )
+        )
+
+    first = _remute()
+    applied = list(cam.loaded_paths)
+    second = _remute()
+
+    assert first["status"] == "remuted"
+    assert first["rollback"]["status"] == "rolled_back"
+    assert second["status"] == "already_remuted"
+    assert second["rollback"] is None
+    assert cam.loaded_paths == applied  # the second stop touches no graph
+
+
+def test_remute_stepped_driver_publishes_a_failed_stop_instead_of_raising(
+    monkeypatch, tmp_path
+):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    async def _refusing_load(_path):
+        raise RuntimeError("CamillaDSP rejected the config")
+
+    out = asyncio.run(
+        commission_ramp_mod.remute_stepped_driver(
+            load_config=_refusing_load,
+            reason="test",
+            ramp_state_path_override=tmp_path / "ramp.json",
+            commission_load_state_path=state_path,
+            safe_playback_state_path=tmp_path / "safe.json",
+            validate=_valid_config,
+        )
+    )
+
+    assert out["status"] == "remute_failed"
+    assert out["rollback"]["status"] == "rollback_failed"
+    assert load_commission_load_state(state_path=state_path)["status"] != "rolled_back"

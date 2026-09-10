@@ -5,13 +5,17 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
+import os
+import signal
 from pathlib import Path
 
 import pytest
 import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
+import jasper.cli.active_speaker as active_speaker_cli
 from jasper.active_speaker import (
     HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
@@ -514,6 +518,48 @@ def test_commission_ramp_abort_cli_remutes(monkeypatch, tmp_path: Path, capsys):
     assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
         encoding="utf-8"
     )
+
+
+def test_commission_ramp_step_sigterm_remutes_once_and_exits_128_plus_signum(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """#2912 gap 2: a step killed mid-flight must not leave the driver up.
+
+    The verb un-mutes the driver part-way through its own call, so the window a
+    signal can land in is the call itself. The stop goes THROUGH the re-mute.
+    """
+    controller, env, _ = _arm_woofer(monkeypatch, tmp_path, capsys)
+    stops: list[str] = []
+    real_remute = active_speaker_cli.remute_stepped_driver
+
+    async def _counting_remute(**kwargs):
+        stops.append(str(kwargs.get("reason")))
+        return await real_remute(**kwargs)
+
+    async def _killed_step(*_args, **_kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(30)
+        raise AssertionError("the handler must cancel the step")
+
+    monkeypatch.setattr(active_speaker_cli, "remute_stepped_driver", _counting_remute)
+    monkeypatch.setattr(active_speaker_cli, "ramp_audible_step", _killed_step)
+
+    code = main([
+        "commission-ramp", "step", "--group", "mono", "--role", "woofer", "--json"
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 128 + int(signal.SIGTERM)
+    assert payload["status"] == "stopped"
+    assert payload["signal"] == int(signal.SIGTERM)
+    assert payload["remute"]["status"] == "remuted"
+    assert len(stops) == 1
+    # The running graph is back on the all-muted staged anchor.
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    # The handlers belong to the verb, not the process: it removed its own.
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
 
 
 def test_commission_ramp_tweeter_blocked_before_woofer_cli(
