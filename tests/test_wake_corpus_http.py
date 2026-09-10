@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.env_file import read_env_file
 from jasper.wake_corpus import bridge_session, runtime_probe
 from jasper.web import wake_corpus_setup
 
@@ -417,10 +418,7 @@ def test_api_session_stores_applied_capture_plan(
         plan = body["capture_plan"]
         assert plan["state"] == "session"
         assert plan["plan_id"]
-        values = {
-            line.split("=", 1)[0]: line.split("=", 1)[1]
-            for line in bridge_path.read_text().splitlines()
-        }
+        values = read_env_file(bridge_path)
         assert values["JASPER_WAKE_CORPUS_PLAN_ID"] == plan["plan_id"]
         assert values["JASPER_WAKE_CORPUS_EXPECTED_LEGS"] == "on,off"
 

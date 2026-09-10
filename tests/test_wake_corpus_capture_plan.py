@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from jasper.chip_aec.policy import ChipAecGate
+from jasper.env_file import read_env_file
 from jasper.wake_corpus import bridge_session, capture_plan, runtime_probe
 from jasper.web import wake_corpus_setup
 
@@ -634,10 +635,7 @@ def test_set_bridge_outputs_matches_selected_session_outputs(
         include_usb_dtln=False,
     )
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert changed is True
     assert "JASPER_AEC_DTLN_ENABLED" not in values
     assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in values
@@ -665,10 +663,7 @@ def test_set_bridge_outputs_enables_aec3_sweep_and_parks_dtln(
         include_aec3_sweep=True,
     )
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert changed is True
     assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
     assert values["JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"] == "1"
@@ -701,10 +696,7 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
         include_aec3_sweep=True,
     )
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert changed is True
     assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
@@ -771,10 +763,7 @@ def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
         include_aec3_sweep=False,
     )
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert changed is True
     assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
     assert "JASPER_AEC_CORPUS_USB_ENABLED" not in values
@@ -811,10 +800,7 @@ def test_set_bridge_outputs_chip_profile_parks_production_dtln(
         include_xvf_raw0_dtln=True,
     )
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert changed is True
     assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
     assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
@@ -852,7 +838,7 @@ def test_set_bridge_outputs_rolls_back_when_restart_fails(
             include_usb_dtln=True,
         )
 
-    assert bridge_path.read_text() == "JASPER_AEC_DTLN_ENABLED=0\n"
+    assert read_env_file(bridge_path) == {"JASPER_AEC_DTLN_ENABLED": "0"}
     assert attempts == 2  # failed new config, then restarted rollback config
 
 
@@ -867,7 +853,7 @@ def test_disable_bridge_outputs_rolls_back_when_restart_fails(
             "JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n"
         ),
     )
-    original = bridge_path.read_text()
+    original = read_env_file(bridge_path)
     attempts = 0
 
     def fake_restart() -> None:
@@ -881,7 +867,7 @@ def test_disable_bridge_outputs_rolls_back_when_restart_fails(
     with pytest.raises(OSError, match="bridge unavailable"):
         wake_corpus_setup.disable_bridge_corpus_outputs()
 
-    assert bridge_path.read_text() == original
+    assert read_env_file(bridge_path) == original
     assert attempts == 2
 
 
@@ -1090,7 +1076,7 @@ def test_corpus_exit_still_rolls_back_a_genuine_aec_init_failure(
 ) -> None:
     """Only the designed park is exempt; a fault keeps the rollback."""
     bridge_path, restarts, kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
-    original = bridge_path.read_text()
+    original = read_env_file(bridge_path)
     monkeypatch.setattr(
         bridge_session,
         "_aec_init_exec_main_status",
@@ -1100,7 +1086,7 @@ def test_corpus_exit_still_rolls_back_a_genuine_aec_init_failure(
     with pytest.raises(subprocess.CalledProcessError):
         wake_corpus_setup.disable_bridge_corpus_outputs()
 
-    assert bridge_path.read_text() == original
+    assert read_env_file(bridge_path) == original
     assert kicks == []
     # Rollback re-runs the same closure, so aec-init is attempted twice.
     assert restarts.count(wake_corpus_setup.AEC_INIT_UNIT) == 2
@@ -1115,7 +1101,7 @@ def test_corpus_exit_rolls_back_when_the_park_cannot_be_confirmed(
     keeps the pre-#2254 behaviour rather than silently swallowing a real fault.
     """
     bridge_path, _restarts, kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
-    original = bridge_path.read_text()
+    original = read_env_file(bridge_path)
     monkeypatch.setattr(
         bridge_session,
         "_aec_init_exec_main_status",
@@ -1125,7 +1111,7 @@ def test_corpus_exit_rolls_back_when_the_park_cannot_be_confirmed(
     with pytest.raises(subprocess.CalledProcessError):
         wake_corpus_setup.disable_bridge_corpus_outputs()
 
-    assert bridge_path.read_text() == original
+    assert read_env_file(bridge_path) == original
     assert kicks == []
 
 
@@ -1271,7 +1257,7 @@ def test_session_configure_keeps_rollback_when_leaving_a_chip_profile(
             "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
         ),
     )
-    original = bridge_path.read_text()
+    original = read_env_file(bridge_path)
 
     def fake_restart_unit(
         unit: str, timeout: float = wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC,
@@ -1295,7 +1281,7 @@ def test_session_configure_keeps_rollback_when_leaving_a_chip_profile(
             include_usb_dtln=False,
         )
 
-    assert bridge_path.read_text() == original
+    assert read_env_file(bridge_path) == original
 
 
 def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
@@ -1321,10 +1307,7 @@ def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
 
     wake_corpus_setup.disable_bridge_corpus_outputs()
 
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
+    values = read_env_file(bridge_path)
     assert "JASPER_AEC_DTLN_ENABLED" not in values
     assert "JASPER_AEC_CORPUS_REF_ENABLED" not in values
     assert "JASPER_AEC_CORPUS_USB_ENABLED" not in values
