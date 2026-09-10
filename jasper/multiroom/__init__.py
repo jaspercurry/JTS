@@ -13,9 +13,11 @@ the leader); each speaker plays a single assigned *channel*
 
 **Off by default.** A solo speaker pays nothing: with grouping `off`,
 no snapserver or snapclient runs, no channel split happens, no socket
-opens. The user explicitly opts in — the web wizard (`jasper/web/rooms_setup.py`)
-writes `/var/lib/jasper/grouping.env` — ABSENT means off, exactly like
-`/var/lib/jasper/peering.env`.
+opens. The user explicitly opts in via the web wizard
+(`jasper/web/rooms_setup.py`), which POSTs to jasper-control's
+`/grouping/set` route; `_write_grouping` (`jasper/control/handlers/grouping.py`)
+is the sole writer of `/var/lib/jasper/grouping.env` — ABSENT means off,
+exactly like `/var/lib/jasper/peering.env`.
 
 Channel splitting, the live snapcast lifecycle, and the setup wizard have
 since shipped. The pure layers (config, plan, argv builders, state) do no
