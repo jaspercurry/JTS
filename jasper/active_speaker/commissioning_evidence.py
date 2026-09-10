@@ -41,10 +41,12 @@ from jasper.audio_measurement.null_walk import (
 )
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.json_fields import finite_float
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    topology_config_fingerprint,
+)
 
 from ._common import require_sha256_hex
-from .baseline_profile import topology_config_fingerprint
 from .bundles import BUNDLE_KIND
 from .measurement import active_driver_targets
 from .commissioning_run import (

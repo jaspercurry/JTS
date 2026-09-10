@@ -262,7 +262,7 @@ _RESET_TIMEOUT_SEC = 5.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
 _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2737.0
 _CAMILLA_UNIT = "jasper-camilla.service"
-# jasper-camilla.service Requires= (and is After=) a Type=oneshot hardware
+# jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
 # that oneshot in full. Measured on jts4 (Pi Zero 2 W, 2026-08-21): the
 # reconciler took 25.5-26.0 s inside camilla restarts of 30.307 / 28.675 /

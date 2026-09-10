@@ -85,11 +85,8 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # shellcheck disable=SC2034  # consumed by the sourced common guard library
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 
-log() {
-    local outcome="$1"
-    shift || true
-    echo "event=camilla_crossover_guard.${outcome} ${*}" >&2
-}
+# shellcheck disable=SC2034  # the sourced common guard library's log() reads it
+JASPER_CAMILLA_GUARD_EVENT=camilla_crossover_guard
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
@@ -101,13 +98,15 @@ if [ -z "$COMMON_LIB" ]; then
     fi
 fi
 # shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+# The library owns log(), so the two lines a guard can emit before it is
+# readable are spelled out at these call sites.
 if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
-    log skip reason=common_lib_unavailable
+    echo "event=camilla_crossover_guard.skip reason=common_lib_unavailable" >&2
     exit 0
 fi
 if ! declare -F camilla_guard_repair_statefile >/dev/null \
         || ! declare -F camilla_guard_check_playback_pipe_or_repair >/dev/null; then
-    log skip reason=common_lib_invalid
+    echo "event=camilla_crossover_guard.skip reason=common_lib_invalid" >&2
     exit 0
 fi
 

@@ -51,6 +51,7 @@ from jasper.output_topology import (
     SpeakerChannel,
     SpeakerGroup,
     load_output_topology_strict,
+    stamp_statefile_topology,
 )
 
 from ._common import issue as _issue
@@ -4946,10 +4947,17 @@ def apply_safe_graph_decision_to_statefile(
             statefile=str(statefile_path),
             config_path=decision.selected_config_path,
         )
+    # The proof stamp goes down only AFTER the pointer it certifies is on disk.
+    # Stamping first would leave a failed `write_camilla_statefile` claiming the
+    # OLD statefile was proved against the NEW topology — the exact pair the
+    # boot gate reads as "no mismatch", which is the one answer that must not
+    # come out of a write that did not happen.
     current = _statefile_config_path(statefile_path)
     if _path_matches(current, decision.selected_config_path):
+        stamp_statefile_topology(statefile_path, topology)
         return False
     write_camilla_statefile(statefile_path, decision.selected_config_path)
+    stamp_statefile_topology(statefile_path, topology)
     return True
 
 

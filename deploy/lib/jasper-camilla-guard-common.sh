@@ -4,9 +4,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared dead-playback-pipe probe and runtime-safe statefile repair for the
-# two Camilla ExecStartPre guards. The sourcing guard provides log() and the
-# STATEFILE, BASE_CONFIG, RUNTIME_SAFE_GRAPH, and PROBE_TIMEOUT variables.
+# Shared parts of the Camilla guard family: the structured logger and the
+# camilla#1 statefile default for all three of them, plus the dead-playback-pipe
+# probe and runtime-safe statefile repair the two ExecStartPre guards use. The
+# sourcing guard sets JASPER_CAMILLA_GUARD_EVENT before sourcing, and provides
+# the STATEFILE, BASE_CONFIG, RUNTIME_SAFE_GRAPH, and PROBE_TIMEOUT variables
+# the repair half reads.
+
+# One `event=<prefix>.<outcome> k=v ...` renderer for the family. A guard names
+# its own prefix in JASPER_CAMILLA_GUARD_EVENT; the two lines a guard emits
+# BEFORE it can source this file are spelled out at those call sites, because
+# there is no logger yet to call.
+log() {
+    local outcome="$1"
+    shift || true
+    echo "event=${JASPER_CAMILLA_GUARD_EVENT}.${outcome} ${*}" >&2
+}
+
+# The camilla#1 (program-bake / outputd) statefile, one owner for the whole
+# family. camilla#2's guard reads a different file through a different override
+# and sets STATEFILE itself.
+: "${JASPER_CAMILLA_STATEFILE:=/var/lib/camilladsp/outputd-statefile.yml}"
 
 # camilla_guard_repair_statefile <reason> <from-config> <repair-detail>
 # Always returns 0: both callers are deliberately fail-open start-path guards.

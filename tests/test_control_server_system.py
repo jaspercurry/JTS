@@ -1617,6 +1617,38 @@ def test_system_restart_audio_uses_local_source_registry(
     assert body["skipped_units"] == []
 
 
+def test_restart_audio_carries_the_topology_gate_refusal_into_its_202(
+    monkeypatch, server_with_coordinator, tmp_path,
+):
+    """A 202 is "systemd took the job", not "the speaker plays".
+
+    jasper-camilla's ExecCondition refuses a graph proved against a different
+    topology (ADR-0283), and a refusal survives a restart — so pressing the
+    button again cannot clear it and a bare 202 sends the household chasing
+    audio that will not come back. The record rides along.
+    """
+    record = tmp_path / "gate.state"
+    record.write_text(
+        "refused_utc=2026-09-10T00:00:00Z\nreason=topology_mismatch\n"
+        "action=run the hardware reconciler\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(record))
+    _record_broker(monkeypatch)
+    base, _fake = server_with_coordinator
+
+    status, body = _post(f"{base}/system/restart/audio", {})
+
+    assert status == 202
+    assert body["topology_gate"]["reason"] == "topology_mismatch"
+    assert body["topology_gate"]["action"] == "run the hardware reconciler"
+
+    # Cleared, the field is absent rather than a null the dashboard must read.
+    record.unlink()
+    _status, healthy = _post(f"{base}/system/restart/audio", {})
+    assert "topology_gate" not in healthy
+
+
 def test_system_restart_audio_502s_when_the_broker_refuses(
     monkeypatch, server_with_coordinator,
 ):

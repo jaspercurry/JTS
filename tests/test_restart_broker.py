@@ -1507,7 +1507,7 @@ def test_root_fallback_uses_same_narrow_timeout_exception(tmp_path, monkeypatch)
 def test_camilla_start_exemption_mirrors_its_callers_derived_bound():
     """The broker must not silently truncate the bound its caller derived.
 
-    jasper-camilla.service Requires= a Type=oneshot hardware reconciler whose
+    jasper-camilla.service Wants= a Type=oneshot hardware reconciler whose
     RemainAfterExit is unset, so a camilla start re-queues it in full — measured
     25.5-26.0 s of a 28.7-30.3 s restart on jts4. Clamping the caller's derived
     bound back to the ordinary 120 s ceiling would re-create the same false

@@ -28,7 +28,8 @@
 
 set -uo pipefail
 
-STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+# shellcheck disable=SC2034  # the sourced common guard library's log() reads it
+JASPER_CAMILLA_GUARD_EVENT=camilla_pipe_guard
 # shellcheck disable=SC2034  # consumed by the sourced common guard library
 BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
 # shellcheck disable=SC2034  # consumed by the sourced common guard library
@@ -37,12 +38,6 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
 # shellcheck disable=SC2034  # consumed by the sourced common guard library
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
-
-log() {
-    local outcome="$1"
-    shift || true
-    echo "event=camilla_pipe_guard.${outcome} ${*}" >&2
-}
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
@@ -54,15 +49,19 @@ if [ -z "$COMMON_LIB" ]; then
     fi
 fi
 # shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+# The library owns log() and the statefile default, so the two lines a guard can
+# emit before it is readable are spelled out at these call sites.
 if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
-    log skip reason=common_lib_unavailable
+    echo "event=camilla_pipe_guard.skip reason=common_lib_unavailable" >&2
     exit 0
 fi
 if ! declare -F camilla_guard_repair_statefile >/dev/null \
         || ! declare -F camilla_guard_check_playback_pipe_or_repair >/dev/null; then
-    log skip reason=common_lib_invalid
+    echo "event=camilla_pipe_guard.skip reason=common_lib_invalid" >&2
     exit 0
 fi
+
+STATEFILE="$JASPER_CAMILLA_STATEFILE"
 
 [ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
 

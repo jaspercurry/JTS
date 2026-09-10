@@ -1450,18 +1450,23 @@ def _unit_directives(name: str) -> list[tuple[str, str]]:
 def test_camilla_start_requeues_the_hardware_reconciler_by_construction():
     """The dependency that dominates the start bound is structural, not a fluke.
 
-    jasper-camilla Requires= AND is After= the hardware reconciler, and that
+    jasper-camilla pulls the hardware reconciler AND is After= it, and that
     reconciler is a Type=oneshot whose RemainAfterExit is unset — so it is
-    inactive between runs and every camilla start re-queues it in full.
+    inactive between runs and every camilla start re-queues it in full. The
+    pull is Wants=, not Requires= (#4416 R8): a Wants= is still queued and
+    still awaited through After=, so the bound is unchanged.
     """
     import jasper.fanin.coupling_reconcile as cr
 
     camilla = _unit_directives("jasper-camilla.service")
-    requires = {
-        unit for key, value in camilla if key == "Requires" for unit in value.split()
+    pulled = {
+        unit
+        for key, value in camilla
+        if key in {"Requires", "Wants"}
+        for unit in value.split()
     }
     after = {unit for key, value in camilla if key == "After" for unit in value.split()}
-    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in requires
+    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in pulled
     assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in after
 
     reconciler = dict(_unit_directives(cr.AUDIO_HARDWARE_RECONCILE_UNIT))
@@ -1572,8 +1577,67 @@ def test_camilla_start_uses_the_derived_bound_through_the_broker(monkeypatch):
     assert seen["timeout"] == cr._CAMILLA_START_TIMEOUT_SEC
 
 
+@pytest.mark.parametrize(
+    ("active", "gate_refused", "ok", "detail_head"),
+    [
+        (True, False, True, ""),
+        (False, True, False, "camilla_topology_gate_refused"),
+        (False, False, False, "camilla_inactive_after_start"),
+    ],
+)
+def test_a_camilla_start_that_returned_zero_is_read_back(
+    monkeypatch, tmp_path, active, gate_refused, ok, detail_head,
+):
+    """systemd answers 0 for a start its own ExecCondition SKIPPED (ADR-0283),
+    so the broker's ok is not evidence CamillaDSP came up. The reconciler reads
+    the unit back and names the gate's record when it did not."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    monkeypatch.setattr(
+        restart_broker, "manage_units", lambda *_u, **_k: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "jasper.service_units.read_unit_states",
+        lambda _units, **_k: {
+            cr.CAMILLA_UNIT: {
+                "load_state": "loaded",
+                "active_state": "active" if active else "inactive",
+            }
+        },
+    )
+    record = tmp_path / "gate.state"
+    if gate_refused:
+        record.write_text(
+            "reason=topology_mismatch\nunproved=bbb\nproved=aaa\n", encoding="utf-8",
+        )
+    monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(record))
+
+    started, detail = cr._start_camilla(reason="t")
+
+    assert started is ok
+    assert detail.startswith(detail_head)
+
+
+def test_a_camilla_start_on_a_box_without_the_unit_stays_unknown(monkeypatch):
+    """No systemctl answer, or a manager that never heard of jasper-camilla, is
+    unknown — and unknown must not turn a working start into a reported
+    failure."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    monkeypatch.setattr(
+        restart_broker, "manage_units", lambda *_u, **_k: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "jasper.service_units.read_unit_states", lambda _units, **_k: None,
+    )
+
+    assert cr._start_camilla(reason="t") == (True, "")
+
+
 def test_camilla_stop_keeps_its_bound_because_a_stop_pulls_nothing(monkeypatch):
-    """A stop cannot re-queue Requires=, so the start's dominant term is absent."""
+    """A stop re-queues no dependency, so the start's dominant term is absent."""
     import jasper.fanin.coupling_reconcile as cr
     from jasper.control import restart_broker
 

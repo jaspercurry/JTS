@@ -28,6 +28,11 @@ sed in ``jasper-camilla-pipe-guard`` and ``jasper-camilla-crossover-guard`` unde
 ``deploy/bin``, plus a fourth in ``deploy/lib/jasper-camilla-guard-common.sh``
 that both guards source. That last one is invisible to a grep for the env-var
 name, because it takes the statefile as ``$STATEFILE``.
+
+The shell side's ``JASPER_CAMILLA_STATEFILE`` DEFAULT has one owner too: the
+guard-family library sets it for every guard that sources it (the two above and
+``jasper-camilla-topology-gate``), which is why none of the three spells the
+path. ``jasper-apply-airplay-mode`` sources nothing and keeps its own.
 """
 
 from __future__ import annotations

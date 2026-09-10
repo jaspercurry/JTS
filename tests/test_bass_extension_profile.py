@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
-    topology_config_fingerprint,
 )
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 import jasper.bass_extension.profile as profile_module

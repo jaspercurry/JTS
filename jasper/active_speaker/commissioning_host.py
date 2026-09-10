@@ -24,9 +24,11 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
 )
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    topology_fingerprint_matches,
+)
 
-from .baseline_profile import topology_config_fingerprint
 from .commissioning_evidence import (
     CompleteCommissioningEvidence,
     RegionEvidencePlan,
@@ -217,8 +219,9 @@ class CommissioningEvidenceHost:
             )
         if (
             topology.topology_id != plan.authority.topology_id
-            or topology_config_fingerprint(topology)
-            != plan.authority.topology_fingerprint
+            or not topology_fingerprint_matches(
+                plan.authority.topology_fingerprint, topology
+            )
             or topology.evaluation().get("status") != "verified"
         ):
             raise CommissioningHostError(

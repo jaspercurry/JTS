@@ -21,7 +21,7 @@ UnsetEnvironment=JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR 
 # Skip the pass when nothing it reads or writes has moved since the last
 # successful one. ExecCondition is inverted from a plain predicate: exit 0 runs
 # ExecStart, exit 1..254 skips it and leaves the unit inactive-but-successful —
-# so `start` still satisfies every caller, including jasper-camilla's Requires=.
+# so `start` still satisfies every caller, including jasper-camilla's Wants=.
 # NOT RemainAfterExit=yes, which would make every later start a no-op and leave
 # a real hot-plug unreconciled. Bypassed entirely by install.sh, which invokes
 # the script directly, so a deploy always gets one full pass.

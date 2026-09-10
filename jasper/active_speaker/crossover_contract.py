@@ -431,15 +431,49 @@ def _snapshot_owner(profile: Mapping[str, Any], snapshot: Mapping[str, Any]) -> 
     return "automatic" if measured_level_match_applied(snapshot) else "manual"
 
 
+def _topology_anchors_agree(
+    recorded: Any, expected: str, topology: Any | None
+) -> bool:
+    """Whether two PERSISTED topology anchors name the same topology.
+
+    Raw equality first, because that is the steady state. When they differ the
+    two may still be the SAME topology written by builds either side of #2500,
+    which narrowed ``topology_config_fingerprint``: a box that takes that deploy
+    carries an applied snapshot holding the legacy hash and rebuilds its
+    candidate with the narrowed one. ``topology_fingerprint_matches`` accepts
+    either spelling, so anchors that both name the live topology agree — which
+    is what stops the narrowing from causing the false staleness it was meant
+    to prevent. Without a topology to compare against there is nothing to
+    reconcile them with, and they disagree.
+    """
+
+    if recorded == expected:
+        return True
+    if topology is None:
+        return False
+    from jasper.output_topology import topology_fingerprint_matches
+
+    return topology_fingerprint_matches(
+        recorded, topology
+    ) and topology_fingerprint_matches(expected, topology)
+
+
 def crossover_snapshot_state(
     profile: Mapping[str, Any] | None,
     *,
     expected_topology_id: str | None = None,
     expected_topology_fingerprint: str | None = None,
+    topology: Any | None = None,
     expected_domain: str = "full",
     require_applied: bool = True,
 ) -> dict[str, Any]:
-    """Validate immutable Layer-A ownership and return one stable verdict."""
+    """Validate immutable Layer-A ownership and return one stable verdict.
+
+    ``topology`` is the LIVE topology both anchors are supposed to name; pass
+    it so a snapshot and a source written either side of #2500's fingerprint
+    narrowing are not read as two different topologies (see
+    :func:`_topology_anchors_agree`).
+    """
     profile = _mapping(profile)
     snapshot = _mapping(profile.get("recomposition_snapshot"))
     owner = _snapshot_owner(profile, snapshot) if snapshot else None
@@ -461,9 +495,8 @@ def crossover_snapshot_state(
     elif expected_topology_id and snapshot.get("topology_id") != expected_topology_id:
         reason = "active_applied_profile_snapshot_topology_stale"
         detail = "The applied crossover belongs to a different output topology."
-    elif (
-        expected_topology_fingerprint
-        and snapshot.get("topology_fingerprint") != expected_topology_fingerprint
+    elif expected_topology_fingerprint and not _topology_anchors_agree(
+        snapshot.get("topology_fingerprint"), expected_topology_fingerprint, topology
     ):
         reason = "active_applied_profile_snapshot_topology_stale"
         detail = "The applied crossover no longer matches the output topology."
