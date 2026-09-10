@@ -121,7 +121,9 @@ mod tests {
     fn f32_values_must_be_finite() {
         with_env("JTS_ENVCRATE_TEST_F32", Some("NaN"), || {
             assert_eq!(
-                env_f32("JTS_ENVCRATE_TEST_F32", 1.0).unwrap_err().to_string(),
+                env_f32("JTS_ENVCRATE_TEST_F32", 1.0)
+                    .unwrap_err()
+                    .to_string(),
                 "JTS_ENVCRATE_TEST_F32 must be finite"
             );
         });
