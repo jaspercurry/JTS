@@ -142,6 +142,10 @@ class CheckScreens:
     no real wiring can produce, set at the point the delta is computed
     (`PilotObservation.delta_implausible`) rather than inside anchor
     resolution, so it does not become a second writer of `anchor_ambiguous`.
+    Which retriable code it maps to depends on ``pilot_snr_ok`` (see
+    :func:`check_screens`'s rung-2 docstring) — the field itself is DETECTED
+    the same way regardless, since the 2026-08-16 incident's own SNR reading
+    was corrupted and detection must not depend on it.
     """
 
     stimulus_located: bool
@@ -167,11 +171,19 @@ def check_screens(screens: CheckScreens) -> str | None:
        because re-recording is exactly what fixes it. ``delta_implausible``
        joins this rung as a second, independent tell (#2647): a captured
        pilot delta no real wiring can produce, even when the anchor itself
-       cleared the near-tie margin.
+       cleared the near-tie margin -- but only while ``pilot_snr_ok`` is
+       ``True``. #1838's shape (a quiet pilot buried by room noise) also
+       clears `DELTA_IMPLAUSIBLE_GAP_DB`, and there the honest, actionable
+       finding is the SNR floor below, never a retake instruction the room's
+       own level will keep failing; the near-tie guard itself (``anchor_ambiguous``)
+       keeps its own, unconditional precedence at this rung.
     3. **Channel map.** Explicit ``False`` only — ``None`` is no evidence.
     4. **Pilot SNR**, ahead of linearity (#1838): below the floor the
        ambient-subtracted two-pilot delta is not evidence either way, so the
-       honest finding is the room and the level, never the microphone.
+       honest finding is the room and the level, never the microphone. A
+       ``delta_implausible`` capture whose SNR already failed is answered
+       here too (from rung 2), ahead of the channel map: a retake in a
+       quieter room also cures the mis-anchoring a buried pilot invites.
     5. **Linearity.** CHECK is the one phase that can tell the room from
        the microphone, because its gain solve already produced a band-resolved
        ambient verdict against THIS capture.
@@ -180,8 +192,14 @@ def check_screens(screens: CheckScreens) -> str | None:
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
-    if screens.anchor_ambiguous or screens.delta_implausible:
+    if screens.anchor_ambiguous:
         return SCREEN_ANCHOR_AMBIGUOUS
+    if screens.delta_implausible:
+        return (
+            SCREEN_ANCHOR_AMBIGUOUS
+            if screens.pilot_snr_ok is True
+            else SCREEN_SNR_FLOOR
+        )
     if screens.channel_map_ok is False:
         return SCREEN_CHANNEL_MAP_MISMATCH
     if screens.pilot_snr_ok is False:
@@ -681,7 +699,7 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     }
 
 
-def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
+def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | bool | None]:
     """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe.
 
     Channel-map publishes BOTH raw rises AND the isolation ratio derived from
@@ -689,6 +707,10 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
     (``CHANNEL_MAP_MIN_ISOLATION_DB``), so a refusal has to name it; the raws
     stay so an operator can see which half of the ratio moved. The ratio comes
     from ``channel_map_isolation_db`` — the same function the verdict used.
+
+    ``delta_implausible`` (#2647) rides along per pilot: the aggregate on the
+    check-diag line says the finding fired, this says which driver's delta
+    was the one no real wiring could produce.
     """
     if pilot is None:
         return {
@@ -698,6 +720,7 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
             "channel_map_target_rise_db": None,
             "channel_map_cross_rise_db": None,
             "channel_map_isolation_db": None,
+            "delta_implausible": None,
         }
     snr_db = pilot.snr_db
     target_rise = pilot.channel_map_target_rise_db
@@ -716,6 +739,7 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
         "channel_map_isolation_db": (
             round(isolation, 3) if isolation is not None else None
         ),
+        "delta_implausible": bool(pilot.delta_implausible),
     }
 
 
