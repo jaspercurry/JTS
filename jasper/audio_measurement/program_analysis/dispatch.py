@@ -1044,6 +1044,13 @@ def _analyze_verify(
             raw_max_db=max_excl,
             tilt_removed_rms_db=tilt_removed_rms_db,
             tilt_removed_max_db=tilt_removed_max_db,
+            # The GRADED band's bin count beside the fit's TRUSTED one, so the
+            # exclusion fraction is derivable from the record alone (#1990).
+            # `notch_excluded_band_mask`'s own in-band term, not a second
+            # opinion about which bins are in band.
+            band_n_bins=int(np.count_nonzero(
+                analysis_mod._band_mask(summed.freqs_hz, tracking_band)
+            )),
         ).to_dict()
     pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
         program, capture, sample_rate, locations, global_offset=global_offset,

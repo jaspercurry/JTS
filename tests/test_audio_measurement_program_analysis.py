@@ -6036,8 +6036,8 @@ def test_verify_discloses_the_frame_it_compared_across():
     assert tracking is not None
     frame = tracking["frame"]
     assert set(frame) == {
-        "offset_db", "tilt_db_per_octave", "pivot_hz", "n_bins", "band_hz",
-        "raw", "tilt_removed",
+        "offset_db", "tilt_db_per_octave", "pivot_hz", "n_bins", "band_n_bins",
+        "band_hz", "raw", "tilt_removed",
     }
     # The record's raw pair IS the reported pair — one computation, two views,
     # so a surface reading the disclosure can never quote a different number
@@ -6114,6 +6114,10 @@ def test_excluding_notch_bins_from_the_fit_beats_fitting_the_whole_band(
 
     # The notch really did exclude bins — otherwise this fixture proves nothing.
     assert frame["n_bins"] < int(in_band.sum())
+    # #1990: the GRADED bin count rides the record beside the TRUSTED one, so
+    # the exclusion fraction — the "was this tilt estimated over a notch-heavy
+    # prediction" signal the caveat rests on — is derivable without the source.
+    assert frame["band_n_bins"] == int(in_band.sum())
     assert band[0] <= frame["band_hz"][0] <= frame["band_hz"][1] <= band[1]
 
     # The construction this replaced: fit over every graded bin, notch included.
@@ -6246,6 +6250,7 @@ def test_the_frame_and_its_beside_grades_ride_the_retention_sidecar():
     assert summary["frame_tilt_db_per_octave"] == pytest.approx(0.7, abs=0.01)
     assert summary["frame_pivot_hz"] == frame["pivot_hz"]
     assert summary["frame_n_bins"] == frame["n_bins"]
+    assert summary["frame_band_n_bins"] == frame["band_n_bins"]
     assert summary["rms_db_tilt_removed"] == frame["tilt_removed"]["rms_db"]
     assert summary["max_db_notch_excluded_tilt_removed"] == frame["tilt_removed"]["max_db"]
     # And the raw ones are still there, unchanged, beside them.
