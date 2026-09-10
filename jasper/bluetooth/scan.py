@@ -149,12 +149,17 @@ class DeviceObserver:
             bus = MessageBus(bus_type=BusType.SYSTEM)
             await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="observer_start")
             self._bus = bus
+            subscribed = False
             try:
                 await self._start_subscribed(bus)
-            except BaseException:
-                await self._stop_locked()
-                raise
-            self._started = True
+                subscribed = True
+            finally:
+                # `finally` also unwinds a cancelled start, not just a raised
+                # exception -- a cancellation must not leave a half-init bus.
+                if subscribed:
+                    self._started = True
+                else:
+                    await self._stop_locked()
 
     async def _start_subscribed(self, bus: MessageBus) -> None:
         async with asyncio.timeout(BLUEZ_CALL_TIMEOUT_SEC):
