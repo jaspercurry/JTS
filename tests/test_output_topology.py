@@ -55,6 +55,7 @@ from jasper.output_topology import (
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
 )
+from tests._log_events import event_fields, event_records
 
 
 def _base_hardware() -> dict:
@@ -1159,13 +1160,6 @@ def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> No
 # --------------------------------------------------------------------------- #
 
 
-def _load_failure_lines(text: str) -> list[str]:
-    return [
-        line for line in text.splitlines()
-        if "event=output_topology.load_failed" in line
-    ]
-
-
 def test_load_output_topology_warns_once_for_a_repeated_failure(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1176,9 +1170,8 @@ def test_load_output_topology_warns_once_for_a_repeated_failure(
         for _ in range(5):
             assert load_output_topology(path).status == "draft"
 
-    lines = _load_failure_lines(caplog.text)
-    assert len(lines) == 1, caplog.text
-    assert "repeat_suppression_sec=3600" in lines[0]
+    fields = event_fields(caplog, "output_topology.load_failed")
+    assert fields["repeat_suppression_sec"] == "3600"
 
 
 def test_load_output_topology_rewarns_when_the_failure_changes(
@@ -1195,7 +1188,7 @@ def test_load_output_topology_rewarns_when_the_failure_changes(
         path.write_text(json.dumps({"kind": "not_a_topology"}), encoding="utf-8")
         load_output_topology(path)
 
-    assert len(_load_failure_lines(caplog.text)) == 2, caplog.text
+    assert len(event_records(caplog, "output_topology.load_failed")) == 2
 
 
 def test_load_output_topology_rewarns_after_the_reminder_window(
@@ -1210,11 +1203,11 @@ def test_load_output_topology_rewarns_after_the_reminder_window(
         load_output_topology(path)
         clock[0] += output_topology_mod.LOAD_FAILURE_REMINDER_SEC - 1.0
         load_output_topology(path)
-        assert len(_load_failure_lines(caplog.text)) == 1, caplog.text
+        assert len(event_records(caplog, "output_topology.load_failed")) == 1
         clock[0] += 1.0
         load_output_topology(path)
 
-    assert len(_load_failure_lines(caplog.text)) == 2, caplog.text
+    assert len(event_records(caplog, "output_topology.load_failed")) == 2
 
 
 def test_load_output_topology_logs_recovery_once_after_a_logged_failure(
@@ -1229,7 +1222,7 @@ def test_load_output_topology_logs_recovery_once_after_a_logged_failure(
         load_output_topology(path)
         load_output_topology(path)
 
-    assert caplog.text.count("event=output_topology.load_recovered") == 1
+    assert len(event_records(caplog, "output_topology.load_recovered")) == 1
 
 
 def test_load_output_topology_is_silent_when_it_never_failed(
@@ -1242,7 +1235,8 @@ def test_load_output_topology_is_silent_when_it_never_failed(
         load_output_topology(path)
         load_output_topology(path)
 
-    assert "event=output_topology.load_" not in caplog.text
+    assert not event_records(caplog, "output_topology.load_failed")
+    assert not event_records(caplog, "output_topology.load_recovered")
 
 
 def test_load_failure_state_is_bounded(
@@ -2040,13 +2034,8 @@ def test_a_stamp_nobody_could_write_or_retire_says_so(
     # Absent is retired, not a failure: the steady state after a clean apply.
     assert clear_topology_fingerprint_stamp(tmp_path / "never-existed") is True
 
-    events = {
-        record.getMessage().split()[0]
-        for record in caplog.records
-        if record.getMessage().startswith("event=")
-    }
-    assert "event=camilla_topology_stamp.write_failed" in events
-    assert "event=camilla_topology_stamp.clear_failed" in events
+    assert event_records(caplog, "camilla_topology_stamp.write_failed")
+    assert event_records(caplog, "camilla_topology_stamp.clear_failed")
 
 
 def test_an_unreadable_or_empty_stamp_reads_as_unknown(tmp_path: Path) -> None:
