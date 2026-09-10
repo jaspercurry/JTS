@@ -259,11 +259,12 @@ pub struct PairedCompositeSink {
     delay_delta_baseline: Option<i64>,
     last_delay_delta: Option<i64>,
     last_delay_delta_error: Option<i64>,
-    /// The `(A, B)` child delays read by the most recent
+    /// The `(A, B)` child delays read by this period's
     /// [`Self::check_delay_delta`], so `dac_delay_frames` answers from that
     /// same pair instead of issuing two more `snd_pcm_delay` ioctls in the same
-    /// period. `None` until the first post-write check (the pair is read
-    /// directly then).
+    /// period. Cleared at the top of every
+    /// [`Self::write_dual_period`]: `None` means this period ran no check, and
+    /// the pair is then read directly.
     last_child_delays: Option<(i64, i64)>,
     max_delay_delta_frames: i64,
     /// The two child period buffers, at the children's declared edge width —
@@ -926,6 +927,11 @@ impl PairedCompositeSink {
     /// outputd's SCHED_FIFO playout thread. Moving the declaration inside the
     /// loop re-zeroes it every pass and makes the recovery unbounded.
     pub fn write_dual_period(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
+        // The stashed pair belongs to the period whose check read it. Dropping it
+        // HERE — not at the check — is what keeps a period that ends without one
+        // (a child not Running, or a bail before the gate below) from serving the
+        // previous period's depth to `dac_delay_frames`.
+        self.last_child_delays = None;
         let mut recoveries = 0u32;
         loop {
             self.periods.deinterleave(samples_4ch)?;
@@ -1175,8 +1181,9 @@ impl PairedCompositeSink {
     }
 
     /// Deepest queued child, in frames. Answers from the pair
-    /// [`Self::check_delay_delta`] already read for this period; only a period
-    /// that ran no check (the pair was not Running) reads the devices itself.
+    /// [`Self::check_delay_delta`] already read for THIS period; a period that
+    /// ran no check (the pair was not Running, or the write bailed) reads the
+    /// devices itself rather than serving the previous period's depth.
     pub fn dac_delay_frames(&self) -> Result<u64> {
         let (delay_a, delay_b) = match self.last_child_delays {
             Some(pair) => pair,
