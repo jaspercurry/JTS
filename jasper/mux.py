@@ -95,11 +95,12 @@ from .assistant_volume import volume_context_publisher_for_runtime
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
+from .control.volume_ops import _make_duck_active_probe
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
-from .platform.uds import daemon_command, fanin_command, local_status_json
+from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
 from .source_events import start_source_event_tasks
 from .source_state import (
@@ -1048,7 +1049,11 @@ class Mux:
             backend=backend,
             spotify_router=self._ensure_spotify_router(),
             spotify_device_name=speaker_runtime_name(),
-            duck_active_probe=_make_duck_active_probe(),
+            duck_active_probe=_make_duck_active_probe(
+                os.environ.get(
+                    "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+                ),
+            ),
             volume_context_publisher=volume_context_publisher_for_runtime(
                 os.environ,
             ),
@@ -1684,29 +1689,6 @@ class Mux:
 
 def _fmt_db(value: float | None) -> str:
     return "none" if value is None else f"{value:.1f}"
-
-
-def _make_duck_active_probe() -> Any:
-    socket_path = os.environ.get(
-        "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
-    )
-
-    async def probe() -> bool | None:
-        try:
-            # Seconds, TOTAL: voice STATUS is a synchronous attribute read,
-            # so a slower answer means the daemon is wedged.
-            response = await daemon_command(
-                socket_path, wire.STATUS, timeout=1.0, daemon="voice_daemon",
-            )
-        except (OSError, RuntimeError, ValueError):
-            return None
-        camilla_locked = response.get("camilla_volume_locked")
-        if isinstance(camilla_locked, bool):
-            return camilla_locked
-        duck_active = response.get("duck_active")
-        return duck_active if isinstance(duck_active, bool) else None
-
-    return probe
 
 
 async def _amain(args: argparse.Namespace) -> None:
