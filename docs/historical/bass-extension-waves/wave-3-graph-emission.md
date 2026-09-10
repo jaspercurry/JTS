@@ -12,7 +12,7 @@
 > both removed with the dead commissioning-capture seam in
 > [#2362](https://github.com/jaspercurry/JTS/issues/2362). Current operational
 > truth lives in
-> [HANDOFF-bass-extension-plan.md](../HANDOFF-bass-extension-plan.md).
+> [HANDOFF-bass-extension-plan.md](../../HANDOFF-bass-extension-plan.md).
 
 > **Revision 13 (2026-08-06; live-comparison correction).** Revision 12 and
 > earlier prescribed comparing the live `active_raw` readback against the

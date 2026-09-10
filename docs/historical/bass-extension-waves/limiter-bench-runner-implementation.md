@@ -13,7 +13,7 @@
 > snapshots) have drifted since it was written and at least one prior-art
 > pointer named code that has since been deleted. Current operational truth
 > for the program is
-> [`docs/HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md).
+> [`docs/HANDOFF-bass-extension-plan.md`](../../HANDOFF-bass-extension-plan.md).
 
 > **This is the runner-implementation prompt** that the accepted
 > [`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md)

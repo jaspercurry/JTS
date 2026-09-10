@@ -24,7 +24,7 @@ Wave-0 evidence and the primitives that actually exist.
 
 ## Wave-0 evidence (the basis)
 
-From [`docs/research/2026-07-16-bass-extension-spikes/README.md`](../research/2026-07-16-bass-extension-spikes/README.md):
+From [`docs/research/2026-07-16-bass-extension-spikes/README.md`](../../research/2026-07-16-bass-extension-spikes/README.md):
 
 - **Spike 1 — transition mechanism (`R1 confirmed`):** live `PatchConfig` with
   mandatory micro-stepping is the product mechanism for *audible* transitions;
