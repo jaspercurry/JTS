@@ -46,10 +46,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_CAPACITY = 1000  # stores formatted lines (~0.3 KB) -> ~0.3 MB/daemon
 FLUSH_LEVEL = logging.WARNING
 # Minimum gap between two AUTOMATIC dumps triggered by the same WARNING+
-# call site. A chronic warning dumps the whole ring every time it fires,
-# which buries the journal it was meant to illuminate (2026-09-03: the
-# Gemini reconnect churn on jts4 produced 42k of 44k lines/day). Explicit
-# dumps (`dump()`, SIGUSR1, "flag that") are never rate-limited.
+# call site. This bounds how OFTEN a chronic warning dumps; RingFlushHandler's
+# flush cursor bounds how MUCH each dump writes, which is what buried the
+# journal the ring was meant to illuminate (2026-09-03: the Gemini reconnect
+# churn on jts4 produced 42k of 44k lines/day). Explicit dumps (`dump()`,
+# SIGUSR1, "flag that") are never rate-limited.
 AUTO_FLUSH_MIN_INTERVAL_SEC = 21600.0
 # Hard cap on tracked signatures. Only binds when a daemon logs WARNING+
 # through f-strings (one signature per call, not per call site) from many
@@ -71,6 +72,15 @@ class RingFlushHandler(logging.Handler):
     tail risk). Unlike stdlib ``MemoryHandler`` it never flushes on capacity
     (the ``deque`` drops oldest instead) and its dump target is a plain
     stream, not an INFO-filtered handler that would drop the DEBUG lines.
+
+    A flush never empties the ring; it moves a cursor. Each buffered line
+    carries the sequence number it was appended under, and every flush of
+    any kind advances the cursor to the newest of them, so an AUTOMATIC dump
+    writes only the lines appended since the previous dump. An explicit one
+    ("flag that", SIGUSR1) still replays the whole ring — the window around
+    the moment is the point of asking — and advances the cursor too. Line
+    and sequence live in ONE deque as a tuple, so a signal landing between
+    two appends cannot leave the two out of step.
     """
 
     def __init__(self, capacity: int, dump_stream) -> None:
@@ -82,6 +92,9 @@ class RingFlushHandler(logging.Handler):
         # must be clean whatever order the two installs run in.
         self.addFilter(REDACTING_FILTER)
         self._dumping = False
+        self._seq = 0
+        # Newest sequence number any flush has already written out.
+        self._flush_cursor = 0
         # Monotonic time of the last auto-flush per WARNING+ signature.
         self._last_auto_flush: dict[str, float] = {}
 
@@ -92,9 +105,11 @@ class RingFlushHandler(logging.Handler):
             line = self.format(record)  # store the formatted string, not the record
         except Exception:  # noqa: BLE001  # pragma: no cover - defensive; never crash the caller
             return
-        self.buffer.append(line)
+        self._seq += 1
+        self.buffer.append((self._seq, line))
         if record.levelno >= FLUSH_LEVEL and self._auto_flush_due(record):
-            self.flush_buffer("auto:" + record.levelname.lower())
+            reason = "auto:" + record.levelname.lower()
+            self.flush_buffer(reason, since_last_flush=True)
 
     def _auto_flush_due(self, record: logging.LogRecord) -> bool:
         """Whether this WARNING+ record may trigger an automatic dump.
@@ -132,18 +147,23 @@ class RingFlushHandler(logging.Handler):
         self._last_auto_flush[sig] = now
         return True
 
-    def flush_buffer(self, reason: str) -> int:
-        """Write the buffered lines to the dump stream and clear the ring.
-        Returns the number of lines dumped. Best-effort — a dump must never
-        crash the daemon it's recording."""
+    def flush_buffer(self, reason: str, *, since_last_flush: bool = False) -> int:
+        """Write buffered lines to the dump stream and advance the flush
+        cursor past them. ``since_last_flush`` writes only what no earlier
+        flush carried; the default replays the whole ring. Returns the number
+        of lines dumped. Best-effort — a dump must never crash the daemon
+        it's recording."""
         self.acquire()
         try:
             if self._dumping:
                 return 0
-            lines = list(self.buffer)
-            self.buffer.clear()
-            if not lines:
+            entries = list(self.buffer)
+            if since_last_flush:
+                entries = [e for e in entries if e[0] > self._flush_cursor]
+            if not entries:
                 return 0
+            self._flush_cursor = self.buffer[-1][0]
+            lines = [line for _, line in entries]
             self._dumping = True
             n = len(lines)
             try:

@@ -298,18 +298,23 @@ def _db_for(percent: float) -> str:
 
 
 def _fire_burst(
-    percents, *, runtime_dir: Path, port: int, spacing: float,
+    percents, *, runtime_dir: Path, port: int, spacing: float | list[float],
 ) -> None:
-    """Model shairport's parent wait; only publication delays the next message."""
+    """Model shairport's parent wait; only publication delays the next message.
+
+    `spacing` is the gap before the next message: one value for the whole
+    burst, or one per message when a recorded burst is being replayed.
+    """
+    gaps = [spacing] * len(percents) if isinstance(spacing, float) else spacing
     next_at = time.monotonic()
-    for percent in percents:
+    for percent, gap in zip(percents, gaps):
         delay = next_at - time.monotonic()
         if delay > 0:
             time.sleep(delay)
         _run_hook(
             _db_for(percent), runtime_dir=runtime_dir, port=port, wait_for_delivery=False,
         )
-        next_at = time.monotonic() + spacing
+        next_at = time.monotonic() + gap
     _wait_for_delivery(runtime_dir)
 
 
@@ -420,6 +425,41 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
     # than a fixed deadline, so a slow runner (stretching both alike) still
     # tells the two cases apart.
     assert _Recorder.times[opened] - started < (finished - started) / 2
+
+
+# The same animation with two stalls written into it, which makes the jitter
+# CI hit deterministic: a gap wide enough for three of a 200 ms poll's reads
+# leaves two of them unchanged whatever their phase, so the old settle loop
+# called the ramp finished twice and chased it (#4334). One gap per message.
+STALLED_FADE_UP = [6, 19, 31, 44, 57, 63]
+STALLED_FADE_GAPS_S = [0.25, 0.24, 0.75, 0.26, 0.75, 0.25]
+
+
+@requires_flock
+def test_a_reconnect_holds_the_animation_across_a_stalled_burst(
+    control_stub, tmp_path,
+):
+    """The settle window has to outlast the widest gap the sender's own
+    messages arrive at, not just the nominal spacing. Against the old
+    200 ms/two-unchanged-reads loop these gaps post `[63, 31, 44, 57, 63]`
+    every run — the same chase CI hit as `[63, 31, 57, 63]` when the runner
+    supplied the stalls. The session still delivers the restore and nothing
+    else."""
+    level = CONNECT_FADE_UP[-1]
+    port = control_stub.server_port
+    _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
+    _run_hook("-144.000000", runtime_dir=tmp_path, port=port)
+    opened = len(_Recorder.posts)
+
+    _run_hook("--session-start", runtime_dir=tmp_path)
+    _fire_burst(
+        STALLED_FADE_UP,
+        runtime_dir=tmp_path,
+        port=port,
+        spacing=STALLED_FADE_GAPS_S,
+    )
+
+    assert [body["percent"] for _, body in _Recorder.posts[opened:]] == [level]
 
 
 @requires_flock
