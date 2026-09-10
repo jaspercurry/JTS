@@ -106,6 +106,8 @@ from .runtime_probe import (  # noqa: F401
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
+_BRIDGE_ENV_OWNER = "JTS /wake-corpus recorder control"
+
 
 # ---------------------------------------------------------------------------
 # Bridge-side corpus-output config + systemctl units
@@ -740,14 +742,16 @@ def _write_env_and_restart_with_rollback(
 ) -> None:
     """Apply recorder env and restore it if the matching restart fails."""
     if values:
-        write_env_file(env_path, values, mode=0o644)
+        write_env_file(env_path, values, mode=0o644, owner=_BRIDGE_ENV_OWNER)
     else:
         delete_env_file(env_path)
     try:
         restart()
     except _BRIDGE_RESTART_ERRORS:
         if existed:
-            write_env_file(env_path, old_values, mode=0o644)
+            write_env_file(
+                env_path, old_values, mode=0o644, owner=_BRIDGE_ENV_OWNER,
+            )
         else:
             delete_env_file(env_path)
         try:

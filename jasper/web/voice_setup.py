@@ -111,6 +111,8 @@ from .voice_page import (
 
 logger = logging.getLogger(__name__)
 
+VOICE_ENV_OWNER = "JTS /assistant/voice wizard"
+
 
 
 # Provider metadata lives in jasper.voice.catalog so the wizard's provider,
@@ -161,11 +163,15 @@ def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
     secrets = {k: v for k, v in new.items() if k in _SECRET_KEY_ENVS}
     rest = {k: v for k, v in new.items() if k not in _SECRET_KEY_ENVS}
     if rest:
-        write_env_file(cfg["state_path"], rest, mode=SECRET_ENV_MODE)
+        write_env_file(
+            cfg["state_path"], rest, mode=SECRET_ENV_MODE, owner=VOICE_ENV_OWNER,
+        )
     else:
         delete_env_file(cfg["state_path"])
     if secrets:
-        write_env_file(cfg["keys_path"], secrets, mode=SECRET_ENV_MODE)
+        write_env_file(
+            cfg["keys_path"], secrets, mode=SECRET_ENV_MODE, owner=VOICE_ENV_OWNER,
+        )
     else:
         delete_env_file(cfg["keys_path"])
 

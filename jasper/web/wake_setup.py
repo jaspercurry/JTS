@@ -936,6 +936,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 cfg["state_path"],
                 {"JASPER_WAKE_MODEL": new["JASPER_WAKE_MODEL"]},
                 mode=0o644,
+                owner=wake_models.WAKE_MODEL_ENV_OWNER,
             )
         except OSError as e:
             logger.exception("could not write wake-model env file")

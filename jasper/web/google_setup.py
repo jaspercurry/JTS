@@ -130,7 +130,7 @@ def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
     write_env_file(path, {
         "GOOGLE_CLIENT_ID": client_id,
         "GOOGLE_CLIENT_SECRET": client_secret,
-    }, mode=SECRET_ENV_MODE)
+    }, mode=SECRET_ENV_MODE, owner="JTS /assistant/google wizard")
 
 
 def _delete_creds_file(path: str) -> None:
