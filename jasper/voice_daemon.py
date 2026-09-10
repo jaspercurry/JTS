@@ -2584,9 +2584,18 @@ class WakeLoop:
         `_measurement_active` without awaiting in between — so a wake that
         cleared `_check_input_admission` a moment earlier would otherwise wait
         here for the whole window (up to MEASUREMENT_AUTOCLEAR_SEC), deaf and
-        uncued. Racing the two is exactly "a measurement opened while this
-        wake was mid-acquire", and such a wake is not alive: it is dropped
-        silently, like one `_wake_late_cancelled` catches at a checkpoint.
+        uncued. Arbitrating the two bounds that wait by the window's opening
+        instead.
+
+        Which side wins is a real race, and both outcomes are safe. A wake
+        that loses is dropped silently, like one `_wake_late_cancelled`
+        catches at a checkpoint. A wake whose claim lands in the SAME wait as
+        the pause keeps its episode and proceeds — the window closed input
+        admission before it set `_measurement_active`, so that turn is refused
+        at the next `_check_input_admission` and every emission through the
+        episode is refused at the seam `play_responses` reads
+        (`AssistantOutputGate.admission_refusal`): no audio escapes into the
+        capture either way.
         """
         if self._measurement_active.is_set():
             self._refuse_output_episode_for_measurement()
