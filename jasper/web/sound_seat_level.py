@@ -47,14 +47,61 @@ SEAT_LEVEL_CLI = "jasper-seat-level"
 SEAT_LEVEL_STOP_TIMEOUT_S = 5.0
 
 
+#: status()'s written sentence for a pass that had to be force-stopped (SIGINT
+#: got no response, so the CLI's own fade-out/latch-restore teardown never
+#: ran) -- never the raw stderr_tail, which stays in the
+#: sound.seat_level_stop_timeout log event only.
+_FORCE_STOPPED_DETAIL = (
+    "The leveling pass had to be force-stopped and the household volume may "
+    "still be at the measurement level. Check the volume floor section on "
+    "this page and adjust it if needed."
+)
+
+
+def _flatten_cli_document(
+    body: dict[str, Any] | None,
+) -> tuple[str | None, str, float | None]:
+    """One ``jasper-seat-level`` stdout document, flattened for the card.
+
+    A refusal nests its sentence and telemetry two levels down: ``main()``
+    passes ``{**SeatLevelResult.to_dict(), "detail": <sentence>}`` as the
+    ``detail`` argument to :func:`jasper.cli._refusal.failed`, which wraps
+    that under the outer document's own ``detail`` key (``jasper/cli/
+    seat_level.py``, ``jasper/cli/_refusal.py``) -- so the sentence lives at
+    ``body["detail"]["detail"]``, not ``body["detail"]``. A converged run's
+    document has no such wrapping; its ``detail`` is already the sentence.
+    """
+    if not isinstance(body, dict):
+        return None, "The pass ended without a readable result.", None
+    reason = body.get("reason")
+    nested = body.get("detail")
+    if isinstance(nested, Mapping):
+        detail = nested.get("detail")
+        measured = nested.get("measured_db_spl")
+    else:
+        detail = nested
+        measured = body.get("measured_db_spl")
+    if not isinstance(detail, str):
+        detail = "The pass ended without a readable result."
+    if not isinstance(measured, (int, float)):
+        measured = None
+    return reason, detail, measured
+
+
 class _SeatLevelSession:
-    """One in-flight (or just-finished) leveling pass, at most one at a time."""
+    """One in-flight (or just-finished) leveling pass this process's session
+    lock allows at a time. The cross-process guard against two passes
+    running at once -- including one started directly from the CLI -- is
+    ``jasper-seat-level``'s own ``measurement_window`` lease
+    (:mod:`jasper.measurement_window`), not this lock.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._target_db_spl: float | None = None
         self._result: dict[str, Any] | None = None
+        self._graceful = True
 
     def _reap(self, proc: subprocess.Popen[str]) -> None:
         stdout, stderr = proc.communicate()
@@ -62,14 +109,25 @@ class _SeatLevelSession:
             payload = json.loads(stdout) if stdout else None
         except ValueError:
             payload = None
+        stderr_tail = (stderr or "").strip()[-500:]
+        force_stopped = False
         with self._lock:
             if self._process is proc:
                 self._process = None
+                force_stopped = not self._graceful
                 self._result = {
                     "converged": proc.returncode == 0,
                     "payload": payload if isinstance(payload, dict) else None,
-                    "stderr_tail": (stderr or "").strip()[-500:],
+                    "stderr_tail": stderr_tail,
+                    "force_stopped": force_stopped,
                 }
+        if force_stopped:
+            log_event(
+                logger,
+                "sound.seat_level_stop_timeout",
+                level=logging.WARNING,
+                stderr_tail=stderr_tail,
+            )
         log_event(
             logger,
             "sound.seat_level_finished",
@@ -101,6 +159,7 @@ class _SeatLevelSession:
             self._process = proc
             self._target_db_spl = target_db_spl
             self._result = None
+            self._graceful = True
         threading.Thread(target=self._reap, args=(proc,), daemon=True).start()
         log_event(logger, "sound.seat_level_start", target_db_spl=target_db_spl)
         return {"status": "started", "target_db_spl": target_db_spl}
@@ -114,7 +173,8 @@ class _SeatLevelSession:
             proc.send_signal(signal.SIGINT)
             proc.wait(timeout=SEAT_LEVEL_STOP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            log_event(logger, "sound.seat_level_stop_timeout", level=logging.WARNING)
+            with self._lock:
+                self._graceful = False
             proc.terminate()
             try:
                 proc.wait(timeout=1.0)
@@ -133,11 +193,23 @@ class _SeatLevelSession:
         if proc is not None and proc.poll() is None:
             return {"state": "running", "target_db_spl": target}
         if result is not None:
+            if result["force_stopped"]:
+                return {
+                    "state": "refused",
+                    "target_db_spl": target,
+                    "reason": "force_stopped",
+                    "detail": _FORCE_STOPPED_DETAIL,
+                    "measured_db_spl": None,
+                    "force_stopped": True,
+                }
             state = "converged" if result["converged"] else "refused"
+            reason, detail, measured = _flatten_cli_document(result["payload"])
             return {
                 "state": state,
                 "target_db_spl": target,
-                "detail": result["payload"] or result["stderr_tail"],
+                "reason": reason,
+                "detail": detail,
+                "measured_db_spl": measured,
             }
         return {"state": "idle", "target_db_spl": None}
 
@@ -173,8 +245,15 @@ def seat_level_status_payload() -> dict[str, Any]:
 
 
 def seat_level_start_payload(body: Mapping[str, Any]) -> dict[str, Any]:
+    raw_target = body.get("target_db_spl")
+    if raw_target is None:
+        return {
+            "status": "refused",
+            "reason": "invalid_target",
+            "detail": "target_db_spl must be a number",
+        }
     try:
-        target = float(body.get("target_db_spl"))
+        target = float(raw_target)
     except (TypeError, ValueError):
         return {
             "status": "refused",

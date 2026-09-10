@@ -780,6 +780,72 @@ def test_stale_sound_stop_and_abort_routes_still_dispatch(tmp_path, monkeypatch)
         assert read_calls == [2]
 
 
+def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
+    """#2761: POST /active-speaker/seat-level/start reaches
+    _seat_level_start_payload only after the CSRF chokepoint
+    (guard_mutating_request, wired via dispatch_post(..., guard="header"))."""
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/seat-level/start",
+        content_length=-1,
+    )
+    assert b" 403 " in response.split(b"\r\n", 1)[0]
+    assert read_calls == []
+
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "_seat_level_start_payload",
+        lambda body: {"route": "seat-level-start", "body": body},
+    )
+    body = b'{"target_db_spl": 78.0}'
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/seat-level/start",
+        content_length=len(body),
+        body=body,
+    )
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert payload == {
+        "route": "seat-level-start",
+        "body": {"target_db_spl": 78.0},
+    }
+    assert read_calls == [len(body)]
+
+
+def test_seat_level_stop_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
+    """#2761: POST /active-speaker/seat-level/stop reaches
+    _seat_level_stop_payload only after the same CSRF chokepoint."""
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/seat-level/stop",
+        content_length=-1,
+    )
+    assert b" 403 " in response.split(b"\r\n", 1)[0]
+    assert read_calls == []
+
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "_seat_level_stop_payload",
+        lambda: {"route": "seat-level-stop"},
+    )
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/seat-level/stop",
+        content_length=2,
+        body=b"{}",
+    )
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
+        "route": "seat-level-stop",
+    }
+    assert read_calls == [2]
+
+
 def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     guard_calls = []
 

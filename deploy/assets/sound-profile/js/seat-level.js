@@ -9,11 +9,10 @@
 // volume-floor tone, so a leveling pass never keeps ramping the household's
 // volume after the page is gone.
 
-import { getJSON, postJSON } from "/assets/shared/js/http.js";
+import { getJSON, postJSON, startPolling } from "/assets/shared/js/http.js";
 
-var POLL_MS = 1500;
-var pollTimer = null;
 var running = false;
+var stopPoll = null;
 
 function els() {
   return {
@@ -48,36 +47,33 @@ function renderState(payload) {
     e.status.textContent = 'Leveling toward ' + payload.target_db_spl +
       ' dB SPL using ' + (mic.label || 'the household mic') + '…';
   } else if (payload.state === 'converged') {
-    var detail = payload.detail && typeof payload.detail === 'object' ? payload.detail : {};
-    var reached = typeof detail.measured_db_spl === 'number' ?
-      detail.measured_db_spl.toFixed(1) + ' dB SPL' : 'the target level';
+    var reached = typeof payload.measured_db_spl === 'number' ?
+      payload.measured_db_spl.toFixed(1) + ' dB SPL' : 'the target level';
     e.status.textContent = 'Reached ' + reached + ' and banked the reference.';
   } else if (payload.state === 'refused') {
-    var d = payload.detail;
-    var reason = d && typeof d === 'object' ? (d.detail || d.reason) : d;
-    e.status.textContent = reason ? String(reason) : 'The last leveling pass was refused.';
+    e.status.textContent = payload.detail ?
+      String(payload.detail) : 'The last leveling pass was refused.';
   } else {
     e.status.textContent = 'Mic ready: ' + (mic.label || 'calibrated') + '.';
   }
 }
 
+// A pass is a rare, occasional action -- poll only while one is running,
+// via the shared scheduler (startPolling), rather than forever.
 function schedulePoll() {
-  if (pollTimer) return;
-  pollTimer = setInterval(function() {
-    if (document.hidden) return;
-    fetchStatus();
-  }, POLL_MS);
+  if (stopPoll) return;
+  stopPoll = startPolling(fetchStatus, {intervalMs: 1500});
 }
 
-function stopPoll() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+function stopPollNow() {
+  if (stopPoll) { stopPoll(); stopPoll = null; }
 }
 
 function fetchStatus() {
   return getJSON('./active-speaker/seat-level/status')
     .then(function(payload) {
       renderState(payload);
-      if (payload.state === 'running') schedulePoll(); else stopPoll();
+      if (payload.state === 'running') schedulePoll(); else stopPollNow();
       return payload;
     })
     .catch(function() {});
@@ -98,7 +94,6 @@ function startLeveling() {
         e.start.disabled = false;
         return;
       }
-      schedulePoll();
       fetchStatus();
     })
     .catch(function(err) {
