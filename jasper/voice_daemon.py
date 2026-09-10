@@ -1937,6 +1937,21 @@ class WakeLoop:
         if sustained < BARGE_IN_SUSTAINED_SPEECH_SEC:
             return
         self._barge_in_signalled_this_run = True
+        self._signal_barge_in(silero=self._barge_in_run_peak, sustained=sustained)
+
+    def _signal_barge_in(self, *, silero: float, sustained: float) -> None:
+        """Flush local TTS for one detected barge-in, and record that it fired.
+
+        Both endpointer paths score the same AEC-cleaned "on" leg, so both
+        report it identically: a barge-in only one of them counts is one
+        nobody can debug from /state or the journal.
+
+        A turn whose provider owns acoustic interruption gets neither — it
+        stops itself when the user really talks over it, and what the local
+        detector scored here is as likely to be the assistant's own echo.
+        """
+        if self._turn.owns_interruption:
+            return
         self._barge_in_count += 1
         self._barge_in_last_leg = "on"
         self._barge_in_last_at = datetime.now(timezone.utc).isoformat(
@@ -1946,7 +1961,7 @@ class WakeLoop:
             logger,
             "barge.detected",
             leg="on",
-            silero=f"{self._barge_in_run_peak:.2f}",
+            silero=f"{silero:.2f}",
             sustained_ms=int(sustained * 1000),
             # Durable (needs_client_truncate) vs cosmetic (server_self_truncates,
             # where a real-time provider may resume) — see _barge_in_reconcile.
@@ -2112,7 +2127,10 @@ class WakeLoop:
                 if not self._continuous_speech_started or now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC:
                     self._continuous_speech_started = self._speech_run_started_at
                     if speaking and self._barge_in_active:
-                        self._turn.request_local_interrupt()
+                        self._signal_barge_in(
+                            silero=self._speech_run_max_silero,
+                            sustained=now - self._speech_run_started_at,
+                        )
                 self._continuous_last_speech = now
                 self._user_speech_seen = True
                 self._input_ended = False

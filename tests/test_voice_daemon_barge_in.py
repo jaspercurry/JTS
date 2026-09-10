@@ -24,18 +24,30 @@ import pytest
 from jasper.config import Config
 
 from tests._live_turn_fake import silent_frame
-from tests._log_events import event_records
+from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
 
 
 class _SpyTurn:
     """LiveTurn stand-in exposing just the barge-in + forward surface."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        continuous_input: bool = False,
+        owns_interruption: bool = False,
+        chunks_pending: int = 0,
+    ) -> None:
+        self.continuous_input = continuous_input
+        self.owns_interruption = owns_interruption
+        self._chunks_pending = chunks_pending
         self._interrupt_event = asyncio.Event()
         self._interrupted = False
         self.local_interrupt_calls = 0
         self.send_audio_calls = 0
+
+    def audio_chunks_pending(self) -> int:
+        return self._chunks_pending
 
     def request_local_interrupt(self) -> None:
         self.local_interrupt_calls += 1
@@ -201,6 +213,96 @@ def test_flag_on_threshold_respected():
 
     assert turn.local_interrupt_calls == 0
     assert wl._barge_in_run_started_at == 0.0
+
+
+# --- The provider that owns interruption gets no host flush ------------
+
+
+def _continuous_loop(*, owns_interruption: bool, score: float = 0.9):
+    """A WakeLoop mid-turn on a continuous-input provider that is speaking."""
+    from jasper.voice_daemon import State
+
+    wl = wake_loop_for_tests()
+    wl._state = State.SESSION
+    wl._turn = _SpyTurn(
+        continuous_input=True,
+        owns_interruption=owns_interruption,
+        # Assistant audio still queued => the daemon reads the turn as speaking.
+        chunks_pending=1,
+    )
+    wl._vad = _FixedVad(score)
+    wl._bg_tasks = set()
+    wl._barge_in_active = True
+    wl._barge_in_reference_available = True
+    return wl
+
+
+async def _drive_sustained_speech(wl) -> None:
+    """Two frames either side of the sustained-arming window."""
+    from jasper.voice_daemon import SUSTAINED_SPEECH_TO_ARM_SEC
+
+    await wl._handle_session_frame(silent_frame())
+    wl._speech_run_started_at -= SUSTAINED_SPEECH_TO_ARM_SEC + 0.05
+    await wl._handle_session_frame(silent_frame())
+
+
+@pytest.mark.parametrize("owns_interruption", [False, True])
+def test_continuous_barge_in_flushes_only_when_the_host_owns_interruption(
+    caplog, owns_interruption,
+):
+    """A provider that stops itself on the user's voice must not be flushed
+    by the host: local detection scores the assistant's own echo too, and the
+    flush chops the reply mid-word. One that does not stop itself keeps the
+    flush AND becomes observable — the continuous path used to interrupt with
+    no event and no counter at all."""
+    wl = _continuous_loop(owns_interruption=owns_interruption)
+    turn = wl._turn
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        asyncio.run(_drive_sustained_speech(wl))
+
+    expected = 0 if owns_interruption else 1
+    assert turn.local_interrupt_calls == expected
+    assert turn._interrupt_event.is_set() is (not owns_interruption)
+    assert wl.session_status()["barge_in_count_session"] == expected
+    assert len(event_records(caplog, "barge.detected")) == expected
+    # Either way the user's audio keeps reaching the provider.
+    assert turn.send_audio_calls == 2
+
+
+def test_continuous_barge_in_reports_the_same_fields_as_the_playback_path(caplog):
+    """One vocabulary for both endpointer paths, so /state and the journal
+    describe a barge-in the same way whichever path detected it."""
+    wl = _continuous_loop(owns_interruption=False)
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        asyncio.run(_drive_sustained_speech(wl))
+
+    fields = event_fields(caplog, "barge.detected")
+    assert fields["leg"] == "on"
+    assert float(fields["silero"]) == pytest.approx(0.9, abs=0.005)
+    assert int(fields["sustained_ms"]) >= 200
+    assert fields["reconcile"] == "needs_client_truncate"
+    status = wl.session_status()
+    assert status["barge_in_last_leg"] == "on"
+    assert isinstance(status["barge_in_last_at"], str) and status["barge_in_last_at"]
+
+
+def test_owning_interruption_does_not_outlive_conversation_end(monkeypatch):
+    """The exemption covers the host's own barge-in flush and nothing else:
+    a requested conversation end still ends the turn."""
+    wl = _continuous_loop(owns_interruption=True)
+    wl._conversation_end_requested = True
+    ended: list[str] = []
+
+    async def _spy(reason: str = "ended") -> None:
+        ended.append(reason)
+
+    monkeypatch.setattr(wl, "_end_turn", _spy)
+    asyncio.run(wl._handle_session_frame(silent_frame()))
+
+    assert ended == ["conversation_ended"]
+    assert wl._turn.send_audio_calls == 0
 
 
 # --- Self-interrupt-loop guard -----------------------------------------

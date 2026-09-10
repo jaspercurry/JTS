@@ -27,6 +27,8 @@ async def drain_audio_chunks(turn) -> list[AudioOutChunk]:
 
 
 class FakeLiveTurn:
+    owns_interruption = False
+
     def __init__(
         self,
         user_text: str | None = None,

@@ -51,6 +51,9 @@ AUDIBLE_RMS_FLOOR = 32
 
 class OpenAILiveTurn(BaseLiveTurn):
     continuous_input = True
+    # Live's own VAD stops generation when the user talks over it, and its
+    # transport carries no cancel — see `cancel_response` below.
+    owns_interruption = True
 
     def __init__(self, conn, started_at):
         super().__init__(conn, started_at)
