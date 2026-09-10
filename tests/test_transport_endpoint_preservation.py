@@ -488,28 +488,16 @@ async def test_the_drift_check_neutralizes_the_transport_axis(
 # --------------------------------------------------------------------------
 
 
-# Exempt because the endpoint CANCELS: this producer's re-emit is
-# FINGERPRINTED (``NormalizedActiveRawIdentity``, which freezes the devices
-# block) and compared against a fingerprint a planning step recorded from the
-# same snapshot-default recompose, so both ends move together — feeding the live
-# endpoint to one end and not the stored other would invalidate every
-# fingerprint already on disk. Fingerprint-ONLY: the text is then discarded.
-_ENDPOINT_EXEMPT_CALL_SITES = {
-    "jasper/active_speaker/commissioning_isolated_producer.py",
-}
-
-
 async def test_every_recompose_call_site_names_the_endpoint_or_is_exempt():
     """A WALKING guard over the CALL SITES, so a fourth seam cannot arrive
-    quietly; a stale exemption fails too, being a rule protecting nothing."""
+    quietly."""
     found: set[str] = set()
     missing: list[str] = []
     for rel, _tree, call in _jasper_calls("recompose_applied_baseline_yaml"):
         found.add(rel)
         if any(kw.arg == "playback_device" for kw in call.keywords):
             continue
-        if rel not in _ENDPOINT_EXEMPT_CALL_SITES:
-            missing.append(f"{rel}:{call.lineno}")
+        missing.append(f"{rel}:{call.lineno}")
 
     assert found, "no recompose call sites found — this guard has gone vacuous"
     assert not missing, (
@@ -517,7 +505,6 @@ async def test_every_recompose_call_site_names_the_endpoint_or_is_exempt():
         "so they inherit the applied snapshot's lane and move an armed speaker "
         f"off the ring (#2339/#2337): {missing}"
     )
-    assert not _ENDPOINT_EXEMPT_CALL_SITES - found, "exemption names no call site"
 
 
 async def test_sound_carrier_forwards_the_derived_endpoint(applied_box):

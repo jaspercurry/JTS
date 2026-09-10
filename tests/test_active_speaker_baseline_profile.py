@@ -4627,11 +4627,11 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
 
 # --- Wave 4 (crossover measurement v2 §5.8): MeasuredCrossoverCandidate -----
 #
-# The new v2 measured-crossover candidate (trims + optional delay/polarity,
-# jasper.active_speaker.measured_crossover_candidate) is a drop-in peer of
-# the legacy MeasuredElectricalCandidate for build_baseline_profile_candidate
-# / apply_baseline_profile's existing measured_candidate seam — same
-# apply-with-rollback transaction, same freshness gate, no new apply path.
+# The v2 measured-crossover candidate (trims + optional delay/polarity,
+# jasper.active_speaker.measured_crossover_candidate) rides
+# build_baseline_profile_candidate / apply_baseline_profile's existing
+# measured_candidate seam — same apply-with-rollback transaction, same
+# freshness gate, no new apply path.
 
 
 def _v2_candidate(

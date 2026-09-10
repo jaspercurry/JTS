@@ -16,7 +16,6 @@ import yaml
 import jasper.active_speaker._common as _common
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
-from jasper.active_speaker import commissioning_verification
 from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
@@ -964,9 +963,9 @@ def _denied_receipt_status(
         lambda _path=None: automatic,
     )
     monkeypatch.setattr(
-        commissioning_verification,
-        "read_commissioning_room_authority",
-        lambda _topology: {
+        setup_mod,
+        "_v2_apply_room_authority",
+        lambda _applied: {
             "allowed": False,
             "authority": "automatic_verified_receipt",
             "reason": receipt_reason,
@@ -1187,18 +1186,27 @@ def test_a_blocker_outranks_a_notice_for_the_setup_headline(
     assert status["detail"] == blockers[0]["message"]
 
 
-def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
+@pytest.mark.parametrize("write_v2_apply_record", [True, False])
+def test_room_authority_reads_the_v2_apply_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    write_v2_apply_record: bool,
 ) -> None:
-    from jasper.active_speaker import commissioning_verification
+    """``handle_v2_apply`` is the only door onto an automatic crossover
+    (#4788/#4792), so the durable v2 state it marks ``applied`` — naming the
+    same measured candidate the applied profile was composed from — is what
+    grants room correction. A box with no such record is denied ABSENT.
+    """
+    from jasper.active_speaker.crossover_v2 import durable_state
 
+    candidate_fingerprint = "9" * 64
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
     config_path = tmp_path / "active_speaker_baseline.yml"
     automatic = _applied_acoustic_profile(config_path=config_path)
     automatic["tuning_owner"] = "automatic"
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
+    automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
     _write_applied_graph(topology, automatic, config_path)
     monkeypatch.setattr(
         baseline_mod,
@@ -1215,26 +1223,33 @@ def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
     )
-    monkeypatch.setattr(
-        commissioning_verification,
-        "read_commissioning_room_authority",
-        lambda _topology: {
-            "allowed": True,
-            "authority": "automatic_verified_receipt",
-            "receipt_fingerprint": "9" * 64,
-        },
-    )
+    state_path = tmp_path / "crossover_v2_state.json"
+    if write_v2_apply_record:
+        state_path.write_text(
+            json.dumps(
+                {"applied": True, "candidate": {"fingerprint": candidate_fingerprint}}
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(durable_state, "DEFAULT_V2_STATE_PATH", state_path)
 
     status = setup_mod.read_active_speaker_setup_status(
         active_config_path=str(config_path),
     )
+    acoustic = status["acoustic_commissioning"]
 
+    if not write_v2_apply_record:
+        assert status["room_correction_allowed"] is False
+        assert acoustic["authority"] is None
+        assert acoustic["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
+        assert acoustic["receipt_fingerprint"] is None
+        return
     assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["authority"] == (
+    assert acoustic["authority"] == (
         setup_mod.ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
     )
-    assert status["acoustic_commissioning"]["receipt_fingerprint"] == "9" * 64
-    assert status["acoustic_commissioning"]["layer_a_identity"] == (
+    assert acoustic["receipt_fingerprint"] == candidate_fingerprint
+    assert acoustic["layer_a_identity"] == (
         status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
     )
 

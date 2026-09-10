@@ -14,9 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker.bundles import BUNDLE_KIND as ACTIVE_BUNDLE_KIND
-from jasper.active_speaker.commissioning_receipt import AdmittedCaptureProof
-from jasper.audio_measurement.evidence_identity import ArtifactIdentity, CaptureIdentity
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_admission import (
     ExcitationAdmission,
     ExcitationLimits,
@@ -570,69 +568,6 @@ def test_pure_recheck_does_not_treat_hash_inequality_as_freshness() -> None:
     assert same_content.allowed is True
     assert different_observation.allowed is True
     assert same_content.protection_evidence != different_observation.protection_evidence
-
-
-def test_playback_artifact_preserves_active_receipt_encoding(tmp_path: Path) -> None:
-    authority = create_admission_authority(
-        tmp_path / BUNDLE_ID,
-        bundle_kind=ACTIVE_BUNDLE_KIND,
-        bundle_id=BUNDLE_ID,
-    )
-    limits = _limits()
-    request = ExcitationRequest(
-        band=FrequencyBand(1_000, 8_000),
-        effective_peak_dbfs=-18,
-        duration_s=4,
-        repeat_count=1,
-        target_fingerprint=limits.target_fingerprint,
-        safety_profile_fingerprint=limits.safety_profile_fingerprint,
-        authority_fingerprint=limits.fingerprint,
-        excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
-    )
-    generation_admission = admit_excitation(
-        request,
-        limits,
-        protection_evidence=_evidence(limits, GENERATION_PROOF),
-    )
-    generation = persist_generation_admission(
-        authority,
-        admission_id=ADMISSION_ID,
-        admission=generation_admission,
-    )
-    result = readmit_and_persist_playback_admission(
-        authority,
-        generation,
-        current_limits=limits,
-        current_protection_evidence=_evidence(limits, PLAYBACK_PROOF),
-    )
-    assert result.artifact is not None
-
-    def artifact(path: str, marker: str) -> ArtifactIdentity:
-        raw = marker.encode("ascii")
-        return _identity(authority=authority, relative_path=path, raw=raw)
-
-    capture = CaptureIdentity(
-        consumer_id="active_crossover",
-        measurement_kind="active_crossover_post_apply",
-        capture_id="capture-1",
-        raw_artifact=artifact("capture/raw.wav", "raw"),
-        analysis_input_artifact=artifact("capture/input.json", "input"),
-        target_fingerprint=TARGET,
-        context_fingerprint="7" * 64,
-        geometry_id="reference_axis",
-        placement_fingerprint="8" * 64,
-        quality_artifact=artifact("capture/quality.json", "quality"),
-        admission_artifact=result.artifact.artifact,
-    )
-
-    proof = AdmittedCaptureProof(
-        capture=capture,
-        commissioning_session_id=BUNDLE_ID,
-        generation_admission=generation.admission,
-        admission=result.decision,
-        generation_artifact=generation.artifact,
-    )
-    assert proof.admission_decision_fingerprint == result.decision.fingerprint
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,8 @@ into the answer that UI, control, and multiroom gates consume.
 
 from __future__ import annotations
 
+import errno
+import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -140,6 +142,70 @@ def _nonnegative_int(value: Any) -> int:
 def _mapping(value: Any) -> Mapping[str, Any]:
     """Return a read-only mapping view for optional artifact sections."""
     return value if isinstance(value, Mapping) else {}
+
+
+def _receipt_denial(reason: str, cause: str) -> dict[str, Any]:
+    """One un-vouched room-authority answer, disclosed and never enforced.
+
+    Ruling S10: an unproven fact is a WARNING, not a stop. ``cause`` rides the
+    answer so the file or errno behind it reaches the operator. The four
+    denial classes stay distinguishable — see ADR-0196.
+    """
+    return {
+        "allowed": False,
+        "authority": "automatic_verified_receipt",
+        "reason": reason,
+        "cause": cause,
+        "receipt_fingerprint": None,
+    }
+
+
+def _v2_apply_room_authority(
+    applied_profile: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Whether the applied automatic crossover carries v2's own apply proof.
+
+    ``jasper.web.correction_crossover_v2.handle_v2_apply`` is the only door
+    onto an automatic crossover (#4788/#4792), and what it leaves behind is the
+    durable v2 state marked ``applied`` beside the candidate it installed. The
+    proof is that record naming the SAME measured candidate the applied profile
+    was composed from, so a later apply through any other owner reads as stale
+    rather than inheriting this grant.
+    """
+    from .crossover_v2 import durable_state
+
+    try:
+        record = json.loads(
+            durable_state.DEFAULT_V2_STATE_PATH.read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        return _receipt_denial(ROOM_AUTHORITY_RECEIPT_ABSENT, "no v2 apply record")
+    except ValueError:
+        return _receipt_denial(
+            ROOM_AUTHORITY_RECEIPT_MALFORMED, "v2 apply record is not JSON"
+        )
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno or 0, str(exc.errno or ""))
+        return _receipt_denial(
+            ROOM_AUTHORITY_RECEIPT_UNREADABLE, f"{type(exc).__name__}:{code}"
+        )
+    if not isinstance(record, Mapping) or record.get("applied") is not True:
+        return _receipt_denial(ROOM_AUTHORITY_RECEIPT_ABSENT, "no applied v2 candidate")
+    applied_source = _mapping(_mapping(applied_profile).get("source"))
+    fingerprint = str(_mapping(record.get("candidate")).get("fingerprint") or "")
+    if not fingerprint or fingerprint != str(
+        applied_source.get("measured_candidate_fingerprint") or ""
+    ):
+        return _receipt_denial(
+            ROOM_AUTHORITY_RECEIPT_STALE,
+            "the v2 apply record is not the applied crossover",
+        )
+    return {
+        "allowed": True,
+        "authority": "automatic_verified_receipt",
+        "reason": None,
+        "receipt_fingerprint": fingerprint,
+    }
 
 
 def _usable_summed_acoustic(record: Any) -> bool:
@@ -1167,10 +1233,7 @@ def read_active_speaker_setup_status(
         "receipt_fingerprint": None,
     }
     if applied_crossover.get("owner") == "automatic":
-        # Manual/passive status stays free of the recorder/analyzer stack.
-        from .commissioning_verification import read_commissioning_room_authority
-
-        receipt_authority = read_commissioning_room_authority(topology)
+        receipt_authority = _v2_apply_room_authority(applied_profile)
     acoustic_commissioning = _acoustic_commissioning_status(
         topology,
         setup_ready=not blocked,
