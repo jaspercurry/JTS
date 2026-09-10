@@ -33,7 +33,7 @@ def normalise_installation(raw: Any) -> dict[str, Any] | None:
     raw = _FIELDS.mapping(raw, "installation")
     if set(raw) - INSTALLATION_FIELDS.keys():
         raise ValueError("installation has unknown fields")
-    result = {}
+    result: dict[str, Any] = {}
     for key, spec in INSTALLATION_FIELDS.items():
         value = raw.get(key)
         if value is None or value == "":
