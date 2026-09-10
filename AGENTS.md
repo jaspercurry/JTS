@@ -137,6 +137,8 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   `sudo /opt/jasper/.venv/bin/jasper-doctor` on the Pi. Runtime Python lives
   in `/opt/jasper/`, not the rsync checkout — edits aren't live until install
   re-copies.
+- A post-merge fetch can miss GitHub's ref advance and redeploy stale code —
+  verify `git merge-base --is-ancestor <merge-sha> origin/main` first.
 - CI lanes and branch protection: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## PRs and coordination
