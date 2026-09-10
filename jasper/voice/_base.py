@@ -106,8 +106,8 @@ class BaseLiveTurn:
         self._conn = conn
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
         self._interrupt_event = asyncio.Event()
-        # Loop time (asyncio) of the last model activity of any kind, and
-        # of the last audio chunk specifically.
+        # Loop time (asyncio) of the last inbound progress event, and of
+        # the last audio chunk specifically.
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
         self._first_chunk_logged = False
@@ -174,6 +174,9 @@ class BaseLiveTurn:
 
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
+
+    def end_input_at(self) -> float:
+        return self._end_input_at_monotonic
 
     def server_turn_complete(self) -> bool:
         return self._server_turn_complete
@@ -253,14 +256,18 @@ class BaseLiveTurn:
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.
 
-        Every adapter calls this once per inbound server message, plus on
-        the local tool milestones (a tool of a round finishing, the tool
-        response going out) that produce no message of their own. So the
-        anchor answers "when did this session last hear from the server",
-        and the watchdog's pre-response timer means "socket open but
-        server silent" rather than "no audio yet" — a slow generation
-        that is still emitting acknowledgements, output items or
-        transcript deltas no longer trips it. See issue #4532.
+        Called for inbound messages that carry content or prove the model
+        is working on this turn — audio and text deltas, transcripts,
+        tool calls, response acknowledgements, turn_complete — and for
+        the local tool milestones that produce no message of their own (a
+        tool of a round finishing, the tool response going out). NOT for
+        `error` frames, keepalives or session bookkeeping, which prove
+        only that the socket is open.
+
+        So the anchor answers "when did this turn last make progress",
+        and the watchdog's pre-response timer no longer trips a slow
+        generation that is still emitting transcript deltas. See issue
+        #4532.
         """
         self._last_activity_at = asyncio.get_event_loop().time()
 

@@ -99,6 +99,19 @@ _NOISE_REDUCTION_DISABLED = frozenset((
 ))
 _NOISE_REDUCTION_WIRE_VALUES = frozenset(("near_field", "far_field"))
 
+# Inbound event types that prove the turn is making progress, so they
+# advance the pre-response idle anchor: the whole `response.*` namespace
+# (created, in_progress, output items, audio and text deltas, done), the
+# input transcription under `conversation.item.*`, and the commit
+# acknowledgement. Excluded on purpose — `error`, `session.*` and
+# `rate_limits.updated` prove only that the socket is open. See #4532.
+_PROGRESS_EVENT_PREFIXES = ("response.", "conversation.item.")
+_PROGRESS_EVENT_TYPES = frozenset(("input_audio_buffer.committed",))
+
+
+def _is_progress_event(etype: str) -> bool:
+    return etype in _PROGRESS_EVENT_TYPES or etype.startswith(_PROGRESS_EVENT_PREFIXES)
+
 
 def _normalize_noise_reduction(value: str | None) -> str:
     normalized = (value or "").strip().lower()
@@ -1037,7 +1050,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
 
     async def _dispatch_event(self, etype: str, event) -> None:
         turn = self._active_turn
-        if turn is not None and self._owns_turn(turn):
+        if turn is not None and self._owns_turn(turn) and _is_progress_event(etype):
             turn._note_activity()
         if etype == "error":
             detail = failure_detail(
