@@ -260,3 +260,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0278](0278-measurement-purpose-is-independent-of-position.md) | Measurement purpose is independent of position | accepted |
 | [0272](0272-the-decay-snap-lever-is-removed-so-the-cushion-hold-is-not-hardware-provable.md) | The DECAY_SNAP lever is removed, so the cushion hold is not hardware-provable | accepted |
 | [0283](0283-camilladsp-starts-only-on-a-graph-proved-against-its-own-topology.md) | CamillaDSP starts only on a graph proved against its own topology | accepted |
+| [0284](0284-audits-are-frozen-reports-and-issues-are-the-ledger.md) | Audits are frozen reports; issues are the ledger | accepted |
