@@ -8,6 +8,9 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement.analysis import (
+    THIRD_OCTAVE_BASS_BANDS_HZ,
+    band_levels_from_magnitude,
+    compression_curve,
     notch_excluded_band_mask,
     notch_excluded_tracking_error_db,
     thd_curve,
@@ -117,6 +120,16 @@ def test_thd_curve_masks_low_fundamental_snr_only():
     assert np.all(np.isfinite(ratio[1:]))
 
 
+def test_third_octave_bands_and_power_mean_levels():
+    assert len(THIRD_OCTAVE_BASS_BANDS_HZ) == 11
+    levels = band_levels_from_magnitude(
+        np.asarray((20.0, 25.0, 31.5)),
+        np.asarray((0.0, -10.0, -20.0)),
+        ((20.0, 30.0), (30.0, 40.0)),
+    )
+    assert levels == pytest.approx((-2.596, -20.0), abs=0.001)
+
+
 def test_extract_harmonic_ir_rejects_window_collision():
     _, meta = synchronized_swept_sine(
         f1=10.0, f2=500.0, duration_approx_s=8.0, sample_rate=SR
@@ -125,6 +138,18 @@ def test_extract_harmonic_ir_rejects_window_collision():
     with pytest.raises(ValueError, match="crosses"):
         extract_harmonic_ir(full_ir, SR, 500, meta, 2)
     assert harmonic_time_advance_s(meta, 2) == pytest.approx(meta.L * math.log(2))
+
+
+def test_compression_curve_on_soft_clipped_rungs():
+    assert compression_curve((
+        (-30.0, (-40.0, -42.0)),
+        (-27.0, (-37.5, -40.0)),
+        (-24.0, (-35.5, -38.0)),
+    )) == (
+        (0.0, 0.0),
+        (-0.5, -1.0),
+        (-1.5, -2.0),
+    )
 
 
 def test_tracking_error_is_level_offset_invariant():

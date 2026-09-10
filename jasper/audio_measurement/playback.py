@@ -50,7 +50,6 @@ class PlaybackFailureCode(str, Enum):
     TIMEOUT = "timeout"
     WAIT_FAILED = "wait_failed"
     PROCESS_FAILED = "process_failed"
-    CLEANUP_FAILED = "cleanup_failed"
 
 
 class PlaybackCleanupState(str, Enum):
