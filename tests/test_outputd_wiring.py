@@ -9,6 +9,7 @@ import errno
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -270,9 +271,27 @@ def _start_monitor(
             },
             stdout=journal.open("wb"),
             stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL,
+            # A fresh process group so `_stop_monitor` can reach the
+            # script's process-substitution subshell and the fanned-out
+            # `alsactl` children it backgrounds -- `kill()` alone only
+            # reaches this top pid and orphans the rest.
+            start_new_session=True,
         ),
         journal,
     )
+
+
+def _stop_monitor(monitor: subprocess.Popen[bytes]) -> None:
+    """Tear down `monitor` and every process it fanned out, not just the
+    top bash pid: `start_new_session=True` above put them all in one group.
+    `Popen.kill()` no-ops once its pid is already reaped; a plain `killpg`
+    has no such guard, and raises instead when a caller (e.g. `_await` on
+    an unexpected exit) reaped the group's last member first."""
+    try:
+        os.killpg(monitor.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    monitor.wait()
 
 
 def _await(
@@ -378,8 +397,7 @@ def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
             time.sleep(0.02)
         assert sorted(started) == ["monitor hw:A", "monitor hw:A_1"]
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_kills_every_fanned_out_alsactl_on_a_population_move(
@@ -442,8 +460,7 @@ def test_the_drift_monitor_kills_every_fanned_out_alsactl_on_a_population_move(
         assert not _pid_alive(pid_a), "old card A alsactl survived the restart"
         assert not _pid_alive(pid_a1), "old card A_1 alsactl survived the restart"
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_reads_the_control_only_when_an_event_says_so(
@@ -485,8 +502,7 @@ def test_the_drift_monitor_reads_the_control_only_when_an_event_says_so(
         _await(monitor, log, _BOTH_APPLE_PINS)
         assert log.read_text().count("sget") == 4  # one per card, twice
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def _await_count(path: Path, n: int, monitor: subprocess.Popen[bytes]) -> float:
@@ -580,8 +596,7 @@ def test_the_drift_monitor_backoff_grows_caps_then_decays_after_a_full_window(
             "event=apple_dongle.headphone_monitor.mode mode=poll reason=eof",
         ]
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_falls_back_to_polling_without_alsactl(tmp_path):
@@ -620,8 +635,7 @@ def test_the_drift_monitor_falls_back_to_polling_without_alsactl(tmp_path):
             "mode=poll reason=not_installed"
         ) == 1
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_floors_how_often_it_reads_and_resets(tmp_path):
@@ -664,8 +678,7 @@ def test_the_drift_monitor_floors_how_often_it_reads_and_resets(tmp_path):
         _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
         time.sleep(3.5)
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
     calls = log.read_text()
     sget_count = calls.count("sget")
@@ -694,8 +707,7 @@ def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
     try:
         _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_refuses_an_explicit_card_with_no_control(tmp_path):
@@ -763,8 +775,7 @@ def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
             (bin_dir / "alsactl.log").read_text().splitlines()
         ) == ["monitor hw:A", "monitor hw:A_1"]
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def _flaky_emitter_python(tmp_path: Path) -> Path:
@@ -806,8 +817,7 @@ def test_the_drift_monitor_retries_a_failed_probe_on_the_next_poll(tmp_path):
     try:
         _await(monitor, log, _BOTH_APPLE_PINS)
     finally:
-        monitor.kill()
-        monitor.wait()
+        _stop_monitor(monitor)
 
 
 def test_the_drift_monitor_fails_loudly_when_the_classifier_cannot_run(tmp_path):
