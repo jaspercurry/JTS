@@ -7,13 +7,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import numpy as np
+
+from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
 from jasper.audio_measurement.program_analysis import (
-    MeasurementGeometry, analysis_diagnostic_summary, analyze_program_capture,
+    MeasurementGeometry, ProgramAnalysis, analysis_diagnostic_summary, analyze_program_capture,
 )
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.json_fields import finite_float
@@ -33,19 +39,33 @@ class MeasurementAnalysisRefused(ValueError):
         super().__init__(code)
 
 
-def analyze_measurement_bundle(
-    bundle_dir: Path, *, calibration_root: Path | None = None,
-    run_reference_db: float | None = None,
-) -> FrequencyRun:
-    """Read exact captured programs and WAVs; never rewrite banked evidence."""
-    if run_reference_db is not None and finite_float(run_reference_db) is None:
-        raise MeasurementAnalysisRefused("measurement_reference_invalid")
-    info = json.loads((bundle_dir / "info.json").read_text())
+@dataclass(frozen=True)
+class AnalyzedMeasurement:
+    record: dict[str, Any]
+    record_path: str
+    program: ExcitationProgram
+    samples: np.ndarray
+    sample_rate: int
+    calibration: CalibrationRecord | None
+    analysis: ProgramAnalysis
 
-    documents = []
+    def document(self) -> dict[str, Any]:
+        return {
+            **self.record, "curves": analysis_curve_records(self.analysis, self.program),
+            "diagnostic": analysis_diagnostic_summary(self.analysis),
+            "calibration": {"applied": self.calibration is not None,
+                            "calibration_id": self.calibration.calibration_id if self.calibration else None},
+        }
+
+
+def analyzed_measurements(
+    bundle_dir: Path, *, calibration_root: Path | None = None,
+) -> Iterator[AnalyzedMeasurement]:
+    """Reopen exact takes once; release each raw capture before loading the next."""
     for row in bundle_measurements(bundle_dir):
+        record_path = f"{EVIDENCE_ROOT}/artifacts/{row.path}"
         try:
-            record, wav = reopen_measurement_capture(bundle_dir, f"{EVIDENCE_ROOT}/artifacts/{row.path}")
+            record, wav = reopen_measurement_capture(bundle_dir, record_path)
         except MeasurementCaptureIdentityError as exc:
             raise MeasurementAnalysisRefused("measurement_capture_identity_mismatch") from exc
         if wav is None:
@@ -68,12 +88,17 @@ def analyze_measurement_bundle(
             geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
             capture_report=record.get("capture_integrity"),
         )
-        documents.append({
-            **record, "curves": analysis_curve_records(analysis, program),
-            "diagnostic": analysis_diagnostic_summary(analysis),
-            "calibration": {"applied": calibration is not None,
-                            "calibration_id": calibration.calibration_id if calibration is not None else None},
-        })
+        yield AnalyzedMeasurement(record, record_path, program, samples, rate, calibration, analysis)
+
+
+def analyze_measurement_bundle(
+    bundle_dir: Path, *, calibration_root: Path | None = None,
+    run_reference_db: float | None = None,
+) -> FrequencyRun:
+    if run_reference_db is not None and finite_float(run_reference_db) is None:
+        raise MeasurementAnalysisRefused("measurement_reference_invalid")
+    info = json.loads((bundle_dir / "info.json").read_text())
+    documents = [take.document() for take in analyzed_measurements(bundle_dir, calibration_root=calibration_root)]
     if not documents:
         raise MeasurementAnalysisRefused("measurement_captures_missing")
     return frequency_run_from_documents(
