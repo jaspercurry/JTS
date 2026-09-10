@@ -490,6 +490,7 @@ class VolumeCoordinator:
             # protocol surfaces. Push-mode 0% is the exception: still
             # assert Camilla main_mute as the content/music mute guarantee.
             if await self._camilla_carries_level(source):
+                await self._set_loudness_level(target_level)
                 await self._set_camilla(target_level)
             else:
                 pin_db = 0.0 if target_level > 0 else percent_to_db(0)
@@ -970,6 +971,7 @@ class VolumeCoordinator:
                             include_live_guard=True,
                         )
                     publish_needed = True
+        await self._set_loudness_level(level)
         if publish_needed:
             # Camilla/socket reads and IPC happen after releasing the mutation
             # lock; volume commands must not queue behind observability work.
@@ -1101,6 +1103,7 @@ class VolumeCoordinator:
         """
         source = source if source is not None else await self._active_source()
         try:
+            await self._set_loudness_level(level)
             if source == Source.AIRPLAY:
                 await self._set_airplay(level)
             elif source == Source.SPOTIFY:
@@ -2119,6 +2122,18 @@ class VolumeCoordinator:
         BLUETOOTH (AVRCP).
         """
         return volume_mode(source) == VolumeMode.CAMILLA_MASTER
+
+    async def _set_loudness_level(self, level: int) -> bool:
+        """Mirror source-neutral listening intent to Camilla's Aux1 reference.
+
+        Aux1 is statefile-persisted and cheap to update even when the loaded
+        graph has no Loudness listener. Keeping it current lets a later graph
+        activation start from the canonical level instead of stale fader state.
+        """
+        return await self._camilla.set_loudness_volume_db(
+            percent_to_db(max(0, min(100, int(level)))),
+            best_effort=True,
+        )
 
     async def _camilla_locked(self) -> bool | None:
         if self._camilla_volume_locked:

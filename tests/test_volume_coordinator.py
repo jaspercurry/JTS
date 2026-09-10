@@ -93,6 +93,7 @@ class _FakeCamilla:
         self.muted = False
         self.set_calls: list[float] = []
         self.mute_calls: list[bool] = []
+        self.loudness_calls: list[float] = []
         self.events: list[tuple[str, float | bool]] = []
         self.get_calls: int = 0
         # When True, every best_effort call is a no-op (writes return
@@ -128,6 +129,16 @@ class _FakeCamilla:
         self._db = db
         self.set_calls.append(db)
         self.events.append(("volume", db))
+        return True
+
+    async def set_loudness_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        if self.unavailable:
+            if best_effort:
+                return False
+            raise CamillaUnavailable("test fake offline")
+        self.loudness_calls.append(db)
         return True
 
     async def set_main_mute(
@@ -388,6 +399,15 @@ async def test_push_mode_nonzero_clears_stale_final_mute(tmp_path):
         ("volume", pytest.approx(0.0)),
         ("mute", False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_push_volume_also_updates_source_neutral_loudness_reference(tmp_path):
+    coord, cam, _ = _coord(tmp_path, selected=Source.SPOTIFY.value)
+
+    await coord.set_listening_level(50)
+
+    assert cam.loudness_calls == [percent_to_db(50)]
 
 
 async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
@@ -918,7 +938,7 @@ async def test_observe_within_echo_window_ignored(tmp_path, observed):
 
 
 async def test_observe_outside_echo_window_becomes_canonical(tmp_path, monkeypatch):
-    coord, _, persistence = _coord(tmp_path, active={"spotactive": True})
+    coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(60)
     # Fast-forward past the echo window without sleeping.
     fake_now = time.monotonic() + ECHO_WINDOW_SEC + 1.0
@@ -930,6 +950,7 @@ async def test_observe_outside_echo_window_becomes_canonical(tmp_path, monkeypat
     _assert_persisted(persistence, level=40)
     # An observation must NOT trigger an outbound dispatch (no echo).
     assert coord.spotify_writes == [60]
+    assert cam.loudness_calls[-1] == pytest.approx(percent_to_db(40))
 
 
 @pytest.mark.parametrize("seeded_level", [50, 100])
@@ -1084,11 +1105,12 @@ async def test_observe_revalidates_active_source_at_mutation_boundary(tmp_path):
 
 
 async def test_initialize_first_boot_uses_default(tmp_path):
-    coord, _, persistence = _coord(tmp_path, active={})
+    coord, cam, persistence = _coord(tmp_path, active={})
     target, reason = await coord.initialize(first_boot_default_pct=42)
     assert target == 42
     assert "first-boot" in reason
     _assert_persisted(persistence, level=42)
+    assert cam.loudness_calls == [pytest.approx(percent_to_db(42))]
 
 
 async def test_initialize_does_not_bump_last_used_at(tmp_path):
@@ -2803,6 +2825,9 @@ class _MinimalCamillaClient:
 
     def set_main_volume(self, value: float) -> None:
         self.db = float(value)
+
+    def set_volume_external(self, fader: int, value: float) -> None:
+        pass
 
     def set_main_mute(self, value: bool) -> None:
         self.muted = bool(value)
