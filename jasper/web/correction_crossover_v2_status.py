@@ -148,6 +148,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # like ``candidate`` and ``verify`` beside it: the envelope's own
         # accessor is the validating reader.
         "round_receipt": (state or {}).get("round_receipt"),
+        "room_trial": (state or {}).get("room_trial"),
         "verify": (state or {}).get("verify"),
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.audio_measurement.bundles import (
     BundleError,
@@ -23,14 +23,67 @@ from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .measured_crossover_candidate import candidate_trial_scope
 
 
-def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict[str, Any] | None:
+ROOM_TRIAL_SCOPE = "room_candidate"
+
+
+def room_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """Compact durable pointer to the exact captured Room graph, when present."""
+    if not candidate.room_correction:
+        return None
+    record = trial if isinstance(trial, Mapping) else {}
+    candidate_id = str(record.get("candidate_id") or "")
+    graph_fingerprint = str(record.get("graph_fingerprint") or "")
+    record_path = str(record.get("record_path") or "")
+    if (
+        candidate_id != candidate.fingerprint
+        or record.get("graph_scope") != ROOM_TRIAL_SCOPE
+        or re.fullmatch(r"[0-9a-f]{16}", graph_fingerprint) is None
+        or not record_path
+    ):
+        raise CandidateBankRefusal(
+            "candidate_trial_required",
+            "Capture this complete Room candidate before applying it.",
+        )
+    return {
+        "candidate_fingerprint": candidate_id,
+        "graph_scope": ROOM_TRIAL_SCOPE,
+        "graph_fingerprint": graph_fingerprint,
+        "record_path": record_path,
+    }
+
+
+def room_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -> bool:
+    """Whether a persisted Room-trial pointer names this exact candidate."""
+    if not isinstance(reference, Mapping):
+        return False
+    return (
+        str(reference.get("candidate_fingerprint") or "")
+        == str(candidate_fingerprint or "")
+        != ""
+        and reference.get("graph_scope") == ROOM_TRIAL_SCOPE
+        and re.fullmatch(
+            r"[0-9a-f]{16}", str(reference.get("graph_fingerprint") or "")
+        ) is not None
+        and bool(str(reference.get("record_path") or ""))
+    )
+
+
+def require_candidate_trial(
+    candidate: Any,
+    *,
+    root: Path | None = None,
+    expected_graph_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
     """Require a captured full graph for authored candidates; legacy fits need no new proof.
 
     A trial establishes that these exact settings were captured, not that their
     acoustic result passed. The graph digest is the installed graph's recorded
     identity; rebuilding it here would substitute current device configuration.
     """
-    if candidate.analysis.get("measurement_status") != "unmeasured":
+    if (
+        candidate.analysis.get("measurement_status") != "unmeasured"
+        and not candidate.room_correction
+    ):
         return None
     from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader
     from .crossover_v2.record_index import bundle_measurements  # lazy: pulls the tuning engine
@@ -50,6 +103,8 @@ def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict
                     or record.get("incident") != ""
                     or finite_float(record.get("level_db")) is None
                     or re.fullmatch(r"[0-9a-f]{16}", str(record.get("graph_fingerprint") or "")) is None
+                    or expected_graph_fingerprint is not None
+                    and record.get("graph_fingerprint") != expected_graph_fingerprint
                 ):
                     continue
                 wav = relative_artifact_path(bundle, record.get("wav_path") or "")

@@ -5326,8 +5326,9 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     assert changed["config"]["path"] != applied["config"]["path"]
 
 
+@pytest.mark.parametrize("matching_tuning_graph", [True, False])
 async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
-    monkeypatch, tmp_path: Path,
+    monkeypatch, tmp_path: Path, matching_tuning_graph: bool,
 ) -> None:
     from jasper.active_speaker.measured_crossover_candidate import (
         prove_candidate_config,
@@ -5375,6 +5376,17 @@ async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
     assert first["status"] == "applied"
     profile = _sealed_profile(topology, first["profile"])
     save_bass_extension_profile(profile, bass_path)
+    tuning_graph = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        compile_config=True,
+        tuning_owner="automatic",
+        measured_candidate=measured,
+    )
+    tuning_fingerprint = str(tuning_graph["config"]["sha256"])[:16]
 
     with (
         mock.patch(
@@ -5399,9 +5411,20 @@ async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
             validate=_valid_config,
             tuning_owner="automatic",
             measured_candidate=measured,
+            expected_tuning_graph_fingerprint=(
+                tuning_fingerprint if matching_tuning_graph else "0" * 16
+            ),
         )
 
+    if not matching_tuning_graph:
+        assert repeated["status"] == "blocked"
+        assert "candidate_trial_graph_mismatch" in {
+            issue["code"] for issue in repeated["issues"]
+        }
+        assert len(loaded_graphs) == 1
+        return
     assert repeated["status"] == "applied"
+    assert repeated["profile"]["config"]["sha256"] != tuning_graph["config"]["sha256"]
     assert prove_measured.call_count == 1
     assert prove_graph.call_count == 1
     repeated_text = loaded_graphs[-1]

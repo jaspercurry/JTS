@@ -65,6 +65,7 @@ from .attempts_loop import (
     REASON_SITTING_UNRECORDED,
 )
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
+from .candidate_trials import room_trial_matches_candidate
 from .crossover_v2.journey import (
     CAPTURE_PHASES,
     PHASE_APPLYING,
@@ -2611,6 +2612,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # never-graded spectrum). Literal grade words because
         # ``jasper.active_speaker`` never imports ``jasper.web``.
         grade = _mapping(v2.get("post_apply_grade"))
+        if str(grade.get("state") or "") == "room_trial_measured":
+            done_verdict = "Your measured Room correction is applied."
         spatial = str(grade.get("spatial") or "")
         spec_passed = (
             True if spatial == "passed" else False if spatial == "failed" else None
@@ -2883,6 +2886,15 @@ def crossover_v2_phase(
     # implies graded" ladder for a stage 2 that ran and could not decide.
     if PHASE_VERIFY not in phases:
         if applied:
+            candidate = state.get("candidate") if isinstance(state, Mapping) else None
+            candidate_fingerprint = (
+                candidate.get("fingerprint")
+                if isinstance(candidate, Mapping) else None
+            )
+            if room_trial_matches_candidate(
+                (state or {}).get("room_trial"), candidate_fingerprint,
+            ):
+                return PHASE_DONE
             return PHASE_VERIFY
         # …and the measuring session's own TAIL is not the review interlude
         # either. Accepting the final cloud position marks every stage-1 phase

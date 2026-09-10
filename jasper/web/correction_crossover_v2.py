@@ -73,6 +73,10 @@ from typing import (
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.candidate_trials import (
+    room_trial_matches_candidate,
+    room_trial_reference,
+)
 from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -634,6 +638,7 @@ def observe_apply_success(
     *,
     previous_candidate_fingerprint: str | None = None,
     expected_post_apply_offset_db: float = 0.0,
+    room_trial: Mapping[str, Any] | None = None,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
     soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
@@ -676,6 +681,12 @@ def observe_apply_success(
         )
         return
     state["applied"] = True
+    state["room_trial"] = (
+        dict(room_trial)
+        if isinstance(room_trial, Mapping)
+        and room_trial_matches_candidate(room_trial, candidate_fingerprint)
+        else None
+    )
     # SF1 (adversarial review, 2026-07-20): do NOT blindly clear an existing
     # failure code. In the ordinary happy path it is already None (MEASURE's
     # own accept clears it before the conductor ever triggers auto-apply) —
@@ -1381,6 +1392,7 @@ GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
+GRADE_ROOM_TRIAL_MEASURED = "room_trial_measured"
 
 # The four ``RESULT_*`` codes this module's ``_post_apply_grade`` selects from
 # are imported at the top of the file rather than declared here: the domain
@@ -1400,6 +1412,7 @@ GRADE_UNVERIFIED = "unverified"
 GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
+GRADE_SCOPE_ROOM_TRIAL = "room_trial"
 
 #: The post-apply SPATIAL grade's own state (#2160). ``overall_passed`` is a
 #: bool and therefore cannot distinguish "graded and failed" from "could not be
@@ -1587,6 +1600,28 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
             # would warn every speaker that has never been commissioned.
             "complete": True,
         }
+    candidate = block.get("candidate")
+    candidate = candidate if isinstance(candidate, Mapping) else {}
+    if room_trial_matches_candidate(
+        block.get("room_trial"), candidate.get("fingerprint"),
+    ):
+        return {
+            "state": GRADE_ROOM_TRIAL_MEASURED,
+            "graded": True,
+            "verify_outcome": None,
+            "post_apply_spec_passed": None,
+            "scope": GRADE_SCOPE_ROOM_TRIAL,
+            "spatial": GRADE_SPATIAL_ABSENT,
+            "spatial_worst_db": None,
+            "spatial_worst_hz": None,
+            "complete": True,
+            "improvement_db": None,
+            "tracking_passed": None,
+            "absolute_passed": None,
+            "absolute_miss_db": None,
+            "absolute_worst_hz": None,
+            "candidate_fingerprint": str(candidate.get("fingerprint") or ""),
+        }
     verify = block.get("verify")
     outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, Mapping) else ""
     claims = verify.get("claims") if isinstance(verify, Mapping) else None
@@ -1601,8 +1636,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     prediction = prediction if isinstance(prediction, Mapping) else {}
     comparison = prediction.get("comparison")
     comparison = comparison if isinstance(comparison, Mapping) else {}
-    candidate = block.get("candidate")
-    candidate = candidate if isinstance(candidate, Mapping) else {}
     improvement_db = _finite(comparison.get("improvement_db"))
     required_db = _finite(comparison.get("required_db"))
     absolute_miss_db, absolute_worst_hz = _finite(absolute.get("max_db")), _finite(absolute.get("worst_hz"))
@@ -3528,6 +3561,9 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     candidate = v2.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
+    if candidate.get("trial_scope") == "room_candidate":
+        v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
+        return
     try:
         resolve_conductor_context(status)
     except CrossoverV2Refused as exc:
@@ -4497,11 +4533,22 @@ def prepare_v2_session(
                 "verification needs an applied measured crossover; measure and "
                 "apply first"
             )
+        candidate_state = state.get("candidate")
+        candidate_fingerprint = (
+            candidate_state.get("fingerprint")
+            if isinstance(candidate_state, Mapping) else None
+        )
+        if room_trial_matches_candidate(
+            state.get("room_trial"), candidate_fingerprint,
+        ):
+            raise CrossoverV2Refused(
+                "this measured Room correction is already applied; it does not "
+                "use the speaker-fit verification stage"
+            )
         attempt_store = _attempt_loop_store_snapshot()
         attempts_loop = state.get("attempts_loop")
         attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
         prior_attempt_decision = attempts_loop.get("last_decision")
-        candidate_state = state.get("candidate")
         tuning_attempt_id = (
             str(candidate_state.get("fingerprint") or "")
             if isinstance(candidate_state, Mapping) else ""
@@ -5460,10 +5507,13 @@ def handle_v2_apply(
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from jasper.active_speaker.candidate_trials import require_candidate_trial
 
-    try:
-        require_candidate_trial(candidate)
-    except CandidateBankRefusal as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
+    room_apply = bool(candidate.room_correction)
+    applied_room_trial = None
+    if not room_apply:
+        try:
+            require_candidate_trial(candidate)
+        except CandidateBankRefusal as exc:
+            raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
     topology = load_output_topology()
     # WHAT THIS APPLY ASKS ``/sound`` TO DECLARE — derived from the candidate
     # that is about to be applied, never from a persisted record that merely
@@ -5564,7 +5614,8 @@ def handle_v2_apply(
             # Sound but was not applied" framing there. Raw on purpose:
             # ``_before_dsp`` would relabel a pre-write refusal as
             # saved-not-applied, which is false on this side of the write.
-            _assert_stage_2_can_open(status)
+            if not room_apply:
+                _assert_stage_2_can_open(status)
             measured_revision = (state or {}).get("sound_design_revision")
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):
@@ -5621,6 +5672,7 @@ def handle_v2_apply(
             crossover_preview=preview,
             measurements=measurements,
             write=False,
+            compile_config=room_apply,
             tuning_owner="automatic",
             measured_candidate=candidate,
         )
@@ -5640,6 +5692,15 @@ def handle_v2_apply(
     baseline_expected_fingerprint = str(
         reviewed_baseline.get("candidate_fingerprint") or ""
     )
+    if room_apply:
+        compiled_graph = str((reviewed_baseline.get("config") or {}).get("sha256") or "")
+        try:
+            trial = require_candidate_trial(
+                candidate, expected_graph_fingerprint=compiled_graph[:16],
+            )
+            applied_room_trial = room_trial_reference(candidate, trial)
+        except CandidateBankRefusal as exc:
+            raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
     # The pre-candidate applied profile, if any (``None`` on the speaker's
     # first-ever apply). ``build_baseline_profile_candidate`` freezes it here
     # as ``applied_recomposition_profile`` before the actual apply below
@@ -5653,7 +5714,8 @@ def handle_v2_apply(
     # LAST, immediately before the transaction commits (D3). After the
     # freshness gates, so a stale candidate still gets its own specific
     # refusal rather than this one.
-    _before_dsp(lambda: _assert_stage_2_can_open(status))
+    if not room_apply:
+        _before_dsp(lambda: _assert_stage_2_can_open(status))
 
     if alternative and not _update_current_review(
         review_session_id, expected, accepted_revision, {},
@@ -5697,6 +5759,10 @@ def handle_v2_apply(
             ),
             tuning_owner="automatic",
             expected_candidate_fingerprint=baseline_expected_fingerprint,
+            expected_tuning_graph_fingerprint=(
+                applied_room_trial["graph_fingerprint"]
+                if applied_room_trial is not None else None
+            ),
             measured_candidate=candidate,
         ))
     except Exception as exc:  # noqa: BLE001 - DSP result may be ambiguous
@@ -5742,6 +5808,7 @@ def handle_v2_apply(
                     )
                     or None,
                     expected_post_apply_offset_db=offset_db,
+                    room_trial=applied_room_trial,
                 )
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:

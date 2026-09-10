@@ -44,6 +44,7 @@ from jasper.active_speaker.attempts_loop import (
     AttemptIntegrity,
     AttemptRecord,
 )
+from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
@@ -863,6 +864,7 @@ def _candidate_summary(
     return {
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
+        "trial_scope": candidate_trial_scope(candidate),
         "trims_db": dict(candidate.role_attenuations_db),
         # …and which of those trims the round did NOT solve: the household
         # copy must never word a pinned number as a measured result. The

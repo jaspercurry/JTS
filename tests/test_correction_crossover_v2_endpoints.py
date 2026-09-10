@@ -2323,6 +2323,91 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
+def _room_trial_state(*, reference=None):
+    fingerprint = "room-candidate-fingerprint"
+    return {
+        "session_id": "cap_room",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": fingerprint},
+        "applied": True,
+        "room_trial": reference if reference is not None else {
+            "candidate_fingerprint": fingerprint,
+            "graph_scope": "room_candidate",
+            "graph_fingerprint": "0123456789abcdef",
+            "record_path": "/bank/position-0001.json",
+        },
+    }
+
+
+def test_an_applied_room_trial_is_terminal_without_speaker_recovery(monkeypatch):
+    """A Room layer is complete on its exact trial, even over inherited boost."""
+    v2host.save_v2_state(_room_trial_state())
+    monkeypatch.setattr(v2host, "_applied_graph_boosts", lambda: True)
+
+    block = v2status.crossover_v2_status_block()
+    assert block["phase"] == "done"
+    assert block["post_apply_grade"] == {
+        "state": v2host.GRADE_ROOM_TRIAL_MEASURED,
+        "graded": True,
+        "verify_outcome": None,
+        "post_apply_spec_passed": None,
+        "scope": v2host.GRADE_SCOPE_ROOM_TRIAL,
+        "spatial": v2host.GRADE_SPATIAL_ABSENT,
+        "spatial_worst_db": None,
+        "spatial_worst_hz": None,
+        "complete": True,
+        "improvement_db": None,
+        "tracking_passed": None,
+        "absolute_passed": None,
+        "absolute_miss_db": None,
+        "absolute_worst_hz": None,
+        "candidate_fingerprint": "room-candidate-fingerprint",
+    }
+    envelope = v2projection.build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert envelope["verdict_text"] == "Your measured Room correction is applied."
+
+    with pytest.raises(v2host.CrossoverV2Refused):
+        v2host.prepare_v2_session(
+            {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
+        )
+
+
+def test_room_review_does_not_warn_about_the_unused_speaker_verify_stage(monkeypatch):
+    status = {"crossover_v2": {
+        "phase": "review",
+        "candidate": {"fingerprint": "room", "trial_scope": "room_candidate"},
+    }}
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context",
+        lambda _status: pytest.fail("Room review checked speaker VERIFY"),
+    )
+
+    v2host.attach_stage2_preflight(status)
+
+    assert status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong", "stale"])
+def test_an_invalid_room_trial_proof_does_not_close_the_apply(fault):
+    state = _room_trial_state()
+    if fault == "missing":
+        state.pop("room_trial")
+    elif fault == "wrong":
+        state["room_trial"]["graph_scope"] = "candidate"
+    else:
+        state["room_trial"]["candidate_fingerprint"] = "older-candidate"
+    v2host.save_v2_state(state)
+
+    block = v2status.crossover_v2_status_block()
+    assert block["phase"] == PHASE_VERIFY
+    assert block["post_apply_grade"]["state"] == v2host.GRADE_UNVERIFIED
+
+
 def test_a_session_that_verified_still_resolves_to_done():
     """The review branch keys on a session that never intended to VERIFY, so
     every shape that DID keeps its shipped terminal — a full pre-cloud session
@@ -5982,6 +6067,134 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
     state = v2host.load_v2_state()
     assert state["accepted_sound_revision"] == 2
     assert state["applied"] is True
+
+
+def test_room_apply_persists_the_exact_compiled_trial_without_speaker_preflight(
+    monkeypatch, tmp_path,
+):
+    from jasper.active_speaker import candidate_trials
+    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    candidate = replace(
+        base,
+        analysis={**base.analysis, "measurement_status": "unmeasured"},
+        room_correction=_room_correction(),
+    )
+    reviewed = build_baseline_profile_candidate(
+        _topology,
+        design_draft=load_design_draft(topology=_topology),
+        crossover_preview=load_crossover_preview(),
+        measurements=load_measurement_state(_topology),
+        write=False,
+        compile_config=True,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    graph_fingerprint = reviewed["config"]["sha256"][:16]
+    proof = {
+        "candidate_id": candidate.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": graph_fingerprint,
+        "record_path": str(tmp_path / "bank" / "position-0001.json"),
+    }
+    seen = {}
+
+    def require_trial(_candidate, *, expected_graph_fingerprint=None):
+        seen["trial_graph"] = expected_graph_fingerprint
+        return proof
+
+    monkeypatch.setattr(candidate_trials, "require_candidate_trial", require_trial)
+
+    async def apply_room(*args, **kwargs):
+        seen["expected_graph"] = kwargs.get("expected_tuning_graph_fingerprint")
+        return {
+            "status": "applied",
+            "profile": {
+                "config": {"sha256": graph_fingerprint + "0" * 48},
+                "source": {},
+            },
+        }
+
+    monkeypatch.setattr(baseline_profile_mod, "apply_baseline_profile", apply_room)
+    monkeypatch.setattr(
+        v2host, "_assert_stage_2_can_open",
+        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_room_apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, _FakeApplyCam, status={},
+    )
+
+    assert payload["status"] == "applied"
+    assert seen["trial_graph"] == graph_fingerprint
+    assert seen["expected_graph"] == graph_fingerprint
+    assert v2host.load_v2_state()["room_trial"] == {
+        "candidate_fingerprint": candidate.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": graph_fingerprint,
+        "record_path": proof["record_path"],
+    }
+
+
+def test_room_apply_refuses_a_trial_for_a_different_compiled_graph(
+    monkeypatch, tmp_path,
+):
+    from jasper.active_speaker import candidate_trials
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    candidate = replace(
+        base,
+        analysis={**base.analysis, "measurement_status": "unmeasured"},
+        room_correction=_room_correction(),
+    )
+    def require_wrong_trial(_candidate, *, expected_graph_fingerprint=None):
+        raise candidate_trials.CandidateBankRefusal(
+            "candidate_trial_required", "no matching graph",
+        )
+
+    monkeypatch.setattr(
+        candidate_trials, "require_candidate_trial", require_wrong_trial,
+    )
+    monkeypatch.setattr(
+        v2host, "_assert_stage_2_can_open",
+        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_wrong_room_graph",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    cam = _FakeApplyCam()
+
+    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+        v2host.handle_v2_apply(
+            {"expected_candidate_fingerprint": candidate.fingerprint,
+             "candidate": candidate.to_dict()},
+            _bg_run_async, lambda: cam, status={},
+        )
+
+    assert refusal.value.code == "candidate_trial_required"
+    assert cam.path is None
+    assert v2host.load_v2_state()["applied"] is False
 
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):

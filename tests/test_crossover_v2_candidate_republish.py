@@ -36,7 +36,11 @@ from jasper.active_speaker.candidate_bank import (
     find_banked_candidate,
     publish_authored_candidate,
 )
-from jasper.active_speaker.candidate_trials import require_candidate_trial
+from jasper.active_speaker.candidate_trials import (
+    require_candidate_trial,
+    room_trial_matches_candidate,
+    room_trial_reference,
+)
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.candidate_parts import compose_candidate
@@ -995,8 +999,45 @@ def test_a_room_candidate_needs_a_trial_through_its_room_graph(bank, captured_sc
     _retain_round(bank, bundle)
 
     if admitted:
-        assert require_candidate_trial(child)["graph_scope"] == captured_scope
+        proof = require_candidate_trial(child)
+        assert proof["graph_scope"] == captured_scope
+        reference = room_trial_reference(child, proof)
+        assert room_trial_matches_candidate(reference, child.fingerprint)
+        assert reference == {
+            "candidate_fingerprint": child.fingerprint,
+            "graph_scope": "room_candidate",
+            "graph_fingerprint": proof["graph_fingerprint"],
+            "record_path": proof["record_path"],
+        }
     else:
         with pytest.raises(CandidateBankRefusal) as refusal:
             require_candidate_trial(child)
         assert refusal.value.code == "candidate_trial_required"
+
+
+def test_room_trial_lookup_skips_an_older_capture_of_a_different_graph(bank):
+    parent = _candidate()
+    _publish(bank, parent)
+    child = replace(
+        compose_candidate(find_banked_candidate(parent.fingerprint), {}),
+        room_correction=_room_correction(),
+    )
+    publish_authored_candidate(child)
+    older, _path, _wav = _stage_trial(bank, {
+        "candidate_id": child.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": "0000000000000000",
+    })
+    _retain_round(bank, older)
+    matching, _path, _wav = _stage_trial(bank, {
+        "candidate_id": child.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": "0123456789abcdef",
+    })
+    _retain_round(bank, matching)
+
+    proof = require_candidate_trial(
+        child, expected_graph_fingerprint="0123456789abcdef",
+    )
+
+    assert proof["graph_fingerprint"] == "0123456789abcdef"
