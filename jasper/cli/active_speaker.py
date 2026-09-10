@@ -910,7 +910,7 @@ async def _stoppable_ramp_step(
         # Reached only where no handler could be installed (a loop that is not
         # the main thread's): the interpreter raises inside the step instead.
         stopped_by = int(signal.SIGINT)
-    except BaseException:
+    except BaseException:  # noqa: BLE001 - must uninstall signal handlers before any failure, including cancellation/exit, propagates.
         _uninstall()
         raise
     else:
