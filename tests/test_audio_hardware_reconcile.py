@@ -2943,6 +2943,30 @@ def test_render_success_still_writes_template(tmp_path: Path):
     )
 
 
+def _declare_narrow_wire(tmp_path: Path, monkeypatch) -> None:
+    """This box declares the narrow ring wire, hermetically."""
+    from jasper import env_load
+
+    fanin_env = tmp_path / "declared-fanin.env"
+    fanin_env.write_text("JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n", encoding="utf-8")
+    monkeypatch.setattr(env_load, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(env_load, "BASE_ENV_PATH", str(tmp_path / "absent.env"))
+
+
+def _shipped_asound_source(tmp_path: Path, *, drop_alias: str = "") -> dict[str, str]:
+    """The SHIPPED asound source as this pass's template source.
+
+    ``drop_alias`` renames one snd-aloop alias out of it, which is how a
+    candidate the lane render cannot narrow is staged.
+    """
+    text = (ROOT / "deploy" / "alsa" / "asoundrc.jasper").read_text(encoding="utf-8")
+    if drop_alias:
+        text = text.replace(f"pcm.{drop_alias} {{", f"pcm.{drop_alias}_renamed {{")
+    source = tmp_path / "shipped-asoundrc.jasper.source"
+    source.write_text(text, encoding="utf-8")
+    return {"JASPER_ASOUND_SOURCE_TEMPLATE": str(source)}
+
+
 def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2952,19 +2976,11 @@ def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
     live template on EVERY pass — `render_changed=1`, and `restart_audio` stops
     jasper-voice once per reconcile on a box that changed nothing.
     """
-    from jasper import env_load
     from jasper.renderer_lanes import RENDERER_LANES
+    from jasper.ring_assets import conf_block_body
 
-    fanin_env = tmp_path / "declared-fanin.env"
-    fanin_env.write_text("JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n", encoding="utf-8")
-    monkeypatch.setattr(env_load, "FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(env_load, "BASE_ENV_PATH", str(tmp_path / "absent.env"))
-    source = tmp_path / "shipped-asoundrc.jasper.source"
-    source.write_text(
-        (ROOT / "deploy" / "alsa" / "asoundrc.jasper").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    shipped_source = {"JASPER_ASOUND_SOURCE_TEMPLATE": str(source)}
+    _declare_narrow_wire(tmp_path, monkeypatch)
+    shipped_source = _shipped_asound_source(tmp_path)
 
     first = _run_reconcile(
         tmp_path,
@@ -2977,9 +2993,13 @@ def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
     assert stderr_event(first.stderr, "audio_hardware_reconcile.asound_rendered")
     first_complete = stderr_event(first.stderr, "audio_hardware_reconcile.complete")
     assert first_complete["render_changed"] == "1"
-    # The narrowing is what the second pass has to agree with.
+    # The narrowing is what the second pass has to agree with. Per BLOCK, not a
+    # count: a total says nothing about WHICH lane got the width.
     template = _template(tmp_path)
-    assert template.count("format S16_LE") == len(RENDERER_LANES), template
+    for lane in RENDERER_LANES:
+        assert conf_block_body(template, lane.aloop_device).count(
+            "format S16_LE"
+        ) == 1, lane.aloop_device
     after_first = _systemctl_log(tmp_path)
 
     second = _run_reconcile(
@@ -3000,6 +3020,83 @@ def test_a_narrow_wire_box_renders_the_asound_template_once_not_every_pass(
     )
     # One render of the live asound.conf, not one per pass.
     assert _render_log(tmp_path) == "render\n"
+
+
+def test_a_candidate_the_lane_render_cannot_narrow_is_never_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#3580: publishing a candidate that still carries the WIDE aliases over a
+    narrow box would leave its renderers unable to open their lanes, and — since
+    the live template never converges — stop jasper-voice on every pass. Same
+    posture as a rejected candidate: keep what the box runs."""
+    _declare_narrow_wire(tmp_path, monkeypatch)
+
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_shipped_asound_source(tmp_path, drop_alias="librespot_substream"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    failed = stderr_event(result.stderr, "audio_hardware_reconcile.asound_render_failed")
+    assert failed["stage"] == "aloop_lane_wire"
+    assert failed["result"] == "absent"
+    assert failed["sample_format"] == "S16_LE"
+    assert not stderr_events(result.stderr, "audio_hardware_reconcile.asound_rendered")
+    assert not (tmp_path / "asoundrc.jasper.template").exists()
+    assert _render_log(tmp_path) == ""
+    # The render flag is what carries an asound change into the audio restart,
+    # so a refused candidate contributes no restart of its own.
+    complete = stderr_event(result.stderr, "audio_hardware_reconcile.complete")
+    assert complete["render_changed"] == "0"
+
+
+@pytest.mark.parametrize(
+    "listing,reason",
+    [
+        pytest.param(DAC8X_STUDIO_LISTING, "no_declared_floor", id="no-floor"),
+        pytest.param("", "dac_unrecognized", id="unrecognized"),
+    ],
+)
+def test_the_lane_conf_d_narrows_under_gates_that_skip_the_ring_render(
+    tmp_path: Path, monkeypatch, listing: str, reason: str
+) -> None:
+    """#3580: the ring conf.d's PERIOD gates say nothing about the WIRE. A lane
+    block left wide on a narrow box is a renderer that cannot open its lane, so
+    the lane half narrows whenever the wire resolves — the same condition the
+    snd-aloop half already narrows under."""
+    from jasper.renderer_lanes import RENDERER_LANES, ring_conf_pcm_name
+    from jasper.ring_assets import conf_block_body
+
+    _declare_narrow_wire(tmp_path, monkeypatch)
+    conf = _staged_ring_conf(tmp_path)
+    lanes = tmp_path / "61-jts-renderer-lanes.conf"
+    lanes.write_text(
+        (ROOT / "deploy" / "alsa" / "conf.d" / "61-jts-renderer-lanes.conf").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    before = conf.read_bytes()
+
+    result = _run_reconcile(
+        tmp_path, listing, "--reason", "test", extra_env={"JASPER_RING_CONF_D": str(conf)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = stderr_event(result.stderr, "audio_hardware_reconcile.ring_conf")
+    assert (fields["result"], fields["reason"]) == ("skipped", reason)
+    assert fields["lane_result"] == "rendered"
+    assert fields["lane_conf"] == _log_token(str(lanes))
+    lane_text = lanes.read_text(encoding="utf-8")
+    for lane in RENDERER_LANES:
+        assert conf_block_body(lane_text, ring_conf_pcm_name(lane.label)).count(
+            "format S16_LE"
+        ) == 1, lane.label
+    # The gate still holds for the ring conf.d it gates.
+    assert conf.read_bytes() == before
 
 
 def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: Path):

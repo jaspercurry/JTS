@@ -344,6 +344,63 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_LANE_WIDTH_SHEAR
 
 
+def _patch_lane_conf_d(monkeypatch, tmp_path: Path) -> Path:
+    """Point the lane conf.d check at a staged copy of the shipped drop-in."""
+    from jasper import renderer_lanes as rl
+
+    name = Path(rl.RENDERER_LANES_CONF_D).name
+    staged = tmp_path / name
+    staged.write_text(
+        (Path(__file__).resolve().parents[1] / "deploy/alsa/conf.d" / name).read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rl, "RENDERER_LANES_CONF_D", str(staged))
+    return staged
+
+
+def test_lane_conf_d_wiring_is_ok_on_the_shipped_wide_drop_in(monkeypatch, tmp_path):
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
+
+    _patch_lane_conf_d(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_fanin,
+        "read_declared_ring_wire_format",
+        lambda: RING_WIRE_FORMAT_WIDE,
+    )
+
+    assert audio_runtime_fanin.check_renderer_lane_conf_d_wiring().status == "ok"
+
+
+def test_lane_conf_d_wiring_fails_when_a_lane_shears_from_the_wire(
+    monkeypatch, tmp_path
+):
+    """The RING half of the lane ingress, judged against the box's own resolved
+    wire exactly as the snd-aloop half above is: a block the width render never
+    reached is a renderer whose `snd_pcm_open` is refused (#3580)."""
+    _patch_lane_conf_d(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
+    )
+
+    r = audio_runtime_fanin.check_renderer_lane_conf_d_wiring()
+
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_fanin.REASON_LANE_CONF_D_WIDTH_SHEAR
+
+
+def test_lane_conf_d_wiring_skips_when_the_drop_in_is_absent(monkeypatch, tmp_path):
+    from jasper import renderer_lanes as rl
+
+    monkeypatch.setattr(rl, "RENDERER_LANES_CONF_D", str(tmp_path / "absent.conf"))
+
+    r = audio_runtime_fanin.check_renderer_lane_conf_d_wiring()
+
+    assert r.status == "skipped"
+    assert r.reason == audio_runtime_fanin.REASON_LANE_CONF_D_MISSING
+
+
 def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path):
     _patch_asound_conf(
         monkeypatch,

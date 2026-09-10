@@ -48,6 +48,10 @@ REASON_ASOUND_LANE_WIDTH_SHEAR = "asound_lane_width_shear"
 REASON_ASOUND_STALE_TOPOLOGY_STATE = "asound_stale_topology_state"
 REASON_ASOUND_RING_WIRE_UNRESOLVED = "asound_ring_wire_unresolved"
 
+REASON_LANE_CONF_D_MISSING = "lane_conf_d_missing"
+REASON_LANE_CONF_D_BLOCK_MISSING = "lane_conf_d_block_missing"
+REASON_LANE_CONF_D_WIDTH_SHEAR = "lane_conf_d_width_shear"
+
 REASON_FANIN_UNIT_MISSING = "fanin_unit_missing"
 REASON_FANIN_UNIT_NOT_ENABLED = "fanin_unit_not_enabled"
 REASON_FANIN_INACTIVE = "fanin_inactive"
@@ -369,6 +373,69 @@ def check_fanin_asound_wiring() -> CheckResult:
         )
 
     return CheckResult(label, "ok", "renderer/test lanes 0..4")
+
+
+@doctor_check()
+def check_renderer_lane_conf_d_wiring() -> CheckResult:
+    """The RING half of the lane ingress declares this box's resolved wire.
+
+    Sibling of the width shear above, which covers the snd-aloop half. One
+    resolved wire narrows both ends (#3580), and a lane block the render never
+    reached attaches at a width fan-in does not read — the renderer's
+    ``snd_pcm_open`` is refused and the lane is silent behind a healthy-looking
+    daemon.
+    """
+    from ...renderer_lanes import (  # lazy: doctor init cost (ADR-0226)
+        RENDERER_LANES,
+        RENDERER_LANES_CONF_D,
+        ring_conf_pcm_name,
+    )
+    from ...ring_assets import ring_conf_format  # lazy: doctor init cost (ADR-0226)
+
+    label = "renderer lane conf.d wiring"
+    if not os.path.exists(RENDERER_LANES_CONF_D):
+        return CheckResult(
+            label,
+            "skipped",
+            f"{RENDERER_LANES_CONF_D} absent — re-run deploy/install.sh",
+            reason=REASON_LANE_CONF_D_MISSING,
+        )
+    try:
+        wire = read_declared_ring_wire_format()
+    except ValueError as e:
+        return CheckResult(
+            label, "fail", str(e), reason=REASON_ASOUND_RING_WIRE_UNRESOLVED
+        )
+    missing: list[str] = []
+    sheared: list[str] = []
+    for lane in RENDERER_LANES:
+        pcm = ring_conf_pcm_name(lane.label)
+        declared = ring_conf_format(pcm, RENDERER_LANES_CONF_D)
+        if declared is None:
+            missing.append(pcm)
+        elif declared != wire:
+            sheared.append(f"{pcm}={declared}")
+    if missing or sheared:
+        parts = []
+        if missing:
+            parts.append("no readable block for " + ", ".join(missing))
+        if sheared:
+            parts.append(f"width ≠ {wire}: " + ", ".join(sheared))
+        return CheckResult(
+            label,
+            "fail",
+            "; ".join(parts)
+            + f". Every lane's jts_ring block must declare {wire}, this box's "
+            "resolved wire. Run jasper-audio-hardware-reconcile, which renders "
+            "it.",
+            reason=(
+                REASON_LANE_CONF_D_BLOCK_MISSING
+                if missing
+                else REASON_LANE_CONF_D_WIDTH_SHEAR
+            ),
+        )
+    return CheckResult(label, "ok", f"{len(RENDERER_LANES)} lanes at {wire}")
+
 
 @doctor_check(core=True)
 def check_fanin_service() -> CheckResult:

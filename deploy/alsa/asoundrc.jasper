@@ -107,8 +107,8 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   5-7 — no alias here. The owner records why they stay reserved.
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
-# gets converted to the substream's 48 kHz S32_LE via the configured
-# libsamplerate converter.
+# gets converted to the substream's 48 kHz and the resolved wire (the WIDTH
+# note above) via the configured libsamplerate converter.
 pcm.librespot_substream {
     type plug
     slave {

@@ -232,7 +232,35 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
 
 
 
-def test_the_shipped_conf_d_declares_the_same_default_the_resolvers_answer() -> None:
+def _shipped(conf_d: str) -> Path:
+    return _REPO / conf_d.lstrip("/").replace("etc/alsa/conf.d", "deploy/alsa/conf.d")
+
+
+def _shipped_conf_d_pcms() -> list[tuple[str, str]]:
+    """``(shipped drop-in, PCM block)`` for every ring block ALSA reads.
+
+    BOTH drop-ins, derived from their own block lists: the program rings and
+    the renderer lanes are two halves of one wire, and a lane block that
+    omitted ``format`` would attach at the plugin's narrow default while every
+    resolver answered wide (#3580).
+    """
+    from jasper.renderer_lanes import (
+        RENDERER_LANES,
+        RENDERER_LANES_CONF_D,
+        ring_conf_pcm_name,
+    )
+    from jasper.ring_assets import RING_CONF_D, RING_CONF_PCMS
+
+    return [(RING_CONF_D, pcm) for pcm in RING_CONF_PCMS] + [
+        (RENDERER_LANES_CONF_D, ring_conf_pcm_name(lane.label))
+        for lane in RENDERER_LANES
+    ]
+
+
+@pytest.mark.parametrize("conf_d,pcm", _shipped_conf_d_pcms())
+def test_the_shipped_conf_d_declares_the_same_default_the_resolvers_answer(
+    conf_d: str, pcm: str
+) -> None:
     """THREE declarers of one default, not two.
 
     The resolver pair above answers what an undeclared box's wire IS. The ALSA
@@ -246,21 +274,19 @@ def test_the_shipped_conf_d_declares_the_same_default_the_resolvers_answer() -> 
     both resolvers answer — the exact shear this file exists to prevent, reached
     through the one end that has no env chain to read.
     """
-    from jasper.ring_assets import (
-        RING_CONF_D,
-        RING_CONF_DEFAULT_FORMAT,
-        RING_CONF_PCMS,
-        ring_conf_format,
-    )
+    from jasper.ring_assets import ring_conf_format
 
-    shipped = _REPO / RING_CONF_D.lstrip("/").replace(
-        "etc/alsa/conf.d", "deploy/alsa/conf.d"
-    )
+    shipped = _shipped(conf_d)
     assert shipped.exists(), shipped
-    for pcm in RING_CONF_PCMS:
-        assert ring_conf_format(pcm, str(shipped)) == RING_WIRE_FORMAT_WIDE, pcm
-    # The plugin's own default is still narrow, and that gap is deliberate: it is
-    # what keeps the ioplug capability gate live instead of dormant.
+    assert ring_conf_format(pcm, str(shipped)) == RING_WIRE_FORMAT_WIDE, pcm
+
+
+def test_the_ioplug_default_stays_narrow_so_its_capability_gate_stays_live() -> None:
+    """The gap between the shipped conf.d's token and the plugin's compiled-in
+    default is deliberate: it is what keeps the ioplug capability gate live
+    instead of dormant."""
+    from jasper.ring_assets import RING_CONF_DEFAULT_FORMAT
+
     assert RING_CONF_DEFAULT_FORMAT == RING_WIRE_FORMAT
 
 

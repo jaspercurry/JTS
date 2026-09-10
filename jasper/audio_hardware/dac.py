@@ -776,8 +776,8 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # ring conf.d is already ``period_frames 128``, so the period axis is a
     # no-op for this profile. But ``ring_conf_wire_report`` renders ONLY from a
     # declared floor — an absent floor short-circuits to
-    # ``result skipped / reason no_declared_floor`` before it ever resolves the
-    # wire (``jasper/cli/audio_config.py``), so the
+    # ``result skipped / reason no_declared_floor`` before it renders the ring
+    # conf.d at all (``jasper/cli/audio_config.py``), so the
     # ACTIVE block would keep the ioplug's default 2 channels no matter what the
     # topology resolved. An undeclared floor ALSO makes the planner
     # ``jasper.audio_runtime_plan.outputd_latency_floor_actions`` emit ``unset``

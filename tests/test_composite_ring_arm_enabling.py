@@ -361,8 +361,10 @@ def test_composite_floor_equals_its_children():
 
 def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path):
     """The floor's real payoff, pinned at the command that consumes it: an
-    absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
-    resolved, so the ACTIVE block would keep the ioplug default forever."""
+    absent floor short-circuits to ``no_declared_floor`` before the RING conf.d
+    is written, so the ACTIVE block would keep the ioplug default forever. (The
+    renderer-lane conf.d beside it still narrows — that half follows the wire,
+    not the floor.)"""
     from jasper.ring_assets import ring_conf_wire_report
 
     conf = tmp_path / "60-jts-ring.conf"

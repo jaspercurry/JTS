@@ -711,13 +711,6 @@ class RingConfWireRender:
     ``ring_active_channels`` is what the ACTIVE ring's block was rendered to —
     the ioplug default on every box without an active ring, which is what the
     shipped file already declares.
-
-    ``lane_conf_d`` is the renderer-lane file this render narrowed alongside the
-    ring conf.d, and ``lane_result`` its own verdict — ``"rendered"``,
-    ``"skipped"`` or ``"failed"``. Separate from ``changed``, which stays the
-    ring conf.d's own verdict: the two files are written independently, either
-    can already declare the wire, and a lane file this box cannot write is
-    reported rather than raised (the ring conf.d is already published by then).
     """
 
     changed: bool
@@ -728,8 +721,6 @@ class RingConfWireRender:
     ring_b_channels: int
     conf_d: str
     ring_active_channels: int = RING_CONF_DEFAULT_CHANNELS
-    lane_conf_d: str = ""
-    lane_result: str = "skipped"
 
 
 def _render_block_field(
@@ -780,80 +771,104 @@ def _render_block_field(
 
 def _render_lane_wire_format(
     path: str, pcm_names: Sequence[str], sample_format: str
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     """SUBSTITUTE ``format`` inside each named PCM block of one lane file.
 
     SUBSTITUTE ONLY, unlike :func:`_render_block_field`: every lane block ships
     an explicit ``format`` line, and the two transports disagree about what an
     omitted key would mean (the ioplug's compiled-in ``S16_LE`` on the ring
     side, whatever ``plug`` negotiates on the aloop side), so a file missing the
-    key is one this renderer must not invent a meaning for. jasper-doctor's
-    ``check_fanin_asound_wiring`` names such a box.
+    key is one this renderer must not invent a meaning for. jasper-doctor names
+    such a box on either end (``check_fanin_asound_wiring``,
+    ``check_renderer_lane_conf_d_wiring``).
 
-    Returns ``"rendered"``, ``"skipped"`` (a missing or unreadable file, an
-    absent block, or one already on the wire — this runs mid-upgrade, where the
-    new Python is installed a step before the new conf.d, and on boxes where a
-    lane has never existed) or ``"failed"`` (readable but not writable). Never
-    raises: the caller's own file is already published by then.
+    Returns the file's verdict and the block names this call rewrote:
+
+    - ``"rendered"`` — every named block is present and at least one moved;
+    - ``"unchanged"`` — every named block is present and already on the wire;
+    - ``"absent"`` — the file is missing or unreadable, or a named block is not
+      in it (mid-upgrade, where the new Python installs a step before the new
+      conf.d, and boxes predating a lane). ``absent`` outranks the other two so
+      that a caller gating on "does this file declare the wire" reads a
+      partially-narrowed file as what it is;
+    - ``"failed"`` — readable, but the replace was refused.
+
+    Never raises: the caller's own file is already published by then.
     """
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
-        return "skipped"
+        return "absent", ()
     rendered = text
+    changed: list[str] = []
+    missing = False
     for pcm_name in pcm_names:
         # Re-find the span each pass: rewriting one block can move the next.
         span = _ring_conf_block_body_span(rendered, pcm_name)
         if span is None:
+            missing = True
             continue
+        was = rendered[span[0] : span[1]]
         body = _RING_CONF_FORMAT_RE.sub(
-            lambda m: f"{m.group('indent')}format {sample_format}",
-            rendered[span[0] : span[1]],
+            lambda m: f"{m.group('indent')}format {sample_format}", was
         )
+        if body != was:
+            changed.append(pcm_name)
         rendered = rendered[: span[0]] + body + rendered[span[1] :]
+    verdict = "absent" if missing else "rendered" if changed else "unchanged"
     if rendered == text:
-        return "skipped"
+        return verdict, ()
     from jasper.atomic_io import atomic_write_text  # lazy: renderer-only cost
 
     try:
         atomic_write_text(path, rendered, preserve_target_stat=True)
     except OSError:
-        return "failed"
-    return "rendered"
+        return "failed", ()
+    return verdict, tuple(changed)
 
 
-def _lane_conf_d_beside(ring_conf_d: str) -> str:
-    """The renderer-lane conf.d that sits beside ``ring_conf_d``.
+def render_lane_ring_conf_wire(sample_format: str, *, conf_d: str) -> tuple[str, str]:
+    """Narrow the renderer-lane conf.d beside ``conf_d``; clear the rings it orphans.
 
-    Derived rather than taken as a second path because the two files ARE
-    siblings: ``deploy/lib/install/ring-platform.sh`` installs both into the one
-    ALSA drop-in directory, and ALSA reads the whole directory. So the ring
-    conf.d override the caller already resolved (``JASPER_RING_CONF_D``, and a
+    Returns ``(lane conf.d path, verdict)``; verdicts as
+    :func:`_render_lane_wire_format`.
+
+    The lane file's path is DERIVED from the ring conf.d rather than taken as a
+    second argument, because the two ARE siblings:
+    ``deploy/lib/install/ring-platform.sh`` installs both into the one ALSA
+    drop-in directory, and ALSA reads the whole directory. So the ring conf.d
+    override the caller already resolved (``JASPER_RING_CONF_D``, and a
     ``tmp_path`` in tests) scopes this render with it, and no call site can aim
     the two halves of one wire at two different trees.
-    """
-    from jasper.renderer_lanes import (  # lazy: renderer_lanes imports this module
-        RENDERER_LANES_CONF_D,
-    )
 
-    return os.path.join(
-        os.path.dirname(ring_conf_d), os.path.basename(RENDERER_LANES_CONF_D)
-    )
+    Only ``format`` moves: a lane's period, depth and channel count are the
+    aloop-cushion derivation its own conf.d header owns, not this box's ring
+    wire.
 
-
-def _lane_ring_conf_pcms() -> tuple[str, ...]:
-    """Every renderer lane's ring PCM block name, off the lane registry.
-
-    Read from :data:`jasper.renderer_lanes.RENDERER_LANES` rather than listed a
-    second time, so a lane added there narrows with the rest.
+    A rewritten block ORPHANS that lane's ring in ``/dev/shm``, whose header
+    still carries the old width — which the renderer's next ``snd_pcm_open``
+    refuses, leaving the lane silent until someone runs ``rm`` by hand. So each
+    rewritten lane's ring is cleared through
+    :func:`jasper.renderer_lanes.delete_stale_ring`, the same best-effort
+    comparator the arm/disarm path uses; the next open recreates it. A lane
+    whose block did not move keeps its ring.
     """
     from jasper.renderer_lanes import (  # lazy: renderer_lanes imports this module
         RENDERER_LANES,
+        RENDERER_LANES_CONF_D,
+        delete_stale_ring,
         ring_conf_pcm_name,
     )
 
-    return tuple(ring_conf_pcm_name(lane.label) for lane in RENDERER_LANES)
+    path = os.path.join(
+        os.path.dirname(conf_d), os.path.basename(RENDERER_LANES_CONF_D)
+    )
+    labels = {ring_conf_pcm_name(lane.label): lane.label for lane in RENDERER_LANES}
+    verdict, changed = _render_lane_wire_format(path, tuple(labels), sample_format)
+    for pcm_name in changed:
+        delete_stale_ring(labels[pcm_name], conf_d=path)
+    return path, verdict
 
 
 def render_aloop_lane_wire(path: str, sample_format: str) -> str:
@@ -870,15 +885,18 @@ def render_aloop_lane_wire(path: str, sample_format: str) -> str:
     live one — the reconcile is the sole writer of both the template and the
     ``asound.conf`` derived from it, so narrowing the candidate is what keeps a
     narrow box's pass idempotent instead of re-rendering and restarting audio
-    every time. Verdicts as :func:`_render_lane_wire_format`.
+    every time. Verdicts as :func:`_render_lane_wire_format`; no ring is cleared
+    here because an aloop lane has none — its ring sibling is
+    :func:`render_lane_ring_conf_wire`.
     """
     from jasper.renderer_lanes import (  # lazy: renderer_lanes imports this module
         RENDERER_LANES,
     )
 
-    return _render_lane_wire_format(
+    verdict, _changed = _render_lane_wire_format(
         path, tuple(lane.aloop_device for lane in RENDERER_LANES), sample_format
     )
+    return verdict
 
 
 def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
@@ -900,15 +918,41 @@ def ring_conf_wire_report(
     conf_d: str = "",
     output_topology: str | None = None,
     topology: OutputTopology | None = None,
+    dac_recognized: bool = True,
 ) -> dict[str, str]:
-    """Render only declared floors matching Ring A's fixed slot (issue #2147)."""
+    """Render only declared floors matching Ring A's fixed slot (issue #2147).
+
+    Those gates are the RING conf.d's. The renderer-lane conf.d beside it
+    narrows on every call that resolves a wire, AHEAD of them (#3580): a lane's
+    width follows :func:`~jasper.fanin_coupling.resolve_ring_wire` and nothing
+    else, so an unrecognized DAC or an undeclared floor — both of which
+    legitimately leave the ring's PERIOD alone, and neither of which says
+    anything about the wire — must not leave a renderer unable to open its lane.
+    That is the same condition the snd-aloop half already narrows under.
+    """
     resolved_conf_d = conf_d or RING_CONF_D
-    floor = latency_floor_for(profile_id) if profile_id else None
+    topology_reason = "loaded"
+    if topology is None:
+        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
+    wire = resolve_ring_wire(topology)
+    lane_conf, lane_result = render_lane_ring_conf_wire(
+        wire.sample_format, conf_d=resolved_conf_d
+    )
+    lanes = {"lane_conf": str(lane_conf), "lane_result": lane_result}
+    floor = latency_floor_for(profile_id) if profile_id and dac_recognized else None
+    if not dac_recognized:
+        return {
+            "result": "skipped",
+            "reason": "dac_unrecognized",
+            "conf": str(resolved_conf_d),
+            **lanes,
+        }
     if floor is None:
         return {
             "result": "skipped",
             "reason": "no_declared_floor",
             "conf": str(resolved_conf_d),
+            **lanes,
         }
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return {
@@ -916,11 +960,9 @@ def ring_conf_wire_report(
             "reason": f"ring_slot_fixed_{RING_SLOT_FRAMES}",
             "period_frames": str(floor.outputd_period_frames),
             "conf": str(resolved_conf_d),
+            **lanes,
         }
-    topology_reason = "loaded"
-    if topology is None:
-        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
-    outcome = render_ring_conf_wire(resolve_ring_wire(topology), conf_d=resolved_conf_d)
+    outcome = render_ring_conf_wire(wire, conf_d=resolved_conf_d)
     report = {
         "result": "rendered" if outcome.changed else "unchanged",
         "period_frames": str(outcome.period_frames),
@@ -933,8 +975,7 @@ def ring_conf_wire_report(
     report["ring_active_channels"] = str(outcome.ring_active_channels)
     report["topology"] = topology_reason
     report["conf"] = str(outcome.conf_d)
-    report["lane_conf"] = str(outcome.lane_conf_d)
-    report["lane_result"] = outcome.lane_result
+    report.update(lanes)
     return report
 
 
@@ -982,19 +1023,10 @@ def render_ring_conf_wire(
       which the three rings legitimately differ, which is why the parsers above
       are block-scoped.
 
-    **The renderer-lane conf.d renders too**, from this same resolved wire and
-    this same call, so ``JASPER_FANIN_RING_WIRE_FORMAT`` is ONE lever rather
-    than a pin that shears against a statically-shipped deploy (#3580): the ring
-    PCM of every lane in :data:`jasper.renderer_lanes.RENDERER_LANES` has its
-    ``format`` substituted to ``wire.sample_format`` in the sibling file
-    :func:`_lane_conf_d_beside` resolves. Only that key: a lane's period, depth
-    and channel count are the aloop-cushion derivation its own conf.d header
-    owns, not this box's ring wire. The file is independent of this one — see
-    :func:`_render_lane_wire_format` — and is written AFTER the ring conf.d, so
-    a lane file this box cannot write is a reported ``lane_result``, never a
-    lost ring render. The lane's OTHER ingress end, the snd-aloop alias, is
-    :func:`render_aloop_lane_wire`, which the reconcile applies to the asound
-    template it alone renders.
+    **The RENDERER LANES are not this function's**, even though they share the
+    wire and the drop-in directory: the two lane-ingress ends narrow in
+    :func:`render_lane_ring_conf_wire` and :func:`render_aloop_lane_wire`, under
+    the wire-resolves condition rather than this function's floor gate (#3580).
 
     **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
     Ring A's slot size is fan-in's COMPILE-TIME constant
@@ -1136,12 +1168,6 @@ def render_ring_conf_wire(
         )
         rendered = rendered[: span[0]] + body + rendered[span[1] :]
 
-    # Resolved only once the ring conf.d has parsed: a torn or foreign file
-    # refuses the whole render above rather than narrowing the lanes against a
-    # ring that never moved.
-    lane_path = _lane_conf_d_beside(path)
-    lane_pcms = _lane_ring_conf_pcms()
-
     if rendered == text:
         # A no-op render can only happen when every period_frames line already
         # read `period_frames`: the substitution rewrites EVERY matched line to
@@ -1157,8 +1183,6 @@ def render_ring_conf_wire(
             ring_b_channels=ring_b_channels,
             ring_active_channels=ring_active_channels,
             conf_d=path,
-            lane_conf_d=lane_path,
-            lane_result=_render_lane_wire_format(lane_path, lane_pcms, sample_format),
         )
     # Function-local so the module keeps its stdlib-only import cost for the
     # presence/parse callers; only the renderer pays for atomic_io.
@@ -1168,9 +1192,6 @@ def render_ring_conf_wire(
     from jasper.atomic_io import atomic_write_text
 
     atomic_write_text(path, rendered, preserve_target_stat=True)
-    # After the ring conf.d is published, so an unwritable lane file cannot cost
-    # this box its ring render.
-    lane_result = _render_lane_wire_format(lane_path, lane_pcms, sample_format)
     return RingConfWireRender(
         changed=True,
         period_frames=period_frames,
@@ -1180,8 +1201,6 @@ def render_ring_conf_wire(
         ring_b_channels=ring_b_channels,
         ring_active_channels=ring_active_channels,
         conf_d=path,
-        lane_conf_d=lane_path,
-        lane_result=lane_result,
     )
 
 

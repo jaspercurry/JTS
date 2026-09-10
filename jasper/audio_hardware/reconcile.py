@@ -1240,7 +1240,23 @@ class Pass:
         # source ships the wide aloop aliases, so a candidate compared wide
         # would differ from the narrowed live template on EVERY pass and stop
         # jasper-voice with it (#3580).
-        aloop_lane_render = self.render_aloop_lane_wire_candidate(tmp)
+        aloop_lane_render, narrow_wire = self.render_aloop_lane_wire_candidate(tmp)
+        if narrow_wire and aloop_lane_render not in ("rendered", "unchanged"):
+            os.unlink(tmp)
+            # Publishing here would write the WIDE aliases over a narrowed live
+            # template — a renderer that cannot open its lane, plus a restart of
+            # jasper-voice on every pass. Same posture as a rejected candidate:
+            # keep what the box runs. Scoped to a box that positively declared
+            # the narrow wire, so an unresolvable wire still publishes rather
+            # than leaving a fresh box with no asound.conf at all.
+            self.log(
+                "asound_render_failed",
+                stage="aloop_lane_wire",
+                result=aloop_lane_render,
+                sample_format=narrow_wire,
+                preserved_existing=1,
+            )
+            return False
         os.chmod(tmp, 0o644)
         if destination.is_file() and destination.read_bytes() == Path(tmp).read_bytes():
             os.unlink(tmp)
@@ -1284,19 +1300,27 @@ class Pass:
         )
         return True
 
-    def render_aloop_lane_wire_candidate(self, candidate: str) -> str:
+    def render_aloop_lane_wire_candidate(self, candidate: str) -> tuple[str, str]:
         """Narrow the candidate template's snd-aloop lane aliases to this box's
-        resolved ring wire (#3580). Best-effort: an unrenderable candidate keeps
-        the shipped wide aliases, which jasper-doctor's
-        ``check_fanin_asound_wiring`` names on a box that declared narrow.
+        resolved ring wire (#3580).
+
+        Returns the render verdict and the NARROW wire this box declared —
+        empty when it resolves the shipped wide wire, and empty when the wire
+        did not resolve at all. The caller refuses to publish a candidate that
+        carries neither, so "" is what keeps an unresolvable wire on the old
+        best-effort path instead of leaving a fresh box with no asound.conf.
         """
-        from jasper.fanin_coupling import resolve_ring_wire  # lazy: ADR-0226
+        from jasper.fanin_coupling import (  # lazy: ADR-0226
+            RING_WIRE_FORMAT_WIDE,
+            resolve_ring_wire,
+        )
         from jasper.ring_assets import render_aloop_lane_wire  # lazy: ADR-0226
 
+        narrow = ""
         try:
-            return render_aloop_lane_wire(
-                candidate, resolve_ring_wire(self.saved_topology()).sample_format
-            )
+            wire = resolve_ring_wire(self.saved_topology()).sample_format
+            narrow = "" if wire == RING_WIRE_FORMAT_WIDE else wire
+            return render_aloop_lane_wire(candidate, wire), narrow
         # noqa reason: same posture as the ring conf.d render — a failure leaves
         # the shipped wire in place and must not abort a hardware reconcile.
         except Exception as exc:  # noqa: BLE001
@@ -1304,7 +1328,7 @@ class Pass:
                 "aloop_lane_wire_failed",
                 detail=_log_token(f"{type(exc).__name__}: {exc}"),
             )
-            return "failed"
+            return "failed", narrow
 
     def render_ring_conf_if_needed(self) -> None:
         """Render the shm-ring conf.d slot period from the ACTIVE DAC's
@@ -1312,20 +1336,22 @@ class Pass:
         with no declared floor, and a floor whose period is not fan-in's
         compile-time RING_SLOT_FRAMES all leave the shipped conf.d untouched.
 
+        The report owns those gates — including this pass's own DAC recognition
+        — because the renderer-lane conf.d beside the ring's narrows on every
+        call the WIRE resolves, which none of the three gates speaks to (#3580).
+
         Triggers NO restart and feeds no restart flag: ALSA reads the conf.d at
         the next PCM open, and arming is owned by the coupling reconciler.
         """
         from jasper.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
 
-        if not self.output_dac_recognized:
-            self.log("ring_conf", result="skipped", reason="dac_unrecognized")
-            return
         try:
             report = ring_conf_wire_report(
                 profile_id=self.output_dac_id,
                 conf_d=self.ring_conf_d,
                 output_topology=self.output_topology_path,
                 topology=self.saved_topology(),
+                dac_recognized=self.output_dac_recognized,
             )
         # noqa reason: the conf.d render is best-effort — a failure leaves the
         # shipped wire in place and must not abort a hardware reconcile.

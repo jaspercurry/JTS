@@ -1316,6 +1316,47 @@ def test_a_magicless_ring_is_left_for_the_writer_to_reclaim(tmp_path, monkeypatc
     assert pathlib.Path(path).exists()
 
 
+def test_narrowing_a_lane_block_clears_that_lane_s_ring_and_no_other(
+    tmp_path, monkeypatch
+):
+    """Rewriting a lane's conf.d width ORPHANS its ring: the header on tmpfs
+    still carries the old one, so the renderer's next `snd_pcm_open` is refused
+    and the lane is silent until someone runs `rm` by hand (#3580). Arm/disarm
+    is not a second lever the operator can be expected to pull for a width
+    change, so the render clears what it orphaned — and only that.
+    """
+    monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
+    conf_d = tmp_path / "60-jts-ring.conf"
+    conf_d.write_text("", encoding="utf-8")
+    lanes = tmp_path / pathlib.Path(rl.RENDERER_LANES_CONF_D).name
+    lanes.write_text(LANES_CONF.read_text(encoding="utf-8"), encoding="utf-8")
+    wide = resolve_ring_wire_format(None)
+    rendered, untouched = rl.RENDERER_LANES[0].label, rl.RENDERER_LANES[1].label
+    for label in (rendered, untouched):
+        _write_ring_header(rl.renderer_ring_path(label), n_slots=16, period_frames=256)
+    # Everything but the first lane is already narrow, so only the first lane's
+    # block moves — and both rings are stale against a narrow conf.d.
+    text = lanes.read_text(encoding="utf-8").replace(f"format {wide}", "format S16_LE")
+    start = text.index(f"pcm.{rl.ring_conf_pcm_name(rendered)} {{")
+    end = text.index("}", start)
+    lanes.write_text(
+        text[:start]
+        + text[start:end].replace("format S16_LE", f"format {wide}")
+        + text[end:],
+        encoding="utf-8",
+    )
+
+    path, verdict = ring_assets.render_lane_ring_conf_wire(
+        "S16_LE", conf_d=str(conf_d)
+    )
+
+    assert (path, verdict) == (str(lanes), "rendered")
+    assert not pathlib.Path(rl.renderer_ring_path(rendered)).exists()
+    # Stale too, but this render did not move its block, so clearing it is the
+    # arm path's and the doctor's business — not a width render's.
+    assert pathlib.Path(rl.renderer_ring_path(untouched)).exists()
+
+
 def test_every_detach_reason_has_its_own_remedy():
     """A remedy-per-token guard, so a P6b-d token cannot ship remedy-less.
 

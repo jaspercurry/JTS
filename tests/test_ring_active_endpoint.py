@@ -4149,45 +4149,64 @@ def test_a_narrow_wire_renders_the_lane_conf_d_beside_the_ring_conf_d(tmp_path):
 
     conf, lanes = _staged_ring_and_lane_conf_d(tmp_path)
 
+    lane_conf, lane_result = ra.render_lane_ring_conf_wire(
+        "S16_LE", conf_d=str(conf)
+    )
     outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
 
+    assert lane_conf == str(lanes)
+    assert lane_result == "rendered"
     assert outcome.changed is True
-    assert outcome.lane_conf_d == str(lanes)
-    assert outcome.lane_result == "rendered"
     lane_text = lanes.read_text(encoding="utf-8")
-    assert lane_text.count("format S16_LE") == len(RENDERER_LANES)
     for lane in RENDERER_LANES:
-        assert ra.conf_block_body(
-            lane_text, ring_conf_pcm_name(lane.label)
-        ).count("format S16_LE") == 1
+        assert (
+            ra.conf_block_body(lane_text, ring_conf_pcm_name(lane.label)).count(
+                "format S16_LE"
+            )
+            == 1
+        ), lane.label
     for pcm_name in ra.RING_CONF_PCMS:
         assert ra.ring_conf_format(pcm_name, str(conf)) == "S16_LE"
 
     # Idempotent: a box already on the resolved wire is left byte-identical.
-    again = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
-    assert again.changed is False
-    assert again.lane_result == "skipped"
+    before = lanes.read_bytes()
+    assert ra.render_lane_ring_conf_wire("S16_LE", conf_d=str(conf))[1] == "unchanged"
+    assert lanes.read_bytes() == before
+    assert ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf)).changed is False
 
 
-def test_an_absent_lane_conf_d_is_a_skip_not_a_failed_render(tmp_path):
-    """Mid-upgrade and pre-lane boxes: the ring still renders (#3580)."""
+def test_an_absent_lane_conf_d_is_reported_absent_not_failed(tmp_path):
+    """Mid-upgrade and pre-lane boxes: no lane file is a verdict, not a raise."""
     from jasper import ring_assets as ra
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
 
-    outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
-
-    assert outcome.changed is True
-    assert outcome.lane_result == "skipped"
+    assert ra.render_lane_ring_conf_wire("S16_LE", conf_d=str(conf))[1] == "absent"
+    assert ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf)).changed is True
 
 
-def test_an_unwritable_lane_conf_d_never_costs_the_box_its_ring_render(
-    tmp_path, monkeypatch
-):
-    """The ring conf.d is published FIRST and the lane failure is reported as a
-    field, not raised (#3580). Both files share one directory, so the failure
-    is injected at the writer rather than with a mode."""
+def test_a_lane_conf_d_missing_one_block_is_absent_not_unchanged(tmp_path):
+    """The verdict answers "does this file declare the wire". A file whose
+    other blocks are already narrow but which is missing a lane does not, and
+    the reconcile's asound gate reads that verdict."""
+    from jasper import ring_assets as ra
+    from jasper.renderer_lanes import RENDERER_LANES, ring_conf_pcm_name
+
+    conf, lanes = _staged_ring_and_lane_conf_d(tmp_path)
+    ra.render_lane_ring_conf_wire("S16_LE", conf_d=str(conf))
+    dropped = ring_conf_pcm_name(RENDERER_LANES[0].label)
+    text = lanes.read_text(encoding="utf-8")
+    start = text.index(f"pcm.{dropped} {{")
+    lanes.write_text(text[:start] + text[text.index("}", start) + 1 :], "utf-8")
+
+    assert ra.render_lane_ring_conf_wire("S16_LE", conf_d=str(conf))[1] == "absent"
+
+
+def test_an_unwritable_lane_conf_d_never_raises_at_the_caller(tmp_path, monkeypatch):
+    """A lane file this box cannot write is a verdict, so the ring conf.d's own
+    render is unaffected (#3580). Both files share one directory, so the
+    failure is injected at the writer rather than with a mode."""
     from jasper import atomic_io, ring_assets as ra
 
     conf, lanes = _staged_ring_and_lane_conf_d(tmp_path)
@@ -4200,10 +4219,9 @@ def test_an_unwritable_lane_conf_d_never_costs_the_box_its_ring_render(
 
     monkeypatch.setattr(atomic_io, "atomic_write_text", refuse_the_lane_file)
 
-    outcome = ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
-
-    assert outcome.lane_result == "failed"
-    # The ring conf.d itself still carries the narrowed wire.
+    assert ra.render_lane_ring_conf_wire("S16_LE", conf_d=str(conf))[1] == "failed"
+    # The ring conf.d itself still renders the narrowed wire.
+    ra.render_ring_conf_wire(_narrow_wire(), conf_d=str(conf))
     for pcm_name in ra.RING_CONF_PCMS:
         assert ra.ring_conf_format(pcm_name, str(conf)) == "S16_LE"
 
@@ -4226,5 +4244,5 @@ def test_the_aloop_lane_aliases_narrow_from_the_same_resolved_wire(tmp_path):
     for lane in RENDERER_LANES:
         assert ra.conf_block_body(text, lane.aloop_device).count("format S16_LE") == 1
     # Second pass on an already-narrow file writes nothing.
-    assert ra.render_aloop_lane_wire(str(template), "S16_LE") == "skipped"
-    assert ra.render_aloop_lane_wire(str(tmp_path / "absent"), "S16_LE") == "skipped"
+    assert ra.render_aloop_lane_wire(str(template), "S16_LE") == "unchanged"
+    assert ra.render_aloop_lane_wire(str(tmp_path / "absent"), "S16_LE") == "absent"
