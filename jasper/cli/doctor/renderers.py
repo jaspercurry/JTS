@@ -854,6 +854,23 @@ def _renderer_device_bluealsa() -> Optional[str]:
                     return m.group(1)
     return None
 
+#: The renderer units :func:`renderer_probes` covers, in probe order.
+_RENDERER_UNITS = (
+    "shairport-sync.service",
+    "librespot.service",
+    "bluealsa-aplay.service",
+)
+
+
+def _renderer_unit_property(prop: str, unit: str) -> Optional[str]:
+    """One systemd property for one renderer unit, asked for the whole roster
+    at once so ``evidence.unit_property``'s memo answers all three units from
+    a single ``systemctl show`` per property (ADR-0233 rule 4)."""
+    units = _RENDERER_UNITS if unit in _RENDERER_UNITS else (unit,)
+    values = evidence.unit_property(prop, units)
+    return values[units.index(unit)] if values else None
+
+
 def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
     """`(User=, LoadState=)` for `unit`. Empty User on a LOADED unit is root.
 
@@ -864,9 +881,7 @@ def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
     """
     state = evidence.unit_state(unit)
     load_state = (state or {}).get("load_state") or "unknown"
-    users = evidence.unit_property("User", (unit,))
-    user = (users[0] or None) if users else None
-    return user, load_state
+    return _renderer_unit_property("User", unit) or None, load_state
 
 def _unit_runtime_environ(unit: str) -> dict[str, str]:
     """The FULLY RESOLVED environment the running unit was exec'd with.
@@ -925,15 +940,9 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     env_map: dict[str, str] = {}
     # Least authoritative first, so the better source overwrites it.
-    try:
-        r = subprocess.run(
-            ["systemctl", "show", unit, "-p", "Environment", "--value"],
-            capture_output=True, text=True, timeout=2,
-        )
-        if r.returncode == 0:
-            env_map.update(_parse_systemd_environment(r.stdout))
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+    env_map.update(_parse_systemd_environment(
+        _renderer_unit_property("Environment", unit) or ""
+    ))
     env_map.update(_unit_runtime_environ(unit))
 
     def _sub(match: re.Match[str]) -> str:
@@ -1104,9 +1113,9 @@ def renderer_probes() -> tuple[RendererProbe, ...]:
     """
     # Built per call, so a test that redirects one parser is seen here.
     configured = (
-        ("shairport-sync", "shairport-sync.service", _renderer_device_shairport),
-        ("librespot", "librespot.service", _renderer_device_librespot),
-        ("bluealsa-aplay", "bluealsa-aplay.service", _renderer_device_bluealsa),
+        ("shairport-sync", _RENDERER_UNITS[0], _renderer_device_shairport),
+        ("librespot", _RENDERER_UNITS[1], _renderer_device_librespot),
+        ("bluealsa-aplay", _RENDERER_UNITS[2], _renderer_device_bluealsa),
     )
     probes: list[RendererProbe] = []
     for name, unit, parse_dev in configured:
@@ -1116,22 +1125,22 @@ def renderer_probes() -> tuple[RendererProbe, ...]:
                 RendererProbe(name, detail="config not found (not installed?)")
             )
             continue
-        # A ${VAR} reference is what systemd would substitute at ExecStart
-        # time; probing the literal would fail with "Unknown PCM ${VAR}" on a
-        # box whose running daemon has resolved it.
-        resolved_device = _resolve_systemd_env_vars(device, unit)
         user, load_state = _systemd_unit_user(unit)
         if load_state != "loaded":
             probes.append(
                 RendererProbe(
                     name,
-                    device=resolved_device,
+                    device=device,
                     declared_device=device,
                     outcome=PROBE_UNIT_NOT_LOADED,
                     detail=f"{unit} is {load_state}, not loaded",
                 )
             )
             continue
+        # A ${VAR} reference is what systemd would substitute at ExecStart
+        # time; probing the literal would fail with "Unknown PCM ${VAR}" on a
+        # box whose running daemon has resolved it.
+        resolved_device = _resolve_systemd_env_vars(device, unit)
         outcome, detail = _probe_open_as_user(resolved_device, user)
         verdict, why = PROBE_RESOLVED, ""
         if outcome is ProbeOutcome.BUSY:

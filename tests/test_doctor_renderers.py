@@ -33,6 +33,16 @@ def _seed_unit_states(**by_unit):
     _evidence.evidence.seed("units", states)
 
 
+def _seed_unit_environment(monkeypatch, **by_unit):
+    """Answer the batched ``systemctl show -p Environment`` the renderer
+    checks read through the evidence cache, without spawning systemctl."""
+    monkeypatch.setattr(
+        _evidence,
+        "read_unit_property",
+        lambda prop, units, *, timeout: [by_unit.get(u, "") for u in units],
+    )
+
+
 @pytest.mark.parametrize(
     "fact,status,reason",
     [
@@ -1183,15 +1193,10 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch):
     """The running daemon's own `/proc/<MainPID>/environ` is the most
     authoritative surface — the arm.sh precedent — and it beats
     `systemctl show`."""
-
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
-
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_environment(
+        monkeypatch,
+        **{"librespot.service": "JASPER_LIBRESPOT_DEVICE=librespot_substream"},
+    )
     monkeypatch.setattr(
         renderers,
         "_unit_runtime_environ",
@@ -1209,15 +1214,10 @@ def test_resolve_device_falls_back_to_proc_environ(monkeypatch):
 def test_no_override_resolves_to_the_shipped_aloop_device(monkeypatch):
     """No override — the in-unit default is what the renderer writes and what
     the probe must open."""
-
-    def fake_run(cmd, **kwargs):
-        class R:
-            returncode = 0
-            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
-
-        return R()
-
-    monkeypatch.setattr(renderers.subprocess, "run", fake_run)
+    _seed_unit_environment(
+        monkeypatch,
+        **{"librespot.service": "JASPER_LIBRESPOT_DEVICE=librespot_substream"},
+    )
     monkeypatch.setattr(renderers, "_unit_runtime_environ", lambda unit: {})
 
     assert (
