@@ -188,9 +188,10 @@ def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
 
         return _stop
 
-    def stop_safe() -> dict:
+    def stop_safe(reason: str = "operator_stop") -> dict:
+        tone = sound_active_speaker._active_speaker_stop_commission_tone(reason=reason)
         recorded.append("safe")
-        return {"status": "idle"}
+        return {"status": "idle", "commission_tone": tone}
 
     monkeypatch.setattr(
         sound_active_speaker, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
@@ -2225,6 +2226,20 @@ def test_active_speaker_stop_route_stops_audible_commission_tone(
     assert stopped["commission_tone"] == {
         "status": "stopped",
         "reason": "operator_stop",
+    }
+
+    # A topology-mutation caller (save/reset/repin) passes its own reason
+    # instead of relying on the "operator_stop" default, and the tone still
+    # stops exactly once.
+    tone_stops.clear()
+    stopped_for_save = sound_setup._active_speaker_stop_payload(
+        reason="output_topology_save"
+    )
+
+    assert tone_stops == ["output_topology_save"]
+    assert stopped_for_save["commission_tone"] == {
+        "status": "stopped",
+        "reason": "output_topology_save",
     }
 
 
