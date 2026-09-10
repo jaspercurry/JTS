@@ -793,6 +793,50 @@ def test_graph_context_change_invalidates_baseline_cache(tmp_path: Path) -> None
     assert changed["candidate_fingerprint"] != first["candidate_fingerprint"]
 
 
+def test_a_graph_context_change_gets_its_own_sibling_filename(tmp_path: Path) -> None:
+    """#2416: two candidates differing only in graph context must not collide.
+
+    ``candidate_graph_context`` (here, ``capture_device``) used to be excluded
+    from the source fingerprint that names the WRITTEN sibling file, so two
+    builds that differed only there shared one filename while carrying
+    different bytes. Both calls here write (unlike the cache-path test above,
+    which exercises the ``write=False`` read side), so this pins the actual
+    collision: the ON-DISK path must differ, not just the reported status.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    default_capture = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    other_capture = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile_2.json",
+        config_path=config_path,
+        capture_device="a-different-capture-device",
+        validate=_valid_config,
+    )
+
+    assert other_capture["config"]["path"] != default_capture["config"]["path"]
+    assert Path(other_capture["config"]["path"]).exists()
+    assert Path(default_capture["config"]["path"]).exists()
+
+
 def test_baseline_source_binds_exact_normalized_preview_candidate(
     tmp_path: Path,
 ) -> None:
@@ -1165,6 +1209,67 @@ def test_a_write_free_rebuild_knowing_less_does_not_supersede_the_applied_profil
         step for step in view["steps"] if step["id"] == "profile"
     )["status"] == "done"
     assert view["next_action"]["id"] == "start_combined_test"
+
+
+def test_an_applied_profile_predating_the_graph_context_fingerprint_is_not_superseded(
+    tmp_path: Path,
+) -> None:
+    """A saved source missing ``candidate_graph_context_fingerprint`` reads as
+    unknown, not changed — it predates the key, per the migration exemption in
+    ``_MIGRATION_EXEMPT_SOURCE_KEYS``. Without it, every profile applied
+    before this key existed would read as superseded on the first rebuild
+    after upgrade, even with nothing else different.
+    """
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    baseline_state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    measured = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=_v2_candidate(preset),
+        created_at="2026-07-18T12:20:00Z",
+    )
+    applied = {**measured, "status": "applied", "applied_at": "2026-07-18T12:21:00Z"}
+    assert "candidate_graph_context_fingerprint" in applied["source"]
+    pre_migration_applied = {
+        **applied,
+        "source": {
+            key: value
+            for key, value in applied["source"].items()
+            if key != "candidate_graph_context_fingerprint"
+        },
+    }
+    baseline_state_path.write_text(
+        json.dumps(pre_migration_applied), encoding="utf-8"
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert "candidate_graph_context_fingerprint" in payload["source"]
+    assert payload["revalidation"]["required"] is False
+    assert payload["applied_profile_stands"] is True
+    assert payload["driver_target_proof_from_applied_profile"] is True
 
 
 def test_a_provisional_applied_profile_never_stands_in_for_driver_evidence(

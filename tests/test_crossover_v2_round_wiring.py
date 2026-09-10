@@ -869,6 +869,11 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     assert identity["round_id"] == _MINTED_CAPTURE_SESSION_ID
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
     assert identity["artifact_fingerprint"]
+    # #2704: every banked identity carries what topology it was measured
+    # through, so a later read can tell a stale series from a live one.
+    assert identity["topology_fingerprint"] == coordinator.topology_config_fingerprint(
+        coordinator.load_output_topology()
+    )
 
 
 def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
@@ -2214,6 +2219,58 @@ def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
     assert position.previous_objectives is not None
     assert position.previous_objectives.tilt_db is None
     assert position.previous_objectives.ripple_db is None
+
+
+def test_a_topology_change_between_rounds_resets_the_series(monkeypatch):
+    """#2704: a banked blend measured through the OLD graph must not seed the
+    NEW graph's first candidate. The receipt's topology stamp is compared
+    against the CURRENT topology at read time, and a mismatch means no
+    series — the same "unreadable shape resolves to the first round" rule
+    this function already applies everywhere else.
+    """
+
+    monkeypatch.setattr(
+        coordinator, "topology_config_fingerprint", lambda _topology: "new-topology",
+    )
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 4,
+        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
+        "topology_fingerprint": "old-topology",
+    }})
+
+    assert position.ordinal == 1
+    assert position.previous_objectives is None
+
+
+def test_a_matching_topology_fingerprint_keeps_the_series_going(monkeypatch):
+    """The read-side guard does not fire when nothing about the topology moved."""
+
+    monkeypatch.setattr(
+        coordinator, "topology_config_fingerprint", lambda _topology: "same-topology",
+    )
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 4,
+        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
+        "topology_fingerprint": "same-topology",
+    }})
+
+    assert position.ordinal == 5
+
+
+def test_a_receipt_with_no_topology_fingerprint_is_not_a_mismatch():
+    """A pre-#2704 receipt carries no claim about the topology either way, so
+    it must not be treated as a stale one — only a STORED-AND-DIFFERENT
+    fingerprint resets the series.
+    """
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 4,
+        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
+    }})
+
+    assert position.ordinal == 5
 
 
 @pytest.mark.parametrize(

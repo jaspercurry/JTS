@@ -358,11 +358,18 @@ def _source_payload(
     *,
     measured_candidate_fingerprint: str | None = None,
     driver_protection: Mapping[str, Any] | None = None,
+    candidate_graph_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fingerprint source inputs, not emitted bytes.
 
-    Graph context can change while this fingerprint and path remain fixed.
-    Confirm the live normalized graph; a matching path is not proof of content.
+    Covers ``candidate_graph_context`` (playback/capture device, domain,
+    driver-domain pair trim, the measured-candidate/driver-protection
+    fingerprints) since #2416 — the caller assembles it and passes it in
+    BEFORE the emit devices it depends on are resolved into bytes, so two
+    builds differing only there no longer share one filename. Still not a
+    content hash: two builds with identical source can still emit different
+    bytes for other reasons (recompose, blend correction). Confirm the live
+    normalized graph; a matching path is not proof of content.
     """
     measurement_summary = (
         measurements.get("summary")
@@ -389,6 +396,19 @@ def _source_payload(
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
     if driver_protection is not None:
         source["driver_protection_fingerprint"] = _fingerprint(driver_protection)
+    if candidate_graph_context is not None:
+        # Excludes ``measured_candidate_fingerprint``: that field already
+        # rides its own top-level key above, exempted from staleness by
+        # ``_REBUILD_BLIND_SOURCE_KEYS`` because a write-free rebuild is
+        # handed no measured candidate and must not read as superseded for
+        # knowing less. Folding it into this composite would defeat that
+        # exemption the moment the composite (not the bare field) is what
+        # ``_changed_source_keys`` compares.
+        device_context = {
+            key: value for key, value in candidate_graph_context.items()
+            if key != "measured_candidate_fingerprint"
+        }
+        source["candidate_graph_context_fingerprint"] = _fingerprint(device_context)
     return {**source, "fingerprint": _fingerprint(source)}
 
 
@@ -1647,6 +1667,16 @@ def applied_profile_displacement(
 #: See ADR-0195.
 _REBUILD_BLIND_SOURCE_KEYS = frozenset({"measured_candidate_fingerprint"})
 
+#: Source keys ``_source_payload`` started writing after profiles already on
+#: disk were saved. Absent-on-saved means "predates this key", not "changed"
+#: — without this, every fleet profile applied before the key existed reads
+#: as superseded on its first post-upgrade rebuild. Unlike
+#: ``_REBUILD_BLIND_SOURCE_KEYS`` (a permanent apply-vs-rebuild asymmetry),
+#: this is a one-way migration exemption: remove the key here once no fleet
+#: profile predates ``candidate_graph_context_fingerprint``'s introduction
+#: (#2416).
+_MIGRATION_EXEMPT_SOURCE_KEYS = frozenset({"candidate_graph_context_fingerprint"})
+
 
 def _changed_source_keys(
     saved_source: Mapping[str, Any],
@@ -1665,6 +1695,8 @@ def _changed_source_keys(
         key
         for key in keys
         if key not in _REBUILD_BLIND_SOURCE_KEYS or key in current_source
+        if key not in _MIGRATION_EXEMPT_SOURCE_KEYS
+        or (key in saved_source and key in current_source)
         if saved_source.get(key) != current_source.get(key)
     )
 
@@ -2043,16 +2075,6 @@ def build_baseline_profile_candidate(
         }
     if driver_domain:
         protection = None
-    source = _source_payload(
-        topology,
-        design_draft,
-        crossover_preview,
-        measurements,
-        measured_candidate_fingerprint=(
-            measured_candidate.fingerprint if measured_candidate is not None else None
-        ),
-        driver_protection=protection,
-    )
     resolved_playback_device, playback_device_source = (
         resolve_active_playback_device(
             topology,
@@ -2125,6 +2147,24 @@ def build_baseline_profile_candidate(
         ),
         **({"driver_protection": protection} if protection is not None else {}),
     }
+    # #2416: assembled BEFORE ``_source_payload`` so the candidate's source
+    # fingerprint — and therefore its filename — covers the graph context,
+    # not only topology/design-draft/measurements. Two builds that differ
+    # only in ``candidate_graph_context`` (a different capture device, a
+    # different measured candidate) used to share one filename while
+    # carrying different bytes; they now source-fingerprint apart and each
+    # gets its own sibling.
+    source = _source_payload(
+        topology,
+        design_draft,
+        crossover_preview,
+        measurements,
+        measured_candidate_fingerprint=(
+            measured_candidate.fingerprint if measured_candidate is not None else None
+        ),
+        driver_protection=protection,
+        candidate_graph_context=candidate_graph_context,
+    )
     saved_snapshot = (
         saved.get("recomposition_snapshot")
         if isinstance(saved, Mapping)

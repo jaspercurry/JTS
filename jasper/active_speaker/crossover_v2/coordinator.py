@@ -23,6 +23,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
 )
 from jasper.log_event import log_event
+from jasper.output_topology import load_output_topology, topology_config_fingerprint
 
 from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN, AdoptionOutcome
 from .journey import PHASE_VERIFY
@@ -636,6 +637,13 @@ def _round_identity(
         "round_id": evidence.session_id,
         "artifact_fingerprint": "",
         "receipt_fingerprint": "",
+        # Read-side series guard (#2704): a mismatch against the CURRENT
+        # topology at read time means "no series" — see
+        # ``series_position_from_state``. Stamped here, at write time, so the
+        # comparison is against the topology this round actually measured
+        # through, the same pattern ``ANCHOR_TOPOLOGY_CHANGED``-style checks
+        # use elsewhere.
+        "topology_fingerprint": topology_config_fingerprint(load_output_topology()),
         # Here rather than only in the banked artifact: fetching a bundle to
         # answer this would make a live surface depend on evidence storage.
         "adoption": evaluation.adoption.outcome.value,
@@ -857,6 +865,18 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
     if not isinstance(previous_ordinal, int) or isinstance(previous_ordinal, bool):
         return SeriesPosition.first(ordinal_epoch=epoch)
     if previous_ordinal < 1:
+        return SeriesPosition.first(ordinal_epoch=epoch)
+    # #2704: a topology/driver change invalidates the series — the banked
+    # blend was derived through a graph this box no longer has. A receipt
+    # from before this fingerprint existed carries no claim either way, so
+    # only a STORED-AND-DIFFERENT fingerprint resets the series; an absent
+    # one is read the way every pre-existing key here is, as "unknown", not
+    # as a mismatch.
+    stored_fingerprint = receipt.get("topology_fingerprint")
+    if (
+        isinstance(stored_fingerprint, str) and stored_fingerprint
+        and stored_fingerprint != topology_config_fingerprint(load_output_topology())
+    ):
         return SeriesPosition.first(ordinal_epoch=epoch)
     objectives = receipt.get("objectives")
     if not isinstance(objectives, Mapping):

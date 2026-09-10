@@ -652,20 +652,16 @@ JTS_DIAG_MEMORY_HIGH=512M JTS_DIAG_MEMORY_MAX=768M bash scripts/pi-run-diagnosti
   least one was; `1` a graded branch did not match (the finding); `2` no verdict
   (refused, or nothing gradeable). A role the fit left alone reaches no verdict
   and is listed in the report's `unavailable_roles`, never counted either way.
-- `--dry-run` runs the real emitter and derivation for both arms and writes both
+- `--dry-run` runs the real emitter and derivation for both candidates and writes both
   configs without resolving a binary or rendering — a genuine preflight, so an
   emitter refusal, a non-allowlisted stage, a hard-clip limiter or an over-cap
-  stimulus surfaces on the laptop. The bundle keeps both arms' configs, **four
-  `.raw` renders** (`<arm>.{first,repeat}.raw` — the repeat's SHA-256 is the
+  stimulus surfaces on the laptop. The bundle keeps both candidates' configs, **four
+  `.raw` renders** (`<candidate>.{first,repeat}.raw` — the repeat's SHA-256 is the
   determinism receipt), the stimulus WAV, and `report.json`.
 - **Read `band_max_error_db` per branch, not just the verdict.** The
   classifier's tolerances are calibrated for a microphone (1.5 dB below 10 kHz)
   and are generous offline: an exact render lands at 0.003–0.013 dB while the
   shelf-Q realization defect this exists for reads 1.705 dB.
-
-> This section says "arm" for what invariant 9 calls a candidate; `arm` is also
-> a dataclass field, an `arm=` log key and an asserted CLI string
-> ([#2878](https://github.com/jaspercurry/JTS/issues/2878)).
 
 Coverage: `tests/test_active_speaker_emit_bench_{derivation,compare,loop,cli}.py`
 against [`tests/_fake_camilladsp.py`](../tests/_fake_camilladsp.py) — the

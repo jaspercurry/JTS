@@ -21,7 +21,7 @@ modelling, and its fidelity cannot move the answer. The claim graded against is
 
 The soft clip is always on and accounted for: CamillaDSP's ``Limiter`` with ``soft_clip:
 true`` is a memoryless cubic on every sample (``src/filters/limiter.rs``: ``s = v/clip;
-s -= s^3/6.75; v = s*clip``), compressing both A/B arms by slightly different amounts
+s -= s^3/6.75; v = s*clip``), compressing both A/B candidates by slightly different amounts
 wherever linearization changes level. For amplitude ``a*clip`` the fundamental is ``a*(1
 - a^2/9)``; :func:`soft_clip_fundamental_gain_db` computes it and
 :func:`soft_clip_error_bound_db` bounds its contribution. The loop refuses a pair whose
@@ -197,7 +197,7 @@ def soft_clip_error_bound_db(
 ) -> float:
     """Upper bound, dB, on what the soft clip can contribute to the A/B.
 
-    Each arm's compression lies in ``[g(peak), 0]``, both <= 0, so the
+    Each candidate's compression lies in ``[g(peak), 0]``, both <= 0, so the
     difference cannot exceed the larger magnitude; using PEAK rather than
     per-frequency amplitude is the conservative direction. Two opposite
     effects: reading the peak off the RENDER (the limiter's OUTPUT) makes
@@ -232,8 +232,8 @@ def deconvolved_ir(
 ) -> np.ndarray:
     """The full, unwindowed regularized impulse response of one rendered branch.
 
-    Unwindowed on purpose: the window must be shared between the two A/B arms
-    (:func:`shared_arrival_window`); per-arm ``argmax`` windowing would truncate
+    Unwindowed on purpose: the window must be shared between the two A/B candidates
+    (:func:`shared_arrival_window`); per-candidate ``argmax`` windowing would truncate
     differently since linearization biquads shift the peak, letting the difference carry
     that instead of the filters. The module's default capture cap (a real FFT-memory
     guard on the Pi) is left in place; the caller refuses a stimulus long enough to
@@ -254,9 +254,9 @@ def deconvolved_ir(
 def shared_arrival_window(
     reference_ir: np.ndarray, sample_rate: int
 ) -> tuple[int, int]:
-    """The one arrival window BOTH arms of an A/B are truncated with.
+    """The one arrival window BOTH candidates of an A/B are truncated with.
 
-    Derived from the CONTROL arm, so the subject of the measurement never chooses its
+    Derived from the CONTROL candidate, so the subject of the measurement never chooses its
     own window. Windowing discards the synchronized sweep's harmonic images (wrapped to
     the buffer end in a circular full IR); the default 500 ms post-arrival span is
     orders of magnitude longer than any digital filter chain's impulse. Pre-arrival span
@@ -282,10 +282,10 @@ def windowed_magnitude_db(
     *,
     n_fft: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """``(freqs_hz, magnitude_db)`` for one arm, on a caller-fixed FFT length.
+    """``(freqs_hz, magnitude_db)`` for one candidate, on a caller-fixed FFT length.
     ``normalize=False`` is load-bearing (normalizing would destroy the level
-    relationship the A/B measures); ``n_fft`` is a parameter, not derived per-arm, so
-    both arms land on one grid by construction.
+    relationship the A/B measures); ``n_fft`` is a parameter, not derived per-candidate, so
+    both candidates land on one grid by construction.
     """
 
     try:
@@ -296,7 +296,7 @@ def windowed_magnitude_db(
 
 
 def magnitude_fft_length(window: tuple[int, int]) -> int:
-    """The FFT length both arms share -- the module's one grid decision. Mirrors
+    """The FFT length both candidates share -- the module's one grid decision. Mirrors
     :func:`~jasper.audio_measurement.deconv.magnitude_response`'s own default rule (next
     power of two at or above the windowed length, floored at 8192), computed once from
     the SHARED window.
@@ -320,8 +320,8 @@ def branch_validity_mask(
 ) -> np.ndarray:
     """The bins this branch's comparison trusts: in the sweep band, and audible.
 
-    "Audible" means within ``floor_db`` of the CONTROL arm's own in-band peak -- the
-    control is the right yardstick since using the treated arm would let a filter that
+    "Audible" means within ``floor_db`` of the CONTROL candidate's own in-band peak -- the
+    control is the right yardstick since using the treated candidate would let a filter that
     cut a region deeply exclude the very bins it is graded on. Returns an all-``False``
     mask when nothing in ``band_hz`` is finite; callers must treat that as "not
     measured", not "measured, and empty".
@@ -355,7 +355,7 @@ class BranchComparison:
     ``expected_offset_db`` -- distinct from :attr:`verdict`'s own error fields, taken
     over the narrower set of bins where the correction commands at least
     ``DELTA_PROBE_MIN_COMMANDED_DB``. ``expected_offset_db`` is the level move the
-    EMITTER knows it made between the two arms (program headroom gain difference),
+    EMITTER knows it made between the two candidates (program headroom gain difference),
     removed once and threaded identically to the classifier. ``frame`` is evidence about
     the shape of the disagreement, never a re-grade. ``soft_clip_bound_db`` is disclosed
     on every branch so a small residual can be read against its own instrument's noise
@@ -433,11 +433,11 @@ def compare_branch(
 ) -> BranchComparison:
     """Grade one branch's realized transfer against what the fit claimed.
 
-    All four arrays share one grid. ``treated_db``/``control_db`` are the two arms'
+    All four arrays share one grid. ``treated_db``/``control_db`` are the two candidates'
     magnitudes from :func:`windowed_magnitude_db` (their difference is the realized
     transfer); ``claimed_db`` is ``20*log10(|complex_correction_response(filters,
-    freqs)|)`` on the same grid. Taking the two arms, not a pre-differenced curve, lets
-    this function own the validity decision (which needs the control arm's own level).
+    freqs)|)`` on the same grid. Taking the two candidates, not a pre-differenced curve, lets
+    this function own the validity decision (which needs the control candidate's own level).
 
     Three readings answer three questions: ``band_*`` is the measurement (how far apart
     the curves are across trusted bins, known level move removed); ``frame`` is evidence
