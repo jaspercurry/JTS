@@ -550,7 +550,7 @@ class LevelMatchSession:
     ) -> None:
         self.session_id = session_id
         self.store = store
-        self.config = config or MeasurementRamp.from_env()
+        self.config = config or MeasurementRamp()
         self._controller: RampController | None = None
         # Lifecycle cancellation is wider than RampController.cancel(): the
         # retained session exists while waiting for the phone to arm and after

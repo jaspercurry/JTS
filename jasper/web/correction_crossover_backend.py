@@ -379,7 +379,7 @@ class CrossoverLevelLease:
         # Room measurement, so it uses that domain's reviewed cap. Near-field
         # retains the quieter shared default. Both still pass through the 0 dB
         # hard ceiling and live clip abort.
-        return MeasurementRamp.from_env(
+        return MeasurementRamp(
             allow_bounded_low_level=True,
             **(
                 {
@@ -397,8 +397,8 @@ class CrossoverLevelLease:
         Derived from ``_ramp_config_for_geometry`` so the phone's deadline
         can never undercut the server's real ``MeasurementRamp.safety_timeout``
         — a flat client-side constant sized against today's defaults would
-        silently drift out of sync the moment the ramp config (env-tuned
-        knobs, geometry-specific caps) changes. ``PHONE_TRANSPORT_GRACE_S``
+        silently drift out of sync the moment the ramp config (its
+        geometry-specific caps) changes. ``PHONE_TRANSPORT_GRACE_S``
         is the same margin ``crossover_level_run.build_level_run_request``
         uses for its (currently unwired) exact-run ``phone_hard_timeout_ms``.
         """

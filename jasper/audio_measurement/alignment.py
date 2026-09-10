@@ -15,32 +15,14 @@ starting gate, not a measurement-derived constant.
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal as scipy_signal
 
-
-def _env_threshold(default: float = 0.40) -> float:
-    """The default confidence gate, overridable at deploy time.
-
-    The 0.40 default is NOT empirically derived; tuning it needs on-device
-    sweeps, so it is a deploy-time knob
-    (``JASPER_CAPTURE_ALIGNMENT_THRESHOLD``, 0..1) rather than a code change.
-    """
-    raw = os.environ.get("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "").strip()
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            return default
-        if 0.0 <= value <= 1.0:
-            return value
-    return default
-
-
-DEFAULT_CONFIDENCE_THRESHOLD = _env_threshold()
+# NOT empirically derived; tuning it needs on-device sweeps. Nothing in
+# deploy/ or scripts/ sets this per rig, so it is a plain constant.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.40
 # Exclude the main correlation lobe (~a few ms) when picking the competing peak.
 DEFAULT_EXCLUDE_RADIUS_S = 0.005
 # Cost/memory backstop mirroring deconv.DEFAULT_MAX_CAPTURE_SECONDS; the

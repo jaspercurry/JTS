@@ -48,7 +48,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from jasper.env_load import bounded_env_float, bounded_env_int
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -102,16 +101,6 @@ RECOVERABLE_ERRORS = (
     LookupError,
     ArithmeticError,
 )
-
-
-# --- env knobs ---------------------------------------------------------------
-#
-# Every threshold whose true value is hardware-gated is a deploy-time knob (the
-# defaults here are conservative placeholders, NOT empirically derived).
-# Out-of-range or unparseable values fall back to the documented default; a
-# COMBINATION of individually-valid values that fails cross-field validation
-# falls back as a whole (see :meth:`MeasurementRamp.from_env`), so a jasper.env
-# edit can never brick the ramp at construction time.
 
 
 class RampState(Enum):
@@ -435,88 +424,6 @@ class MeasurementRamp:
                 f"original={original_db!r} bump={self.cap_bump_db!r}"
             )
         return min(requested, self.cap_ceil_db, HARD_CEILING_DBFS)
-
-    @classmethod
-    def from_env(cls, **overrides: Any) -> MeasurementRamp:
-        """Build a config with hardware-gated knobs read from the environment.
-
-        Explicit ``overrides`` win over env; anything else falls back to the
-        documented default. Out-of-range or unparseable env values are ignored,
-        and when individually-valid env values fail CROSS-FIELD validation the
-        env set is dropped as a whole with a warning, so a jasper.env edit can
-        never brick the ramp at construction time.
-        """
-        env_values: dict[str, Any] = {
-            "window_low_dbfs": bounded_env_float(
-                "JASPER_RAMP_WINDOW_LOW_DBFS", cls.window_low_dbfs, lo=-60.0, hi=0.0
-            ),
-            "window_high_dbfs": bounded_env_float(
-                "JASPER_RAMP_WINDOW_HIGH_DBFS", cls.window_high_dbfs, lo=-60.0, hi=0.0
-            ),
-            "trust_margin_db": bounded_env_float(
-                "JASPER_RAMP_TRUST_MARGIN_DB", cls.trust_margin_db, lo=0.0, hi=40.0
-            ),
-            "settle_hold_s": bounded_env_float(
-                "JASPER_RAMP_SETTLE_HOLD_S", cls.settle_hold_s, lo=0.0, hi=30.0
-            ),
-            "max_loop_latency_s": bounded_env_float(
-                "JASPER_RAMP_MAX_LOOP_LATENCY_S",
-                cls.max_loop_latency_s,
-                lo=0.0,
-                hi=30.0,
-            ),
-            # Env floor is 2, not 1: the spec pins k >= 3 as the default and a
-            # deploy knob may trade one confirmation for speed, but a single
-            # sample is never "consecutive confirmation".
-            "confirm_k": bounded_env_int(
-                "JASPER_RAMP_CONFIRM_K", cls.confirm_k, lo=2, hi=20
-            ),
-            "settle_min_samples": bounded_env_int(
-                "JASPER_RAMP_SETTLE_MIN_SAMPLES",
-                cls.settle_min_samples,
-                lo=1,
-                hi=10,
-            ),
-            "feed_timeout_s": bounded_env_float(
-                "JASPER_RAMP_FEED_TIMEOUT_S", cls.feed_timeout_s, lo=2.0, hi=60.0
-            ),
-            "cap_bump_db": bounded_env_float(
-                "JASPER_RAMP_CAP_BUMP_DB", cls.cap_bump_db, lo=0.0, hi=24.0
-            ),
-            "cap_ceil_db": bounded_env_float(
-                "JASPER_RAMP_CAP_CEIL_DB", cls.cap_ceil_db, lo=-30.0, hi=0.0
-            ),
-            "agc_slope_min_span_db": bounded_env_float(
-                "JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB",
-                cls.agc_slope_min_span_db,
-                lo=1.0,
-                hi=20.0,
-            ),
-            "agc_slope_min_steps": bounded_env_int(
-                "JASPER_RAMP_AGC_SLOPE_MIN_STEPS",
-                cls.agc_slope_min_steps,
-                lo=2,
-                hi=10,
-            ),
-            "agc_slope_threshold": bounded_env_float(
-                "JASPER_RAMP_AGC_SLOPE_THRESHOLD",
-                cls.agc_slope_threshold,
-                lo=0.1,
-                hi=1.0,
-            ),
-        }
-        merged = {**env_values, **overrides}
-        try:
-            return cls(**merged)
-        except ValueError as exc:
-            log_event(
-                logger,
-                "ramp_env_config_invalid",
-                level=logging.WARNING,
-                error=str(exc),
-                action="falling back to defaults for env-provided knobs",
-            )
-            return cls(**overrides)
 
 
 @dataclass

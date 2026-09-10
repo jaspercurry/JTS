@@ -391,55 +391,6 @@ def test_safety_timeout_derived_from_worst_case_walk():
     assert MeasurementRamp(safety_timeout_s=9.0).safety_timeout == 9.0
 
 
-def test_from_env_cross_field_conflict_falls_back(monkeypatch):
-    # Individually-valid values that conflict as a pair must not brick the
-    # ramp: the env set is dropped with a warning.
-    monkeypatch.setenv("JASPER_RAMP_WINDOW_LOW_DBFS", "-10")  # above default high
-    cfg = MeasurementRamp.from_env()
-    assert cfg.window_low_dbfs == MeasurementRamp.window_low_dbfs
-
-    monkeypatch.delenv("JASPER_RAMP_WINDOW_LOW_DBFS")
-    monkeypatch.setenv("JASPER_RAMP_SETTLE_HOLD_S", "1.0")  # < default latency 2.0
-    cfg = MeasurementRamp.from_env()
-    assert cfg.settle_hold_s == MeasurementRamp.settle_hold_s
-
-
-def test_from_env_valid_values_apply(monkeypatch):
-    monkeypatch.setenv("JASPER_RAMP_TRUST_MARGIN_DB", "14")
-    monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "12")
-    monkeypatch.setenv("JASPER_RAMP_CAP_BUMP_DB", "9")
-    monkeypatch.setenv("JASPER_RAMP_CAP_CEIL_DB", "-4")
-    cfg = MeasurementRamp.from_env()
-    assert cfg.trust_margin_db == 14.0
-    assert cfg.feed_timeout_s == 12.0
-    assert cfg.cap_bump_db == 9.0
-    assert cfg.cap_ceil_db == -4.0
-
-
-@pytest.mark.parametrize(
-    ("key", "value", "field"),
-    [
-        ("JASPER_RAMP_CAP_BUMP_DB", "-0.1", "cap_bump_db"),
-        ("JASPER_RAMP_CAP_BUMP_DB", "25", "cap_bump_db"),
-        ("JASPER_RAMP_CAP_CEIL_DB", "-30.1", "cap_ceil_db"),
-        ("JASPER_RAMP_CAP_CEIL_DB", "0.1", "cap_ceil_db"),
-    ],
-)
-def test_from_env_cap_bounds_fall_back(key, value, field, monkeypatch):
-    monkeypatch.setenv(key, value)
-    cfg = MeasurementRamp.from_env()
-    assert getattr(cfg, field) == getattr(MeasurementRamp, field)
-
-
-def test_from_env_confirm_k_floor_is_two(monkeypatch):
-    # The spec pins k>=3 as the default; the env knob may weaken to 2 but a
-    # single sample is never "consecutive confirmation".
-    monkeypatch.setenv("JASPER_RAMP_CONFIRM_K", "1")
-    assert MeasurementRamp.from_env().confirm_k == MeasurementRamp.confirm_k
-    monkeypatch.setenv("JASPER_RAMP_CONFIRM_K", "2")
-    assert MeasurementRamp.from_env().confirm_k == 2
-
-
 def test_bounded_low_stability_threshold_must_be_finite_and_nonnegative():
     with pytest.raises(ValueError, match="bounded_low_max_spread_db"):
         MeasurementRamp(bounded_low_max_spread_db=-0.1)
@@ -469,25 +420,6 @@ def test_agc_slope_config_defaults_and_validation():
         MeasurementRamp(agc_slope_threshold=0.0)
     with pytest.raises(ValueError, match="agc_slope_threshold"):
         MeasurementRamp(agc_slope_threshold=float("nan"))
-
-
-def test_agc_slope_env_knobs_apply_and_fall_back(monkeypatch):
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB", "8.0")
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_STEPS", "4")
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_THRESHOLD", "0.6")
-    cfg = MeasurementRamp.from_env()
-    assert cfg.agc_slope_min_span_db == pytest.approx(8.0)
-    assert cfg.agc_slope_min_steps == 4
-    assert cfg.agc_slope_threshold == pytest.approx(0.6)
-
-    # Out-of-range values fall back to the documented default.
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB", "0.5")
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_STEPS", "1")
-    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_THRESHOLD", "1.5")
-    cfg = MeasurementRamp.from_env()
-    assert cfg.agc_slope_min_span_db == MeasurementRamp.agc_slope_min_span_db
-    assert cfg.agc_slope_min_steps == MeasurementRamp.agc_slope_min_steps
-    assert cfg.agc_slope_threshold == MeasurementRamp.agc_slope_threshold
 
 
 # --- AGC empirical slope verification (unattested chains) ---------------------
