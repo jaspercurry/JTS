@@ -1145,6 +1145,54 @@ def test_the_done_screen_spells_the_producers_grade_words():
     assert "unproven" not in passed
 
 
+def test_an_unrecognized_spatial_word_badges_distinctly_from_a_pass():
+    """#2242's S1 fixed the doctor's own read of an unrecognized ``spatial``
+    word to WARN and name it
+    (``correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED``,
+    ``test_an_unknown_spatial_word_from_a_later_build_is_disclosed`` in
+    tests/test_doctor_correction.py) — this screen now carries the matching
+    branch. A word this build cannot read must not fall through every
+    ``elif`` in :func:`build_crossover_envelope_v2` and reach the same
+    badge a genuinely PASSED grade gets: a later build's grade must render
+    as a distinct, named warning here, same as the doctor already
+    discloses it. Pinned on the badge CODE — the field a caller keys on —
+    not the sentence.
+    """
+    grade = {
+        "state": "graded", "graded": True, "complete": True,
+        "scope": GRADE_SCOPE_SPATIAL, "spatial": "graded_from_orbit",
+    }
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
+        candidate=_candidate_summary(), post_apply_grade=grade,
+    ))
+    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_spatial_unrecognized"}
+
+
+def test_spec_verdict_is_not_reintroduced_as_a_second_grade_owner():
+    """R19 (#2160, #2242) deleted ``_spec_verdict`` because it and
+    ``_post_apply_grade`` answered the same "did the spatial spec pass?"
+    question from two places, and the two could disagree. Nothing stops a
+    later edit from writing a same-named local helper back in to re-derive
+    that verdict here instead of reading the producer's grade, so this walks
+    the module's own function definitions rather than trusting that nobody
+    will.
+    """
+    import ast
+    from pathlib import Path
+
+    from jasper.active_speaker import crossover_envelope_v2
+
+    tree = ast.parse(
+        Path(crossover_envelope_v2.__file__).resolve().read_text(encoding="utf-8")
+    )
+    defined = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_spec_verdict" not in defined
+
+
 def test_a_level_mismatch_caveats_the_pass_screen():
     """#1811 SF1: a non-rollback probe finding must not render as a clean pass.
 
