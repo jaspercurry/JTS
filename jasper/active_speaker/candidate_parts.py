@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -162,7 +162,7 @@ def compose_candidate(
     bass = dict(
         base.candidate.bass_extension
         if bass_extension is _INHERIT and not tune_changed and room_correction is None
-        else ({} if bass_extension is _INHERIT else bass_extension)
+        else ({} if bass_extension is _INHERIT else cast(Mapping[str, Any], bass_extension))
     )
     analysis: dict[str, Any] = {
         "kind": COMPOSITION_KIND,

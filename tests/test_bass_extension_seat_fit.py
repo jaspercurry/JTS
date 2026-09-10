@@ -18,17 +18,17 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.bass_extension.adapters.base import (
+    BassExtensionRefusal,
     CaptureRole,
     MagnitudeCurve,
     passband_normalize,
     woofer_curve,
 )
-from jasper.bass_extension.adapters.sealed import SEALED_ADAPTER, SealedPlantFit
+from jasper.bass_extension.adapters.sealed import SEALED_ADAPTER
 from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
     second_order_highpass_db,
 )
-from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.seat_fit import (
     DeclaredPlant,
     SeatFitRefused,
@@ -213,7 +213,7 @@ def test_a_target_declaring_no_usable_cabinet_refuses(target, reason, detail):
 def test_the_declared_cabinet_picks_its_adapter_and_carries_its_geometry():
     adapter, cabinet = cabinet_of(SEALED_TARGET)
 
-    assert adapter.adapter_id == SealedPlantFit.adapter_id
+    assert adapter is SEALED_ADAPTER
     assert cabinet == CABINET
 
 

@@ -8,6 +8,7 @@ import pytest
 from jasper.camilla_emit import fmt
 from jasper.bass_extension.adapters import adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
+    BassExtensionRefusal,
     COMMISSION_FLOOR_HZ,
     MIN_CURVE_POINTS,
     TARGET_RESPONSE_RESERVE_DB,
@@ -21,7 +22,6 @@ from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
     second_order_highpass_db,
 )
-from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.targets import MARGINS
 
 

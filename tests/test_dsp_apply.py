@@ -30,7 +30,6 @@ from jasper.dsp_apply import (
     config_file_sha256,
     same_config_file,
     _DSP_LOCK_OWNERSHIP,
-    _dsp_apply_lock,
     _default_apply_lock_path,
     dsp_apply_lock_path,
     dsp_write_epoch,

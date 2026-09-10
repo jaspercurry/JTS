@@ -372,9 +372,10 @@ def load_v2_state() -> dict[str, Any] | None:
         or raw.get("schema_version") != STATE_SCHEMA_VERSION
     ):
         return None
-    if "room_trial" in raw:
-        raw.setdefault("tuning_trial", raw.pop("room_trial"))
-    return dict(raw)
+    state = dict(raw)
+    if "room_trial" in state:
+        state.setdefault("tuning_trial", state.pop("room_trial"))
+    return state
 
 
 def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:

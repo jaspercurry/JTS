@@ -25,6 +25,7 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.adapters import SEALED_ADAPTER, adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
+    BassExtensionRefusal,
     CabinetInfo,
     CaptureRole,
     EnclosureAdapter,
@@ -35,7 +36,6 @@ from jasper.bass_extension.adapters.base import (
 )
 from jasper.bass_extension.adapters.sealed import declared_plant
 from jasper.bass_extension.alignment import lt_boost_db
-from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.targets import MarginPolicy, digital_anchor_level
 from jasper.json_fields import finite_float
 
