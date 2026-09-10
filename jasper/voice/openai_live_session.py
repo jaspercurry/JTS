@@ -37,6 +37,17 @@ FRONTEND_INSTRUCTIONS = (
     "Do not invite another question after every answer."
 )
 
+# Quiet output deltas are answer audio only this close to the last audible
+# one: Live streams one real-time timeline, and the quiet between words is
+# what keeps the fan-in TTS lane fed. Past this the answer is over and
+# playout must be allowed to drain, because the host opens its follow-up
+# window from that drain (`continuous_watchdog` in .conversation). Sized to
+# the host's own end-of-phrase silence, END_OF_UTTERANCE_SILENCE_SEC.
+SILENCE_BRIDGE_SEC = 0.8
+
+# int16 RMS floor for "this delta carries speech" (about -60 dBFS).
+AUDIBLE_RMS_FLOOR = 32
+
 
 class OpenAILiveTurn(BaseLiveTurn):
     continuous_input = True
@@ -50,6 +61,8 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._sender = None
         self._transcripts = {"user": [], "assistant": []}
         self._seconds = 0.0
+        self._quiet_played = 0
+        self._quiet_discarded = 0
         self._finalized = False
         self._delegation_id = None
         self._response_ids = {}
@@ -112,6 +125,12 @@ class OpenAILiveTurn(BaseLiveTurn):
         if self._released:
             return
         self._released = True
+        log_event(
+            logger, "live.turn_audio",
+            chunks_received=self._chunks_received,
+            quiet_played=self._quiet_played,
+            quiet_discarded=self._quiet_discarded,
+        )
         self.discard_input()
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
@@ -135,13 +154,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         if self._released or self._turn_lost:
             return
         if kind == "session.output_audio.delta":
-            pcm = base64.b64decode(event["delta"])
-            # Digital silence must not keep a follow-up window alive indefinitely.
-            if pcm and audioop.rms(pcm, 2) > 32:  # approximately -60 dBFS
-                self._last_chunk_at = time.monotonic()
-                self._chunks_received += 1
-                self._note_activity()
-                self._enqueue_audio(AudioOutChunk(pcm))
+            self._on_output_audio(base64.b64decode(event["delta"]))
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
             speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
             self._transcripts[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
@@ -154,6 +167,28 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._calls.clear()
             self.backend_pending = True
             self._note_activity()
+
+    def _on_output_audio(self, pcm: bytes) -> None:
+        """Admit one output delta to playout.
+
+        An audible delta is the turn's answer audio and its activity
+        anchor. The quiet between audible deltas is played too — the lane
+        starves without it — but only while the answer is still running,
+        never as an unbounded tail.
+        """
+        if not pcm:
+            return
+        now = time.monotonic()
+        if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
+            self._last_chunk_at = now
+            self._chunks_received += 1
+            self._note_activity()
+            self._enqueue_audio(AudioOutChunk(pcm))
+        elif self._last_chunk_at and now - self._last_chunk_at <= SILENCE_BRIDGE_SEC:
+            self._quiet_played += 1
+            self._enqueue_audio(AudioOutChunk(pcm))
+        else:
+            self._quiet_discarded += 1
 
     async def _on_backend_event(self, envelope: dict) -> None:
         event = envelope["event"]

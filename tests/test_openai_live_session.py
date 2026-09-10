@@ -6,13 +6,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+from contextlib import asynccontextmanager
 
+import pytest
 from openai.types.live.client_event_param import ClientEventParam
 from pydantic import TypeAdapter
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice.openai_live_session import OpenAILiveConnection
+from jasper.voice import openai_live_session
+from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from tests._async_wait import wait_until
+from tests._log_events import event_fields
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
@@ -43,6 +48,36 @@ class LiveSocket:
 
     async def __anext__(self):
         return await self.events.get()
+
+
+AUDIBLE_PCM = b"\x00\x40" * 120  # 5 ms of int16 tone at 24 kHz
+QUIET_PCM = bytes(240)
+
+
+class FrozenClock:
+    """The adapter reads only `time.monotonic()`; hold it still."""
+
+    def __init__(self, now=10_000.0):
+        self.now = now
+
+    def monotonic(self):
+        return self.now
+
+
+def output_audio(pcm):
+    return {"type": "session.output_audio.delta", "delta": base64.b64encode(pcm).decode()}
+
+
+@asynccontextmanager
+async def live_turn():
+    conn = OpenAILiveConnection(api_key="test", connect=LiveSocket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        yield turn
+    finally:
+        await turn.release()
+        await conn.stop()
 
 
 def backend(delegation, kind, **fields):
@@ -133,8 +168,9 @@ async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_in
     await conn.start(ToolRegistry(), "Be brief.")
     turn = await conn.acquire_turn()
     try:
-        await turn.on_event({"type": "session.output_audio.delta", "delta": base64.b64encode(bytes(240)).decode()})
+        await turn.on_event(output_audio(QUIET_PCM))
         assert turn.chunks_received() == 0
+        assert turn.audio_chunks_pending() == 0
         await turn.send_audio(b"\xff\x7f" * 1280)
         turn.discard_input()
         await wait_until(lambda: any(e["type"] == "session.input_audio.append" for e in socket.sent))
@@ -168,3 +204,45 @@ async def test_failed_start_redacts_key_and_allows_another_wake():
     turn = await conn.acquire_turn()
     await turn.release()
     await conn.stop()
+
+
+@pytest.mark.parametrize("gap_sec, played, discarded", [
+    (0.0, 1, 0),
+    (SILENCE_BRIDGE_SEC, 1, 0),
+    (SILENCE_BRIDGE_SEC + 0.05, 0, 1),
+    (30.0, 0, 1),
+])
+async def test_quiet_deltas_play_only_while_the_answer_is_running(
+    monkeypatch, caplog, gap_sec, played, discarded,
+):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(AUDIBLE_PCM))
+        audible_at = turn.last_chunk_at()
+        clock.now += gap_sec
+        await turn.on_event(output_audio(QUIET_PCM))
+        assert turn.audio_chunks_pending() == 1 + played
+        # Quiet never counts as an answer, whether it is played or not.
+        assert turn.chunks_received() == 1
+        assert turn.last_chunk_at() == audible_at
+    fields = event_fields(caplog, "live.turn_audio")
+    assert int(fields["chunks_received"]) == 1
+    assert int(fields["quiet_played"]) == played
+    assert int(fields["quiet_discarded"]) == discarded
+
+
+async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeypatch):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(AUDIBLE_PCM))
+        clock.now += SILENCE_BRIDGE_SEC * 4
+        await turn.on_event(output_audio(QUIET_PCM))
+        assert turn.audio_chunks_pending() == 1
+        await turn.on_event(output_audio(AUDIBLE_PCM))
+        clock.now += SILENCE_BRIDGE_SEC / 2
+        await turn.on_event(output_audio(QUIET_PCM))
+        assert turn.audio_chunks_pending() == 3
+        assert turn.chunks_received() == 2
