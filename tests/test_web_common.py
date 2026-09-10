@@ -499,6 +499,21 @@ def test_restart_systemd_units_routes_through_broker_no_block(monkeypatch):
     assert kwargs["no_block"] is True
 
 
+@pytest.mark.parametrize("broker_ok", [True, False])
+def test_restart_systemd_units_reports_a_refused_restart(monkeypatch, broker_ok):
+    """A refusal — broker down, unit not allowlisted, polkit denial — has to
+    reach the saver, or ~30 wizard saves answer "Saved, restarting" for a
+    restart that never happened."""
+    monkeypatch.setattr(
+        _common, "manage_units", lambda *units, **kwargs: {"ok": broker_ok},
+    )
+    monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
+    monkeypatch.setattr(_common, "bonded_follower_active", lambda: False)
+
+    assert _common.restart_systemd_units("jasper-voice") is broker_ok
+    assert _common.restart_voice_daemon() is broker_ok
+
+
 def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
     calls = []
 
@@ -508,7 +523,9 @@ def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
         lambda *units, **kwargs: calls.append((units, kwargs)) or {"ok": True},
     )
 
-    _common.restart_voice_daemon()
+    # A deliberate skip is not a failure: the saved config is correct and
+    # applies on unbond, so the saver must not be told the restart failed.
+    assert _common.restart_voice_daemon() is True
 
     assert calls == []
 
@@ -741,7 +758,7 @@ def test_restart_voice_daemon_skips_while_parked(monkeypatch):
     monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
     calls = []
     monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
-    common.restart_voice_daemon()
+    assert common.restart_voice_daemon() is True
     assert calls == []
 
 

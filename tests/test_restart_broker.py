@@ -13,6 +13,7 @@ hardware-free and side-effect-free.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -22,6 +23,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -186,12 +188,36 @@ class _FakeProc:
     stderr: str = ""
 
 
+class _InlineThread:
+    """Runs the detached spawn's reaper inline, so its journal line has landed
+    by the time `_spawn_detached` returns."""
+
+    def __init__(self, *, target, args, daemon):
+        self._target = target
+        self._args = args
+
+    def start(self) -> None:
+        self._target(*self._args)
+
+
+class _FinishedPopen:
+    """Stands in for the detached child: already exited, nothing on stderr."""
+
+    returncode = 0
+
+    def communicate(self) -> tuple[str, str]:
+        return "", ""
+
+
 def _record_popen(monkeypatch) -> list[list[str]]:
     """Capture the argv of every detached spawn instead of running it."""
     spawned: list[list[str]] = []
-    monkeypatch.setattr(
-        subprocess, "Popen", lambda argv, **kw: spawned.append(list(argv)),
-    )
+
+    def fake_popen(argv, **kw):
+        spawned.append(list(argv))
+        return _FinishedPopen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     return spawned
 
 
@@ -544,6 +570,41 @@ def test_power_verbs_run_unit_less_and_detached(broker, monkeypatch, verb):
     assert resp["ok"] is True
     assert resp["status"] == "queued_unconfirmed"
     assert resp["units"] == []
+
+
+@pytest.mark.parametrize("script,expected_events", [
+    # A polkit/logind denial: nonzero exit, the reason only on stderr.
+    (
+        "import sys; sys.stderr.write('Interactive authentication required\\n');"
+        " sys.exit(1)",
+        1,
+    ),
+    ("raise SystemExit(0)", 0),
+])
+def test_a_detached_spawn_reports_its_failure_to_the_journal(
+    monkeypatch, caplog, script, expected_events,
+):
+    """A detached spawn's rc can never reach the client — reboot/poweroff and
+    the control self-restart answer `queued_unconfirmed` by contract. So the
+    journal is the only place a polkit/logind denial can land: the reaper
+    reports a nonzero child, and stays quiet on a clean one.
+    """
+    monkeypatch.setattr(
+        restart_broker, "threading", SimpleNamespace(Thread=_InlineThread),
+    )
+    with caplog.at_level(logging.WARNING, logger=restart_broker.logger.name):
+        restart_broker._spawn_detached(
+            [sys.executable, "-c", script], verb="reboot", units_label="-",
+        )
+
+    denials = [
+        r for r in caplog.records
+        if getattr(r, "jasper_event", "") == "restart_broker.deferred_failed"
+    ]
+    assert len(denials) == expected_events
+    if expected_events:
+        # systemctl's own denial text, i.e. stderr is captured, not DEVNULL'd.
+        assert "Interactive authentication required" in denials[0].getMessage()
 
 
 def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
@@ -1548,21 +1609,24 @@ def test_default_socket_path_is_resolved_at_call_time(call, tmp_path, monkeypatc
         listener.close()
 
 
-@pytest.mark.parametrize("verb", [
-    "exec",    # outside the closed vocabulary
-    "reboot",  # in it, but a power verb never takes a unit
+@pytest.mark.parametrize("verb,unit", [
+    ("exec", "jasper-voice"),    # outside the closed vocabulary
+    ("reboot", "jasper-voice"),  # in it, but a power verb never takes a unit
+    ("restart", "ssh"),          # allowlisted verb, unit outside MANAGED_UNITS
 ])
 def test_root_fallback_refuses_what_the_broker_would_refuse(
-    tmp_path, monkeypatch, verb,
+    tmp_path, monkeypatch, verb, unit,
 ):
     """The broker's request validation must hold on the fallback path too.
 
     The broker's own rejections are covered by
-    test_unknown_verb_rejected_without_running_anything and
+    test_unknown_verb_rejected_without_running_anything,
+    test_unit_not_in_allowlist_rejected and
     test_power_verbs_run_unit_less_and_detached, but _direct_systemctl runs as
-    ROOT and enforces them separately. Mutation testing (neutering its
-    `verb not in ALLOWED_VERBS` guard) left the whole file green, so nothing
-    pinned it.
+    ROOT and enforces them separately — so MANAGED_UNITS is a property of the
+    manage_units API, not of whichever transport happened to run. Mutation
+    testing (neutering its `verb not in ALLOWED_VERBS` guard) left the whole
+    file green, so nothing pinned it.
     """
     monkeypatch.setattr(
         restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
@@ -1571,7 +1635,7 @@ def test_root_fallback_refuses_what_the_broker_would_refuse(
     ran = _record_popen(monkeypatch)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(list(argv)))
 
-    resp = restart_broker.manage_units("jasper-voice", verb=verb, timeout=0.5)
+    resp = restart_broker.manage_units(unit, verb=verb, timeout=0.5)
 
     assert resp["ok"] is False
     assert ran == []  # never reached systemctl

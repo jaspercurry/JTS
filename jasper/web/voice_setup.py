@@ -505,7 +505,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         if err is not None or new is None:
             send_see_other(handler, "./", flash=err or "Could not save.")
             return
-        restart_voice_daemon()
+        restarted = restart_voice_daemon()
         active = new.get("JASPER_VOICE_PROVIDER", "")
         # The active provider (gemini/openai/grok) is the headline config
         # change — not a secret. The API keys in `new` are never logged.
@@ -515,10 +515,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             provider=active,
             client=handler.address_string(),
         )
-        send_see_other(
-            handler, "./",
-            flash=f"Saved. Voice daemon restarting on {_provider_label(active)}.",
-        )
+        if restarted:
+            flash = (
+                f"Saved. Voice daemon restarting on {_provider_label(active)}."
+            )
+        else:
+            flash = (
+                f"Saved {_provider_label(active)}, but the voice daemon could "
+                "not restart. Try again or check System status."
+            )
+        send_see_other(handler, "./", flash=flash)
 
     @form_guarded
     def _post_save_test(

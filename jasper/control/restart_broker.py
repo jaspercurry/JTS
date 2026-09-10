@@ -60,8 +60,11 @@ tree's only ``systemctl``. Direct calls elsewhere are the design, not drift:
 **Root fallback.** :func:`manage_units` tries the broker first and, only if the
 broker is unreachable **and** the caller is root (``os.geteuid() == 0``), falls
 back to a direct ``systemctl`` — logged LOUDLY (``event=restart_broker.
-fallback_direct``) so a silently-broken broker path stays visible. A non-root
-client has no fallback: ``geteuid() != 0``, so the broker is its only path.
+fallback_direct``) so a silently-broken broker path stays visible. The fallback
+re-checks the same verb and unit allowlist the broker applies, so the scope of
+:func:`manage_units` is a property of the API, not of which transport ran. A
+non-root client has no fallback: ``geteuid() != 0``, so the broker is its only
+path.
 The exception is :data:`POWER_VERBS`, which only jasper-control itself issues:
 they keep the direct path so a failed broker bind (non-fatal by design) cannot
 cost the household its reboot button.
@@ -326,17 +329,45 @@ def _build_argv(verb: str, units: list[str], *, no_block: bool) -> list[str]:
     return argv
 
 
-def _spawn_detached(argv: list[str]) -> None:
+def _journal_detached_result(
+    proc: subprocess.Popen[str], verb: str, units_label: str,
+) -> None:
+    """Journal a detached spawn's verdict once it lands. The reply already went
+    out as ``queued_unconfirmed``, so this is the only record a denial (polkit,
+    logind) ever gets; a spawn that succeeds takes the box or the broker down
+    before it reports, so in practice only failures reach the log."""
+    try:
+        _, err = proc.communicate()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return
+    detail = (err or "").strip()
+    if proc.returncode == 0 and not detail:
+        return
+    log_event(
+        logger, "restart_broker.deferred_failed", verb=verb,
+        units=units_label, rc=proc.returncode, detail=detail[:200],
+        level=logging.WARNING,
+    )
+
+
+def _spawn_detached(argv: list[str], *, verb: str, units_label: str) -> None:
     """Fire a systemctl call the broker must not wait on — the transition it
-    starts can kill the broker before it has answered."""
-    subprocess.Popen(
+    starts can kill the broker before it has answered. The rc can never reach
+    the caller, so stderr goes to a reaper thread instead of DEVNULL."""
+    proc = subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         start_new_session=True,
         close_fds=True,
     )
+    threading.Thread(
+        target=_journal_detached_result,
+        args=(proc, verb, units_label),
+        daemon=True,
+    ).start()
 
 
 def _run_systemctl_request(
@@ -357,7 +388,9 @@ def _run_systemctl_request(
     control restart as a detached no-block command so the broker can answer.
     """
     if verb in POWER_VERBS:
-        _spawn_detached(_build_argv(verb, units, no_block=False))
+        _spawn_detached(
+            _build_argv(verb, units, no_block=False), verb=verb, units_label="-",
+        )
         return None, "", True
 
     if verb == "restart" and _SELF_UNIT in units:
@@ -374,7 +407,11 @@ def _run_systemctl_request(
             if first.returncode != 0:
                 return first.returncode, (first.stderr or "").strip(), False
 
-        _spawn_detached(_build_argv(verb, [_SELF_UNIT], no_block=True))
+        _spawn_detached(
+            _build_argv(verb, [_SELF_UNIT], no_block=True),
+            verb=verb,
+            units_label=_SELF_UNIT,
+        )
         return None, "", True
 
     proc = subprocess.run(
@@ -729,10 +766,14 @@ def _direct_systemctl(
         return {"ok": False, "error": f"unknown verb {verb!r}"}
     if verb in POWER_VERBS and units:
         return {"ok": False, "error": f"{verb} takes no units"}
-    argv = _build_argv(verb, [_normalize_unit(u) for u in units], no_block=no_block)
+    units = [_normalize_unit(u) for u in units]
+    bad = [u for u in units if not _unit_allowed_for_verb(u, verb)]
+    if bad:
+        return {"ok": False, "error": f"unit(s) not in allowlist: {','.join(bad)}"}
+    argv = _build_argv(verb, units, no_block=no_block)
     try:
         if verb in POWER_VERBS:
-            _spawn_detached(argv)
+            _spawn_detached(argv, verb=verb, units_label="-")
             return {"ok": True, "action": verb, "units": [], "rc": None, "stderr": ""}
         proc = subprocess.run(
             argv, check=False, timeout=timeout,
@@ -743,7 +784,7 @@ def _direct_systemctl(
     return {
         "ok": proc.returncode == 0,
         "action": verb,
-        "units": [_normalize_unit(u) for u in units],
+        "units": units,
         "rc": proc.returncode,
         "stderr": (proc.stderr or "").strip()[:500] if proc.returncode != 0 else "",
     }

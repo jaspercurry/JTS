@@ -185,7 +185,7 @@ def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
     )
 
 
-def restart_systemd_units(*units: str) -> None:
+def restart_systemd_units(*units: str) -> bool:
     """Best-effort non-blocking restart for wizard-owned config changes.
 
     `--no-block` is important. `Type=notify` units make `systemctl
@@ -199,10 +199,11 @@ def restart_systemd_units(*units: str) -> None:
 
     With --no-block, systemctl queues the restart and returns in
     a few ms. The browser gets the success banner immediately.
-    The actual restart still happens; if it fails, the user finds
-    out when wake doesn't fire (or via /system/) rather than via a
-    web error — same failure mode we already had, since the
-    previous `check=False, timeout=10` was swallowing errors too.
+    A *queued* restart that later fails still surfaces only when wake
+    doesn't fire (or via /system/), but a REFUSED one — broker down,
+    unit not allowlisted, polkit denial — is reported here: returns
+    False so the saver can say "saved, but it did not restart" instead
+    of a bare success banner.
 
     The fallback timeout of 5 s is for systemctl's own argument-
     parsing / dbus-roundtrip overhead, NOT the restart itself —
@@ -213,15 +214,15 @@ def restart_systemd_units(*units: str) -> None:
     WS1 Phase 3: this no longer shells out to systemctl directly — it asks
     jasper-control's restart broker to do it (manage_units), so jasper-web
     needs no privilege of its own once dropped to a non-root service user.
-    manage_units is best-effort and never raises (same contract as before);
-    while jasper-web is still root it falls back to a direct systemctl if the
-    broker is unreachable."""
+    manage_units is best-effort and never raises (same contract as before)
+    and logs its own `event=restart_broker.client_error` on a refusal."""
     if not units:
-        return
-    manage_units(
+        return True
+    resp = manage_units(
         *units, verb="restart", reason="wizard config change",
         no_block=True, timeout=5.0,
     )
+    return bool(resp.get("ok"))
 
 
 def bonded_follower_park_reason() -> str:
@@ -304,9 +305,14 @@ def pair_banner_html() -> str:
     )
 
 
-def restart_voice_daemon() -> None:
+def restart_voice_daemon() -> bool:
     """Best-effort restart of jasper-voice so it picks up new
     credentials / new provider / wake model on its next boot.
+
+    Returns False only when the restart was REFUSED (see
+    :func:`restart_systemd_units`). A deliberate skip below is not a
+    failure — the saved config is correct and applies on unbond — so
+    those return True.
 
     Two skip gates, both states where a restart would be WRONG:
     provider unset (voice refuses to start anyway), and parked as a
@@ -316,13 +322,13 @@ def restart_voice_daemon() -> None:
     on unbond (the un-park path restarts voice with fresh env)."""
     if not read_active_provider():
         logger.info("not starting jasper-voice: JASPER_VOICE_PROVIDER is unset")
-        return
+        return True
     if bonded_follower_active():
         logger.info(
             "not restarting jasper-voice: parked (bonded follower) — "
             "saved config applies on unbond",
         )
-        return
+        return True
     # No explicit `systemctl enable` here. jasper-voice is enabled at install,
     # and the root jasper-aec-reconcile (Tier B) is the authoritative owner of
     # voice's enable/disable (it disables on bonded-follower park and re-enables
@@ -331,7 +337,7 @@ def restart_voice_daemon() -> None:
     # manage-unit-files — it can't be unit-scoped and `systemctl restart`
     # consults it, which would re-open restart-of-any-unit; see
     # deploy/polkit/49-jasper-control.rules.)
-    restart_systemd_units("jasper-voice")
+    return restart_systemd_units("jasper-voice")
 
 
 def terminate_process(
