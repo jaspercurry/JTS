@@ -14,7 +14,6 @@ import subprocess
 import time
 from typing import Any, Mapping, Sequence
 
-# Unit names spelled ≥3 times across jasper/ product code (register.md §3).
 # Import these instead of re-spelling the literal.
 JASPER_VOICE_SERVICE = "jasper-voice.service"
 OUTPUTD_SERVICE = "jasper-outputd.service"
