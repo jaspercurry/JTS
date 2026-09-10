@@ -380,6 +380,11 @@ install_jts_ring_platform() {
     # Pinned by tests/test_install_ring_platform_sequencing.py
     # (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
     #
+    # ACTIVE ring: an operator-pinned box short-circuits before
+    # reconcile_coupling, so _converge_ring's _delete_stale_ring_files
+    # (jasper/fanin/coupling_reconcile.py) never runs there — this rm -f is
+    # the only deleter that reaches those boxes.
+    #
     # `grouping.ring` (jasper-snapclient's ingress) is deliberately excluded:
     # that unit has StartLimitBurst=6 and NO StartLimitAction, so a stale
     # ring there costs bounded, visible retries rather than a reboot loop —
