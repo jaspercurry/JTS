@@ -84,7 +84,7 @@ Navigation pointers; inspect current callers before editing:
 Verified PR context on the date above:
 
 - [#4758](https://github.com/jaspercurry/JTS/pull/4758), merged: native dynamic
-  bass, shared saved-layer composition, 12 dB maximum descriptor, removal of the
+  bass, shared saved-layer composition, validated native descriptors, removal of the
   standalone bass runtime, bench, and sealed-only fitter. Start here.
 - [#4700](https://github.com/jaspercurry/JTS/pull/4700), merged through #4758:
   save measured Room candidates through the existing apply transaction.
