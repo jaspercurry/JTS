@@ -45,10 +45,12 @@ from jasper.active_speaker.commissioning_coordinator import (
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
     crossover_preview_fingerprint,
+    load_crossover_preview,
+    save_crossover_preview,
 )
 from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft, save_design_draft
 from jasper.active_speaker.graph_safety import protection_requirement_present, view_from_emitted_text
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
@@ -1209,6 +1211,50 @@ def test_a_write_free_rebuild_knowing_less_does_not_supersede_the_applied_profil
         step for step in view["steps"] if step["id"] == "profile"
     )["status"] == "done"
     assert view["next_action"]["id"] == "start_combined_test"
+
+
+@pytest.mark.parametrize(("change", "spacing"), [("installation", None), ("installation", 150), ("gain", 150), ("spacing", 150)])
+def test_hardware_save_preserves_applied_tune_but_design_edits_do_not(tmp_path, change, spacing):
+    topology = _dual_apple_topology()
+    manual = {"drivers": [{"role": "woofer", "gain_offset_db": 0.0}], "driver_spacing_mm": spacing}
+    draft_path = tmp_path / "draft.json"
+    draft = save_design_draft(topology, driver_research=_research(), manual_settings=manual,
+        path=draft_path, created_at="2026-07-18T12:00:00Z")
+    if spacing is None:
+        draft["manual_settings"].pop("driver_spacing_mm")
+    preview_path = tmp_path / "preview.json"
+    preview = save_crossover_preview(draft, path=preview_path)
+    preset, issues, _ = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    state_path = tmp_path / "profile.json"
+    config_path = tmp_path / "baseline.yml"
+    measured = build_baseline_profile_candidate(topology, design_draft=draft,
+        crossover_preview=preview, measurements={}, write=True, state_path=state_path,
+        config_path=config_path, validate=_valid_config, tuning_owner="automatic",
+        measured_candidate=_v2_candidate(preset))
+    state_path.write_text(json.dumps({**measured, "status": "applied", "applied_at": "2026-07-18T12:01:00Z"}))
+    if change == "installation":
+        manual["drivers"][0]["installation"] = {"amplifier_model": "TPA3255", "supply_voltage_v": 36}
+    elif change == "gain":
+        manual["drivers"][0]["gain_offset_db"] = -3.0
+    else:
+        manual["driver_spacing_mm"] = 200
+    changed = save_design_draft(topology, driver_research=_research(), manual_settings=manual,
+        path=draft_path, created_at="2026-07-18T12:05:00Z", expected_revision=draft["revision"])
+    loaded = load_crossover_preview(preview_path, current_design_draft=changed)
+    payload = build_baseline_profile_candidate(topology, design_draft=changed,
+        crossover_preview=loaded, measurements={}, write=False, state_path=state_path,
+        config_path=config_path, validate=_valid_config, tuning_owner="automatic")
+    stands = change == "installation"
+    assert payload["applied_profile_stands"] is stands
+    assert payload["revalidation"]["required"] is not stands
+    assert (loaded["status"] == preview["status"]) is stands
+    rebuilt = build_crossover_preview(changed)
+    assert (crossover_preview_fingerprint(rebuilt) == crossover_preview_fingerprint(preview)) is stands
+    if stands:
+        assert payload["source"]["design_draft_updated_at"] == draft["updated_at"]
+        assert changed["updated_at"] != draft["updated_at"]
+        assert payload["driver_target_proof_from_applied_profile"] is True
 
 
 def test_an_applied_profile_predating_the_graph_context_fingerprint_is_not_superseded(

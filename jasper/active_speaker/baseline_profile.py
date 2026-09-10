@@ -62,7 +62,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
     measured_level_match_applied,
 )
-from .crossover_preview import crossover_preview_fingerprint
+from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint
 from .driver_base_trim import (
     BANK_CLEAR_FAILED,
     BANK_CORRECTION_ENTRY_UNREADABLE,
@@ -379,10 +379,15 @@ def _source_payload(
     # The baseline config cache invalidates whenever this source fingerprint
     # changes, so nothing spurious may ride the topology fingerprint — what it
     # covers and why is `topology_config_fingerprint`'s own docstring.
+    preview_source = crossover_preview.get("source") or {}
+    draft_updated_at = design_draft.get("updated_at")
+    if preview_source.get("design_draft_fingerprint") == crossover_design_fingerprint(design_draft):
+        # A hardware-only save does not change the design that the preview proved.
+        draft_updated_at = preview_source.get("design_draft_updated_at", draft_updated_at)
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        "design_draft_updated_at": design_draft.get("updated_at"),
+        "design_draft_updated_at": draft_updated_at,
         "crossover_preview_updated_at": crossover_preview.get("updated_at"),
         # Bind the exact normalized candidate that protected staging consumes,
         # not merely the design draft it came from.
