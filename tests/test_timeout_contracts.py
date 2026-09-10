@@ -45,7 +45,7 @@ _ASYNCIO_WAIT_FOR_FUNC = "asyncio.wait_for"
 # site is not bounded today. Every entry is a call this round's AST walk
 # actually found unbounded at HEAD -- re-verify before adding or removing one.
 ALLOWLIST: dict[str, str] = {
-    "jasper/audio_hardware/reconcile.py:1210": (
+    "jasper/audio_hardware/reconcile.py:1216": (
         "renders asound.conf via a sourced bash lib with no timeout=; a hang "
         "here is bounded only by the unit's own TimeoutStartSec=50s "
         "(jasper-audio-hardware-reconcile.service). Adding a bare timeout= "
@@ -53,8 +53,8 @@ ALLOWLIST: dict[str, str] = {
         "catch three lines below this call for the shape a real fix needs) "
         "-- a design-judgment fix, not a one-line addition."
     ),
-    "jasper/audio_hardware/reconcile.py:1244": (
-        "same gap as line 1210 (render_asound_conf, no timeout=); the "
+    "jasper/audio_hardware/reconcile.py:1250": (
+        "same gap as line 1216 (render_asound_conf, no timeout=); the "
         "adjacent OSError catch (rc=127) shows the shape a bounded version "
         "needs, but does not itself bound a hang."
     ),
@@ -64,25 +64,34 @@ ALLOWLIST: dict[str, str] = {
         "for the bounded async analog); Popen's own constructor takes no "
         "timeout= keyword."
     ),
-    "jasper/cli/aec_commission.py:644": (
+    "jasper/cli/aec_commission.py:645": (
         "wait_reconciler_idle polls `systemctl is-active` inside its own "
         "30s wall-clock deadline, but the individual subprocess.run call is "
         "itself unbounded -- a wedged systemd hangs past that deadline. "
         "Interactive commissioning CLI (an operator is at the terminal)."
     ),
-    "jasper/cli/aec_commission.py:781": (
+    "jasper/cli/aec_commission.py:782": (
         "recorder = subprocess.Popen(...) is bounded by "
         "recorder.wait(timeout=5) below and the finally block's "
         "terminate()+wait(timeout=2); the constructor call itself takes no "
         "timeout= keyword."
     ),
-    "jasper/cli/aec_init.py:899": (
+    "jasper/cli/aec_init.py:900": (
         "interactive commissioning tool; `amixer sset` against a live chip "
         "has no bound today. Operator present at the terminal."
     ),
-    "jasper/cli/aec_init.py:904": (
+    "jasper/cli/aec_init.py:905": (
         "interactive commissioning tool; `amixer sget` readback has no "
         "bound today. Operator present at the terminal."
+    ),
+    "jasper/control/restart_broker.py:370": (
+        "_spawn_detached's Popen is fired-and-forgotten by the broker itself "
+        "(a systemctl transition that can kill the broker before it answers) "
+        "-- but its handle is captured into `proc` to hand to a daemon reaper "
+        "thread that calls proc.communicate() for the exit code/stderr, so "
+        "this walk cannot see it as fire-and-forget. The reaper thread is "
+        "daemon=True and the broker process itself does not block on it; a "
+        "wedged child leaks one thread, not a caller."
     ),
     "jasper/cli/wake_enroll.py:246": (
         "systemctl(action, unit) restarts jasper-voice (Type=notify) "
