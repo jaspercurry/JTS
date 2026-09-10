@@ -363,6 +363,19 @@ CHANNEL_MAP_TARGET_RISE_DB = 12.0
 CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 
 
+# A captured/programmed pilot-delta gap past this is not evidence about
+# wiring at all (#2647): whatever driver is actually wired still carries the
+# SAME commanded step between the lo/hi pilots, so a real wiring fault can
+# only mute or misdirect that step (hardware-measured wiring shapes moved
+# `CHANNEL_MAP_MIN_ISOLATION_DB`'s cross rise by only +/-0.4 dB) -- it cannot
+# invert it by tens of dB. Set at double `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`:
+# comfortably above any hardware-measured wiring effect, comfortably below the
+# 77 dB gap the 2026-08-16 incident measured (+10 dB commanded, -67 dB
+# captured). NOT gated on pilot SNR validity -- the incident's own SNR
+# reading was itself corrupted by the same wrong window, so waiting on it
+# would blind this exact case. PROVISIONAL.
+DELTA_IMPLAUSIBLE_GAP_DB = 2.0 * CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+
 # VERIFY tracking-error smoothing: 1/6-octave (design §5.2).
 VERIFY_TRACKING_SMOOTHING_FRACTION = 6
 
@@ -788,6 +801,14 @@ class PilotObservation:
     caller can compute the capture chain's own transfer without binding
     back to the source program; ``None`` predates this field and must be
     treated as "nothing to compare", never ``0.0``.
+
+    ``delta_implausible`` is True when ``captured_delta_db`` diverges from
+    ``programmed_delta_db`` by more than `DELTA_IMPLAUSIBLE_GAP_DB` (#2647) --
+    a gap no real wiring can produce, so CHECK's ladder reads it as
+    mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``
+    (unlike ``linearity_ok``): a gap this size means one of the two readings
+    floored while the other did not, and the 2026-08-16 incident's own
+    ``snr_valid`` was itself an artifact of the wrong window being read.
     """
 
     role: str
@@ -804,6 +825,7 @@ class PilotObservation:
     channel_map_target_rise_db: float | None = None
     channel_map_cross_rise_db: float | None = None
     programmed_hi_gain_db: float | None = None
+    delta_implausible: bool = False
 
 
 @dataclass(frozen=True)
@@ -972,6 +994,12 @@ class ProgramAnalysis:
     # confident-looking wiring verdict instead of an honest "not found").
     # ``False`` (not ``None``) default: unambiguous by construction.
     anchor_ambiguous: bool = False
+    # Any pilot's `PilotObservation.delta_implausible` (#2647) -- set ONLY by
+    # `_analyze_check`, a second, independent signal alongside
+    # `anchor_ambiguous` that this capture's timeline is not trustworthy. Never
+    # written by `_global_offset`/`_resolve_anchor`, so this field has exactly
+    # one writer. ``False`` default: implausible by construction otherwise.
+    delta_implausible: bool = False
     # Passthrough of MeasurementPriors.mic_calibrated, set at the same site
     # as `mic_tier`. ``None`` means "not resolved either way", never a guess.
     mic_calibrated: bool | None = None

@@ -28,6 +28,7 @@ def _check(**overrides) -> cd.CheckScreens:
     base = dict(
         stimulus_located=True,
         anchor_ambiguous=False,
+        delta_implausible=False,
         channel_map_ok=True,
         pilot_snr_ok=True,
         linearity_ok=True,
@@ -87,6 +88,7 @@ def test_check_accepts_a_clean_capture():
     [
         ({"stimulus_located": False}, cd.SCREEN_LOCATE_FAILED),
         ({"anchor_ambiguous": True}, cd.SCREEN_ANCHOR_AMBIGUOUS),
+        ({"delta_implausible": True}, cd.SCREEN_ANCHOR_AMBIGUOUS),
         ({"channel_map_ok": False}, cd.SCREEN_CHANNEL_MAP_MISMATCH),
         ({"pilot_snr_ok": False}, cd.SCREEN_SNR_FLOOR),
         ({"gain_plan_present": False}, cd.SCREEN_SNR_FLOOR),
@@ -189,6 +191,37 @@ def test_an_unattributed_anchor_is_asked_before_the_wiring_verdict():
     assert cd.check_screens(
         _check(anchor_ambiguous=True, channel_map_ok=False)
     ) == cd.SCREEN_ANCHOR_AMBIGUOUS
+
+
+def test_an_impossible_delta_is_asked_before_the_wiring_verdict_even_with_a_confident_anchor():
+    """Issue #2647's ordering, the deferred half of #2644's fix.
+
+    The 2026-08-16 incident's anchor was a near-tie (`anchor_ambiguous` alone
+    already catches that shape). This pins the OTHER shape #2645 deliberately
+    left open: an anchor that confidently locked onto the WRONG spacing --
+    ``anchor_ambiguous`` stays False -- still leaves a captured pilot delta no
+    real wiring can produce (``delta_implausible``, #2647). That signal alone,
+    independent of the near-tie guard, must still out-rank
+    ``channel_map_mismatch``. Swapping the two rungs turns this green→red.
+    """
+    assert cd.check_screens(
+        _check(anchor_ambiguous=False, delta_implausible=True, channel_map_ok=False)
+    ) == cd.SCREEN_ANCHOR_AMBIGUOUS
+
+
+def test_a_plausible_mis_wire_delta_still_hard_stops_on_the_wiring_verdict():
+    """The rung this issue must NOT swallow: a genuine wiring fault.
+
+    Hardware-measured wiring shapes moved the isolation ratio by only
+    +/-0.4 dB (`CHANNEL_MAP_MIN_ISOLATION_DB`'s derivation) -- nowhere near
+    `DELTA_IMPLAUSIBLE_GAP_DB`'s 48 dB ceiling. A capture whose delta sits
+    inside that ceiling (``delta_implausible=False``) but whose channel map
+    still failed must keep reporting the wiring fault, not get routed to the
+    retriable anchor-ambiguous vocabulary.
+    """
+    assert cd.check_screens(
+        _check(anchor_ambiguous=False, delta_implausible=False, channel_map_ok=False)
+    ) == cd.SCREEN_CHANNEL_MAP_MISMATCH
 
 
 def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():

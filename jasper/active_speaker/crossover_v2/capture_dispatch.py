@@ -136,10 +136,17 @@ class CheckScreens:
     than one optional because the ladder reads them at two rungs and means
     different things by them: the linearity rung asks "did the gain solve ALREADY
     judge this room noisy", the final rung refuses an absent plan outright.
+
+    ``delta_implausible`` is a SECOND, independent signal that this capture's
+    timeline is not trustworthy (#2647): a captured/programmed pilot-delta gap
+    no real wiring can produce, set at the point the delta is computed
+    (`PilotObservation.delta_implausible`) rather than inside anchor
+    resolution, so it does not become a second writer of `anchor_ambiguous`.
     """
 
     stimulus_located: bool
     anchor_ambiguous: bool
+    delta_implausible: bool
     channel_map_ok: bool | None
     pilot_snr_ok: bool | None
     linearity_ok: bool | None
@@ -157,7 +164,10 @@ def check_screens(screens: CheckScreens) -> str | None:
     2. **Anchor attributed.** Every rung below reads per-driver windows, and the
        channel map is the rung that turns a slid window into a household
        instruction to rewire a correctly-wired speaker (#2644). Retriable,
-       because re-recording is exactly what fixes it.
+       because re-recording is exactly what fixes it. ``delta_implausible``
+       joins this rung as a second, independent tell (#2647): a captured
+       pilot delta no real wiring can produce, even when the anchor itself
+       cleared the near-tie margin.
     3. **Channel map.** Explicit ``False`` only — ``None`` is no evidence.
     4. **Pilot SNR**, ahead of linearity (#1838): below the floor the
        ambient-subtracted two-pilot delta is not evidence either way, so the
@@ -170,7 +180,7 @@ def check_screens(screens: CheckScreens) -> str | None:
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
-    if screens.anchor_ambiguous:
+    if screens.anchor_ambiguous or screens.delta_implausible:
         return SCREEN_ANCHOR_AMBIGUOUS
     if screens.channel_map_ok is False:
         return SCREEN_CHANNEL_MAP_MISMATCH

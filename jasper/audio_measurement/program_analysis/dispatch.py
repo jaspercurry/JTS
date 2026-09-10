@@ -183,6 +183,9 @@ def _analyze_check(
     linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
+    # Any pilot's gap no wiring can produce (#2647) -- CHECK's ladder routes
+    # this to mis-anchoring evidence ahead of `channel_map_mismatch`.
+    delta_implausible = any(p.delta_implausible for p in pilots)
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
     return ProgramAnalysis(
         phase=program.phase,
@@ -193,6 +196,7 @@ def _analyze_check(
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
         pilot_snr_ok=pilot_snr_ok,
+        delta_implausible=delta_implausible,
         gain_plan=gain_plan,
     )
 
