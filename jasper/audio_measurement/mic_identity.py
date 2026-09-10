@@ -87,6 +87,10 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "miniDSP UMIK-2",
         "tier": "reference",
         "sign_convention": "response",
+        "capture_channels": 2,
+        # Either input is valid; pin left for stable evidence identity. Manual:
+        # https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf
+        "capture_channel": 0,
         # Read off the live JTS3 unit: ALSA card `UMIK2`,
         # `/proc/asound/UMIK2/usbid` = 2752:002b.
         "usb_ids": ("2752:002b",),

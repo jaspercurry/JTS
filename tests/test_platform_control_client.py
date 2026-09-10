@@ -123,8 +123,12 @@ def test_non_2xx_is_not_an_error(server):
 
 
 def test_transport_failure_raises_control_error():
-    with pytest.raises(client.ControlError):
+    with pytest.raises(client.ControlError) as excinfo:
         client.get("/state", base_url="http://127.0.0.1:1", timeout=0.2)
+    # Nothing answered, so there is no status — the attribute is always
+    # present so a caller need not branch on hasattr.
+    assert excinfo.value.status is None
+    assert not isinstance(excinfo.value, client.ControlResponseTooLarge)
 
 
 async def test_async_client_adjust_and_set_volume(server):
@@ -157,7 +161,7 @@ async def test_async_client_post_threads_headers_to_request(monkeypatch):
 
     def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
                      body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
-                     headers=None):
+                     headers=None, max_bytes=client.LOCAL_RESPONSE_MAX_BYTES):
         seen.update(method=method, path=path, headers=headers)
         return client.ControlResponse(200, b"{}")
 
@@ -180,7 +184,7 @@ async def test_async_client_headers_default_none_is_backward_compatible(monkeypa
 
     def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
                      body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
-                     headers=None):
+                     headers=None, max_bytes=client.LOCAL_RESPONSE_MAX_BYTES):
         seen["headers"] = headers
         return client.ControlResponse(200, b"{}")
 
@@ -335,3 +339,121 @@ def test_get_forwards_x_jts_token_header(header_server):
 def test_no_headers_sends_no_x_jts_token(header_server):
     resp = client.post("/grouping/set", data=b"{}", base_url=header_server)
     assert resp.json()["x_jts_token"] is None
+
+
+# ----------------------------------------------------------------------
+# Bounded reads and redirects (#4281, #4282).
+#
+# The Pi Zero 2 W has 415 MB, so no response body may be read unbounded —
+# a wedged handler on either end would otherwise take the caller down with
+# it. And `http.client` never follows a 3xx, which is why the peer paths
+# route through this client: `urllib`'s default opener replays every request
+# header to the redirect target, including the household credential, past
+# the SSRF guard that only ever saw the first hop.
+# ----------------------------------------------------------------------
+
+
+class _Flood(BaseHTTPRequestHandler):
+    """Serves exactly as many bytes as the path names."""
+
+    def log_message(self, *a):  # silence test server
+        pass
+
+    def do_GET(self):  # noqa: N802
+        body = b"x" * int(self.path.lstrip("/"))
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.fixture()
+def flood_server():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Flood)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_body_at_the_cap_is_read_and_one_byte_over_is_an_error(flood_server):
+    cap = client.PEER_RESPONSE_MAX_BYTES
+    at_cap = client.get(f"/{cap}", base_url=flood_server, max_bytes=cap)
+    assert len(at_cap.body) == cap
+    with pytest.raises(client.ControlResponseTooLarge):
+        client.get(f"/{cap + 1}", base_url=flood_server, max_bytes=cap)
+
+
+def test_an_over_cap_body_reports_the_status_the_target_answered(flood_server):
+    """The target ANSWERED — a caller mapping this to operator text must be
+    able to say so rather than render "unreachable"."""
+    cap = client.PEER_RESPONSE_MAX_BYTES
+    with pytest.raises(client.ControlResponseTooLarge) as excinfo:
+        client.get(f"/{cap + 1}", base_url=flood_server, max_bytes=cap)
+    assert excinfo.value.status == 200
+    assert isinstance(excinfo.value, client.ControlError)
+
+
+def test_the_local_default_cap_admits_a_body_over_the_peer_cap(flood_server):
+    """This box's own aggregates (/state, /system/snapshot) measure well past
+    the peer cap, so the default must be the local one — a peer caller opts
+    into the smaller cap explicitly."""
+    assert client.LOCAL_RESPONSE_MAX_BYTES > client.PEER_RESPONSE_MAX_BYTES
+    over_peer = client.PEER_RESPONSE_MAX_BYTES + 1
+    assert len(client.get(f"/{over_peer}", base_url=flood_server).body) == over_peer
+
+
+@pytest.fixture()
+def redirect_pair():
+    """A server that 302s every POST to a second server, plus that second
+    server's request log — an empty log proves nothing rode the second hop."""
+    hits: list[dict[str, str]] = []
+
+    class _Sink(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _record(self):
+            hits.append({k.lower(): v for k, v in self.headers.items()})
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = do_POST = _record  # noqa: N815
+
+    sink = ThreadingHTTPServer(("127.0.0.1", 0), _Sink)
+    Thread(target=sink.serve_forever, daemon=True).start()
+    sink_url = f"http://127.0.0.1:{sink.server_address[1]}/grouping/set"
+
+    class _Redirector(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                self.rfile.read(n)
+            self.send_response(302)
+            self.send_header("Location", sink_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Redirector)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}", hits
+    for each in (srv, sink):
+        each.shutdown()
+        each.server_close()
+
+
+def test_a_redirect_is_handed_back_and_no_header_rides_the_second_hop(
+    redirect_pair,
+):
+    base_url, hits = redirect_pair
+    resp = client.post(
+        "/grouping/set", {"enabled": True}, base_url=base_url,
+        headers={"X-JTS-Household": "house-secret"},
+    )
+    assert resp.status == 302
+    assert resp.ok is False
+    assert hits == []

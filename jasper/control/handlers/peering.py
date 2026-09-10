@@ -14,11 +14,14 @@ import concurrent.futures
 import json
 import logging
 import threading
-import urllib.error
-import urllib.request
 from typing import Any
 
 from ...log_event import log_event
+from ...platform.control_client import (
+    PEER_RESPONSE_MAX_BYTES,
+    ControlError,
+    request as control_request,
+)
 from ...service_units import read_unit_states
 from ..supervisor_runtime import signal_on_control_loop, spawn_on_control_loop
 from ._base import ControlHandlerMixin, logger
@@ -116,9 +119,10 @@ _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
 _VOICE_UNIT_SHOW_TIMEOUT_SECONDS = 1.0
 
 # Patch seam scoping a test double to the forward's ONE network call;
-# patching stdlib urllib.request.urlopen would also intercept the test
+# patching the shared client module-wide would also intercept the test
 # driver's own HTTP client.
-_pair_urlopen = urllib.request.urlopen
+_pair_request = control_request
+_PAIR_FORWARD_TIMEOUT_SECONDS = 2.5
 
 
 def _pair_follower_leader_addr() -> str | None:
@@ -230,42 +234,21 @@ class PeeringRoutes(ControlHandlerMixin):
                 length = 0
             body = self.rfile.read(length) if length > 0 else b"{}"
         server_port = self.server.server_address[1]
-        url = "http://{}:{}{}".format(
-            leader, server_port, self.path,
-        )
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                _PAIR_FORWARD_HEADER: "1",
-            },
-            method=self.command,
-        )
+        # Through the shared control client: it never follows a redirect (so
+        # the forward marker is not replayed to a host nothing vetted) and
+        # its read is bounded, which `resp.read()` was not.
         try:
-            with _pair_urlopen(req, timeout=2.5) as resp:
-                payload = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            # The leader ANSWERED — relay its status + JSON body verbatim.
-            # Collapsing a 400 invalid-body reject into "unreachable"
-            # would report a responding speaker as offline.
-            try:
-                relayed = json.loads(e.read().decode())
-            except Exception:  # noqa: BLE001 — non-JSON error body
-                relayed = {"error": f"pair leader error: {e}"}
-            if isinstance(relayed, dict):
-                relayed.setdefault("pair_leader", leader)
-            log_event(
-                logger,
-                "pair.action_forward_rejected",
-                leader=leader,
-                path=self.path,
-                status=e.code,
-                level=logging.WARNING,
+            resp = _pair_request(
+                self.command,
+                self.path,
+                base_url=f"http://{leader}:{server_port}",
+                data=body,
+                timeout=_PAIR_FORWARD_TIMEOUT_SECONDS,
+                headers={_PAIR_FORWARD_HEADER: "1"},
+                max_bytes=PEER_RESPONSE_MAX_BYTES,
             )
-            self._send_json(relayed, status=e.code)
-            return True
-        except Exception as e:  # noqa: BLE001 — transport failure: 502
+            payload: Any = resp.json() if resp.ok else None
+        except (ControlError, UnicodeDecodeError, json.JSONDecodeError) as e:
             log_event(
                 logger,
                 "pair.action_forward_failed",
@@ -279,6 +262,27 @@ class PeeringRoutes(ControlHandlerMixin):
                  "pair_leader": leader},
                 status=502,
             )
+            return True
+        if not resp.ok:
+            # The leader ANSWERED — relay its status + JSON body verbatim.
+            # Collapsing a 400 invalid-body reject into "unreachable"
+            # would report a responding speaker as offline.
+            try:
+                relayed = resp.json()
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                relayed = None
+            if not isinstance(relayed, dict):
+                relayed = {"error": f"pair leader error: HTTP {resp.status}"}
+            relayed.setdefault("pair_leader", leader)
+            log_event(
+                logger,
+                "pair.action_forward_rejected",
+                leader=leader,
+                path=self.path,
+                status=resp.status,
+                level=logging.WARNING,
+            )
+            self._send_json(relayed, status=resp.status)
             return True
         if isinstance(payload, dict):
             # Additive marker so UIs can label the slider "pair volume".

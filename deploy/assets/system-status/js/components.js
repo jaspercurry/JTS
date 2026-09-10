@@ -39,7 +39,7 @@ export function statCard({ label, value, sub, tone = "ok", chart }) {
 
 // Key/value description list. `rows` is [[key, value], …]; value may be a
 // string or a Node. `modifier` adds a `.deflist--<modifier>` hook for a list
-// whose labels need their own responsive treatment, exactly as table() does.
+// whose labels need their own responsive treatment.
 export function defList(rows, modifier = "") {
   const cls = ["dl.deflist", modifier ? `.deflist--${modifier}` : ""].join("");
   return h(cls, null,
@@ -51,25 +51,6 @@ export function defList(rows, modifier = "") {
 // app.css modifier that sets --tone.
 export function badge(text, tone = "ok") {
   return h(`span.badge.badge--${tone}`, null, text);
-}
-
-// Table. columns: {key, label, align?}[]; rows: object[]; renderCell:
-// optional (row, col) => Node | string.
-export function table({ columns, rows, modifier = "", renderCell }) {
-  const head = h("thead", null,
-    h("tr", null, columns.map((c) =>
-      h("th", { class: c.align === "right" ? "num" : "" }, c.label))),
-  );
-  const body = h("tbody", null,
-    rows.map((row) =>
-      h("tr", null, columns.map((c) => {
-        const cellClass = c.align === "right" ? "num" : "";
-        const value = renderCell ? renderCell(row, c) : row[c.key];
-        return h("td", { class: cellClass }, value);
-      }))),
-  );
-  const cls = ["table", modifier ? `table--${modifier}` : ""].filter(Boolean).join(" ");
-  return h("div.table-wrap", null, h("table", { class: cls }, head, body));
 }
 
 // Choice card (the Medium/Best audio-conversion toggle). aria-pressed marks

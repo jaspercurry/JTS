@@ -22,7 +22,7 @@
 #     blocked open is not interrupted by SIGTERM (alive-but-silent).
 #
 # Pure bash, no Python import cost (<5 ms in the solo steady state:
-# one statefile read + one grep). Mirrors jasper-wifi-guardian's
+# one statefile read + one sed + one awk). Mirrors jasper-wifi-guardian's
 # shape and test seams (env-overridable paths, structured
 # `event=camilla_pipe_guard.<outcome>` lines on stderr).
 

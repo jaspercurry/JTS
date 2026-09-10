@@ -31,7 +31,6 @@ from ..tts_playout import (
     TtsPlayout,
     tts_wire_is_wide as _tts_wire_is_wide,
 )
-from ..camilla import CueDuck
 from ..config import Config
 from ..cues import AudioCueManager
 from ..cues.manager import (
@@ -394,41 +393,14 @@ class AssistantOutput:
         restore: Callable[[], Awaitable[None]] | None = None
         try:
             await self._prepare_feedback_loudness_context(kind="dynamic_text")
-            if isinstance(self._ducker, FanInDucker):
-                restore = self._ducker.restore
-                played = False
-                try:
-                    await self._ducker.duck()
-                    played = await _speak()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("dynamic text play failed: %s", e)
-                return played
-            owner = getattr(self._volume_coordinator, "volume_owner", None)
-            if owner is None:
-                # No fader owner — degrade to unducked playback rather
-                # than crash. The user hears the cue over un-ducked music
-                # which is loud but recoverable; better than silence.
-                try:
-                    return await _speak()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("dynamic text play failed: %s", e)
-                    return False
-            cue_duck = CueDuck(owner, self._cfg.duck_db)
-
-            async def _restore_cue_duck() -> None:
-                # Deliberately neutral context: CueDuck.__aexit__ only writes
-                # its snapshot and never suppresses an exception. The caller
-                # retains the original cancellation/error while the cleanup
-                # task owns restore to a known outcome.
-                await cue_duck.__aexit__(None, None, None)
-
-            restore = _restore_cue_duck
-            await cue_duck.__aenter__()
+            restore = self._ducker.restore
+            played = False
             try:
-                return await _speak()
+                await self._ducker.duck()
+                played = await _speak()
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
-                return False
+            return played
         finally:
             try:
                 if restore is None:

@@ -64,6 +64,7 @@ from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ._common import (
+    access_log_line,
     begin_request,
     csrf_field_html,
     flash_error,
@@ -719,6 +720,22 @@ def _build_flow(cfg: dict[str, Any], creds: tuple[str, str], *, state: str | Non
     return flow
 
 
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. urllib replays every request header on a
+    redirect, so a 302 out of the userinfo endpoint would hand the bearer
+    token to whatever host the reply named (non-negotiable 3). Returning
+    None leaves the 3xx to the default error handler, which raises."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201, D102
+        return None
+
+
+# The userinfo reply is a small OIDC claims object; anything larger is not one
+# and must not be decoded on a 415 MB box.
+_USERINFO_MAX_BYTES = 64 * 1024
+_USERINFO_OPENER = urllib.request.build_opener(_RefuseRedirect)
+
+
 def _fetch_userinfo(access_token: str) -> dict[str, Any]:
     """Hit Google's OIDC userinfo endpoint with the freshly-issued
     access token. Returns ``{}`` on any error — the wizard falls back
@@ -730,8 +747,12 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {access_token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read())
+        with _USERINFO_OPENER.open(req, timeout=5) as r:
+            raw = r.read(_USERINFO_MAX_BYTES + 1)
+        if len(raw) > _USERINFO_MAX_BYTES:
+            logger.warning("userinfo reply over %d bytes", _USERINFO_MAX_BYTES)
+            return {}
+        data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception as e:  # noqa: BLE001
         logger.warning("userinfo fetch failed: %s", e)
@@ -1017,7 +1038,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
+            logger.info(
+                "%s - %s", self.address_string(), access_log_line(fmt, *args),
+            )
 
         def do_GET(self) -> None:  # noqa: N802
             handler_fn = _GET_ROUTES.get(route_path(self.path))

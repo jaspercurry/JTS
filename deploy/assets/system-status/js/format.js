@@ -49,34 +49,6 @@ export function fmtDur(sec) {
   return parts.join(" ");
 }
 
-export function fmtMsAge(ms) {
-  if (ms == null) return "never";
-  const sec = Math.max(0, Number(ms) / 1000);
-  if (sec < 1) return Math.round(Number(ms)) + "ms ago";
-  if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + "s ago";
-  if (sec < 3600) return Math.round(sec / 60) + "m ago";
-  return Math.round(sec / 3600) + "h ago";
-}
-
-export function fmtRatePerHour(value) {
-  if (value == null) return "0/h";
-  const n = Number(value);
-  if (!isFinite(n) || n <= 0) return "0/h";
-  if (n < 1) return n.toFixed(2) + "/h";
-  if (n < 10) return n.toFixed(1) + "/h";
-  return Math.round(n) + "/h";
-}
-
-export function baseName(path) {
-  if (!path) return "";
-  return String(path).split("/").filter(Boolean).pop() || String(path);
-}
-
-export function fmtUSD(n) {
-  if (n == null) return "—";
-  return "$" + Number(n).toFixed(2);
-}
-
 // --- status tones ---------------------------------------------------------
 
 // Derive a tone from a percentage, given the warn + danger break points.
