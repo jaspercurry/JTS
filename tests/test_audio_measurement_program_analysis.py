@@ -167,6 +167,7 @@ from tests._flat_lin_corpus import (
     requires_cdhorn,
     sweep_anchored_global_offset,
 )
+from tests._log_events import event_field_maps, event_fields, event_records
 
 SR = 48_000
 FC_HZ = 1600.0
@@ -1926,12 +1927,8 @@ def test_glitch_log_event_survives_an_unresolved_discontinuity(caplog):
         )
     assert res.glitch_detected
     assert res.drift.discontinuity_samples == program_analysis.DISCONTINUITY_UNRESOLVED
-    glitch_lines = [
-        r.getMessage() for r in caplog.records
-        if "event=program_analysis.glitch" in r.getMessage()
-    ]
-    assert len(glitch_lines) == 1
-    assert "discontinuity_samples=unresolved" in glitch_lines[0]
+    fields = event_fields(caplog, "program_analysis.glitch")
+    assert fields["discontinuity_samples"] == "unresolved"
 
 
 # --------------------------------------------------------------------------- #
@@ -2518,13 +2515,6 @@ def test_selector_scores_the_shipped_frame_without_declared_bounds():
     assert candidate.left_anchor_lobe is True
 
 
-def _alignment_selection_records(caplog):
-    return [
-        record for record in caplog.records
-        if "event=program_analysis.alignment_selection" in record.getMessage()
-    ]
-
-
 def test_a_lobe_hop_raises_the_selection_log_to_warning(caplog):
     """The compensating control has to be LOUD, not merely present.
 
@@ -2555,10 +2545,11 @@ def test_a_lobe_hop_raises_the_selection_log_to_warning(caplog):
             alignment, None, alignment_delay_bounds_us=None,
         )
     assert candidate.left_anchor_lobe is True
-    records = _alignment_selection_records(caplog)
+    records = event_records(caplog, "program_analysis.alignment_selection")
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
-    assert "left_anchor_lobe=true" in records[0].getMessage()
+    fields = event_fields(caplog, "program_analysis.alignment_selection")
+    assert fields["left_anchor_lobe"] == "true"
 
 
 def test_an_ordinary_selection_stays_at_info(caplog):
@@ -2583,7 +2574,7 @@ def test_an_ordinary_selection_stays_at_info(caplog):
         )
     assert candidate.left_anchor_lobe is False
     assert candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
-    records = _alignment_selection_records(caplog)
+    records = event_records(caplog, "program_analysis.alignment_selection")
     assert len(records) == 1
     assert records[0].levelno == logging.INFO
 
@@ -2624,13 +2615,13 @@ def test_the_selection_log_never_emits_a_bare_nan(caplog):
             alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
             branch_snr_insufficient=True,
         )
-    records = _alignment_selection_records(caplog)
+    records = event_records(caplog, "program_analysis.alignment_selection")
     assert len(records) == 1
-    message = records[0].getMessage()
-    assert "nan" not in message.lower()
+    assert "nan" not in records[0].getMessage().lower()
     # The committed score specifically — the one the deleted comment claimed
     # could not get here.
-    assert "ripple_db=null" in message
+    fields = event_fields(caplog, "program_analysis.alignment_selection")
+    assert fields["ripple_db"] == "null"
 
 
 def test_a_commitment_inside_the_anchor_lobe_is_not_flagged():
@@ -2975,14 +2966,11 @@ def test_measure_analysis_holds_the_applied_delay_when_a_branch_is_unmeasurable(
     assert held.alignment.polarity == "normal"
     assert held.alignment.polarity_agrees_with_sum is None
     # The reason is readable in one line, with both numbers on it.
-    line = next(
-        rec.getMessage() for rec in caplog.records
-        if "program_analysis.alignment_selection" in rec.getMessage()
-    )
-    assert "objective=applied_alignment_held_after_low_snr" in line
-    assert "applied_delay_us=59.6" in line
-    assert "branch_snr_insufficient=true" in line
-    assert "anchor_delay_us=" in line
+    fields = event_fields(caplog, "program_analysis.alignment_selection")
+    assert fields["objective"] == "applied_alignment_held_after_low_snr"
+    assert fields["applied_delay_us"] == "59.6"
+    assert fields["branch_snr_insufficient"] == "true"
+    assert "anchor_delay_us" in fields
 
     none_applied = _refused_two_way_analysis()
     assert none_applied.candidate.alignment_objective == (
@@ -4663,13 +4651,10 @@ def test_measure_level_solve_refuses_a_degenerate_ambient_report(caplog):
     assert GAIN_BOUND_CAPTURE_FLOOR in GAIN_BOUNDS
     # And it is not silent: one structured WARNING per refused role, carrying
     # the arms it refused so the refusal is diagnosable from the journal.
-    refusals = [
-        r for r in caplog.records
-        if "event=program_analysis.measure_level_solve_refused" in r.getMessage()
-    ]
+    refusals = event_field_maps(caplog, "program_analysis.measure_level_solve_refused")
     assert len(refusals) == 2
-    assert all("reason=degenerate_ambient" in r.getMessage() for r in refusals)
-    assert all("required_capture_dbfs=" in r.getMessage() for r in refusals)
+    assert all(fields["reason"] == "degenerate_ambient" for fields in refusals)
+    assert all("required_capture_dbfs" in fields for fields in refusals)
 
 
 def test_measure_level_solve_reports_the_room_demand_even_when_it_is_refused():
@@ -7257,9 +7242,9 @@ def test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band(caplog):
     assert candidate.trim_db["tweeter"] == pytest.approx(
         -MIRRORED_HALVES_BIAS_DB, abs=0.1
     )
-    assert "event=program_analysis.ripple_trim_skipped" in caplog.text
-    assert "reason=ripple_band_one_sided" in caplog.text
-    assert "event=program_analysis.ripple_trim_rejected" not in caplog.text
+    fields = event_fields(caplog, "program_analysis.ripple_trim_skipped")
+    assert fields["reason"] == "ripple_band_one_sided"
+    assert not event_records(caplog, "program_analysis.ripple_trim_rejected")
 
 
 def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
@@ -7277,11 +7262,11 @@ def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
         _candidate_alignment(), None, **_one_sided_sweeps(fc_hz),
     )
-    assert "event=program_analysis.branch_level_match" in caplog.text
-    assert 'woofer_band_hz="(1000.0, 2000.0)"' in caplog.text
-    assert 'tweeter_band_hz="(2000.0, 4000.0)"' in caplog.text
-    assert "level_w_db=" in caplog.text
-    assert "level_t_db=" in caplog.text
+    fields = event_fields(caplog, "program_analysis.branch_level_match")
+    assert fields["woofer_band_hz"] == "(1000.0, 2000.0)"
+    assert fields["tweeter_band_hz"] == "(2000.0, 4000.0)"
+    assert "level_w_db" in fields
+    assert "level_t_db" in fields
 
 
 @pytest.mark.parametrize("excursion_db", [-4.0, 4.0])
@@ -7333,9 +7318,9 @@ def test_build_candidate_rejects_a_polish_the_level_gate_could_not_grade(
     )
     # Rejected: the applied trim falls back to the band-average seed exactly.
     assert candidate.trim_db == candidate.trim_band_average_db
-    assert "event=program_analysis.ripple_trim_rejected" in caplog.text
-    assert f"tolerance_db={REALIZED_LEVEL_MATCH_TOLERANCE_DB}" in caplog.text
-    assert f"rejected_delta_db={excursion_db}" in caplog.text
+    fields = event_fields(caplog, "program_analysis.ripple_trim_rejected")
+    assert fields["tolerance_db"] == str(REALIZED_LEVEL_MATCH_TOLERANCE_DB)
+    assert fields["rejected_delta_db"] == str(excursion_db)
     # The candidate carries it too — without this the three ways `trim_db` can
     # equal the seed are indistinguishable downstream.
     assert candidate.ripple_polish_rejected_delta_db == pytest.approx(excursion_db)
@@ -7378,7 +7363,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
         candidate.trim_band_average_db["tweeter"] + excursion_db
     )
     assert candidate.ripple_polish_rejected_delta_db is None
-    assert "event=program_analysis.ripple_trim_rejected" not in caplog.text
+    assert not event_records(caplog, "program_analysis.ripple_trim_rejected")
 
 
 # --------------------------------------------------------------------------- #

@@ -45,6 +45,12 @@ from jasper.audio_measurement.program_analysis import (
     solve_branch_trims,
     summed_model_residual_delay_us,
 )
+from tests._log_events import (
+    event_field_maps,
+    event_fields,
+    event_records,
+    parse_event,
+)
 from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
@@ -427,7 +433,10 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
     assert c2.delta_probe.verdict == VERDICT_MATCHED
     assert c2.delta_probe.expected_offset_db == pytest.approx(-22.458)
     assert c2.delta_probe.residual_offset_db == pytest.approx(0.0, abs=1e-6)
-    assert "expected_offset_db=-22.458" in caplog.text
+    (fields,) = event_field_maps(
+        caplog, "correction.crossover_v2_delta_probe", verdict="matched"
+    )
+    assert fields["expected_offset_db"] == "-22.458"
 
 
 def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
@@ -452,9 +461,8 @@ def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
     assert c.delta_probe.verdict == VERDICT_LEVEL_MISMATCH
 
     probe_lines = [
-        r for r in caplog.records
-        if "event=correction.crossover_v2_delta_probe" in r.getMessage()
-        and "verdict=level_mismatch" in r.getMessage()
+        r for r in event_records(caplog, "correction.crossover_v2_delta_probe")
+        if parse_event(r.getMessage())[1]["verdict"] == "level_mismatch"
     ]
     assert probe_lines, "the probe must log its verdict"
     assert all(r.levelno >= logging.WARNING for r in probe_lines)
@@ -520,8 +528,8 @@ def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
     )
 
     assert calls == [SAFETY_BOOST_OVER_DECLARED_BOUND]
-    assert "event=correction.crossover_v2_round_restore" in caplog.text
-    assert "restored=true" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_round_restore")
+    assert fields["restored"] == "true"
     # The refusal names itself to the host (the same contract PR-L4 relies on).
     assert c.last_failure_code == REASON_CORRECTION_UNSAFE_RESULT
 
@@ -555,8 +563,8 @@ def test_delta_probe_refuses_honestly_when_no_rollback_seam_is_bound(caplog):
     # knows before it tries that there is no anchor, so it does not attempt a
     # restore it cannot make — and says so, which is what keeps the STILL
     # APPLIED sentence below true.
-    assert "event=correction.crossover_v2_round_recovery_required" in caplog.text
-    assert "rollback_anchor_available=false" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_round_recovery_required")
+    assert fields["rollback_anchor_available"] == "false"
     message = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
     assert "STILL APPLIED" in message
     assert "put back" not in message.replace("put the previous sound back", "")
@@ -624,7 +632,8 @@ def test_delta_probe_grades_the_bands_the_captures_gate_trusts(caplog):
     assert c.delta_probe.probe_band_hz[1] <= trusted_hi_hz
     # The band is on the journal line too, beside the band it actually graded —
     # a disputed verdict should be self-describing (#2521).
-    assert f'trusted_band_hz="(300.0, {trusted_hi_hz})"' in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe")
+    assert fields["trusted_band_hz"] == f"(300.0, {trusted_hi_hz})"
 
 
 def test_a_capture_with_no_trusted_band_leaves_the_probe_unavailable(caplog):
@@ -649,7 +658,7 @@ def test_a_capture_with_no_trusted_band_leaves_the_probe_unavailable(caplog):
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
     assert c.delta_probe is None
-    assert "event=correction.crossover_v2_delta_probe_no_trusted_band" in caplog.text
+    assert event_records(caplog, "correction.crossover_v2_delta_probe_no_trusted_band")
 
 
 def test_a_frame_carrying_capture_is_disclosed_rather_than_rolled_back(caplog):
@@ -674,15 +683,15 @@ def test_a_frame_carrying_capture_is_disclosed_rather_than_rolled_back(caplog):
     assert c.verify_outcome == "pass"
     assert c.delta_probe.verdict == VERDICT_FRAME_MISMATCH
     assert c.delta_probe.rollback is False
-    assert "frame_removed=true" in caplog.text
-    assert "frame_tilt_db_per_octave=-0.9" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_delta_probe")
+    assert fields["frame_removed"] == "true"
+    assert fields["frame_tilt_db_per_octave"] == "-0.9"
     # A non-rollback finding on an otherwise-passing session rides WARNING, or
     # nobody sweeping the journal ever sees it (the #1811 argument, one verdict
     # over).
     probe_lines = [
-        r for r in caplog.records
-        if "event=correction.crossover_v2_delta_probe " in r.getMessage()
-        and "verdict=frame_mismatch" in r.getMessage()
+        r for r in event_records(caplog, "correction.crossover_v2_delta_probe")
+        if parse_event(r.getMessage())[1]["verdict"] == "frame_mismatch"
     ]
     assert probe_lines, "the probe must log its verdict"
     assert all(r.levelno >= logging.WARNING for r in probe_lines)
@@ -1206,13 +1215,14 @@ def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
         _run_phase(c, 2, 2)
 
     # Item 1's own disclosure, under its own event.
-    assert "event=correction.crossover_v2_level_match_finding" in caplog.text
-    assert "event=correction.crossover_v2_level_match_refused" not in caplog.text
+    finding_maps = event_field_maps(
+        caplog, "correction.crossover_v2_level_match_finding"
+    )
+    assert finding_maps
+    assert not event_records(caplog, "correction.crossover_v2_level_match_refused")
     # …with both realized levels on the line, so the verdict is re-derivable.
-    for ledger_field in (
-        "difference_db=", "level_w_db=", "level_t_db=", "tolerance_db=",
-    ):
-        assert ledger_field in caplog.text
+    for ledger_field in ("difference_db", "level_w_db", "level_t_db", "tolerance_db"):
+        assert any(ledger_field in fields for fields in finding_maps)
     # The round proceeded and banked its reservation.
     assert c.candidate is not None
     assert len(fakes.published_candidates) == 1
@@ -1304,13 +1314,15 @@ def test_prediction_gate_logs_the_improved_path_with_both_terms(caplog):
     c = _cloud_conductor(fakes)
     _walk_measure_cloud_to_close(c)
 
-    assert "event=correction.crossover_v2_prediction_gate" in caplog.text
-    assert "reason=improved" in caplog.text
-    assert "after_passed=false" in caplog.text
+    gate_maps = event_field_maps(caplog, "correction.crossover_v2_prediction_gate")
+    assert any(
+        fields["reason"] == "improved" and fields["after_passed"] == "false"
+        for fields in gate_maps
+    )
     for ledger_field in (
-        "before_rms_db=", "after_rms_db=", "improvement_db=", "required_db=",
+        "before_rms_db", "after_rms_db", "improvement_db", "required_db",
     ):
-        assert ledger_field in caplog.text
+        assert any(ledger_field in fields for fields in gate_maps)
 
 
 def test_the_candidate_payload_discloses_the_headroom_cost_to_the_household():
