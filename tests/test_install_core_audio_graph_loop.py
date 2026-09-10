@@ -467,6 +467,32 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     )
 
 
+def test_the_two_park_lists_overlap_only_by_the_crossover(tmp_path):
+    """The core-graph park and the low-memory build park write ONE record, and
+    forget_core_graph_park_record drops every entry the core-graph list names.
+    jasper-camilla-crossover sits in both and is safe to drop because the
+    grouping reconciler the tail runs re-arms it. Another unit added to the
+    overlap would be dropped with no such owner, so pin the overlap exactly."""
+    r = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'REPO_DIR="{ROOT}"; SYSTEMD_DIR="{tmp_path}"; source "{FRAGMENT}"; '
+            'printf "%s\\n" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; '
+            'echo "---"; '
+            'printf "%s\\n" "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert r.returncode == 0, r.stderr
+    core_block, _, build_block = r.stdout.partition("---\n")
+    core = {ln.strip() for ln in core_block.splitlines() if ln.strip()}
+    build = {ln.strip() for ln in build_block.splitlines() if ln.strip()}
+    assert core & build == {"jasper-camilla-crossover.service"}
+
+
 def _stateful_systemctl(tmp_path: Path) -> str:
     """A `systemctl` that keeps real active/inactive state under
     `<tmp_path>/down`, so `is-active` answers truthfully across a park and
@@ -631,13 +657,15 @@ _LEFT_OFF_BY_THE_TAIL = frozenset(
 )
 
 # The reconcilers own the core-graph units once the tail has run.
-# jasper-audio-hardware-reconcile is an absolute-path binary this harness
-# cannot shim, so require_outputd_ready — the fragment seam immediately behind
-# it — stands in for a park_output_audio that refused to validate the DAC lane.
-# reconcile_grouping_state genuinely stops snapclient/snapserver: both ship
-# disabled and are reconciler-started, so they are in OFF_AT_PARK and the
-# unpark's "left off on purpose" skip can never protect them.
+# require_outputd_ready stands in for a park_output_audio that refused to
+# validate the DAC lane. reconcile_grouping_state genuinely stops
+# snapclient/snapserver: both ship disabled and are reconciler-started, so they
+# are in OFF_AT_PARK and the unpark's "left off on purpose" skip can never
+# protect them. jasper-audio-hardware-reconcile is an absolute-path binary that
+# does not exist here; shim it converged so its own WARN arm is the one
+# variable the degraded run below changes.
 _TAIL_RECONCILER_SHIMS = """
+/usr/local/sbin/jasper-audio-hardware-reconcile() { return 0; }
 require_outputd_ready() {
     systemctl stop jasper-outputd.service jasper-voice.service
     return 0
@@ -645,11 +673,25 @@ require_outputd_ready() {
 reconcile_grouping_state() {
     systemctl stop jasper-snapclient.service jasper-snapserver.service
 }
+# build-sandbox.sh is sourced only in the epilogue (the stub loop must not see
+# it), so the fragment's journal helper needs a stand-in during the tail.
+_build_sandbox_log() { :; }
+"""
+
+# The same tail with the hardware reconcile WARNing instead of converging: it
+# runs to the end anyway (every one of its steps is non-fatal) but nothing has
+# taken ownership of the parked units, so the record must survive to the trap.
+_DEGRADED_TAIL_SHIM = """
+/usr/local/sbin/jasper-audio-hardware-reconcile() { return 1; }
 """
 
 
-def _run_green_tail(
-    tmp_path: Path, function: str, *, low_memory: bool = False
+def _run_tail(
+    tmp_path: Path,
+    function: str,
+    *,
+    low_memory: bool = False,
+    degraded: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Run one profile's whole restart tail with the park/record/unpark chain
     real, a stateful systemctl and reconcilers that leave
@@ -657,6 +699,8 @@ def _run_green_tail(
     entry. Returns the call log split at the sentinel: what the tail did, then
     what the trap did."""
     shims = _stateful_systemctl(tmp_path) + _TAIL_RECONCILER_SHIMS
+    if degraded:
+        shims += _DEGRADED_TAIL_SHIM
     if low_memory:
         # build_swap_required lives in build-sandbox.sh, which the stub loop
         # must not have seen; force the constrained-build park on.
@@ -704,7 +748,7 @@ def test_the_exit_trap_starts_nothing_after_a_green_restart_tail(
     record then would start a renderer against a rejected lane, and would start
     a second snapserver on a leader. After a green tail the trap must start
     nothing."""
-    tail, trap = _run_green_tail(tmp_path, function)
+    tail, trap = _run_tail(tmp_path, function)
 
     # Not vacuous: the park must have recorded these (the shim reports every
     # unit active until it is stopped) and the tail must have left them down.
@@ -728,12 +772,34 @@ def test_a_green_tail_keeps_the_low_memory_build_park_restorable(tmp_path):
     back: bt-agent is reached only by a `try-restart`, a no-op while it is
     stopped. Dropping the core-graph entries at the end of the tail must not
     take that phase with them — the trap is still its only restore."""
-    _, trap = _run_green_tail(tmp_path, "install_systemd_units", low_memory=True)
+    _, trap = _run_tail(tmp_path, "install_systemd_units", low_memory=True)
     started = {
         call.split()[2] for call in trap if call.startswith("systemctl start ")
     }
     assert "bt-agent.service" in started, trap
     assert not (_LEFT_OFF_BY_THE_TAIL & started), sorted(started)
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function):
+    """The forget is only earned by a tail that CONVERGED. Every step that
+    justifies it is non-fatal (`|| WARN`), so one of them WARNing leaves the
+    parked units down with no reconciler that owns them. Dropping the record
+    there would end the install green on a silent speaker with nothing left to
+    restore it, so a WARNed tail must reach the trap with the record intact."""
+    tail, trap = _run_tail(tmp_path, function, degraded=True)
+
+    # Not vacuous: the park has to have taken the speaker down first.
+    parked = {c.split()[2] for c in tail if c.startswith("systemctl stop ")}
+    assert _LEFT_OFF_BY_THE_TAIL <= parked, tail
+
+    started = {c.split()[2] for c in trap if c.startswith("systemctl start ")}
+    assert _LEFT_OFF_BY_THE_TAIL <= started, sorted(started)
+    still_down = {p.name for p in (tmp_path / "down").iterdir()}
+    assert not (_LEFT_OFF_BY_THE_TAIL & still_down), sorted(still_down)
 
 
 @pytest.mark.parametrize(

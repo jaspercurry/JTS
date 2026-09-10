@@ -892,42 +892,48 @@ park_audio_clients_for_core_graph_restart() {
 
 forget_core_graph_park_record() {
     # Closes the window park_audio_clients_for_core_graph_restart opened. Once
-    # the restart tail has run, the reconcilers it invokes (audio-hardware,
-    # source-intent, AEC, grouping) OWN every JASPER_CORE_GRAPH_PARK_UNITS
-    # entry, and one they left stopped is stopped on purpose: an output lane
-    # the hardware reconciler refused to validate, a follower's snapserver.
-    # Replaying the park record over that would start units against a graph
-    # the reconciler rejected, so drop those entries — the trap then replays
-    # the park only when the install died BEFORE the tail converged.
+    # the restart tail has CONVERGED, the reconcilers it invokes (audio
+    # hardware, outputd, source intent, AEC, grouping, fan-in coupling) OWN
+    # every JASPER_CORE_GRAPH_PARK_UNITS entry, and one they left stopped is
+    # stopped on purpose: an output lane the hardware reconciler refused to
+    # validate, a follower's snapserver. Replaying the park record over that
+    # would start units against a graph the reconciler rejected, so drop those
+    # entries — the trap then replays the park only when the install died
+    # BEFORE the tail converged.
     #
-    # Only those entries. JASPER_LOW_MEMORY_BUILD_PARK_UNITS is disjoint from
-    # the core-graph list, its park happens far earlier (before the Rust
-    # builds), and the tail does not restart all of it — bt-agent is reached
-    # only by a `try-restart`, a no-op while it is stopped. The trap remains
-    # the sole restore for that phase, so its entries stay recorded.
-    local unit
-    local -a parked=() off_at_park=()
+    # Converged means every one of those steps returned 0. All of them are
+    # non-fatal (`|| WARN`), so a degraded tail arrives here with the graph
+    # possibly still down and no owner that will bring it back. Keep the
+    # record then and let the EXIT trap restore what the park took away.
+    if (( JASPER_CORE_GRAPH_TAIL_DEGRADED )); then
+        _build_sandbox_log "core_graph_park_kept" "reason=tail_degraded"
+        return 0
+    fi
+    # Only the core-graph entries. The two park lists overlap by
+    # jasper-camilla-crossover, which the grouping reconciler re-arms; the rest
+    # of JASPER_LOW_MEMORY_BUILD_PARK_UNITS is parked far earlier (before the
+    # Rust builds) and the tail does not restart all of it — bt-agent is
+    # reached only by a `try-restart`, a no-op while it is stopped. The trap
+    # remains the sole restore for that phase, so its entries stay recorded.
+    local unit dropped=0
+    local -a parked=()
     if (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )); then
         for unit in "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; do
-            _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
+            if _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; then
+                dropped=$(( dropped + 1 ))
+                continue
+            fi
             parked+=("${unit}")
         done
     fi
-    if (( ${#JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]} )); then
-        for unit in "${JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]}"; do
-            _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
-            off_at_park+=("${unit}")
-        done
-    fi
     JASPER_LOW_MEMORY_PARK_RECORD=()
-    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
     # Re-assign guarded: bash 3.2 under `set -u` rejects "${empty[@]}".
     if (( ${#parked[@]} )); then
         JASPER_LOW_MEMORY_PARK_RECORD=("${parked[@]}")
     fi
-    if (( ${#off_at_park[@]} )); then
-        JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=("${off_at_park[@]}")
-    fi
+    # JASPER_LOW_MEMORY_PARK_OFF_AT_PARK needs no pruning: it is only ever read
+    # for a unit still IN the record.
+    _build_sandbox_log "core_graph_park_forgotten" "dropped=${dropped}"
 }
 
 restart_core_camilla_after_dsp_reconcile() {
@@ -977,9 +983,11 @@ JASPER_LOCAL_SOURCE_REFRESH_UNITS=(
 )
 
 # Second phase of the low-memory build park: the core graph itself plus the
-# control plane. Deliberately disjoint from JASPER_CORE_GRAPH_PARK_UNITS (phase
-# one, the graph's CLIENTS) — an ordinary deploy restarts these in place rather
-# than parking them, and only the constrained build window stops them outright.
+# control plane. Phase one (JASPER_CORE_GRAPH_PARK_UNITS) is the graph's
+# CLIENTS, and the two lists overlap only by jasper-camilla-crossover, which
+# both phases stop and the grouping reconciler re-arms. An ordinary deploy
+# restarts the rest of this list in place rather than parking it; only the
+# constrained build window stops it outright.
 JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
     jasper-fanin.service
     jasper-camilla.service
@@ -1006,6 +1014,12 @@ JASPER_LOW_MEMORY_PARK_RECORD=()
 # several units run while permanently disabled because a reconciler starts
 # them and systemd never does. See _unpark_one_low_memory_unit.
 JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+
+# 1 once any restart-tail step WARNed instead of converging. Every one of those
+# steps is non-fatal, so this is the only signal that the reconcilers did NOT
+# take ownership of the parked core-graph units — forget_core_graph_park_record
+# keeps the record while it is set so the EXIT trap still puts them back.
+JASPER_CORE_GRAPH_TAIL_DEGRADED=0
 
 # Restore order after an aborted install: the units' own declared After= chain.
 # jasper-camilla is After=jasper-outputd jasper-fanin; jasper-mux is
@@ -1338,6 +1352,7 @@ PY
         rm -f /run/jasper-source-intent/status.json
         echo "  WARN: source intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
         logger -t jasper-install -- "event=source_intent.replay_failed" 2>/dev/null || true
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     fi
 }
 
@@ -1361,11 +1376,15 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-accessory-reconcile.path
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
-    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
+    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
     systemctl restart jasper-fanin.service 2>/dev/null || true
-    require_outputd_ready || \
+    require_outputd_ready || {
         echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
@@ -1685,8 +1704,10 @@ install_systemd_units() {
     # runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
-    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
+    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
 
     systemctl restart jasper-fanin.service 2>/dev/null || true
     # outputd owns the final DAC loop on current main. If it is not active
@@ -1699,8 +1720,10 @@ install_systemd_units() {
     # dependency is the real runtime guard, and run_doctor_summary re-checks
     # outputd (check_outputd_service) at the end of the install. Mirrors the
     # non-fatal jasper-audio-hardware-reconcile handling a few lines above.
-    require_outputd_ready || \
+    require_outputd_ready || {
         echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
