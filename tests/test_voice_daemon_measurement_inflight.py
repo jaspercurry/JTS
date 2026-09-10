@@ -38,6 +38,7 @@ import shutil
 import socket
 import tempfile
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -606,8 +607,8 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
 ) -> None:
     """A later AUDIO failure cannot erase an earlier command's audible tail."""
 
-    import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import TtsPlayout
+    import jasper.tts_playout as tts_mod
+    from jasper.tts_playout import TtsPlayout
 
     class _FailSecondWrite:
         def __init__(self) -> None:
@@ -630,8 +631,8 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         def resume_content_meter(self) -> None:
             return None
 
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
@@ -654,7 +655,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
             "sleep": staticmethod(fake_drain_sleep),
         },
     )
-    monkeypatch.setattr(audio_io_mod, "asyncio", fake_asyncio)
+    monkeypatch.setattr(tts_mod, "asyncio", fake_asyncio)
 
     tts = TtsPlayout(
         socket_path=tts_socket,
@@ -704,7 +705,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     tts_socket: str,
 ) -> None:
     """Cancellation cannot outrun an uncancellable socket-write worker."""
-    from jasper.audio_io import TtsPlayout
+    from jasper.tts_playout import TtsPlayout
 
     write_started = threading.Event()
     release_write = threading.Event()
@@ -792,10 +793,10 @@ async def test_cancelled_cue_tail_retains_output_episode(
 ) -> None:
     """Accepted cue PCM keeps admin/proactive ownership under cancellation."""
 
-    import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import TtsPlayout
+    import jasper.tts_playout as tts_mod
+    from jasper.tts_playout import TtsPlayout
 
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
@@ -877,18 +878,8 @@ async def test_cancelled_cue_tail_retains_output_episode(
     await _close_window(wl)
 
 
-@pytest.mark.parametrize(
-    ("tts_socket", "duck_kind"),
-    [
-        (FANIN_TTS_SOCKET, "fanin"),
-        (OUTPUTD_TTS_SOCKET, "cue"),
-    ],
-)
-async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
-    tts_socket: str,
-    duck_kind: str,
-) -> None:
-    """Both routed duck implementations restore only after physical drain."""
+async def test_cancelled_proactive_tail_retains_concrete_duck_owner() -> None:
+    """The routed duck restores only after physical drain."""
 
     from jasper.voice_daemon import FanInDucker
 
@@ -925,77 +916,35 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
             self._ducked = False
             restored.set()
 
-    class _Fader:
-        """The cue duck's half of the seam, now a claim on the volume owner.
-
-        One door for both directions: the duck and its give-back are both
-        absolute writes through the owner, discriminated by where they land.
-        """
-
-        def __init__(self) -> None:
-            self.db = -20.0
-
-        async def get_volume_db(self, *, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(
-            self, db: float, *, best_effort: bool = False,
-        ) -> bool:
-            nonlocal restore_calls
-            if db < -20.0:
-                self.db = db
-                ducked.set()
-                return True
-            assert db == -20.0
-            restore_calls += 1
-            restore_started.set()
-            await wait_signalled(
-                release_restore,
-                "release CueDuck proactive restore",
-            )
-            self.db = db
-            restored.set()
-            return True
-
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(
         output_gate=gate,
         tts=tts,
         cues=_Cues(),
-        ducker=_FanInDuck() if duck_kind == "fanin" else object(),
+        ducker=_FanInDuck(),
     )
-    wl._cfg.tts_outputd_socket = tts_socket
+    wl._cfg.tts_outputd_socket = FANIN_TTS_SOCKET
     wl._cfg.duck_db = -25.0
-    if duck_kind != "fanin":
-        from jasper.volume_owner import VolumeOwner
-
-        fader = _Fader()
-        owner = VolumeOwner(
-            set_fader_db=fader.set_volume_db,
-            get_fader_db=fader.get_volume_db,
-        )
-        await owner.declare_household_level_db(-20.0)
-        wl._volume_coordinator.volume_owner = owner  # type: ignore[attr-defined]
 
     playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
-    await wait_signalled(ducked, f"{duck_kind} proactive duck", producer=playing)
+    await wait_signalled(ducked, "fanin proactive duck", producer=playing)
     await wait_signalled(
         tts.drain_started,
-        f"{duck_kind} proactive physical drain",
+        "fanin proactive physical drain",
         producer=playing,
     )
 
     playing.cancel()
     for _ in range(5):
         await asyncio.sleep(0)
-    assert not playing.done(), (tts_socket, duck_kind)
+    assert not playing.done()
     assert not restored.is_set(), "duck must cover accepted PCM tail"
     assert wl._output_gate.active_kind == "proactive"
 
     tts.release_drain.set()
     await wait_signalled(
         restore_started,
-        f"{duck_kind} proactive restore",
+        "fanin proactive restore",
         producer=playing,
     )
     assert not restored.is_set()
@@ -1032,11 +981,11 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
     off_started = asyncio.Event()
     release_on = threading.Event()
     release_off = threading.Event()
-    commands: list[bytes] = []
+    commands: list[bool] = []
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def _blocking_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             loop.call_soon_threadsafe(on_started.set)
             if not release_on.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_ON")
@@ -1044,12 +993,10 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
                 return False
             if on_outcome == "error":
                 raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
-        elif payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+        else:
             loop.call_soon_threadsafe(off_started.set)
             if not release_off.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_OFF")
-        else:
-            raise AssertionError(f"unexpected fan-in command: {payload!r}")
         return True
 
     class _Cues:
@@ -1068,8 +1015,10 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             self.calls += 1
             return True
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
+
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     cues = _Cues()
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(output_gate=gate, ducker=ducker, tts=FakeTts(), cues=cues)
@@ -1087,7 +1036,7 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             f"{path} fan-in PROGRAM_DUCK_ON worker",
             producer=playing,
         )
-        assert commands == [b"PROGRAM_DUCK_ON\nCLOSE\n"]
+        assert commands == [True]
         assert wl._output_gate.active_kind == expected_kind
 
         playing.cancel()
@@ -1107,8 +1056,8 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
         )
         assert ducker.is_ducked
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
         assert wl._output_gate.active_kind == expected_kind
 
@@ -1126,8 +1075,8 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
         assert gate.end_calls == 1
         assert cues.calls == 0
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
     finally:
         release_on.set()
@@ -1143,21 +1092,21 @@ async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
 
     from jasper.voice_daemon import FanInDucker
 
-    commands: list[bytes] = []
+    commands: list[bool] = []
     worker_error = RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def _blocking_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             if on_outcome == "false":
                 return False
             raise worker_error
-        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
-            return True
-        raise AssertionError(f"unexpected fan-in command: {payload!r}")
+        return True
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
+
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
 
     if on_outcome == "false":
         await ducker.duck()
@@ -1170,8 +1119,8 @@ async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
     await ducker.restore()
     assert not ducker.is_ducked
     assert commands == [
-        b"PROGRAM_DUCK_ON\nCLOSE\n",
-        b"PROGRAM_DUCK_OFF\nCLOSE\n",
+        True,
+        False,
     ]
 
 
@@ -1189,11 +1138,11 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
     off_started = asyncio.Event()
     release_on = threading.Event()
     release_off = threading.Event()
-    commands: list[bytes] = []
+    commands: list[bool] = []
 
-    def send_command(payload: bytes) -> bool:
-        commands.append(payload)
-        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+    def _blocking_duck(on: bool) -> bool:
+        commands.append(on)
+        if on:
             loop.call_soon_threadsafe(on_started.set)
             if not release_on.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_ON")
@@ -1202,12 +1151,11 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             if on_outcome == "error":
                 raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
             return True
-        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+        else:
             loop.call_soon_threadsafe(off_started.set)
             if not release_off.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_OFF")
             return True
-        raise AssertionError(f"unexpected fan-in command: {payload!r}")
 
     class _Tts(FakeTts):
         def __init__(self) -> None:
@@ -1267,8 +1215,10 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             self.close_calls += 1
             return 0.0
 
-    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
-    monkeypatch.setattr(ducker, "_send_command", send_command)
+    async def program_duck(on: bool) -> bool:
+        return await asyncio.to_thread(_blocking_duck, on)
+
+    ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
     tts = _Tts()
     content = _ContentActivity()
     volume = _Volume()
@@ -1329,8 +1279,8 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
             await beginning
 
         assert commands == [
-            b"PROGRAM_DUCK_ON\nCLOSE\n",
-            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            True,
+            False,
         ]
         assert not ducker.is_ducked
         assert cleanup_calls == 1
@@ -1826,12 +1776,12 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
 ) -> None:
     import wave
 
-    import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import TtsPlayout
+    import jasper.tts_playout as tts_mod
+    from jasper.tts_playout import TtsPlayout
     from jasper.cues import AudioCueManager
     from jasper.cues.registry import find
 
-    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
     restore_started = asyncio.Event()
@@ -2215,12 +2165,12 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
 ) -> None:
     """MEASURE_PAUSE never reconnects; a later ordinary control does once."""
 
-    import jasper.audio_io as audio_io_mod
-    from jasper.audio_io import TtsPlayout
+    import jasper.tts_playout as tts_mod
+    from jasper.tts_playout import TtsPlayout
     from jasper.voice.control_socket import serve
 
     parent, child = socket.socketpair()
-    poisoned = audio_io_mod._OutputdStreamAdapter(parent)
+    poisoned = tts_mod._OutputdStreamAdapter(parent)
     poisoned.close()
     child.close()
     tts = TtsPlayout(socket_path="/tmp/outputd-test.sock")

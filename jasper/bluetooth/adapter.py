@@ -15,8 +15,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dbus_next import BusType, Variant  # type: ignore
+from dbus_next import BusType, Message, MessageType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
+from dbus_next.errors import DBusError  # type: ignore
 
 from ..log_event import log_event
 
@@ -32,13 +33,24 @@ DEFAULT_ADAPTER = "hci0"
 # the radio closes the pairing window after a few minutes.
 DISCOVERABLE_AUTO_OFF_SEC = 300
 
+# dbus-next reports an unreachable bus, a refused connection or an unexpected
+# reply shape as any of these; a read-only BlueZ probe treats them all alike.
+BLUEZ_ERRORS = (AttributeError, DBusError, EOFError, OSError, TypeError, ValueError)
+
 
 @asynccontextmanager
 async def _system_bus() -> AsyncIterator[MessageBus]:
-    """Connect one system bus and always disconnect it on exit."""
+    """Connect one system bus and always disconnect it on exit.
 
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    The socket is opened by the constructor and `connect()` awaits the Hello
+    reply, so a cancellation (a caller's timeout) landing inside `connect()`
+    must still reach `disconnect()`, or the reader dbus-next registered keeps
+    the connection alive forever.
+    """
+
+    bus = MessageBus(bus_type=BusType.SYSTEM)
     try:
+        await bus.connect()
         yield bus
     finally:
         bus.disconnect()
@@ -106,7 +118,6 @@ class BluezSession:
     def __init__(self, bus: MessageBus) -> None:
         self.bus = bus
         self._adapter_props: dict[str, Any] = {}
-        self._object_manager: Any = None
 
     async def adapter_props(self, adapter: str = DEFAULT_ADAPTER) -> Any:
         props = self._adapter_props.get(adapter)
@@ -115,17 +126,18 @@ class BluezSession:
             self._adapter_props[adapter] = props
         return props
 
-    async def object_manager(self) -> Any:
-        if self._object_manager is None:
-            intro = await self.bus.introspect(BLUEZ_BUS, "/")
-            self._object_manager = self.bus.get_proxy_object(
-                BLUEZ_BUS, "/", intro,
-            ).get_interface("org.freedesktop.DBus.ObjectManager")
-        return self._object_manager
+    async def call(self, msg: Message) -> Any:
+        """One method call, raising `DBusError` on an error reply. No
+        introspection: the ObjectManager and BlueZ media interfaces are fixed,
+        so the proxy round-trip would only cost a message per session."""
+        reply = await self.bus.call(msg)
+        if reply.message_type == MessageType.ERROR:
+            raise DBusError(reply.error_name, reply.body[0] if reply.body else "")
+        return reply.body
 
 
 @asynccontextmanager
-async def _session(
+async def bluez_session(
     session: BluezSession | None = None,
 ) -> AsyncIterator[BluezSession]:
     """The caller's session, or a throwaway one for this call alone."""
@@ -137,6 +149,18 @@ async def _session(
         yield BluezSession(bus)
 
 
+async def managed_objects(session: BluezSession | None = None) -> dict[str, Any]:
+    """BlueZ's whole object tree: path -> interface -> property -> Variant."""
+    async with bluez_session(session) as sess:
+        body = await sess.call(Message(
+            destination=BLUEZ_BUS,
+            path="/",
+            interface="org.freedesktop.DBus.ObjectManager",
+            member="GetManagedObjects",
+        ))
+        return body[0]
+
+
 async def state(
     adapter: str = DEFAULT_ADAPTER,
     *,
@@ -146,7 +170,7 @@ async def state(
     discovering, plus our name/alias. Returns a flat JSON-able dict.
     Raises DBusError if bluez itself is unreachable; caller decides
     whether to surface "Bluetooth daemon not running" in the UI."""
-    async with _session(session) as sess:
+    async with bluez_session(session) as sess:
         props = await sess.adapter_props(adapter)
         all_props = await props.call_get_all("org.bluez.Adapter1")
         def _v(k, d=None):
@@ -205,7 +229,7 @@ async def set_discoverable(
     Anything initiating a pair must therefore raise it first -- see
     `set_pairable`.
     """
-    async with _session(session) as sess:
+    async with bluez_session(session) as sess:
         props = await sess.adapter_props(adapter)
         if value:
             try:
@@ -247,21 +271,18 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
     host. Cheap: one ObjectManager.GetManagedObjects round-trip."""
     from .models import is_hid_uuids
 
-    async with _session() as sess:
-        om = await sess.object_manager()
-        managed = await om.call_get_managed_objects()
-        for _path, ifaces in managed.items():
-            dev = ifaces.get("org.bluez.Device1")
-            if not dev:
-                continue
-            paired = dev.get("Paired")
-            if paired is None or not getattr(paired, "value", paired):
-                continue
-            uuids_v = dev.get("UUIDs")
-            uuids = getattr(uuids_v, "value", uuids_v) or []
-            if is_hid_uuids([str(u) for u in uuids]):
-                return True
-        return False
+    for _path, ifaces in (await managed_objects()).items():
+        dev = ifaces.get("org.bluez.Device1")
+        if not dev:
+            continue
+        paired = dev.get("Paired")
+        if paired is None or not getattr(paired, "value", paired):
+            continue
+        uuids_v = dev.get("UUIDs")
+        uuids = getattr(uuids_v, "value", uuids_v) or []
+        if is_hid_uuids([str(u) for u in uuids]):
+            return True
+    return False
 
 
 async def remove_device(
@@ -313,9 +334,8 @@ async def untrust_unbonded(
     """
     prefix = f"/org/bluez/{adapter}/"
     untrusted: list[str] = []
-    async with _session(session) as sess:
-        om = await sess.object_manager()
-        managed = await om.call_get_managed_objects()
+    async with bluez_session(session) as sess:
+        managed = await managed_objects(sess)
         for path, ifaces in managed.items():
             dev = ifaces.get("org.bluez.Device1")
             if not dev or not str(path).startswith(prefix):

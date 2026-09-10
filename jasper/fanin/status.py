@@ -28,14 +28,6 @@ from jasper.platform.status_socket import FANIN_STATUS_SOCKET, read_status_socke
 # its ``source":"direct"`` unit tests). This is the load-bearing USB signal:
 # fan-in owns the gadget capture directly as the sole live ingress owner.
 FANIN_INPUT_SOURCE_DIRECT = "direct"
-# The STATUS input-lane ``source`` value on a renderer-ingress SHM-ring lane
-# (U3 / P6). A third alternative beside ``lane`` and ``direct``, not a layer on
-# either: a ring lane opens no aloop substream and no gadget capture. Nothing in
-# this module keys off it — the USB predicates below are deliberately bound to
-# ``direct`` AND ``label=usbsink``, so a ring lane can never be mistaken for the
-# USB one — but the token is named here because this module owns the vocabulary
-# the Rust serializer publishes.
-FANIN_INPUT_SOURCE_RING = "ring"
 USBSINK_INPUT_LABEL = "usbsink"
 
 # Stable ``direct.health`` tokens produced by rust/jasper-fanin.  Health is an
@@ -110,6 +102,32 @@ def read_fanin_status(
         return None
 
 
+def fanin_inputs_by_label(
+    fanin_status: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Project a raw fan-in STATUS's ``inputs`` list into ``{label: lane}``.
+
+    Fail-soft to ``{}`` — a missing / malformed STATUS, an absent ``inputs``,
+    and a lane with no string label all drop out rather than raising, so every
+    consumer keys off one projection.
+
+    Takes the raw STATUS only. Health snapshots that republish lanes key them
+    by SOURCE ID, not by fan-in label (``bluealsa`` is the ``bluetooth``
+    source's lane), so passing one here would silently miss lanes.
+    """
+
+    if not isinstance(fanin_status, dict):
+        return {}
+    inputs = fanin_status.get("inputs")
+    if not isinstance(inputs, list):
+        return {}
+    return {
+        entry["label"]: entry
+        for entry in inputs
+        if isinstance(entry, dict) and isinstance(entry.get("label"), str)
+    }
+
+
 def fanin_usbsink_input(
     fanin_status: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -121,15 +139,7 @@ def fanin_usbsink_input(
     Malformed snapshots fail soft to ``None``.
     """
 
-    if not isinstance(fanin_status, dict):
-        return None
-    inputs = fanin_status.get("inputs")
-    if not isinstance(inputs, list):
-        return None
-    for entry in inputs:
-        if isinstance(entry, dict) and entry.get("label") == USBSINK_INPUT_LABEL:
-            return entry
-    return None
+    return fanin_inputs_by_label(fanin_status).get(USBSINK_INPUT_LABEL)
 
 
 def fanin_usbsink_lane_is_direct(fanin_status: dict[str, Any] | None) -> bool:
@@ -155,6 +165,7 @@ __all__ = [
     "FANIN_INPUT_SOURCE_DIRECT",
     "USBSINK_INPUT_LABEL",
     "extract_direct_sample",
+    "fanin_inputs_by_label",
     "fanin_usbsink_input",
     "fanin_usbsink_lane_is_direct",
     "FANIN_STATUS_SOCKET",

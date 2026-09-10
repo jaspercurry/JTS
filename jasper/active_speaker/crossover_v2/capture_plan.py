@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -36,7 +37,10 @@ from jasper.audio_measurement.program import (
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
-from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT
+from ..measurement_programs import (
+    POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT, PURPOSE_ROOM,
+    pose_place, resolved_measurement_purpose,
+)
 from . import contracts as _contracts
 from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
@@ -173,6 +177,13 @@ class CloudPositionPrompt:
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
+    purpose: str | None = None
+    preserve_text: bool = False
+
+    @property
+    def place(self) -> tuple[object, ...]:
+        return pose_place(self.kind, position_angle_deg(self), position_elevation_deg(self),
+                          self.distance_m, self.seat_offset_m)
 
     @property
     def wide(self) -> bool:
@@ -1382,7 +1393,7 @@ def _positioned_prompt(
     ``role`` are untouched, so a gated session's evidence stays comparable with
     a tape-measured one's.
     """
-    if shape is not None and shape.positions_gated:
+    if shape is not None and shape.positions_gated and not prompt.preserve_text:
         return remote_position_prompt(prompt)
     return prompt
 
@@ -1433,9 +1444,7 @@ def _candidate_batch_screens(
         return {}
     screens = {}
     for _pose, group in groupby(
-        enumerate(prompts), key=lambda row: (
-            position_angle_deg(row[1]), position_elevation_deg(row[1]),
-        ),
+        enumerate(prompts), key=lambda row: row[1].place,
     ):
         offsets = [offset for offset, _prompt in group]
         for ordinal, offset in enumerate(offsets, 1):
@@ -1483,6 +1492,14 @@ def _cloud_entry_screen(
         "body": body,
         **policy,
     }
+
+
+def room_sweep_band_hz(
+    roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
+) -> tuple[float, float] | None:
+    if any(resolved_measurement_purpose(p.purpose, p.kind) == PURPOSE_ROOM for p in prompts):
+        return ROOM_FLOOR_HZ, measurement_band_hz(roles)[1]
+    return None
 
 
 def build_v2_capture_plan(
@@ -1541,9 +1558,11 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase, and it
     # is the announced one because its program object is stage 2's anchor.
     band_hz = measurement_band_hz(roles)
+    summed_band = room_sweep_band_hz(roles, lateral_prompts or ())
     verify = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,
+        sweep_band_hz=summed_band,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -1553,6 +1572,7 @@ def build_v2_capture_plan(
     cloud = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,
+        sweep_band_hz=summed_band,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -1647,7 +1667,7 @@ def build_v2_capture_plan(
         prompt = _positioned_prompt(lateral_table[offset], shape)
         policy = _entry_policy(shape, prompt)
         batch = candidate_screens.get(capture_index, {})
-        if branch_diagnostic:
+        if branch_diagnostic and not prompt.preserve_text:
             batch = {**batch, "title": "Measure woofer, tweeter and both", "body": "Keep the mic still for all five sweeps. The repeated solo sweeps check the recording clock."}
         if batch:
             policy[POSITION_HAND_RELEASED_KEY] = str(not shape.externally_positioned).lower()

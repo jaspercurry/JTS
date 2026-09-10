@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
@@ -26,10 +26,12 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
     RING_SLOTS_MIN,
+    RING_WIRE_FORMAT,
     RING_WIRE_FORMAT_ENV_VAR,
-    RING_WIRE_FORMATS,
+    RING_WIRE_FORMAT_WIDE,
     resolve_ring_slots,
 )
+from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
 from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,9 +50,6 @@ _FANIN_MIXER_MODULE_RS = (
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
 _FANIN_DIRECT_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
-)
-_FANIN_RING_CAPTURE_RS = (
-    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
 )
 _OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
 _RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
@@ -96,12 +95,6 @@ def _direct_capture_rs_text() -> str:
     return _FANIN_DIRECT_CAPTURE_RS.read_text(encoding="utf-8")
 
 
-def _ring_capture_rs_text() -> str:
-    if not _FANIN_RING_CAPTURE_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_RING_CAPTURE_RS}")
-    return _FANIN_RING_CAPTURE_RS.read_text(encoding="utf-8")
-
-
 def _source_text(path: Path) -> str:
     if not path.exists():
         pytest.skip(f"source not present: {path}")
@@ -122,38 +115,32 @@ def _call_sites(fn: str, code: str) -> int:
     return len(re.findall(rf"(?<!\w){re.escape(fn)}\(", code))
 
 
-def test_coupling_selector_env_var_name_agrees():
-    text = _config_rs_text()
-    assert f'"{COUPLING_ENV_VAR}"' in text, (
-        f"Rust must read the coupling selector from {COUPLING_ENV_VAR}"
-    )
-
-
 def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
     """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
 
-    Ring A is the daemon's only transport (ADR-0100), so this key no longer
-    SELECTS anything on the Rust side; it only has to serve what the fleet can
-    legitimately present and refuse the rest (that refusal half is pinned
-    behaviorally in-crate by `only_a_ring_declaration_or_none_is_served`).
+    Ring A is the daemon's only transport (ADR-0100), so this key SELECTS
+    nothing on either side; Python no longer writes it at all and sweeps a
+    persisted value off migrating boxes
+    (``coupling_reconcile._LEGACY_FANIN_COUPLING_ENV``). Rust still has to serve
+    what the fleet can legitimately present and refuse the rest (that refusal
+    half is pinned behaviorally in-crate by
+    `only_a_ring_declaration_or_none_is_served`).
 
-    UNSET is a first-class served state and this is the row that says so.
-    `coupling-auto` runs ``After=jasper-fanin.service``, so on a fresh or reset
-    box fan-in starts BEFORE the key is written. If Rust refused the undeclared
-    key, that box would park on every first boot; because it serves it, no
-    Python reader may map undeclared → loopback and derive a runtime
-    expectation from it (see ``resolve_coupling``'s docstring, and the doctor's
-    `_fanin_health_from_status`, which expects ``shm_ring`` unconditionally).
+    UNSET is a first-class served state and this is the row the sweep depends
+    on: once the key is gone, every box presents ``None`` and must start.
 
     Shape-level on purpose: it complements the in-crate behavioral pin rather
     than restating it, and what can drift across the language boundary is the
     accept-set's MEMBERSHIP, which is what this reads.
     """
     text = _config_rs_text()
+    assert f'"{_LEGACY_FANIN_COUPLING_ENV}"' in text, (
+        f"Rust must still read {_LEGACY_FANIN_COUPLING_ENV} to refuse a value "
+        "it cannot serve"
+    )
     assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
         "the Rust accept arm must serve the undeclared key (None), a cleared "
-        f"key (empty), and the {COUPLING_SHM_RING!r} token Python's "
-        "resolve_coupling emits — all three in one arm"
+        f"key (empty), and the {COUPLING_SHM_RING!r} token — all three in one arm"
     )
 
 
@@ -177,27 +164,31 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     )
 
 
-def test_shm_ring_wire_format_env_var_name_agrees():
-    """The Ring-A wire FORMAT key is the third cross-language env name.
+def test_rust_refuses_the_narrow_ring_wire_format_token():
+    """Rust's accept-set for the wire-format key is ``None`` | ``""`` | S32_LE.
 
-    Its two siblings above (path, slots) have been pinned since the ring
-    shipped; the wire format arrived later and did not get the same treatment.
-    It is the same drift axis and a worse one to get wrong: the header compares
-    ``sample_format`` field-by-field, so a Python side reading one key name
-    while the daemon reads another does not mis-declare a wire — it silently
-    reads the DEFAULT wire while the reconciler's four-ends gate reports
-    agreement, and the ioplug attach is the first thing to notice.
+    The two vocabularies diverge here on purpose:
+    :func:`jasper.fanin_coupling.resolve_ring_wire_format` still normalizes
+    ``S16_LE``, because the Python reconciler renders the ioplug conf.d and the
+    C plugin still parses that token. fan-in does not — it creates Ring A
+    S32_LE unconditionally, so a declaration it cannot honour is a config-class
+    park (exit 78) rather than a narrowed program. Nothing else holds the two
+    ends of that divergence together, so a Rust accept arm that grew ``S16_LE``
+    back would resolve a wire no writer produces with no test failing.
     """
     text = _config_rs_text()
-    assert f'"{RING_WIRE_FORMAT_ENV_VAR}"' in text, (
-        f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    _, sep, after = text.partition(f'std::env::var("{RING_WIRE_FORMAT_ENV_VAR}")')
+    assert sep, f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    accept_block, sep, _ = after.partition("\n\n")
+    assert sep, "could not delimit the wire-format match block"
+    assert f'None | Some("") | Some("{RING_WIRE_FORMAT_WIDE}") => {{}}' in accept_block, (
+        "the Rust accept arm must serve the undeclared key (None), a cleared "
+        f"key (empty) and {RING_WIRE_FORMAT_WIDE} — and nothing else"
     )
-    # The two-token vocabulary is the other half of the contract: a value Python
-    # accepts must be a value Rust accepts, spelled identically.
-    for token in RING_WIRE_FORMATS:
-        assert f'"{token}"' in text, (
-            f"Rust must accept the {token} wire token Python's vocabulary declares"
-        )
+    assert RING_WIRE_FORMAT not in accept_block, (
+        f"{RING_WIRE_FORMAT} must stay REFUSED by fan-in; Python accepts the "
+        "token only to render the ioplug conf.d"
+    )
 
 
 _CHANNEL_DECLARATIONS = (
@@ -390,7 +381,7 @@ def test_fanin_mixer_publishes_slots_and_opens_no_playback_pcm():
     text = _mixer_rs_text()
     assert "RingOutput" in text
     assert "RingWriter" in text
-    assert ".publish(" in text
+    assert ".publish_bytes(" in text
     # The 128-frame slot is pinned via the shared RING_SLOT_FRAMES constant.
     assert "RING_SLOT_FRAMES" in text
 
@@ -481,22 +472,20 @@ def test_fanin_music_output_tap_stays_deleted():
 # or /state reader). One fact, one owner.
 
 
-def test_step_fills_output_buf_once_above_the_ring_publish():
-    """`step()`'s narrow saturate runs ONCE, above the ring publish.
+def test_step_fills_the_ring_payload_once_above_the_ring_publish():
+    """`step()` fills the ring payload ONCE, above the ring publish.
 
     The mutant this catches: moving (or duplicating)
-    `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)`
-    below or past the publish. `output_buf` is the NARROW ring wire's published
-    payload — `write_ring_period` publishes it slot by slot whenever the ring's
-    attached header is S16LE. A publish that ran before the saturate would leave
-    a narrow box publishing a stale (or, on the first period, all-zero) buffer
-    into Ring A, with CamillaDSP reading it and every counter healthy. That is
-    the whole fleet's narrow boxes going silent-or-stuttering from a mutant with
-    no error path.
+    `fill_ring_payload(&self.sum_buf, &mut self.ring_payload)` below or past the
+    publish. `ring_payload` is what `write_ring_period` publishes slot by slot.
+    A publish that ran before the fill would leave the box publishing a stale
+    (or, on the first period, all-zero) buffer into Ring A, with CamillaDSP
+    reading it and every counter healthy. That is the whole fleet going
+    silent-or-stuttering from a mutant with no error path.
 
     This is pinned in Python because `step()` has no hardware-free Rust test at
     all: it reads live ALSA inputs. The in-crate ring tests
-    (`wide_ring_slots_carry_the_left_justified_narrow_slots`) enter at
+    (`ring_slots_carry_the_published_period_sample_for_sample`) enter at
     `write_ring_period`, one call BELOW the ordering asserted here, so they
     cannot see what filled the buffer they are handed.
     """
@@ -507,23 +496,23 @@ def test_step_fills_output_buf_once_above_the_ring_publish():
     body, sep, _ = text[text.index(opener) :].partition("\n    }\n")
     # Containment: the slice must stop at step()'s OWN closing brace. A sentinel
     # that misses it lands on the next method's instead, and the assertions below
-    # would then read text that is not step()'s — a saturate in a later method or
+    # would then read text that is not step()'s — a fill in a later method or
     # a unit test could satisfy them while step() itself was gutted. (The count is
     # 1, not 0: the slice starts AT step()'s own opener. It counts `fn `, not
     # `pub fn `, because mixer.rs's methods are private.)
     assert sep, "could not find step()'s closing brace"
     assert body.count("fn ") == 1, "the step() slice ran past its own function"
 
-    saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)"
+    fill = "fill_ring_payload(&self.sum_buf, &mut self.ring_payload)"
     publish = "write_ring_period("
-    assert body.count(saturate) == 1, (
-        "step() must fill output_buf with exactly ONE saturate — a second one "
+    assert body.count(fill) == 1, (
+        "step() must fill the ring payload with exactly ONE call — a second one "
         "means the call was duplicated"
     )
     assert body.count(publish) == 1, "step() must publish to the ring exactly once"
-    assert body.index(saturate) < body.index(publish), (
-        "the saturate that fills output_buf must sit ABOVE the ring publish — "
-        "below it, a narrow box publishes a stale output_buf into Ring A"
+    assert body.index(fill) < body.index(publish), (
+        "the fill that builds the ring payload must sit ABOVE the ring publish — "
+        "below it, the box publishes a stale payload into Ring A"
     )
 
 
@@ -550,15 +539,10 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
     blind to it, so nothing counts these; the guard has to be structural.
 
-    Two owners, both off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
-    `snd_pcm_close`) and `fanin-ring-attacher` (`RingReader::create_or_attach`,
-    whose inter-process `flock` is bounded at 500 ms — ~187 slots — and which
-    needs no USB host at all to fire: a ring lane detached by a geometry shear or
-    a permission refusal stays detached until an operator clears it, paying that
-    every ~2 s: #2538).
+    One owner, off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
+    `snd_pcm_close`).
     """
     direct_text = _direct_capture_rs_text()
-    ring_text = _ring_capture_rs_text()
 
     # 1. The direct-lane opener thread owns every gadget open and close.
     assert "pub(super) fn spawn(" in direct_text
@@ -592,80 +576,46 @@ def test_no_blocking_io_on_the_fanin_render_thread():
         "the Absent retry must queue an open and poll for the result"
     )
 
-    # 2. The ring-lane attacher thread owns every reattach (#2538).
-    assert "pub(super) fn spawn(" in ring_text
-    assert '.name(format!("fanin-ring-attacher-{label}"))' in ring_text, (
-        "the ring attacher must be its own named thread, one per lane"
-    )
-    ring_code = _rust_code_only(ring_text)
-    # `attach_ring` — and through it `RingReader::create_or_attach` — has exactly
-    # TWO production callers: the attacher thread, and `open_ring_input`, which
-    # runs in `Mixer::new` on the constructing thread and is not the render loop.
-    # The test module's own call sites are excluded by SLICING it off rather than
-    # by budgeting for them, so a new test can never loosen the guard.
-    ring_production_code = ring_code[: ring_code.index("mod tests {")]
-    assert _call_sites("RingReader::create_or_attach", ring_production_code) == 1, (
-        "`create_or_attach` may be spelled once, inside `attach_ring`"
-    )
-    attacher_start = ring_production_code.index("fn spawn(")
-    attacher_end = ring_production_code.index("fn publish_pending(", attacher_start)
-    assert (
-        _call_sites("attach_ring", ring_production_code[attacher_start:attacher_end])
-        == 1
-    ), "the attacher thread performs the attach"
-    construction_start = ring_production_code.index("fn open_ring_input(")
-    construction_end = ring_production_code.index(
-        "fn read_ring_and_render(", construction_start
-    )
-    assert (
-        _call_sites(
-            "attach_ring", ring_production_code[construction_start:construction_end]
-        )
-        == 1
-    ), "the CONSTRUCTION attach stays inline — `Mixer::new` is not the render loop"
-    # The ~2 s Detached retry is a poll + queue, never an inline attach. SCOPED
-    # assertion FIRST, before the whole-file count below: a re-inline trips both,
-    # and the one that fires is the one whose message the next reader gets.
-    reattach_start = ring_production_code.index("fn maybe_reattach_ring(")
-    reattach_end = ring_production_code.index("fn adopt_attach_outcome(", reattach_start)
-    reattach_body = ring_production_code[reattach_start:reattach_end]
-    assert not _call_sites("attach_ring", reattach_body), (
-        "the ~2 s Detached retry must not attach the ring on the render thread — "
-        "`create_or_attach` takes a 500 ms-bounded flock inside a 5.33 ms period"
-    )
-    assert "attacher.request(" in reattach_body and ".poll()" in reattach_body, (
-        "the Detached retry must queue an attach and poll for the result"
-    )
-    # Backstop for a re-inline the scoped slice above would not see: a NEW caller
-    # somewhere else in the file that the render loop can reach.
-    assert _call_sites("attach_ring", ring_production_code) == 3, (
-        "`attach_ring` has exactly three spellings in production code: its own "
-        "definition, the attacher thread, and `open_ring_input`. A fourth means "
-        "a new caller — check it is not on the render thread."
-    )
-    # And the retry latches are phase-seeded so lanes cannot retry in lockstep.
-    assert "pub(super) const fn reattach_phase(" in ring_production_code
-    assert "reattach_phase(lane_index, lane_count)" in ring_production_code, (
-        "each ring lane must seed its retry latch from its own phase"
-    )
 
-    # 3. Both queues are observable in STATUS (depth / in-flight), so a hanging
-    #    device open or a hanging attach is visible rather than silent.
-    state_text = _state_rs_text()
-    assert '"reopen_pending"' in state_text
-    assert '"attach_pending"' in state_text
+def _compiled_fanin_lane_labels() -> list[str]:
+    """Scrape fan-in's compiled-in default ``input_renderers`` array."""
+    rs = _config_rs_text()
+    m = re.search(r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S)
+    assert m, "could not find the JASPER_FANIN_INPUT_RENDERERS default in config.rs"
+    # Entries are either a bare "label" literal or a named const spelled
+    # via a `pub const NAME: &str = "...";` reference (issue #3461).
+    consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
+    raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    return [consts.get(item, item) for item in raw_items]
 
 
-def test_input_resampler_recovery_restarts_capture_pcm():
-    text = _mixer_rs_text()
-    recovery_start = text.index("fn recover_resampler_input_xrun(")
-    recovery_end = text.index("fn read_into_resampler_and_render(", recovery_start)
-    recovery_body = text[recovery_start:recovery_end]
+@pytest.mark.parametrize("spec", MUSIC_SOURCE_SPECS, ids=lambda s: s.id.value)
+def test_every_music_source_names_a_real_fanin_lane(spec):
+    """A label absent from fan-in's compiled-in default input_renderers is
+    refused at config (ConfigClassError -> park) UNLESS
+    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
+    the compiled-in default, not the guaranteed runtime outcome."""
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert spec.fanin_label in fanin_labels, (
+        f"MUSIC_SOURCE_SPECS[{spec.id.value}].fanin_label "
+        f"{spec.fanin_label!r} is missing from fan-in's compiled-in default "
+        f"input_renderers {fanin_labels} (scraped from {_FANIN_CONFIG_RS.name})"
+    )
 
-    assert ".try_recover(error, true)" in recovery_body
-    # `input.pcm` is now `Option<PCM>` (None only on the USB DIRECT lane, which
-    # uses recover_direct_xrun instead); the aloop resampler lane binds it and
-    # still restarts the capture PCM if a post-recover try_recover left it
-    # PREPARED. Assert the state-check + restart on the bound handle.
-    assert "pcm.state() != State::Running" in recovery_body
-    assert ".start()" in recovery_body
+
+@pytest.mark.parametrize(
+    "source",
+    sorted(SOURCE_TO_FANIN_LABEL, key=lambda s: s.value),
+    ids=lambda s: s.value,
+)
+def test_every_source_to_fanin_label_entry_names_a_real_fanin_lane(source):
+    """``SOURCE_TO_FANIN_LABEL`` is the dict control-plane callers actually
+    read (mux's source gate, in particular); pin it directly rather than
+    trusting it stays a faithful projection of MUSIC_SOURCE_SPECS above."""
+    label = SOURCE_TO_FANIN_LABEL[source]
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert label in fanin_labels, (
+        f"SOURCE_TO_FANIN_LABEL[{source.value}] = {label!r} is missing from "
+        f"fan-in's compiled-in default input_renderers {fanin_labels} "
+        f"(scraped from {_FANIN_CONFIG_RS.name})"
+    )

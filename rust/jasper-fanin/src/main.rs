@@ -26,6 +26,7 @@ mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
 mod mixer;
+mod output_clock;
 mod playout;
 mod source_notify;
 mod state;
@@ -126,7 +127,7 @@ fn run() -> Result<()> {
     let config = Config::from_env()?;
     info!(
         "event=fanin.config_loaded inputs={} sample_rate={} period_frames={} input_buffer_frames={}",
-        config.input_pcms.len(),
+        config.input_renderers.len(),
         config.sample_rate,
         config.period_frames,
         config.input_buffer_frames,
@@ -205,16 +206,6 @@ fn run() -> Result<()> {
             (None, None, None)
         };
 
-    // The ASSISTANT wire this box will accept without converting — the reader's
-    // half of the pair `jasper-voice` publishes as `event=tts_wire.resolved`.
-    // Emitted unconditionally (even with the TTS socket disabled) and with BOTH
-    // inputs named, so "which half made this narrow?" is answerable from one
-    // line. Two lines side by side answer "is a mismatch converting right now"
-    // without waiting for a payload to trigger the mismatch warn — which by
-    // design fires at most once for the daemon's lifetime and may already have
-    // scrolled out of the journal window.
-    info!("{}", config.assistant_wire_resolved_line());
-
     // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
     // required in the production fan-in topology; a missing lane means
     // one renderer can silently play without entering the summed music
@@ -223,7 +214,7 @@ fn run() -> Result<()> {
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
-        config.input_pcms.len(),
+        config.input_renderers.len(),
     );
     let source_notify_signals = mixer.source_notify_signals();
 
@@ -393,6 +384,11 @@ fn run() -> Result<()> {
             sched_policy,
         },
     );
+    let output_clock_thread = output_clock::spawn(
+        Arc::clone(&mixer.ring_observability.nominal_clock),
+        Arc::clone(&shutdown),
+    )
+    .context("spawning output clock watcher")?;
     let state_server_shutdown = Arc::clone(&shutdown);
     let state_thread = std::thread::Builder::new()
         .name("fanin-state-server".into())
@@ -425,6 +421,7 @@ fn run() -> Result<()> {
         let _ = handle.join();
     }
     let _ = state_thread.join();
+    let _ = output_clock_thread.join();
     let _ = tap_writer.join();
     if let Some(handle) = source_notify_thread {
         let _ = handle.join();
@@ -484,15 +481,6 @@ mod tests {
         assert_eq!(config_class_exit_code(&error), Some(EXIT_CONFIG));
     }
 
-    /// A config-parse failure carries the marker straight off
-    /// `Config::from_env`, with no extra context layers.
-    #[test]
-    fn unparseable_ring_wire_format_is_config_class() {
-        let error = crate::config::RingWireFormat::from_env_value(Some("S24_3LE"))
-            .expect_err("an unsupported wire token must fail loud");
-        assert_eq!(config_class_exit_code(&error), Some(EXIT_CONFIG));
-    }
-
     /// The marker is narrow on purpose: the transient hardware faults that
     /// `Restart=on-failure` exists to ride out must NOT park the unit.
     #[test]
@@ -541,7 +529,6 @@ mod tests {
         ] {
             let error = ring_open_error(
                 "/dev/shm/jts-ring/program.ring",
-                "S32_LE",
                 std::io::Error::new(kind, detail),
             );
             assert_eq!(
@@ -568,7 +555,6 @@ mod tests {
         ] {
             let error = ring_open_error(
                 "/dev/shm/jts-ring/program.ring",
-                "S16_LE",
                 std::io::Error::new(kind, detail),
             );
             assert_eq!(

@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..audio_io import MicCapture
+from ..mic_capture import MicCapture
 from ..aec_sweep import (
     AGC1_ENABLED_ENV,
     AGC1_MAX_GAIN_DB_ENV,

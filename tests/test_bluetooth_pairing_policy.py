@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import types
 
 import pytest
-from dbus_next import Variant
+from dbus_next import MessageType, Variant
 from dbus_next.errors import DBusError
 
 from jasper.bluetooth import adapter
@@ -279,12 +280,20 @@ class _FakeManagedProps:
         self._writes.append((self._path, bool(value.value)))
 
 
+def _managed_reply(managed: dict):
+    """What `MessageBus.call` hands back for a GetManagedObjects call."""
+    return types.SimpleNamespace(message_type=MessageType.METHOD_RETURN, body=[managed])
+
+
 class _FakeManagedBus:
     """Enough ObjectManager to exercise untrust_unbonded's own decision."""
 
     def __init__(self, managed: dict, writes: list[tuple[str, bool]]) -> None:
         self._managed = managed
         self.writes = writes
+
+    async def call(self, _msg):
+        return _managed_reply(self._managed)
 
     async def introspect(self, _service: str, _path: str):
         return object()
@@ -527,11 +536,11 @@ class _CountingBus:
     async def call_set(self, _iface: str, key: str, value) -> None:
         self.sets.append((key, value.value))
 
-    async def call_get_managed_objects(self) -> dict:
+    async def call(self, _msg):
         self.sweeps += 1
         if self.sweeps >= self._stop_after:
             self.done.set()
-        return {}
+        return _managed_reply({})
 
 
 def test_agent_lifetime_opens_one_bus_connection(monkeypatch):
@@ -573,7 +582,8 @@ def test_agent_lifetime_opens_one_bus_connection(monkeypatch):
     assert bus.sweeps >= 4
     assert connections == 1
     assert bus.introspects.count("/org/bluez/hci0") == 1
-    assert bus.introspects.count("/") == 1
+    # The ObjectManager sweep is a fixed-shape raw call: no root introspection.
+    assert "/" not in bus.introspects
     assert bus.disconnected is True
 
 

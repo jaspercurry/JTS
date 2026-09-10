@@ -12,15 +12,12 @@ bounded fan-out, and the GET /grouping readers).
 from __future__ import annotations
 
 import concurrent.futures
-import http.client
 import ipaddress
 import json
 import re
 import socket
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler
 
@@ -29,7 +26,11 @@ from ..control import household_credential
 from ..platform.control_client import (
     CONTROL_PORT,
     PEER_RESPONSE_MAX_BYTES,
+    ControlError,
+    ControlResponseTooLarge,
+    get as control_get,
     peer_detail,
+    post as control_post,
 )
 from ..net.mdns import browse_once
 from ..multiroom.config import is_private_or_loopback_ipv4
@@ -297,6 +298,10 @@ def post_grouping_to_member(
     under each other), else a fresh ``household_credential.current()`` read.
     A member with no secret yet fail-safe-accepts and adopts it; a lone
     speaker has none to attach. Returns (ok, detail); never raises.
+
+    Goes through the jasper-control client, which speaks ``http.client`` and
+    so never follows a redirect: a member's 3xx comes back as a 3xx (not ok)
+    rather than replaying these headers to a host ``lan_target`` never vetted.
     """
     target = lan_target(addr, known)
     if target is None:
@@ -305,42 +310,29 @@ def post_grouping_to_member(
         except ValueError:
             return False, f"not an IP address: {addr!r}"
         return False, f"refusing non-LAN target {addr}"
-    url = f"http://{target}:{CONTROL_PORT}/grouping/set"
-    headers = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {}
     if token:
         headers["X-JTS-Token"] = token
     cred = household if household is not None else household_credential.current()
     if cred:
         headers["X-JTS-Household"] = cred
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers=headers,
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=CONTROL_HTTP_TIMEOUT_SEC) as r:
-            raw = _read_peer_response(r)
-            if raw is None:
-                return False, "peer response too large"
-            return (
-                200 <= r.status < 300,
-                _grouping_set_success_detail(r.status, raw),
-            )
-    except urllib.error.HTTPError as e:
-        try:
-            raw = _read_peer_response(e) if e.fp else b""
-        except (OSError, http.client.HTTPException):
-            return False, f"HTTP {e.code}"
-        if raw is None:
-            return False, f"HTTP {e.code}: response too large"
-        detail = peer_detail(raw, token or "", cred or "")
-        return False, f"HTTP {e.code}: {detail}".strip()
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
-        # http.client.HTTPException (BadStatusLine / IncompleteRead) is NOT an
-        # OSError subclass, and a malformed reply from one peer must not
-        # escape and crash the fan-out batch.
-        return False, str(e)
+        resp = control_post(
+            "/grouping/set",
+            body,
+            base_url=f"http://{target}:{CONTROL_PORT}",
+            timeout=CONTROL_HTTP_TIMEOUT_SEC,
+            headers=headers,
+            max_bytes=PEER_RESPONSE_MAX_BYTES,
+        )
+    except ControlError as e:
+        # A malformed or absent reply from one peer must not escape and crash
+        # the fan-out batch.
+        return False, peer_detail(str(e), token or "", cred or "")
+    if resp.ok:
+        return True, _grouping_set_success_detail(resp.status, resp.body)
+    detail = peer_detail(resp.body, token or "", cred or "")
+    return False, f"HTTP {resp.status}: {detail}".strip()
 
 
 def _grouping_set_success_detail(status: int, raw: bytes) -> str:
@@ -360,14 +352,6 @@ def _grouping_set_success_detail(status: int, raw: bytes) -> str:
     if payload.get("reconciler_kicked"):
         return "Saved; audio update scheduled."
     return f"HTTP {status}"
-
-
-def _read_peer_response(response) -> bytes | None:
-    """Read one small peer-control response, or None when it exceeds the cap."""
-    if not hasattr(response, "read"):
-        return b""
-    raw = response.read(PEER_RESPONSE_MAX_BYTES + 1)
-    return raw if len(raw) <= PEER_RESPONSE_MAX_BYTES else None
 
 
 # Caps the pool so a large household can't spawn an unbounded number of
@@ -487,20 +471,23 @@ def _get_remote_json_result(
     timeout: float,
 ) -> tuple[dict | None, str | None]:
     """GET one bounded peer JSON object with a small diagnostic result."""
-    url = f"http://{target}:{CONTROL_PORT}{path}"
-    req = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if not (200 <= r.status < 300):
-                return None, f"speaker returned HTTP {r.status}"
-            raw = _read_peer_response(r)
-            if raw is None:
-                return None, "speaker returned an oversized response"
-            parsed = json.loads(raw.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return None, f"speaker returned HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        resp = control_get(
+            path,
+            base_url=f"http://{target}:{CONTROL_PORT}",
+            timeout=timeout,
+            max_bytes=PEER_RESPONSE_MAX_BYTES,
+        )
+    except ControlResponseTooLarge:
+        # The speaker ANSWERED; calling that unreachable would send the
+        # operator to check power and cabling that are both fine.
+        return None, "speaker returned an oversized response"
+    except ControlError:
         return None, "speaker is unreachable — check its power and network"
+    if not resp.ok:
+        return None, f"speaker returned HTTP {resp.status}"
+    try:
+        parsed = resp.json()
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, "speaker returned an invalid response"
     if not isinstance(parsed, dict):

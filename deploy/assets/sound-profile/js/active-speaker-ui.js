@@ -17,15 +17,6 @@ export function outputStatusClass(statusValue) {
   return ' status-pill--planned';
 }
 
-export function humanMode(modeValue) {
-  return {
-    full_range_passive: 'Passive/full range',
-    active_2_way: 'Active 2-way',
-    active_3_way: 'Active 3-way',
-    subwoofer: 'Subwoofer'
-  }[modeValue] || modeValue || 'Unknown';
-}
-
 export function humanRole(role) {
   return {
     full_range: 'Full range',
@@ -436,14 +427,7 @@ function commissionIssueReason(codes) {
   // something the household cannot fix by retrying. Each names the state and
   // where to look WITHOUT the operator's shell command — those remedies live on
   // the CLI and journal surfaces, never here (#2344, #2412).
-  //
-  // The two arming codes share one sentence because the household ACTION is the
-  // same for both; the two operator remedies are what differ, and they belong
-  // to two different reconcilers.
-  if (
-    codes.indexOf('commissioning_ring_feed_unarmed') >= 0 ||
-    codes.indexOf('commissioning_active_endpoint_unarmed') >= 0
-  ) {
+  if (codes.indexOf('commissioning_active_endpoint_unarmed') >= 0) {
     return 'This speaker’s output path isn’t finished setting up, so driver ' +
       'tests can’t run yet. Open System status.';
   }
@@ -645,30 +629,3 @@ export function levelMatchSummary(baseline) {
   };
 }
 
-export function playbackResultMessage(playback, fallback, normalizeMessage) {
-  playback = playback || {};
-  var issues = Array.isArray(playback.issues) ? playback.issues : [];
-  for (var i = 0; i < issues.length; i += 1) {
-    var issue = issues[i] || {};
-    var code = String(issue.code || '').toLowerCase();
-    var message = String(issue.message || issue.label || issue.code || '').trim();
-    if (
-      code === 'audio_backend_not_enabled' ||
-      code === 'test_pcm_required' ||
-      code === 'test_pcm_forbidden_main_lane'
-    ) {
-      return 'Driver tests are not available on this install yet.';
-    }
-    if (code === 'tone_plan_not_ready') {
-      return 'JTS could not prepare that driver test. Choose the driver again so it can rebuild the safe test setup.';
-    }
-    if (message) {
-      return typeof normalizeMessage === 'function' ?
-        normalizeMessage(message) :
-        message;
-    }
-  }
-  if (playback.status === 'blocked') return 'JTS could not start that test. Choose the driver again to try.';
-  if (playback.status === 'failed') return 'That test did not finish. Choose the driver again to try.';
-  return fallback || 'No sound played.';
-}

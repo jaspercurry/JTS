@@ -32,12 +32,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
+import jasper.control.handlers.peering as srv_peering
 from jasper.control.server import (
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.control.volume_ops import VOLUME_MAX_DB, VOLUME_MIN_DB
-from jasper.volume_curve import db_to_percent
+from jasper.platform.control_client import PEER_RESPONSE_MAX_BYTES, ControlError
 
 from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
@@ -85,15 +85,6 @@ def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
         "detail": "choose and save a speaker layout before using audio",
     }
     assert setup is blocked
-
-
-# --- pure helpers ---
-
-
-def test_db_to_percent_endpoints():
-    assert db_to_percent(VOLUME_MIN_DB) == 0
-    assert db_to_percent(VOLUME_MAX_DB) == 100
-    assert db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
 
 
 # --- management request guardrails ---
@@ -785,7 +776,7 @@ def _peering_env(monkeypatch):
     """Stub peering config, reset `_peering_task` around the test, and hand
     back the modules so the test can install its own FakePeeringDaemon on
     `peering_daemon_mod.PeeringDaemon`."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
     import jasper.peering as peering_pkg
     import jasper.peering.daemon as peering_daemon_mod
 
@@ -912,7 +903,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     fail-LOUD-invalid configs all resolve to None (local handling)."""
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         effective_role, "read_effective_role_status", lambda: {},
@@ -931,7 +922,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
 
 
 def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
     import jasper.multiroom.config as mcfg
     import jasper.multiroom.effective_role as effective_role
 
@@ -952,41 +943,27 @@ def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
     assert srv_mod._pair_follower_leader_addr() is None
 
 
-class _FakeUpstream:
-    """Context-manager response double for urllib.request.urlopen."""
-
-    def __init__(self, payload: bytes):
-        self._payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def read(self):
-        return self._payload
-
-
 @pytest.fixture
 def follower_server(monkeypatch, server_with_coordinator):
     """The coordinator server, with this speaker patched into an active
     bonded follower and the upstream leader call captured."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
+    from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
     )
     seen: list = []
 
-    def fake_urlopen(req, timeout=None):
-        seen.append((req, timeout))
-        return _FakeUpstream(
+    def fake_request(method, path, **kwargs):
+        seen.append((method, path, kwargs))
+        return ControlResponse(
+            200,
             b'{"db": -15.0, "percent": 70, "muted": false, '
-            b'"restore_percent": null}'
+            b'"restore_percent": null}',
         )
 
-    monkeypatch.setattr(srv_mod, "_pair_urlopen", fake_urlopen)
+    monkeypatch.setattr(srv_mod, "_pair_request", fake_request)
     base, fake = server_with_coordinator
     return base, fake, seen
 
@@ -1004,11 +981,14 @@ def test_follower_get_volume_forwards_to_leader(follower_server):
         "pair_leader": "jts.local",
     }
     assert fake.calls == []  # the LOCAL coordinator was never touched
-    req, timeout = seen[0]
-    assert req.full_url.startswith("http://jts.local:")
-    assert req.full_url.endswith("/volume")
-    assert req.get_header("X-jts-pair-forwarded") == "1"
-    assert timeout == 2.5
+    method, path, kwargs = seen[0]
+    assert method == "GET"
+    assert kwargs["base_url"].startswith("http://jts.local:")
+    assert path == "/volume"
+    assert kwargs["headers"] == {srv_peering._PAIR_FORWARD_HEADER: "1"}
+    assert kwargs["timeout"] == 2.5
+    # The forward is bounded — a leader that streams must not be read whole.
+    assert kwargs["max_bytes"] == PEER_RESPONSE_MAX_BYTES
 
 
 def test_follower_post_volume_set_relays_body_verbatim(follower_server):
@@ -1017,9 +997,9 @@ def test_follower_post_volume_set_relays_body_verbatim(follower_server):
     assert status == 200
     assert body["pair_leader"] == "jts.local"
     assert fake.calls == []
-    req, _ = seen[0]
-    assert req.full_url.endswith("/volume/set")
-    assert json.loads(req.data) == {"percent": 35}
+    _, path, kwargs = seen[0]
+    assert path == "/volume/set"
+    assert json.loads(kwargs["data"]) == {"percent": 35}
 
 
 def test_follower_forward_loop_is_broken(follower_server):
@@ -1042,16 +1022,16 @@ def test_follower_forward_loop_is_broken(follower_server):
 def test_follower_forward_failure_is_502_with_leader_named(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
     )
 
-    def exploding_urlopen(req, timeout=None):
-        raise OSError("no route to host")
+    def exploding_request(method, path, **kwargs):
+        raise ControlError("no route to host")
 
-    monkeypatch.setattr(srv_mod, "_pair_urlopen", exploding_urlopen)
+    monkeypatch.setattr(srv_mod, "_pair_request", exploding_request)
     base, fake = server_with_coordinator
     status, body = _get(f"{base}/volume")
     assert status == 502
@@ -1066,20 +1046,17 @@ def test_follower_forward_relays_leader_http_verdict(
     """A leader that ANSWERS with 4xx/5xx is relayed verbatim (status +
     JSON body, pair_leader-tagged) — never mislabeled 'unreachable'. Only
     transport failures take the 502 path."""
-    import io
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.peering as srv_mod
+    from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
         srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
     )
 
-    def rejecting_urlopen(req, timeout=None):
-        raise urllib.error.HTTPError(
-            req.full_url, 400, "Bad Request", hdrs=None,
-            fp=io.BytesIO(b'{"error": "percent must be an integer"}'),
-        )
+    def rejecting_request(method, path, **kwargs):
+        return ControlResponse(400, b'{"error": "percent must be an integer"}')
 
-    monkeypatch.setattr(srv_mod, "_pair_urlopen", rejecting_urlopen)
+    monkeypatch.setattr(srv_mod, "_pair_request", rejecting_request)
     base, fake = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {"percent": "shout"})
     assert status == 400
@@ -1096,8 +1073,8 @@ def test_follower_transport_toggle_forwards_to_leader(follower_server):
     status, body = _post(f"{base}/transport/toggle", {})
     assert status == 200
     assert body["pair_leader"] == "jts.local"
-    req, _ = seen[0]
-    assert req.full_url.endswith("/transport/toggle")
+    _, path, _ = seen[0]
+    assert path == "/transport/toggle"
 
 
 def test_follower_source_select_forwards_to_leader(follower_server):
@@ -1108,9 +1085,9 @@ def test_follower_source_select_forwards_to_leader(follower_server):
     assert status == 200
     assert body["pair_leader"] == "jts.local"
     assert fake.calls == []
-    req, _ = seen[0]
-    assert req.full_url.endswith("/source/select")
-    assert json.loads(req.data) == {"source": "airplay"}
+    _, path, kwargs = seen[0]
+    assert path == "/source/select"
+    assert json.loads(kwargs["data"]) == {"source": "airplay"}
 
 
 def test_follower_get_mic_reports_pair_parked_state(follower_server):

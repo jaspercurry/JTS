@@ -127,14 +127,10 @@ Group=jasper
 # lets the wizards write/read HA + Spotify credentials and token caches.
 # `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
-# U3/P6c — `jts-ring` (write access to /dev/shm/jts-ring, so the aplay
-# children the wizards spawn via jasper.audio_measurement.correction_lane
-# can create the correction lane's SHM ring while this box has that lane
-# armed (`jasper-audio-config renderer-lanes --arm correction`); the ring
-# FILE's mode comes from the helper's per-spawn umask, so this unit needs
-# no UMask= line for it). On an unarmed box — the fleet default — spawns
-# stay on the correction_substream aloop alias and the membership grants
-# only directory write, pointing nothing at a ring.
+# `jts-ring` is a READ grant: the /rooms/ wizards (jasper/web/rooms_setup.py,
+# pair_flow.py) import jasper.multiroom.state, whose ring_flow_state opens
+# /dev/shm/jts-ring/grouping.ring (0660, group jts-ring) O_RDONLY for its
+# header. This unit writes no ring.
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service

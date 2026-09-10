@@ -4,10 +4,8 @@
 
 """Playback lifecycle for active-speaker tone plans.
 
-The normal artifact backend never emits audio. Product commissioning routes
-continuous tones through the protected active-speaker graph. The only generic
-audio backend kept here is an explicit lab ``aplay`` hook pointed at a dedicated
-test PCM by environment.
+The artifact backend never emits audio. Product commissioning routes
+continuous tones through the protected active-speaker graph instead.
 """
 
 from __future__ import annotations
@@ -17,12 +15,11 @@ import logging
 import math
 import os
 import struct
-import subprocess
 import time
 import uuid
 import wave
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Protocol
 
 from ._common import bounded_int as _bounded_int, issue as _issue
 from .calibration_level import (
@@ -30,12 +27,7 @@ from .calibration_level import (
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
 )
-from .audible_policy import (
-    audible_policy_payload,
-    audible_role_allowed,
-    audible_role_block_code,
-    audible_role_block_message,
-)
+from .audible_policy import audible_policy_payload
 from jasper.audio_lab import (
     AUDIO_LAB_APLAY_BACKEND,
     AUDIO_LAB_TEST_PCM_ENV,
@@ -49,10 +41,6 @@ from .driver_protection import (
     LOW_LIMIT_LEGACY_PROTECTION_FILTER,
     driver_protection_payload,
     normalise_driver_role,
-)
-from .safe_playback import (
-    floor_audio_confirmed_for_target,
-    floor_audio_retry_allowed_for_target,
 )
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
@@ -75,10 +63,8 @@ MAX_ARTIFACT_RETENTION = 100
 MIN_PLAYBACK_FREQUENCY_HZ = 20.0
 MAX_PLAYBACK_FREQUENCY_HZ = 20_000.0
 INT16_PEAK = 32767
-DEFAULT_APLAY_BINARY = "aplay"
 DEFAULT_AUDIO_BACKEND = "wav_artifact"
 APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
-APLAY_TIMEOUT_PAD_SEC = 1.0
 # Every daemon-owned lane an audio-lab tone must NEVER be injected into. These
 # are sinks and readers in the RUNTIME graph, not test-tone injection points:
 # writing a tone into one of them puts lab audio on a live speaker path.
@@ -118,18 +104,6 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 #   - an flock's identity is the PATHNAME, so unlinking `<ring>.writer.lock`
 #     voids exclusivity SILENTLY, with no log line between two live writers.
 # A hearing-safety fence should not rest on a guard with those three holes.
-#
-# RENDERER-lane rings (jts_ring_lane_* / *_ring_lane, incl. the correction
-# lane's — U3/P6) are still deliberately NOT fenced, but on the CONSEQUENCE
-# asymmetry rather than the mechanism one this paragraph used to claim: a lane
-# ring is INGRESS into fan-in, not a sink, so a tone landing there is wrong
-# output on the ordinary program path — not audio placed past the crossover.
-# Their ioplug writer side takes the same P6a flock, so a stray second writer
-# gets a clean bounded-wait EBUSY. The env-chosen test PCM here is operator
-# intent and does NOT silently follow the lane map: an operator who arms the
-# correction lane and wants lab tones on the ring re-points
-# JASPER_AUDIO_LAB_TEST_PCM themselves; one pointed at a busy armed lane fails
-# loudly with EBUSY.
 FORBIDDEN_TEST_PCM_TOKENS = (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",
@@ -148,11 +122,6 @@ FORBIDDEN_TEST_PCM_TOKENS = (
 )
 
 logger = logging.getLogger(__name__)
-
-AplayRunner = Callable[
-    [Sequence[str], float],
-    subprocess.CompletedProcess[str],
-]
 
 
 class TonePlaybackBackend(Protocol):
@@ -242,19 +211,6 @@ def _artifact_retention(value: Any = None) -> int:
     )
 
 
-def _aplay_runner(
-    argv: Sequence[str],
-    timeout_sec: float,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(argv),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
-    )
-
-
 def _forbidden_test_pcm_token(pcm: str) -> str | None:
     """Return a daemon-owned PCM token that must not be used as a test writer."""
 
@@ -280,11 +236,10 @@ def tone_backend_status(
     audio-lab backend used to be reported as audio-enabled, but no production
     path has ever consulted that selection: all four ``start_tone_playback``
     call sites pass ``backend=None``, which always resolves to
-    :class:`WavArtifactTonePlaybackBackend`. The one function that turned this
-    status into an :class:`AplayTonePlaybackBackend` (``enabled_audio_backend``)
-    had zero callers and was deleted. So an operator who set the knob was told
-    "audio_enabled" while the tone still rendered silently to a WAV --- this
-    reports a ``tone_backend_not_wired`` blocker instead of that quiet lie. The
+    :class:`WavArtifactTonePlaybackBackend`. No backend that emits audio is
+    wired up. So an operator who set the knob was told "audio_enabled" while
+    the tone still rendered silently to a WAV --- this reports a
+    ``tone_backend_not_wired`` blocker instead of that quiet lie. The
     operator-typed value is still validated (unknown backend, missing test PCM,
     forbidden daemon lane) so a stale or wrong setting is named, not swallowed.
     """
@@ -348,12 +303,7 @@ def tone_backend_status(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": TONE_BACKEND_STATUS_KIND,
         "status": status,
-        "backend": requested
-        if requested in {
-            DEFAULT_AUDIO_BACKEND,
-            APLAY_AUDIO_BACKEND,
-        }
-        else requested,
+        "backend": requested,
         "artifact_backend": DEFAULT_AUDIO_BACKEND,
         "audio_backend": requested if audio_enabled else None,
         "tone_playback_implemented": audio_enabled,
@@ -589,10 +539,6 @@ def _plan_declared_low_limit_hz(protection: dict[str, Any] | None) -> float | No
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
-
-
-def _tone_at_floor(tone: dict[str, Any]) -> bool:
-    return float(tone.get("level_dbfs") or 0.0) <= MIN_TEST_LEVEL_DBFS + 1e-6
 
 
 def _plan_with_bounded_tone(plan: dict[str, Any], tone: dict[str, Any]) -> dict[str, Any]:
@@ -892,104 +838,6 @@ class WavArtifactTonePlaybackBackend:
         }
 
 
-class AplayTonePlaybackBackend:
-    """Play a bounded generated artifact through an explicitly configured PCM."""
-
-    backend_id = APLAY_AUDIO_BACKEND
-    audio_backend = True
-
-    def __init__(
-        self,
-        *,
-        pcm: str,
-        aplay_binary: str = DEFAULT_APLAY_BINARY,
-        runner: AplayRunner = _aplay_runner,
-        artifact_dir: str | Path | None = None,
-        sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
-        artifact_retention: int | None = None,
-    ) -> None:
-        self.pcm = str(pcm or "").strip()
-        if not self.pcm:
-            raise ValueError("audio-lab test PCM is required")
-        forbidden_token = _forbidden_test_pcm_token(self.pcm)
-        if forbidden_token is not None:
-            logger.warning(
-                "event=audio_lab.tone_backend.forbidden_test_pcm "
-                "pcm=%r token=%r",
-                self.pcm,
-                forbidden_token,
-            )
-            raise ValueError(
-                f"audio-lab test PCM '{self.pcm}' targets a daemon-owned "
-                f"audio lane ('{forbidden_token}'); audible channel tests must "
-                f"use a dedicated audio-lab PCM"
-            )
-        self.aplay_binary = str(aplay_binary or DEFAULT_APLAY_BINARY)
-        self.runner = runner
-        self.artifact_backend = WavArtifactTonePlaybackBackend(
-            artifact_dir=artifact_dir,
-            sample_rate_hz=sample_rate_hz,
-            artifact_retention=artifact_retention,
-        )
-
-    def start(
-        self,
-        plan: dict[str, Any],
-        *,
-        playback_id: str,
-        now_epoch: float,
-    ) -> dict[str, Any]:
-        artifact_result = self.artifact_backend.start(
-            plan,
-            playback_id=playback_id,
-            now_epoch=now_epoch,
-        )
-        artifact = artifact_result.get("artifact") or {}
-        wav_path = str(artifact.get("wav_path") or "")
-        if not wav_path:
-            raise RuntimeError("tone artifact was not generated")
-        duration_sec = (
-            _bounded_int(
-                artifact.get("duration_ms"),
-                default=DEFAULT_TONE_DURATION_MS,
-                lo=MIN_TONE_DURATION_MS,
-                hi=MAX_TONE_DURATION_MS,
-            )
-            / 1000.0
-        )
-        argv = [self.aplay_binary, "-q", "-D", self.pcm, wav_path]
-        completed = self.runner(argv, duration_sec + APLAY_TIMEOUT_PAD_SEC)
-        if completed.returncode != 0:
-            stderr = (completed.stderr or "").strip().splitlines()
-            detail = stderr[0][:160] if stderr else f"exit {completed.returncode}"
-            raise RuntimeError(f"aplay failed: {detail}")
-        return {
-            "backend": self.backend_id,
-            "status": "completed",
-            "audio_emitted": True,
-            "audio_device": {
-                "pcm": self.pcm,
-                "command": Path(self.aplay_binary).name,
-            },
-            "artifact": artifact,
-        }
-
-    def stop(
-        self,
-        *,
-        playback_id: str | None,
-        reason: str,
-        now_epoch: float,
-    ) -> dict[str, Any]:
-        return {
-            "backend": self.backend_id,
-            "status": "stopped",
-            "playback_id": playback_id,
-            "reason": reason,
-            "audio_emitted": False,
-        }
-
-
 def start_tone_playback(
     plan: dict[str, Any],
     *,
@@ -1005,7 +853,6 @@ def start_tone_playback(
     selected = backend or WavArtifactTonePlaybackBackend()
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
-    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
@@ -1020,81 +867,6 @@ def start_tone_playback(
         driver_role,
         driver_protection=driver_protection,
     )
-    if audio_backend and not allow_audio:
-        issues.append(
-            _issue(
-                "blocker",
-                "audio_playback_not_authorized",
-                "audible channel tests require an explicit per-request authorization",
-            )
-        )
-    if audio_backend and not plan.get("playback_allowed"):
-        issues.append(
-            _issue(
-                "blocker",
-                "playback_not_allowed_by_readiness",
-                "readiness gates did not authorize audible playback for this target",
-            )
-        )
-    if (
-        audio_backend
-        and not safety.get("protected_startup_loaded")
-    ):
-        issues.append(
-            _issue(
-                "blocker",
-                "protected_startup_config_not_loaded",
-                (
-                    "audible channel tests require the protected startup DSP "
-                    "to be loaded and current"
-                ),
-            )
-        )
-    if audio_backend and not audible_role_allowed(
-        driver_role,
-        driver_protection=driver_protection,
-    ):
-        issues.append(
-            _issue(
-                "blocker",
-                audible_role_block_code(driver_role),
-                audible_role_block_message(driver_role),
-            )
-        )
-    if audio_backend:
-        for issue in driver_protection.get("issues", []):
-            if isinstance(issue, dict):
-                issues.append(issue)
-        max_auto_level = driver_protection.get("max_auto_level_dbfs")
-        try:
-            max_auto_level = float(max_auto_level)
-        except (TypeError, ValueError):
-            max_auto_level = MAX_TEST_LEVEL_DBFS
-        if tone["level_dbfs"] > max_auto_level + 1e-6:
-            issues.append(
-                _issue(
-                    "blocker",
-                    "driver_auto_level_cap_exceeded",
-                    "tone level exceeds the driver-specific closed-loop cap",
-                )
-            )
-    if (
-        audio_backend
-        and not _tone_at_floor(tone)
-        and not floor_audio_confirmed_for_target(safe_session, target)
-        and not floor_audio_retry_allowed_for_target(safe_session, target)
-    ):
-        issues.append(
-            _issue(
-                "blocker",
-                "floor_audio_not_confirmed",
-                (
-                    "audible channel tests above the calibration floor require "
-                    "a successful floor-level audible test for the same target "
-                    "and safety session"
-                ),
-            )
-        )
     if issues:
         return {
             "artifact_schema_version": SCHEMA_VERSION,

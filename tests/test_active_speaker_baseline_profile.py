@@ -66,6 +66,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
+    candidate_room_peqs,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE, PeqFilter
@@ -2970,35 +2971,26 @@ def test_ring_reemit_refuses_a_typod_wire_instead_of_raising(
 def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     tmp_path: Path,
 ) -> None:
-    """Question C: a ring-endpoint graph carries the RING's CamillaDSP geometry,
-    not the box's ``CamillaFloor``.
+    """Question C: a ring-endpoint graph carries the RING's CamillaDSP geometry.
 
-    jts3's DAC8x floor is ``CamillaFloor(256, 1536)``. Its
-    ``target_level`` alone (1536) is six times the whole 2-slot ring's
-    256-frame capacity, so a ring graph emitted at the floor is a second shear
-    waiting at the same rung the format shear halted. Both numbers come from the
-    ONE home that already encodes the certified ring pairing for the stereo ring
-    (``jasper.fanin_coupling``'s ``RING_CAMILLA_*``), never a second copy.
+    The box's own default target (2048) is eight times the whole 2-slot ring's
+    256-frame capacity, so a ring graph emitted at it is a second shear waiting
+    at the same rung the format shear halted. All four numbers come from the ONE
+    home that encodes the certified ring pairing (``jasper.fanin_coupling``'s
+    ``RING_CAMILLA_*``), never a second copy.
     """
     from jasper.active_speaker.baseline_profile import (
         recompose_applied_baseline_yaml,
     )
-    from jasper.audio_hardware.dac import camilla_floor_for
     from jasper.camilla_config_contract import parse_camilla_devices_config
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
     )
 
     topology, applied = _applied_mono_baseline(tmp_path)
-    floor = camilla_floor_for(topology.hardware.device_id)
-    assert floor is not None, (
-        "this test's whole point is a box whose DAC declares a CamillaDSP floor; "
-        f"{topology.hardware.device_id} declares none, so it proves nothing"
-    )
-    assert floor.chunksize != RING_CAMILLA_CHUNKSIZE
-    assert floor.target_level != RING_CAMILLA_TARGET_LEVEL
 
     ring_yaml, issues = recompose_applied_baseline_yaml(
         topology,
@@ -3010,19 +3002,12 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     devices = parse_camilla_devices_config(ring_yaml)
     assert devices["chunksize"] == RING_CAMILLA_CHUNKSIZE
     assert devices["target_level"] == RING_CAMILLA_TARGET_LEVEL
-    assert "  enable_rate_adjust: false" in ring_yaml
-    # The ring pair is deliberately OUTSIDE CamillaFloor's own 4x rule (128/128
-    # would not construct as a floor): that rule sizes a rate-ADJUSTED
-    # resampler's steady-state fill, and the ring graph runs rate_adjust off.
-    with pytest.raises(ValueError, match="target_level"):
-        type(floor)(
-            chunksize=RING_CAMILLA_CHUNKSIZE,
-            target_level=RING_CAMILLA_TARGET_LEVEL,
-        )
+    assert devices["queuelimit"] == RING_CAMILLA_QUEUELIMIT
+    assert devices["enable_rate_adjust"] is False
 
-    # CONTROL: the ALSA active lane still takes the box's floor, resolved by the
-    # emitter at emit time. A helper that forced ring geometry everywhere would
-    # pass every assertion above and silently retune every unarmed box.
+    # CONTROL: the ALSA active lane still takes the box's own geometry, resolved
+    # by the emitter at emit time. A helper that forced ring geometry everywhere
+    # would pass every assertion above and silently retune every unarmed box.
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
@@ -3033,6 +3018,7 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     alsa_devices = parse_camilla_devices_config(alsa_yaml)
     assert alsa_devices["chunksize"] != RING_CAMILLA_CHUNKSIZE
     assert alsa_devices["target_level"] != RING_CAMILLA_TARGET_LEVEL
+    assert alsa_devices["queuelimit"] != RING_CAMILLA_QUEUELIMIT
 
 
 def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> None:
@@ -4903,11 +4889,7 @@ _ROOM_CORRECTION: dict[str, Any] = {
 def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
     tmp_path: Path,
 ) -> None:
-    """A v2 candidate's own room set reaches the graph it applies: the PEQs
-    round-trip back out of the emitted config text, their boost is absorbed by
-    active_baseline_headroom, and the applied-now record lands on the payload's
-    top level (never inside the fingerprinted recomposition_snapshot). A
-    candidate without the field emits no room stage at all."""
+    """An accepted room layer is emitted and persisted for recomposition."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
@@ -4951,15 +4933,74 @@ def test_build_baseline_profile_candidate_emits_the_candidates_room_peqs(
         _headroom_gain_db(plain_text) - 3.0
     )
     assert payload["room_correction"] == candidate.room_correction
-    assert "room_correction" not in payload["recomposition_snapshot"]
+    assert payload["recomposition_snapshot"]["room_correction"] == candidate.room_correction
+
+    applied = {**payload, "status": "applied"}
+    preserved, preserved_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        bass_extension_profile=None,
+    )
+    speaker_only, speaker_only_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=(),
+        bass_extension_profile=None,
+    )
+    assert preserved_issues == speaker_only_issues == []
+    assert preserved is not None and speaker_only is not None
+    assert extract_room_peqs_from_config_text(preserved) == list(
+        candidate_room_peqs(candidate)
+    )
+    assert extract_room_peqs_from_config_text(speaker_only) == []
 
     assert plain["status"] == "ready_to_apply", plain["issues"]
     assert plain["room_correction"] == {}
+    assert "room_correction" not in plain["recomposition_snapshot"]
     assert [
         name
         for name in yaml_lib.safe_load(plain_text)["filters"]
         if name.startswith("room_peq_")
     ] == []
+
+
+def test_legacy_applied_room_mirror_survives_frozen_read_and_recompose(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset, room_correction=_ROOM_CORRECTION)
+    legacy = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    legacy["status"] = "applied"
+    legacy["recomposition_snapshot"].pop("room_correction")
+
+    frozen = baseline_profile_mod._frozen_applied_profile(legacy)
+    assert frozen is not None
+    assert frozen["room_correction"] == candidate.room_correction
+    recomposed, recompose_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=frozen,
+        bass_extension_profile=None,
+    )
+    assert recompose_issues == []
+    assert recomposed is not None
+    assert extract_room_peqs_from_config_text(recomposed) == list(
+        candidate_room_peqs(candidate)
+    )
 
 
 def test_build_baseline_profile_candidate_threads_linearization_outcome(

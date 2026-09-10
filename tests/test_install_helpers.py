@@ -854,6 +854,31 @@ def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_pat
     )
 
 
+@pytest.mark.parametrize("function", ["install_jasper", "install_streambox_jasper"])
+def test_runtime_install_keeps_shared_env_readable_during_upgrade(tmp_path, function):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(mode=0o755)
+    env_file = env_dir / "jasper.env"
+    env_file.write_text("JASPER_HOSTNAME=jts.local\n")
+    env_file.chmod(0o640)
+    script = f"""
+set -eu
+source {shlex.quote(str(_INSTALL_LIB_DIR / 'python-runtime.sh'))}
+ENV_DIR={shlex.quote(str(env_dir))}
+INSTALL_DIR={shlex.quote(str(tmp_path / 'install'))}
+ensure_state_dir() {{ :; }}
+install() {{
+    command install "$@"
+    if [[ "${{!#}}" == "$ENV_DIR" ]]; then exit 23; fi
+}}
+{function}
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=5)
+    assert result.returncode == 23
+    assert stat.S_IMODE(env_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
+
+
 def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_path):
     """The streambox refresh re-asserts JASPER_INSTALL_PROFILE on an EXISTING
     jasper.env. It used to `sed -i` the key out and append it back unquoted,
@@ -2005,14 +2030,11 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
 
 
-def test_shairport_configure_enables_airplay2_and_pipe_backend():
-    """The shairport-sync source build must compile in BOTH AirPlay 2 and
-    the pipe output backend. AirPlay 2 is the whole reason we source-build
-    (Trixie apt is AP1-only); --with-pipe ships the pipe backend dormant so a
-    future shairport->pipe->reader low-latency path needs no rebuild. The flag
-    lives only on the ./configure line in renderers.sh; this contract test is
-    what keeps a refactor of that long multi-line invocation from silently
-    dropping a backend, and couples the flag to its rebuild-force trigger."""
+def test_shairport_configure_enables_airplay2():
+    """AirPlay 2 is the whole reason we source-build shairport-sync (Trixie
+    apt is AP1-only). The flag lives only on the ./configure line in
+    renderers.sh; this contract test keeps a refactor of that long multi-line
+    invocation from silently dropping the backend."""
     text = _RENDERERS_LIB.read_text(encoding="utf-8")
 
     # Isolate the shairport ./configure invocation (a backslash-continued
@@ -2025,17 +2047,7 @@ def test_shairport_configure_enables_airplay2_and_pipe_backend():
     flags = match.group("flags")
 
     assert "--with-airplay-2" in flags
-    assert "--with-pipe" in flags
-    # --with-stdout is intentionally NOT built (no planned stdout pipeline;
-    # the design target is a named-pipe reader, not shairport-as-a-pipe-stage).
     assert "--with-stdout" not in flags
-
-    # The rebuild trigger must feature-detect the pipe backend, or a flag-only
-    # change is a silent no-op on already-built Pis (-V already has "AirPlay2").
-    # The pattern is anchored so the "pipe" token matches whether it is
-    # followed by another feature token or sits at the end of the -V string,
-    # so a future trim of the feature list can't cause an infinite rebuild.
-    assert "grep -qE -- '-pipe(-|$)'" in text
 
 
 def test_install_curl_fetches_are_bounded_and_retried():
@@ -3745,6 +3757,7 @@ def test_retired_leftovers_table_file_targets_are_scoped():
     rows = re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
     kinds = {kind for kind, _ in rows}
     assert kinds == {"unit", "file"}
+    file_targets: set[str] = set()
     for kind, body in rows:
         if kind != "file":
             continue
@@ -3754,3 +3767,24 @@ def test_retired_leftovers_table_file_targets_are_scoped():
             assert target.startswith(
                 ("${STATE_DIR}/", "${SYSTEMD_DIR}/", "${CAMILLA_CONF}/", "/etc/")
             ), target
+        file_targets.update(targets)
+    # #4336: the Bluetooth role store holds the MAC of every device the box
+    # ever paired and lost its last writer, reader and mode-healer in #4333.
+    assert "${STATE_DIR}/bt_roles.json" in file_targets
+
+
+def test_retired_leftovers_table_retires_the_renderer_lane_ingress():
+    """Static pin: an upgraded box carries the never-armed per-renderer ring
+    ingress as an arm map and a conf.d drop-in, and the retirement table names
+    both -- nothing else in the tree removes either."""
+    text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
+    targets = {
+        target
+        for kind, body in re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
+        if kind == "file"
+        for target in body.split("|", 1)[0].split()
+    }
+    assert {
+        "${STATE_DIR}/renderer_lanes.env",
+        "/etc/alsa/conf.d/61-jts-renderer-lanes.conf",
+    } <= targets

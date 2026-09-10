@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
-# correction_play_device is the lane's one transport reader: payloads resolve
-# the device fresh so they report the transport the spawn actually used.
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
@@ -44,6 +42,7 @@ from jasper.audio_hardware.i2s_hat import (
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
+from jasper.platform import wire
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
@@ -1536,7 +1535,7 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     """Best-effort return from setup-only routing to normal latest-source-wins."""
 
     try:
-        payload = _commission_tone_mux_command("AUTO")
+        payload = _commission_tone_mux_command(wire.MUX_AUTO)
     except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
         log_event(
             logger,

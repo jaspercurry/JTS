@@ -104,6 +104,7 @@ from ..secret_redaction import redact_secrets
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     SECRET_ENV_MODE,
+    access_log_line,
     begin_request,
     csrf_field_html,
     dispatch_get,
@@ -925,7 +926,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
+            logger.info(
+                "%s - %s", self.address_string(), access_log_line(fmt, *args),
+            )
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)

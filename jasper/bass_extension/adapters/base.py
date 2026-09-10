@@ -45,6 +45,14 @@ class CabinetInfo:
 
 
 COMMISSION_FLOOR_HZ = 20.0
+# Leave room for response-grid sampling and four-decimal CamillaDSP emission.
+TARGET_RESPONSE_RESERVE_DB = 0.01
+
+
+def target_response_grid() -> np.ndarray:
+    """Dense grid used to bound an emitted target's actual filter gain."""
+
+    return np.concatenate(([0.0], np.geomspace(1.0, 1_000.0, 8192)))
 
 
 def woofer_curve(

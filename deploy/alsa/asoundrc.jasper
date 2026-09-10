@@ -46,14 +46,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   shairport-sync     → pcm.shairport_substream   → hw:Loopback,0,1
 #   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
 #   USB (UAC2 gadget)  → jasper-fanin DIRECT-captures hw:UAC2Gadget (no aloop
-#                        write alias — the old jasper-usbsink → pcm.usbsink_substream
-#                        → hw:Loopback,0,3 solo path was removed 2026-07-10;
-#                        fan-in still opens hw:Loopback,1,3 as the usbsink lane's
-#                        idle fallback when USB Audio Input is off)
+#                        alias at all: pair 3 has no writer and fan-in does not
+#                        open it — with USB Audio Input off the lane is absent
+#                        and renders silence)
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
 #                                                       │
 #                                                       ▼ (loop)
-#   jasper-fanin reads        hw:Loopback,1,0..4
+#   jasper-fanin reads        hw:Loopback,1,0..2 and 1,4
 #       sums sample-wise
 #       writes the sum      → SHM ring → jasper-camilla → SHM ring
 #                                                               │
@@ -82,12 +81,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #
 # WIDTH: snd-aloop pins BOTH halves of a cable to one format, so the slaves
 # below and jasper-fanin's capture opens must name the same one. That width is
-# not this file's to choose — it is the wire an undeclared box resolves
-# (`JASPER_FANIN_RING_WIRE_FORMAT` defaults to S32_LE), which
-# `mixer::lane_capture_format` resolves on the reader side. This file ships
-# rather than rendering per box, so pinning the narrow rollback means deploying
-# a narrowed source; jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared
-# box by name until then.
+# the program wire, S32_LE — `mixer::pcm_open::LANE_CAPTURE_FORMAT` on the
+# reader side. jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared box
+# by name.
 
 # Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
 # substream allocation and the reasoning behind it (8 pairs per card, pinned

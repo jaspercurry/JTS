@@ -209,7 +209,6 @@ def _lane(**overrides: object) -> dict:
         "xrun_count": 0,
         "catchup_resync_frames": 0,
         "catchup_events": 0,
-        "trim": {"trims": 0, "trimmed_frames": 0, "pending": False},
     }
     base.update(overrides)
     return base
@@ -289,6 +288,9 @@ class FakeController:
 
     async def get_config_file_path(self) -> str:
         return str(self.config_path)
+
+    async def normalize_config_raw(self, config: str, *, best_effort: bool = False) -> str:
+        return config
 
     async def set_active_config_raw(self, raw: str) -> bool:
         self.calls.append("set_active_config_raw")

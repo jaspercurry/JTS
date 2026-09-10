@@ -22,13 +22,11 @@ from .log_event import log_event
 if TYPE_CHECKING:
     from camilladsp import CamillaClient
 
-    from .volume_owner import VolumeClaimHandle, VolumeOwner
-
 # `camilladsp` is a Pi-side runtime dep (pycamilladsp wraps the Rust binary's
 # websocket API). Lazy-imported in `CamillaController._ensure` — the only
 # place it's used at runtime — so this module can be imported on a dev
 # machine without camilladsp in the venv. Parallel to the sounddevice /
-# openwakeword treatment in audio_io.py and wake.py. The `CamillaClient`
+# openwakeword treatment in mic_capture.py and wake.py. The `CamillaClient`
 # type annotations on `_client` and `_ensure`'s return are strings thanks
 # to `from __future__ import annotations`, so they need nothing at import
 # time. (Production code instantiates CamillaController in voice_daemon /
@@ -100,12 +98,12 @@ async def _duck_release_target_db(
 
     ``min(reference, current + duck_depth_db)`` — give back this holder's own
     attenuation and nothing else, and never end above the level that should be
-    in effect. Both halves are load-bearing, and the two duck holders here
-    (`CueDuck` and the graph-swap bracket) can interleave in either order:
+    in effect. Both halves are load-bearing even with the graph-swap bracket
+    as the only holder that ducks the main fader in production — a volume
+    change landing inside that bracket's window can go either way:
 
-    * replaying the entry snapshot strands the fader, because whichever holder
-      exits last replays a value the other one had already ducked — and a deep
-      drop is exactly what `maybe_reconcile_camilla` leaves alone;
+    * replaying the entry snapshot ignores that change, stranding the fader
+      at the pre-duck level instead of the one the change set;
     * a bare relative release fails the other way, clamping to 0 dB — loud —
       when a volume change lands inside the window.
 
@@ -1059,7 +1057,7 @@ def crossover_controller() -> CamillaController:
     Constructed in production by the live pair-balance-trim path
     (:func:`jasper.multiroom.runtime_balance._active_endpoint_camilla`, when
     ``cfg.role == "leader"``), reached from ``apply_local_trim`` /
-    ``apply_live_grouping_trim`` in ``jasper/control/server.py``.
+    ``apply_live_grouping_trim`` in ``jasper/control/handlers/grouping.py``.
     ``jasper-camilla-crossover.service`` itself is not boot-enabled — the
     multiroom reconciler arms/tears it down per-reconcile
     (``_systemctl_crossover_unit`` in ``jasper/multiroom/reconcile.py``) as an
@@ -1163,44 +1161,3 @@ def declare_main_volume_db(db: float) -> None:
         raise CamillaVolumeError(
             f"Camilla volume readback mismatch: wrote {db:.2f} dB, read {actual:.2f} dB"
         )
-
-
-class CueDuck:
-    """Transient-duck claim for brief cue playback.
-
-    Async context manager — `__aenter__` takes the claim, `__aexit__` gives it
-    back. The owner lands the release at ``min(reference, current + depth)``:
-    this duck's own attenuation back and nothing else, never above the level in
-    effect.
-
-    It used to replay a pre-duck snapshot instead, on the reasoning that a cue
-    is short and passive. That holds while a cue is the only duck, and fails as
-    soon as it interleaves with a graph-swap duck: whichever of the two exits
-    last replays a value the other had already ducked, and the fader is
-    stranded tens of dB quiet somewhere the reconciler's duck carve-out will
-    not heal.
-
-    Best-effort: if the attenuation cannot be established (camilla restarting)
-    the claim is refused, the cue plays unducked, and exit has nothing to undo.
-    """
-
-    def __init__(self, owner: "VolumeOwner", duck_db: float) -> None:
-        self._owner = owner
-        self._duck_db = duck_db
-        self._claim: "VolumeClaimHandle | None" = None
-
-    async def __aenter__(self) -> "CueDuck":
-        from .volume_owner import VolumeClaimRefused
-
-        try:
-            self._claim = await self._owner.acquire_duck(self._duck_db)
-        except VolumeClaimRefused:
-            # Don't pretend to duck. Exit is a no-op: nothing was taken.
-            self._claim = None
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        claim, self._claim = self._claim, None
-        if claim is None:
-            return
-        await self._owner.release(claim)

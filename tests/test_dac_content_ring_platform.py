@@ -487,8 +487,8 @@ def test_the_installer_ships_the_dac_content_confd():
     0644 is load-bearing (AGENTS.md, the PR #214 class): a definition only root
     can read is a name the non-root renderer users cannot resolve. Asserting the
     install LINE rather than a doctor presence check is the sibling precedent —
-    ``61-jts-renderer-lanes.conf`` and ``62-jts-ring-grouping.conf`` are both
-    covered exactly this way, and :func:`jasper.ring_assets.ring_asset_presence`
+    ``62-jts-ring-grouping.conf`` is covered exactly this way, and
+    :func:`jasper.ring_assets.ring_asset_presence`
     deliberately stays scoped to the coupling's own conf.d because it is the
     shm_ring ACTIVATION gate: a missing conf.d here must not refuse the fan-in
     coupling's arm.

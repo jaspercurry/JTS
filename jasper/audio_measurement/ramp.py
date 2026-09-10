@@ -32,9 +32,9 @@ fresh post-latency tail. Restoring the user's own pre-ramp volume is exempt
 from the dynamic cap and honors only the 0 dB hard ceiling.
 
 Tone contract: ``play_continuous_tone`` must play until ``cancel_tone()`` is
-called (the ``jasper.audio_measurement.playback.TonePlayer.play`` shape); the
-kernel runs it as a task and an early finish ends the ramp in ERROR -- a
-silent tone must never blind-climb.
+called (a coroutine that does not return until cancelled); the kernel runs it
+as a task and an early finish ends the ramp in ERROR -- a silent tone must
+never blind-climb.
 """
 
 from __future__ import annotations
@@ -820,10 +820,11 @@ class RampController:
         """Run the settle-based level-match ramp. Returns the terminal RampData.
 
         Injected dependencies keep the loop pure and testable.
-        ``play_continuous_tone`` must play until ``cancel_tone()`` is called (the
-        ``TonePlayer.play`` shape); the kernel runs it as a task and treats an
-        early finish as an error. It is started AFTER the quiet start volume is
-        set and killed AFTER the fade-down (audio-safety order). A non-finite
+        ``play_continuous_tone`` must play until ``cancel_tone()`` is called
+        (a coroutine that blocks until cancellation); the kernel runs it as a
+        task and treats an early finish as an error. It is started AFTER the
+        quiet start volume is set and killed AFTER the fade-down
+        (audio-safety order). A non-finite
         ``noise_floor_dbfs`` is treated as unknown (no trust floor) with a
         warning, never as a gate that silently passes everything.
         """

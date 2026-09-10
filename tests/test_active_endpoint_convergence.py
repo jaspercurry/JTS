@@ -5,7 +5,7 @@
 """The ACTIVE-endpoint convergence step (#2285 P7).
 
 What these pin is the STEP, not admission. Whether an unattended pass may touch
-a roleful box at all is ``ring_roleful_unattended_ready``'s question (P6, pinned
+a roleful box at all is ``ring_roleful_unattended_ready``'s question (pinned
 in ``tests/test_ring_active_endpoint.py``); this step's questions are only the
 ones no gate can answer — is the graph already there, did a human pin this box,
 and is the applied record still what the speaker is playing.
@@ -17,20 +17,6 @@ from pathlib import Path
 
 import pytest
 
-# EAGER, AND NOT UNUSED — deleting these re-opens a cross-file failure.
-# Five modules bind ``load_output_topology_strict`` at MODULE scope (`from
-# jasper.output_topology import ...`), so whichever of them is imported FIRST
-# while this file's fixture has that function patched freezes the patch into its
-# globals permanently — monkeypatch undoes the source module, never the copy.
-# The fixture's own convergence call is what pulls them in, so importing them
-# here, before any patching, is what keeps the patch local to this file.
-# Symptom when this regresses: an unrelated test in
-# tests/test_audio_hardware_reconcile.py fails with
-# "'object' object has no attribute 'speaker_groups'".
-import jasper.active_speaker.runtime_contract  # noqa: F401
-import jasper.active_speaker.setup_status  # noqa: F401
-import jasper.cli.active_speaker  # noqa: F401
-import jasper.cli.output_topology_reset  # noqa: F401
 from jasper.fanin import converge
 
 #: The REAL re-emit, captured before any fixture replaces the attribute.
@@ -52,14 +38,14 @@ class _Box:
         self.roleful = True
         self.gates: tuple = ()
 
-        cr = "jasper.fanin.coupling_reconcile"
-        monkeypatch.setattr(f"{cr}.default_ring_gates", lambda: self.gates)
+        cr = "jasper.fanin.ring_readiness"
+        monkeypatch.setattr(converge, "_ring_gates", lambda: self.gates)
         monkeypatch.setattr(
-            "jasper.output_topology.load_output_topology_strict",
-            lambda *a, **k: object(),
+            converge, "load_output_topology_strict", lambda *a, **k: object()
         )
         monkeypatch.setattr(
-            "jasper.active_speaker.runtime_contract.active_ring_channels_for_topology",
+            converge,
+            "active_ring_channels_for_topology",
             lambda _t: 4 if self.roleful else None,
         )
         monkeypatch.setattr(
@@ -77,7 +63,8 @@ class _Box:
             lambda _g: (self.converged, "endpoint detail"),
         )
         monkeypatch.setattr(
-            f"{cr}._start_audio_hardware_reconcile",
+            converge,
+            "_start_audio_hardware_reconcile",
             lambda **k: (self.kicks.append("kick"), (True, ""))[1],
         )
         monkeypatch.setattr(
@@ -125,7 +112,8 @@ def test_a_flat_box_is_a_no_op(box):
 
 def test_an_unreadable_topology_refuses_rather_than_moving(box, monkeypatch):
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        converge,
+        "load_output_topology_strict",
         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")),
     )
 
@@ -174,25 +162,29 @@ def test_a_refused_gate_stops_the_move(box):
     assert not box.touched_anything()
 
 
-def test_the_one_skipped_gate_is_the_fixed_point_itself(box):
-    """``ring_topology`` is skipped because its roleful arm ends in
+def test_the_one_omitted_gate_is_the_fixed_point_itself():
+    """``ring_topology_ready`` is omitted because its roleful arm ends in
     ``active_ring_endpoint_proof``, which reads the marker derived from the graph
-    this has not moved yet. Requiring it here IS the fixed point. Skipping any
+    this has not moved yet. Requiring it here IS the fixed point. Omitting any
     other gate would move a graph the box was never admitted to run."""
-    asked: list[str] = []
-    box.gates = (
-        ("ring_topology", lambda: asked.append("ring_topology") or (False, "no proof")),
-        ("ring_assets", lambda: asked.append("ring_assets") or (True, "")),
-    )
+    from jasper.fanin import ring_readiness as rr
 
-    assert box.run() == "graph_reemitted"
-    assert asked == ["ring_assets"]
+    gates = dict(converge._ring_gates())
+
+    assert list(gates) == [
+        "ring_roleful_unattended",
+        "ring_assets",
+        "ring_wire_caps",
+        "ring_edge_width",
+    ]
+    assert gates["ring_edge_width"] is rr.ring_edge_width_ready
+    assert rr.ring_topology_ready not in gates.values()
 
 
 def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
     """THE OTHER GATE THAT READS THE LOADED GRAPH, and why it needs no skip.
 
-    ``ring_edge_width`` is in the real ``default_ring_gates()`` and this step
+    ``ring_edge_width`` is in the real ``_ring_gates()`` and this step
     runs it BEFORE the move, so if it refused an unmoved graph nothing would
     ever converge — the headline feature would be a silent no-op on every box.
     It does not: an end it cannot inspect costs the message its claim, never the
@@ -200,7 +192,7 @@ def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
     its docstring, because "the gate probably passes" is how a feature ships
     dead.
     """
-    from jasper.fanin.ring_health import (
+    from jasper.fanin.ring_readiness import (
         LoadedCamillaGraph,
         ring_edge_width_ready,
     )
@@ -297,10 +289,7 @@ def test_no_automated_path_can_pass_force(monkeypatch):
     assert not any("force" in arg for arg in argv)
 
 
-@pytest.mark.parametrize(
-    "auto,no_apply", [(False, False), (False, True), (True, True)]
-)
-def test_the_explicit_operator_arm_is_untouched(monkeypatch, auto, no_apply):
+def test_the_explicit_operator_arm_is_untouched(monkeypatch):
     """SCOPE PIN. Convergence rides the UNATTENDED pass only: an operator
     already typing the CLI sees no change in behaviour and no change in ladder.
     """
@@ -342,9 +331,7 @@ def test_the_explicit_operator_arm_is_untouched(monkeypatch, auto, no_apply):
             detail="",
         ),
     )
-    args = types.SimpleNamespace(
-        auto=auto, no_apply=no_apply, coupling=None, reason="test"
-    )
+    args = types.SimpleNamespace(auto=False, coupling=None, reason="test")
 
     cr._run_entry_verb(args)
 

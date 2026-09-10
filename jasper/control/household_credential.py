@@ -67,9 +67,10 @@ from jasper.atomic_io import atomic_write_text
 # Mode 0640 group jasper (NOT 0600): TWO non-root daemons in the shared `jasper`
 # group read+write this file. jasper-web mints it
 # (rooms_setup._save_bond -> ensure()), while jasper-control adopts, clears, and
-# verifies it (server._post_grouping_set). A 0600 file written by one would be
-# unreadable by the other. This mirrors the control_token widening: jasper-web
-# embeds that token in management pages and jasper-control verifies it, so both
+# verifies it (handlers.grouping._post_grouping_set). A 0600 file written by
+# one would be unreadable by the other. This mirrors the control_token
+# widening: jasper-web embeds that token in management pages and
+# jasper-control verifies it, so both
 # files need group-read once the daemons run non-root. Group-read suffices:
 # writes go through atomic_write_text (a new tempfile the writer owns, renamed
 # over the old — needs dir-write on the group-writable state dir, not

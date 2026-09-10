@@ -1055,11 +1055,13 @@ def _pair_channels_check(monkeypatch, *, cfg, leader_payload=None,
         def json(self):
             return {"grouping": leader_payload}
 
-    def fake_get(path, *, base_url, timeout):
+    def fake_get(path, *, base_url, timeout, max_bytes=None):
         if leader_error is not None:
             raise leader_error
         assert path == "/grouping"
         assert base_url == f"http://{cfg.leader_addr}:8780"
+        # A peer read, so the small cap — not this box's local one.
+        assert max_bytes == control_client.PEER_RESPONSE_MAX_BYTES
         return _Resp()
 
     monkeypatch.setattr(control_client, "get", fake_get)

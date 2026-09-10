@@ -32,24 +32,6 @@ pub use jasper_ring::RING_SLOT_FRAMES;
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
 
-/// The directory every SHM slot ring lives in. Mirrors
-/// `jasper.ring_assets.RING_SHM_DIR` by VALUE (the tmpfiles.d entry
-/// `deploy/tmpfiles/jts-ring.conf` is the authority that creates it);
-/// `tests/test_renderer_ring_lanes.py` pins the two spellings against each other.
-///
-/// Ring A (`program.ring`) and Ring B (`content.ring`) name their own files
-/// through `JASPER_FANIN_RING_PATH` / outputd's default. The RENDERER-ingress
-/// rings do NOT get a per-ring env key: their path is DERIVED from the lane
-/// label by [`renderer_ring_path`], because a lane's ring is an attribute of the
-/// lane, and a second env key naming it could disagree with the label that
-/// selected it.
-pub const RING_SHM_DIR: &str = "/dev/shm/jts-ring";
-
-/// Filename prefix for a RENDERER-ingress ring, so `ls /dev/shm/jts-ring/` tells
-/// an operator which files are renderer lanes and which are the program/content
-/// hops. Mirrored in Python by `jasper.renderer_lanes.RENDERER_RING_PREFIX`.
-pub const RENDERER_RING_PREFIX: &str = "lane-";
-
 /// Label of the measurement / diagnostic injection lane — the one lane that
 /// carries stimuli rather than program.
 ///
@@ -59,58 +41,6 @@ pub const RENDERER_RING_PREFIX: &str = "lane-";
 /// stimuli are never onset-shaped, because the measurement loop deconvolves
 /// against the signal it believes it played (`mixer::lane_fade`).
 pub const MEASUREMENT_LANE: &str = "correction";
-
-/// The ring file a renderer-ingress lane reads, derived from the fan-in lane
-/// LABEL — the one identity fan-in already has for that lane. This is the whole
-/// path rule; there is no env override, so the reader's path and the conf.d
-/// writer's path cannot drift through a second knob (they drift only if the two
-/// language mirrors disagree, which the contract test catches).
-pub fn renderer_ring_path(label: &str) -> String {
-    format!("{RING_SHM_DIR}/{RENDERER_RING_PREFIX}{label}.ring")
-}
-
-/// Whether a lane gets a `LaneResampler`, from the four loose values rather than
-/// a built `Config`.
-///
-/// A free function so `Config::from_env` can ask the question BEFORE the
-/// `Config` is built: it must refuse the resampler+ring combination at config
-/// time, and re-spelling the predicate there would give the refusal and the
-/// construction two rules that could drift apart. `Config::lane_wants_resampler`
-/// is the one caller that has a `Config`; both go through here.
-pub fn lane_wants_resampler_for(
-    label: &str,
-    resampler_lane_label: &str,
-    input_resampler_enabled: bool,
-    usb_direct_enabled: bool,
-) -> bool {
-    (input_resampler_enabled || usb_direct_enabled) && label == resampler_lane_label
-}
-
-/// The slot count a renderer-ingress ring is built with, DERIVED from the lane
-/// buffer geometry fan-in already owns: `input_buffer_frames / period_frames`,
-/// with the ring's slot equal to one fan-in period.
-///
-/// Derived rather than a constant because the aloop lane this replaces gives the
-/// renderer exactly `input_buffer_frames` of cushion (fan-in opens the capture
-/// side with that buffer and snd-aloop locks the pair to it). A renderer is a
-/// network player whose ALSA write blocks when its buffer is full, so that
-/// cushion is how much network jitter it absorbs before it underruns; deriving
-/// the ring's depth from the same number leaves the flow-control regime
-/// unchanged.
-///
-/// `None` when the geometry cannot be expressed as whole slots inside the ring
-/// header's `n_slots` range — the caller FAILS LOUD rather than handing the
-/// renderer a different cushion than the aloop lane gave it.
-pub fn renderer_ring_slots(input_buffer_frames: u32, period_frames: u32) -> Option<u32> {
-    if period_frames == 0 || input_buffer_frames % period_frames != 0 {
-        return None;
-    }
-    let slots = input_buffer_frames / period_frames;
-    if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&slots) {
-        return None;
-    }
-    Some(slots)
-}
 
 /// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
 /// target — a small working cushion the outer DLL always has to steer within.
@@ -229,35 +159,12 @@ pub struct Config {
     /// backstop. Env: `JASPER_FANIN_RING_SLOTS`.
     pub ring_slots: u32,
 
-    /// The sample format Ring A's wire carries. Default
-    /// [`RingWireFormat::S32Le`] — narrow is a width regression on the hop the
-    /// ring replaces, so the wide wire is what an undeclared box gets and
-    /// `S16_LE` is an operator's rollback pin. Env:
-    /// `JASPER_FANIN_RING_WIRE_FORMAT` (`S16_LE` | `S32_LE`); a present but
-    /// unrecognized value fails loud in `Config::from_env` as a config-class
-    /// fault (exit 78, the unit parks) rather than resolving to a default the
-    /// operator did not ask for.
-    ///
-    /// Ring A's wire is declared independently by each end that touches it —
-    /// fan-in through this key, the ioplug through its conf.d `format` field,
-    /// and the emitted CamillaDSP capture stanza. Attach compares
-    /// `sample_format` field-by-field, so a value here that the other ends do
-    /// not also declare makes the ring open fail loudly rather than misreading
-    /// bytes.
-    pub ring_wire_format: RingWireFormat,
-
-    /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
-    /// (USB) lane (`src/lane_resampler.rs`). When off, the per-lane read path is
-    /// the strict one-period read + catch-up drain. When on, the lane named by
-    /// `input_resampler_lane_label` is DLL-steered to the DAC clock — drop-free
-    /// reconciliation in place of the catch-up sawtooth on that lane. Env:
-    /// `JASPER_FANIN_INPUT_RESAMPLER` (only the literal `enabled` arms it).
-    pub input_resampler_enabled: bool,
-
-    /// The lane LABEL (matched against `input_renderers`) the input resampler
-    /// arms on when enabled. Only ONE lane crosses a foreign clock (USB), so
-    /// this is a single label, not a set. A label with no matching input is a
-    /// no-op (logged once). Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
+    /// The lane LABEL (matched against `input_renderers`) that crosses the
+    /// foreign USB clock: the one lane that reads no aloop substream, gets a
+    /// `LaneResampler` (`src/lane_resampler.rs`), and is either the
+    /// `hw:UAC2Gadget` direct capture (`usb_direct_enabled`) or absent —
+    /// rendered as silence. Only ONE lane crosses a foreign clock, so this is a
+    /// single label, not a set. Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
     /// (default `usbsink`).
     pub input_resampler_lane_label: String,
 
@@ -302,26 +209,17 @@ pub struct Config {
     /// [`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`] clamped into that range. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
-    /// DEFAULT-OFF one-shot AUTO-TRIM. When `true`, the mixer schedules ONE
-    /// `TRIM` per armed resampler lane a couple of seconds after that lane goes
-    /// active, dropping the accumulated standing head-start (the cursor-relative
-    /// fill excess above the held target). Manual `TRIM` over the control socket
-    /// works regardless of this flag. Env: `JASPER_FANIN_AUTO_TRIM` (only the
-    /// literal `enabled` arms it).
-    pub auto_trim_enabled: bool,
 
     /// DEFAULT-OFF USB DIRECT capture. When `true`, the lane labelled
     /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
     /// snd-aloop substream; the mixer opens `usb_direct_device`
     /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
-    /// `LaneResampler`. A wide-wire box hands the resampler the gadget's `i32`
-    /// untouched; only a box an operator has PINNED narrow (see
-    /// [`Config::ring_wire_format`], whose default is `S32Le`) narrows to S16
-    /// first. Either way this deletes the usbsink bridge hop and the aloop cable
-    /// — ~25 ms measured — from the USB path. Direct mode IMPLIES a resampler on
-    /// that lane regardless of `input_resampler_enabled` (see
-    /// [`Config::lane_wants_resampler`]). Env: `JASPER_FANIN_USB_DIRECT` (only
-    /// the literal `enabled` arms it).
+    /// `LaneResampler` the gadget's `i32` untouched. This deletes the usbsink
+    /// bridge hop and the aloop cable — ~25 ms measured — from the USB path.
+    /// Direct mode IMPLIES a resampler on that lane (see
+    /// [`Config::lane_wants_resampler`]); with direct off the lane opens
+    /// nothing at all. Env: `JASPER_FANIN_USB_DIRECT` (only the literal
+    /// `enabled` arms it).
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
@@ -339,24 +237,6 @@ pub struct Config {
     /// rather than the refuted shallow 2-period URB headroom. Unused when direct
     /// is off. Env: `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`.
     pub usb_direct_period_frames: u32,
-
-    /// DEFAULT-EMPTY renderer-ingress lane set: the fan-in LABELS whose audio
-    /// arrives over a per-renderer SHM slot ring instead of that lane's
-    /// snd-aloop capture substream.
-    ///
-    /// A label listed here makes that lane open [`renderer_ring_path`] with the
-    /// [`renderer_ring_slots`] geometry and IGNORE its `input_pcms` entry — the
-    /// aloop substream is never opened on a ring lane, exactly as the USB DIRECT
-    /// lane never opens its own (`Input::pcm` is `None` on both).
-    ///
-    /// Membership is the ONLY input: fan-in does not consult the CamillaDSP
-    /// coupling, because a renderer ring and the fan-in -> CamillaDSP hop are
-    /// independent transports (a loopback-coupled box can ring-ingress a renderer
-    /// and vice versa). The policy that decides WHICH labels land here lives in
-    /// one place on the Python side (`jasper.renderer_lanes`), which is also the
-    /// single writer of the env file both fan-in and the renderer read.
-    /// Env: `JASPER_FANIN_RENDERER_RING_LANES` (comma-separated labels).
-    pub renderer_ring_lanes: Vec<String>,
 
     /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
     /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
@@ -382,36 +262,12 @@ pub struct Config {
 
 impl Config {
     /// Whether the lane labelled `label` should be constructed with a
-    /// `LaneResampler`. True when EITHER the DEFAULT-OFF input resampler is
-    /// enabled OR USB direct capture is enabled — both steer the same lane
-    /// (`input_resampler_lane_label`) to the DAC clock, and direct capture has
-    /// no aloop catch-up fallback to reconcile the host↔DAC rate gap, so it
-    /// MUST own a resampler. A label that doesn't match the resampler lane never
-    /// gets one.
+    /// `LaneResampler`. Only the USB DIRECT lane: it has no aloop catch-up
+    /// fallback to reconcile the host↔DAC rate gap, so it MUST own a
+    /// resampler. Off with direct disabled — that lane then opens nothing and
+    /// renders silence.
     pub fn lane_wants_resampler(&self, label: &str) -> bool {
-        lane_wants_resampler_for(
-            label,
-            &self.input_resampler_lane_label,
-            self.input_resampler_enabled,
-            self.usb_direct_enabled,
-        )
-    }
-
-    /// Whether the lane labelled `label` ingresses over a per-renderer SHM slot
-    /// ring instead of its snd-aloop capture substream. Membership in
-    /// [`Config::renderer_ring_lanes`] is the WHOLE rule on this side — see that
-    /// field's docs for why the coupling is deliberately not consulted.
-    pub fn lane_is_renderer_ring(&self, label: &str) -> bool {
-        self.renderer_ring_lanes.iter().any(|l| l == label)
-    }
-
-    /// The ring geometry a renderer-ingress lane attaches with: one slot per
-    /// fan-in period, depth derived from the aloop cushion this lane replaces.
-    /// `None` when the geometry is not expressible in whole slots —
-    /// `Config::from_env` already refuses that combination when any lane is
-    /// armed, so a live ring lane always resolves `Some`.
-    pub fn renderer_ring_slots(&self) -> Option<u32> {
-        renderer_ring_slots(self.input_buffer_frames, self.period_frames)
+        self.usb_direct_enabled && label == self.input_resampler_lane_label
     }
 
     /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
@@ -426,184 +282,46 @@ impl Config {
     pub fn host_clock_servo_armed(&self) -> bool {
         self.host_clock_enabled && self.usb_direct_enabled
     }
-}
-
-/// The sample format Ring A's wire carries — the ONE place in this daemon that
-/// owns the wire-format vocabulary. Both directions live here (token → header
-/// id for the geometry fan-in builds, header id → token for what STATUS
-/// reports), so the spelling fan-in accepts and the spelling it publishes can
-/// never drift apart.
-///
-/// The tokens are the SAME ones the other ends of the wire spell: the ioplug's
-/// conf.d `format` field (`c/jts-ring-ioplug/pcm_jts_ring.c`) and Python's
-/// `jasper.fanin_coupling.RING_WIRE_FORMAT`. The match is EXACT (not
-/// case-folded) because the ioplug's own `strcmp` is exact: accepting a
-/// spelling the ioplug rejects would let fan-in build a geometry no reader can
-/// declare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RingWireFormat {
-    /// Interleaved signed 16-bit little-endian — `jasper_ring`'s
-    /// `SAMPLE_FORMAT_S16LE`.
-    S16Le,
-    /// Interleaved signed 32-bit little-endian — `jasper_ring`'s
-    /// `SAMPLE_FORMAT_S32LE`.
-    S32Le,
-}
-
-impl RingWireFormat {
-    /// Normalize a raw `JASPER_FANIN_RING_WIRE_FORMAT` value.
-    ///
-    /// Unset or empty resolves to [`RingWireFormat::S32Le`] — empty is how the
-    /// env-file writers in this repo clear a key (disable-clears-stale), so a
-    /// cleared key and an absent key mean the same thing. A present but
-    /// unrecognized value is a config-class fault and FAILS LOUD: silently
-    /// resolving a typo to the default would arm a wire the operator did not
-    /// ask for, and the ring's own attach-time validation could not tell the
-    /// difference.
-    ///
-    /// THE DEFAULT IS WIDE because narrow is a width REGRESSION on the hop the
-    /// ring replaces: the loopback CamillaDSP -> outputd hop already carries
-    /// S32_LE, so arming a ring at S16_LE would narrow a hop that was wide
-    /// before the arm. Nothing WRITES `JASPER_FANIN_RING_WIRE_FORMAT`, so an
-    /// operator's `S16_LE` is a rollback lever no boot, deploy or udev pass can
-    /// overwrite. Python's
-    /// `jasper.fanin_coupling.resolve_ring_wire_format` defaults identically and
-    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
-    pub fn from_env_value(raw: Option<&str>) -> Result<Self> {
-        match raw.map(str::trim) {
-            None | Some("") => Ok(RingWireFormat::S32Le),
-            Some("S16_LE") => Ok(RingWireFormat::S16Le),
-            Some("S32_LE") => Ok(RingWireFormat::S32Le),
-            Some(other) => Err(anyhow::anyhow!(
-                "JASPER_FANIN_RING_WIRE_FORMAT={} unsupported (S16_LE|S32_LE) — \
-                 the token must match the ioplug conf.d `format` field exactly",
-                other,
-            )
-            .context(crate::ConfigClassError)),
-        }
-    }
-
-    /// The `jasper_ring` header id for this wire — what the geometry fan-in
-    /// creates or attaches against declares in `sample_format`.
-    pub fn sample_format_id(self) -> u32 {
-        match self {
-            RingWireFormat::S16Le => jasper_ring::SAMPLE_FORMAT_S16LE,
-            RingWireFormat::S32Le => jasper_ring::SAMPLE_FORMAT_S32LE,
-        }
-    }
-
-    /// The reverse of [`RingWireFormat::sample_format_id`]: `None` for an id
-    /// this daemon has no token for.
-    pub fn from_sample_format_id(id: u32) -> Option<Self> {
-        if id == jasper_ring::SAMPLE_FORMAT_S16LE {
-            Some(RingWireFormat::S16Le)
-        } else if id == jasper_ring::SAMPLE_FORMAT_S32LE {
-            Some(RingWireFormat::S32Le)
-        } else {
-            None
-        }
-    }
-
-    /// The wire vocabulary token — the spelling every end of the ring uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RingWireFormat::S16Le => "S16_LE",
-            RingWireFormat::S32Le => "S32_LE",
-        }
-    }
-}
-
-impl Config {
-    /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
-    /// per-box width decision the whole daemon reads (#2223).
-    ///
-    /// The TRANSPORT half of the conjunction is `true` on every box: the ring is
-    /// the only fan-in → CamillaDSP transport (ADR-0100). What decides the width
-    /// is the WIRE FORMAT half, which `JASPER_FANIN_RING_WIRE_FORMAT` resolves to
-    /// `S32_LE` when unset ([`RingWireFormat::from_env_value`]). The ring's own
-    /// attached header is the RUNTIME authority for what
-    /// `write_ring_period` publishes; this is the same fact resolved from config
-    /// at construction, which is when the lane buffers and the direct lane's
-    /// render width have to be sized. The two cannot drift: `create_or_attach`
-    /// validates the header field-by-field against the geometry built from this
-    /// same config and fails the open on a mismatch, and `Mixer::new`
-    /// cross-checks them explicitly before mixing a single period.
-    ///
-    /// THE CONJUNCTION ITSELF LIVES IN THE SHARED CRATE
-    /// ([`jasper_tts_protocol::TtsWireWidth::from_box_declaration`]) and this
-    /// calls it rather than restating it. The same rule decides the ASSISTANT
-    /// wire's width, and the Python control plane
-    /// (`jasper.fanin_coupling.assistant_wire_is_wide`) mirrors that one
-    /// function — so "both ends derive the same answer" is a call graph, not a
-    /// claim. `tests/test_ring_wire_format_contract.py` pins the verdict table
-    /// across the two languages.
-    pub fn program_wire_is_wide(&self) -> bool {
-        matches!(
-            jasper_tts_protocol::TtsWireWidth::from_box_declaration(
-                matches!(self.ring_wire_format, RingWireFormat::S32Le),
-                true,
-            ),
-            jasper_tts_protocol::TtsWireWidth::Wide,
-        )
-    }
-
-    /// The `event=fanin.tts_wire.resolved` startup line — this box's resolved
-    /// ASSISTANT wire width and the declared wire format that produced it.
-    ///
-    /// The mismatch warn fires at most once for the daemon's lifetime and may
-    /// have scrolled out of the journal window; this line is always emitted,
-    /// even with the TTS socket disabled, so it is the durable half of "is a
-    /// mismatch converting right now, and which half made it narrow".
-    /// `jasper-voice` publishes its own `event=tts_wire.resolved`; the two
-    /// compared are the whole diagnosis.
-    ///
-    /// Rendered here rather than formatted at the call site so the fields are
-    /// reachable from a test — an inline `info!` in `main()` is unguardable.
-    pub fn assistant_wire_resolved_line(&self) -> String {
-        let width = if self.program_wire_is_wide() {
-            jasper_tts_protocol::TtsWireWidth::Wide
-        } else {
-            jasper_tts_protocol::TtsWireWidth::Narrow
-        };
-        format!(
-            "event=fanin.tts_wire.resolved verb={} wire_format={} sample_bytes={}",
-            width.verb(),
-            self.ring_wire_format.as_str(),
-            width.sample_bytes(),
-        )
-    }
 
     /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
     /// Returns `Err` only on structural misconfiguration (e.g., input
     /// PCM list length != renderer label list length).
     pub fn from_env() -> Result<Self> {
+        // snd-aloop pair 3 is deliberately absent: the USB lane
+        // (`input_resampler_lane_label`) reads the gadget capture directly or
+        // nothing at all, so it takes no aloop substream and the surviving
+        // pairs do not renumber.
         let input_pcms = env_list(
             "JASPER_FANIN_INPUT_PCMS",
             &[
                 "hw:Loopback,1,0",
                 "hw:Loopback,1,1",
                 "hw:Loopback,1,2",
-                "hw:Loopback,1,3",
                 "hw:Loopback,1,4",
             ],
         );
-        // Spelled out rather than built from MEASUREMENT_LANE: this array is
-        // read as TEXT by tests/test_renderer_ring_lanes.py, which scrapes the
-        // quoted labels straight out of this file to check that every Python
-        // renderer-lane label is one fan-in will accept. A named constant is
-        // invisible to that scrape. The agreement is pinned behaviourally by
-        // `from_env_uses_documented_defaults` below, which asserts the parsed
+        // `from_env_uses_documented_defaults` pins the parsed
         // `input_renderers[4] == MEASUREMENT_LANE`.
         let input_renderers = env_list(
             "JASPER_FANIN_INPUT_RENDERERS",
             &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
         );
-        if input_pcms.len() != input_renderers.len() {
+        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
+        // The USB lane is the one label with no aloop PCM; the rest pair
+        // positionally in order.
+        let aloop_lanes = input_renderers
+            .iter()
+            .filter(|label| *label != &input_resampler_lane_label)
+            .count();
+        if input_pcms.len() != aloop_lanes {
             anyhow::bail!(
                 "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
-                 — must match positionally",
+                 aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
+                 substream) — must match positionally",
                 input_pcms.len(),
+                aloop_lanes,
                 input_renderers.len(),
+                input_resampler_lane_label,
             );
         }
         if input_pcms.is_empty() {
@@ -665,17 +383,33 @@ impl Config {
             }
         }
 
+        // Fan-in creates the ring S32_LE unconditionally, so this key selects
+        // nothing either — but the Python reconciler still reads it to render
+        // the ioplug conf.d, so a stale `S16_LE` would leave the two halves of
+        // the box describing different wires. Refuse the declaration instead.
+        // Unset / empty is "no declaration" (empty is how this repo's env
+        // writers clear a key). The token is compared exactly, as spelled in
+        // the ALSA `format` field.
+        let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
+        match ring_wire_format.as_deref().map(str::trim) {
+            None | Some("") | Some("S32_LE") => {}
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "JASPER_FANIN_RING_WIRE_FORMAT={other} unsupported (S32_LE) — \
+                     fan-in publishes the program wire S32_LE unconditionally, so \
+                     a narrower declaration would shear against the ring header \
+                     rather than narrow the program",
+                )
+                .context(crate::ConfigClassError));
+            }
+        }
+
         // Every rejection in this Ring A block carries `ConfigClassError`, so main()
         // exits 78 and the unit PARKS (RestartPreventExitStatus=78). A bad ring
         // geometry is identical on every restart, and the restart burst on this
         // unit escalates to StartLimitAction=reboot — a typo here would
         // otherwise reboot the speaker every few minutes.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_wire_format = RingWireFormat::from_env_value(
-            std::env::var("JASPER_FANIN_RING_WIRE_FORMAT")
-                .ok()
-                .as_deref(),
-        )?;
         let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)
             .map_err(|e| e.context(crate::ConfigClassError))?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
@@ -703,8 +437,6 @@ impl Config {
             .context(crate::ConfigClassError));
         }
 
-        let input_resampler_enabled = env_enabled("JASPER_FANIN_INPUT_RESAMPLER");
-        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
         let input_resampler_target_frames =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
@@ -781,8 +513,6 @@ impl Config {
                 cushion_decay_ceiling,
             );
         }
-        let auto_trim_enabled = env_enabled("JASPER_FANIN_AUTO_TRIM");
-
         let usb_direct_enabled = env_enabled("JASPER_FANIN_USB_DIRECT");
         let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
         // Range 32..=1024: below 32 the period IRQ storms the mixer thread, above
@@ -799,83 +529,11 @@ impl Config {
             );
         }
 
-        // Parsed and VALIDATED unconditionally so a typo fails on any boot rather
-        // than only on an armed box.
-        //
-        // EVERY rejection below carries `ConfigClassError`, for the reason the
-        // Ring A block above states and this block reaches sooner: a bad lane map
-        // is IDENTICAL on every restart, so without the marker `main` exits 1, the
-        // unit burns StartLimitBurst, and `StartLimitAction=reboot` reboots the
-        // speaker every few minutes forever. A box on
-        // `JASPER_FANIN_PERIOD_FRAMES=128` derives 4096/128 = 32 slots, above
-        // `RING_SLOTS_MAX`, so any armed lane there hits the geometry rejection on
-        // every boot.
-        let renderer_ring_lanes = env_csv_labels("JASPER_FANIN_RENDERER_RING_LANES");
-        for label in &renderer_ring_lanes {
-            if !input_renderers.iter().any(|l| l == label) {
-                return Err(anyhow::anyhow!(
-                    "JASPER_FANIN_RENDERER_RING_LANES names '{}', which is not one of this \
-                     daemon's lanes [{}] — a ring lane is selected by its fan-in LABEL, and an \
-                     unmatched label would silently arm nothing",
-                    label,
-                    input_renderers.join(", "),
-                )
-                .context(crate::ConfigClassError));
-            }
-        }
-        if !renderer_ring_lanes.is_empty()
-            && renderer_ring_slots(input_buffer_frames, period_frames).is_none()
-        {
-            return Err(anyhow::anyhow!(
-                "JASPER_FANIN_RENDERER_RING_LANES is armed ([{}]) but this box's lane geometry \
-                 cannot be expressed as whole ring slots: \
-                 JASPER_FANIN_INPUT_BUFFER_FRAMES={} / JASPER_FANIN_PERIOD_FRAMES={} must divide \
-                 evenly into {}..={} slots. A renderer ring's depth is DERIVED from the aloop \
-                 cushion it replaces so the renderer's flow control is unchanged; refusing here \
-                 rather than rounding keeps that promise honest",
-                renderer_ring_lanes.join(", "),
-                input_buffer_frames,
-                period_frames,
-                RING_SLOTS_MIN,
-                RING_SLOTS_MAX,
-            )
-            .context(crate::ConfigClassError));
-        }
-        // A ring lane that ALSO wants a `LaneResampler` is REFUSED.
-        // `read_ring_and_render` consumes one slot per period straight into
-        // `read_buf` and never touches `input.resampler`, so a lane holding both
-        // would build a resampler, feed it nothing, and render the ring directly
-        // — rate reconciliation silently absent while `/state` reported it armed.
-        // Nothing needs the combination: the resampler lane is the USB one, which
-        // is `direct`, and a ring lane's producer is DAC-paced through its own
-        // blocking write.
-        if let Some(label) = renderer_ring_lanes.iter().find(|label| {
-            lane_wants_resampler_for(
-                label,
-                &input_resampler_lane_label,
-                input_resampler_enabled,
-                usb_direct_enabled,
-            )
-        }) {
-            return Err(anyhow::anyhow!(
-                "lane '{}' is in JASPER_FANIN_RENDERER_RING_LANES and is also the armed \
-                 resampler lane (JASPER_FANIN_INPUT_RESAMPLER / JASPER_FANIN_USB_DIRECT with \
-                 JASPER_FANIN_INPUT_RESAMPLER_LANE={}). That combination is not designed: the \
-                 ring read path renders slots directly and never feeds the resampler, so the \
-                 lane would report a resampler that reconciles nothing. Pick one transport for \
-                 this lane",
-                label,
-                input_resampler_lane_label,
-            )
-            .context(crate::ConfigClassError));
-        }
-
         // STATIC held-target churn guard — the symmetric sibling of the
         // decay-floor validation above, entered through the static cushion knobs.
-        // An armed lane (JASPER_FANIN_INPUT_RESAMPLER=enabled, or implied by
-        // JASPER_FANIN_USB_DIRECT=enabled — the direct lane has no aloop catch-up
-        // fallback, so it always builds a resampler) holds the ring at
-        // `target + cushion` and renders ONE `period_frames` each step, so the
+        // The armed lane (JASPER_FANIN_USB_DIRECT=enabled — the direct lane has
+        // no aloop catch-up fallback, so it always builds a resampler) holds the
+        // ring at `target + cushion` and renders ONE `period_frames` each step, so the
         // steady-state post-render cursor-relative fill sits at `held - period`.
         // The lane underfill-unlocks the instant that fill drops below
         // `minimum_safe_fill_frames` (= ceil(period × max_ratio) + radius + 1), so
@@ -887,8 +545,7 @@ impl Config {
         // The production defaults (512 + 2048 = 2560 held) clear this by ~2030
         // frames; only a hand-tuned lab geometry (the observed churn came from
         // 256 + 256 = 512 held) can trip it.
-        let resampler_armed_on_a_lane = input_resampler_enabled || usb_direct_enabled;
-        if resampler_armed_on_a_lane {
+        if usb_direct_enabled {
             let min_safe = cushion_decay_min_safe_fill;
             let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
             let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
@@ -900,7 +557,7 @@ impl Config {
                 let post_render_headroom =
                     held_target as i64 - period_frames as i64 - min_safe as i64;
                 anyhow::bail!(
-                    "JASPER_FANIN_INPUT_RESAMPLER held target (target {} + warm-up cushion {} \
+                    "resampler held target (target {} + warm-up cushion {} \
                      = {}) is too shallow for the armed clock-crossing lane: it must be >= \
                      minimum_safe_fill {} + one render period {} + {}-frame jitter margin = {}. \
                      The steady post-render cursor fill would sit only {} frames above the \
@@ -1080,8 +737,6 @@ impl Config {
             ),
             ring_path,
             ring_slots,
-            ring_wire_format,
-            input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
@@ -1089,11 +744,9 @@ impl Config {
             input_resampler_ring_frames,
             input_resampler_cushion_decay_enabled,
             input_resampler_cushion_decay_floor_frames,
-            auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
             usb_direct_period_frames,
-            renderer_ring_lanes,
             host_clock_enabled,
             host_clock_probe_ppm,
         })
@@ -1101,22 +754,6 @@ impl Config {
 }
 
 // ---- env var helpers ------------------------------------------------
-
-/// Parse a comma-separated LABEL set. Whitespace around each label is trimmed and
-/// empty entries are dropped, so `""`, `" "`, and `",,"` all mean "no labels" —
-/// the fail-safe direction for a key whose empty value must mean "nothing armed".
-/// Order is preserved and duplicates are kept: the only consumer is a membership
-/// test, and silently de-duplicating would hide a malformed write from the one
-/// writer that produces this value.
-fn env_csv_labels(name: &str) -> Vec<String> {
-    std::env::var(name)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
 
 /// Fail-safe feature gate: only the exact `enabled` token, ignoring case and
 /// surrounding whitespace, arms the feature.
@@ -1256,6 +893,7 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
@@ -1271,9 +909,15 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(cfg.input_pcms.len(), 5);
+                // FOUR aloop PCMs for FIVE labels: the usbsink lane reads the
+                // gadget capture or nothing, never an aloop substream, and the
+                // surviving pairs do not renumber around the gap.
+                assert_eq!(cfg.input_pcms.len(), 4);
+                assert!(!cfg.input_pcms.iter().any(|p| p == "hw:Loopback,1,3"));
+                assert_eq!(cfg.input_pcms[3], "hw:Loopback,1,4");
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
+                assert_eq!(cfg.input_renderers[3], "usbsink");
                 assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
@@ -1297,10 +941,6 @@ mod tests {
                     cfg.assistant_reference_path,
                     "/var/lib/jasper/assistant_volume_reference.json"
                 );
-                assert!(
-                    !cfg.input_resampler_enabled,
-                    "input resampler must default OFF"
-                );
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
@@ -1314,7 +954,6 @@ mod tests {
                     cfg.input_resampler_cushion_decay_floor_frames,
                     DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
                 );
-                assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
                 assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
                 assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
             },
@@ -1409,47 +1048,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_trim_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(cfg.auto_trim_enabled, "{raw:?} should arm auto-trim");
-            });
-        }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.auto_trim_enabled,
-                    "{raw:?} must NOT arm auto-trim (only `enabled` does)"
-                );
-            });
-        }
-    }
-
-    #[test]
-    fn input_resampler_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    cfg.input_resampler_enabled,
-                    "{raw:?} should arm the resampler"
-                );
-            });
-        }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.input_resampler_enabled,
-                    "{raw:?} must NOT arm the resampler (only `enabled` does)"
-                );
-            });
-        }
-    }
-
-    #[test]
     fn usb_direct_only_armed_by_exact_enabled_literal() {
         for raw in ["enabled", "ENABLED", " Enabled "] {
             with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
@@ -1489,67 +1087,66 @@ mod tests {
 
     #[test]
     fn usb_direct_default_off_is_inert() {
-        with_env(
-            &[
-                ("JASPER_FANIN_USB_DIRECT", None),
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert!(!cfg.usb_direct_enabled);
-                assert!(!cfg.input_resampler_enabled);
-                assert!(
-                    !cfg.lane_wants_resampler("usbsink"),
-                    "no resampler on any lane when both flags are off"
-                );
-            },
-        );
+        with_env(&[("JASPER_FANIN_USB_DIRECT", None)], || {
+            let cfg = Config::from_env().unwrap();
+            assert!(!cfg.usb_direct_enabled);
+            assert!(
+                !cfg.lane_wants_resampler("usbsink"),
+                "no resampler on any lane with direct off"
+            );
+        });
     }
 
     #[test]
     fn usb_direct_implies_resampler_on_the_usbsink_lane() {
-        // Direct capture has no aloop catch-up fallback, so its lane still wants
-        // a resampler with the plain flag off — and only that lane does.
-        with_env(
-            &[
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert!(cfg.usb_direct_enabled);
-                assert!(!cfg.input_resampler_enabled);
-                assert!(
-                    cfg.lane_wants_resampler("usbsink"),
-                    "direct mode must imply a resampler on the usbsink lane"
-                );
-                assert!(
-                    !cfg.lane_wants_resampler("airplay"),
-                    "only the resampler lane label gets one"
-                );
-            },
-        );
+        // Direct capture has no aloop catch-up fallback, so its lane owns a
+        // resampler — and only that lane does.
+        with_env(&[("JASPER_FANIN_USB_DIRECT", Some("enabled"))], || {
+            let cfg = Config::from_env().unwrap();
+            assert!(cfg.usb_direct_enabled);
+            assert!(
+                cfg.lane_wants_resampler("usbsink"),
+                "direct mode must imply a resampler on the usbsink lane"
+            );
+            assert!(
+                !cfg.lane_wants_resampler("airplay"),
+                "only the resampler lane label gets one"
+            );
+        });
     }
 
     #[test]
-    fn input_resampler_alone_still_wants_resampler_on_its_lane() {
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
-                ("JASPER_FANIN_USB_DIRECT", None),
-            ],
-            || {
+    fn planned_lane_source_follows_the_resampler_predicate() {
+        use crate::mixer::{planned_lane_source, LaneSource};
+
+        // The three transports a lane can be planned with. Pinned here rather
+        // than in mixer.rs: the decision reads a `Config`, which only these
+        // env-backed tests can build.
+        for (direct, label, expected) in [
+            (None, "usbsink", LaneSource::Disabled),
+            (Some("enabled"), "usbsink", LaneSource::Direct),
+            (None, "airplay", LaneSource::Lane),
+            (Some("enabled"), "airplay", LaneSource::Lane),
+        ] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", direct)], || {
                 let cfg = Config::from_env().unwrap();
-                assert!(cfg.lane_wants_resampler("usbsink"));
-            },
-        );
+                assert_eq!(
+                    planned_lane_source(&cfg, label),
+                    expected,
+                    "lane {label} with JASPER_FANIN_USB_DIRECT={direct:?}"
+                );
+            });
+        }
     }
 
     #[test]
     fn input_resampler_knobs_parse_overrides() {
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                // The lane label picks WHICH label reads no aloop substream, so
+                // the roster moves with it.
+                ("JASPER_FANIN_INPUT_RENDERERS", Some("spotify|usbsink2")),
+                ("JASPER_FANIN_INPUT_PCMS", Some("hw:Loopback,1,0")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
@@ -1561,7 +1158,6 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("parses");
-                assert!(cfg.input_resampler_enabled);
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
                 assert_eq!(cfg.input_resampler_target_frames, 768);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
@@ -2216,12 +1812,13 @@ mod tests {
 
     #[test]
     fn static_cushion_fails_loud_on_churny_lab_geometry_when_resampler_armed() {
-        // The lab geometry that produced the observed unlock churn: target 256 +
-        // cushion 256 = 512 held, period 256, max_ppm 500. min_safe = 274, so the
-        // required held is 274 + 256 + 32 = 562 > 512.
+        // The lab geometry that produced the observed unlock churn, in the mode
+        // that produced the evidence (USB DIRECT — the only mode that arms a
+        // resampler): target 256 + cushion 256 = 512 held, period 256, max_ppm
+        // 500. min_safe = 274, so the required held is 274 + 256 + 32 = 562 > 512.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
                 (
                     "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
@@ -2243,41 +1840,11 @@ mod tests {
     }
 
     #[test]
-    fn static_cushion_churn_guard_also_fires_in_usb_direct_mode() {
-        // The live churn was observed in USB DIRECT mode, which arms a resampler
-        // on the usbsink lane WITHOUT JASPER_FANIN_INPUT_RESAMPLER (see
-        // `lane_wants_resampler`), so gating on that flag alone would miss the
-        // configuration that produced the evidence.
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
-                (
-                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
-                    Some("256"),
-                ),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-            ],
-            || {
-                let err = Config::from_env()
-                    .expect_err("USB DIRECT with a churny held target must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("held target") && msg.contains("churn-by-construction"),
-                    "expected static-cushion churn error in direct mode, got: {msg}"
-                );
-            },
-        );
-    }
-
-    #[test]
     fn static_cushion_production_default_passes_the_churn_guard() {
         // The production default held target is 512 + 2048 = 2560.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
                 ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
@@ -2300,7 +1867,7 @@ mod tests {
         // + cushion 256 = 562 passes, and one under (cushion 255 → 561) fails.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
@@ -2319,7 +1886,7 @@ mod tests {
         );
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
@@ -2341,11 +1908,10 @@ mod tests {
 
     #[test]
     fn static_cushion_churn_guard_ignored_when_resampler_off() {
-        // With neither flag armed no resampler is built, so no churn is possible
-        // and a churny cushion must not block boot.
+        // With direct off no resampler is built, so no churn is possible and a
+        // churny cushion must not block boot.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
                 ("JASPER_FANIN_USB_DIRECT", None),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
                 (
@@ -2356,7 +1922,6 @@ mod tests {
             || {
                 let cfg =
                     Config::from_env().expect("resampler-off box must ignore a churny cushion");
-                assert!(!cfg.input_resampler_enabled);
                 assert!(!cfg.usb_direct_enabled);
             },
         );
@@ -2414,6 +1979,38 @@ mod tests {
         }
     }
 
+    /// Which `JASPER_FANIN_RING_WIRE_FORMAT` declarations this daemon will
+    /// serve, now that fan-in creates the ring S32_LE unconditionally.
+    ///
+    /// The REFUSAL is the load-bearing half: the Python reconciler still reads
+    /// this key to render the ioplug conf.d, so a box still carrying `S16_LE`
+    /// must PARK — exit 78 via [`crate::ConfigClassError`] — rather than let the
+    /// two halves of the box describe different wires.
+    #[test]
+    fn only_an_s32_wire_declaration_or_none_is_served() {
+        for (raw, served) in [
+            (None, true),
+            (Some(""), true),
+            (Some(" S32_LE "), true),
+            (Some("S16_LE"), false),
+            (Some("s32_le"), false),
+        ] {
+            with_env(
+                &[("JASPER_FANIN_RING_WIRE_FORMAT", raw)],
+                || match Config::from_env() {
+                    Ok(_) => assert!(served, "{raw:?} must be refused"),
+                    Err(err) => {
+                        assert!(!served, "{raw:?} must be served: {err:#}");
+                        assert!(
+                            err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                            "{raw:?} must park the unit (exit 78), not restart-loop it",
+                        );
+                    }
+                },
+            );
+        }
+    }
+
     #[test]
     fn ring_defaults_parse() {
         with_env(
@@ -2426,249 +2023,6 @@ mod tests {
                 assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
                 assert_eq!(cfg.ring_slots, 2);
                 assert_eq!(cfg.period_frames, 256);
-            },
-        );
-    }
-
-    /// EVERY renderer-ring-lane rejection MUST carry `ConfigClassError`.
-    ///
-    /// A REBOOT-LOOP guard, not a tidiness one: a bad lane map is identical on
-    /// every restart, so without the marker `main` exits 1 instead of 78, the
-    /// unit's `Restart=` burns `StartLimitBurst`, and `StartLimitAction=reboot`
-    /// reboots the speaker every few minutes forever.
-    ///
-    /// Asserted per rejection rather than in bulk so a NEW rejection that
-    /// forgets the marker cannot hide behind its siblings.
-    #[test]
-    fn every_renderer_ring_lane_rejection_parks_instead_of_rebooting() {
-        // 1. A label that matches no lane.
-        with_env(
-            &[("JASPER_FANIN_RENDERER_RING_LANES", Some("nosuchlane"))],
-            || {
-                let err = Config::from_env().expect_err("an unmatched label must fail");
-                assert!(
-                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
-                    "unmatched-label rejection must PARK (exit 78), not restart-loop \
-                     into StartLimitAction=reboot: {err:#}"
-                );
-                // Bound to THIS rejection, not merely to "some config-class error
-                // happened": reordering the checks so an earlier one fires first
-                // would otherwise leave this case untested and still green.
-                assert!(
-                    format!("{err:#}").contains("not one of this"),
-                    "expected the unmatched-label rejection specifically: {err:#}"
-                );
-            },
-        );
-        // 2. period 128 with the shipped 4096 buffer derives 32 slots, above
-        //    RING_SLOTS_MAX.
-        with_env(
-            &[
-                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("128")),
-                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
-            ],
-            || {
-                let err = Config::from_env().expect_err("32 slots is out of range");
-                assert!(
-                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
-                    "inexpressible-geometry rejection must PARK: {err:#}"
-                );
-                assert!(
-                    format!("{err:#}").contains("whole ring slots"),
-                    "expected the geometry rejection specifically: {err:#}"
-                );
-            },
-        );
-        // 3. A ring lane that is ALSO the armed resampler lane.
-        with_env(
-            &[
-                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("spotify")),
-            ],
-            || {
-                let err = Config::from_env().expect_err("ring + resampler must fail");
-                assert!(
-                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
-                    "ring+resampler rejection must PARK: {err:#}"
-                );
-                assert!(
-                    format!("{err:#}").contains("armed \nresampler lane")
-                        || format!("{err:#}").contains("resampler lane"),
-                    "expected the ring+resampler rejection specifically: {err:#}"
-                );
-            },
-        );
-    }
-
-    /// A ring lane and a `LaneResampler` on the SAME lane is refused at config.
-    ///
-    /// The read path renders slots straight into `read_buf` and never feeds
-    /// `input.resampler`, so the combination would build a resampler, starve it,
-    /// and report it armed in `/state` while it reconciled nothing.
-    #[test]
-    fn a_ring_lane_may_not_also_be_the_resampler_lane() {
-        // The refusal is bound to the SAME lane, not to the features existing: a
-        // ring lane beside a DIFFERENT resampler lane is the shipped shape.
-        with_env(
-            &[
-                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink")),
-            ],
-            || {
-                let cfg = Config::from_env()
-                    .expect("a ring lane beside a different resampler lane is fine");
-                assert!(cfg.lane_is_renderer_ring("spotify"));
-                assert!(cfg.lane_wants_resampler("usbsink"));
-                assert!(!cfg.lane_wants_resampler("spotify"));
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_RENDERER_RING_LANES", Some("usbsink")),
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-            ],
-            || {
-                Config::from_env()
-                    .expect_err("usb-direct implies a resampler on usbsink; ring must refuse");
-            },
-        );
-    }
-
-    /// DEFAULT BAR: with `JASPER_FANIN_RING_WIRE_FORMAT` unset the resolved wire
-    /// is the WIDE one. Narrow is a width regression on the hop the ring
-    /// replaces (the loopback CamillaDSP -> outputd hop already carries S32_LE),
-    /// so the fleet converges without declaring anything and `S16_LE` becomes an
-    /// operator's rollback pin. Cleared-to-empty means the same as unset (that
-    /// is how this repo's env-file writers disable a key).
-    ///
-    /// Python's `resolve_ring_wire_format` answers identically;
-    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
-    #[test]
-    fn ring_wire_format_defaults_to_wide() {
-        assert_eq!(
-            RingWireFormat::from_env_value(None).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("  ")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::S32Le.sample_format_id(),
-            jasper_ring::SAMPLE_FORMAT_S32LE
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
-            RingWireFormat::S16Le
-        );
-    }
-
-    #[test]
-    fn ring_wire_format_accepts_both_wire_tokens() {
-        assert_eq!(
-            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
-            RingWireFormat::S16Le
-        );
-        assert_eq!(
-            RingWireFormat::from_env_value(Some(" S32_LE ")).unwrap(),
-            RingWireFormat::S32Le
-        );
-        assert_eq!(
-            RingWireFormat::S32Le.sample_format_id(),
-            jasper_ring::SAMPLE_FORMAT_S32LE
-        );
-    }
-
-    /// An unknown token FAILS LOUD rather than silently resolving to the
-    /// default — and carries the config-class marker, so the unit parks at
-    /// exit 78 instead of restart-looping into StartLimitAction=reboot.
-    ///
-    /// The match is EXACT, matching the ioplug's own `strcmp`: a case-folded
-    /// spelling fan-in accepted but the ioplug rejected would let fan-in build
-    /// a geometry no reader on the other end can declare.
-    #[test]
-    fn ring_wire_format_rejects_unknown_and_mis_cased_tokens() {
-        for bad in ["S24_3LE", "s32_le", "S32LE", "FLOAT_LE", "32", "yes"] {
-            let err = RingWireFormat::from_env_value(Some(bad))
-                .expect_err("an unsupported wire token must fail loud");
-            let msg = format!("{:#}", err);
-            assert!(
-                msg.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
-                "expected a wire-format error naming the key, got: {}",
-                msg,
-            );
-            assert!(
-                err.downcast_ref::<crate::ConfigClassError>().is_some(),
-                "an unparseable wire is config-class (park at 78), got: {}",
-                msg,
-            );
-        }
-    }
-
-    /// The vocabulary has ONE owner: every token round-trips token → header id
-    /// → token, so the spelling fan-in accepts is the spelling STATUS reports.
-    #[test]
-    fn ring_wire_format_round_trips_through_the_header_id() {
-        for format in [RingWireFormat::S16Le, RingWireFormat::S32Le] {
-            assert_eq!(
-                RingWireFormat::from_sample_format_id(format.sample_format_id()),
-                Some(format),
-            );
-            assert_eq!(
-                RingWireFormat::from_env_value(Some(format.as_str())).unwrap(),
-                format,
-            );
-        }
-        assert_eq!(RingWireFormat::from_sample_format_id(0), None);
-        assert_eq!(RingWireFormat::from_sample_format_id(3), None);
-    }
-
-    #[test]
-    fn shm_ring_wire_format_reaches_the_config() {
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("unset wire format must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("the operator's narrow pin must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S16Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S32_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("S32_LE must parse");
-                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("bogus")),
-            ],
-            || {
-                Config::from_env().expect_err("an unknown wire token must fail the whole parse");
             },
         );
     }
@@ -2761,48 +2115,5 @@ mod tests {
                 );
             },
         );
-    }
-
-    /// The per-box program width (#2223) follows the WIRE FORMAT alone: the
-    /// transport half of the conjunction is `true` on every box (ADR-0100).
-    ///
-    /// The unset row matters most. The wire resolver defaults WIDE, so an
-    /// undeclared box arms the widened source path (spine-scale lane buffers, the
-    /// `AUDIO32` assistant verb, the wide earcon bake) with no declaration at
-    /// all, and an operator's `S16_LE` is the pin that narrows it.
-    #[test]
-    fn the_program_width_follows_the_declared_wire_format() {
-        for (wire, expected) in [
-            (None, true),
-            (Some("S32_LE"), true),
-            (Some("S16_LE"), false),
-        ] {
-            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", wire)], || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(cfg.program_wire_is_wide(), expected, "wire={wire:?}");
-            });
-        }
-    }
-
-    /// The STARTUP WIDTH LINE, asserted by CONTENT rather than by presence: a
-    /// line that said only "narrow" would leave a support read unable to tell a
-    /// narrow-format box from a wide-format one, which is the distinction the
-    /// line exists to draw.
-    #[test]
-    fn the_startup_width_line_names_the_verdict_and_the_declared_format() {
-        for (wire, verb, sample_bytes) in [("S32_LE", "AUDIO32", "4"), ("S16_LE", "AUDIO", "2")] {
-            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", Some(wire))], || {
-                let line = Config::from_env()
-                    .expect("defaults must parse")
-                    .assistant_wire_resolved_line();
-                assert!(line.starts_with("event=fanin.tts_wire.resolved "), "{line}",);
-                assert!(line.contains(&format!("verb={verb}")), "{line}");
-                assert!(line.contains(&format!("wire_format={wire}")), "{line}");
-                assert!(
-                    line.contains(&format!("sample_bytes={sample_bytes}")),
-                    "{line}",
-                );
-            });
-        }
     }
 }

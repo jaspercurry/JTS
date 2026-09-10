@@ -194,6 +194,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
             rationale=args.rationale,
             room_correction=room_fields.get("room_correction"),
             room_prescription_sha256=room_sha256,
+            room_measured_basis=room_fields.get("measured_basis"),
         )
     except RoomPrescriptionRefused as exc:
         return _gate_refusal(exc)
@@ -214,6 +215,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
         "out": str(published.path),
         "measurement_status": "unmeasured",
         "adopted": False,
+        **({"room_source": candidate.analysis["room_source"]} if candidate.room_correction else {}),
     })
 
 
@@ -339,7 +341,7 @@ def _composed_room(
         read_prescription_bytes(payload), args, _room_median_path(args), sides
     )
     return (
-        room_prescription_to_candidate_fields(prescription),
+        {**room_prescription_to_candidate_fields(prescription), "measured_basis": prescription.measured_basis},
         prescription_sha256(payload),
     )
 

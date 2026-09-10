@@ -8,23 +8,13 @@
 use super::*;
 
 /// PCM sample format for this daemon's snd-aloop capture lanes — the
-/// per-renderer inputs, the only aloop lanes left since ADR-0100.
-///
-/// Lane ingress is NOT its own width axis: it is this box's one resolved wire
-/// ([`Config::program_wire_is_wide`]), the same fact that decides the program
-/// ring's payload and the assistant wire.
+/// per-renderer inputs, the only aloop lanes left since ADR-0100. It is the
+/// program wire's own width: lane ingress is not a separate axis.
 ///
 /// snd-aloop pins both halves of a cable to one format, so the renderer
-/// aliases' slaves in `deploy/alsa/asoundrc.jasper` declare the same width and
-/// move with this; `tests/test_fanin_wiring.py` and `check_fanin_asound_wiring`
-/// pin that side.
-pub(super) fn lane_capture_format(program_wire_is_wide: bool) -> Format {
-    if program_wire_is_wide {
-        Format::S32LE
-    } else {
-        Format::S16LE
-    }
-}
+/// aliases' slaves in `deploy/alsa/asoundrc.jasper` declare the same width;
+/// `tests/test_fanin_wiring.py` and `check_fanin_asound_wiring` pin that side.
+pub(super) const LANE_CAPTURE_FORMAT: Format = Format::S32LE;
 
 /// Compute the direct capture buffer for a given open period, honoring the
 /// deep-buffer safety floor (≥ `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥
@@ -56,17 +46,40 @@ pub(super) fn open_input(
     // blocking forever in the PREPARED state.
     pcm.start()
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
+    Ok(lane_input(Some(pcm), pcm_name, label, config, resampler))
+}
+
+/// Build the USB lane with NO capture device: `JASPER_FANIN_USB_DIRECT` is off,
+/// so there is no gadget capture to read, and the aloop substream that used to
+/// stand in for it has had no writer since the usbsink bridge was deleted.
+/// `read_input` renders a `pcm: None` lane as silence, so the lane keeps its
+/// roster slot (mux addresses lanes by label) at the cost of one memset.
+pub(super) fn disabled_input(
+    label: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
+    lane_input(None, "", label, config, resampler)
+}
+
+/// The per-lane `Input` every lane is built from; the DIRECT lane overrides the
+/// few fields that differ. `pcm_name` is what STATUS reports as this lane's
+/// device — empty when the lane opens none.
+fn lane_input(
+    pcm: Option<PCM>,
+    pcm_name: &str,
+    label: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    Ok(Input {
-        pcm: Some(pcm),
+    Input {
+        pcm,
         direct: None,
         direct_opener: None,
-        ring: None,
-        ring_attacher: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
-        read_buf: vec![0i16; period_samples],
-        read_buf_wide: spine_read_buf(config.program_wire_is_wide(), period_samples),
+        read_buf: vec![0i32; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         last_xrun_ms: Arc::new(AtomicU64::new(jasper_daemon::json::NEVER_MS)),
         frames_read: Arc::new(AtomicU64::new(0)),
@@ -74,41 +87,21 @@ pub(super) fn open_input(
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
-        trim: TrimControl::new(),
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
-        ring_obs: None,
         lane_fade: LaneFade::for_lane(label, config.sample_rate),
-    })
-}
-
-/// A lane's SPINE-SCALE period buffer — allocated on a wide wire, empty on a
-/// narrow one. The ONE place that decides, for every lane source (aloop, ring,
-/// USB direct), whether that lane carries its period at spine scale.
-///
-/// Non-empty `read_buf_wide` is not merely a buffer — it is the lane's OWN
-/// width switch, read by the drain (which side of the capture fork), by the
-/// render (which `render_period`), and by the sum (which entry). Inverting it
-/// points every one of those at the wrong scale at once, which is why the
-/// decision is a testable pure helper rather than an inline `if` on a `&Config`.
-/// An empty `Vec` has no capacity, so a narrow box allocates nothing.
-pub(super) fn spine_read_buf(program_wire_is_wide: bool, period_samples: usize) -> Vec<i32> {
-    if program_wire_is_wide {
-        vec![0i32; period_samples]
-    } else {
-        Vec::new()
     }
 }
 
 /// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
 /// proven envelope; on failure the lane starts `Absent` and renders silence with
-/// a bounded reopen retry, so a gadget-absent box never fails the daemon. The
-/// aloop substream is NOT opened (`pcm: None`): this lane's audio comes only
-/// from the gadget capture. Never returns `Err` — the fail-hard "every input
-/// required" contract is exempted for this lane alone.
+/// a bounded reopen retry, so a gadget-absent box never fails the daemon. This
+/// lane has no aloop substream at all (`pcm: None`): its audio comes only from
+/// the gadget capture, which is also what STATUS reports as its `pcm`. Never
+/// returns `Err` — the fail-hard "every input required" contract is exempted for
+/// this lane alone.
 pub(super) fn open_direct_input(
     label: &str,
-    pcm_name: &str,
     config: &Config,
     resampler: Option<LaneResampler>,
 ) -> Input {
@@ -152,8 +145,6 @@ pub(super) fn open_direct_input(
             }
         }
     };
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    let read_buf_wide = spine_read_buf(config.program_wire_is_wide(), period_samples);
     // The deferred device-open channel (#2533). Spawned at construction, before
     // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
     // failure leaves the lane WITHOUT self-heal rather than restoring an inline
@@ -171,27 +162,12 @@ pub(super) fn open_direct_input(
             None
         }
     };
+    // The direct lane has no aloop substream — its only source is the gadget
+    // capture in `direct`, so that device is also its reported `pcm`.
+    let base = lane_input(None, &device, label, config, resampler);
     Input {
-        // The direct lane does NOT open its aloop substream — its only source
-        // is the gadget capture in `direct`.
-        pcm: None,
         direct: Some(direct),
         direct_opener,
-        ring: None,
-        ring_attacher: None,
-        label: label.to_string(),
-        pcm_name: pcm_name.to_string(),
-        read_buf: vec![0i16; period_samples],
-        read_buf_wide,
-        xrun_count: Arc::new(AtomicU64::new(0)),
-        last_xrun_ms: Arc::new(AtomicU64::new(jasper_daemon::json::NEVER_MS)),
-        frames_read: Arc::new(AtomicU64::new(0)),
-        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-        catchup_events: Arc::new(AtomicU64::new(0)),
-        resampler,
-        trim: TrimControl::new(),
-        muted: Arc::new(AtomicBool::new(false)),
         direct_obs: Some(DirectObservability {
             device,
             period_frames: open_period,
@@ -212,8 +188,7 @@ pub(super) fn open_direct_input(
             card_gen_reopens: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
-        ring_obs: None,
-        lane_fade: LaneFade::for_lane(label, config.sample_rate),
+        ..base
     }
 }
 
@@ -320,9 +295,8 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
             .with_context(|| format!("set_channels({})", CHANNELS))?;
         hwp.set_rate(config.sample_rate, ValueOr::Nearest)
             .with_context(|| format!("set_rate({})", config.sample_rate))?;
-        let format = lane_capture_format(config.program_wire_is_wide());
-        hwp.set_format(format)
-            .with_context(|| format!("set_format({:?})", format))?;
+        hwp.set_format(LANE_CAPTURE_FORMAT)
+            .with_context(|| format!("set_format({:?})", LANE_CAPTURE_FORMAT))?;
         hwp.set_access(Access::RWInterleaved)
             .context("set_access(RWInterleaved)")?;
         hwp.set_period_size(config.period_frames as i64, ValueOr::Nearest)
@@ -390,26 +364,5 @@ mod tests {
                 "resolved buffer {b} must validate at period {p}",
             );
         }
-    }
-
-    /// SF-C: the ONE decision that makes a lane spine-scale, and the ALSA open
-    /// format that has to agree with it.
-    ///
-    /// Inverting the buffer points the capture fork, the render, and the sum
-    /// entry at the wrong scale simultaneously, and the `debug_assert` in
-    /// `mix_into_wide` cannot catch it on the Pi — the release profile compiles
-    /// debug assertions out. Inverting the open format is just as silent at
-    /// compile time and louder at runtime: `read_input` picks its typed IO
-    /// handle off the buffer and alsa-lib verifies that handle against the
-    /// PCM's negotiated format, so an aloop lane whose two halves disagreed
-    /// would fail every read. Both are pinned here, where a mutation has to
-    /// fail, and pinned together because they are one decision.
-    #[test]
-    fn a_lanes_wire_decides_its_open_format_and_its_period_buffer_together() {
-        assert_eq!(spine_read_buf(true, 4), vec![0i32; 4]);
-        assert_eq!(lane_capture_format(true), Format::S32LE);
-
-        assert!(spine_read_buf(false, 4).is_empty());
-        assert_eq!(lane_capture_format(false), Format::S16LE);
     }
 }

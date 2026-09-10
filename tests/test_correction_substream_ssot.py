@@ -13,7 +13,7 @@ files in ``jasper.active_speaker``, ``jasper.web``, and ``jasper.cli`` —
 nothing enforced that the copies agreed, so a rename would have silently
 diverged.
 
-Three checks:
+Two checks:
 
   1. **The drift guard.** No file under ``jasper/`` other than the owning
      module declares a string constant whose value is EXACTLY
@@ -29,17 +29,14 @@ Three checks:
      guard" docstring section for what legitimately spells the literal
      outside it (the checked-in ALSA config, four stdlib-only lab probes)
      and why.
-  2. **Co-ownership.** The sites that used to hold their own named copy of
-     the literal still resolve to the SSOT's value, not a reintroduced local
-     override.
-  3. **The placement promise, proven rather than merely stated.**
+  2. **The placement promise, proven rather than merely stated.**
      ``correction_lane.py`` lives in ``jasper.audio_measurement`` instead of
      beside the sweep/playback kernel specifically so the socket-activated
      modules never pay for ``numpy``. That promise had no test until a
      reviewer demonstrated the gap empirically: adding
      ``from .playback import play_wav as play_wav`` to
      ``jasper/audio_measurement/__init__.py`` drags ``numpy`` into all four
-     consumers while checks 1 and 2 above — and every other guard in this
+     consumers while check 1 above — and every other guard in this
      repo — stayed green, because none of them execute the consumers' import
      chains. ``test_lane_constant_consumers_stay_numpy_free`` closes that gap
      by actually importing each consumer in a subprocess with ``numpy`` and
@@ -59,7 +56,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper import renderer_lanes
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -110,31 +106,6 @@ def test_owning_module_value_is_the_expected_lane_name() -> None:
     # rather than only surfacing later as a runtime ALSA "no such pcm"
     # failure.
     assert CORRECTION_SUBSTREAM == "correction_substream"
-
-
-def test_known_consuming_sites_resolve_to_the_ssot() -> None:
-    """The sites that still hold a named copy of the LANE NAME agree with it.
-
-    Since P6c-ii the lane's ACTIVE device is not a constant anywhere — it is
-    ``correction_play_device()``'s per-call answer (the owning module's
-    transport reader, pinned by ``tests/test_renderer_ring_lanes.py``'s
-    unitless device facts). What remains constant is the lane's NAME on the
-    shipped snd-aloop transport, and exactly two consumers still hold a
-    named copy of it: the ``correction`` row's ``aloop_device`` in
-    ``jasper.renderer_lanes`` (which imports the SSOT rather than
-    respelling the literal).
-
-    Seven historical aliases are gone rather than listed here: P6c-0
-    dissolved ``sound_setup.VOLUME_FLOOR_TONE_ALSA_DEVICE``,
-    ``sync_flow.PLAYBACK_DEVICE``, and ``balance_flow.PLAYBACK_DEVICE``;
-    P6c-ii dissolved ``web_commissioning.COMMISSION_TONE_ALSA_DEVICE``
-    (and sound_setup's import of it),
-    ``program_playback.CORRECTION_SUBSTREAM``, and
-    ``correction.playback.DEFAULT_ALSA_DEVICE`` — those surfaces resolve
-    the device through the reader at call time instead of naming it.
-    """
-    lane = renderer_lanes.lane_by_label("correction")
-    assert lane is not None and lane.aloop_device == CORRECTION_SUBSTREAM
 
 
 def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:

@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import flat_spec
-from jasper.audio_measurement import analysis, peq, room_boundary, snr_policy
+from jasper.audio_measurement import peq, room_boundary, snr_policy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -333,12 +333,6 @@ def test_every_routed_site_resolves_to_the_ssot_today():
     default = room_boundary.ROOM_BOUNDARY_DEFAULT_HZ
 
     assert inspect.signature(peq.design_peq).parameters["f_high"].default == default
-    for fn in (
-        analysis.deviation_metrics,
-        analysis.before_after_fill_segments,
-        analysis.before_after_delta,
-    ):
-        assert inspect.signature(fn).parameters["f_high"].default == default
 
 
 # ---------------------------------------------------------------------------

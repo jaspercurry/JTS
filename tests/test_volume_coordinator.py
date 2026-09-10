@@ -28,6 +28,7 @@ from jasper import volume_coordinator as vc_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
+from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import (
     BT_VOLUME_MAX,
     ECHO_WINDOW_SEC,
@@ -45,7 +46,7 @@ from jasper.volume_diagnostics import (
     read_diagnostics,
 )
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_owner import ClaimKind
+from jasper.volume_owner import ClaimKind, VolumeClaimRefused
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
 
@@ -667,10 +668,32 @@ async def test_which_attenuator_carries_the_level_across_a_transition(
     assert coord.airplay_writes == case["airplay"]
 
 
+async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
+    tmp_path,
+):
+    """The observer resolves the source before the cross-daemon lease. A
+    handoff that commits while the verdict queues must not end with camilla
+    pinned to 0 dB against a lane whose own slider JTS never writes."""
+    coord, cam, _ = _coord(tmp_path, active={}, level=50, selected="spotify")
+    answers = ["spotify", "airplay"]
+
+    async def selected_source() -> str:
+        return answers.pop(0) if answers else "airplay"
+
+    coord._backend.selected_source = selected_source
+    before = list(cam.set_calls)
+
+    assert await coord._active_source() is Source.SPOTIFY
+    await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
+
+    assert coord.spotify_writes == []
+    assert cam.set_calls == before
+
+
 async def test_transition_suppressed_during_voice_session(tmp_path):
     """note_voice_session(True) gates apply_active_source_transition
     so the ducker's additive math isn't corrupted by absolute writes."""
-    coord, cam, _ = _coord(tmp_path, active={})
+    coord, cam, _ = _coord(tmp_path, active={}, selected="spotify")
     coord.note_voice_session(True)
     initial_calls = list(cam.set_calls)
     await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
@@ -1350,7 +1373,9 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
     diag_path = tmp_path / "volume_policy.json"
     monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     level = 42
-    coord, _, persistence = _coord(tmp_path, active={}, level=level)
+    coord, _, persistence = _coord(
+        tmp_path, active={}, level=level, selected=current_source.value,
+    )
     persistence.save_now(-7.5)
     guard_calls = _stub_failed_push(
         monkeypatch, coord, setter_name, guard_confirmed,
@@ -2130,6 +2155,150 @@ async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gat
     assert cam.mute_calls == []
 
 
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.set_listening_level(95), id="set_up"),
+        pytest.param(lambda coord: coord.set_listening_level(25), id="set_down"),
+        pytest.param(lambda coord: coord.adjust_listening_level(35), id="adjust_up"),
+        pytest.param(
+            lambda coord: coord.adjust_listening_level(-35), id="adjust_down",
+        ),
+    ],
+)
+async def test_the_level_doors_refuse_every_write_while_measuring(tmp_path, door):
+    """The voice tools reach these IN-PROCESS, never through jasper-control.
+
+    ``jasper.tools.audio`` calls them on this coordinator whenever the box is
+    not a bonded follower, so the HTTP measurement hold never sees the request.
+    Direction cannot be the test: the measurement drives camilla's main_volume
+    directly and never writes the persistence file, so the persisted level
+    these doors would compare against says nothing about where the fader sits,
+    and a "quieter" can be a large step UP on the stimulus. The refusal type is
+    what ``tools.dispatch_tool`` turns into the model-visible error payload.
+    """
+    coord, cam, persistence = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+    _assert_persisted(persistence, level=60)
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.unmute(), id="unmute"),
+        pytest.param(lambda coord: coord.set_muted(False), id="set_muted_false"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_from_muted"),
+    ],
+)
+async def test_unmute_is_refused_while_measuring(tmp_path, door):
+    """Unmute restores the household level onto the fader — a level write."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.mute()
+    await coord.note_measurement_active(True)
+    cam.set_calls.clear()
+
+    with pytest.raises(VolumeClaimRefused):
+        await door(coord)
+
+    assert cam.set_calls == []
+    assert coord.is_muted()
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param(lambda coord: coord.mute(), id="mute"),
+        pytest.param(lambda coord: coord.set_muted(True), id="set_muted_true"),
+        pytest.param(lambda coord: coord.toggle_mute(), id="toggle_to_muted"),
+    ],
+)
+async def test_mute_still_lands_while_measuring(tmp_path, door):
+    """The emergency door: a human reaching for silence mid-sweep gets it."""
+    coord, cam, _ = _real_coord(tmp_path, active={}, level=60)
+    await coord.note_measurement_active(True)
+
+    await door(coord)
+
+    assert coord.is_muted()
+    assert cam.mute_calls[-1] is True
+
+
+async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
+    tmp_path, monkeypatch, caplog,
+):
+    """The voice rollback path can drop note_measurement_active(False).
+
+    Past its aggregate deadline the resume coroutine is closed unawaited and
+    the safety task is already cancelled, so nothing is left to lower the flag.
+    Without the lapse this refuses every level write for the life of the
+    process, invisibly to /state. The bound is per WINDOW, not per process: a
+    later window that strands its own flag lapses, and says so, again.
+    """
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
+    await coord.note_measurement_active(True)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
+    with pytest.raises(VolumeClaimRefused):
+        await coord.set_listening_level(20)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        assert await coord.set_listening_level(20) == 20
+        assert await coord.adjust_listening_level(-5) == 15
+        # _event_fields asserts exactly one: once per lapse, not once per write.
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+        # A second window strands its flag too. The once-per-lapse latch is
+        # reset by note_measurement_active(True), so this one is announced.
+        caplog.clear()
+        await coord.note_measurement_active(True)
+        with pytest.raises(VolumeClaimRefused):
+            await coord.set_listening_level(30)
+        now[0] += MEASUREMENT_AUTOCLEAR_SEC
+        assert await coord.set_listening_level(30) == 30
+        assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+
+async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
+    tmp_path, monkeypatch, caplog,
+):
+    """Same bound, applied on the tick's OWN clock.
+
+    The write doors only bound their own refusal; the 1 Hz reconciler reads the
+    raw flag, so a flag the voice rollback path stranded would pause drift
+    correction for the life of the process. A tick is not a volume write — it
+    IS the clock the pause runs on — so it may clear what it finds lapsed.
+    """
+    now = [0.0]
+    monkeypatch.setattr(vc_mod, "_measurement_monotonic", lambda: now[0])
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
+    )
+    await coord.note_measurement_active(True)
+
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC - 1.0
+    await coord.note_measurement_active(True)  # the window renews
+    now[0] = MEASUREMENT_AUTOCLEAR_SEC + 1.0   # past the FIRST window's bound
+    cam._db = 0.0
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == [], "a renewing window must stay paused"
+
+    now[0] += MEASUREMENT_AUTOCLEAR_SEC
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        await coord.maybe_reconcile_camilla()
+    assert cam.set_calls, "a stranded flag must not pause drift correction"
+    assert _event_fields(caplog, "volume.measurement_flag_expired")
+
+
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
     """MEASURE_PAUSE may race a tick already awaiting Camilla readback."""
     coord, cam, _ = _real_coord(
@@ -2401,6 +2570,29 @@ async def test_observe_usbsink_initial_snapshot_cannot_clear_remote_mute(tmp_pat
 
 
 @pytest.mark.parametrize(
+    ("selected", "expected"),
+    [
+        ("airplay", Source.AIRPLAY),
+        # Mux holds its last committed answer across a handoff, so "idle" is
+        # true idle and takes the attenuating camilla-master carrier. Only a
+        # fan-in test-lease label, which is not a source at all, falls through
+        # to the raw probes.
+        ("idle", Source.IDLE),
+        ("correction", Source.SPOTIFY),
+        (None, Source.SPOTIFY),
+    ],
+)
+async def test_active_source_honours_mux_over_the_raw_probes(
+    tmp_path, selected, expected,
+):
+    coord, _, _ = _real_coord(
+        tmp_path, active={"spotactive": True}, selected=selected,
+    )
+
+    assert await coord._active_source() is expected
+
+
+@pytest.mark.parametrize(
     ("active", "selected"),
     [
         pytest.param({"usbsinkactive": True}, None, id="raw_activity_probe"),
@@ -2647,7 +2839,7 @@ def _owned_coord(tmp_path, db: float):
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     """The reconciler writes by DECLARING the household level, so a duck held
     in this process outranks it — no dB inference is involved, which is why
-    `RECONCILE_DUCK_SKIP_DB` is not what protects `CueDuck`.
+    `RECONCILE_DUCK_SKIP_DB` is not what protects a cue's duck.
 
     The duck is shallower than that threshold, so the carve-out cannot be
     what spares it; releasing the claim lands the fader back on the household
@@ -2776,7 +2968,7 @@ async def test_a_refused_write_speaks_once_and_says_when_it_lands(
     assert len(event_records(caplog, "volume.reconciled")) == 1
 
 
-# ---------- graph-swap duck composed with CueDuck ---------------------------
+# ---------- graph-swap duck composed with a ranked TRANSIENT_DUCK -----------
 
 # enter/exit sequences for the two holders. The two orders the review probed
 # are `bracket_first_cue_last` and `cue_first_bracket_last`; the other two are
@@ -2812,13 +3004,21 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
         coord.get_camilla_target_db,
     )
 
-    cue = camilla_module.CueDuck(coord.volume_owner, -25.0)
+    owner = coord.volume_owner
+    cue: list = []
+
+    async def _cue_enter() -> None:
+        cue.append(await owner.acquire_duck(-25.0))
+
+    async def _cue_exit() -> None:
+        await owner.release(cue.pop())
+
     bracket = cam._graph_mutation("test.swap")
     steps = {
         "B_enter": bracket.__aenter__,
         "B_exit": lambda: bracket.__aexit__(None, None, None),
-        "C_enter": cue.__aenter__,
-        "C_exit": lambda: cue.__aexit__(None, None, None),
+        "C_enter": _cue_enter,
+        "C_exit": _cue_exit,
     }
     for step in _INTERLEAVINGS[order]:
         await steps[step]()

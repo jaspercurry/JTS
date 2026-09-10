@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_measurement import correction_lane, playback
+from jasper.audio_measurement import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 
 from ._async_wait import wait_signalled
@@ -852,129 +852,6 @@ def test_neutral_surface_requires_owner_policy() -> None:
     assert not hasattr(playback, "DEFAULT_TONE_DIR")
 
 
-async def test_continuous_tone_nonzero_exit_is_typed_and_bounded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-
-    async def create(*_args, **kwargs):
-        assert kwargs["stderr"] is asyncio.subprocess.PIPE
-        return _ExitedProcess(returncode=2, stderr=b"driver unavailable")
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-
-    with pytest.raises(playback.PlaybackError) as caught:
-        await playback.TonePlayer(wav_path, alsa_device="test_pcm").play()
-
-    assert caught.value.code is playback.PlaybackFailureCode.PROCESS_FAILED
-    assert caught.value.diagnostic_tail == "driver unavailable"
-
-
-async def test_continuous_tone_startup_failure_is_typed_and_logged(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-
-    async def create(*_args, **_kwargs):
-        raise OSError("no aplay")
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
-
-    with pytest.raises(playback.PlaybackError) as caught:
-        await playback.TonePlayer(wav_path, alsa_device="test_pcm").play()
-
-    assert caught.value.code is playback.PlaybackFailureCode.START_FAILED
-    assert "failure_code=start_failed" in caplog.text
-
-
-async def test_continuous_tone_cancel_reaps_and_logs_lifecycle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-    wait_started = asyncio.Event()
-    killed = asyncio.Event()
-
-    class Process:
-        stderr = None
-        returncode = None
-
-        async def wait(self):
-            wait_started.set()
-            await killed.wait()
-            return self.returncode
-
-        def kill(self):
-            self.returncode = -9
-            killed.set()
-
-    async def create(*_args, **_kwargs):
-        return Process()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
-    player = playback.TonePlayer(wav_path, alsa_device="test_pcm")
-    task = asyncio.create_task(player.play())
-    await wait_signalled(wait_started, "process wait() started", producer=task)
-
-    player.cancel()
-    await task
-
-    assert player.cancelled is True
-    assert "result=started" in caplog.text
-    assert "result=cancelled" in caplog.text
-    assert "cleanup_state=killed_and_reaped" in caplog.text
-
-
-async def test_continuous_tone_unconfirmed_cancel_cleanup_is_bounded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-    wait_started = asyncio.Event()
-
-    class Process:
-        stderr = None
-        returncode = None
-
-        def __init__(self) -> None:
-            self.never_exits = asyncio.Event()
-
-        async def wait(self):
-            wait_started.set()
-            await self.never_exits.wait()
-
-        def kill(self):
-            pass
-
-    async def create(*_args, **_kwargs):
-        return Process()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
-    player = playback.TonePlayer(wav_path, alsa_device="test_pcm")
-    task = asyncio.create_task(player.play())
-    await wait_signalled(wait_started, "process wait() started", producer=task)
-
-    player.cancel()
-    with pytest.raises(playback.PlaybackError) as caught:
-        await asyncio.wait_for(task, timeout=0.2)
-
-    assert caught.value.code is playback.PlaybackFailureCode.CLEANUP_FAILED
-    assert caught.value.cleanup_state is (
-        playback.PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED
-    )
-
-
 def test_shared_playback_holds_no_powerful_host_reference() -> None:
     # The import graph, in a fresh interpreter: this module must never be the
     # thing that drags the DSP controller into a measurement process.
@@ -986,53 +863,6 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
         [sys.executable, "-c", probe], text=True, stderr=subprocess.STDOUT
     )
     assert out.strip() == "False"
-
-
-# --- #2626: both aplay spawns carry the correction-lane umask ----------------
-
-
-async def test_both_aplay_spawns_carry_the_correction_lane_umask(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every correction-lane `aplay` spawn sets `CORRECTION_PLAY_UMASK` (#2626).
-
-    WHY THIS IS A SILENT-FAILURE SHAPE, not tidiness. `jasper-correction-web
-    .service` runs with `UMask=0077`. If one of these spawns is ever the
-    CREATOR of an armed correction ring file, the ring lands `0600` and the
-    non-root fan-in end cannot write its header half — no error at this end,
-    no audio at the other. Every wrapper in
-    `jasper.audio_measurement.correction_lane` already rides the umask; these
-    two module-local spawns were the exceptions.
-
-    Both are asserted in one test because the failure is the same for either,
-    and a per-site test would let one be deleted without noticing the pair
-    broke. The `umask` keyword reaches the child because
-    `create_subprocess_exec` forwards unknown keywords to `subprocess.Popen`
-    — the mechanism is pinned empirically in `tests/test_correction_lane_play
-    .py`; this test pins the CALL, which is what regressed.
-    """
-    wav_path = tmp_path / "tone.wav"
-    wav_path.write_bytes(b"RIFF")
-    seen: list[dict] = []
-
-    async def create(*_args, **kwargs):
-        seen.append(kwargs)
-        return _ExitedProcess()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-
-    await playback.play_wav(wav_path, alsa_device="test_pcm", timeout_s=2.0)
-    await playback.TonePlayer(wav_path, alsa_device="test_pcm").play()
-
-    assert len(seen) == 2, seen
-    assert [kwargs.get("umask") for kwargs in seen] == [
-        correction_lane.CORRECTION_PLAY_UMASK,
-        correction_lane.CORRECTION_PLAY_UMASK,
-    ]
-    # Value pinned too: a `umask=` present but wrong is the same silent
-    # failure, so the kwarg's presence alone is not the claim.
-    assert correction_lane.CORRECTION_PLAY_UMASK == 0o007
 
 
 @pytest.mark.parametrize("reaped", [True, False])

@@ -55,8 +55,6 @@ export function buildSystemPanel(handlers) {
   // aria-live region for post-action feedback (esp. reboot/power-off, which
   // take the page offline, so the button label alone isn't enough).
   const actionsStatus = h("p.info-card__note", { "attr:aria-live": "polite" });
-  const capabilityNote = h("p.info-card__note", null, "");
-  capabilityNote.hidden = true;
   const restartVoice = actionButton("Restart voice", {
     variant: "default", onClick: handlers.restartVoice,
   });
@@ -73,7 +71,6 @@ export function buildSystemPanel(handlers) {
   actions.body.append(
     h("p.info-card__note", null,
       "Restart services or shut down the Pi. Anyone on this Wi-Fi can run these actions."),
-    capabilityNote,
     h("div.form-actions", null,
       restartVoice,
       restartAudio,
@@ -126,7 +123,7 @@ export function buildSystemPanel(handlers) {
     parksSection: parks.section, parks: parks.body,
     vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
-    actionsStatus, capabilityNote,
+    actionsStatus,
     actionButtons: { restartVoice, restartAudio },
     forensics,
     _memo: {},
@@ -150,12 +147,6 @@ function applySystemCapabilities(refs, caps) {
 
   setActionAvailable(refs.actionButtons.restartVoice, canRestartVoice);
   setActionAvailable(refs.actionButtons.restartAudio, canRestartAudio);
-
-  // The capability map no longer carries a per-profile explanation string
-  // (the removed endpoint tier was its only producer), so keep the note
-  // hidden rather than reading a field that is always absent.
-  refs.capabilityNote.hidden = true;
-  refs.capabilityNote.textContent = "";
 }
 
 export function update(refs, snap) {

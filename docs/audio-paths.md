@@ -16,7 +16,7 @@ device per process — is [ADR-0282](adr/0282-the-pre-mix-lives-in-fan-in.md).
 ```
 MUSIC / CONTENT chain (gets CamillaDSP processing)
     shairport-sync, librespot, bluealsa-aplay, correction/test playback
-        → private snd-aloop lanes: hw:Loopback,0,N → hw:Loopback,1,N ─┐
+        → private snd-aloop lanes: hw:Loopback,0,{0-2,4} → 1,{0-2,4} ─┐
     USB audio (UAC2 gadget), where the reconciler has armed           │
     JASPER_FANIN_USB_DIRECT                                           │
         → jasper-fanin DIRECT-captures hw:UAC2Gadget: no aloop hop,   │
@@ -135,17 +135,23 @@ Ownership is deliberately split:
 - `jasper-mux` owns policy and the source-handoff transaction. Auto mode is
   source-neutral latest-start-wins: every confirmed inactive→active transition,
   including USB frame flow, becomes the winner, and losing the winner falls
-  back to the newest source still active. Manual mode persistently pins the
+  back to the newest source still active. Confirmed-start order is
+  process-local, so sources first observed active in one snapshot fall back to
+  `MUSIC_SOURCES` registry order. Manual mode persistently pins the
   user-selected source; `/sources/` disables sources entirely. Native producer
   events are wake hints only — `jasper/source_events.py` translates librespot
   inotify and AirPlay/Bluetooth D-Bus signals, fan-in sends USB frame-flow
   edges over mux's UDS — and every hint plus the fixed 1 Hz lost-alert patrol
   enters the same reconciler, which re-reads source state before applying
-  policy. Alert arrival order never chooses the winner. Source metadata
+  policy. Alert arrival order never chooses the winner. The two event-backed
+  probes — AirPlay over `busctl`, Bluetooth over BlueZ `MediaTransport1` — are
+  re-read on that patrol once per `EVENT_BACKED_PROBE_SEC` instead of every
+  tick; an alert naming either source still probes it at once. Source metadata
   (fan-in lane label, volume carrier) lives in `jasper/music_sources.py`;
   operational lifecycle resources — the units that run, advertise, park while
   paired as a follower, restore on unpair and refresh after audio-graph
-  changes — live in `jasper/local_sources/registry.py`, which declares
+  changes, plus the `health_units` subset whose failure means the source is
+  broken — live in `jasper/local_sources/registry.py`, which declares
   resources while the handoff below owns how intent is applied.
 - Mux's `STATUS` already answers "what is audible now" in one field,
   `active_source`, which folds the test lease, the manual pin and a still-playing
@@ -211,13 +217,18 @@ introduces no second mixer, second output device or new volume model.
 1. **Give it one private fan-in lane.** Either an snd-aloop lane — one PCM
    alias in `deploy/alsa/asoundrc.jasper`, pinned to 48 kHz stereo `S32_LE` via
    `plug`, over a substream pair allocated in `deploy/modprobe.d/snd-aloop.conf`
-   — or, when fan-in can capture the source from a card of its own, a direct
-   capture like the UAC2 gadget's: no alias, no aloop pair, fan-in opens the
-   device. If the aloop pairs are exhausted, redesign the topology rather than
-   overloading snd-aloop.
+   (`0` Spotify, `1` AirPlay, `2` Bluetooth, `4` correction/test; `3` UNUSED
+   because USB is fan-in's direct capture, and `5`–`7` UNALLOCATED because the
+   central hops those pairs carried are rings) — or, when fan-in can capture
+   the source from a card of its own, a direct capture like the UAC2 gadget's:
+   no alias, no aloop pair, fan-in opens the device. If the aloop pairs are
+   exhausted, redesign the topology rather than overloading snd-aloop.
 2. **Teach `jasper-fanin` about the lane.** Extend the compiled-in `input_pcms`
    and `input_renderers` default arrays in `Config::from_env`, keeping them
-   positionally aligned. The `JASPER_FANIN_INPUT_PCMS` /
+   positionally aligned across the aloop lanes — the direct-capture lane
+   (`JASPER_FANIN_INPUT_RESAMPLER_LANE`, default `usbsink`) has no `input_pcms`
+   entry, because it reads the gadget capture or nothing at all. The
+   `JASPER_FANIN_INPUT_PCMS` /
    `JASPER_FANIN_INPUT_RENDERERS` env vars only *override* those defaults and
    are not set by `deploy/systemd/jasper-fanin.service`, so editing the unit
    alone does nothing. The lists are pipe-delimited because ALSA `hw:` names

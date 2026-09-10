@@ -412,7 +412,7 @@ async def run_session(args: argparse.Namespace) -> int:
 
     # Lazy imports so the module is importable without the Pi-side deps
     # (openwakeword for the detector, UdpMicCapture for the audio I/O).
-    from jasper.audio_io import UdpMicCapture
+    from jasper.mic_capture import UdpMicCapture
     from jasper.wake import WakeWordDetector
 
     leg_dirs = all_quadrant_dirs(args.condition)

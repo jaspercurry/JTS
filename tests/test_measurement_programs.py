@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from jasper.active_speaker import measurement_programs as mp
@@ -18,8 +21,11 @@ from jasper.active_speaker import measurement_programs as mp
         ("baseline", "express", 5, 5, 8),
         ("tournament", "full", 3, 3, 3),
         ("tournament", "express", 1, 1, 1),
+        ("seat", "cloud", 11, 11, 11),
         ("seat", "cube", 7, 7, 7),
         ("seat", "express", 3, 3, 3),
+        ("room", "cloud", 11, 11, 11),
+        ("room", "quick", 3, 3, 3),
         ("close", "spot", 1, 1, 1),
     ],
 )
@@ -70,6 +76,9 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("baseline", "full"),
         ("branches", "express"),
         ("close", "spot"),
+        ("room", "cloud"),
+        ("room", "quick"),
+        ("seat", "cloud"),
         ("seat", "cube"),
         ("seat", "express"),
         ("tournament", "express"),
@@ -122,18 +131,31 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
 
     assert {p.kind for p in cube.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cube.poses} == {(0, 0, 1)}
-    assert {p.seat_offset_m for p in cube.poses} == {
+    assert [p.seat_offset_m for p in cube.poses] == [
         (0.0, 0.0, 0.0),
-        (mp.SEAT_OFFSET_M, 0.0, 0.0), (-mp.SEAT_OFFSET_M, 0.0, 0.0),
-        (0.0, mp.SEAT_OFFSET_M, 0.0), (0.0, -mp.SEAT_OFFSET_M, 0.0),
-        (0.0, 0.0, mp.SEAT_OFFSET_M), (0.0, 0.0, -mp.SEAT_OFFSET_M),
-    }
+        (0.30, 0.0, 0.0), (-0.30, 0.0, 0.0),
+        (0.0, 0.30, 0.0), (0.0, -0.30, 0.0),
+        (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
+    ]
     assert [p.seat_offset_m for p in express.poses] == [
         (0.0, 0.0, 0.0), (mp.SEAT_OFFSET_M, 0.0, 0.0), (0.0, mp.SEAT_OFFSET_M, 0.0),
     ]
     assert {p.seat_offset_m for p in express.poses} <= {
         p.seat_offset_m for p in cube.poses
     }
+
+
+def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
+    cloud = mp.program("seat", "cloud")
+
+    assert {p.kind for p in cloud.poses} == {mp.POSE_KIND_SEAT}
+    assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cloud.poses} == {(0, 0, 1)}
+    assert [p.seat_offset_m for p in cloud.poses] == [
+        (-0.30, 0.30, 0.0), (0.0, 0.30, 0.0), (0.30, 0.30, 0.0),
+        (-0.30, 0.0, 0.0), (0.0, 0.0, 0.0), (0.30, 0.0, 0.0),
+        (-0.30, -0.30, 0.0), (0.0, -0.30, 0.0), (0.30, -0.30, 0.0),
+        (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
+    ]
 
 
 def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
@@ -159,3 +181,97 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
     assert (row.mic_move_count, row.capture_count) == (1, 1)
     assert (row.program_id, row.size) == ("spot", "express")
 
+
+def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
+    assert {
+        program_id: mp.program(program_id).size
+        for program_id in ("baseline", "tournament", "branches", "seat", "room", "close")
+    } == {
+        "baseline": "express",
+        "tournament": "express",
+        "branches": "express",
+        "seat": "cloud",
+        "room": "cloud",
+        "close": "spot",
+    }
+
+
+def test_room_plans_are_summed_ungated_measurements() -> None:
+    cloud = mp.program("room", "cloud")
+    quick = mp.program("room", "quick")
+
+    assert cloud.poses is mp.program("seat", "cloud").poses
+    assert [(pose.azimuth_deg, pose.elevation_deg) for pose in quick.poses] == [
+        (0, 0), (-20, 0), (20, 0),
+    ]
+    assert {row.purpose for row in (cloud, quick)} == {mp.PURPOSE_ROOM}
+    assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
+    assert mp.gate_exemption(cloud.purpose) == mp.SEAT_EXEMPT
+    assert mp.baseline_scope(cloud.purpose) == "speaker_tune"
+
+
+@pytest.mark.parametrize(
+    ("purpose", "kind", "expected"),
+    [
+        (None, mp.POSE_KIND_BEARING, mp.PURPOSE_SPEAKER),
+        (None, mp.POSE_KIND_SEAT, mp.PURPOSE_ROOM),
+        (None, mp.POSE_KIND_CLOSE, mp.PURPOSE_REFERENCE),
+        (mp.PURPOSE_ROOM, mp.POSE_KIND_BEARING, mp.PURPOSE_ROOM),
+    ],
+)
+def test_measurement_purpose_resolves_explicit_and_legacy_rows(
+    purpose: str | None, kind: str, expected: str
+) -> None:
+    assert mp.resolved_measurement_purpose(purpose, kind) == expected
+
+
+def _bundled_config() -> dict[str, object]:
+    path = Path(mp.__file__).with_name("measurement_plans.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_config(tmp_path: Path, config: dict[str, object]) -> Path:
+    path = tmp_path / "plans.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    return path
+
+
+def test_shared_layout_can_change_to_five_positions_without_code(tmp_path: Path) -> None:
+    config = _bundled_config()
+    config["layouts"]["seat_cloud"] = config["layouts"]["seat_cloud"][:5]  # type: ignore[index]
+
+    programs = mp.load_programs(_write_config(tmp_path, config))
+
+    assert len(programs[("seat", "cloud")].poses) == 5
+    assert programs[("room", "cloud")].poses is programs[("seat", "cloud")].poses
+
+
+def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
+    config = _bundled_config()
+    pose = config["layouts"]["room_quick"][0]  # type: ignore[index]
+    pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
+
+    programs = mp.load_programs(_write_config(tmp_path, config))
+
+    loaded = programs[("room", "quick")].poses[0]
+    assert (loaded.headline, loaded.detail) == (
+        "Measure the main seat", "Hold the mic at ear height.",
+    )
+
+
+@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode"])
+def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
+    config = _bundled_config()
+    if broken == "empty":
+        config["layouts"]["room_quick"] = []  # type: ignore[index]
+    elif broken == "repeats":
+        config["layouts"]["room_quick"][0]["repeats"] = 0  # type: ignore[index]
+    elif broken == "purpose":
+        config["programs"][0]["purpose"] = "other"  # type: ignore[index]
+    elif broken == "regime":
+        config["programs"][0]["regime"] = "other"  # type: ignore[index]
+    else:
+        config["programs"][0].update({"purpose": "room", "regime": "per_driver"})  # type: ignore[index]
+
+    with pytest.raises(ValueError):
+        mp.load_programs(_write_config(tmp_path, config))

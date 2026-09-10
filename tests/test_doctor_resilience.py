@@ -17,6 +17,7 @@ import time
 import pytest
 
 from jasper import service_units
+from jasper.control import heal_supervisor
 from jasper.cli.doctor import _evidence, _shared, resilience, web
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
@@ -79,8 +80,18 @@ def _unit_block(unit: str, active: str, sub: str, restarts: int = 0) -> str:
             "fail",
             resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
+        # #2802 item 3: a dead grouping/source-intent reconciler used to stay
+        # doctor-invisible except indirectly (via USB combo consistency).
+        (
+            [
+                ("jasper-grouping-reconcile.service", "failed", "failed", 0),
+                ("jasper-source-intent-reconcile.service", "failed", "failed", 0),
+            ],
+            "fail",
+            resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
+        ),
     ],
-    ids=["failed-unit", "restart-count", "failed-oneshot"],
+    ids=["failed-unit", "restart-count", "failed-oneshot", "failed-reconcilers"],
 )
 def test_check_service_runtime_state_verdicts(
     monkeypatch, blocks, status, reason
@@ -124,6 +135,15 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
+
+
+def test_runtime_state_units_are_queryable_on_the_doctor_roster():
+    """#2802 item 3: `evidence.unit_states()` queries only
+    `service_units.DOCTOR_UNIT_ROSTER`, so a unit in `_RUNTIME_STATE_UNITS`
+    but missing from the roster never appears in the batch and this check
+    silently no-ops on it (the bug that motivated tracking these two)."""
+    for unit in _shared._RUNTIME_STATE_UNITS:
+        assert unit in service_units.DOCTOR_UNIT_ROSTER, unit
 
 
 def test_a_failed_camilla_is_exactly_one_fail_row(monkeypatch):
@@ -714,6 +734,7 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
     "check_name",
     [
         "check_bootloop_guard",
+        "check_heal_recency",
         "check_outputd_failure_reconcile_park",
         "check_required_units_active",
         "check_speaker_silence",
@@ -724,6 +745,47 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
 )
 def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()
+
+
+# ---------------------------------------------------------- check_heal_recency
+
+
+_HEAL_STALE_AFTER_SEC = 3 * 600.0
+
+
+def test_the_stale_window_is_three_supervisor_ticks():
+    assert (
+        resilience._HEAL_STALE_TICKS * heal_supervisor.TICK_INTERVAL_SEC
+        == _HEAL_STALE_AFTER_SEC
+    )
+
+
+@pytest.mark.parametrize(
+    "heal, status, reason",
+    [
+        (None, "skipped", resilience.REASON_CONTROL_UNAVAILABLE),
+        ({"enabled": False}, "skipped", resilience.REASON_HEAL_UNOBSERVED),
+        ({"age": _HEAL_STALE_AFTER_SEC + 60}, "warn", resilience.REASON_HEAL_STALE),
+        ({"age": 60.0}, "ok", resilience.REASON_HEAL_RECENT),
+        (
+            {"age": 60.0, "would_act": {"case": "silent", "action": "restart-audio"}},
+            "ok", resilience.REASON_HEAL_RECENT,
+        ),
+    ],
+)
+def test_check_heal_recency_verdicts(monkeypatch, heal, status, reason):
+    """``age`` is how long ago the supervisor published its last tick."""
+    snapshot = None if heal is None else dict(heal)
+    if snapshot is not None and "age" in snapshot:
+        snapshot["last_tick"] = time.time() - snapshot.pop("age")
+    monkeypatch.setattr(
+        resilience, "_read_resilience_state",
+        lambda: None if snapshot is None else {"heal": snapshot},
+    )
+
+    result = resilience.check_heal_recency()
+
+    assert (result.status, result.reason) == (status, reason)
 
 
 # --------------------------------------- check_outputd_failure_reconcile_park

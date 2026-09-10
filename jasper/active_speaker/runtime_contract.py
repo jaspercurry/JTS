@@ -827,17 +827,6 @@ def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
     return read_camilla_statefile_config_path(statefile_path)
 
 
-def _read_text(path: str | Path) -> tuple[str | None, dict[str, str] | None]:
-    try:
-        return Path(path).read_text(encoding="utf-8"), None
-    except OSError as exc:
-        return None, _issue(
-            "blocker",
-            "camilla_config_unreadable",
-            f"could not read CamillaDSP config {path}: {type(exc).__name__}",
-        )
-
-
 def _path_matches(left: str | Path | None, right: str | Path | None) -> bool:
     if not left or not right:
         return False
@@ -989,7 +978,7 @@ def _flat_output_terminally_muted(
 
     The three-fact proof itself was PROMOTED to ``graph_safety`` when a second
     caller appeared — the ring arm's anchor acceptance
-    (``jasper.fanin.coupling_reconcile._anchor_is_all_muted``) needs the same
+    (``jasper.fanin.ring_readiness._anchor_is_all_muted``) needs the same
     three facts about the same shape of graph, and a mirrored copy would be a
     drift site on a hearing-safety path. What stays here is the binding this
     module owns: the flat graph's commission-mute NAME for ``index`` and the
@@ -4023,7 +4012,6 @@ def classify_bass_extension_graph(
                 )
                 if selected_path is None:
                     continue
-            selector1 = None
             selected1 = selected_path.read_bytes()
             selected2 = selected_path.read_bytes()
             if evidence_source == "persisted_boot":
@@ -4031,8 +4019,6 @@ def classify_bass_extension_graph(
                 selected2_s = parse_camilla_statefile_config_path(selector2.decode("utf-8"))
                 if selected2_s != str(selected_path):
                     continue
-            else:
-                selector2 = None
             staged2 = _read_optional_bytes(staged_metadata_path)
             profile2 = _read_optional_bytes(profile_path)
             intent2 = _read_optional_bytes(intent_path)
@@ -4071,18 +4057,6 @@ def classify_bass_extension_graph(
             staged_metadata_bytes=staged1,
         )
     return _unsafe_boundary("bass_extension_snapshot_unstable", "graph authority changed while it was read")
-
-
-async def _invoke_active_graph_reader(
-    reader: Callable[[], Awaitable[str | None]],
-) -> str | None:
-    """Invoke one live CamillaDSP query inside a task so failures become evidence.
-
-    Used for both queries the live boundary makes — reading the running graph
-    and canonicalizing the selected file — since either can fail the same ways.
-    """
-
-    return await reader()
 
 
 async def classify_active_bass_extension_graph(
@@ -4136,10 +4110,8 @@ async def classify_active_bass_extension_graph(
         # CamillaController, whose `_call` holds its lock for the whole call, so
         # these serialize rather than interleaving on one websocket.
         active_result, canonical_result = await asyncio.gather(
-            _invoke_active_graph_reader(read_active_graph_text),
-            _invoke_active_graph_reader(
-                lambda: canonicalize_graph_text(selected_text),
-            ),
+            read_active_graph_text(),
+            canonicalize_graph_text(selected_text),
             return_exceptions=True,
         )
         for result in (active_result, canonical_result):
@@ -4556,14 +4528,12 @@ def safe_graph_for_current_topology(
     preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     parked_config_path: str | Path | None = None,
-    coupling: str | None = None,
     applied_baseline_path: str | Path | None = None,
     profile_path: str | Path | None = None,
     intent_path: str | Path | None = None,
     staged_metadata_path: str | Path | None = None,
     staged_startup_hold_path: str | Path | None = None,
     consider_applied_baseline: bool = True,
-    staged_config: Mapping[str, Any] | None = None,
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology.
 
@@ -4588,11 +4558,6 @@ def safe_graph_for_current_topology(
     from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
     from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
 
-    if staged_config not in (None, {}):
-        raise TypeError(
-            "in-memory staged_config authority is no longer accepted; "
-            "pass staged_metadata_path"
-        )
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
     # Empty is a deliberate runtime state, not implicit stereo.  Decide it

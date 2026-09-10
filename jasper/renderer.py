@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Renderer state poller + AirPlay-pause control.
+"""Renderer state poller.
 
 Consults each renderer daemon directly for its playback state:
 
   librespot     → /run/librespot/state.env (--onevent hook)
   shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
-  bluez-alsa    → bluealsa-cli list-pcms (subprocess)
+  bluez         → org.bluez.MediaTransport1 presence (system bus)
   USB input       → jasper-fanin DIRECT lane STATUS
 
 `RendererClient.active_renderers()` returns a dict with one boolean
@@ -23,7 +23,6 @@ the effective audible source, then delegates to MPRIS / Spotify Web API
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any
@@ -31,12 +30,13 @@ from typing import Any
 from . import librespot_state
 from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
-from .platform.status_socket import MUX_CONTROL_SOCKET_PATH
+from .platform import wire
+from .platform.uds import mux_socket_command
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
     spotify_playing,
-    usbsink_playing,
+    usbsink_streaming,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,10 +62,10 @@ async def airplay_now_playing() -> dict[str, str]:
 
 
 class RendererClient:
-    """Renderer state + AirPlay-pause control. Read-only state queries
-    are fail-soft (log + return safe default on transport errors).
-    Source-aware routing across AirPlay/Spotify lives in
-    `jasper.tools.transport`."""
+    """Renderer state. Every query is read-only and fail-soft (log +
+    return a safe default on transport errors). Source-aware routing across
+    AirPlay/Spotify lives in `jasper.tools.transport`; stopping a source is
+    mux's, over its control socket."""
 
     def __init__(
         self,
@@ -82,14 +82,16 @@ class RendererClient:
     async def active_renderers(self) -> dict[str, bool]:
         """Return raw renderer activity keyed by the stable public names.
 
-        ``usbsinkactive`` comes from fan-in's DIRECT lane, the sole USB audio
-        owner.
+        ``usbsinkactive`` is fan-in's DIRECT-lane *streaming* edge, the same
+        arbitration predicate mux uses — not the level predicate behind
+        ``/state.renderers.usbsink.playing`` — so a caller falling back to
+        these probes cannot pick a different winner than mux did.
         """
         spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
-            usbsink_playing(),
+            usbsink_streaming(),
             return_exceptions=False,
         )
         return {
@@ -100,58 +102,25 @@ class RendererClient:
         }
 
     async def selected_source(self) -> str | None:
-        """Return mux's effective audible source, or None if unknown/idle.
+        """Return mux's effective audible source, or None if unknown.
 
-        This is intentionally separate from `active_renderers()`, which
-        reports raw renderer activity. Mux controls the audible fan-in
-        lane in both manual mode and auto mode once a winner has been
-        selected, so volume/dashboard callers should prefer this policy
-        layer when it is available.
+        The answer is mux's own ``active_source`` — the single field that
+        already folds the test lease, the manual pin, and a winner that is
+        still playing into one name. This is intentionally separate from
+        `active_renderers()`, which reports raw renderer activity.
+
+        Fail-soft: an unreachable mux, an unparseable reply, or a STATUS
+        without the field all return ``None``.
         """
         try:
-            async with asyncio.timeout(1.0):
-                reader, writer = await asyncio.open_unix_connection(
-                    MUX_CONTROL_SOCKET_PATH
-                )
-        except (FileNotFoundError, ConnectionRefusedError,
-                asyncio.TimeoutError, OSError) as e:
-            logger.debug("mux status unavailable: %s", e)
+            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
+            # mux STATUS is a synchronous snapshot on the daemon's side.
+            payload = await mux_socket_command(wire.STATUS, timeout=1.0)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug("mux STATUS unavailable: %s", e)
             return None
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11
-            # wait_for SWALLOWS a CancelledError that arrives in the same
-            # tick its awaited future completes (Lib/asyncio/tasks.py:
-            # `except CancelledError: if fut.done(): return fut.result()`).
-            # VolumeObserver._run is a cancellation-only `while True:` and
-            # reaches this call EVERY tick through a directly-awaited chain
-            # (_tick -> VolumeCoordinator._active_source -> here) with no
-            # asyncio.gather in between to restore the parent's cancel -- so
-            # a swallowed cancel here makes the observer immortal and hangs
-            # VolumeObserver.stop()'s `await self._task` (#2003, same class
-            # as #1935/#1952). Do not "simplify" this back to wait_for while
-            # 3.11 is supported.
-            async with asyncio.timeout(1.0):
-                line = await reader.readline()
-        except (asyncio.TimeoutError, ConnectionResetError, OSError) as e:
-            logger.debug("mux STATUS failed: %s", e)
-            return None
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            payload = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        selected = payload.get("selected_source")
-        if isinstance(selected, str):
-            return selected
-        winner = payload.get("winner")
-        return winner if isinstance(winner, str) else None
+        effective = payload.get("active_source")
+        return effective if isinstance(effective, str) else None
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at
@@ -190,22 +159,6 @@ class RendererClient:
     async def _ap_currentsong(self) -> dict[str, Any]:
         return await airplay_now_playing()
 
-    # ------------------------------------------------------------------
-    # pause_airplay — pauses an active AirPlay session via MPRIS so
-    # another source can take the speaker. Spotify pause goes via the
-    # Spotify Web API at the caller's spotify_router instance
-    # (librespot has no local control HTTP); Bluetooth transport lives
-    # in jasper.bluetooth.avrcp.
-    # ------------------------------------------------------------------
-
-    async def pause_airplay(self) -> None:
-        await _busctl_call_method(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "Pause",
-        )
-
 
 # ----------------------------------------------------------------------
 # DBus helpers — busctl is in systemd, no extra dep. Subprocess output
@@ -230,19 +183,6 @@ async def _busctl_get_property(
     if m:
         return m.group(1)
     return line
-
-
-async def _busctl_call_method(
-    bus_name: str, object_path: str, interface: str, method: str,
-) -> bool:
-    stdout = await system_busctl(
-        "call",
-        bus_name, object_path, interface, method,
-    )
-    if stdout is None:
-        logger.debug("busctl Call %s.%s failed", interface, method)
-        return False
-    return True
 
 
 def _parse_mpris_metadata(busctl_out: str) -> dict[str, Any]:

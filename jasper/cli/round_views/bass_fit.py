@@ -141,7 +141,9 @@ def _cmd_bass_fit(args: argparse.Namespace) -> int:
         return refused_by_name(exc.reason, exc.detail)
 
     published = fit.to_dict()
-    published["median"] = {"path": str(median_path), "sha256": median_sha256}
+    published["median"] = {
+        "path": str(median_path), "sha256": median_sha256, "evidence": median.evidence,
+    }
     published["design_draft"] = {
         "path": str(draft_path), "sha256": sha256_file(draft_path),
     }

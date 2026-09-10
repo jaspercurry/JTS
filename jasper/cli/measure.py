@@ -531,7 +531,7 @@ def _bind_compose(
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
 
-    async def before_play(program: Any, artifact: Any, phase: str) -> None:
+    async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
         try:
             await hold_fader_at(

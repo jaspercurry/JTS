@@ -183,7 +183,7 @@ class FakeClock:
 
 
 class BlockingTone:
-    """The tone contract: play() blocks until cancel() (a TonePlayer shape)."""
+    """The tone contract: play() blocks until cancel()."""
 
     def __init__(self) -> None:
         self.started = False

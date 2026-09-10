@@ -67,22 +67,6 @@ def model_label_aliases(model_key: str) -> list[str]:
     return [str(a) for a in aliases if a]
 
 
-def supported_model_options() -> tuple[dict[str, Any], ...]:
-    """Public, UI-safe model picker options derived from SUPPORTED_MODELS.
-
-    The capture page consumes these via CaptureSpec, so adding a supported
-    measurement mic is a registry edit, not a separate page edit.
-    """
-    return tuple(
-        {
-            "key": key,
-            "label": str(spec["label"]),
-            "aliases": model_label_aliases(key),
-        }
-        for key, spec in SUPPORTED_MODELS.items()
-    )
-
-
 @dataclass(frozen=True)
 class CalibrationCurve:
     freqs_hz: list[float]

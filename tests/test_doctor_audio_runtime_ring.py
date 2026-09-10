@@ -19,7 +19,6 @@ from jasper.audio_hardware.dac import (
     LatencyFloor,
     latency_floor_for,
 )
-from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_reconcile
@@ -27,7 +26,6 @@ from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
-from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 
 from ._doctor_audio_runtime_fixtures import (
     _fanin_status_payload,
@@ -141,107 +139,6 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     assert split.status == "fail", split.detail
     assert split.reason == audio_runtime_ring.REASON_SPLIT_RING_UNCONSUMED
-
-
-# ---- renderer ring lanes: the unarmed fleet default is healthy ----------
-
-
-def test_unarmed_renderer_lanes_report_skipped(monkeypatch):
-    """An unarmed box (the fleet default) formed no verdict, and is not failing.
-
-    ADR-0233 rule 3: a check that did not run says `skipped`, never `ok`. It
-    must also stay exit-0 — the next test drives the same result through the
-    real render path to pin that.
-    """
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "skipped"
-    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANES_UNARMED
-
-
-def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
-    """The fleet-wide repro, inverted into a guard: drive the unarmed
-    result through the doctor's REAL render/exit path and require exit 0.
-    A status outside the vocabulary reaches render()'s else-branch and
-    becomes exit 1, so this pin breaks on the defect CLASS, not just
-    today's literal."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    exit_code = doctor.render([result])
-    capsys.readouterr()  # swallow render()'s printed report
-    assert exit_code == 0
-
-
-def _resting_ring_entry(label):
-    """An armed lane's STATUS entry: attached, never fed since attach."""
-    from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
-
-    return {
-        "label": label,
-        "source": FANIN_INPUT_SOURCE_RING,
-        "frames_read": 0,
-        "ring": {
-            "attached": True,
-            "startup_empty_reads": 40,
-            "empty_reads": 0,
-            "writer_alive": False,
-            "occupancy": 0,
-            "epoch_resets": 0,
-        },
-    }
-
-
-def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
-    """An armed correction lane that has never been fed is RESTING, not
-    broken (U3/P6c-ii): its writers are ephemeral measurement spawns, so
-    between measurements the ring sits attached with only startup empty
-    reads — the same "not a fault" class as a paused renderer. The
-    never-fed WARN diagnoses a DAEMON renderer that failed to reopen its
-    ring after an arm; applying it to an on-demand lane would put a
-    standing false warning on every armed box.
-
-    Stated residual: resting and broken-at-open are byte-identical to
-    this check, so the ok does not prove the writer path."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
-    evidence.seed(
-        f"status:{FANIN_STATUS_SOCKET}",
-        _evidence.StatusRead({"inputs": [_resting_ring_entry("correction")]}),
-    )
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "ok"
-    assert result.reason == ""
-
-
-def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
-    """Control for the on-demand carve-out: a unit-ful lane in the same
-    never-fed state keeps the WARN and its restart-the-unit remedy — the
-    carve-out is keyed on the lane's writers, not applied lane-wide."""
-    import jasper.renderer_lanes as rl
-
-    monkeypatch.setattr(
-        rl, "read_armed_labels", lambda *a, **kw: ("spotify", "correction")
-    )
-    evidence.seed(
-        f"status:{FANIN_STATUS_SOCKET}",
-        _evidence.StatusRead(
-            {
-                "inputs": [
-                    _resting_ring_entry("spotify"),
-                    _resting_ring_entry("correction"),
-                ]
-            }
-        ),
-    )
-    result = audio_runtime_ring.check_renderer_ring_lanes()
-    assert result.status == "warn"
-    # The daemon lane is the problem; the on-demand lane beside it is not.
-    assert result.reason == audio_runtime_ring.REASON_RENDERER_LANE_NEVER_FED
 
 
 # ===========================================================================
@@ -506,15 +403,15 @@ def _stage_ring_geometry(
     monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring.ring_assets, "RING_A_PROGRAM_FILE", str(program))
     # The check's own read is the evidence-memoized `fanin_env()`, sourced from
-    # `env_load.FANIN_ENV_PATH`; `ring_health.FANIN_ENV_PATH` still needs
+    # `env_load.FANIN_ENV_PATH`; `ring_readiness.FANIN_ENV_PATH` still needs
     # patching too since `resolve_effective_fanin_ring_slots` reports it as
     # the resolution's `source` label.
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env)
+        "jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env)
     )
     return fanin_env, program
 
@@ -787,7 +684,7 @@ def test_any_missing_asset_is_a_hard_fail(monkeypatch, tmp_path, staged):
 
     There is no second transport to degrade onto: the graph cannot resolve its
     ring devices at all, so there is no "loopback still carries audio" warn to
-    fall back to. The verdict must not depend on read_persisted_coupling, so
+    fall back to. The verdict must not depend on a transport declaration, so
     this never stubs it, and it must never open-probe a live ring.
     """
     _stage_assets(monkeypatch, tmp_path, **staged)
@@ -989,20 +886,11 @@ def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
     assert not ring.exists(), "residue left behind after a failed probe"
 
 
-# --- The verdict is independent of the persisted token ----------------
+# --- The verdict is unconditional -------------------------------------------
 
 
-def _arm_ring(monkeypatch):
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
-
-
-def test_a_missing_asset_fails_whatever_the_persisted_token_says(
-    monkeypatch, tmp_path
-):
-    """The verdict does NOT turn on the coupling any more, and that is the fix.
+def test_a_missing_asset_fails(monkeypatch, tmp_path):
+    """The verdict does NOT turn on a transport declaration, and that is the fix.
 
     It used to: an armed box FAILED and an unarmed one merely WARNED "inert
     platform incomplete (loopback still active)". ADR-0100 retired that route,
@@ -1010,21 +898,12 @@ def test_a_missing_asset_fails_whatever_the_persisted_token_says(
     claimed a transport the box does not have — a speaker emitting nothing,
     reported as degraded-but-playing, which is exactly the reported-as-healthy
     case the transport parks exist to prevent.
-
-    Both polarities are driven, because one alone would also pass against a
-    check that still branched and happened to be tested on the branch that
-    matches.
     """
     _stage_assets(monkeypatch, tmp_path, so=False)
 
-    def _verdict(label):
-        res = audio_runtime_ring.check_ring_platform_assets()
-        assert res.status == "fail", label
-        assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING, label
-
-    _verdict("persisted token not rewritten yet")
-    _arm_ring(monkeypatch)
-    _verdict("persisted token names the ring")
+    res = audio_runtime_ring.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert res.reason == audio_runtime_ring.REASON_RING_ASSET_MISSING
 
 
 # --- The open-probe asks for what the CONF.D DECLARES, never the resolver ----

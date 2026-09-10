@@ -87,21 +87,11 @@ install_renderers() {
     elif [[ "$(/usr/local/bin/shairport-sync -V 2>&1 | head -1)" != "${SHAIRPORT_SYNC_VERSION}-"* ]]; then
         # `-V` prints "<version>-<feature>-<feature>..." (e.g.
         # "5.2.3-AirPlay2-smi10-OpenSSL-..."), so the installed version is the
-        # text before the first "-". Without this gate the feature probes below
-        # pass on any AP2+pipe build and a pin bump is a silent no-op on every
-        # Pi that already has one.
+        # text before the first "-". Without this gate the AirPlay2 feature
+        # probe below passes on any AP2 build and a pin bump is a silent no-op
+        # on every Pi that already has one.
         need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
-        need_build=1
-    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -qE -- '-pipe(-|$)'; then
-        # The pipe output backend (--with-pipe) was added to the configure
-        # line; an older source build (or apt AP1) lacks it. shairport-sync's
-        # -V feature string gains a "pipe" feature token only when the backend
-        # is compiled in, so this forces exactly one rebuild on upgrade and is
-        # a no-op once the pipe-capable binary is installed. The pattern
-        # matches the token whether it is followed by another "-<feature>"
-        # token or sits at the end of the string, so a future trim of the -V
-        # feature list cannot leave us rebuilding on every deploy.
         need_build=1
     fi
     if [[ "$need_build" == "1" ]]; then
@@ -133,7 +123,6 @@ install_renderers() {
                 --with-alsa --with-soxr --with-avahi \
                 --with-ssl=openssl \
                 --with-airplay-2 \
-                --with-pipe \
                 --with-metadata --with-dbus-interface \
                 --with-mpris-interface
             # RAM-bounded + cgroup-contained C build (BUILD_SANDBOX_KB_PER_JOB_C
@@ -166,16 +155,7 @@ install_renderers() {
         groupadd -r shairport-sync
     fi
     if ! getent passwd shairport-sync >/dev/null 2>&1; then
-        # -G jts-ring (U3/P6d): the airplay renderer lane's ioplug creates its
-        # SHM ring under /dev/shm/jts-ring (2775) inside the shairport-sync
-        # process. Safe to hard-list because WE create the group:
-        # create_jasper_service_users runs before install_renderers in
-        # install.sh, so on a fresh box the group exists here — and if that
-        # ordering ever broke, this useradd would fail LOUDLY (exit 6 under
-        # set -euo pipefail), not silently. Boxes whose user predates P6d take
-        # the guarded usermod in service-users.sh instead (the useradd here is
-        # skipped for them). Inert until the lane is armed.
-        useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio,jts-ring shairport-sync
+        useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio shairport-sync
     fi
 
     # shairport-sync config is templated: deploy/shairport-sync.conf.template

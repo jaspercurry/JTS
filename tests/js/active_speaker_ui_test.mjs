@@ -483,13 +483,12 @@ const STEREO_WITH_SUB_UNSET_FC = {
 }
 
 // #2344, re-pointed by #2412 Wave 3 — the ring refusal is retired, and what has
-// to REACH the household now is the two arming states and the ends-disagree
-// defect, from every array the backend can park them in. Behavioural, not a
-// substring check on the source: a rung whose code is misspelled still contains
-// the code as a substring, and a walker that dropped an array still mentions it
-// in a comment.
+// to REACH the household now is the arming state and the ends-disagree defect,
+// from every array the backend can park them in. Behavioural, not a substring
+// check on the source: a rung whose code is misspelled still contains the code
+// as a substring, and a walker that dropped an array still mentions it in a
+// comment.
 {
-  const FEED = "commissioning_ring_feed_unarmed";
   const ENDPOINT = "commissioning_active_endpoint_unarmed";
   const ENDS = "commissioning_transport_ends_disagree";
   const WIRE = "ring_wire_declaration_invalid";
@@ -505,15 +504,14 @@ const STEREO_WITH_SUB_UNSET_FC = {
     "recognise, so driver tests can’t run. Open System status.";
 
   // The blocked driver-test payload: the preflight's issues are copied into
-  // `load.issues` by load_driver_commissioning_config. Both arming codes reach
-  // the same sentence because the household ACTION is the same for both; the
-  // two operator remedies differ and belong to two different reconcilers.
-  for (const code of [FEED, ENDPOINT]) {
-    assert.equal(
-      commissionPayloadFailure({ status: "blocked", load: { issues: [{ code }] } }),
-      unarmed,
-    );
-  }
+  // `load.issues` by load_driver_commissioning_config.
+  assert.equal(
+    commissionPayloadFailure({
+      status: "blocked",
+      load: { issues: [{ code: ENDPOINT }] },
+    }),
+    unarmed,
+  );
   assert.equal(
     commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: ENDS }] } }),
     ends,
@@ -533,7 +531,7 @@ const STEREO_WITH_SUB_UNSET_FC = {
     commissionPayloadFailure({
       status: "blocked",
       issues: [{ code: "ramp_prepare_failed" }],
-      prepare_issues: [{ code: FEED }],
+      prepare_issues: [{ code: ENDPOINT }],
     }),
     unarmed,
   );

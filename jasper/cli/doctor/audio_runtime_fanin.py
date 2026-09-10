@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import devices_playback_is_pipe
-from ...fanin_coupling import read_declared_ring_wire_format
+from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -46,7 +46,6 @@ REASON_ASOUND_LANE_MISSING = "asound_lane_missing"
 REASON_ASOUND_LANE_WRONG_SLAVE = "asound_lane_wrong_slave"
 REASON_ASOUND_LANE_WIDTH_SHEAR = "asound_lane_width_shear"
 REASON_ASOUND_STALE_TOPOLOGY_STATE = "asound_stale_topology_state"
-REASON_ASOUND_RING_WIRE_UNRESOLVED = "asound_ring_wire_unresolved"
 
 REASON_FANIN_UNIT_MISSING = "fanin_unit_missing"
 REASON_FANIN_UNIT_NOT_ENABLED = "fanin_unit_not_enabled"
@@ -100,9 +99,7 @@ REASON_HOST_CLOCK_ACTUATOR_UNAVAILABLE = "host_clock_actuator_unavailable"
 REASON_HOST_CLOCK_L2_FALLBACK = "host_clock_l2_fallback"
 REASON_HOST_CLOCK_PROBING = "host_clock_probing"
 
-REASON_COUPLING_FILE_ABSENT = "coupling_file_absent"
 REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
-REASON_COUPLING_TOKEN_UNKNOWN = "coupling_token_unknown"
 REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
 REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
@@ -167,36 +164,15 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-#: The lane roster on a box with NO renderer lane armed (the shipped fleet shape).
+#: The `(label, pcm)` roster fan-in's STATUS should report for its snd-aloop
+#: lanes. The USB lane is not one of them: it reads `hw:UAC2Gadget` directly, or
+#: nothing at all with direct off, so it never names an aloop substream.
 _FANIN_EXPECTED_ALOOP_INPUTS = [
     ("spotify", "hw:Loopback,1,0"),
     ("airplay", "hw:Loopback,1,1"),
     ("bluealsa", "hw:Loopback,1,2"),
-    ("usbsink", "hw:Loopback,1,3"),
     ("correction", "hw:Loopback,1,4"),
 ]
-
-
-def _fanin_expected_inputs(
-    lanes_env: str | None = None,
-) -> list[tuple[str, str]]:
-    """The `(label, pcm)` roster fan-in's STATUS should report on THIS box.
-
-    An armed renderer-ingress lane reports its RING PATH as its `pcm`, so the
-    armed set is read from the lane map (`jasper.renderer_lanes`) fan-in itself
-    reads rather than compared against a hardcoded list.
-    """
-    from jasper import renderer_lanes as rl
-
-    armed = (
-        rl.read_armed_labels()
-        if lanes_env is None
-        else rl.read_armed_labels(lanes_env)
-    )
-    return [
-        (label, rl.expected_fanin_lane_pcm(label, pcm, armed))
-        for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
-    ]
 
 
 # The assistant-loudness gain floor, and the only fixed bound the shared Rust
@@ -299,22 +275,20 @@ def check_fanin_asound_wiring() -> CheckResult:
             reason=REASON_ASOUND_LEGACY_RENDERER_BLOCK,
         )
 
-    # No usbsink_substream write alias: USB audio is DIRECT-captured by
-    # jasper-fanin from hw:UAC2Gadget. fan-in still READS the pair-3 capture side
-    # as the usbsink lane's idle fallback, but nothing writes it.
+    # No usbsink_substream alias at all: USB audio is DIRECT-captured by
+    # jasper-fanin from hw:UAC2Gadget, so pair 3 has neither a writer nor a
+    # reader.
     expected_aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
         "bluealsa_substream": "hw:Loopback,0,2",
         CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
-    # snd-aloop pins both halves of a cable to one format, and the reader half is
-    # jasper-fanin, which opens every capture side at the box's one resolved
-    # wire. So the expected lane width is that wire.
-    try:
-        wire = read_declared_ring_wire_format()
-    except ValueError as e:
-        return CheckResult(label, "fail", str(e), reason=REASON_ASOUND_RING_WIRE_UNRESOLVED)
+    # snd-aloop pins both halves of a cable to one format, and the reader half
+    # is jasper-fanin, whose capture opens are the constant
+    # `mixer::pcm_open::LANE_CAPTURE_FORMAT`. So the expected lane width is the
+    # program wire itself, not anything this box declares.
+    wire = RING_WIRE_FORMAT_WIDE
     missing: list[str] = []
     wrong: list[str] = []
     sheared: list[str] = []
@@ -340,7 +314,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             parts.append("wrong slave " + ", ".join(wrong))
         if sheared:
             parts.append(
-                f"lane width ≠ {wire} (this box's resolved wire): "
+                f"lane width ≠ {wire} (the program wire): "
                 + ", ".join(sheared)
             )
         # One row can carry several classes; the reason names the worst, so a
@@ -464,10 +438,16 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS response missing inputs[]",
             reason=REASON_FANIN_STATUS_MISSING_INPUTS,
         )
+    # The ALOOP roster only. The USB lane reports the gadget capture it reads
+    # directly (or nothing, with direct off), so it takes no part in this
+    # compare — while an old daemon still reporting hw:Loopback,1,3 for it lands
+    # here as unexpected drift.
+    aloop_prefix = f"hw:{_ALOOP_CARD_ID},"
     actual_inputs = [
         (inp.get("label"), inp.get("pcm"))
         for inp in inputs
         if isinstance(inp, dict)
+        and str(inp.get("pcm") or "").startswith(aloop_prefix)
     ]
 
     progress_age = data.get("watchdog", {}).get(
@@ -514,7 +494,7 @@ def check_fanin_service() -> CheckResult:
     faults: list[tuple[str, str]] = []
     if progress_age > FANIN_STALE_MS:
         faults.append((REASON_FANIN_PROGRESS_STALE, "the work loop may be wedged"))
-    expected_inputs = _fanin_expected_inputs()
+    expected_inputs = list(_FANIN_EXPECTED_ALOOP_INPUTS)
     # Order-insensitive but multiplicity-preserving: a lane-map reordering is
     # not drift, but a duplicated lane must still be caught, which a `set`
     # compare forgives by collapsing the duplicate. A payload with a
@@ -534,7 +514,7 @@ def check_fanin_service() -> CheckResult:
         faults.append((
             REASON_FANIN_INPUTS_DRIFTED,
             f"input roster drifted: {roster_detail} — check "
-            "/var/lib/jasper/fanin.env and /var/lib/jasper/renderer_lanes.env",
+            "/var/lib/jasper/fanin.env",
         ))
     if input_buffer_frames < 4096:
         faults.append((
@@ -715,7 +695,7 @@ def check_fanin_tts_drops() -> CheckResult:
     fan-in's TTS lane drops whole audio commands that arrive while its bounded
     pending queue is full (it cannot block the socket reader without stalling
     barge-in FLUSH behind queued audio). The Python writer paces itself to stay
-    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a
+    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/tts_playout.py), so a
     nonzero drop counter means assistant/cue audio audibly skipped.
 
     Every counter here is CUMULATIVE SINCE FAN-IN START, so the verdict keys on
@@ -876,50 +856,6 @@ def check_fanin_sched_policy() -> CheckResult:
     return CheckResult(name, "ok", policy)
 
 
-@doctor_check()
-def check_fanin_coupling_value() -> CheckResult:
-    """The persisted fan-in coupling must be a RECOGNIZED token.
-
-    jasper-fanin REFUSES an unrecognized value at start (exit 78) and the
-    ``--auto`` reconciler converges it; this surfaces the stale value until that
-    pass runs. An ABSENT key is not that state: fan-in serves the ring for it
-    (ADR-0100), so a box the reconciler has not written yet is ``ok``.
-    """
-    from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
-        COUPLING_SHM_RING,
-        coupling_value_removed,
-    )
-
-    label = "fan-in coupling value"
-    env = evidence.fanin_env()
-    if env is None:
-        return CheckResult(
-            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}",
-            reason=REASON_COUPLING_FILE_ABSENT,
-        )
-    # `coupling_value_removed` is the same predicate `persisted_coupling_feeds_ring`
-    # applies to fanin.env's own read, so this verdict cannot drift from what
-    # fan-in serves.
-    raw = env.get(COUPLING_ENV_VAR)
-    if coupling_value_removed(raw):
-        return CheckResult(
-            label,
-            "warn",
-            f"{COUPLING_ENV_VAR}={raw!r} in {FANIN_ENV_PATH} names a removed/unknown "
-            "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
-            "the file.",
-            reason=REASON_COUPLING_TOKEN_UNKNOWN,
-        )
-    return CheckResult(
-        label,
-        "ok",
-        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
-    )
-
-
 def _requires_roleful_graph() -> bool:
     """Does the saved topology need a per-driver (crossover) graph?
 
@@ -952,12 +888,8 @@ def check_fanin_coupling() -> CheckResult:
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
-    running fan-in is on the ring whatever that file says, and a healthy box's
-    key may not be written yet (coupling-auto runs
-    ``After=jasper-fanin.service``). The file's own legacy-token question
-    belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
-    what this graph writes to :func:`check_content_transport_coherence`.
+    KEYED ON THE LOADED GRAPH. Whether outputd consumes what this graph writes
+    belongs to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1074,17 +1006,15 @@ def check_fanin_coupling() -> CheckResult:
 # the registered set is DERIVED — never restated — from the one place that
 # still owns a pair allocation:
 #
-#   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
+#   pairs 0-2, 4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
 #
 # Deriving rather than tabulating makes retirement MECHANICAL: a pair stops
-# being registered the moment its owning constant stops naming it. The roster is
-# read in its ALOOP form, not through `_fanin_expected_inputs()`, because a
-# ring-armed renderer lane still RESERVES its aloop pair, so the registered set
-# must not flap with arming state.
+# being registered the moment its owning constant stops naming it.
 #
-# Pairs 5, 6 and 7 are absent because no owner names them: their PCM
-# definitions are gone, so an open pair in that range has resurrected a
-# deleted lane. That is the WARN — migration hygiene naming a pid, not a
+# Pairs 3, 5, 6 and 7 are absent because no owner names them: nothing writes
+# or reads them any more (pair 3 lost its last opener when the USB lane stopped
+# taking an aloop substream), so an open pair there has resurrected a deleted
+# lane. That is the WARN — migration hygiene naming a pid, not a
 # broken speaker. They stay reserved rather than reclaimed, per
 # deploy/modprobe.d/snd-aloop.conf: pcm_substreams stays 8 so no surviving
 # pair renumbers.
@@ -1268,10 +1198,11 @@ def check_aloop_registered_substreams() -> CheckResult:
             label,
             "warn",
             "snd-aloop substream(s) open with no registered purpose in this "
-            f"phase: {'; '.join(shown)}{suffix}. Only fan-in's five capture "
-            "lanes (pairs 0-4) are registered; pairs 5, 6 and 7 have no PCM "
-            "definitions left to open (ADR-0100 moved the content lane and the "
-            "summed music output to SHM rings). "
+            f"phase: {'; '.join(shown)}{suffix}. Only fan-in's four aloop "
+            "capture lanes (pairs 0-2 and 4) are registered; pairs 3, 5, 6 and "
+            "7 have no lane left to open (the USB lane reads the gadget capture "
+            "directly, and ADR-0100 moved the content lane and the summed music "
+            "output to SHM rings). "
             "A holder there means a rolled-back binary or a stale "
             "/etc/asound.conf resurrected a deleted lane. Identify the process "
             "above, stop it, and re-run `bash scripts/deploy-to-pi.sh` to "

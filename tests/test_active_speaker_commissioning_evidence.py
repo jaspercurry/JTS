@@ -68,12 +68,12 @@ from jasper.audio_measurement.excitation_artifacts import (
 )
 from jasper.audio_measurement.null_walk import (
     BoundedNullWalkSchedule,
-    NullWalkError,
     NullWalkSpec,
 )
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _three_way_preset
+from tests.test_audio_measurement_null_walk import _fine_grid
 
 
 def _hash(value: str) -> str:
@@ -1256,7 +1256,7 @@ def test_delay_walk_requires_explicit_signed_geometry_and_fresh_points(
     assert walk.spec.geometry_seed_us == -37.5
     assert walk.geometry_attestation.signed_geometry_seed_us == -37.5
     assert walk.schedule.refinement_anchor_us == -37.5
-    assert walk.spec.candidate_delays_us() == (
+    assert _fine_grid(walk.spec) == (
         -237.5,
         -137.5,
         -37.5,
@@ -1330,8 +1330,6 @@ def test_shipped_350_hz_region_uses_bounded_schedule_without_weakening_grid(
 
     assert walk.spec.crossover_fc_hz == 350.0
     assert walk.spec.candidate_count == 29
-    with pytest.raises(NullWalkError, match="candidate budget"):
-        walk.spec.candidate_delays_us()
     assert len(walk.schedule.coarse_delays_us) == 15
     assert walk.schedule.coarse_delays_us[0] == -1400.0
     assert walk.schedule.coarse_delays_us[-1] == 1400.0

@@ -2,67 +2,83 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Named measurement programs, as plain data.
-
-A program is a menu item the household or the LLM operator picks by name.
-Free-form geometry is not a program: the only caller-supplied bearing is
-:func:`spot_program`'s single pose.
-
-The numbers come from ``docs/tuning-master-plan.md``, section "Measurement
-program constants"; this table is where they live.
-
-A pose is CATEGORIZED (ADR-0260): a ``bearing`` is an absolute
-azimuth and elevation at the mark in whole degrees, a ``seat`` is an offset
-from the listener's head centre, a ``close`` take sits on the design axis at
-its own distance. Mover reach is the staging layer's to enforce: a program
-says where to measure, not where the mover can go.
-
-Deliberate omissions, so absence reads as a decision:
-
-* No ``verify`` row: the shipped verify flow owns its own pose table
-  (``crossover_v2.capture_plan.verify_pose_table``).
-* No level. Every program is driven at the banked seat-level anchor's own SPL.
-* No distance on a bearing: ``distance_m=None`` is the walk's own
-  :data:`~jasper.active_speaker.crossover_v2_flow.MARK_DISTANCE_M`.
-"""
+"""Named measurement programs loaded from the bundled measurement plan."""
 
 from __future__ import annotations
 
+import json
 import math
+import numbers
 from dataclasses import dataclass
+from importlib import resources
+from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
-# Repeats at the on-axis anchor, per the plan's ratified position-major
-# structure: x4 at the 0 deg anchor pose, x1 at every other pose.
-ANCHOR_REPEATS = 4
-
-#: The pose kinds. A ``bearing`` is gated to the direct sound; a ``seat`` take
-#: is the room's own measurement and keeps its reflections
-#: (docs/measurement-loop-doctrine.md 1a; ADR-0260); a ``close`` take
-#: is the room-suppressed reference, gated like a bearing.
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
 POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE)
 
-#: Which kinds are analyzed ungated, and the word their gating block carries.
-GATE_EXEMPTION_BY_POSE_KIND: Mapping[str, str] = MappingProxyType({POSE_KIND_SEAT: SEAT_EXEMPT})
+PURPOSE_SPEAKER = "speaker"
+PURPOSE_ROOM = "room"
+PURPOSE_REFERENCE = "reference"
+PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_REFERENCE)
+
+REGIME_PER_DRIVER = "per_driver"
+REGIME_SUMMED = "summed"
+REGIME_BRANCHES = "branches"
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES)
+
+_LEGACY_PURPOSE_BY_KIND = {
+    POSE_KIND_BEARING: PURPOSE_SPEAKER,
+    POSE_KIND_SEAT: PURPOSE_ROOM,
+    POSE_KIND_CLOSE: PURPOSE_REFERENCE,
+}
 
 
-def off_the_mark(kind: str) -> bool:
-    """A bearing is measured at the mark. Every other kind is stated from
-    somewhere else: it plays the applied tune whole as one summed sweep, and
-    a turntable at the mark cannot reach it."""
+def _validated_purpose(purpose: str | None) -> str:
+    if purpose is None:
+        return PURPOSE_SPEAKER
+    if purpose not in PURPOSES:
+        raise ValueError(f"a measurement purpose must be one of {PURPOSES}, got {purpose!r}")
+    return purpose
 
-    return kind != POSE_KIND_BEARING
 
-#: The cube's half-edge and the close reference's standoff, both in metres.
-#: See ADR-0260.
-SEAT_OFFSET_M = 0.30
-CLOSE_DISTANCE_M = 0.30
+def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
+    """Resolve explicit purpose, or infer the purpose of an old pose."""
+
+    if purpose is not None:
+        return _validated_purpose(purpose)
+    try:
+        return _LEGACY_PURPOSE_BY_KIND[kind]
+    except KeyError:
+        raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}") from None
+
+
+def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
+    """Resolve purpose and validate the capture mode supported by the runner."""
+
+    resolved = resolved_measurement_purpose(purpose, kind)
+    if regime not in REGIMES:
+        raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
+    if resolved in (PURPOSE_ROOM, PURPOSE_REFERENCE) and regime != REGIME_SUMMED:
+        raise ValueError(f"{resolved} measurements require the summed regime")
+    return resolved
+
+
+def baseline_scope(purpose: str | None) -> str:
+    return (
+        "speaker_tune"
+        if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_REFERENCE)
+        else "base"
+    )
+
+
+def gate_exemption(purpose: str | None) -> str | None:
+    return SEAT_EXEMPT if _validated_purpose(purpose) == PURPOSE_ROOM else None
 
 
 def validated_pose(
@@ -113,12 +129,7 @@ def pose_place(
 
 @dataclass(frozen=True)
 class ProgramPose:
-    """One place to measure from, and how many takes to capture there.
-
-    ``seat_offset_m`` is ``(right, forward, up)`` from the head centre, seat
-    kind only. ``distance_m`` is the speaker-to-microphone standoff a
-    ``close`` take states; ``None`` is the mark.
-    """
+    """One place to measure, its take count, and optional prompt text."""
 
     azimuth_deg: int
     elevation_deg: int
@@ -126,8 +137,16 @@ class ProgramPose:
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
+    headline: str = ""
+    detail: str = ""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "azimuth_deg", validated_angle(self.azimuth_deg))
+        object.__setattr__(self, "elevation_deg", validated_angle(self.elevation_deg))
+        if isinstance(self.repeats, bool) or not isinstance(self.repeats, int) or self.repeats <= 0:
+            raise ValueError(f"pose repeats must be a positive integer, got {self.repeats!r}")
+        if not isinstance(self.headline, str) or not isinstance(self.detail, str):
+            raise ValueError("pose headline and detail must be text")
         offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
         object.__setattr__(self, "seat_offset_m", offset)
         object.__setattr__(self, "distance_m", distance)
@@ -142,11 +161,18 @@ class ProgramPose:
 
 @dataclass(frozen=True)
 class MeasurementProgram:
-    """One named menu item: an ordered pose list."""
+    """One named menu item: an ordered pose list and capture purpose."""
 
     program_id: str
     size: str
     poses: tuple[ProgramPose, ...]
+    purpose: str = PURPOSE_SPEAKER
+    regime: str = REGIME_PER_DRIVER
+
+    def __post_init__(self) -> None:
+        if not self.poses:
+            raise ValueError("a measurement program must contain at least one pose")
+        validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
 
     @property
     def mic_move_count(self) -> int:
@@ -165,100 +191,131 @@ class UnknownProgramError(ValueError):
     def __init__(
         self,
         program_id: str,
-        size: str,
+        size: str | None,
         choices: tuple[tuple[str, str], ...],
     ) -> None:
         self.program_id = program_id
         self.size = size
         self.choices = choices
         offered = ", ".join(f"{pid}/{sz}" for pid, sz in choices) or "(none)"
-        super().__init__(
-            f"no measurement program {program_id}/{size}; choose one of: {offered}"
+        requested = size if size is not None else "<default>"
+        super().__init__(f"no measurement program {program_id}/{requested}; choose one of: {offered}")
+
+
+def validated_angle(value: object) -> int:
+    """Normalize a whole-degree bearing without imposing mover reach."""
+
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError(f"an angle must be stated in whole degrees, got {value!r}")
+    return int(value)
+
+
+def _text(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be nonempty text")
+    return value
+
+
+def _pose(value: Any, layout: str, index: int) -> ProgramPose:
+    label = f"layout {layout!r} pose {index}"
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    try:
+        return ProgramPose(**value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}: {exc}") from None
+
+
+def _config_text(path: str | Path | None) -> str:
+    if path is not None:
+        return Path(path).read_text(encoding="utf-8")
+    return resources.files(__package__).joinpath("measurement_plans.json").read_text(
+        encoding="utf-8"
+    )
+
+
+def _load_programs(
+    path: str | Path | None = None,
+) -> tuple[Mapping[tuple[str, str], MeasurementProgram], Mapping[str, str]]:
+    raw = json.loads(_config_text(path))
+    if not isinstance(raw, dict):
+        raise ValueError("measurement plan must be an object")
+    unknown = set(raw) - {"layouts", "programs", "default_sizes"}
+    if unknown:
+        raise ValueError(f"measurement plan has unknown fields: {sorted(unknown)}")
+
+    layouts_raw = raw.get("layouts")
+    if not isinstance(layouts_raw, dict) or not layouts_raw:
+        raise ValueError("measurement plan layouts must be a nonempty object")
+    layouts: dict[str, tuple[ProgramPose, ...]] = {}
+    for name, values in layouts_raw.items():
+        name = _text(name, "layout name")
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"layout {name!r} must contain at least one pose")
+        layouts[name] = tuple(_pose(value, name, index) for index, value in enumerate(values))
+
+    rows = raw.get("programs")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("measurement plan programs must be a nonempty list")
+    programs: dict[tuple[str, str], MeasurementProgram] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"program {index} must be an object")
+        unknown = set(row) - {"id", "size", "layout", "purpose", "regime"}
+        if unknown:
+            raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
+        try:
+            program_id = _text(row["id"], f"program {index} id")
+            size = _text(row["size"], f"program {index} size")
+            layout = _text(row["layout"], f"program {index} layout")
+        except KeyError as exc:
+            raise ValueError(f"program {index} is missing {exc.args[0]}") from None
+        if layout not in layouts:
+            raise ValueError(f"program {program_id}/{size} names unknown layout {layout!r}")
+        key = (program_id, size)
+        if key in programs:
+            raise ValueError(f"measurement plan repeats program {program_id}/{size}")
+        programs[key] = MeasurementProgram(
+            program_id,
+            size,
+            layouts[layout],
+            purpose=row.get("purpose", PURPOSE_SPEAKER),
+            regime=row.get("regime", REGIME_PER_DRIVER),
         )
 
+    defaults_raw = raw.get("default_sizes")
+    if not isinstance(defaults_raw, dict):
+        raise ValueError("measurement plan default_sizes must be an object")
+    program_ids = {program_id for program_id, _size in programs}
+    if set(defaults_raw) != program_ids:
+        raise ValueError("measurement plan must name one default size for every program id")
+    defaults: dict[str, str] = {}
+    for program_id, size in defaults_raw.items():
+        program_id = _text(program_id, "default program id")
+        size = _text(size, f"default size for {program_id}")
+        if (program_id, size) not in programs:
+            raise ValueError(f"default {program_id}/{size} is not a program")
+        defaults[program_id] = size
+    return MappingProxyType(programs), MappingProxyType(defaults)
 
-_BASELINE_FULL_POSES: tuple[ProgramPose, ...] = (
-    ProgramPose(0, 0, ANCHOR_REPEATS),
-    ProgramPose(-10, 0),
-    ProgramPose(10, 0),
-    ProgramPose(-20, 0),
-    ProgramPose(20, 0),
-    ProgramPose(-30, 0),
-    ProgramPose(30, 0),
-    ProgramPose(-40, 0),
-    ProgramPose(40, 0),
-    ProgramPose(0, -10),
-    ProgramPose(0, 10),
-    ProgramPose(0, -20),
-    ProgramPose(0, 20),
+def load_programs(
+    path: str | Path | None = None,
+) -> Mapping[tuple[str, str], MeasurementProgram]:
+    """Load and validate the bundled plan, or a plan at ``path``."""
+
+    return _load_programs(path)[0]
+
+
+_PROGRAMS, _DEFAULT_SIZES = _load_programs()
+
+# Compatibility values derived from the config, which remains their owner.
+ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
+SEAT_OFFSET_M = max(
+    abs(component)
+    for pose in _PROGRAMS[("seat", "cloud")].poses
+    for component in pose.seat_offset_m or ()
 )
-
-# On-axis plus one horizontal pair and one vertical pair: the owner's quick
-# tier, same anchor repeats as full.
-_BASELINE_EXPRESS_POSES: tuple[ProgramPose, ...] = (
-    ProgramPose(0, 0, ANCHOR_REPEATS),
-    ProgramPose(-20, 0),
-    ProgramPose(20, 0),
-    ProgramPose(0, -10),
-    ProgramPose(0, 10),
-)
-
-# The candidate cycle's poses (#3498). Few and unrepeated on purpose: a
-# tournament round multiplies the CANDIDATE list, and a candidate is only
-# comparable to another measured from the same place.
-_TOURNAMENT_EXPRESS_POSES: tuple[ProgramPose, ...] = (ProgramPose(0, 0),)
-
-_TOURNAMENT_FULL_POSES: tuple[ProgramPose, ...] = (
-    ProgramPose(0, 0),
-    ProgramPose(-20, 0),
-    ProgramPose(20, 0),
-)
-
-
-def _seat(right_m: float, forward_m: float, up_m: float) -> ProgramPose:
-    return ProgramPose(
-        0, 0, kind=POSE_KIND_SEAT, seat_offset_m=(right_m, forward_m, up_m),
-    )
-
-
-# The seat cube: the head centre and the six face centres around it, each
-# a SUMMED sweep through the applied tune (the VERIFY shape), because the
-# room is measured through the speaker stage it sits on.
-_SEAT_CUBE_POSES: tuple[ProgramPose, ...] = (
-    _seat(0.0, 0.0, 0.0),
-    _seat(SEAT_OFFSET_M, 0.0, 0.0),
-    _seat(-SEAT_OFFSET_M, 0.0, 0.0),
-    _seat(0.0, SEAT_OFFSET_M, 0.0),
-    _seat(0.0, -SEAT_OFFSET_M, 0.0),
-    _seat(0.0, 0.0, SEAT_OFFSET_M),
-    _seat(0.0, 0.0, -SEAT_OFFSET_M),
-)
-
-_SEAT_EXPRESS_POSES: tuple[ProgramPose, ...] = (
-    _seat(0.0, 0.0, 0.0),
-    _seat(SEAT_OFFSET_M, 0.0, 0.0),
-    _seat(0.0, SEAT_OFFSET_M, 0.0),
-)
-
-# One summed take on the design axis, close enough that the room is
-# suppressed: what ``round-views close-reference`` reads.
-_CLOSE_SPOT_POSES: tuple[ProgramPose, ...] = (
-    ProgramPose(0, 0, kind=POSE_KIND_CLOSE, distance_m=CLOSE_DISTANCE_M),
-)
-
-_PROGRAMS: Mapping[tuple[str, str], MeasurementProgram] = {
-    (p.program_id, p.size): p
-    for p in (
-        MeasurementProgram("baseline", "full", _BASELINE_FULL_POSES),
-        MeasurementProgram("baseline", "express", _BASELINE_EXPRESS_POSES),
-        MeasurementProgram("tournament", "full", _TOURNAMENT_FULL_POSES),
-        MeasurementProgram("tournament", "express", _TOURNAMENT_EXPRESS_POSES),
-        MeasurementProgram("branches", "express", _TOURNAMENT_EXPRESS_POSES),
-        MeasurementProgram("seat", "cube", _SEAT_CUBE_POSES),
-        MeasurementProgram("seat", "express", _SEAT_EXPRESS_POSES),
-        MeasurementProgram("close", "spot", _CLOSE_SPOT_POSES),
-    )
-}
+CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
@@ -271,21 +328,20 @@ def available_programs() -> tuple[tuple[str, str], ...]:
     return tuple(sorted(_PROGRAMS))
 
 
-def program(program_id: str, size: str) -> MeasurementProgram:
-    """The named program, or :class:`UnknownProgramError` listing the choices."""
+def program(program_id: str, size: str | None = None) -> MeasurementProgram:
+    """Return a named program, using its configured size when omitted."""
 
+    requested_size = size
+    if size is None:
+        size = _DEFAULT_SIZES.get(program_id)
     try:
-        return _PROGRAMS[(program_id, size)]
+        return _PROGRAMS[(program_id, size)]  # type: ignore[index]
     except KeyError:
-        raise UnknownProgramError(program_id, size, available_programs()) from None
+        raise UnknownProgramError(program_id, requested_size, available_programs()) from None
 
 
 def spot_program(azimuth_deg: int, elevation_deg: int) -> MeasurementProgram:
-    """One take at one caller-supplied bearing.
-
-    Not a registry row, and it enforces no reach bounds — the staging layer
-    owns what the mover can reach.
-    """
+    """One take at one caller-supplied bearing."""
 
     return MeasurementProgram(
         "spot", "express", (ProgramPose(azimuth_deg, elevation_deg),)

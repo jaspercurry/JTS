@@ -14,7 +14,6 @@ takes. Each enforcement point keeps a self-expiring lease of its own.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -22,6 +21,8 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
+from .platform import wire
+from .platform.uds import daemon_command
 from .platform.uds import mux_socket_command as _mux_socket_command
 from .log_event import log_event
 
@@ -127,8 +128,7 @@ async def _acquire_measurement_gate(
 
     try:
         payload = await _mux_socket_command(
-            "TEST_SELECT "
-            f"{MEASUREMENT_FANIN_LABEL} {gate_owner}",
+            wire.mux_test_select(MEASUREMENT_FANIN_LABEL, gate_owner),
             timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
         )
     except (
@@ -170,7 +170,7 @@ async def _release_measurement_gate(
     for attempt in range(3):
         try:
             payload = await _mux_socket_command(
-                f"TEST_RELEASE {gate_owner}",
+                wire.mux_test_release(gate_owner),
                 timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
             )
             if isinstance(payload, Mapping) and (
@@ -199,7 +199,7 @@ async def _release_measurement_gate(
             # cleanup tell another feature's owner apart without releasing it.
             try:
                 status = await _mux_socket_command(
-                    "STATUS", timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
+                    wire.STATUS, timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
                 )
             except (
                 OSError,
@@ -374,32 +374,16 @@ def _measurement_hold_ttl_sec() -> float:
 
 async def _voice_uds_command(
     socket_path: str, cmd: str, *, timeout: float = 5.0,
-) -> dict:
-    """Send one ASCII line to voice_daemon's control socket, parse the JSON.
+) -> dict[str, Any]:
+    """voice_daemon's control socket WITHOUT platform.uds's connect retry.
 
-    Same wire format as jasper.control.server._voice_socket_command, not
-    imported here to avoid a circular dependency.
+    ``VOICE_MEASURE_PAUSE_TIMEOUT_SEC`` is the daemon's drain contract, not a
+    transport allowance: letting a connect retry eat into it would fail a
+    strict window against a daemon that answered inside its own budget.
     """
-    async with asyncio.timeout(1.0):
-        reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11 wait_for
-        # swallows a CancelledError arriving in the same tick its future
-        # completes, which would make _refresh_voice_lease immortal and wedge
-        # window teardown (#1952). Do not "simplify" while 3.11 is supported.
-        async with asyncio.timeout(timeout):
-            line = await reader.readline()
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError(f"voice_daemon returned no response for {cmd!r}")
-    return json.loads(line.decode("utf-8"))
+    return await daemon_command(
+        socket_path, cmd, timeout=timeout, daemon="voice_daemon",
+    )
 
 
 async def _check_no_active_voice_session(
@@ -413,7 +397,9 @@ async def _check_no_active_voice_session(
     treated as "voice daemon down, so no session".
     """
     try:
-        status = await _voice_uds_command(socket_path, "STATUS", timeout=2.0)
+        status = await _voice_uds_command(
+            socket_path, wire.STATUS, timeout=2.0,
+        )
     except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(
@@ -431,10 +417,7 @@ async def _check_no_active_voice_session(
                 f"Could not verify voice is idle: {e}"
             ) from e
         raise
-    if require_voice_pause and (
-        not isinstance(status, dict)
-        or status.get("state") not in {"WAKE", "SESSION"}
-    ):
+    if require_voice_pause and status.get("state") not in {"WAKE", "SESSION"}:
         raise MeasurementWindowError(
             "Voice STATUS did not provide a trustworthy WAKE/SESSION state."
         )
@@ -606,15 +589,9 @@ async def measurement_window(
             try:
                 resp = await _voice_uds_command(
                     voice_socket_path,
-                    "MEASURE_PAUSE",
+                    wire.VOICE_MEASURE_PAUSE,
                     timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                 )
-                if not isinstance(resp, dict):
-                    if require_voice_pause:
-                        raise MeasurementWindowError(
-                            "MEASURE_PAUSE returned a malformed response."
-                        )
-                    raise TypeError("MEASURE_PAUSE response is not an object")
                 pause_result = resp.get("result")
                 if pause_result == "ok":
                     voice_paused = True
@@ -646,7 +623,7 @@ async def measurement_window(
                             try:
                                 renewal = await _voice_uds_command(
                                     voice_socket_path,
-                                    "MEASURE_PAUSE",
+                                    wire.VOICE_MEASURE_PAUSE,
                                     timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                                 )
                             except (
@@ -754,7 +731,7 @@ async def measurement_window(
                     # RESUME has no in-playout drain to wait out, and giving up
                     # here is recoverable via the daemon's auto-clear.
                     await _voice_uds_command(
-                        voice_socket_path, "MEASURE_RESUME", timeout=3.0,
+                        voice_socket_path, wire.VOICE_MEASURE_RESUME, timeout=3.0,
                     )
                 except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
                     logger.error(

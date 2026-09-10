@@ -284,7 +284,7 @@ per-lane mute: other lanes legitimately remain `muted:false` and MUST NOT be
 required muted.
 
 (ii) **Lane state.** The measurement lane reports `muted:false`, no
-`resampler` block present (or `resampler.armed:false`), `trim.pending:false`,
+`resampler` block present (or `resampler.armed:false`),
 and its `xrun_count` / `catchup_resync_frames` / `catchup_events` unchanged
 between the pass-start and pass-end reads.
 
@@ -314,10 +314,9 @@ the i32 spine scale — which is every ring-armed box since the ring wire's
 default went wide on 2026-08-15
 ([`60-jts-ring.conf`](../../deploy/alsa/conf.d/60-jts-ring.conf) declares that
 wire). What still carries this requirement is the BENCH LANE, which
-is narrow by its own decision: the renderer-ingress lanes in
-[`61-jts-renderer-lanes.conf`](../../deploy/alsa/conf.d/61-jts-renderer-lanes.conf)
-omit `format` deliberately, unlike the program ring's conf.d, so the stimulus
-path stays 48 kHz S16_LE whether it rides snd-aloop or a ring. The module
+is narrow by its own decision: renderer ingress is the snd-aloop substreams in
+[`asoundrc.jasper`](../../deploy/alsa/asoundrc.jasper), which fan-in reads as
+S16_LE, so the stimulus path stays 48 kHz S16_LE. The module
 docstring quoted here has been re-worded to match ("Renderer lane inputs are
 S16_LE interleaved stereo; the USB DIRECT lane …").
 
@@ -620,7 +619,7 @@ supervised bench session remains the only path to an accepted bundle.
   insufficient lead-in and lead-out including the Conv-impulse-length case.
 - R6a ingress transparency: isolation (mux STATUS `test_source`/
   `active_source`/`test_owner`), lane state (`muted`, `resampler.armed`,
-  `trim.pending`, `xrun_count`/`catchup_resync_frames`/`catchup_events`
+  `xrun_count`/`catchup_resync_frames`/`catchup_events`
   unchanged), no foreign audio at the mix (fan-in STATUS
   `tts.program_duck_active`/`tts.pending_frames` at start and end,
   `tts.flushed_frames`/`tts.dropped_audio_frames` unchanged), and
@@ -964,7 +963,7 @@ the plan table becomes the sole status surface.
   replaced entirely: isolation is mux's selected-input gate
   (`_measurement_gate_held` on `test_source`/`active_source`/`test_owner`),
   not per-lane mutes; four proof elements (isolation; lane state incl.
-  `resampler.armed`/`trim.pending`/xrun-and-catchup counters; no-duck via
+  `resampler.armed`/xrun-and-catchup counters; no-duck via
   `program_duck_active` plus the held `MEASURE_PAUSE` lease; S16
   bit-width/geometry); no assertable per-lane gain (fan-in exposes none).
   R10 replaced entirely: cross-check gated on the owner-channel index being

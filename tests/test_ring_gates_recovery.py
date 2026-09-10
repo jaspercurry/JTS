@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.fanin.ring_health import (
+from jasper.fanin.ring_readiness import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
 )
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
 )
@@ -124,9 +123,7 @@ def _armed_env(tmp_path):
     """
     import jasper.fanin.coupling_reconcile as cr
 
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
-    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(
         tmp_path / "outputd.env",
         cr._apply_actions("", cr._outputd_actions(""))[0],
@@ -407,23 +404,26 @@ def test_wire_gate_compares_outputd_only_once_armed(monkeypatch):
     file, two verdicts, decided by whether the box is already armed.
 
     The stale token is ``S16_LE`` now — since the ring wire's resolver
-    defaults wide, an unarmed box's leftover narrow declaration is what an
-    armed box must be refused for. The unarmed half of the test is what
-    proves the verdict is decided by ``armed`` and not by the token.
+    defaults wide, an unreconciled box's leftover narrow declaration is what a
+    reconciled box must be refused for. The unreconciled half of the test is
+    what proves the verdict is decided by whether the reconciler has written
+    outputd.env and not by the token.
     """
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    loopback_outputd = "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE\n"
+    stale_format = "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE\n"
 
-    ok_unarmed, _ = ring_edge_width_ready(fanin_text="", outputd_text=loopback_outputd)
-    assert ok_unarmed is True, "a not-yet-armed box must not be refused for this"
+    ok_unreconciled, _ = ring_edge_width_ready(fanin_text="", outputd_text=stale_format)
+    assert ok_unreconciled is True, "an unreconciled box must not be refused for this"
 
-    ok_armed, detail = ring_edge_width_ready(
-        fanin_text=f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
-        outputd_text=loopback_outputd,
+    ok_reconciled, detail = ring_edge_width_ready(
+        fanin_text="",
+        outputd_text=(
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={COUPLING_SHM_RING}\n" + stale_format
+        ),
     )
-    assert ok_armed is False
+    assert ok_reconciled is False
     assert "outputd (Ring B reader)" in detail
 
 
@@ -446,18 +446,19 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    armed = f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
+    reconciled = f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={COUPLING_SHM_RING}\n"
 
-    ok, detail = ring_edge_width_ready(fanin_text=armed, outputd_text="")
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text=reconciled)
     assert ok is False
     assert "outputd (Ring B reader)" in detail
     # The gate read the ABSENT key as the daemon's own token, not as "unknown".
     assert "S16_LE" in detail
 
-    # Positive control: the key the hardware reconciler writes on an armed box
-    # agrees with the resolved wire, and the same gate is silent.
+    # Positive control: the key the hardware reconciler writes agrees with the
+    # resolved wire, and the same gate is silent.
     ok, detail = ring_edge_width_ready(
-        fanin_text=armed, outputd_text="JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
+        fanin_text="",
+        outputd_text=reconciled + "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n",
     )
     assert ok is True, detail
 
@@ -658,7 +659,7 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", _mono_two_way_topology
     )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
@@ -719,7 +720,7 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", _mono_two_way_topology
     )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
@@ -790,7 +791,7 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", _three_way_topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", _three_way_topology
     )
 
     wire = resolve_ring_wire(_three_way_topology())
@@ -841,7 +842,7 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", _mono_two_way_topology
     )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
@@ -892,7 +893,7 @@ def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
     )
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
 
     assert resolve_ring_wire().sample_format == RING_WIRE_FORMAT
@@ -914,14 +915,12 @@ def test_an_unparseable_declared_wire_refuses_instead_of_raising(
 
     ``resolve_ring_wire`` fails loud on a token neither language recognizes —
     correct for an emitter, and the same verdict ``jasper-fanin`` reaches before
-    parking. But the arm has already written the ring env by the time the
-    preflights run, so an uncaught exception here would skip the snapshot restore
-    that makes a refused arm non-destructive: the box would be left holding the
-    partial flip. Both wire-reading gates resolve through ``resolve_wire_for_gate``
-    for exactly that reason.
+    parking. A refused gate must leave the box exactly as it was found, so an
+    uncaught exception here would cost the pass its refusal. Both wire-reading
+    gates resolve through ``resolve_wire_for_gate`` for exactly that reason.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin import ring_readiness as rr
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
@@ -929,10 +928,10 @@ def test_an_unparseable_declared_wire_refuses_instead_of_raising(
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s16le\n", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
 
-    for gate in (cr.ring_edge_width_ready, cr.ring_wire_caps_ready):
+    for gate in (rr.ring_edge_width_ready, rr.ring_wire_caps_ready):
         ok, detail = gate()
         assert ok is False, f"{gate.__name__} did not refuse"
         assert RING_WIRE_FORMAT_ENV_VAR in detail
@@ -952,7 +951,7 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+        "jasper.fanin.ring_readiness.load_topology_for_wire", _mono_two_way_topology
     )
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
@@ -965,3 +964,16 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     assert "is unreadable" in detail
 
 
+def test_topology_read_fails_soft_when_its_module_will_not_import(monkeypatch):
+    """An unimportable ``jasper.output_topology`` answers ``None``, not a raise.
+
+    The read defers that module, so the import is one more thing that can fail
+    at call time; the exception type it raises with lives in the same module.
+    """
+    import sys
+
+    from jasper.fanin import ring_readiness as rr
+
+    monkeypatch.setitem(sys.modules, "jasper.output_topology", None)
+
+    assert rr.load_topology_for_wire() is None

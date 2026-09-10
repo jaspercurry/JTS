@@ -114,11 +114,8 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64
             + signals.ceiling_fill_frames as f64
             - signals.held_target_frames.load(Ordering::Relaxed) as f64,
-        // RAW cumulative input — NOT trim-compensated. A `trim_ring` only moves
-        // the read cursor, never `input_frames` or `output_frames`, so the
-        // divergence `capture − playback` is already smooth across a trim.
-        // Subtracting `trimmed_frames` here would INJECT the phantom divergence
-        // step it purported to cancel (see the module-level `Obs mapping` note).
+        // RAW cumulative input: any correction term subtracted here injects
+        // the divergence step it claims to cancel.
         capture_frames: signals.input_frames.load(Ordering::Relaxed),
         // DAC-paced — the divergence anchor.
         playback_frames: signals.output_frames.load(Ordering::Relaxed),
@@ -583,40 +580,15 @@ mod tests {
     }
 
     #[test]
-    fn obs_capture_is_raw_input_not_trim_compensated() {
-        // capture_frames is the RAW cumulative input. A `LaneResampler::trim_ring`
-        // only advances the read cursor; it does NOT bump `input_frames` (pushed
-        // at capture) or `output_frames` (DAC-paced), so the divergence
-        // `capture − playback` is already smooth across a trim. The Obs mapping
-        // must therefore NOT subtract any trimmed-frames term — doing so was the
-        // inverted-compensation bug that injected a phantom −N divergence step
-        // into the slope estimator (probe response_ratio ~0.85 → ~43, +1000 ppm
-        // feed-forward rail in the wrong direction).
+    fn obs_capture_and_playback_are_the_raw_resampler_counters() {
+        // The divergence the slope estimator differences must carry no
+        // correction term on either side.
         let s = signals();
         s.input_frames.store(100_000, Ordering::Relaxed);
         s.output_frames.store(95_000, Ordering::Relaxed);
         let obs = build_obs(&s);
-        assert_eq!(
-            obs.capture_frames, 100_000,
-            "capture_frames must be the raw input counter (no trim subtraction)"
-        );
-        assert_eq!(
-            obs.playback_frames, 95_000,
-            "playback (DAC-paced) is the divergence anchor"
-        );
-
-        // A trim happening between two ticks bumps neither counter, so the very
-        // next Obs sees the SAME divergence — no step. Emulate a period where
-        // input/output advanced by one on-rate period each (a trim in between is
-        // invisible to these counters by construction).
-        s.input_frames.store(100_256, Ordering::Relaxed);
-        s.output_frames.store(95_256, Ordering::Relaxed);
-        let obs = build_obs(&s);
-        assert_eq!(
-            obs.capture_frames as i64 - obs.playback_frames as i64,
-            5_000,
-            "the divergence is unchanged across a trim — no phantom step"
-        );
+        assert_eq!(obs.capture_frames, 100_000);
+        assert_eq!(obs.playback_frames, 95_000);
     }
 
     #[test]

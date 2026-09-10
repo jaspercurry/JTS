@@ -179,7 +179,6 @@ CLOUD_WALK_SHAPE_TAIL_POST_APPLY = _plan.CLOUD_WALK_SHAPE_TAIL_POST_APPLY
 CloudPositionPrompt = _plan.CloudPositionPrompt
 DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 DEFAULT_CLOUD_VERIFY_POSITIONS = _plan.DEFAULT_CLOUD_VERIFY_POSITIONS
-DEFAULT_TIER = _plan.DEFAULT_TIER
 GEOMETRY_RETRY_OFFSET_CM = _plan.GEOMETRY_RETRY_OFFSET_CM
 LATERAL_MARK_PROMPT = _plan.LATERAL_MARK_PROMPT
 LATERAL_MARK_RETURN_PROMPT = _plan.LATERAL_MARK_RETURN_PROMPT
@@ -210,7 +209,6 @@ WALL_CLOCK_CEILING_PER_ENTRY_S = _plan.WALL_CLOCK_CEILING_PER_ENTRY_S
 WIDE_OFFSET_MIN_CM = _plan.WIDE_OFFSET_MIN_CM
 _DISPLAY_FC_HZ = _plan._DISPLAY_FC_HZ
 _DISPLAY_ROLES_BANDS = _plan._DISPLAY_ROLES_BANDS
-_LATERAL_POSE = _plan._LATERAL_POSE
 _LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
 _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
@@ -329,7 +327,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
 
-from .measurement_programs import GATE_EXEMPTION_BY_POSE_KIND
+from .measurement_programs import gate_exemption, resolved_measurement_purpose
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -482,9 +480,6 @@ def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     )
 
 
-_band_edge = _verification._band_edge
-
-_flatness_tilt_log_field = _verification._flatness_tilt_log_field
 _per_band_flatness_log_field = _verification._per_band_flatness_log_field
 
 
@@ -501,14 +496,6 @@ CLAIM_PASS = _contracts.CLAIM_PASS
 CLAIM_FAIL = _contracts.CLAIM_FAIL
 CLAIM_NOT_EVALUATED = _contracts.CLAIM_NOT_EVALUATED
 CLAIM_NO_PER_BRANCH_CAPTURE = _verification.CLAIM_NO_PER_BRANCH_CAPTURE
-
-_verify_evidence_from_tracking = _verification._verify_evidence_from_tracking
-_verify_graded_band_from_tracking = (
-    _verification._verify_graded_band_from_tracking
-)
-_verify_claims = _verification._verify_claims
-_verify_frame_from_tracking = _verification._verify_frame_from_tracking
-
 
 PILOT_SNR_UNUSABLE_DB = _diagnostics.PILOT_SNR_UNUSABLE_DB
 _worst_pilot_snr_db = _diagnostics._worst_pilot_snr_db
@@ -611,7 +598,6 @@ class V2FlowSeams:
 V2ConductorSnapshot = _durable_state.V2ConductorSnapshot
 attempt_history_from_state = _durable_state.attempt_history_from_state
 attempt_record_from_verify = _durable_state.attempt_record_from_verify
-_attempt_optional_float = _durable_state._attempt_optional_float
 
 
 # One prompted position's attempt ledger (owner ruling #2086). Kept importable
@@ -651,8 +637,6 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 
 
 # --- cloud group bands + honesty pipeline (the emitting halves) ------------
-cloud_validity_floor_hz = _spatial.cloud_validity_floor_hz
-cloud_trusted_floor_hz = _spatial.cloud_trusted_floor_hz
 
 
 def _derive_cloud_echo_band_hz(
@@ -711,9 +695,6 @@ def assemble_cloud_group_result(
 _CloudFitEvidence = _candidates.CloudFitEvidence
 _LinearizationState = _candidates.LinearizationState
 _SpeculativeClose = _candidates.SpeculativeClose
-
-
-committed_crossover_region_hz = _verification.committed_crossover_region_hz
 
 
 def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
@@ -987,6 +968,7 @@ class CrossoverV2Session:
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
+            summed_sweep_band_hz=_plan.room_sweep_band_hz(self._roles, self._lateral_prompts),
         )
         # Composed ONCE and held: ``program_for_phase`` answers by OBJECT IDENTITY, and
         # #2291's before→after comparability depends on it.
@@ -1709,7 +1691,7 @@ class CrossoverV2Session:
             return table[position]
         # A DISTINCT defensive spot, not a table row repeated: 45 cm right is past the
         # table's widest RIGHT offset (40 cm) and inside the geometry rung's.
-        return _pose(_LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
+        return _pose(_plan._LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
 
     def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
         """The prompt the operator ACTUALLY followed for the take in hand.
@@ -1992,15 +1974,11 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError(str(exc)) from exc
 
     def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
-        """The session's geometry with THIS capture's window.
-
-        A seat take is the room's own measurement, so it is analyzed ungated
-        (docs/measurement-loop-doctrine.md 1a; ADR-0260).
-        """
-        exemption = (
-            GATE_EXEMPTION_BY_POSE_KIND.get(self._prompt_shown_for(phase, index).kind)
-            if phase in GROUP_PHASES else None
-        )
+        """Apply the plan's analysis purpose to this capture."""
+        exemption = None
+        if phase in GROUP_PHASES:
+            prompt = self._prompt_shown_for(phase, index)
+            exemption = gate_exemption(resolved_measurement_purpose(prompt.purpose, prompt.kind))
         return replace(self._geometry, gate_exempt_reason=exemption) if exemption else self._geometry
 
     def consume_capture(
@@ -3657,12 +3635,12 @@ class CrossoverV2Session:
             position_records=tuple(
                 self._group_position_meta.get(phase, {}).values()
             ),
-            validity_floor_hz=cloud_validity_floor_hz(positions),
+            validity_floor_hz=_spatial.cloud_validity_floor_hz(positions),
             trusted_ceiling_hz=ceiling_hz,
             tier=self._tier,
             # #1967: where the SHIPPED graph divides the spectrum, from the
             # preset's committed regions.
-            crossover_region_hz=committed_crossover_region_hz(
+            crossover_region_hz=_verification.committed_crossover_region_hz(
                 getattr(self._preset, "crossover_regions", ()) or ()
             ),
             # #2291: the round's SPEC verdict needs the live object; the dict
@@ -3674,7 +3652,9 @@ class CrossoverV2Session:
         self._group_cloud_result[phase] = result
         # #2609 SF5 / §4.2: what the ROUND needs and the serialized result does not
         # carry. Recorded for both phases; only ``PHASE_CLOUD_VERIFY``'s are read.
-        floor_hz = cloud_trusted_floor_hz(cloud_validity_floor_hz(positions))
+        floor_hz = _spatial.cloud_trusted_floor_hz(
+            _spatial.cloud_validity_floor_hz(positions)
+        )
         self._group_trusted_floor_hz[phase] = floor_hz
         self._group_position_residuals[phase] = self._position_residual_rows(
             combined, floor_hz, ceiling_hz,
@@ -3696,10 +3676,10 @@ class CrossoverV2Session:
             flatness_max_hz=flatness.get("max_hz"),
             # WHICH FRAME the deviation above is stated against (#1857): the
             # pointer moves under a different reference band.
-            flatness_reference_band_lo_hz=_band_edge(
+            flatness_reference_band_lo_hz=_verification._band_edge(
                 flatness.get("reference_band_hz"), 0
             ),
-            flatness_reference_band_hi_hz=_band_edge(
+            flatness_reference_band_hi_hz=_verification._band_edge(
                 flatness.get("reference_band_hz"), 1
             ),
             # EVERY band's own deviation from that reference (#1857): a
@@ -3707,7 +3687,7 @@ class CrossoverV2Session:
             flatness_bands=_per_band_flatness_log_field(spec.get("bands")),
             # The one figure above that the frame CANNOT move (#1857): the step
             # between two band levels, in which the shared reference cancels.
-            flatness_tilt=_flatness_tilt_log_field(flatness),
+            flatness_tilt=_verification._flatness_tilt_log_field(flatness),
             flatness_rms_db=flatness.get("rms_db"),
             spec_n_excluded=flatness.get("n_excluded"),
             validity_floor_hz=result.get("validity_floor_hz"),
@@ -4052,7 +4032,7 @@ class CrossoverV2Session:
         # The store banks PREDICTION error, and its number is the tracking deviation —
         # read off the analysis, not ``record.grade_db``. The two are equal today and
         # that coincidence is the hazard: two owners, two quantities (#2291).
-        tracking_deviation_db = _attempt_optional_float(
+        tracking_deviation_db = _durable_state._attempt_optional_float(
             (analysis.verify_tracking or {}).get(
                 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
             )
@@ -4269,12 +4249,16 @@ class CrossoverV2Session:
             )
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
-        self._verify_evidence = _verify_evidence_from_tracking(tracking)
-        self._verify_graded_band_hz = _verify_graded_band_from_tracking(tracking)
-        self._verify_frame = _verify_frame_from_tracking(tracking)
+        self._verify_evidence = _verification._verify_evidence_from_tracking(tracking)
+        self._verify_graded_band_hz = _verification._verify_graded_band_from_tracking(
+            tracking
+        )
+        self._verify_frame = _verification._verify_frame_from_tracking(tracking)
         # Every §7 claim, graded BEFORE any of them gates, so a capture that fails one
         # still discloses the others.
-        self._verify_claims = _verify_claims(tracking, analysis.verify_absolute)
+        self._verify_claims = _verification._verify_claims(
+            tracking, analysis.verify_absolute
+        )
         # Notch-aware, validity-floor-clamped comparator: the NOTCH-EXCLUDED max
         # over this capture's own gate-derived band. Run 7 read 27.83 dB raw
         # against a predicted sum whose own ripple was ~30 dB.
@@ -4578,7 +4562,6 @@ __all__ = [
     "TIER_FULL",
     "TIER_EXPRESS",
     "TIERS",
-    "DEFAULT_TIER",
     "express_cloud_measure_positions",
     "normalize_tier",
     "resolve_plan_shape",

@@ -219,15 +219,18 @@ def test_accessory_bridge_host_keeps_the_folded_adapter_sandbox():
     )
 
 
-def test_the_installer_grants_the_bridge_user_its_bluez_membership():
-    """With the group off the unit file, `usermod -aG` is the ONLY thing that
-    reaches the mic adapter's BlueZ access — and the drop-in supplementary-group
-    contract test above can no longer see it."""
+@pytest.mark.parametrize("user", ["jasper-input", "jasper-mux", "jasper-voice"])
+def test_the_installer_grants_its_bluez_callers_their_membership(user):
+    """With the group off these unit files, `usermod -aG` is the ONLY thing that
+    reaches BlueZ: the mic adapter's GATT access (jasper-input) and the A2DP
+    presence probe + AVRCP preempt pause (jasper-mux, jasper-voice). BlueZ's
+    D-Bus policy resolves the group from the user database, so the drop-in
+    supplementary-group contract test above cannot see this grant."""
     users = (ROOT / "deploy/lib/install/service-users.sh").read_text(
         encoding="utf-8",
     )
 
-    assert "usermod -aG bluetooth jasper-input" in users
+    assert f"usermod -aG bluetooth {user}" in users
 
 
 @pytest.mark.parametrize("unit,path", sorted(ACCESSORY_RECONCILERS.items()))
@@ -286,6 +289,44 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
         f"dependency mistakes fail visibly instead of wedging voice offline "
         f"(expected TimeoutStartSec={expected_timeout})."
     )
+
+
+HOTPLUG_BURST_RECONCILERS = {
+    "jasper-audio-hardware-reconcile": (
+        ROOT / "deploy/systemd/jasper-audio-hardware-reconcile.service"
+    ),
+    "jasper-aec-reconcile": RECONCILE_ONESHOTS["jasper-aec-reconcile"],
+}
+
+
+@pytest.mark.parametrize("unit,path", sorted(HOTPLUG_BURST_RECONCILERS.items()))
+def test_hotplug_burst_reconcilers_disable_start_rate_limit(unit, path):
+    """A DAC replug (or aec profile) uevent burst inside systemd's default
+    5-starts/10s window must not exhaust the start budget before the terminal
+    pass that would see the hardware present runs; jasper-accessory-reconcile
+    already carries this fix for the same reason."""
+    pairs = set(_directives(path))
+    assert ("StartLimitIntervalSec", "0") in pairs, (
+        f"{unit} must disable start-rate limiting so a hot-plug burst cannot "
+        "spend the budget before a terminal pass runs (mirrors "
+        "jasper-accessory-reconcile)"
+    )
+
+
+def test_dongle_recover_reset_failed_covers_camillas_hard_dependency():
+    """jasper-camilla.service Requires=jasper-audio-hardware-reconcile.service,
+    so if the reconcile unit is parked failed, the unguarded
+    `systemctl start jasper-camilla.service` two lines below fails on its
+    dependency and the recovery unit locks itself out."""
+    unit_path = RECONCILE_ONESHOTS["jasper-dongle-recover"]
+    text = unit_path.read_text(encoding="utf-8")
+    reset_failed_argvs = [
+        argv
+        for argv in exec_argv_for(text, "ExecStart")
+        if argv and PurePosixPath(argv[0]).name == "systemctl" and argv[1:2] == ["reset-failed"]
+    ]
+    assert reset_failed_argvs, "expected one `systemctl reset-failed` ExecStart="
+    assert "jasper-audio-hardware-reconcile.service" in reset_failed_argvs[0]
 
 
 def test_grouping_timeout_covers_every_bounded_owner_handoff_step():

@@ -84,9 +84,10 @@ class PeeringClient:
         """Ask jasper-control's peering daemon whether this Pi should
         take the turn. Returns "WIN" or "LOSE".
 
-        Side effect: sets `self._epoch` from the
-        daemon's response so `session_*` can reference
-        the same arbitration round.
+        Side effect: on WIN, sets `self._epoch` from the daemon's
+        response so `session_*` can reference the same arbitration
+        round. A LOSE reply carries the winner's epoch, so `_epoch`
+        stays empty there.
 
         Fast-path: when peering is disabled OR no peering daemon is
         running OR the UDS errors, returns "WIN" immediately, and
@@ -103,14 +104,15 @@ class PeeringClient:
         resp = await self._send(f"ARBITRATE {payload}")
         if resp is None:
             return "WIN"  # peering disabled or daemon unreachable
-        self._epoch = str(resp.get("epoch") or "")
         result = (resp.get("result") or "").upper()
-        if result not in ("WIN", "LOSE"):
+        if result == "LOSE":
+            return "LOSE"  # reply epoch is the winner's session, not ours
+        if result != "WIN":
             logger.warning(
                 "peer arbitrate returned %r; defaulting to WIN", result,
             )
-            return "WIN"
-        return result
+        self._epoch = str(resp.get("epoch") or "")
+        return "WIN"
 
     async def session_started(self, has_turn: bool) -> None:
         """Fire-and-forget notice that this speaker opened a session.

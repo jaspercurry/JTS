@@ -50,7 +50,7 @@ Topology:
                                                           detection.
 
 Every leg's token and UDP port is owned by `jasper.wake_legs`. Why UDP
-rather than an snd-aloop card: see `UdpMicCapture` in jasper/audio_io.py.
+rather than an snd-aloop card: see `UdpMicCapture` in jasper/mic_capture.py.
 
 Reference and mic run on independent clock domains — outputd's DAC-paced
 sender against the XVF chip's USB UAC2 clock — and will drift. AEC3's delay
@@ -325,7 +325,9 @@ def _process_optional_engine(
         return engine, engine.process(input_bytes, ref_bytes), None
     except Exception as exc:  # noqa: BLE001
         if failure_message is not None:
-            logger.exception(failure_message, exc)
+            # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key
+            # is the record's file:line, so the caller's must survive.
+            logger.exception(failure_message, exc, stacklevel=2)
         return None, b"", exc
 
 

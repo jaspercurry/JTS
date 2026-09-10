@@ -16,7 +16,7 @@ These tests pin exactly that:
    magnitude_response → smooth`` pipeline yields the same scalars it yielded
    before extraction (golden values baked below). Any accidental change to the
    moved math moves a golden and fails here.
-2. Each :class:`QualityModel` profile (``ROOM`` / ``DRIVER`` / ``RAMP``) carries
+2. Each :class:`QualityModel` profile (``ROOM`` / ``DRIVER``) carries
    exactly the pre-extraction threshold values, and the module-level aliases
    still consumed by ``acoustic_quality.py`` / ``driver_acoustics.py`` equal
    them.
@@ -37,7 +37,7 @@ import pytest
 from scipy.signal import fftconvolve
 
 from jasper.audio_measurement import analysis, deconv, quality, sweep
-from jasper.audio_measurement.quality_model import DRIVER, RAMP, ROOM, QualityModel
+from jasper.audio_measurement.quality_model import DRIVER, ROOM, QualityModel
 
 SR = 48000
 SMOOTH_EQUIVALENCE_ATOL_DB = 2e-9
@@ -301,7 +301,7 @@ def test_quality_model_profiles_carry_preextraction_values():
                            OVERLAP_MIN_BINS=4
     """
     # Structural (shared across all profiles — digital-full-scale facts).
-    for model in (ROOM, DRIVER, RAMP):
+    for model in (ROOM, DRIVER):
         assert model.dbfs_floor == -120.0
         assert model.clip_abs_threshold == 0.999
         assert model.clip_fraction_fail == 1e-4
@@ -329,9 +329,6 @@ def test_quality_model_profiles_carry_preextraction_values():
     assert DRIVER.snr_warn_db == ROOM.snr_warn_db
     assert DRIVER.alignment_snr_ok_db == ROOM.alignment_snr_ok_db
     assert DRIVER.null_cap_margin_db == ROOM.null_cap_margin_db
-
-    # RAMP is a documented placeholder that reuses ROOM's values for now.
-    assert RAMP == ROOM
 
 
 def test_consumed_module_level_aliases_match_profiles():

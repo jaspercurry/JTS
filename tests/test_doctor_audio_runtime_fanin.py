@@ -223,8 +223,8 @@ def _patch_unreachable_status(monkeypatch):
 def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
     """Every fan-in STATUS consumer in this module shares ONE read.
 
-    The five checks below used to open ``/run/jasper-fanin/control.sock`` five
-    times per run; the evidence cache is what makes that one (ADR-0233 rule 4).
+    The four checks below used to open ``/run/jasper-fanin/control.sock`` once
+    each per run; the evidence cache is what makes that one (ADR-0233 rule 4).
     """
     opens: list[str] = []
 
@@ -233,9 +233,6 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         return json.loads(_fanin_status_payload().decode("utf-8"))
 
     monkeypatch.setattr(_evidence, "read_status_socket", counting_read)
-    monkeypatch.setattr(
-        "jasper.renderer_lanes.read_armed_labels", lambda *a, **k: ["librespot"]
-    )
     _seed_units()
 
     for check in (
@@ -243,7 +240,6 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
         audio_runtime_fanin.check_fanin_host_clock,
         audio_runtime_fanin.check_fanin_tts_drops,
         audio_runtime_ring.check_ring_reader_stall,
-        audio_runtime_ring.check_renderer_ring_lanes,
     ):
         check()
 
@@ -328,13 +324,13 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     monkeypatch, tmp_path
 ):
     """The renderer aliases are the PLAYBACK half of fan-in's aloop cables, and
-    snd-aloop pins both halves to one format. A box pinned narrow through the
-    rollback lever whose /etc/asound.conf still declares the wide wire cannot
-    have both ends open, so the deployed file is judged against the wire the box
-    actually resolves rather than a literal."""
-    _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
-    monkeypatch.setattr(
-        audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
+    snd-aloop pins both halves to one format. fan-in's capture half is the
+    constant `mixer::pcm_open::LANE_CAPTURE_FORMAT`, so a narrowed alias cannot
+    have both ends open."""
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace("format S32_LE", "format S16_LE", 1),
+        tmp_path,
     )
     r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
@@ -585,15 +581,17 @@ def proc_root(monkeypatch, tmp_path):
 #: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
 #: it too, so nothing fails. A literal is what makes a source-constant
 #: deletion detectable.
-_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4)
+_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 4)
 
 #: The pairs whose owners are GONE, and which must therefore read as offenders.
-#: Pair 5 lost its PCM definitions; pairs 6 and 7 lost theirs to
-#: ADR-0100, which moved outputd's passive content lane and fan-in's summed
-#: music output onto SHM rings. deploy/alsa/asoundrc.jasper declares none of the
-#: three, and deploy/modprobe.d/snd-aloop.conf records them as
-#: reserved-not-reclaimed so no surviving pair renumbers.
-_RETIRED_PAIRS = (5, 6, 7)
+#: Pair 3 lost its writer with the usbsink bridge and its last reader when the
+#: USB lane stopped taking an aloop substream; pair 5 lost its PCM definitions;
+#: pairs 6 and 7 lost theirs to ADR-0100, which moved outputd's passive content
+#: lane and fan-in's summed music output onto SHM rings.
+#: deploy/alsa/asoundrc.jasper declares none of the four, and
+#: deploy/modprobe.d/snd-aloop.conf records them as reserved-not-reclaimed so no
+#: surviving pair renumbers.
+_RETIRED_PAIRS = (3, 5, 6, 7)
 
 
 # --------------------------------------------------------------------------
@@ -617,20 +615,6 @@ def test_all_closed_is_ok(proc_root, tmp_path):
     assert result.reason == ""
 
 
-def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
-    """THE FALSE-POSITIVE REGRESSION GUARD.
-
-    Observed on jts4, 2026-08-14: /proc/asound/Loopback/pcm1c/sub3 in
-    `state: RUNNING`, owner cgroup jasper-fanin.service — the usbsink lane's
-    idle-read fallback documented in deploy/modprobe.d/snd-aloop.conf. That
-    box is HEALTHY. If this check ever fails it, the check is wrong.
-    """
-    proc_root(_make_card(tmp_path, {"pcm1c": [3]}))
-    result = audio_runtime_fanin.check_aloop_registered_substreams()
-    assert result.status == "ok"
-    assert result.reason == ""
-
-
 @pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
 @pytest.mark.parametrize("pair", _RETIRED_PAIRS)
 def test_positive_control_foreign_substream_warns(
@@ -638,12 +622,13 @@ def test_positive_control_foreign_substream_warns(
 ):
     """POSITIVE CONTROL — a deliberately-opened foreign substream trips it.
 
-    Pairs 5, 6 and 7 are the foreign ones: pair 5's PCM definitions are gone
-    and ADR-0100 deleted pairs 6 and 7's when the passive content
-    lane and the summed music output both moved to SHM rings. A holder on any
-    of them has resurrected a deleted lane — a rolled-back binary or a stale
-    asoundrc — which is the regression this guard exists to catch, and which
-    read as `ok` for as long as pairs 6 and 7 stayed in the registered set.
+    Pairs 3, 5, 6 and 7 are the foreign ones: pair 3 has neither a writer nor
+    a reader since the USB lane went direct-or-nothing, pair 5's PCM
+    definitions are gone, and ADR-0100 deleted pairs 6 and 7's when the passive
+    content lane and the summed music output both moved to SHM rings. A holder
+    on any of them has resurrected a deleted lane — a rolled-back binary or a
+    stale asoundrc — which is the regression this guard exists to catch, and
+    which read as `ok` for as long as those pairs stayed in the registered set.
     Parametrised across all four PCM directions so a walker that only scanned
     the playback side would fail this.
     """
@@ -955,41 +940,6 @@ def test_check_skipped_when_no_loaded_capture(monkeypatch, tmp_path):
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_NO_LOADED_CAPTURE
 
 
-# --- check_fanin_coupling_value: persisted coupling value must be recognized --
-
-
-@pytest.mark.parametrize(
-    "raw,status,reason",
-    [
-        (None, "ok", audio_runtime_fanin.REASON_COUPLING_FILE_ABSENT),
-        ("", "ok", ""),
-        ("shm_ring", "ok", ""),
-        ("transport_pipe", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-        ("loopback", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-    ],
-    ids=["absent_file", "absent_key", "declared", "removed_token", "retired_token"],
-)
-def test_check_fanin_coupling_value_reads_the_shared_predicate(
-    monkeypatch, tmp_path, raw, status, reason
-):
-    """ADR-0100: only a value fan-in REFUSES is a finding.
-
-    A migrating box carrying the removed ``transport_pipe`` token (or a typo)
-    warns until the reconciler converges it. An ABSENT or empty key is not that
-    state — fan-in serves the ring for it — so this surface must agree with the
-    daemon rather than with the presence of a token (#3655).
-    """
-    fanin_env = tmp_path / "fanin.env"
-    if raw is not None:
-        fanin_env.write_text(f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n")
-    # The check's own read is the evidence-memoized `fanin_env()`, sourced
-    # from `env_load.FANIN_ENV_PATH`.
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    res = audio_runtime_fanin.check_fanin_coupling_value()
-    assert res.status == status
-    assert res.reason == reason
-
-
 # --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
 
 _RING_CFG = """\
@@ -1166,16 +1116,6 @@ def _fanin_case_ok_expected(monkeypatch, tmp_path):
     return audio_runtime_fanin.check_fanin_service()
 
 
-def _fanin_case_expects_ring(persisted):
-    def _case(monkeypatch, tmp_path):
-        _seed_units()
-        monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", lambda: persisted)
-        _patch_status_reader(monkeypatch, _fanin_status_payload())
-        return audio_runtime_fanin.check_fanin_service()
-
-    return _case
-
-
 def _fanin_case_fails_non_ring_transport(monkeypatch, tmp_path):
     _seed_units()
     _patch_status_reader(monkeypatch, _fanin_status_payload(transport="loopback"))
@@ -1281,9 +1221,6 @@ _MALFORMED_LOUDNESS = {"decision_seen": True, "calibrated": False, "final_gain_d
     "setup, expected_status, expected_reason, extra",
     [
         pytest.param(_fanin_case_ok_expected, "ok", "", None, id="test_check_fanin_service_ok_with_expected_status"),
-        pytest.param(_fanin_case_expects_ring("shm_ring"), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[shm_ring]"),
-        pytest.param(_fanin_case_expects_ring("loopback"), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[loopback]"),
-        pytest.param(_fanin_case_expects_ring(None), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[None]"),
         pytest.param(_fanin_case_fails_non_ring_transport, "fail", _F.REASON_FANIN_TRANSPORT_NOT_RING, _SILENT, id="test_check_fanin_service_fails_on_a_non_ring_live_transport"),
         pytest.param(_fanin_case_fails_no_ring_block, "fail", _F.REASON_FANIN_STATUS_MISSING_RING, None, id="test_check_fanin_service_fails_when_status_carries_no_ring_block"),
         pytest.param(_fanin_case_fails_no_output_block, "fail", _F.REASON_FANIN_STATUS_MISSING_OUTPUT, None, id="test_check_fanin_service_fails_when_status_carries_no_output_block"),

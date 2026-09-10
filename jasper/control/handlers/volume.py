@@ -15,6 +15,7 @@ from typing import Any
 from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
+from ...platform import wire
 from ...volume_curve import db_to_percent
 from .. import measurement_hold
 from .. import server as _server
@@ -101,9 +102,59 @@ class VolumeRoutes(ControlHandlerMixin):
         return None
 
     def _get_source_state(self) -> None:
-        result = self._mux_cmd_or_error("STATUS", log_label="source STATUS")
+        result = self._mux_cmd_or_error(wire.STATUS, log_label="source STATUS")
         if result is not None:
             self._send_json(_augment_source_payload(result))
+
+    def _measurement_hold_decline(
+        self, *, source: str, **fields: Any
+    ) -> str | None:
+        """Count one declined source-observed write, and log it. Owner or None."""
+        declined = measurement_hold.record_declined_observation()
+        if declined is None:
+            return None
+        hold_owner, first_decline = declined
+        log_event(
+            logger,
+            "volume.observation_declined",
+            source=source,
+            owner=hold_owner,
+            client=self.address_string(),
+            level=logging.INFO if first_decline else logging.DEBUG,
+            **fields,
+        )
+        return hold_owner
+
+    def _refuse_authoritative_write(self, *, kind: str, **fields: Any) -> bool:
+        """Refuse a fader write the measurement owns; True once the 409 is sent.
+
+        Its own event and its own per-hold counter: `volume.observation_declined`
+        and `declined_observations` are the source-observed vocabulary. The
+        first line per hold is INFO and the rest DEBUG for the same reason that
+        one is — a slider drag and a spun HID knob repeat.
+        """
+        refused = measurement_hold.record_refused_write()
+        if refused is None:
+            return False
+        hold_owner, first_refusal = refused
+        log_event(
+            logger,
+            "volume.write_refused_measurement_hold",
+            kind=kind,
+            owner=hold_owner,
+            client=self.address_string(),
+            level=logging.INFO if first_refusal else logging.DEBUG,
+            **fields,
+        )
+        self._send_json(
+            {
+                "error": f"a measurement is in progress (owner={hold_owner})",
+                "owner": hold_owner,
+                "measurement": measurement_hold.snapshot(),
+            },
+            status=409,
+        )
+        return True
 
     def _post_volume_adjust(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
@@ -132,6 +183,12 @@ class VolumeRoutes(ControlHandlerMixin):
                 {"error": "delta_percent must be an integer"},
                 status=400,
             )
+            return
+        # Either direction is refused while a measurement holds the fader; see
+        # _post_volume_set.
+        if measurement_hold.held() and self._refuse_authoritative_write(
+            kind="adjust", delta_pct=delta_pct,
+        ):
             return
         try:
             state = asyncio.run(self._adjust_op(delta_pct))
@@ -203,57 +260,42 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        # A live measurement owns the fader. Decline SOURCE-OBSERVED writes
-        # while the hold is up — a host that moves its USB slider mid-sweep
-        # would otherwise walk the very level the measurement is holding, which
-        # is the writer war seat-level hit on jts3 (journal:
-        # `event=volume.reconciled source=idle drift_db=+9.35`, once a second).
-        # This runs BEFORE _observe_op so no coordinator is built and nothing
-        # touches Camilla, and it returns the ESTABLISHED
-        # `observation_applied: false` contract — the USB bridge already
-        # understands it and re-presents the household slider on its retry
-        # backoff, so no bridge change is needed for correctness.
-        # AUTHORITATIVE writes (no `source`: management UI, HID accessory,
-        # voice "louder") stay allowed on purpose: those are a human at the
-        # speaker, and this is not a nanny.
-        # ONE locked read answers "is it held?", "by whom?", and "is this the
-        # first decline?" together, so the log line cannot name an owner that
-        # lapsed between two reads or mis-rank itself against a stale count.
-        declined = (
-            measurement_hold.record_declined_observation() if source_name else None
-        )
-        if declined is not None:
-            hold_owner, first_decline = declined
-            log_event(
-                logger,
-                "volume.observation_declined",
-                source=str(source_name),
-                owner=hold_owner,
-                requested_pct=target_pct,
-                client=self.address_string(),
-                # The TRANSITION is the signal; the repetition is not. The USB
-                # bridge re-presents the host slider on its backoff schedule for
-                # as long as the decline lasts (~720/hour at its 5 s ceiling,
-                # ~360 lines in one 30-minute measurement — this feature's
-                # ORDINARY case), so INFO on every one would re-create the exact
-                # journal spam #2791 removed one commit earlier. The suppressed
-                # count is reported once by event=measurement.hold_released /
-                # _expired as declined_observations.
-                level=logging.INFO if first_decline else logging.DEBUG,
-            )
-            try:
-                state = self._get_op()
-            except Exception as e:  # noqa: BLE001
-                # Same shape as _get_volume's guard: this reads the persisted
-                # projection, and a read failure is a 502, not a silent 200
-                # carrying whatever a half-built payload would have said.
-                logger.exception("declined observation state read failed")
-                self._send_json({"error": str(e)}, status=502)
-                return
-            payload = self._volume_payload(state)
-            payload["observation_applied"] = False
-            self._send_json(payload)
-            return
+        # A live measurement OWNS the fader: it drives camilla's main_volume
+        # directly (audio_measurement.ramp) and never writes the persistence
+        # file, so the persisted household level says nothing about where the
+        # fader actually sits. A write of ANY size can therefore land a level
+        # far above the ramp's — the writer war seat-level hit on jts3
+        # (journal: `event=volume.reconciled source=idle drift_db=+9.35`, once
+        # a second) and a driver taken above its declared cap for the playing
+        # stimulus. So every level write is refused for the life of the hold,
+        # and MUTE stays open as the emergency door.
+        # The two answers differ by contract, not by policy: a SOURCE-OBSERVED
+        # write gets the ESTABLISHED `observation_applied: false` 200 that the
+        # USB bridge already understands and retries against, while an
+        # AUTHORITATIVE one gets /measurement/hold's own 409 envelope.
+        if measurement_hold.held():
+            if not source_name:
+                if self._refuse_authoritative_write(
+                    kind="set", requested_pct=target_pct,
+                ):
+                    return
+            else:
+                try:
+                    state = self._get_op()
+                except Exception as e:  # noqa: BLE001
+                    # Same shape as _get_volume's guard: this reads the
+                    # persisted projection, and a read failure is a 502, not a
+                    # silent 200 carrying a half-built payload.
+                    logger.exception("declined observation state read failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                if self._measurement_hold_decline(
+                    source=str(source_name), requested_pct=target_pct,
+                ) is not None:
+                    payload = self._volume_payload(state)
+                    payload["observation_applied"] = False
+                    self._send_json(payload)
+                    return
         observation_applied: bool | None = None
         try:
             if source_name:
@@ -319,6 +361,29 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
+        # Unmuting restores the household listening level onto the fader the
+        # measurement is holding, so it is a level write like any other and is
+        # refused (see _post_volume_set). Muting is the emergency door and
+        # stays open in both its shapes — explicit and toggle-to-muted.
+        if measurement_hold.held():
+            resolves_unmuted = explicit is False
+            if explicit is None:
+                try:
+                    state = self._get_op()
+                except Exception:  # noqa: BLE001
+                    # An unreadable latch must not close the emergency door:
+                    # the toggle proceeds as a MUTE, and toggle_mute's own
+                    # read under the coordinator's lock decides the direction.
+                    logger.exception("mute toggle state read failed")
+                    resolves_unmuted = False
+                else:
+                    # The same latch toggle_mute itself branches on, so the
+                    # refusal cannot disagree with what the toggle would do.
+                    resolves_unmuted = state.restore_percent is not None
+            if resolves_unmuted and self._refuse_authoritative_write(
+                kind="unmute", explicit=str(explicit),
+            ):
+                return
         try:
             if explicit is None:
                 state = asyncio.run(self._mute_toggle_op())
@@ -374,9 +439,9 @@ class VolumeRoutes(ControlHandlerMixin):
         body = self._read_json()
         source = str(body.get("source") or "").strip().lower()
         if source == "auto":
-            cmd = "AUTO"
+            cmd = wire.MUX_AUTO
         elif source in _server.SOURCE_SELECT_IDS:
-            cmd = f"SELECT {source}"
+            cmd = wire.mux_select(source)
         else:
             choices = ", ".join(sorted(_server.SOURCE_SELECT_IDS))
             self._send_json(

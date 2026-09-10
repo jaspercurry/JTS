@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import wake_legs
-from jasper.audio_io import InputDeviceUnavailable
+from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice import daemon_main
 
 from ._log_events import event_fields
