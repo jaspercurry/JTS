@@ -33,7 +33,7 @@ def _recording_popen(calls: list[list[str]]):
         def __init__(self, cmd, **_kwargs):
             calls.append(cmd)
 
-        def communicate(self) -> tuple[str, str]:
+        def communicate(self, input=None, timeout=None) -> tuple[str, str]:
             """The child already exited cleanly with nothing on stderr — the
             restart broker reaps every detached spawn to journal a denial."""
             return "", ""

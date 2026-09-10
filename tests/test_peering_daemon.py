@@ -24,6 +24,7 @@ from jasper.peering.transport import (
     IncomingClaim,
     IncomingWake,
 )
+from tests._async_wait import wait_signalled
 from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 
@@ -243,7 +244,7 @@ async def test_cancel_during_uds_bind_still_lets_stop_close_the_socket(
 
     d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
     start_task = asyncio.create_task(d.start())
-    await bind_started.wait()
+    await wait_signalled(bind_started, "bind_started", producer=start_task)
     start_task.cancel()
     release_bind.set()
 
