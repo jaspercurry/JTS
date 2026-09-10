@@ -296,6 +296,9 @@ class Session(Protocol):
     def complete(self) -> tuple[int, str]:
         """POST the wired all-spots-measured signal. Returns ``(status, body)``."""
 
+    def cancel(self) -> tuple[int, str]:
+        """POST capture-cancel. Returns ``(http_status, body)``; never raises."""
+
 
 # --------------------------------------------------------------------------- #
 # the turntable adapter, as a Mover
@@ -393,7 +396,10 @@ class TurntableMover:
 #: :mod:`jasper.active_speaker.wizard_client`.
 POSITION_READY_PATH = "/sound/speaker/crossover/v2/position-ready"
 COMPLETE_PATH = "/sound/speaker/crossover/v2/complete"
-
+#: Stops the box's own v2 capture session (``correction_handlers._handle_crossover_capture_cancel``).
+#: Not under ``v2/``: it is the generic capture-slot verb, the same route
+#: ``crossover/main.js``'s Stop button posts.
+CAPTURE_CANCEL_PATH = "/sound/speaker/crossover/capture-cancel"
 
 
 class LoopbackSession(WizardClient):
@@ -420,6 +426,9 @@ class LoopbackSession(WizardClient):
 
     def complete(self) -> tuple[int, str]:
         return self.post(COMPLETE_PATH, {})
+
+    def cancel(self) -> tuple[int, str]:
+        return self.post(CAPTURE_CANCEL_PATH, {})
 
 
 # --------------------------------------------------------------------------- #
@@ -826,11 +835,34 @@ class ArmWalk:
         )
         return EXIT_WALK_NOT_TAKEN
 
+    def _cancel_capture(self) -> None:
+        """Best-effort: stop the box's own capture session. Never raises."""
+        try:
+            status, _body = self._session.cancel()
+        except Exception as exc:  # noqa: BLE001 -- the park must still run
+            self._trail.emit(
+                "capture_cancel", level=logging.WARNING, ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self._trail.emit(
+            "capture_cancel", level=logging.INFO if status == 200 else logging.WARNING,
+            ok=status == 200, status=status,
+        )
+
     def _park(self) -> None:
-        """Home the arm and verify the MAGNITUDE. Idempotent; never raises."""
+        """Home the arm and verify the MAGNITUDE. Idempotent; never raises.
+
+        Cancels the box's own v2 capture session first, best-effort: a park
+        signal (SIGHUP/SIGINT/SIGTERM) would otherwise leave the box playing
+        its program until the session's own gate/TTL expires (#2912 gap 4).
+        A failed cancel is reported, not raised -- the arm still needs to
+        come home.
+        """
         if self._parked:
             return
         self._parked = True
+        self._cancel_capture()
         try:
             moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)

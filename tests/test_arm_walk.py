@@ -119,12 +119,15 @@ class FakeSession:
     """
 
     def __init__(self, polls, *, release=(200, '{"ok": true}'),
-                 complete=(200, '{"ok": true}')) -> None:
+                 complete=(200, '{"ok": true}'),
+                 cancel=(200, '{"ok": true}')) -> None:
         self._queue = list(polls)
         self._release = release
         self._complete = complete
+        self._cancel = cancel
         self.released: list[int] = []
         self.completes = 0
+        self.cancels = 0
 
     def poll(self) -> aw.Poll:
         return self._queue[0]
@@ -138,6 +141,10 @@ class FakeSession:
     def complete(self) -> tuple[int, str]:
         self.completes += 1
         return self._complete
+
+    def cancel(self) -> tuple[int, str]:
+        self.cancels += 1
+        return self._cancel
 
 
 @contextlib.contextmanager
@@ -200,6 +207,11 @@ class LiveThen:
 
     def complete(self) -> tuple[int, str]:  # pragma: no cover
         raise AssertionError("this double never completes a stage")
+
+    def cancel(self) -> tuple[int, str]:
+        # Every park calls this, unlike release/complete, so it gets a real
+        # answer rather than the "never called" assertion above.
+        return 200, '{"ok": true}'
 
 
 def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
@@ -366,6 +378,36 @@ def test_a_clean_finish_parks_and_verifies_the_magnitude():
     parked = trail.one("parked")
     assert parked["ok"] is True and parked["offset_deg"] == 0.0
     assert mover.moves[-1] == 0
+
+
+def test_the_park_cancels_the_boxs_capture_session():
+    """#2912 gap 4: a park (including a signal park) must cancel the box's
+    own v2 capture session, or it keeps playing until its gate/TTL expires."""
+    mover = FakeMover(offset=0.0)
+    trail = _RecordingTrail()
+    session = FakeSession([_pending(1, 7), _QUIET])
+    assert _walk(mover, session, trail=trail,
+                 idle_ceiling_s=10.0).run() == aw.EXIT_OK
+    assert session.cancels == 1
+    assert trail.one("capture_cancel")["ok"] is True
+
+
+def test_a_failed_cancel_still_lets_the_park_complete():
+    """Best-effort: a cancel failure is reported, never blocks the park."""
+    class ExplodingCancel(FakeSession):
+        def cancel(self) -> tuple[int, str]:
+            raise OSError("wizard unreachable")
+
+    mover = FakeMover(offset=0.0)
+    trail = _RecordingTrail()
+    session = ExplodingCancel([_QUIET])
+    assert _walk(mover, session, trail=trail,
+                 idle_ceiling_s=10.0).run() == aw.EXIT_IDLE_CEILING
+    failed_cancel = trail.one("capture_cancel")
+    assert failed_cancel["ok"] is False
+    assert "OSError" in failed_cancel["error"]
+    parked = trail.one("parked")
+    assert parked["ok"] is True and mover.moves[-1] == 0
 
 
 def test_the_park_readbacks_sign_is_never_consumed():
@@ -919,6 +961,9 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
             return 200, '{"ok": true}'
 
         def complete(self) -> tuple[int, str]:
+            return 200, '{"ok": true}'
+
+        def cancel(self) -> tuple[int, str]:
             return 200, '{"ok": true}'
 
     session = ResidueThenLive()
