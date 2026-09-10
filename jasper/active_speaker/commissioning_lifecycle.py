@@ -12,6 +12,7 @@ from typing import Any, Literal, Mapping, TypeAlias, cast
 
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
+    FingerprintedRecord,
     json_fingerprint,
 )
 
@@ -200,7 +201,7 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class CommissioningTransition:
+class CommissioningTransition(FingerprintedRecord):
     """One legal, evidence-kind-bound Active commissioning transition."""
 
     from_state: CommissioningState
@@ -286,9 +287,6 @@ class CommissioningTransition:
             "evidence_fingerprint": self.evidence_fingerprint,
             "failure_code": self.failure_code,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CommissioningTransition":

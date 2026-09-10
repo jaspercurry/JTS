@@ -12,7 +12,6 @@ feature evidence.
 
 from __future__ import annotations
 
-import abc
 import hashlib
 import json
 import math
@@ -21,7 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Mapping
 
-from .null_walk import DspPredecessor, NullWalkError
+from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
+from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 EXACT_DSP_STATE_DOMAIN = "camilladsp_exact_transaction_state"
@@ -90,25 +90,6 @@ def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-class FingerprintedRecord(abc.ABC):
-    """A frozen dataclass's `to_dict`: `_core()` plus its `fingerprint`.
-
-    Persisted receipts and evidence are read back through each type's
-    `from_mapping`, which expects exactly this shape -- changing it breaks
-    every already-written record.
-    """
-
-    __slots__ = ()
-    fingerprint: str
-
-    @abc.abstractmethod
-    def _core(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
-
 def _fingerprint(payload: Mapping[str, Any]) -> str:
     return json_fingerprint(payload, field_name="identity payload")
 
@@ -141,7 +122,7 @@ def _raw(raw: Mapping[str, Any], name: str) -> Any:
 
 
 @dataclass(frozen=True)
-class ArtifactIdentity:
+class ArtifactIdentity(FingerprintedRecord):
     """Content-addressed identity for one feature-owned bundle artifact."""
 
     bundle_kind: str
@@ -186,9 +167,6 @@ class ArtifactIdentity:
             "byte_size": self.byte_size,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "ArtifactIdentity":
         value = _strict_serialized_object(
@@ -216,7 +194,7 @@ class ArtifactIdentity:
 
 
 @dataclass(frozen=True, init=False)
-class ExactDspStateIdentity:
+class ExactDspStateIdentity(FingerprintedRecord):
     """Content identity for the exact host-owned transaction/rollback state.
 
     This deliberately reuses :class:`DspPredecessor`'s strict JSON-domain
@@ -269,9 +247,6 @@ class ExactDspStateIdentity:
             "state_fingerprint": self.state_fingerprint,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "ExactDspStateIdentity":
         value = _strict_serialized_object(
@@ -294,7 +269,7 @@ class ExactDspStateIdentity:
 
 
 @dataclass(frozen=True, init=False)
-class NormalizedActiveRawIdentity:
+class NormalizedActiveRawIdentity(FingerprintedRecord):
     """Typed/versioned identity for one normalized CamillaDSP ``active_raw``.
 
     The owning host performs normalization and supplies the resulting JSON
@@ -376,9 +351,6 @@ class NormalizedActiveRawIdentity:
             "active_raw_fingerprint": self.active_raw_fingerprint,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
     @classmethod
     def from_mapping(cls, raw: Any) -> "NormalizedActiveRawIdentity":
         value = _strict_serialized_object(
@@ -418,7 +390,7 @@ class NormalizedActiveRawIdentity:
 
 
 @dataclass(frozen=True)
-class CaptureIdentity:
+class CaptureIdentity(FingerprintedRecord):
     """Raw capture plus exact replay input and admitted evidence identities."""
 
     consumer_id: str
@@ -504,9 +476,6 @@ class CaptureIdentity:
             "quality_artifact": self.quality_artifact.to_dict(),
             "admission_artifact": self.admission_artifact.to_dict(),
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CaptureIdentity":

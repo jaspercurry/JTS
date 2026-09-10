@@ -22,6 +22,7 @@ from typing import Any, Mapping, NoReturn, Sequence
 
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
+    FingerprintedRecord,
     json_fingerprint,
 )
 from jasper.audio_measurement.null_walk import (
@@ -89,7 +90,7 @@ class MeasuredCandidateEvaluationError(MeasuredCandidateError):
 
 
 @dataclass(frozen=True, init=False)
-class MeasuredCandidateInputContract:
+class MeasuredCandidateInputContract(FingerprintedRecord):
     fixed_axis_geometry_id: str
     stationary_evidence_roles: tuple[str, ...]
     stationary_capture_count_per_target: int
@@ -145,9 +146,6 @@ class MeasuredCandidateInputContract:
             },
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
 
 def measured_candidate_input_contract() -> MeasuredCandidateInputContract:
     return MeasuredCandidateInputContract._wave2()
@@ -174,7 +172,7 @@ def _sha256(value: Any, name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class MeasuredElectricalCandidate:
+class MeasuredElectricalCandidate(FingerprintedRecord):
     """Compact attenuation, retained-polarity, and delay refinement."""
 
     run: CommissioningRunHandle
@@ -276,9 +274,6 @@ class MeasuredElectricalCandidate:
             "source": "reviewed_preset",
             "flags": _CANDIDATE_FLAGS,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     def driver_corrections(self) -> dict[str, dict[str, float | bool]]:
         """Return the exact compiler-ready refinement this candidate owns."""

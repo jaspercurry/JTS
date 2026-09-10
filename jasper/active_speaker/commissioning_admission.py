@@ -14,7 +14,11 @@ from typing import Any
 import yaml
 
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
-from jasper.audio_measurement.evidence_identity import ArtifactIdentity, json_fingerprint
+from jasper.audio_measurement.evidence_identity import (
+    ArtifactIdentity,
+    FingerprintedRecord,
+    json_fingerprint,
+)
 from jasper.audio_measurement.excitation_artifacts import (
     read_generation_admission,
     read_playback_admission,
@@ -34,7 +38,7 @@ class ActiveCommissioningAdmissionError(RuntimeError):
     """A capture or running graph cannot provide a usable identity."""
 
 @dataclass(frozen=True, slots=True)
-class ActiveCaptureAdmissionHandoff:
+class ActiveCaptureAdmissionHandoff(FingerprintedRecord):
     """Strict server-owned join from admitted playback to captured evidence."""
 
     session_id: str
@@ -105,9 +109,6 @@ class ActiveCaptureAdmissionHandoff:
             "graph_fingerprint": self.graph_fingerprint,
             "graph_evidence_fingerprint": self.graph_evidence_fingerprint,
         }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_mapping(cls, raw: object) -> "ActiveCaptureAdmissionHandoff":
