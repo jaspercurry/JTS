@@ -1981,7 +1981,7 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert isinstance(spec, dict)
     assert {"max_db", "max_hz", "graded_band_hz", "passed", "tilt"} <= set(spec)
     assert isinstance(spec["bands"], list) and spec["bands"]
-    assert {"f_lo_hz", "f_hi_hz", "graded_lo_hz", "graded_hi_hz", "passed",
+    assert {"f_lo_hz", "f_hi_hz", "graded_lo_hz", "graded_hi_hz", "within_target",
             "tolerance_db", "max_deviation_db", "max_deviation_hz"} == set(
         spec["bands"][0]
     )
