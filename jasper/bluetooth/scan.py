@@ -139,18 +139,22 @@ class DeviceObserver:
         otherwise hang the caller's start() forever, and dbus-next proxy calls
         carry no timeout of their own. On any failure this unwinds fully, so
         the next call is a clean retry rather than a second half-built bus.
+
+        Serialized on `_lock` so two concurrent callers can't both connect a
+        bus: the second would overwrite `self._bus` and leak the first.
         """
-        if self._started:
-            return
-        bus = MessageBus(bus_type=BusType.SYSTEM)
-        await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="observer_start")
-        self._bus = bus
-        try:
-            await self._start_subscribed(bus)
-        except BaseException:
-            await self.stop()
-            raise
-        self._started = True
+        async with self._lock:
+            if self._started:
+                return
+            bus = MessageBus(bus_type=BusType.SYSTEM)
+            await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="observer_start")
+            self._bus = bus
+            try:
+                await self._start_subscribed(bus)
+            except BaseException:
+                await self._stop_locked()
+                raise
+            self._started = True
 
     async def _start_subscribed(self, bus: MessageBus) -> None:
         async with asyncio.timeout(BLUEZ_CALL_TIMEOUT_SEC):
@@ -263,6 +267,14 @@ class DeviceObserver:
             self._schedule_battery_refresh(path)
 
     async def stop(self) -> None:
+        async with self._lock:
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
+        """Body of `stop()`. Callable while `_lock` is already held, so
+        `start()`'s failure-unwind path can call this directly instead of
+        deadlocking on a re-entrant `stop()`.
+        """
         self._started = False
         bus = self._bus
         self._bus = None

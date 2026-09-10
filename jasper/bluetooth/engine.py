@@ -184,6 +184,9 @@ class BluetoothEngine:
         # expiry tasks are concurrent. Keep StartDiscovery + deadline refresh,
         # natural expiry, and manual stop as one serialized state transition.
         self._scan_lock = asyncio.Lock()
+        # First-only latch for observer_restart_failed: WARN once, DEBUG
+        # while the underlying BlueZ outage persists, reset on success.
+        self._observer_restart_warned = False
 
     @property
     def observer(self) -> DeviceObserver:
@@ -392,13 +395,16 @@ class BluetoothEngine:
             return
         try:
             await self._observer.start()
+            self._observer_restart_warned = False
         except SCAN_OPERATION_ERRORS as error:
+            level = logging.WARNING if not self._observer_restart_warned else logging.DEBUG
+            self._observer_restart_warned = True
             log_event(
                 logger,
                 "bluetooth.observer_restart_failed",
                 error_type=type(error).__name__,
                 error=str(error),
-                level=logging.WARNING,
+                level=level,
             )
 
     async def _reconnect_shared_bus(self) -> None:
@@ -410,11 +416,11 @@ class BluetoothEngine:
             try:
                 bus = MessageBus(bus_type=BusType.SYSTEM)
                 await connect_bounded(
-                    bus, SCAN_DBUS_TIMEOUT_SEC, site="bus_recovery",
+                    bus, BUS_CONNECT_TIMEOUT_SEC, site="bus_recovery",
                 )
             except asyncio.TimeoutError as error:
                 timeout_failure = asyncio.TimeoutError(
-                    f"BlueZ bus recovery timed out after {SCAN_DBUS_TIMEOUT_SEC:g}s"
+                    f"BlueZ bus recovery timed out after {BUS_CONNECT_TIMEOUT_SEC:g}s"
                 )
                 log_event(
                     logger,

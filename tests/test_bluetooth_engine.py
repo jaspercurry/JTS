@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import pytest
 from dbus_next.errors import DBusError
@@ -593,9 +594,12 @@ async def test_engine_start_bounds_a_hung_connect_and_arms_recovery(monkeypatch)
     monkeypatch.setattr(engine_module, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
 
     engine = BluetoothEngine()
+    start = time.monotonic()
     with pytest.raises(TimeoutError):
         await engine.start()
+    elapsed = time.monotonic() - start
 
+    assert elapsed < 0.5, f"start() took {elapsed:g}s, expected ~0.01s bound"
     assert engine._bus is None
     assert bus.journal == ["bus_disconnect"]
     # A bootstrap that lost the race to BlueZ must leave the lazy path armed.

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -285,9 +286,12 @@ async def test_device_observer_start_bounds_a_silent_bluez(monkeypatch) -> None:
     monkeypatch.setattr(scan, "BLUEZ_CALL_TIMEOUT_SEC", 0.01)
 
     observer = DeviceObserver()
+    start = time.monotonic()
     with pytest.raises(TimeoutError):
         await observer.start()
+    elapsed = time.monotonic() - start
 
+    assert elapsed < 0.5, f"start() took {elapsed:g}s, expected ~0.01s bound"
     assert observer.started is False
     assert observer._bus is None
     assert bus.disconnected is True
