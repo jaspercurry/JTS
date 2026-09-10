@@ -33,8 +33,9 @@ from jasper.output_topology import (
     load_output_topology_strict,
     stamp_statefile_convergence,
 )
+from jasper.service_units import OUTPUTD_SERVICE
 
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 
 
 @dataclass(frozen=True)

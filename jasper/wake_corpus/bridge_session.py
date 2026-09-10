@@ -30,6 +30,7 @@ import numpy as np
 
 from jasper.control import restart_broker
 from jasper.log_event import log_event
+from jasper.service_units import OUTPUTD_SERVICE
 from jasper.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
@@ -110,7 +111,7 @@ logger = logging.getLogger("jasper-wake-corpus-web")
 # Bridge-side corpus-output config + systemctl units
 # ---------------------------------------------------------------------------
 AUDIO_CONTEXT_SCHEMA_VERSION = 1
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 AEC_INIT_UNIT = "jasper-aec-init.service"
 # Owner of the chip-AEC arming decision and single writer of the daemon-facing
 # mic env. The recorder owns its corpus overrides and nothing else, so a corpus

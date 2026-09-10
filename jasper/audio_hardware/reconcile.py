@@ -67,7 +67,13 @@ from jasper.output_hardware import (
     degraded_marker_path,
     state_path,
 )
-from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
+from jasper.service_units import (
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+    JASPER_VOICE_SERVICE,
+    SYSTEMCTL_TIMEOUT_SEC,
+    run_systemctl,
+)
 from jasper.shell_env import render_shell_assignments
 
 logger = logging.getLogger(__name__)
@@ -76,10 +82,10 @@ EVENT = "audio_hardware_reconcile"
 
 DAC_INIT_UNIT = "jasper-dac-init.service"
 HEADPHONE_MONITOR_UNIT = "jasper-headphone-monitor.service"
-OUTPUTD_UNIT = "jasper-outputd.service"
-VOICE_UNIT = "jasper-voice.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
+VOICE_UNIT = JASPER_VOICE_SERVICE
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
-FANIN_UNIT = "jasper-fanin.service"
+FANIN_UNIT = FANIN_SERVICE
 COUPLING_AUTO_UNIT = "jasper-fanin-coupling-auto.service"
 
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This module

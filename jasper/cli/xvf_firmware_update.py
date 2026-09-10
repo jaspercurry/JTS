@@ -23,11 +23,12 @@ from jasper.atomic_io import atomic_write_text
 from jasper.json_fields import utc_now_iso
 
 from ..mics import xvf3800
+from ..service_units import JASPER_VOICE_SERVICE
 
 
 STATE_PATH = Path("/var/lib/jasper/xvf-firmware-update.json")
 UPDATE_UNITS = (
-    "jasper-voice.service",
+    JASPER_VOICE_SERVICE,
     "jasper-aec-bridge.service",
     "jasper-aec-init.service",
 )

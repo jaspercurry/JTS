@@ -40,6 +40,7 @@ from .audio_runtime_fanin import (
     _asound_pcm_block,
     _assistant_gain_fault,
 )
+from ...service_units import OUTPUTD_SERVICE
 
 REASON_OUTPUTD_UNIT_MISSING = "outputd_unit_missing"
 REASON_OUTPUTD_UNIT_NOT_ENABLED = "outputd_unit_not_enabled"
@@ -675,7 +676,7 @@ def check_outputd_service() -> CheckResult:
     """
     service_failure = _service_state_failure(
         "jasper-outputd",
-        "jasper-outputd.service",
+        OUTPUTD_SERVICE,
         missing=REASON_OUTPUTD_UNIT_MISSING,
         not_enabled=REASON_OUTPUTD_UNIT_NOT_ENABLED,
         inactive=REASON_OUTPUTD_INACTIVE,
@@ -972,7 +973,7 @@ def check_aec_clock_drift() -> CheckResult:
         (still measuring) are all healthy.
     """
     label = "AEC clock drift"
-    state = evidence.unit_state("jasper-outputd.service")
+    state = evidence.unit_state(OUTPUTD_SERVICE)
     if state is None:
         return _systemctl_unavailable_result(label)
     if state.get("load_state") == "not-found" or state.get(

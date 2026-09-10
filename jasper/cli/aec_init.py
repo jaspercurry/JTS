@@ -61,6 +61,7 @@ from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 from jasper.logging_setup import configure_logging
+from jasper.service_units import OUTPUTD_SERVICE
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
@@ -73,7 +74,7 @@ COMMISSION_REQUIRED_EXIT = 2
 # one is a fault.
 ALIGNMENT_RECORD_PATH = "/run/jasper-aec-init/alignment"
 OUTPUTD_ENV_STALE_EXIT = 3
-OUTPUTD_UNIT = "jasper-outputd.service"
+OUTPUTD_UNIT = OUTPUTD_SERVICE
 # How long to let a queued outputd restart land before refusing to commission.
 # Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open).
 #

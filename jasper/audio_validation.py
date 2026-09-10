@@ -53,6 +53,11 @@ from .chip_aec.policy import (
 )
 from .platform import control_client as control
 from .env_load import env_file_path, parse_env_file
+from .service_units import (
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+    JASPER_VOICE_SERVICE,
+)
 from .install_profile import BUILD_MANIFEST_FILE
 from .log_event import log_event
 from .output_hardware import published_dac_id
@@ -798,10 +803,10 @@ def _runtime_env_check(runtime: Any) -> dict[str, JsonValue]:
 
 def _service_state_check(service_states: Mapping[str, str]) -> dict[str, JsonValue]:
     required_units = (
-        "jasper-outputd.service",
+        OUTPUTD_SERVICE,
         "jasper-aec-bridge.service",
         "jasper-aec-init.service",
-        "jasper-voice.service",
+        JASPER_VOICE_SERVICE,
     )
     missing = {
         unit: service_states.get(unit, "unknown")
@@ -820,9 +825,9 @@ def _service_state_check(service_states: Mapping[str, str]) -> dict[str, JsonVal
 
 def _outputd_pipeline_service_state_check(service_states: Mapping[str, str]) -> dict[str, JsonValue]:
     required_units = (
-        "jasper-outputd.service",
+        OUTPUTD_SERVICE,
         "jasper-camilla.service",
-        "jasper-fanin.service",
+        FANIN_SERVICE,
     )
     missing = {
         unit: service_states.get(unit, "unknown")
@@ -1495,10 +1500,10 @@ def build_chip_aec_readiness_artifact(
         else {
             unit: service_state(unit)
             for unit in (
-                "jasper-outputd.service",
+                OUTPUTD_SERVICE,
                 "jasper-aec-bridge.service",
                 "jasper-aec-init.service",
-                "jasper-voice.service",
+                JASPER_VOICE_SERVICE,
             )
         }
     )
@@ -1595,9 +1600,9 @@ def build_outputd_stability_hardware_validation_artifact(
         else {
             unit: service_state(unit)
             for unit in (
-                "jasper-outputd.service",
+                OUTPUTD_SERVICE,
                 "jasper-camilla.service",
-                "jasper-fanin.service",
+                FANIN_SERVICE,
             )
         }
     )

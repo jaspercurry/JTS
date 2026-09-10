@@ -38,6 +38,7 @@ from ._shared import CheckResult, _run
 from .audio_runtime_camilla import _camilla_statefile
 from .audio_runtime_fanin import _requires_roleful_graph
 from .audio_runtime_outputd import _outputd_reconciled_env
+from ...service_units import FANIN_SERVICE
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
@@ -153,7 +154,7 @@ def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
     """
     # Active, or unknown (no systemctl on this host): fan-in may be writing
     # Ring A, so nothing is probeable.
-    if evidence.unit_active("jasper-fanin.service") is not False:
+    if evidence.unit_active(FANIN_SERVICE) is not False:
         return []
     probeable = []
     for pcm, tool, _ring_basename in _JTS_RING_PCMS:

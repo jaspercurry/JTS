@@ -45,7 +45,11 @@ from jasper.install_profile import (
 from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
 from jasper.music_sources import Source
-from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl as _systemctl
+from jasper.service_units import (
+    JASPER_VOICE_SERVICE,
+    SYSTEMCTL_TIMEOUT_SEC,
+    run_systemctl as _systemctl,
+)
 from jasper.source_intent import source_intent_enabled
 
 from ._dbus import variant_value
@@ -60,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
 DEVICE_IFACE = "org.bluez.Device1"
-VOICE_UNIT = "jasper-voice.service"
+VOICE_UNIT = JASPER_VOICE_SERVICE
 # Where wake detection runs, jasper-aec-reconcile owns the voice-input gate
 # marker and the voice start/park decision; we hand our half back to it rather
 # than deciding here — see refresh_voice_input. Where it is not installed, see
