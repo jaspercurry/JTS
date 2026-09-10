@@ -295,9 +295,7 @@ class Config:
     # impossible. Set a positive value (e.g. 21600 = 6 h) to force a
     # periodic fresh session as a safety hedge against stale-context
     # weirdness. Per-provider so e.g. Gemini's resumption-handle path
-    # can be tuned separately from OpenAI's reconnect path. Falls back
-    # to the legacy `JASPER_LIVE_CONTEXT_RESET_SEC` if set, for
-    # backwards-compat with existing /etc/jasper/jasper.env files.
+    # can be tuned separately from OpenAI's reconnect path.
     openai_context_reset_sec: int
     gemini_context_reset_sec: int
     grok_context_reset_sec: int
@@ -723,20 +721,14 @@ class Config:
             #   - Gemini: drops resumption handle, similar reconnect
             #     cost but cheaper baseline pricing.
             #   - Grok: inherits OpenAI implementation.
-            # Legacy JASPER_LIVE_CONTEXT_RESET_SEC, if set, supplies a
-            # global default for any provider whose specific var is
-            # unset.
             openai_context_reset_sec=_env_int(
-                "JASPER_OPENAI_CONTEXT_RESET_SEC",
-                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+                "JASPER_OPENAI_CONTEXT_RESET_SEC", 0,
             ),
             gemini_context_reset_sec=_env_int(
-                "JASPER_GEMINI_CONTEXT_RESET_SEC",
-                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+                "JASPER_GEMINI_CONTEXT_RESET_SEC", 0,
             ),
             grok_context_reset_sec=_env_int(
-                "JASPER_GROK_CONTEXT_RESET_SEC",
-                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+                "JASPER_GROK_CONTEXT_RESET_SEC", 0,
             ),
             # OpenAI Realtime: 60-min hard cap per
             # developers.openai.com/api/docs/guides/realtime-conversations.

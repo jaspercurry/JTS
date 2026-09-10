@@ -21,8 +21,10 @@ legitimately have no safe code default (an empty / template value the
 operator or a wizard must fill in): API keys, the hostname, weather
 coordinates / location, transit station ids, and the provider selection
 (which isn't in .env.example at all). Daemon-owned knobs read elsewhere
-(JASPER_AEC_*, JASPER_OUTPUTD_*, JASPER_CONTROL_*, ...) are
-out of scope here — they have no `Config` field to compare against.
+(JASPER_OUTPUTD_*, JASPER_CONTROL_*, ...) are out of scope here — they have
+no `Config` field to compare against. The seeded `JASPER_AEC_*` rows are the
+exception: they have a machine-readable counterpart in `AEC3_LAB_KNOBS`, and
+get the same guard against it at the bottom of this file.
 
 Defaults are read by constructing `Config.from_env()` under a cleaned
 environment (no JASPER_* / *_API_KEY set) rather than regex-parsing
@@ -35,6 +37,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.aec_sweep import AEC3_LAB_KNOBS, _normalize_knob_value
 from jasper.config import Config
 
 _ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
@@ -132,7 +135,6 @@ _CLEARED = tuple(env for env, _attr, _kind in _CASES) + (
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
     "XAI_API_KEY",
-    "JASPER_LIVE_CONTEXT_RESET_SEC",  # legacy global fallback for *_CONTEXT_RESET_SEC
     "JASPER_TRANSIT_LAT",
     "JASPER_TRANSIT_LON",
 )
@@ -196,4 +198,26 @@ def test_env_example_literal_matches_config_default(
         f"/etc/jasper/jasper.env (first EnvironmentFile), so existing Pis "
         f"would run {expected!r} while code claims {actual!r}. Reconcile "
         f"the two intentionally — do not just edit this test."
+    )
+
+
+def test_env_example_aec3_rows_match_lab_pack_defaults() -> None:
+    """The seeded JASPER_AEC_* rows must equal the AEC3 lab pack's own
+    defaults. install.sh freezes .env.example into jasper.env, so a diverging
+    row would permanently pin an engine value that `AEC3_LAB_KNOBS` — and the
+    fallback `jasper/aec/bridge_engines.py` resolves when the var is unset —
+    both claim is something else."""
+    example = _parse_env_example()
+    seeded = {k: v for k, v in example.items() if k in AEC3_LAB_KNOBS}
+    assert seeded, "no AEC3 lab-pack rows found in .env.example"
+    mismatched = {
+        key: (literal, AEC3_LAB_KNOBS[key].default)
+        for key, literal in seeded.items()
+        if _normalize_knob_value(key, literal)
+        != _normalize_knob_value(key, AEC3_LAB_KNOBS[key].default)
+    }
+    assert not mismatched, (
+        "seeded .env.example rows diverge from AEC3_LAB_KNOBS defaults "
+        f"(env literal, pack default): {mismatched}. Reconcile the two "
+        "intentionally — do not just edit this test."
     )

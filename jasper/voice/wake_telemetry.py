@@ -20,6 +20,7 @@ from ..aec_sweep import (
     AGC1_TARGET_DBFS_ENV,
     NS_ENABLED_ENV,
     NS_LEVEL_ENV,
+    knob_default,
 )
 from ..wake_condition_context import ConditionContext
 from ..wake_events import (
@@ -30,6 +31,12 @@ from ..wake_events import (
 )
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+
+def _pack_knob(name: str) -> str:
+    """Resolve an AEC3 lab-pack knob the way the bridge engines do."""
+
+    return os.environ.get(name, knob_default(name))
 
 
 LEG_DB: dict[str, dict[str, str]] = {
@@ -125,11 +132,13 @@ class WakeTelemetry:
             )
             tel[_cols["mic_rms"]] = _fire.mic_rms_dbfs
         bridge_config = {
-            "ns_enabled": os.environ.get(NS_ENABLED_ENV, "1"),
-            "ns_level": os.environ.get(NS_LEVEL_ENV, "low"),
-            "agc1_enabled": os.environ.get(AGC1_ENABLED_ENV, "0"),
-            "agc1_target_dbfs": os.environ.get(AGC1_TARGET_DBFS_ENV, "9"),
-            "agc1_max_gain_db": os.environ.get(AGC1_MAX_GAIN_DB_ENV, "18"),
+            # Unset knobs must read as the lab pack's default, or the row
+            # records a config the engine did not run.
+            "ns_enabled": _pack_knob(NS_ENABLED_ENV),
+            "ns_level": _pack_knob(NS_LEVEL_ENV),
+            "agc1_enabled": _pack_knob(AGC1_ENABLED_ENV),
+            "agc1_target_dbfs": _pack_knob(AGC1_TARGET_DBFS_ENV),
+            "agc1_max_gain_db": _pack_knob(AGC1_MAX_GAIN_DB_ENV),
             "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
             "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
             "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
