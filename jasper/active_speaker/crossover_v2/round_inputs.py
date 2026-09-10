@@ -6,8 +6,8 @@
 
 The capture owner's snapshot lives in the bundle. Legacy live or banked state
 is usable only when its capture ID matches the round's artifact directory.
-Design, applied profile, repeat floor and declared geometry retain their own
-current/bank-time meanings.
+Design, applied profile, repeat floor, declared geometry and the CamillaDSP
+statefile retain their own current/bank-time meanings.
 """
 
 from __future__ import annotations
@@ -37,6 +37,9 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
+from jasper.active_speaker.environment import (
+    DEFAULT_CAMILLA_STATEFILE as STATEFILE_DEFAULT_PATH,
+)
 
 __all__ = [
     "APPLIED_PROFILE_DEFAULT_PATH",
@@ -53,6 +56,8 @@ __all__ = [
     "STATE_DEFAULT_PATH",
     "STATE_FILENAME",
     "STATE_SESSION_UNKNOWN",
+    "STATEFILE_DEFAULT_PATH",
+    "STATEFILE_FILENAME",
     "banked_round_of",
     "iter_round_sessions",
     "matching_state_path",
@@ -61,13 +66,17 @@ __all__ = [
     "round_inputs",
 ]
 
-#: The five names ``bank-crossover-round.sh`` writes beside the copied bundle.
+#: The six names ``bank-crossover-round.sh`` writes beside the copied bundle.
 STATE_FILENAME = "state.json"
 CAPTURE_STATE_FILENAME = "crossover-v2-state.json"
 DESIGN_DRAFT_FILENAME = "design-draft.json"
 APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
+#: CamillaDSP's durable statefile, banked so an offline read of
+#: ``applied_profile_displacement`` (#2537) answers "at bank time", never the
+#: reading machine's own live statefile (#3316).
+STATEFILE_FILENAME = "camilla-statefile.yml"
 
 #: The household's declared rig geometry; single writer
 #: ``jasper-declare-geometry set``.
@@ -114,6 +123,7 @@ class RoundInputs:
     applied_profile_path: Path | None
     repeat_floor_path: Path | None
     declared_geometry_path: Path | None
+    statefile_path: Path | None
     banked: bool
     state_reason: str = ""
 
@@ -171,6 +181,7 @@ def round_inputs(path: Path) -> RoundInputs:
             applied_profile_path=_sibling(path, APPLIED_PROFILE_FILENAME),
             repeat_floor_path=_sibling(path, REPEAT_FLOOR_FILENAME),
             declared_geometry_path=_sibling(path, DECLARED_GEOMETRY_FILENAME),
+            statefile_path=_sibling(path, STATEFILE_FILENAME),
             banked=True,
             state_reason=state_reason,
         )
@@ -183,6 +194,7 @@ def round_inputs(path: Path) -> RoundInputs:
             applied_profile_path=APPLIED_PROFILE_DEFAULT_PATH,
             repeat_floor_path=REPEAT_FLOOR_DEFAULT_PATH,
             declared_geometry_path=DECLARED_GEOMETRY_DEFAULT_PATH,
+            statefile_path=STATEFILE_DEFAULT_PATH,
             banked=False,
             state_reason=state_reason,
         )

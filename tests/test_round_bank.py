@@ -61,6 +61,7 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
         "applied_profile_path": tmp_path / "ssot" / "applied_profile.json",
         "repeat_floor_path": tmp_path / "ssot" / "repeat_floor.json",
         "declared_geometry_path": tmp_path / "ssot" / "declared_geometry.json",
+        "statefile_path": tmp_path / "ssot" / "statefile.yml",
     }
     if present:
         for key, path in paths.items():
@@ -83,16 +84,19 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
                 "applied-profile.json",
                 "repeat-floor.json",
                 "declared-geometry.json",
+                "camilla-statefile.yml",
             ],
         ),
         (True, "repeat_floor_path", ["repeat-floor.json"]),
         (True, "declared_geometry_path", ["declared-geometry.json"]),
+        (True, "statefile_path", ["camilla-statefile.yml"]),
     ],
     ids=[
         "ssot-present",
         "ssot-absent",
         "repeat-floor-absent",
         "declared-geometry-absent",
+        "statefile-absent",
     ],
 )
 def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, missing):
@@ -130,6 +134,7 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
         "applied-profile.json",
         "repeat-floor.json",
         "declared-geometry.json",
+        "camilla-statefile.yml",
     ):
         assert (banked.path / name).is_file() is (name not in missing)
 

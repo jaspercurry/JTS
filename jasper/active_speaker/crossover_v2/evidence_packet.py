@@ -2134,6 +2134,7 @@ def _incumbent_block(
     profile: dict[str, Any] | None,
     profile_reason: str,
     state: Mapping[str, Any],
+    statefile_path: Path | None,
 ) -> dict[str, Any]:
     """What the speaker is PLAYING — three records, two questions.
 
@@ -2160,12 +2161,19 @@ def _incumbent_block(
 
     ``identity`` says WHICH profile the answer describes. ``config.path`` is
     not among its fields — the packet excludes absolute paths, and
-    ``config.sha256`` names the same graph.
+    ``config.sha256`` names the same graph. Its ``applied_profile_displacement``
+    is the question one layer up (#2537, #3316): is this record still what the
+    speaker is PLAYING, answered against ``statefile_path`` — a CamillaDSP
+    statefile banked at the SAME time as the profile, never a live read, so a
+    packet rebuilt away from the box it describes reports what was true at
+    bank time and not the reading machine's own state. ``None`` (no statefile
+    supplied) reads as unknown, not as agreement.
 
     ``trim`` is a fourth record, LEVEL rather than shape: see
     :func:`_incumbent_trim_block`.
     """
     from jasper.active_speaker.baseline_profile import (
+        applied_profile_displacement,
         profile_blend_correction,
         profile_linearization,
     )
@@ -2205,6 +2213,17 @@ def _incumbent_block(
                 "candidate_fingerprint": profile.get("candidate_fingerprint"),
                 "applied_at": profile.get("applied_at"),
                 "config_sha256": _mapping(profile.get("config")).get("sha256"),
+                "applied_profile_displacement": (
+                    applied_profile_displacement(
+                        profile, statefile_path=statefile_path
+                    )
+                    if statefile_path is not None
+                    else _absence(
+                        "no CamillaDSP statefile was supplied",
+                        False,
+                        "camilla_statefile",
+                    )
+                ),
                 "note": (
                     "which applied profile the filters below describe. A "
                     "packet built from a bank names the profile that was live "
@@ -2678,6 +2697,7 @@ def build_crossover_evidence_packet(
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
     declared_geometry_path: Path | None = None,
+    statefile_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -2708,6 +2728,10 @@ def build_crossover_evidence_packet(
       unmeasured and the two codified assumptions are used, named.
     * ``declared_geometry_path`` — the household's declared rig geometry, the
       only viable source for the room's entanglement floor.
+    * ``statefile_path`` — a CamillaDSP durable statefile banked alongside
+      ``applied_profile_path``; without it ``incumbent.identity``'s
+      ``applied_profile_displacement`` (#2537, #3316) is unknown rather than a
+      live read of whatever statefile the reading machine happens to have.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all: a partially banked round is a
@@ -2837,7 +2861,12 @@ def build_crossover_evidence_packet(
         },
         "crossover_region": crossover_region,
         "incumbent": _incumbent_block(
-            receipt, receipt_reason, applied_profile, applied_profile_reason, state
+            receipt,
+            receipt_reason,
+            applied_profile,
+            applied_profile_reason,
+            state,
+            statefile_path,
         ),
         # Verbatim, every one of them. `spec.bands[]` carries `evaluable`,
         # `n_excluded` and `graded_lo_hz`; `flatness` carries `n_excluded` and

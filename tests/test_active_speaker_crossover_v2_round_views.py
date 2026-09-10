@@ -2407,6 +2407,7 @@ def _banked_for_sweep(round_dir: Path, report) -> BankedRound:
             applied_profile_path=None,
             repeat_floor_path=None,
             declared_geometry_path=None,
+            statefile_path=None,
             banked=True,
         ),
         positions=(),

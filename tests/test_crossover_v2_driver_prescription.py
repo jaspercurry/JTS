@@ -243,12 +243,16 @@ def _speaker(
     classification: dict[str, Any] | None = None,
     incumbent: dict[str, Any] | None = None,
     stash: dict[str, Any] | None = None,
+    statefile_config_path: str | None = None,
 ) -> dict[str, Any]:
     """A bundle plus the two per-driver evidence sources, as a packet.
 
     ``incumbent`` is what the speaker is PLAYING (the applied-profile SSOT);
     ``stash`` lands in a legacy flow-state pre-apply record this packet must
-    never mistake for the first.
+    never mistake for the first. ``statefile_config_path`` banks a CamillaDSP
+    statefile naming that config path (#2537, #3316); ``None`` means no
+    statefile was banked at all, distinct from a statefile that IS there and
+    names a different config.
     """
     session, _ = _bundle(tmp_path)
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
@@ -273,11 +277,16 @@ def _speaker(
             "kind": "jts_crossover_v2_flow_state",
             "pre_apply_profile": {"linearization": stash},
         }))
+    statefile_path = None
+    if statefile_config_path is not None:
+        statefile_path = tmp_path / "camilla-statefile.yml"
+        statefile_path.write_text(f"config_path: {statefile_config_path}\n")
     return build_crossover_evidence_packet(
         session,
         driver_draft_path=draft_path,
         state_path=state_path,
         applied_profile_path=applied_path,
+        statefile_path=statefile_path,
     )
 
 
@@ -4213,6 +4222,45 @@ def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
         assert "incumbent" in {
             entry["field"] for entry in packet["not_evaluated"]
         }
+
+
+@pytest.mark.parametrize(
+    "statefile_config_path, expected",
+    [
+        ("/var/lib/jasper/x.yml", ""),
+        ("/var/lib/jasper/some-other.yml", "applied_profile_displaced"),
+        (None, None),
+    ],
+    ids=["matches-running-config", "names-a-different-config", "no-statefile-banked"],
+)
+def test_incumbent_identity_carries_applied_profile_displacement(
+    tmp_path, statefile_config_path, expected
+):
+    """The question one layer up from WHICH profile (#2537, #3316): is that
+    profile still what the speaker is PLAYING?
+
+    ``applied_profile()``'s fixture always records ``config.path`` as
+    ``/var/lib/jasper/x.yml`` (#3313's identity fixture); the statefile this
+    test banks either names the SAME config (authoritative, ``""``), a
+    DIFFERENT one (``applied_profile_displaced``), or is simply absent — which
+    must read as unknown, never as agreement, and never as a live read of
+    whatever statefile happens to sit on the machine running the test.
+    """
+    packet = _speaker(
+        tmp_path,
+        incumbent={"tweeter": INCUMBENT_TWEETER},
+        statefile_config_path=statefile_config_path,
+    )
+
+    field = packet["incumbent"]["identity"]["applied_profile_displacement"]
+    if expected is None:
+        assert field == {
+            "status": "not_evaluated",
+            "reason": "no CamillaDSP statefile was supplied",
+            "field": "camilla_statefile",
+        }
+    else:
+        assert field == expected
 
 
 def test_a_document_displaces_the_filters_the_graph_is_actually_carrying(tmp_path):
