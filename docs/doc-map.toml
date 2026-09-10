@@ -758,7 +758,7 @@ verification = [
   "pytest tests/test_web_correction_setup.py tests/test_doctor_correction.py",
   "bash scripts/check-js-syntax.sh",
   "pytest tests/test_web_sync_flow.py",
-  "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py",
+  "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_evidence_store.py tests/test_attribution_persistence.py",
 ]
 
 [[subsystem]]

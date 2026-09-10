@@ -1,7 +1,8 @@
 # ADR-0196: The commissioning record's read path takes no lock, and says what it found
 
 - **Date:** 2026-08-30
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0288](0288-the-v1-commissioning-lane-is-deleted.md)
 
 ## Context
 

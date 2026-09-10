@@ -231,7 +231,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0193](0193-the-audition-door-is-a-runtime-only-swap.md) | The audition door is a runtime-only swap | accepted |
 | [0194](0194-the-flat-spec-frame-and-its-ceiling.md) | The flat-spec reference is the low-mid band, and the graded ceiling follows the microphone | accepted |
 | [0195](0195-a-rebuild-that-knows-less-is-not-a-supersede.md) | A rebuild that knows less is not a supersede | accepted |
-| [0196](0196-the-commissioning-record-read-path-takes-no-lock.md) | The commissioning record's read path takes no lock, and says what it found | accepted |
+| [0196](0196-the-commissioning-record-read-path-takes-no-lock.md) | The commissioning record's read path takes no lock, and says what it found | superseded by 0288 |
 | [0197](0197-the-commissioning-capture-stack-is-deleted.md) | The commissioning capture stack is deleted | accepted |
 | [0198](0198-the-unwired-engine-verb-half-is-deleted.md) | The unwired engine verb half is deleted | accepted |
 | [0200](0200-the-measurement-toolbox-is-microphone-only.md) | The measurement toolbox is microphone-only | accepted |
@@ -267,3 +267,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0285](0285-wake-detection-is-off-for-the-whole-measurement-hold.md) | Wake detection is off for the whole measurement hold | accepted |
 | [0286](0286-installation-context-guides-bass-trials.md) | Installation context guides bass trials | accepted |
 | [0287](0287-native-bass-range-is-not-a-driver-limit.md) | Native bass range is not a driver limit | accepted |
+| [0288](0288-the-v1-commissioning-lane-is-deleted.md) | The v1 commissioning lane is deleted | accepted |

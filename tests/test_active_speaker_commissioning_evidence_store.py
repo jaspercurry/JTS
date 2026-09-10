@@ -14,11 +14,13 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker.bundles import (
+    BUNDLE_KIND,
     DEFAULT_SESSIONS_MAX_BYTES,
     open_bundle,
 )
 from jasper.active_speaker.commissioning_evidence_store import (
     MAX_EVIDENCE_ARTIFACT_BYTES,
+    MAX_NON_ARTIFACT_READ_BYTES,
     MIN_FREE_SPACE_AFTER_PUBLISH_BYTES,
     MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES,
     CommissioningEvidenceStore,
@@ -121,6 +123,42 @@ def test_reads_are_bounded_and_detect_tamper_truncation_and_missing(
         relative_path="evidence/v1/artifacts/too-large.wav",
         sha256="0" * 64,
         byte_size=MAX_EVIDENCE_ARTIFACT_BYTES + 1,
+    )
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.reopen_artifact(oversized)
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.TOO_LARGE
+
+
+def test_non_artifact_reads_are_bounded_at_the_wider_ceiling(
+    tmp_path: Path,
+) -> None:
+    """A read outside ``evidence/v1/artifacts/`` is capped at 32 MiB, not 5 MiB.
+
+    ``crossover_v2/record_index.reopen_measurement_capture`` reopens take
+    JSON and ``summed/*.wav`` this way -- neither lives under the artifact
+    root, so both must clear the wider, non-artifact ceiling.
+    """
+    store = _open_store(tmp_path)
+    relative_path = "summed/take.wav"
+    payload = b"a" * (MAX_EVIDENCE_ARTIFACT_BYTES + 1)
+    target = store.bundle_dir / relative_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload)
+    identity = ArtifactIdentity(
+        bundle_kind=BUNDLE_KIND,
+        bundle_id=store.session_id,
+        relative_path=relative_path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_size=len(payload),
+    )
+    assert store.reopen_artifact(identity) == payload
+
+    oversized = ArtifactIdentity(
+        bundle_kind=BUNDLE_KIND,
+        bundle_id=store.session_id,
+        relative_path=relative_path,
+        sha256="0" * 64,
+        byte_size=MAX_NON_ARTIFACT_READ_BYTES + 1,
     )
     with pytest.raises(CommissioningEvidenceStoreError) as raised:
         store.reopen_artifact(oversized)

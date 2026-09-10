@@ -124,7 +124,7 @@ heal_shared_state_modes() {
         # Active run-record advisory locks. A root-run status poll used to
         # CREATE them root:root 0640, after which no service account could take
         # a lock it can only READ -- the ~3 s crossover_level_run_unavailable
-        # ERROR storm and its repeat-admission twin (ADR-0196). The stores now
+        # ERROR storm and its repeat-admission twin (ADR-0288). The stores now
         # publish 0660 group-writable, but a non-owner cannot repair a lock it
         # cannot open, so the existing ones are healed here. `l` derives the
         # ".<record>.lock" name; only the LOCKS widen to write, the records
@@ -170,7 +170,7 @@ for spec in sys.argv[3:]:
         # A record's advisory lock sibling, named the one way the stores name
         # it (jasper.atomic_io callers: ".<record>.lock"), so install does not
         # respell a filename Python owns. Group-WRITABLE, because taking an
-        # advisory lock opens the file for write. See ADR-0196.
+        # advisory lock opens the file for write. See ADR-0288.
         head, base = os.path.split(path)
         path = os.path.join(head, "." + base + ".lock")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK

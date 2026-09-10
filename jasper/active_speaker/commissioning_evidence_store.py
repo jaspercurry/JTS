@@ -46,10 +46,13 @@ from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 EVIDENCE_ROOT = "evidence/v1"
 MAX_EVIDENCE_ARTIFACT_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
-MAX_TYPED_EVIDENCE_BYTES = 32 * 1024 * 1024
-# Every authoritative byte in the session -- evidence, stimuli and admissions.
-# 582 is the capture count of the largest run this store was sized for (a
-# stereo three-way); 1 GiB covers its stimuli and metadata.
+# Bound for a read outside ``evidence/v1/artifacts/`` -- e.g.
+# crossover_v2/record_index.reopen_measurement_capture reopening take JSON
+# and ``summed/*.wav`` capture bytes.
+MAX_NON_ARTIFACT_READ_BYTES = 32 * 1024 * 1024
+# Hard ceiling on every byte `_authoritative_total` walks: `evidence/v1`,
+# `stimuli` and `admission`. v2 capture WAVs under `summed/`/`captures/`
+# live outside those subtrees and are not counted here.
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
     582 * MAX_EVIDENCE_ARTIFACT_BYTES
 ) + (1024 * 1024 * 1024)
@@ -176,7 +179,7 @@ def _artifact_path(relative_path: str) -> str:
 def _max_bytes_for_path(relative_path: str) -> int:
     if relative_path.startswith(f"{EVIDENCE_ROOT}/artifacts/"):
         return MAX_EVIDENCE_ARTIFACT_BYTES
-    return MAX_TYPED_EVIDENCE_BYTES
+    return MAX_NON_ARTIFACT_READ_BYTES
 
 
 @dataclass(frozen=True, slots=True)

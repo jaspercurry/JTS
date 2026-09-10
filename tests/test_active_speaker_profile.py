@@ -16,6 +16,7 @@ from jasper.active_speaker import (
     emit_active_speaker_startup_config,
 )
 
+
 def _two_way_preset(layout: str = "mono") -> dict:
     sides = ["mono"] if layout == "mono" else ["left", "right"]
     outputs = []
