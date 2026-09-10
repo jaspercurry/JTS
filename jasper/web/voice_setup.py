@@ -86,6 +86,7 @@ from jasper.secret_redaction import redact_secrets
 
 from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
+    RestartOutcome,
     api_key_token_is_valid,
     begin_request,
     form_guarded,
@@ -171,6 +172,19 @@ def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
 
 def _provider_label(provider_id: str) -> str:
     return next((p.label for p in PROVIDERS if p.id == provider_id), provider_id)
+
+
+# The one sentence every saver on this page appends about the daemon, so two
+# buttons cannot describe the same outcome differently. A deliberate skip is
+# neither a restart nor a failure, so it adds no clause at all.
+_RESTART_CLAUSE = {
+    RestartOutcome.RAN: " Voice daemon restarting.",
+    RestartOutcome.SKIPPED: "",
+    RestartOutcome.REFUSED: (
+        " The voice daemon did not restart, so it is still running the old "
+        "settings — save again, or check System."
+    ),
+}
 
 
 def _seed_config_from_state(state: dict[str, str]) -> SimpleNamespace:
@@ -505,7 +519,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         if err is not None or new is None:
             send_see_other(handler, "./", flash=err or "Could not save.")
             return
-        restarted = restart_voice_daemon()
+        outcome = restart_voice_daemon()
         active = new.get("JASPER_VOICE_PROVIDER", "")
         # The active provider (gemini/openai/grok) is the headline config
         # change — not a secret. The API keys in `new` are never logged.
@@ -515,16 +529,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             provider=active,
             client=handler.address_string(),
         )
-        if restarted:
-            flash = (
-                f"Saved. Voice daemon restarting on {_provider_label(active)}."
-            )
-        else:
-            flash = (
-                f"Saved {_provider_label(active)}, but the voice daemon could "
-                "not restart. Try again or check System status."
-            )
-        send_see_other(handler, "./", flash=flash)
+        send_see_other(
+            handler, "./",
+            flash=f"Saved {_provider_label(active)}.{_RESTART_CLAUSE[outcome]}",
+        )
 
     @form_guarded
     def _post_save_test(
@@ -575,7 +583,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     result="skipped",
                     level=logging.WARNING,
                 )
-        restart_voice_daemon()
+        clause = _RESTART_CLAUSE[restart_voice_daemon()]
         # Same save audit as _post_save — the "Save & Test" button is the
         # other save path, so "voice provider saved" is logged either way.
         log_event(
@@ -590,7 +598,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "./",
                 flash=(
                     f"Saved, but {label} voice test failed: "
-                    f"{seed_error} Voice daemon restarting."
+                    f"{seed_error}{clause}"
                 ),
             )
             return
@@ -600,8 +608,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             "./",
             flash=(
                 f"Saved and tested {label}. "
-                f"Measured voice at {profile.source_lufs:.1f} LUFS; "
-                "voice daemon restarting."
+                f"Measured voice at {profile.source_lufs:.1f} LUFS."
+                f"{clause}"
             ),
         )
 
@@ -623,7 +631,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write voice provider env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
-        restart_voice_daemon()
+        clause = _RESTART_CLAUSE[restart_voice_daemon()]
         pid = (form.get("provider") or "").strip()
         log_event(
             logger,
@@ -635,7 +643,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             (p.label for p in PROVIDERS if p.id == pid),
             pid,
         )
-        send_see_other(handler, "./", flash=f"Cleared {label} credentials.")
+        send_see_other(
+            handler, "./", flash=f"Cleared {label} credentials.{clause}",
+        )
 
     @form_guarded
     def _post_refresh_models(
@@ -715,12 +725,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write spend-cap env settings")
             send_see_other(handler, "./", flash=f"Could not save spend cap: {e}")
             return
-        restart_voice_daemon()
+        clause = _RESTART_CLAUSE[restart_voice_daemon()]
         log_event(logger, "voice.spend_cap", client=handler.address_string())
         send_see_other(
             handler,
             "./",
-            flash="Saved spend cap. Voice daemon restarting.",
+            flash=f"Saved spend cap.{clause}",
         )
 
     @form_guarded
@@ -762,13 +772,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             provider=provider.id,
             models=len(new_models),
         )
-        restart_voice_daemon()
+        clause = _RESTART_CLAUSE[restart_voice_daemon()]
         send_see_other(
             handler, "./",
-            flash=(
-                f"Saved {provider.label} pricing. "
-                "Voice daemon restarting."
-            ),
+            flash=f"Saved {provider.label} pricing.{clause}",
         )
 
     @form_guarded
@@ -809,13 +816,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             imported=len(models),
             total=len(merged),
         )
-        restart_voice_daemon()
+        clause = _RESTART_CLAUSE[restart_voice_daemon()]
         send_see_other(
             handler, "./",
-            flash=(
-                f"Imported rates for {len(models)} model(s). "
-                "Voice daemon restarting."
-            ),
+            flash=f"Imported rates for {len(models)} model(s).{clause}",
         )
 
     _GET_ROUTES = {"/": _get_index}

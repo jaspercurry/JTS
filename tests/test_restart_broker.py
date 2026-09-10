@@ -572,6 +572,11 @@ def test_power_verbs_run_unit_less_and_detached(broker, monkeypatch, verb):
     assert resp["units"] == []
 
 
+_WALL_WARNING = (
+    "Failed to set wall message, ignoring: Interactive authentication required"
+)
+
+
 @pytest.mark.parametrize("script,expected_events", [
     # A polkit/logind denial: nonzero exit, the reason only on stderr.
     (
@@ -580,14 +585,22 @@ def test_power_verbs_run_unit_less_and_detached(broker, monkeypatch, verb):
         1,
     ),
     ("raise SystemExit(0)", 0),
+    # A HEALTHY `systemctl reboot` under jasper-control's polkit grant: the
+    # grant has no login1.set-wall-message, so systemctl warns on stderr and
+    # still exits 0. Journaling that as a denial would cry wolf on every
+    # successful reboot the household asks for.
+    (
+        f"import sys; sys.stderr.write({_WALL_WARNING!r} + '\\n'); sys.exit(0)",
+        0,
+    ),
 ])
-def test_a_detached_spawn_reports_its_failure_to_the_journal(
+def test_the_reaper_journals_only_a_nonzero_detached_spawn(
     monkeypatch, caplog, script, expected_events,
 ):
     """A detached spawn's rc can never reach the client — reboot/poweroff and
     the control self-restart answer `queued_unconfirmed` by contract. So the
-    journal is the only place a polkit/logind denial can land: the reaper
-    reports a nonzero child, and stays quiet on a clean one.
+    journal is the only place a polkit/logind denial can land, and the exit
+    status is the only thing that decides: stderr on a rc=0 child is noise.
     """
     monkeypatch.setattr(
         restart_broker, "threading", SimpleNamespace(Thread=_InlineThread),
@@ -603,8 +616,35 @@ def test_a_detached_spawn_reports_its_failure_to_the_journal(
     ]
     assert len(denials) == expected_events
     if expected_events:
-        # systemctl's own denial text, i.e. stderr is captured, not DEVNULL'd.
+        # The child's own stderr rode along, i.e. it was piped, not DEVNULL'd.
+        assert "rc=1" in denials[0].getMessage()
         assert "Interactive authentication required" in denials[0].getMessage()
+
+
+def test_a_detached_spawn_does_not_wait_for_its_child(monkeypatch):
+    """The whole point of the detached path is that the broker answers before
+    the transition lands. Reaping stderr must stay off-thread, or a systemctl
+    that hangs holds the reply the broker was spawned detached to protect."""
+    release = threading.Event()
+    reaped = threading.Event()
+
+    class _SlowPopen:
+        returncode = 0
+
+        def communicate(self) -> tuple[str, str]:
+            release.wait(10)
+            reaped.set()
+            return "", ""
+
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: _SlowPopen())
+
+    restart_broker._spawn_detached(
+        ["systemctl", "reboot"], verb="reboot", units_label="-",
+    )
+
+    assert not reaped.is_set()  # returned while the child is still running
+    release.set()
+    assert reaped.wait(10)      # and the reaper did run, just not inline
 
 
 def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
@@ -1615,7 +1655,7 @@ def test_default_socket_path_is_resolved_at_call_time(call, tmp_path, monkeypatc
     ("restart", "ssh"),          # allowlisted verb, unit outside MANAGED_UNITS
 ])
 def test_root_fallback_refuses_what_the_broker_would_refuse(
-    tmp_path, monkeypatch, verb, unit,
+    tmp_path, monkeypatch, caplog, verb, unit,
 ):
     """The broker's request validation must hold on the fallback path too.
 
@@ -1635,10 +1675,17 @@ def test_root_fallback_refuses_what_the_broker_would_refuse(
     ran = _record_popen(monkeypatch)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(list(argv)))
 
-    resp = restart_broker.manage_units(unit, verb=verb, timeout=0.5)
+    with caplog.at_level(logging.WARNING, logger=restart_broker.logger.name):
+        resp = restart_broker.manage_units(unit, verb=verb, timeout=0.5)
 
     assert resp["ok"] is False
     assert ran == []  # never reached systemctl
+    # …and says so in the journal, exactly as the broker path does — a refusal
+    # nobody can see is how the fallback drifted out of the allowlist before.
+    assert [
+        r for r in caplog.records
+        if getattr(r, "jasper_event", "") == "restart_broker.denied"
+    ]
 
 
 def test_manage_units_empty_units_is_noop():

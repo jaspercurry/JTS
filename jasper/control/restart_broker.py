@@ -335,17 +335,24 @@ def _journal_detached_result(
     """Journal a detached spawn's verdict once it lands. The reply already went
     out as ``queued_unconfirmed``, so this is the only record a denial (polkit,
     logind) ever gets; a spawn that succeeds takes the box or the broker down
-    before it reports, so in practice only failures reach the log."""
+    before it reports, so in practice only failures reach the log.
+
+    Only the exit status decides. A *successful* ``systemctl reboot`` under
+    jasper-control's polkit grant still prints "Failed to set wall message,
+    ignoring: Interactive authentication required." on stderr and exits 0 —
+    the grant covers login1.reboot, not login1.set-wall-message — so gating
+    on stderr would journal a WARNING on every healthy reboot.
+    """
     try:
         _, err = proc.communicate()
     except (OSError, ValueError, subprocess.SubprocessError):
         return
-    detail = (err or "").strip()
-    if proc.returncode == 0 and not detail:
+    if proc.returncode == 0:
         return
     log_event(
         logger, "restart_broker.deferred_failed", verb=verb,
-        units=units_label, rc=proc.returncode, detail=detail[:200],
+        units=units_label, rc=proc.returncode,
+        detail=(err or "").strip()[:200],
         level=logging.WARNING,
     )
 
@@ -363,11 +370,17 @@ def _spawn_detached(argv: list[str], *, verb: str, units_label: str) -> None:
         start_new_session=True,
         close_fds=True,
     )
-    threading.Thread(
-        target=_journal_detached_result,
-        args=(proc, verb, units_label),
-        daemon=True,
-    ).start()
+    try:
+        threading.Thread(
+            target=_journal_detached_result,
+            args=(proc, verb, units_label),
+            daemon=True,
+        ).start()
+    except RuntimeError:
+        # Out of threads: the spawn already happened and must not be retried,
+        # so drop the pipe and lose only the journal line.
+        if proc.stderr is not None:
+            proc.stderr.close()
 
 
 def _run_systemctl_request(
@@ -763,12 +776,24 @@ def _direct_systemctl(
     """Run the action directly (root fallback). Mirrors the broker's result
     shape so callers can't tell which path executed."""
     if verb not in ALLOWED_VERBS:
+        log_event(
+            logger, "restart_broker.denied", reason="verb",
+            verb=repr(verb), level=logging.WARNING,
+        )
         return {"ok": False, "error": f"unknown verb {verb!r}"}
     if verb in POWER_VERBS and units:
+        log_event(
+            logger, "restart_broker.denied", reason="unit",
+            verb=verb, units=",".join(units), level=logging.WARNING,
+        )
         return {"ok": False, "error": f"{verb} takes no units"}
     units = [_normalize_unit(u) for u in units]
     bad = [u for u in units if not _unit_allowed_for_verb(u, verb)]
     if bad:
+        log_event(
+            logger, "restart_broker.denied", reason="unit",
+            verb=verb, units=",".join(bad), level=logging.WARNING,
+        )
         return {"ok": False, "error": f"unit(s) not in allowlist: {','.join(bad)}"}
     argv = _build_argv(verb, units, no_block=no_block)
     try:

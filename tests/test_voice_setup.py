@@ -39,6 +39,7 @@ from jasper import env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
 from jasper.web import _common, voice_page, voice_setup
+from jasper.web._common import RestartOutcome
 
 
 # ---------- Save logic -----------------------------------------------------
@@ -759,12 +760,12 @@ def test_e2e_save_writes_file_and_redirects(
     # Prevent the test from actually shelling out to systemctl.
     called = []
     monkeypatch.setattr(
-        _common, "restart_voice_daemon", lambda: called.append(True) or True,
+        _common, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     # The voice_setup module imported the symbol directly; patch it
     # there too.
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or True,
+        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
 
     server, base, _ = _start_server(tmp_path)
@@ -791,22 +792,42 @@ def test_e2e_save_writes_file_and_redirects(
         server.server_close()
 
 
-def test_e2e_save_says_so_when_the_restart_was_refused(
-    tmp_path: Path, monkeypatch,
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+@pytest.mark.parametrize("saver", ["save", "spend-cap"])
+def test_e2e_a_saver_describes_the_restart_it_actually_got(
+    tmp_path: Path, monkeypatch, saver, outcome,
 ):
-    """A refused privileged restart (broker down, polkit denial) must reach the
-    household. The config IS saved, so the answer stays a 303 — what changes is
-    that the flash stops claiming the daemon is restarting."""
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: False)
+    """The privileged restart's real verdict has to reach the household, and
+    every saver on the page has to describe the same verdict the same way —
+    otherwise /voice tells two stories about one daemon. The config IS saved
+    either way, so the answer stays a 303."""
+    monkeypatch.setattr(
+        voice_setup, "restart_voice_daemon", lambda: outcome,
+    )
+    state_path = tmp_path / "voice_provider.env"
+    env_file.write_env_file(str(state_path), {
+        "JASPER_VOICE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-keep",
+    })
+    bodies = {
+        "save": lambda: _form_for(active="openai", openai_key="sk-fresh"),
+        "spend-cap": lambda: {
+            "daily_spend_cap_usd": "5",
+            "daily_spend_cap_safety_multiplier": "1.1",
+        },
+    }
 
     server, base, _ = _start_server(tmp_path)
     try:
-        form = _form_for(active="openai", openai_key="sk-fresh")
-        status, location, _ = _post(f"{base}/save", form)
+        status, location, _ = _post(f"{base}/{saver}", bodies[saver]())
         assert status == 303
         flash = urllib.parse.unquote(location)
-        assert "could not restart" in flash
-        assert (tmp_path / "voice_provider.env").exists()
+        assert "Saved" in flash
+        for candidate, clause in voice_setup._RESTART_CLAUSE.items():
+            if not clause:
+                continue
+            assert (clause.strip() in flash) is (candidate is outcome)
+        assert state_path.exists()
     finally:
         server.shutdown()
         server.server_close()
@@ -817,7 +838,7 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
 ):
     called = []
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or True,
+        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     state_path = tmp_path / "voice_provider.env"
     env_file.write_env_file(str(state_path), {
@@ -851,7 +872,7 @@ def test_e2e_refresh_models_writes_cache_without_restarting_voice(
 ):
     called = []
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or True,
+        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     state_path = tmp_path / "voice_provider.env"
     env_file.write_env_file(str(state_path), {
@@ -903,7 +924,7 @@ def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: events.append(("restart",)) or True,
+        lambda: events.append(("restart",)) or RestartOutcome.RAN,
     )
 
     def seed_fn(cfg, *, path, force, max_attempts, retry_backoff_sec):
@@ -976,7 +997,7 @@ def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: restarted.append(True) or True,
+        lambda: restarted.append(True) or RestartOutcome.RAN,
     )
 
     def seed_fn(cfg, **_kwargs):
@@ -1009,7 +1030,7 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: restarted.append(True) or True,
+        lambda: restarted.append(True) or RestartOutcome.RAN,
     )
 
     server, base, _ = _start_server(tmp_path, loudness_seed_fn=lambda *a, **k: None)
@@ -1034,7 +1055,9 @@ def test_e2e_save_rejects_active_without_key(tmp_path: Path, monkeypatch):
     The radio is disabled in the UI, but a hand-crafted POST should
     still be rejected."""
     monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: True)
+    monkeypatch.setattr(
+        voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
+    )
     server, base, _ = _start_server(tmp_path)
     try:
         form = _form_for(active="grok")
@@ -1078,7 +1101,9 @@ def test_e2e_get_index_renders_state(tmp_path: Path, monkeypatch):
 def test_e2e_clear_credentials_removes_provider_keys(
     tmp_path: Path, monkeypatch,
 ):
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: True)
+    monkeypatch.setattr(
+        voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
+    )
     state_path = tmp_path / "voice_provider.env"
     env_file.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "gemini",

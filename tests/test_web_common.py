@@ -499,19 +499,25 @@ def test_restart_systemd_units_routes_through_broker_no_block(monkeypatch):
     assert kwargs["no_block"] is True
 
 
-@pytest.mark.parametrize("broker_ok", [True, False])
-def test_restart_systemd_units_reports_a_refused_restart(monkeypatch, broker_ok):
+@pytest.mark.parametrize("broker_ok,expected", [
+    (True, _common.RestartOutcome.RAN),
+    (False, _common.RestartOutcome.REFUSED),
+])
+def test_restart_systemd_units_reports_a_refused_restart(
+    monkeypatch, broker_ok, expected,
+):
     """A refusal — broker down, unit not allowlisted, polkit denial — has to
     reach the saver, or ~30 wizard saves answer "Saved, restarting" for a
-    restart that never happened."""
+    restart that never happened. REFUSED must also stay distinct from the
+    deliberate skips below, which are not failures."""
     monkeypatch.setattr(
         _common, "manage_units", lambda *units, **kwargs: {"ok": broker_ok},
     )
     monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
     monkeypatch.setattr(_common, "bonded_follower_active", lambda: False)
 
-    assert _common.restart_systemd_units("jasper-voice") is broker_ok
-    assert _common.restart_voice_daemon() is broker_ok
+    assert _common.restart_systemd_units("jasper-voice") is expected
+    assert _common.restart_voice_daemon() is expected
 
 
 def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
@@ -523,9 +529,9 @@ def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
         lambda *units, **kwargs: calls.append((units, kwargs)) or {"ok": True},
     )
 
-    # A deliberate skip is not a failure: the saved config is correct and
-    # applies on unbond, so the saver must not be told the restart failed.
-    assert _common.restart_voice_daemon() is True
+    # A deliberate skip is neither a failure nor a restart: the saver must
+    # not claim the daemon is restarting, and must not report a failure.
+    assert _common.restart_voice_daemon() is _common.RestartOutcome.SKIPPED
 
     assert calls == []
 
@@ -758,7 +764,7 @@ def test_restart_voice_daemon_skips_while_parked(monkeypatch):
     monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
     calls = []
     monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
-    assert common.restart_voice_daemon() is True
+    assert common.restart_voice_daemon() is common.RestartOutcome.SKIPPED
     assert calls == []
 
 
