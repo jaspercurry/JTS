@@ -124,7 +124,7 @@ while [ "$attempt" -lt 3 ]; do
     passes=0
     failures=0
     while [ "$passes" -lt 25 ]; do
-        pct="$(cat "$state" 2>/dev/null)" || break
+        read -r pct 2>/dev/null < "$state" || break
         initial=""
         # A session start is not a drag. macOS animates the sender's slider up
         # from the bottom of its scale to the real level — measured on jts3 as
@@ -133,10 +133,9 @@ while [ "$attempt" -lt 3 ]; do
         # merely waiting the animation out leaves the speaker muted for two
         # seconds after content is already flowing (a session teardown's -144
         # left it at 0 %). So restore audio first, at the level the owner last
-        # listened at, and only then hold the animation: wait for two
-        # unchanged passes (400 ms, two message intervals) and adopt the level
-        # it settles on. Normally the two are the same value and the settled
-        # post is skipped as already delivered.
+        # listened at, and only then hold the animation, adopting the level it
+        # settles on. Normally the two are the same value and the settled post
+        # is skipped as already delivered.
         # `rm` succeeds only for the process that actually removes the marker,
         # so consuming it IS the claim on this session start. Both of a
         # session's posts carry `observation_initial`, which makes the
@@ -149,11 +148,21 @@ while [ "$attempt" -lt 3 ]; do
             if [ -n "$restore" ] && [ "$restore" != "$last" ]; then
                 post "$restore" "$initial"
             fi
+            # Settled means 20 x 50 ms = 1 s of unchanged reads, nearly 4x
+            # the 220-270 ms the animation's own messages arrive at: a stall
+            # has to swallow three whole message intervals before this reads
+            # as the end of the ramp. The 200 ms poll it replaces needed two
+            # unchanged reads, aliased with that same spacing, sampled one
+            # not-yet-updated rung twice and posted mid-ramp (#4334). Four
+            # ticks spend one of the 200 ms passes counted above, so the
+            # 25-pass ceiling still bounds this loop.
             settled=0
-            while [ "$settled" -lt 2 ] && [ "$passes" -lt 25 ]; do
-                sleep 0.2
-                passes=$((passes + 1))
-                probe="$(cat "$state" 2>/dev/null)" || break
+            ticks=0
+            while [ "$settled" -lt 20 ] && [ "$passes" -lt 25 ]; do
+                sleep 0.05
+                ticks=$((ticks + 1))
+                [ "$((ticks % 4))" -eq 0 ] && passes=$((passes + 1))
+                read -r probe 2>/dev/null < "$state" || break
                 if [ "$probe" = "$pct" ]; then
                     settled=$((settled + 1))
                 else
