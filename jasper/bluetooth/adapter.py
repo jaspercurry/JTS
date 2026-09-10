@@ -10,9 +10,10 @@ this module is the mechanism.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from dbus_next import BusType, Message, MessageType, Variant  # type: ignore
@@ -36,6 +37,41 @@ DISCOVERABLE_AUTO_OFF_SEC = 300
 # dbus-next reports an unreachable bus, a refused connection or an unexpected
 # reply shape as any of these; a read-only BlueZ probe treats them all alike.
 BLUEZ_ERRORS = (AttributeError, DBusError, EOFError, OSError, TypeError, ValueError)
+
+# A wedged bluetoothd can accept the socket without ever answering Hello,
+# hanging `connect()` forever. Shared by callers that keep the bus open past
+# this call (engine.py, scan.py) and so can't use `_system_bus`'s
+# connect-use-drop shape below.
+BUS_CONNECT_TIMEOUT_SEC = 5.0
+
+
+async def connect_bounded(bus: MessageBus, timeout: float, *, site: str) -> None:
+    """Connect `bus` under a bound, dropping it unless it comes up.
+
+    dbus-next opens the socket in `MessageBus.__init__` and registers the loop
+    reader before it awaits Hello, so a `connect()` abandoned by the bound (or
+    by a cancel) leaks both the fd and a live reader unless `disconnect()`
+    still runs — the same invariant `_system_bus` states below. Cleanup lives
+    here so no caller can get it wrong: on return the bus is either connected
+    or dropped. `site` names the caller in the timeout line.
+    """
+    connected = False
+    try:
+        async with asyncio.timeout(timeout):
+            await bus.connect()
+        connected = True
+    except TimeoutError:
+        log_event(
+            logger, "bluetooth.connect_timeout",
+            level=logging.WARNING, site=site, timeout_sec=timeout,
+        )
+        raise
+    finally:
+        if not connected:
+            # A bus that never finished connecting can refuse the teardown;
+            # the connect failure is the news, not the socket already going.
+            with suppress(*BLUEZ_ERRORS):
+                bus.disconnect()
 
 
 @asynccontextmanager

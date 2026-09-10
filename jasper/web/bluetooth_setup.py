@@ -343,8 +343,23 @@ class _AsyncDispatcher:
         self._ready.wait(timeout=10)
         if self._loop is None:
             raise RuntimeError("dispatcher loop failed to start")
-        # Engine bootstrap on the loop.
-        self.run(self._engine.start())
+        # Engine bootstrap on the loop. BlueZ can outlast the bounded connect
+        # while it comes up (minutes, on a low-memory Pi Zero 2 W); raising
+        # here crash-loops the unit into its systemd start limit and /bluetooth/
+        # then 502s until a `reset-failed`. Serve degraded instead: /state runs
+        # on its own short-lived bus, and start() armed the lazy bus recovery
+        # every bus-using request runs first. Only the observer's live device
+        # list waits for the next daemon start (idle-exit bounds that to 10 min).
+        try:
+            self.run(self._engine.start())
+        except (DBusError, OSError, RuntimeError) as exc:
+            log_event(
+                logger,
+                "bluetooth.engine_start_deferred",
+                level=logging.WARNING,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def _run(self) -> None:
         loop = asyncio.new_event_loop()

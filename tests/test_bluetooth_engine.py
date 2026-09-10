@@ -27,6 +27,19 @@ from jasper.bluetooth.models import (
 from ._async_wait import wait_signalled
 
 
+class _HangingBus:
+    """A bus whose connect never answers, journalling its own teardown."""
+
+    def __init__(self) -> None:
+        self.journal: list[str] = []
+
+    async def connect(self):
+        await asyncio.Event().wait()
+
+    def disconnect(self) -> None:
+        self.journal.append("bus_disconnect")
+
+
 def _wiim_device() -> BluetoothDevice:
     return BluetoothDevice.from_props(
         "/org/bluez/hci0/dev_CA_AC_04_04_09_D7",
@@ -563,6 +576,21 @@ async def test_scan_natural_expiry_stops_bluez_and_clears_task_identity():
     assert engine._scan_task is None
 
 
+async def test_engine_start_bounds_a_hung_connect_and_arms_recovery(monkeypatch):
+    bus = _HangingBus()
+    monkeypatch.setattr(engine_module, "MessageBus", lambda *, bus_type: bus)
+    monkeypatch.setattr(engine_module, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    engine = BluetoothEngine()
+    with pytest.raises(TimeoutError):
+        await engine.start()
+
+    assert engine._bus is None
+    assert bus.journal == ["bus_disconnect"]
+    # A bootstrap that lost the race to BlueZ must leave the lazy path armed.
+    assert engine._bus_recovery_required is True
+
+
 async def test_scan_start_before_engine_start_creates_no_timer():
     engine = BluetoothEngine()
 
@@ -827,15 +855,18 @@ async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch)
             self.connect_calls += 1
             self.entered.set()
             await self.release.wait()
-            return replacement_bus
 
     engine, _first_bus, _reasons = _shared_bus_engine(_FakeAdapter())
     engine._release_scan_owner_bus(engine._bus, reason="test")
     connector = _BlockingConnector()
+    # Recovery keeps the bus it constructed (dbus-next's connect() returns that
+    # same object), so the gate rides the replacement bus rather than standing
+    # in for it.
+    replacement_bus.connect = connector.connect
     monkeypatch.setattr(
         engine_module,
         "MessageBus",
-        lambda *, bus_type: connector,
+        lambda *, bus_type: replacement_bus,
     )
 
     async def collect_pair_events() -> list[dict]:
@@ -1039,19 +1070,12 @@ async def test_device_operations_surface_shared_bus_recovery_failure(
 
 
 async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
-    class _BlockingConnector:
-        async def connect(self):
-            await asyncio.Event().wait()
-
+    bus = _HangingBus()
     adapter = _FakeAdapter()
     engine = _scan_engine(adapter)
     engine._release_scan_owner_bus(engine._bus, reason="test")
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
-    monkeypatch.setattr(
-        engine_module,
-        "MessageBus",
-        lambda *, bus_type: _BlockingConnector(),
-    )
+    monkeypatch.setattr(engine_module, "MessageBus", lambda *, bus_type: bus)
 
     with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
@@ -1059,6 +1083,8 @@ async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
     assert engine._bus is None
     assert engine._bus_recovery_required is True
     assert engine._scan_task is None
+    # The abandoned connect leaves no fd and no loop reader behind.
+    assert bus.journal == ["bus_disconnect"]
 
 
 async def test_engine_stop_cancels_scan_and_disconnects_owner_bus():

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+import pytest
 
 from jasper.bluetooth import scan
 from jasper.bluetooth.models import (
@@ -236,6 +237,29 @@ def test_battery_percent_from_read_value_rejects_invalid_values() -> None:
     assert _battery_percent_from_read_value([]) is None
     assert _battery_percent_from_read_value([101]) is None
     assert _battery_percent_from_read_value(["not-a-byte"]) is None
+
+
+async def test_device_observer_start_bounds_a_hung_connect(monkeypatch) -> None:
+    class _HangingBus:
+        def __init__(self) -> None:
+            self.journal: list[str] = []
+
+        async def connect(self):
+            await asyncio.Event().wait()
+
+        def disconnect(self) -> None:
+            self.journal.append("bus_disconnect")
+
+    bus = _HangingBus()
+    monkeypatch.setattr(scan, "MessageBus", lambda **_kwargs: bus)
+    monkeypatch.setattr(scan, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    observer = DeviceObserver()
+    with pytest.raises(TimeoutError):
+        await observer.start()
+
+    assert observer._bus is None
+    assert bus.journal == ["bus_disconnect"]
 
 
 async def test_device_observer_tracks_interfaces_without_ghost_resurrection(

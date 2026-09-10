@@ -34,9 +34,11 @@ from unittest import mock
 
 import pytest
 
+from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
+from tests._log_events import event_fields
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -1055,6 +1057,54 @@ def test_dispatcher_submission_failure_closes_unowned_coroutine(monkeypatch):
         dispatcher.run(coro)
 
     assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+
+
+def test_slow_bluez_boot_defers_the_engine_instead_of_failing_the_daemon(
+    monkeypatch, caplog,
+):
+    """A bounded connect must not turn a slow BlueZ boot into a permanent 502.
+
+    jasper-bluetooth-web is Restart=on-failure with a start limit: raising out
+    of the bootstrap crash-loops the unit into start-limit-hit, which fails the
+    socket unit and serves 502 until a `reset-failed`. The daemon serves
+    degraded instead, and the next request that needs the bus reconnects.
+    """
+
+    class _HungBus:
+        async def connect(self):
+            await asyncio.Event().wait()
+
+        def disconnect(self) -> None:
+            pass
+
+    class _LiveBus:
+        async def connect(self):
+            return self
+
+    buses = [_HungBus(), _LiveBus()]
+    monkeypatch.setattr(engine_module, "MessageBus", lambda *, bus_type: buses.pop(0))
+    monkeypatch.setattr(engine_module, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    dispatcher = bluetooth_setup._AsyncDispatcher()
+    try:
+        with caplog.at_level(logging.WARNING, logger=bluetooth_setup.__name__):
+            dispatcher.start()
+
+        engine = dispatcher.engine
+        assert engine._bus is None
+        assert event_fields(
+            caplog, "bluetooth.engine_start_deferred",
+        )["error_type"] == "TimeoutError"
+
+        dispatcher.run(engine._recover_bus_if_required())
+
+        assert isinstance(engine._bus, _LiveBus)
+        assert engine._bus_recovery_required is False
+    finally:
+        loop = dispatcher._loop
+        assert loop is not None
+        loop.call_soon_threadsafe(loop.stop)
+        dispatcher._thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 def test_pair_stream_allows_one_consumer_and_close_cleans_driver(monkeypatch):

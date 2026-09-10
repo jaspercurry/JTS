@@ -18,6 +18,7 @@ from jasper import source_events
 from jasper.source_events import classify_source_signal, inotify_changed_names
 
 from ._async_wait import wait_signalled
+from ._log_events import event_fields
 
 
 def test_airplay_signal_is_only_a_wake_hint_for_relevant_properties():
@@ -185,6 +186,89 @@ async def test_dbus_adapter_reconnects_and_delivers_signal(monkeypatch):
 
     assert attempts == 2
     assert notifications == [(Source.AIRPLAY, "dbus")]
+
+
+async def test_dbus_adapter_bounds_a_hung_connect_and_retries(monkeypatch, caplog):
+    attempts = 0
+    recovered = asyncio.Event()
+    notifications = []
+
+    class FakeMessage:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeMessageBus:
+        def __init__(self, *, bus_type):
+            assert bus_type == "system"
+            self.handler = None
+
+        async def connect(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.Future()  # never resolves; bound by the timeout
+            return self
+
+        async def call(self, message):
+            return SimpleNamespace(message_type="reply", error_name=None)
+
+        def add_message_handler(self, handler):
+            self.handler = handler
+
+        async def wait_for_disconnect(self):
+            assert self.handler is not None
+            self.handler(SimpleNamespace(
+                message_type="signal",
+                interface="org.freedesktop.DBus.Properties",
+                member="PropertiesChanged",
+                path="/org/mpris/MediaPlayer2",
+                body=[
+                    "org.mpris.MediaPlayer2.Player",
+                    {"PlaybackStatus": "Playing"},
+                    [],
+                ],
+            ))
+            recovered.set()
+            await asyncio.Future()
+
+        def disconnect(self):
+            pass
+
+    dbus_next = ModuleType("dbus_next")
+    dbus_next.__path__ = []
+    dbus_next.BusType = SimpleNamespace(SYSTEM="system")
+    dbus_next.Message = FakeMessage
+    dbus_next.MessageType = SimpleNamespace(ERROR="error", SIGNAL="signal")
+    dbus_aio = ModuleType("dbus_next.aio")
+    dbus_aio.MessageBus = FakeMessageBus
+    dbus_errors = ModuleType("dbus_next.errors")
+    dbus_errors.AuthError = type("AuthError", (Exception,), {})
+    dbus_errors.DBusError = type("DBusError", (Exception,), {})
+    monkeypatch.setitem(sys.modules, "dbus_next", dbus_next)
+    monkeypatch.setitem(sys.modules, "dbus_next.aio", dbus_aio)
+    monkeypatch.setitem(sys.modules, "dbus_next.errors", dbus_errors)
+    monkeypatch.setattr(source_events, "_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(source_events, "_BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    task = asyncio.create_task(source_events.watch_dbus_sources(
+        lambda source, via: notifications.append((source, via)),
+    ))
+    try:
+        with caplog.at_level(logging.WARNING, logger=source_events.__name__):
+            await wait_signalled(
+                recovered, "recovery after a bounded hang", producer=task,
+            )
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert attempts == 2
+    assert notifications == [(Source.AIRPLAY, "dbus")]
+    # A bare TimeoutError() str()s to "": the one WARN an operator gets must
+    # still say what went wrong.
+    assert event_fields(
+        caplog, "source_event.adapter_unavailable",
+    )["detail"].startswith("TimeoutError")
 
 
 async def test_unexpected_adapter_exit_is_observable(monkeypatch, caplog):

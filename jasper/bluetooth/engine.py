@@ -32,7 +32,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
-from .adapter import BLUEZ_ERRORS
+from .adapter import BLUEZ_ERRORS, BUS_CONNECT_TIMEOUT_SEC, connect_bounded
 from .handlers import pick
 from .models import (
     BluetoothActionResult,
@@ -186,7 +186,18 @@ class BluetoothEngine:
 
     async def start(self) -> None:
         self._closing = False
-        self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        bus = MessageBus(bus_type=BusType.SYSTEM)
+        try:
+            await connect_bounded(
+                bus, BUS_CONNECT_TIMEOUT_SEC, site="engine_start",
+            )
+        except BLUEZ_ERRORS:
+            # BlueZ can still be coming up (minutes, on a low-memory Pi Zero
+            # 2 W). A bootstrap that loses the race must not cost the daemon
+            # its bus for good: arm the lazy recovery the request paths run.
+            self._bus_recovery_required = True
+            raise
+        self._bus = bus
         self._bus_recovery_required = False
         await self._observer.start()
 
@@ -348,10 +359,10 @@ class BluetoothEngine:
         async with self._bus_recovery_lock:
             if self._bus is not None or not self._bus_recovery_required:
                 return
+            bus = MessageBus(bus_type=BusType.SYSTEM)
             try:
-                bus = await asyncio.wait_for(
-                    MessageBus(bus_type=BusType.SYSTEM).connect(),
-                    timeout=SCAN_DBUS_TIMEOUT_SEC,
+                await connect_bounded(
+                    bus, SCAN_DBUS_TIMEOUT_SEC, site="bus_recovery",
                 )
             except asyncio.TimeoutError as error:
                 timeout_failure = asyncio.TimeoutError(

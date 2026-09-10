@@ -26,6 +26,7 @@ from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
+from .adapter import BUS_CONNECT_TIMEOUT_SEC, connect_bounded
 from .models import BluetoothDevice, UUID_BATTERY_LEVEL
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,8 @@ class DeviceObserver:
         snapshot the current devices into memory."""
         if self._bus is not None:
             return
-        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        bus = MessageBus(bus_type=BusType.SYSTEM)
+        await connect_bounded(bus, BUS_CONNECT_TIMEOUT_SEC, site="observer_start")
         self._bus = bus
         intro = await bus.introspect(BLUEZ_BUS, "/")
         self._om = bus.get_proxy_object(

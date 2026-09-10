@@ -858,6 +858,22 @@ async def test_subscription_setup_failure_releases_acquired_resources(
     assert sink.closed == (stage not in {"connect", "sink"})
 
 
+async def test_run_subscription_bounds_a_hung_connect_and_disconnects(monkeypatch):
+    bus, sink = _subscription_harness(monkeypatch)
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr(bus, "connect", hang)
+    monkeypatch.setattr(wiim_remote_mic, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
+
+    with pytest.raises(TimeoutError):
+        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig())
+
+    assert bus.journal == ["bus_disconnect"]
+    assert sink.closed is False
+
+
 async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     monkeypatch,
 ):
