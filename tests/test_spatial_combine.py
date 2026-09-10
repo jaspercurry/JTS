@@ -3566,3 +3566,61 @@ def test_the_raw_curves_could_not_have_answered_this(monkeypatch):
     )
     rows = position_residuals(combined)
     assert rows[1].rms_db == max(row.rms_db for row in rows)
+
+
+def test_assess_geometry_has_exactly_one_production_caller():
+    """#2092: the geometry estimator reads only tau, never mic spread, so its
+    lock verdict is a FINDING about the source, not evidence a household
+    huddled the mic — which is exactly why it must never also reach a pose
+    admission decision by a second path. That non-blocking status rested on
+    call-site enumeration (one caller, inside :func:`combine_positions`), but
+    the enumeration itself was never pinned, so a second caller — e.g. a
+    pose-admission gate reading the lock to decide whether to accept a
+    position — could arrive silently. Walks every module under ``jasper/``
+    for a call to ``assess_geometry`` and names the function each one is
+    inside, structural rather than a line-number pin so it survives
+    unrelated edits to the file.
+    """
+    import ast
+    from pathlib import Path
+
+    jasper_root = Path(spatial_combine.__file__).resolve().parents[1]
+
+    def _enclosing_calls(path: Path) -> list[tuple[str, str | None]]:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        funcs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        hits: list[tuple[str, str | None]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id if isinstance(func, ast.Name)
+                else getattr(func, "attr", None)
+            )
+            if name != "assess_geometry":
+                continue
+            enclosing = min(
+                (
+                    f for f in funcs
+                    if f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ),
+                key=lambda f: (f.end_lineno or f.lineno) - f.lineno,
+                default=None,
+            )
+            hits.append((
+                str(path.relative_to(jasper_root)),
+                enclosing.name if enclosing else None,
+            ))
+        return hits
+
+    hits = [
+        hit
+        for path in sorted(jasper_root.rglob("*.py"))
+        for hit in _enclosing_calls(path)
+    ]
+
+    assert hits == [("audio_measurement/spatial_combine.py", "combine_positions")]

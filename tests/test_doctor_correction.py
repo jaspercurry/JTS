@@ -623,6 +623,39 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     }
 
 
+def test_grade_state_member_set_is_pinned_for_its_consumers():
+    """The ``state`` family never got the walking-class guard S1 gave its
+    ``spatial``/``scope`` siblings above — it has no shared second-level
+    prefix to walk by, so a member added to it is invisible to both
+    ``_applied_grade_finding`` (which dispatches on it by name) and the
+    envelope's done screen until someone teaches each dispatch site the new
+    word by hand, exactly the gap S1 closed for ``spatial``/``scope``.
+
+    If this fails because you added a member: teach
+    ``_applied_grade_finding`` and the done-screen branches the new word (or
+    confirm the existing fallthrough is what you want), then extend the
+    pinned set below.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    state_members = {
+        value for name, value in vars(v2host).items()
+        if name.startswith("GRADE_")
+        and not name.startswith(("GRADE_SCOPE_", "GRADE_SPATIAL_"))
+        and isinstance(value, str)
+    }
+
+    assert state_members == {
+        v2host.GRADE_NOT_APPLIED,
+        v2host.GRADE_GRADED,
+        v2host.GRADE_MARK_VERIFIED,
+        v2host.GRADE_INCONCLUSIVE,
+        v2host.GRADE_FAILED,
+        v2host.GRADE_UNVERIFIED,
+        v2host.GRADE_TUNING_TRIAL_MEASURED,
+    }
+
+
 # ---------- measurement hold + unresolved session volume
 
 
