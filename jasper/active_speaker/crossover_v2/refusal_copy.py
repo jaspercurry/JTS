@@ -159,11 +159,6 @@ REASON_APPLY_FAILED = "apply_failed"
 # transport death — see the catch-all's exception classification in
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
-# The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
-# expired before an apply completed. Distinct from a transport death
-# (capture_timeout) and a deliberate phone Stop (user_stopped). Retained but
-# unreached: no shipped session holds for an apply.
-REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -808,12 +803,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
         "You stopped the measurement. Start over from this page when you're "
         "ready.",
-    ),
-    REASON_REVIEW_HOLD_TIMEOUT: ReasonSpec(
-        REASON_REVIEW_HOLD_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        "Applying the measured crossover took too long, so the measurement "
-        "timed out before it could finish. Start over from this page to "
-        "measure again — the quick microphone check runs first.",
     ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
