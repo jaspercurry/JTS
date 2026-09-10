@@ -1139,20 +1139,6 @@ impl Mixer {
             );
         }
 
-        // If the resampler is armed by env but its configured lane label matched
-        // no live input, the feature silently no-ops. Warn ONCE with the
-        // available labels so an operator can see why they observed no effect.
-        if let Some(available) = resampler_lane_not_found(
-            config.usb_direct_enabled,
-            &config.input_resampler_lane_label,
-            &config.input_renderers,
-        ) {
-            warn!(
-                "event=fanin.resampler.noop reason=lane_not_found requested={} available=[{}]",
-                config.input_resampler_lane_label, available,
-            );
-        }
-
         // Ring A — the only final-output transport (ADR-0100). Slot is pinned to
         // 128 frames by the outputd DAC-period contract; `period_frames % 128 ==
         // 0` was validated at config parse. A geometry mismatch against an
@@ -1778,27 +1764,6 @@ fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
     // avail > high_water >= target ⇒ (avail - target) > 0.
     let excess_periods = (avail - target) / period_frames; // floor
     excess_periods.min(CATCHUP_MAX_DRAIN_PERIODS)
-}
-
-/// Pure decision for the "armed but lane label not found" no-op warning.
-///
-/// Returns `Some(available_labels_csv)` when the resampler is ENABLED but its
-/// configured `lane_label` matches NONE of the live `input_labels` — the state
-/// in which the feature silently does nothing because `Mixer::new` constructs no
-/// `LaneResampler`. The CSV is the "here are the labels you could have meant"
-/// hint. Pure (no ALSA) so the warning decision is unit-testable.
-fn resampler_lane_not_found(
-    enabled: bool,
-    lane_label: &str,
-    input_labels: &[String],
-) -> Option<String> {
-    if !enabled {
-        return None;
-    }
-    if input_labels.iter().any(|l| l == lane_label) {
-        return None;
-    }
-    Some(input_labels.join(","))
 }
 
 /// Resolve the input resampler's burst-ring capacity (frames) from the scalar
@@ -2665,33 +2630,6 @@ mod tests {
         // fixed length so neither read nor narrow can slice out of bounds.
         let i32_len = (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize);
         assert_eq!(i32_len, direct_narrow_scratch_samples());
-    }
-
-    #[test]
-    fn resampler_lane_not_found_only_warns_when_armed_and_missing() {
-        let labels = vec![
-            "spotify".to_string(),
-            "airplay".to_string(),
-            "usbsink".to_string(),
-            "correction".to_string(),
-        ];
-        // Disabled → never warn, regardless of label.
-        assert_eq!(resampler_lane_not_found(false, "usbsink", &labels), None);
-        assert_eq!(resampler_lane_not_found(false, "nope", &labels), None);
-        // Enabled + label present → armed normally, no warning.
-        assert_eq!(resampler_lane_not_found(true, "usbsink", &labels), None);
-        assert_eq!(resampler_lane_not_found(true, "spotify", &labels), None);
-        // Enabled + label absent → warn, returning the available-labels CSV the
-        // operator can use to fix the typo.
-        assert_eq!(
-            resampler_lane_not_found(true, "usbsink_typo", &labels),
-            Some("spotify,airplay,usbsink,correction".to_string()),
-        );
-        // The match is exact (a substring must NOT count as found).
-        assert_eq!(
-            resampler_lane_not_found(true, "usb", &labels),
-            Some("spotify,airplay,usbsink,correction".to_string()),
-        );
     }
 
     #[test]
