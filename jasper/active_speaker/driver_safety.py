@@ -71,7 +71,7 @@ MAX_PROVENANCE_SOURCES = 8
 #: datasheet URL and any URL the list accepts must be promotable here verbatim.
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
-_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
+_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
 _MANUAL_DRIVER_FIELDS = {
     "target_id",
     "role",

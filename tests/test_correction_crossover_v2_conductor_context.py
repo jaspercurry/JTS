@@ -409,6 +409,68 @@ def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkey
     assert context.driver_class_by_role is injected
 
 
+def test_driver_spacing_m_resolver_default_pins_todays_unknown_behavior(monkeypatch):
+    """#1864: with no declared spacing, the real resolver must return
+    ``None`` -- UNKNOWN, never the forced ``0.0`` this context field used to
+    hardcode regardless of any declaration. ``None`` and a declared ``0.0``
+    both leave ``MeasurementGeometry.parallax_us()`` at 0.0 (self-cancelling
+    at the mic position, per the field's own docstring), so this is a pure
+    disclosure fix, not a behavior change for an undeclared speaker."""
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+
+    context = v2ctx.resolve_conductor_context(_status())
+
+    assert context.driver_spacing_m is None
+
+
+def test_declared_driver_spacing_reaches_the_conductor_context(monkeypatch):
+    """#1864: a real design draft's declared ``manual_settings.driver_spacing_mm``
+    reaches ``context.driver_spacing_m`` in metres, and that value is exactly
+    what moves ``MeasurementGeometry.parallax_us()`` off zero in the expected
+    (positive) direction -- the parallax-correction plumbing was already live
+    (test_conductor_threads_geometry_and_result_to_analyze in
+    test_crossover_v2_conductor_baseline.py); this closes the other half,
+    that a REAL declaration is what feeds it, not a forced 0.0."""
+    from jasper.audio_measurement.program_analysis import MeasurementGeometry
+
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+    # Same confirmed-safety-profile shape the autouse stub hands every other
+    # case here (session-open confirmation gate, #1821) -- only manual_settings
+    # is new.
+    draft = {
+        "driver_safety_profile": {
+            "targets": [
+                {
+                    "role": role,
+                    "target_fingerprint": f"fp-{role}",
+                    "required_protection_filters": [{
+                        "kind": kind,
+                        "cutoff_hz": cutoff,
+                        "minimum_slope_db_per_octave": 24.0,
+                    }],
+                }
+                for role, kind, cutoff in (
+                    ("woofer", "lowpass", 6000.0), ("tweeter", "highpass", 300.0),
+                )
+            ],
+        },
+        "manual_settings": {"driver_spacing_mm": 150},
+    }
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
+
+    context = v2ctx.resolve_conductor_context(_status())
+
+    assert context.driver_spacing_m == pytest.approx(0.15)
+    unknown = MeasurementGeometry(driver_spacing_m=0.0, mic_distance_m=1.0)
+    declared = MeasurementGeometry(
+        driver_spacing_m=context.driver_spacing_m, mic_distance_m=1.0,
+    )
+    assert unknown.parallax_us() == 0.0
+    assert declared.parallax_us() > unknown.parallax_us()
+
+
 def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     """The W6.5 gate blocker probe: ``resolve_conductor_context`` must resolve
     caps on the proven-HP path with the declaration's sensitivities — the

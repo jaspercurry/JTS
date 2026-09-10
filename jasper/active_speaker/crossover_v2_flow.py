@@ -760,7 +760,7 @@ class CrossoverV2Session:
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
         tier: str = "",
         positions_gated: bool = False,
-        driver_spacing_m: float = 0.0,
+        driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
@@ -882,8 +882,16 @@ class CrossoverV2Session:
         self._radiating_diameter_mm_by_role = (
             dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
         )
+        # #1864: ``None`` is undeclared spacing, never a default -- disclose it
+        # rather than silently folding it into the same 0.0
+        # ``MeasurementGeometry.parallax_us`` already treats as "no correction".
+        if driver_spacing_m is None:
+            log_event(
+                logger, "crossover_v2.driver_spacing_unknown",
+                level=logging.INFO, session_id=self.session_id,
+            )
         self._geometry = MeasurementGeometry(
-            driver_spacing_m=float(driver_spacing_m),
+            driver_spacing_m=0.0 if driver_spacing_m is None else float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
         )
         # Where this round is, and the walk it is in (#2291 Phase 4). ONE aggregate:

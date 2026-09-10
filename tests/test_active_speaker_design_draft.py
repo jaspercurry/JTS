@@ -24,6 +24,7 @@ from jasper.active_speaker.design_draft import (
     ActiveSpeakerDesignDraftRevisionConflict,
     _normalise_candidate,
     declared_driver_sensitivities,
+    declared_driver_spacing_m,
     declared_effective_driver_sensitivities,
 )
 from jasper.active_speaker.declaration_vocabulary import (
@@ -946,6 +947,44 @@ def test_declared_sensitivities_survive_the_normalised_persisted_draft():
         "woofer": 83.3,
         "tweeter": 108.5,
     }
+
+
+# --- #1864: declared woofer<->tweeter acoustic-center spacing -------------
+
+
+def test_declared_driver_spacing_m_reads_the_declaration():
+    draft = {"manual_settings": {"driver_spacing_mm": 150}}
+    assert declared_driver_spacing_m(draft) == pytest.approx(0.15)
+
+
+def test_declared_driver_spacing_m_fails_soft_on_absent_or_malformed():
+    # Absent means UNDECLARED, never a manufactured physical default (#1864).
+    assert declared_driver_spacing_m(None) is None
+    assert declared_driver_spacing_m({}) is None
+    assert declared_driver_spacing_m({"manual_settings": None}) is None
+    assert declared_driver_spacing_m({"manual_settings": {}}) is None
+    for bad in ("far", True, float("nan"), 0, -10):
+        assert declared_driver_spacing_m(
+            {"manual_settings": {"driver_spacing_mm": bad}}
+        ) is None
+
+
+def test_declared_driver_spacing_mm_must_be_positive():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"driver_spacing_mm must be > 0",
+    ):
+        build_design_draft(_topology(), manual_settings={"driver_spacing_mm": 0})
+
+
+def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
+    # End-to-end through the REAL normaliser + draft builder: what
+    # resolve_conductor_context reads is the persisted draft's
+    # manual_settings, so pin the value's survival through that path.
+    payload = build_design_draft(
+        _topology(), manual_settings={"driver_spacing_mm": 150},
+    )
+    assert declared_driver_spacing_m(payload) == pytest.approx(0.15)
 
 
 # --- #1665 component entry: driver_class / radiating_diameter_mm / pad -----
