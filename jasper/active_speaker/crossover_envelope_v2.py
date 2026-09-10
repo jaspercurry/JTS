@@ -1208,6 +1208,7 @@ def _with_remote_disclosure(
 def _done_nudges(
     verify: Mapping[str, Any], *, spec_passed: bool | None,
     result_outcome: str = "", tier: str = "",
+    spatial_unrecognized: bool = False,
 ) -> list[dict[str, str]]:
     """The done screen's badges — one claim per instrument, none
     overclaiming. Three instruments vote: TRACKING (matched its own
@@ -1241,6 +1242,16 @@ def _done_nudges(
             "code": "crossover_v2_out_of_spec",
             "severity": "warn",
             "text": "Verified against the prediction, but not flat to target.",
+        }
+    elif spatial_unrecognized:
+        # A later build's spatial word this build can't read — never the
+        # clean pass ``crossover_v2_verified`` implies (#2242 fixed the
+        # doctor's own read of the same field; this is the wizard's match).
+        badge = {
+            "code": "crossover_v2_spatial_unrecognized",
+            "severity": "warn",
+            "text": "Verified against the prediction, but the spatial grade "
+                    "word is not one this build recognizes.",
         }
     else:
         badge = {
@@ -2618,6 +2629,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         spec_passed = (
             True if spatial == "passed" else False if spatial == "failed" else None
         )
+        # A non-empty word this build does not recognize is a later build's
+        # vocabulary — the doctor's own read of this same field already
+        # disciplines it (``REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED``,
+        # jasper/cli/doctor/correction.py). Without this branch the word
+        # falls through every ``elif`` below and reaches the same badge a
+        # genuinely PASSED grade gets.
+        spatial_unrecognized = bool(spatial) and spatial not in {
+            "passed", "failed", "unmeasurable", "absent",
+        }
         if spec_passed is False:
             done_verdict = (
                 "Your speaker is tuned, but the result still measures further "
@@ -2629,6 +2649,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             done_verdict = (
                 "Your speaker is tuned, but the check that measures how flat "
                 "it is could not read enough of the sound to say either way."
+            )
+        elif spatial_unrecognized:
+            done_verdict = (
+                "Your speaker is tuned, but the check that measures how flat "
+                f"it is used a result word ({spatial!r}) this build does not "
+                "recognize — treating it as unproven rather than guessing. "
+                "Check for a jasper-doctor update, or re-measure."
             )
         elif not grade.get("graded", True):
             # Three answers, three sentences. "Never finished" is false
@@ -2674,8 +2701,16 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # says (#2738): without it a group closed FAILED at -4.63 dB
         # rendered as "Target verified." Capped HERE so the copy below and
         # ``_done_nudges`` read one capped fact. Only ``verified_target``
-        # is capped — the other three already refuse that claim.
-        if spec_passed is False and result_outcome == RESULT_VERIFIED_TARGET:
+        # is capped — the other three already refuse that claim. An
+        # unrecognized spatial word gets the same cap: the badge lookup in
+        # ``_done_nudges`` runs before ``spec_passed``/``spatial_unrecognized``
+        # are consulted, so an uncapped ``verified_target`` would otherwise
+        # win the slot and render the same clean pass this branch exists to
+        # stop.
+        if (
+            (spec_passed is False or spatial_unrecognized)
+            and result_outcome == RESULT_VERIFIED_TARGET
+        ):
             result_outcome = ""
         if result_outcome in {
             RESULT_VERIFIED_TARGET,
@@ -2754,6 +2789,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     verify, spec_passed=spec_passed,
                     result_outcome=result_outcome,
                     tier=str(v2.get("tier") or ""),
+                    spatial_unrecognized=spatial_unrecognized,
                 )
                 + _round_adoption_nudges(v2)
                 + _ripple_reservation_nudges(status)

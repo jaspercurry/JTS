@@ -1145,17 +1145,18 @@ def test_the_done_screen_spells_the_producers_grade_words():
     assert "unproven" not in passed
 
 
-def test_an_unrecognized_spatial_word_badges_the_same_as_a_pass():
+def test_an_unrecognized_spatial_word_badges_distinctly_from_a_pass():
     """#2242's S1 fixed the doctor's own read of an unrecognized ``spatial``
     word to WARN and name it
     (``correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED``,
     ``test_an_unknown_spatial_word_from_a_later_build_is_disclosed`` in
-    tests/test_doctor_correction.py) — this screen never got the matching
-    branch. A word this build cannot read falls through every ``elif`` in
-    :func:`build_crossover_envelope_v2` and reaches the same badge a
-    genuinely PASSED grade gets, so a later build's grade renders as a clean
-    pass here while the doctor already knows to disclose it. Pinned on the
-    badge CODE — the field a caller keys on — not the sentence.
+    tests/test_doctor_correction.py) — this screen now carries the matching
+    branch. A word this build cannot read must not fall through every
+    ``elif`` in :func:`build_crossover_envelope_v2` and reach the same
+    badge a genuinely PASSED grade gets: a later build's grade must render
+    as a distinct, named warning here, same as the doctor already
+    discloses it. Pinned on the badge CODE — the field a caller keys on —
+    not the sentence.
     """
     grade = {
         "state": "graded", "graded": True, "complete": True,
@@ -1165,7 +1166,7 @@ def test_an_unrecognized_spatial_word_badges_the_same_as_a_pass():
         phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
         candidate=_candidate_summary(), post_apply_grade=grade,
     ))
-    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
+    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_spatial_unrecognized"}
 
 
 def test_spec_verdict_is_not_reintroduced_as_a_second_grade_owner():
