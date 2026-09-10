@@ -1063,6 +1063,7 @@ def check_grouping_pair_channels() -> CheckResult:
         resp = control_client.get(
             "/grouping",
             base_url=f"http://{cfg.leader_addr}:{control_client.CONTROL_PORT}",
+            max_bytes=control_client.PEER_RESPONSE_MAX_BYTES,
             timeout=2.0,
         )
         leader = parse_grouping_response(resp.json()) or {}

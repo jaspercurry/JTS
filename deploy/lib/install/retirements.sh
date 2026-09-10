@@ -56,6 +56,12 @@ JASPER_RETIRED_LEFTOVERS=(
     # pcm.jasper_out dmix.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${CAMILLA_CONF}/v1.yml|the pre-outputd CamillaDSP rollback graph"
+    # PR #4333 deleted the Bluetooth role store's writer, its readers, both
+    # jasper-doctor privsep rows and the heal pass that kept its mode correct,
+    # so an already-deployed box carries {mac: handler_id} for every device it
+    # ever paired with nothing left to touch it.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/bt_roles.json|the retired Bluetooth device-role store"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort

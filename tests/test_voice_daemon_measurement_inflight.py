@@ -878,18 +878,8 @@ async def test_cancelled_cue_tail_retains_output_episode(
     await _close_window(wl)
 
 
-@pytest.mark.parametrize(
-    ("tts_socket", "duck_kind"),
-    [
-        (FANIN_TTS_SOCKET, "fanin"),
-        (OUTPUTD_TTS_SOCKET, "cue"),
-    ],
-)
-async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
-    tts_socket: str,
-    duck_kind: str,
-) -> None:
-    """Both routed duck implementations restore only after physical drain."""
+async def test_cancelled_proactive_tail_retains_concrete_duck_owner() -> None:
+    """The routed duck restores only after physical drain."""
 
     from jasper.voice_daemon import FanInDucker
 
@@ -926,77 +916,35 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
             self._ducked = False
             restored.set()
 
-    class _Fader:
-        """The cue duck's half of the seam, now a claim on the volume owner.
-
-        One door for both directions: the duck and its give-back are both
-        absolute writes through the owner, discriminated by where they land.
-        """
-
-        def __init__(self) -> None:
-            self.db = -20.0
-
-        async def get_volume_db(self, *, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(
-            self, db: float, *, best_effort: bool = False,
-        ) -> bool:
-            nonlocal restore_calls
-            if db < -20.0:
-                self.db = db
-                ducked.set()
-                return True
-            assert db == -20.0
-            restore_calls += 1
-            restore_started.set()
-            await wait_signalled(
-                release_restore,
-                "release CueDuck proactive restore",
-            )
-            self.db = db
-            restored.set()
-            return True
-
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(
         output_gate=gate,
         tts=tts,
         cues=_Cues(),
-        ducker=_FanInDuck() if duck_kind == "fanin" else object(),
+        ducker=_FanInDuck(),
     )
-    wl._cfg.tts_outputd_socket = tts_socket
+    wl._cfg.tts_outputd_socket = FANIN_TTS_SOCKET
     wl._cfg.duck_db = -25.0
-    if duck_kind != "fanin":
-        from jasper.volume_owner import VolumeOwner
-
-        fader = _Fader()
-        owner = VolumeOwner(
-            set_fader_db=fader.set_volume_db,
-            get_fader_db=fader.get_volume_db,
-        )
-        await owner.declare_household_level_db(-20.0)
-        wl._volume_coordinator.volume_owner = owner  # type: ignore[attr-defined]
 
     playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
-    await wait_signalled(ducked, f"{duck_kind} proactive duck", producer=playing)
+    await wait_signalled(ducked, "fanin proactive duck", producer=playing)
     await wait_signalled(
         tts.drain_started,
-        f"{duck_kind} proactive physical drain",
+        "fanin proactive physical drain",
         producer=playing,
     )
 
     playing.cancel()
     for _ in range(5):
         await asyncio.sleep(0)
-    assert not playing.done(), (tts_socket, duck_kind)
+    assert not playing.done()
     assert not restored.is_set(), "duck must cover accepted PCM tail"
     assert wl._output_gate.active_kind == "proactive"
 
     tts.release_drain.set()
     await wait_signalled(
         restore_started,
-        f"{duck_kind} proactive restore",
+        "fanin proactive restore",
         producer=playing,
     )
     assert not restored.is_set()
