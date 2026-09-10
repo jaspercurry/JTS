@@ -178,24 +178,47 @@ card_index() {
     return 1
 }
 
-# One `alsactl monitor` blocks in place of the 1 Hz `amixer` poll this loop
-# used to run: an unchanged control produces nothing to read, so an idle
-# board forks nothing at all (#4121). It enumerates the board's cards once
-# when it starts and exits when one of them is removed, so both directions of
-# a card population move are answered by re-opening it.
-MONITOR_PID=""
+# One `alsactl monitor hw:<card>` per armed card blocks in place of the 1 Hz
+# `amixer` poll this loop used to run: an unchanged control produces nothing
+# to read, so an idle board forks nothing at all (#4121). `alsactl monitor`
+# takes exactly one <card> (alsactl(1)), so a board with two Apple DACs runs
+# two of them, fanned out from a single process-substitution subshell that
+# `wait`s on both -- their stdout shares that subshell's one pipe, so a
+# single blocking `read` still sees every armed card's events, and the pipe
+# only EOFs (waking the read promptly) once every card's process has
+# exited. Each start enumerates the board's cards once and exits when one of
+# them is removed, so both directions of a card population move are
+# answered by re-opening it.
+MONITOR_PGID=""
 # How long a blocked read waits before re-checking the card population.
 # Builtins only on that path.
 MONITOR_POLL_SEC=5
 RESET_MIN_INTERVAL_SEC=1
-MONITOR_BACKOFF=1
-MONITOR_BACKOFF_MAX=30
+SWEEP_MIN_INTERVAL_SEC=1
+# Test seams, not operator knobs (mirrors JASPER_SYS_CLASS_SOUND etc. above):
+# let the backoff test assert real elapsed time without waiting out a
+# multi-second production cap.
+MONITOR_BACKOFF_BASE_SEC="${JASPER_HEADPHONE_MONITOR_BACKOFF_BASE_SEC:-1}"
+MONITOR_BACKOFF_CAP_SEC="${JASPER_HEADPHONE_MONITOR_BACKOFF_CAP_SEC:-$MONITOR_POLL_SEC}"
+MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+MONITOR_MODE=""
+MONITOR_MODE_REASON=""
+
+# Logs mode=monitor|poll once, on an actual transition -- never per retry,
+# which would spam the journal every backoff cycle.
+set_monitor_mode() {
+    local mode="$1" reason="${2:--}"
+    [[ "$mode" == "$MONITOR_MODE" && "$reason" == "$MONITOR_MODE_REASON" ]] && return 0
+    MONITOR_MODE="$mode"
+    MONITOR_MODE_REASON="$reason"
+    echo "event=apple_dongle.headphone_monitor.mode mode=${mode} reason=${reason}"
+}
 
 stop_monitor() {
-    [[ -n "$MONITOR_PID" ]] || return 0
-    kill "$MONITOR_PID" 2>/dev/null
+    [[ -n "$MONITOR_PGID" ]] || return 0
+    kill "$MONITOR_PGID" 2>/dev/null
     exec 3<&-
-    MONITOR_PID=""
+    MONITOR_PGID=""
 }
 
 # Started only once a card exists and stopped the moment none does, so the
@@ -203,14 +226,27 @@ stop_monitor() {
 # Non-zero when there is no alsactl to run, which leaves the caller polling.
 start_monitor() {
     command -v alsactl >/dev/null 2>&1 || return 1
+    local use_stdbuf=0
+    command -v stdbuf >/dev/null 2>&1 && use_stdbuf=1
     # alsactl block-buffers when its stdout is a pipe, so without a line
-    # buffer an event sits in libc until 4 KB of them have piled up behind it.
-    if command -v stdbuf >/dev/null 2>&1; then
-        exec 3< <(exec stdbuf -oL alsactl monitor)
-    else
-        exec 3< <(exec alsactl monitor)
-    fi
-    MONITOR_PID=$!
+    # buffer an event sits in libc until 4 KB of them have piled up behind
+    # it. The subshell's own exit code is not reliable for the caller to
+    # `wait` on later (bash loses track of a process-substitution pid once
+    # other job control happens in between), so exec_failed vs eof is read
+    # off MONITOR_MODE instead -- whether THIS generation ever proved
+    # itself connected before it went away.
+    exec 3< <(
+        for card in "${APPLE_CARDS[@]}"; do
+            [[ -n "$card" ]] || continue
+            if (( use_stdbuf )); then
+                stdbuf -oL alsactl monitor "hw:${card}" &
+            else
+                alsactl monitor "hw:${card}" &
+            fi
+        done
+        wait
+    )
+    MONITOR_PGID=$!
 }
 
 # Read every armed card's control once, log what moved, and re-pin anything
@@ -259,6 +295,7 @@ sweep_cards() {
 absent_logged=0
 probe_failed_logged=0
 sweep_due=1
+LAST_SWEEP_AT=""
 while true; do
     # Logged once per outage (like absent_logged below) and reset on the
     # next successful probe; never an exit: an exit here would walk
@@ -291,33 +328,58 @@ while true; do
     fi
 
     absent_logged=0
-    if [[ -z "$MONITOR_PID" ]] && start_monitor; then
+    if [[ -z "$MONITOR_PGID" ]] && start_monitor; then
         # Whatever moved while no monitor was open is only visible in the
         # control itself, so a fresh monitor always costs one read.
         sweep_due=1
     fi
+
+    # A burst of events inside the floor is one control changing several
+    # times, not several controls: coalesce it into a single sweep, the
+    # same 1/s ceiling `maybe_reset` already holds resets to.
     if [[ "$sweep_due" == "1" ]]; then
-        sweep_cards
-        sweep_due=0
+        if [[ -z "$LAST_SWEEP_AT" ]] ||
+            (( SECONDS - LAST_SWEEP_AT >= SWEEP_MIN_INTERVAL_SEC )); then
+            sweep_cards
+            sweep_due=0
+            LAST_SWEEP_AT=$SECONDS
+        fi
     fi
 
-    if [[ -z "$MONITOR_PID" ]]; then
+    if [[ -z "$MONITOR_PGID" ]]; then
         # No alsactl on this box: a slow poll is the only way left to see
         # drift at all.
+        set_monitor_mode poll not_installed
         sweep_due=1
         sleep "$MONITOR_POLL_SEC"
     elif read -r -t "$MONITOR_POLL_SEC" -u 3; then
-        MONITOR_BACKOFF=1
+        set_monitor_mode monitor
+        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
         sweep_due=1
-    elif ! kill -0 "$MONITOR_PID" 2>/dev/null; then
+    elif ! kill -0 "$MONITOR_PGID" 2>/dev/null; then
         # The pid, not `read`'s exit code, is what separates a plain timeout
-        # from the monitor going away — alsactl exits when a card it holds is
-        # removed. Re-open it with backoff; never fall back to polling for
-        # good, or a dongle plugged back in would never be watched again.
+        # from the monitor going away — alsactl exits when a card it holds
+        # is removed, or failed to open its control device at all. This
+        # generation already having reached mode=monitor is what tells the
+        # two apart: eof if it once proved connected, exec_failed if it
+        # never got the chance. Re-open it with backoff; never fall back to
+        # polling for good, or a dongle plugged back in would never be
+        # watched again.
+        wait "$MONITOR_PGID" 2>/dev/null
+        exit_reason="exec_failed"
+        [[ "$MONITOR_MODE" == "monitor" ]] && exit_reason="eof"
         stop_monitor
-        echo "event=apple_dongle.headphone_monitor.monitor_exited backoff=${MONITOR_BACKOFF}" >&2
+        set_monitor_mode poll "$exit_reason"
         sleep "$MONITOR_BACKOFF"
-        (( MONITOR_BACKOFF < MONITOR_BACKOFF_MAX )) &&
+        (( MONITOR_BACKOFF < MONITOR_BACKOFF_CAP_SEC )) &&
             MONITOR_BACKOFF=$(( MONITOR_BACKOFF * 2 ))
+        (( MONITOR_BACKOFF > MONITOR_BACKOFF_CAP_SEC )) &&
+            MONITOR_BACKOFF="$MONITOR_BACKOFF_CAP_SEC"
+    else
+        # A full read window elapsed with the monitor still connected and
+        # nothing to report: whatever backoff an earlier retry grew has
+        # proven itself unneeded.
+        set_monitor_mode monitor
+        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
     fi
 done
