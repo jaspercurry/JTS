@@ -32,7 +32,6 @@ from ._common import issue as _issue
 from .camilla_yaml import (
     ACTIVE_PARKED_SOURCE,
     ACTIVE_PROGRAM_BAKE_SOURCE,
-    FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
     forbidden_playback_token,
 )
 from .path_safety import evaluate_path_safety_evidence
