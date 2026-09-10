@@ -1020,6 +1020,13 @@ pub struct Input {
     /// neither allocates nor zero-fills it per period. Empty on every lane that
     /// has no `direct` capture.
     direct_scratch: Vec<i32>,
+    /// The S16 view of that chunk the ARMED impulse tap reads
+    /// ([`direct_narrow_scratch_samples`] samples, the same fixed length as
+    /// `direct_scratch`). Beside it for the same reason: an armed lane narrows
+    /// once per CHUNK read, several times per period, so a per-chunk stack
+    /// buffer would zero-fill on the render thread every time. Empty on every
+    /// lane that has no `direct` capture.
+    direct_narrow_scratch: Vec<i16>,
     pub xrun_count: Arc<AtomicU64>,
     /// `CLOCK_MONOTONIC` milliseconds of this lane's last xrun, or
     /// [`jasper_daemon::json::NEVER_MS`] until the first one. Bumped with `xrun_count` by
