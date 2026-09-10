@@ -9,15 +9,9 @@
 //! daemons. Three composable pieces — [`SincTable`] (the precomputed
 //! Blackman-Harris windowed-sinc interpolation kernel), [`RateController`]
 //! (the shared [`jasper_clock::Dll`] wired to a buffer-fill error and bounded
-//! by an output ppm clamp), and [`BlockResampler`] (a streaming resampler over
-//! an internal [`AudioRing`], phase-continuous across blocks) — each with its
-//! constraints on its own item.
-//!
-//! [`resample_i16`] is a one-shot convenience over a fresh resampler — the
-//! stateless reference pinned by the in-crate `golden_vector_is_stable` test.
-//! That test is the ONLY guard against silent math drift here: this is a
-//! Rust-only primitive with no cross-language binding or contract test, so the
-//! golden asserts exact equality rather than an LSB tolerance.
+//! by an output ppm clamp), and [`AudioRing`] (the phase-continuous input
+//! buffer the kernel interpolates against) — each with its constraints on its
+//! own item.
 //!
 //! `jasper-fanin`'s `lane_resampler.rs` is the sole consumer of the resampling
 //! algorithm itself ([`AudioRing`] + [`SincTable`] + [`RateController`]); the
@@ -45,30 +39,28 @@
 //! pins the arithmetic, and the END-TO-END proof is jasper-fanin's
 //! `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`, which
 //! asserts a whole period of the shipping route exactly.
-//! [`BlockResampler`] and [`resample_i16`] keep their `i16`-in, `i16`-out
-//! signatures on top of that.
 //!
 //! # The capture-follower ratio convention
 //!
-//! Both the [`RateController`] sign and the [`BlockResampler`] cursor follow
-//! PipeWire's *capture* direction:
-//!
-//! - The controller feeds the DLL the **negated** fill error (`fill - target`),
-//!   so a too-full ring (`error_frames > 0`) settles to `ratio > 1`.
-//! - The resampler advances its read cursor by `ratio` input frames per output
-//!   frame, so `ratio > 1` consumes input **faster** and emits **fewer** output
-//!   frames — draining the ring. This is mathematically PipeWire's capture
-//!   `1.0 / corr`, located as the single inversion at the DLL's error input.
+//! The [`RateController`] sign follows PipeWire's *capture* direction: it
+//! feeds the DLL the **negated** fill error (`fill - target`), so a too-full
+//! ring (`error_frames > 0`) settles to `ratio > 1`. A caller advancing its
+//! own read cursor by `ratio` input frames per output frame consumes input
+//! **faster** and emits **fewer** output frames at `ratio > 1` — draining the
+//! ring. This is mathematically PipeWire's capture `1.0 / corr`, located as
+//! the single inversion at the DLL's error input.
 //!
 //! ```
-//! use jasper_resampler::{SincTable, resample_i16};
+//! use jasper_resampler::{AudioRing, SincTable, spine_acc_to_i16};
 //!
-//! // A stereo ramp resampled at unity is (after the cursor warms past the
-//! // sinc radius) a faithful copy.
+//! // A stereo ramp interpolated at unity, well past the kernel's warm-up
+//! // radius, is a faithful copy to within 1 LSB.
 //! let table = SincTable::new();
+//! let mut ring = AudioRing::new(4096, 2).unwrap();
 //! let input: Vec<i16> = (0..2048).flat_map(|n| [n as i16, -(n as i16)]).collect();
-//! let out = resample_i16(&input, 2, 1.0, &table);
-//! assert!(!out.is_empty());
+//! ring.push_interleaved_narrow(&input);
+//! let sample = spine_acc_to_i16(table.interpolate(&ring, 100.0, 0));
+//! assert!((sample - 100).abs() <= 1);
 //! ```
 
 #![forbid(unsafe_code)]
@@ -103,8 +95,7 @@ const CUTOFF: f64 = 0.97;
 // ---------------------------------------------------------------------------
 // Kernel math. Do not "clean up" the f64 ops, the Blackman-Harris
 // coefficients, the normalization, or the rounding: any change is a silent
-// output-drift risk, caught by the in-crate `golden_vector_is_stable`
-// regression test.
+// output-drift risk with no regression test to catch it.
 // ---------------------------------------------------------------------------
 
 fn sinc(x: f64) -> f64 {
@@ -473,9 +464,8 @@ pub fn rms_dbfs_i32(samples: &[i32]) -> f64 {
 /// A precomputed windowed-sinc interpolation table.
 ///
 /// Built ONCE (it is `PHASES * TAPS` `f64` ≈ 540 KB) and shared across every
-/// resample call — [`BlockResampler`] and `jasper-fanin`'s lane resampler each
-/// hold one and pass it to [`SincTable::interpolate`]. Never rebuild it per
-/// block.
+/// resample call — `jasper-fanin`'s lane resampler holds one and passes it to
+/// [`SincTable::interpolate`]. Never rebuild it per block.
 #[derive(Debug, Clone)]
 pub struct SincTable {
     phases: Vec<[f64; TAPS]>,
@@ -674,7 +664,7 @@ impl AudioRing {
     }
 }
 
-/// Construction error for [`AudioRing`] / [`BlockResampler`].
+/// Construction error for [`AudioRing`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RingError {
     /// `capacity_frames == 0`.
@@ -830,199 +820,12 @@ impl RateController {
     }
 }
 
-/// A streaming arbitrary-ratio resampler that keeps a fractional read cursor
-/// across calls.
-///
-/// Push interleaved input via [`BlockResampler::resample_block`]; it buffers
-/// into an internal [`AudioRing`] and emits whole output frames by advancing
-/// `next_input_frame += ratio` per output frame and interpolating the ring at
-/// that fractional position. Because the cursor persists between calls,
-/// chopping a long signal into 10 ms blocks yields the same samples as one
-/// shot — no per-block discontinuity (the streaming-cursor guarantee).
-///
-/// Capture-follower semantics: `ratio > 1` advances the cursor by more than one
-/// input frame per output frame, so it consumes input FASTER and emits FEWER
-/// output frames (draining the buffer); `ratio < 1` emits more. This is
-/// PipeWire's capture `1.0 / corr`.
-#[derive(Debug, Clone)]
-pub struct BlockResampler {
-    ring: AudioRing,
-    channels: usize,
-    next_input_frame: f64,
-    primed: bool,
-    table: SincTable,
-}
-
-impl BlockResampler {
-    /// Construct a resampler that shares a prebuilt [`SincTable`] (clones the
-    /// table handle, so the heavy build happens once across many resamplers).
-    pub fn with_table(
-        channels: usize,
-        ring_capacity_frames: usize,
-        table: SincTable,
-    ) -> Result<Self, RingError> {
-        if channels == 0 {
-            return Err(RingError::ZeroChannels);
-        }
-        let ring = AudioRing::new(ring_capacity_frames, channels)?;
-        Ok(Self {
-            ring,
-            channels,
-            next_input_frame: 0.0,
-            primed: false,
-            table,
-        })
-    }
-
-    /// Push `input` (interleaved `i16`) and emit resampled interleaved output.
-    ///
-    /// The number of output frames is `floor(available_input_frames / ratio)`
-    /// for whatever input frames are now available ahead of the cursor (a
-    /// non-finite or non-positive `ratio` is treated as unity — the loop layer
-    /// owns clamping, this is a last-ditch guard so the cursor never stalls or
-    /// runs backwards). Consumed history is dropped, keeping
-    /// `RADIUS_FRAMES + 1` frames behind the cursor so the kernel always has
-    /// its left taps.
-    pub fn resample_block(&mut self, input: &[i16], ratio: f64) -> Vec<i16> {
-        let ratio = if ratio.is_finite() && ratio > 0.0 {
-            ratio
-        } else {
-            1.0
-        };
-        if !input.is_empty() {
-            self.ring.push_interleaved_narrow(input);
-        }
-
-        // On the first block, seat the cursor RADIUS_FRAMES into the buffered
-        // input so the kernel has left-hand taps from frame 0 (otherwise the
-        // first RADIUS_FRAMES outputs are computed against zero-padded history
-        // and ramp in). This is the one-shot/streaming edge convention.
-        if !self.primed {
-            if self.ring.fill_frames() == 0 {
-                return Vec::new();
-            }
-            self.next_input_frame = self.ring.read_frame() as f64 + RADIUS_FRAMES as f64;
-            self.primed = true;
-        }
-
-        // Emit output frames while the kernel's rightmost tap (`floor(pos) +
-        // RADIUS_FRAMES`) is still a written frame. The boundary
-        // `pos + RADIUS_FRAMES + 1.0 <= write_frame` keeps that tap strictly
-        // inside `[read_frame, write_frame)` (since `floor(pos) <= pos`), so no
-        // output is computed against unwritten input; the cursor stops one step
-        // short and the remaining input carries to the next call.
-        let write_frame = self.ring.write_frame() as f64;
-        let mut pos = self.next_input_frame;
-        let mut out: Vec<i16> = Vec::new();
-        while pos + RADIUS_FRAMES as f64 + 1.0 <= write_frame {
-            for channel in 0..self.channels {
-                // The ring is spine-scale, so the accumulator is too: narrow
-                // back with the ONE historical rounding. Input widened by an
-                // exact power of two and divided back out is bit-identical to
-                // the pre-spine i16 ring — see [`SPINE_SCALE_F64`] for why, and
-                // jasper-fanin's
-                // `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`
-                // for the exact whole-period proof on the shipping route.
-                out.push(spine_acc_to_i16(
-                    self.table.interpolate(&self.ring, pos, channel),
-                ));
-            }
-            pos += ratio;
-        }
-        self.next_input_frame = pos;
-
-        let keep_from = pos.floor() as i64 - RADIUS_FRAMES - 1;
-        self.ring.drop_before(keep_from);
-        out
-    }
-}
-
-/// One-shot stateless resample of an interleaved `i16` buffer at a fixed ratio.
-///
-/// A fresh [`BlockResampler`] is fed the whole buffer once with zero-padded
-/// edges. This is the stateless reference pinned by the in-crate
-/// `golden_vector_is_stable` regression test. For streaming use, hold a
-/// [`BlockResampler`] instead (this discards cross-call cursor continuity).
-///
-/// The internal ring is sized to hold the whole input plus kernel headroom, so
-/// nothing is dropped. Capture-follower semantics apply: `ratio > 1` returns
-/// FEWER frames than the input, `ratio < 1` returns more.
-pub fn resample_i16(input: &[i16], channels: usize, ratio: f64, table: &SincTable) -> Vec<i16> {
-    if channels == 0 || input.is_empty() {
-        return Vec::new();
-    }
-    let frames = input.len() / channels;
-    // Ring must hold every input frame plus a little kernel headroom so the
-    // one-shot never drops (a one-shot has no producer to drain it).
-    let capacity = frames + TAPS + 1;
-    let mut resampler = match BlockResampler::with_table(channels, capacity, table.clone()) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    resampler.resample_block(input, ratio)
-}
-
-/// The golden contract fixture: one canonical deterministic input and the
-/// ratios the in-crate golden test pins [`resample_i16`]'s output at.
-///
-/// `golden_vector_is_stable` asserts EXACT equality against it — there is no
-/// second implementation to allow a tolerance for.
-///
-/// This is the SINGLE definition of the fixture — the in-crate golden test and
-/// the `golden_vector` example both reference it, so the two can never silently
-/// drift apart. Doc-hidden: it is test/tooling surface, not a runtime API.
-#[doc(hidden)]
-pub mod golden {
-    use super::clamp_i16;
-
-    /// The canonical 256-frame deterministic stereo input. Pure integer-seeded
-    /// trig so it is bit-reproducible on any host.
-    pub fn canonical_input() -> Vec<i16> {
-        (0..256)
-            .flat_map(|n| {
-                let t = n as f64;
-                let l = clamp_i16(6000.0 * (t * 0.05).sin() + 1500.0 * (t * 0.21).sin());
-                let r = clamp_i16(5000.0 * (t * 0.07).cos());
-                [l, r]
-            })
-            .collect()
-    }
-
-    /// Channel count of the canonical input.
-    pub const CHANNELS: usize = 2;
-
-    /// The ratios the contract test pins. 1.0 is the pass-through; the small
-    /// ±ppm offsets are the realistic capture-follower operating points.
-    pub const RATIOS: [f64; 4] = [1.0, 1.0001, 0.9999, 1.0005];
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
     const PERIOD: u32 = 480; // 10 ms at 48 kHz streaming-block example.
-
-    /// Deterministic interleaved stereo test signal: two summed sines plus a
-    /// slow linear sweep, distinct per channel. Bounded well inside i16 so the
-    /// kernel never clamps (clamping would mask interpolation differences).
-    fn stereo_signal(frames: usize) -> Vec<i16> {
-        let mut out = Vec::with_capacity(frames * 2);
-        for n in 0..frames {
-            let t = n as f64;
-            let l = 8000.0 * (t * 0.013).sin()
-                + 4000.0 * (t * 0.071).sin()
-                + 2000.0 * (t / frames.max(1) as f64);
-            let r = 7000.0 * (t * 0.019).sin() + 3500.0 * (t * 0.043).cos();
-            out.push(clamp_i16(l));
-            out.push(clamp_i16(r));
-        }
-        out
-    }
-
-    fn frames_of(interleaved: &[i16], channels: usize) -> usize {
-        interleaved.len() / channels
-    }
 
     #[test]
     fn sinc_table_has_expected_shape() {
@@ -1052,173 +855,6 @@ mod tests {
         assert!(
             center > neighbour * 10.0,
             "phase 0 center tap must dwarf its neighbour: {center} vs {neighbour}"
-        );
-    }
-
-    /// Ratio == 1.0 is a faithful pass-through: once the cursor has warmed past
-    /// the kernel radius, the resampled signal reproduces the input to ≤1 LSB.
-    #[test]
-    fn unity_ratio_is_pass_through_within_one_lsb() {
-        let table = SincTable::new();
-        let input = stereo_signal(4096);
-        let out = resample_i16(&input, 2, 1.0, &table);
-
-        // The one-shot seats the cursor at RADIUS_FRAMES, so output frame k is
-        // input frame k + RADIUS_FRAMES. Compare the overlapping region and
-        // skip the final RADIUS frames where the right kernel tail runs past
-        // the buffered input (those ramp down).
-        let radius = RADIUS_FRAMES as usize;
-        let out_frames = frames_of(&out, 2);
-        let mut compared = 0usize;
-        for k in 0..out_frames {
-            let in_frame = k + radius;
-            if in_frame + radius >= 4096 {
-                break;
-            }
-            for ch in 0..2 {
-                let got = out[k * 2 + ch] as i32;
-                let want = input[in_frame * 2 + ch] as i32;
-                assert!(
-                    (got - want).abs() <= 1,
-                    "unity pass-through off by >1 LSB at frame {k} ch {ch}: got {got} want {want}"
-                );
-            }
-            compared += 1;
-        }
-        assert!(compared > 3000, "should have compared most frames");
-    }
-
-    /// The capture-follower frame-count law: ratio > 1 consumes input faster
-    /// and emits FEWER output frames than input; ratio < 1 emits MORE.
-    #[test]
-    fn ratio_changes_output_frame_count_capture_follower() {
-        let table = SincTable::new();
-        let input = stereo_signal(8192);
-        let in_frames = frames_of(&input, 2);
-
-        let faster = resample_i16(&input, 2, 1.01, &table); // consume faster
-        let slower = resample_i16(&input, 2, 0.99, &table); // consume slower
-        let unity = resample_i16(&input, 2, 1.0, &table);
-
-        let faster_frames = frames_of(&faster, 2);
-        let slower_frames = frames_of(&slower, 2);
-        let unity_frames = frames_of(&unity, 2);
-
-        assert!(
-            faster_frames < unity_frames,
-            "ratio>1 must emit fewer frames: {faster_frames} !< {unity_frames}"
-        );
-        assert!(
-            slower_frames > unity_frames,
-            "ratio<1 must emit more frames: {slower_frames} !> {unity_frames}"
-        );
-        let approx_faster = (in_frames as f64 / 1.01) as usize;
-        assert!(
-            faster_frames.abs_diff(approx_faster) < 2 * TAPS,
-            "ratio>1 output ~ input/ratio: {faster_frames} vs ~{approx_faster}"
-        );
-    }
-
-    /// The streaming-cursor guarantee: resampling a long signal in 10 ms blocks
-    /// yields the SAME samples as one shot — no per-block discontinuity/click.
-    #[test]
-    fn block_streaming_matches_one_shot() {
-        let table = SincTable::new();
-        let input = stereo_signal(16_384);
-        let ratio = 1.0001;
-
-        let one_shot = resample_i16(&input, 2, ratio, &table);
-
-        let mut streamer = BlockResampler::with_table(2, 32_768, table.clone()).expect("streamer");
-        let block = PERIOD as usize;
-        let mut streamed: Vec<i16> = Vec::new();
-        let total_frames = frames_of(&input, 2);
-        let mut f = 0usize;
-        while f < total_frames {
-            let end = (f + block).min(total_frames);
-            let chunk = &input[f * 2..end * 2];
-            streamed.extend_from_slice(&streamer.resample_block(chunk, ratio));
-            f = end;
-        }
-
-        // Both seat the cursor identically (RADIUS_FRAMES into frame 0 on the
-        // first non-empty block), so output frame k is the same sample. They
-        // may differ by a few frames at the very tail (the streamer can emit a
-        // couple more once all input is present); compare the common prefix.
-        let common = one_shot.len().min(streamed.len());
-        assert!(common > 10_000, "should have a long common region");
-        let mut max_diff = 0i32;
-        for i in 0..common {
-            max_diff = max_diff.max((one_shot[i] as i32 - streamed[i] as i32).abs());
-        }
-        assert!(
-            max_diff <= 1,
-            "block streaming must match one-shot within 1 LSB, max_diff={max_diff}"
-        );
-    }
-
-    /// Block streaming with VARYING per-block ratios (what the live loop does)
-    /// must still be phase-continuous: no clicks at block seams. We can't
-    /// compare to a single one-shot ratio here, so assert the seam continuity
-    /// directly — the sample-to-sample step across a block boundary is no larger
-    /// than the steps just inside each block (a discontinuity would spike it).
-    #[test]
-    fn varying_ratio_blocks_have_no_seam_discontinuity() {
-        let table = SincTable::new();
-        let mut streamer = BlockResampler::with_table(2, 32_768, table.clone()).expect("streamer");
-        let block = PERIOD as usize;
-        // A continuous low-frequency tone makes seams obvious if they exist.
-        let tone: Vec<i16> = (0..40_000)
-            .flat_map(|n| {
-                let v = clamp_i16(9000.0 * ((n as f64) * 0.01).sin());
-                [v, v]
-            })
-            .collect();
-
-        let ratios = [1.0, 1.0003, 0.9997, 1.0006, 0.9994, 1.0001];
-        let mut streamed: Vec<i16> = Vec::new();
-        let mut block_lengths: Vec<usize> = Vec::new();
-        let total = frames_of(&tone, 2);
-        let mut f = 0usize;
-        let mut ri = 0usize;
-        while f < total {
-            let end = (f + block).min(total);
-            let chunk = &tone[f * 2..end * 2];
-            let produced = streamer.resample_block(chunk, ratios[ri % ratios.len()]);
-            block_lengths.push(frames_of(&produced, 2));
-            streamed.extend_from_slice(&produced);
-            f = end;
-            ri += 1;
-        }
-
-        // Walk the left channel; find the max |delta| INSIDE blocks vs the
-        // |delta| exactly AT each block seam. A click at a seam would make the
-        // seam delta an outlier.
-        let left: Vec<i32> = streamed.iter().step_by(2).map(|&s| s as i32).collect();
-        let mut seam_indices: Vec<usize> = Vec::new();
-        let mut acc = 0usize;
-        for (i, len) in block_lengths.iter().enumerate() {
-            acc += len;
-            if i + 1 < block_lengths.len() && acc > 0 && acc < left.len() {
-                seam_indices.push(acc);
-            }
-        }
-        let mut max_interior = 0i32;
-        for w in left.windows(2) {
-            max_interior = max_interior.max((w[1] - w[0]).abs());
-        }
-        let mut max_seam = 0i32;
-        for &s in &seam_indices {
-            if s < left.len() {
-                max_seam = max_seam.max((left[s] - left[s - 1]).abs());
-            }
-        }
-        // The seam step must be within the normal interior step range — no
-        // click. (Equality is allowed; a discontinuity would make it much
-        // larger.)
-        assert!(
-            max_seam <= max_interior,
-            "block seams introduce a discontinuity: max_seam={max_seam} max_interior={max_interior}"
         );
     }
 
@@ -1376,32 +1012,6 @@ mod tests {
         assert_eq!(ctl.ratio_ppm(), 0.0, "reset zeroes the reported ppm");
     }
 
-    /// resample_block never panics on degenerate ratios; a non-finite or
-    /// non-positive ratio falls back to unity (defense in depth — the loop owns
-    /// real clamping).
-    #[test]
-    fn degenerate_ratio_falls_back_to_unity() {
-        let table = SincTable::new();
-        let input = stereo_signal(2048);
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let mut r = BlockResampler::with_table(2, 8192, table.clone()).expect("resampler");
-            let out = r.resample_block(&input, bad);
-            assert!(
-                !out.is_empty(),
-                "degenerate ratio {bad} should emit (unity)"
-            );
-        }
-    }
-
-    #[test]
-    fn empty_input_and_zero_channels_are_safe() {
-        let table = SincTable::new();
-        assert!(resample_i16(&[], 2, 1.0, &table).is_empty());
-        assert!(resample_i16(&[1, 2, 3, 4], 0, 1.0, &table).is_empty());
-        let mut r = BlockResampler::with_table(2, 1024, table).expect("resampler");
-        assert!(r.resample_block(&[], 1.0).is_empty());
-    }
-
     #[test]
     fn audio_ring_rejects_zero_capacity_and_channels() {
         assert_eq!(AudioRing::new(0, 2).unwrap_err(), RingError::ZeroCapacity);
@@ -1521,8 +1131,7 @@ mod tests {
     /// half-step values where a rounding-mode difference would show, and both
     /// saturation rails. The end-to-end half of the same claim is jasper-fanin's
     /// `the_narrow_direct_route_is_byte_identical_to_its_committed_golden` —
-    /// exact, whole-period, and on the shipping route. `golden_vector_is_stable`
-    /// is a 4-frame drift tripwire, not that proof.
+    /// exact, whole-period, and on the shipping route.
     #[test]
     fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
         let accs = [
@@ -1983,43 +1592,4 @@ mod tests {
         assert_eq!(ring.sample(4, 0), 50);
         assert_eq!(ring.sample(4, 1), -50);
     }
-
-    /// The committed golden fixture. A short deterministic stereo signal
-    /// resampled one-shot at ratio 1.0001, pinned as a regression tripwire
-    /// against silent math drift. Printed (with `--nocapture`) so the fixture
-    /// can be regenerated via `cargo run --example golden_vector` if the math
-    /// is ever *intentionally* changed.
-    #[test]
-    fn golden_vector_is_stable() {
-        let table = SincTable::new();
-        let input = golden::canonical_input();
-        let out = resample_i16(&input, golden::CHANNELS, 1.0001, &table);
-        assert_eq!(out.len(), GOLDEN_1_0001_LEN, "golden length drift");
-        for (i, &(idx, l, r)) in GOLDEN_1_0001_SPOT.iter().enumerate() {
-            let got_l = out[idx * 2];
-            let got_r = out[idx * 2 + 1];
-            // EXACT: with one implementation in tree a ±1 LSB allowance only
-            // hides drift. Do not loosen it.
-            assert_eq!(
-                (got_l, got_r),
-                (l, r),
-                "golden spot {i} (frame {idx}) drift"
-            );
-        }
-    }
-
-    // Golden fixture for ratio 1.0001 over the 256-frame deterministic input in
-    // `golden_vector_is_stable`. 223 output frames × 2 channels interleaved =
-    // 446 i16 samples (256 input frames, cursor seated at RADIUS_FRAMES, ratio
-    // 1.0001).
-    const GOLDEN_1_0001_LEN: usize = 446;
-    // (output frame index, left, right) at a few stable positions past the
-    // cursor warm-up. Regenerate via `cargo run --example golden_vector` if the
-    // math is intentionally changed.
-    const GOLDEN_1_0001_SPOT: [(usize, i16, i16); 4] = [
-        (32, 3138, -4881),
-        (64, -5874, 3879),
-        (128, 3381, -3962),
-        (200, -4413, -4164),
-    ];
 }
