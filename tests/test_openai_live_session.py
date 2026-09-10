@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+
+from openai.types.live.client_event_param import ClientEventParam
+from pydantic import TypeAdapter
+
+from jasper.tools import ToolRegistry, tool
+from jasper.voice.openai_live_session import OpenAILiveConnection
+from tests._async_wait import wait_until
+
+
+CLIENT_EVENT = TypeAdapter(ClientEventParam)
+
+
+class LiveSocket:
+    def __init__(self):
+        self.events = asyncio.Queue()
+        self.sent = []
+        self.closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        self.closed = True
+
+    async def send(self, event):
+        CLIENT_EVENT.validate_python(event)
+        self.sent.append(event)
+        if event["type"] == "session.start":
+            await self.events.put({"type": "session.started"})
+        if event["type"] == "session.close":
+            await self.events.put({"type": "session.closed", "usage": {"seconds": 12.5}})
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.events.get()
+
+
+def backend(delegation, kind, **fields):
+    return {"type": "response.event", "delegation_id": delegation, "event": {"type": kind, **fields}}
+
+
+async def delegate(turn, delegation, response_id, name, args):
+    await turn.on_event({"type": "session.delegation.created", "delegation": {"id": delegation, "target": "responses"}})
+    await turn.on_event(backend(delegation, "response.created", response={"id": response_id}))
+    await turn.on_event(backend(delegation, "response.output_item.done", item={
+        "type": "function_call", "call_id": response_id + "_call", "name": name, "arguments": json.dumps(args),
+    }))
+    await turn.on_event(backend(delegation, "response.completed", response={
+        "id": response_id, "output": [], "usage": {"input_tokens": 20, "output_tokens": 5},
+    }))
+
+
+async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
+    socket = LiveSocket()
+    registry = ToolRegistry()
+    calls = []
+
+    @tool()
+    async def timer(seconds: int) -> dict:
+        """Set a timer."""
+        calls.append(seconds)
+        return {"seconds": seconds}
+
+    registry.register(timer)
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    usage = []
+    conn.set_background_usage_recorder(lambda **row: usage.append(row))
+    await conn.start(registry, "Use local tools.")
+    assert socket.sent == []
+    turn = await conn.acquire_turn()
+    try:
+        await turn.send_text_context("The user wants the timer.")
+        await delegate(turn, "d1", "r1", "timer", {"seconds": 30})
+        await wait_until(lambda: any(e["type"] == "response.create" for e in socket.sent))
+        assert calls == [30]
+        result = next(e["item"] for e in socket.sent if e["type"] == "response.item.create")
+        assert result["call_id"] == "r1_call"
+        assert json.loads(result["output"])["seconds"] == 30
+        completed = backend("d1", "response.completed", response={"id": "r1", "output": [], "usage": {"input_tokens": 20}})
+        await turn.on_event(completed)
+        assert len(usage) == 1
+        await turn.on_event({"type": "session.usage.updated", "usage": {"seconds": 4}})
+        await turn.on_event({"type": "session.usage.updated", "usage": {"seconds": 10}})
+    finally:
+        await turn.release()
+        await conn.stop()
+    assert turn.usage().breakdown == {"seconds": 12.5, "finalized": True}
+    assert socket.closed
+
+
+async def test_correction_discards_stale_tool_results():
+    socket = LiveSocket()
+    registry = ToolRegistry()
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    @tool()
+    async def slow_lookup() -> dict:
+        """Look up transit."""
+        entered.set()
+        await finish.wait()
+        return {"bus": 1}
+
+    registry.register(slow_lookup)
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(registry, "Use local tools.")
+    turn = await conn.acquire_turn()
+    try:
+        await delegate(turn, "old", "r1", "slow_lookup", {})
+        await entered.wait()
+        await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "new", "target": "responses"}})
+        finish.set()
+        await asyncio.gather(turn._tool_task, return_exceptions=True)
+        assert not any(e["type"] == "response.item.create" for e in socket.sent)
+    finally:
+        finish.set()
+        await turn.release()
+        await conn.stop()
+
+
+async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_input():
+    socket = LiveSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        await turn.on_event({"type": "session.output_audio.delta", "delta": base64.b64encode(bytes(240)).decode()})
+        assert turn.chunks_received() == 0
+        await turn.send_audio(b"\xff\x7f" * 1280)
+        turn.discard_input()
+        await wait_until(lambda: any(e["type"] == "session.input_audio.append" for e in socket.sent))
+        assert all(not any(base64.b64decode(e["audio"])) for e in socket.sent if e["type"] == "session.input_audio.append")
+    finally:
+        await turn.release()
+        await conn.stop()
+
+
+async def test_failed_start_redacts_key_and_allows_another_wake():
+    socket = LiveSocket()
+    key = "private-test-credential"
+    attempts = 0
+
+    def connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError(f"rejected {key}")
+        return socket
+
+    conn = OpenAILiveConnection(api_key=key, connect=connect)
+    await conn.start(ToolRegistry(), "Be concise.")
+    try:
+        await conn.acquire_turn()
+    except RuntimeError as exc:
+        assert key not in str(exc)
+    else:
+        raise AssertionError("connection must fail")
+    assert not conn.is_paused()
+    turn = await conn.acquire_turn()
+    await turn.release()
+    await conn.stop()

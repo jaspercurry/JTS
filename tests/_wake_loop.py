@@ -174,6 +174,7 @@ def wake_loop_for_tests(
         active_voice_model="",
         duck_db=0.0,
         idle_timeout_sec=10.0,
+        followup_timeout_sec=0.0,
         mic_device="udp:9876",
         mic_mute_state_path="/tmp/jasper-voice-daemon-test-mute.env",
         peering_enabled=False,

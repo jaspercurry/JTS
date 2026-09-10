@@ -116,11 +116,11 @@ class VoiceUsageStore(UsageStore):
             for row_id in self._open_activity_ids():
                 self._submit("connection_intervals", row_id)
 
-    def record_billable_activity_close(self) -> None:
+    def record_billable_activity_close(self, *, seconds: float | None = None) -> None:
         with self._condition:
             self._load_snapshot()
             rows = self._open_activity_ids()
-            super().record_billable_activity_close()
+            super().record_billable_activity_close(seconds=seconds)
             for row_id in rows:
                 self._submit("connection_intervals", row_id)
 

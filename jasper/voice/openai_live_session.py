@@ -1,0 +1,365 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""GPT-Live voice streaming with managed Responses delegation.
+
+See https://developers.openai.com/api/docs/guides/live-migration.
+One billable Live session is owned by one wake conversation.
+"""
+from __future__ import annotations
+
+import asyncio
+import audioop
+import base64
+import json
+import logging
+import time
+
+from ..log_event import log_event
+from ..tools import dispatch_tool
+from ._base import BaseLiveConnection, BaseLiveTurn
+from ._supervisor import failure_detail
+from .openai_session import _upsample_16k_to_24k
+from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
+
+logger = logging.getLogger(__name__)
+
+FRONTEND_INSTRUCTIONS = (
+    "You are Jasper, a concise household voice assistant. Answer briefly and naturally. "
+    "Accept follow-up questions without asking for a wake word. Let the user interrupt "
+    "or correct you. Delegate all requests needing tools, local device information, "
+    "current facts, actions, or deeper reasoning to the backend. The backend has the "
+    "speaker's local tools for transit, timers, music and other functions; use those "
+    "instead of guessing or pretending an action succeeded. Delegate standalone "
+    "cancel, never mind, okay thanks, and goodbye so the backend can end_conversation. "
+    "Cancel my timer and stop music are tool requests, not requests to end the conversation. "
+    "Do not invite another question after every answer."
+)
+
+
+class OpenAILiveTurn(BaseLiveTurn):
+    continuous_input = True
+
+    def __init__(self, conn, started_at):
+        super().__init__(conn, started_at)
+        self._conn: OpenAILiveConnection = conn
+        self._resample_state = None
+        self._input_q = asyncio.Queue(maxsize=16)
+        self._input_admitted = True
+        self._sender = None
+        self._transcripts = {"user": [], "assistant": []}
+        self._seconds = 0.0
+        self._finalized = False
+        self._delegation_id = None
+        self._response_ids = {}
+        self._calls = {}
+        self._counted_responses = set()
+        self.backend_pending = False
+
+    async def send_audio(self, pcm_16khz_int16: bytes) -> None:
+        if self._released or self._turn_lost:
+            return
+        if self._input_admitted:
+            await self._input_q.put(pcm_16khz_int16)
+            self._bytes_sent += len(pcm_16khz_int16)
+
+    def discard_input(self) -> None:
+        self._input_admitted = False
+        self._resample_state = None
+        while not self._input_q.empty():
+            self._input_q.get_nowait()
+
+    async def _send_audio_stream(self) -> None:
+        while not self._released and not self._turn_lost:
+            started = time.monotonic()
+            try:
+                pcm = self._input_q.get_nowait()
+            except asyncio.QueueEmpty:
+                pcm = bytes(2560)  # 80 ms at 16 kHz, including button-release silence
+            if not self._input_admitted:
+                pcm = bytes(len(pcm))
+            wire, self._resample_state = _upsample_16k_to_24k(pcm, self._resample_state)
+            await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
+            await asyncio.sleep(max(0, len(pcm) / 32000 - (time.monotonic() - started)))
+
+    async def send_text_context(self, text: str) -> None:
+        await self._conn._send({"type": "session.instructions.append", "content": text, "delegation_id": None})
+
+    async def end_input(self) -> None:
+        # Live needs silence as well as speech to advance its audio timeline.
+        self._end_input_at_monotonic = time.monotonic()
+
+    async def cancel_response(self, reason: str) -> None:
+        # Live owns acoustic interruption. response.create is a backend command,
+        # and the Live protocol has no frontend response.cancel/truncate command.
+        return None
+
+    async def truncate_assistant_audio(self, provider_item_id, audio_played_ms) -> None:
+        return None
+
+    def usage(self) -> TurnUsage:
+        return TurnUsage(breakdown={"seconds": self._seconds, "finalized": self._finalized})
+
+    def capture(self) -> TurnCapture:
+        return TurnCapture(
+            user_text="".join(p["delta"] for p in self._transcripts["user"]) or None,
+            assistant_text="".join(p["delta"] for p in self._transcripts["assistant"]) or None,
+            data={"transcript_intervals": self._transcripts, "voice_usage": self.usage().breakdown},
+        )
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self.discard_input()
+        await self._conn._cancel_task(self._sender)
+        self._cancel_tools()
+        try:
+            await self._conn._close_live_session()
+        finally:
+            self._audio_q.put_nowait(None)
+            self._conn._active_turn = None
+            self._conn._set_state(ConnectionState.CONNECTED)
+
+    async def on_event(self, event: dict) -> None:
+        kind = event["type"]
+        if kind in {"session.usage.updated", "session.closed"}:
+            self._seconds = max(self._seconds, float((event.get("usage") or {}).get("seconds", 0)))
+            self._finalized = kind == "session.closed"
+            self._server_turn_complete = self._finalized
+            return
+        if kind == "response.event":
+            await self._on_backend_event(event)
+            return
+        if self._released or self._turn_lost:
+            return
+        if kind == "session.output_audio.delta":
+            pcm = base64.b64decode(event["delta"])
+            # Digital silence must not keep a follow-up window alive indefinitely.
+            if pcm and audioop.rms(pcm, 2) > 32:  # approximately -60 dBFS
+                self._last_chunk_at = time.monotonic()
+                self._chunks_received += 1
+                self._note_activity()
+                self._enqueue_audio(AudioOutChunk(pcm))
+        elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
+            speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
+            self._transcripts[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
+            self._note_activity()
+        elif kind == "session.delegation.created":
+            delegation = event["delegation"]
+            self._cancel_tools()
+            self._delegation_id = delegation["id"]
+            self._response_ids.clear()
+            self._calls.clear()
+            self.backend_pending = True
+            self._note_activity()
+
+    async def _on_backend_event(self, envelope: dict) -> None:
+        event = envelope["event"]
+        kind = event["type"]
+        delegation = envelope.get("delegation_id")
+        response = event.get("response") or {}
+        response_id = response.get("id") or self._response_ids.get(delegation)
+        if kind == "response.completed":
+            if response_id in self._counted_responses:
+                return
+            self._counted_responses.add(response_id)
+            usage = response.get("usage") or {}
+            if usage and self._conn._usage_recorder is not None:
+                self._conn._usage_recorder(
+                    provider="openai", model=self._conn._backend_model,
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    usage={
+                        "input_token_details": {"text_tokens": usage.get("input_tokens", 0),
+                            "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)},
+                        "output_token_details": {"text_tokens": usage.get("output_tokens", 0)},
+                    },
+                )
+        if self._released or self._turn_lost or delegation != self._delegation_id or delegation is None:
+            return
+        self._note_activity()
+        if kind == "response.created":
+            self._response_ids[delegation] = response_id
+            self._calls[response_id] = []
+        elif kind == "response.output_item.done":
+            item = event["item"]
+            if item.get("type") == "function_call":
+                self._calls.setdefault(response_id, []).append(item)
+        elif kind == "response.completed":
+            calls = self._calls.pop(response_id, [])
+            if calls:
+                # A correction cancels the old round before a new round is started.
+                old = self._tool_task
+                if old is not None and not old.done():
+                    await asyncio.gather(old, return_exceptions=True)
+                self._start_tool_round(lambda: self._run_calls(delegation, calls))
+            else:
+                self.backend_pending = False
+        elif kind in {"response.failed", "response.incomplete"}:
+            self.backend_pending = False
+            self._on_connection_lost()
+
+    async def _run_calls(self, delegation, calls) -> None:
+        assert self._conn._registry is not None
+        for call in calls:
+            if self._released or delegation != self._delegation_id:
+                return
+            try:
+                args = json.loads(call["arguments"])
+                if not isinstance(args, dict):
+                    raise ValueError("tool arguments must be an object")
+            except (ValueError, TypeError):
+                result = {"error": "invalid_arguments"}
+            else:
+                result = await dispatch_tool(self._conn._registry, call["name"], args)
+            if self._released or delegation != self._delegation_id:
+                return
+            await self._conn._send({"type": "response.item.create", "item": {
+                "type": "function_call_output", "call_id": call["call_id"], "output": json.dumps(result),
+            }})
+            self._note_activity()
+        if not self._released and delegation == self._delegation_id:
+            await self._conn._send({"type": "response.create"})
+
+
+class OpenAILiveConnection(BaseLiveConnection):
+    PROVIDER_NAME = "openai_live"
+    _logger = logger
+    _log_tag = "openai live connection:"
+
+    def __init__(self, *, api_key, model="gpt-live-1", voice="marin", backend_model="gpt-5.4-mini", connect=None):
+        super().__init__(model=model, voice=voice)
+        self._api_key = api_key
+        self._backend_model = backend_model
+        self._connect = connect
+        self._client = None
+        self._session_cm = None
+        self._session = None
+        self._started = asyncio.Event()
+        self._closed = asyncio.Event()
+        self._billable_activity_meter = None
+        self._usage_recorder = None
+
+    def set_billable_activity_meter(self, meter) -> None:
+        self._billable_activity_meter = meter
+
+    def set_background_usage_recorder(self, recorder) -> None:
+        self._usage_recorder = recorder
+
+    def _secret_literals(self) -> tuple[str, ...]:
+        return (self._api_key,)
+
+    async def start(self, registry, system_instruction) -> None:
+        self._registry = registry
+        self._system_instruction_provider = system_instruction if callable(system_instruction) else lambda: system_instruction
+        self._set_state(ConnectionState.CONNECTED)
+
+    async def acquire_turn(self) -> OpenAILiveTurn:
+        async with self._turn_lock:
+            assert self._registry is not None
+            assert self._system_instruction_provider is not None
+            if self._active_turn is not None:
+                raise RuntimeError("Live conversation already active")
+            self._set_state(ConnectionState.CONNECTING)
+            self._started.clear()
+            self._closed.clear()
+            turn = OpenAILiveTurn(self, time.monotonic())
+            self._active_turn = turn
+            try:
+                if self._connect is None:
+                    from openai import AsyncOpenAI  # lazy — optional provider SDK
+                    self._client = AsyncOpenAI(api_key=self._api_key)
+                    self._connect = self._client.live.connect
+                self._session_cm = self._connect()
+                async with asyncio.timeout(15):
+                    self._session = await self._session_cm.__aenter__()
+                    self._receive_task = asyncio.create_task(self._receive())
+                    await self._send({"type": "session.start", "session": {
+                        "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
+                        "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
+                        "delegation": {"type": "responses", "responses": {
+                            "model": self._backend_model, "instructions": self._system_instruction_provider(),
+                            "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")],
+                            "tool_choice": "auto", "parallel_tool_calls": False,
+                        }},
+                    }})
+                    await self._started.wait()
+                    if turn.turn_lost():
+                        raise RuntimeError("Live session failed during startup")
+                if self._billable_activity_meter is not None:
+                    self._billable_activity_meter.mark_started()
+                self._set_state(ConnectionState.IN_TURN)
+                turn._sender = asyncio.create_task(turn._send_audio_stream())
+                turn._sender.add_done_callback(lambda task: turn._on_connection_lost() if not task.cancelled() and task.exception() else None)
+                return turn
+            except BaseException as exc:  # noqa: BLE001 — release the socket on cancellation and redact SDK failures
+                try:
+                    await self._teardown_session()
+                finally:
+                    self._active_turn = None
+                    self._set_state(ConnectionState.CONNECTED)
+                if isinstance(exc, Exception):
+                    raise RuntimeError(failure_detail(exc, literals=self._secret_literals())) from None
+                raise
+
+    async def _send(self, event) -> None:
+        if self._session is None:
+            raise RuntimeError("Live socket is closed")
+        await self._session.send(event)
+
+    async def _receive(self) -> None:
+        turn = self._active_turn
+        try:
+            async for raw in self._session:
+                event = raw if isinstance(raw, dict) else raw.model_dump()
+                if event["type"] == "session.started":
+                    self._started.set()
+                elif event["type"] == "error":
+                    raise RuntimeError("Live command rejected")
+                else:
+                    await turn.on_event(event)
+                    if event["type"] == "session.closed":
+                        self._closed.set()
+                        break
+        except Exception as exc:  # noqa: BLE001
+            log_event(logger, "live.connection_failed", detail=failure_detail(exc, literals=self._secret_literals()))
+        finally:
+            if not turn._released:
+                turn._on_connection_lost()
+            self._started.set()
+
+    async def _close_live_session(self) -> None:
+        try:
+            if self._session is not None and not self._closed.is_set():
+                await self._send({"type": "session.close"})
+                await asyncio.wait_for(self._closed.wait(), 15)
+        except Exception as exc:  # noqa: BLE001
+            log_event(logger, "live.finalization_incomplete", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
+        finally:
+            turn = self._active_turn
+            if self._billable_activity_meter is not None:
+                self._billable_activity_meter.mark_ended(
+                    seconds=turn._seconds if turn and turn._finalized else None,
+                )
+            await self._teardown_session()
+
+    async def _teardown_session(self) -> None:
+        await self._cancel_task(self._receive_task)
+        self._receive_task = None
+        if self._session_cm is not None:
+            try:
+                await asyncio.wait_for(self._session_cm.__aexit__(None, None, None), 3)
+            except Exception as exc:  # noqa: BLE001
+                log_event(logger, "live.transport_close_failed", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
+            finally:
+                self._session_cm = self._session = None
+
+    async def stop(self) -> None:
+        if self._active_turn is not None:
+            await self._active_turn.release()
+        await self._teardown_session()
+        if self._client is not None:
+            await self._client.close()
+        self._set_state(ConnectionState.CLOSED)

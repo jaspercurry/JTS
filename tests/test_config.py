@@ -481,3 +481,17 @@ def test_config_import_chain_does_not_require_httpx():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+@pytest.mark.parametrize("raw, expected", [(None, 5.0), ("0", 0.0), ("2.5", 2.5), ("-1", None), ("nan", None), ("inf", None)])
+def test_shared_followup_timeout(monkeypatch, raw, expected):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    if raw is None:
+        monkeypatch.delenv("JASPER_FOLLOWUP_TIMEOUT_SEC", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_FOLLOWUP_TIMEOUT_SEC", raw)
+    if expected is None:
+        with pytest.raises(VoiceConfigError):
+            Config.from_env()
+    else:
+        assert Config.from_env().followup_timeout_sec == expected

@@ -92,6 +92,8 @@ class AssistantLoudnessProfile:
 def active_voice_identity(cfg: Any) -> tuple[str, str, str]:
     """Return the active provider/model/voice tuple from Config-like cfg."""
     provider = getattr(cfg, "voice_provider", "")
+    if provider == "openai_live":
+        return provider, getattr(cfg, "openai_live_model", ""), getattr(cfg, "openai_live_voice", "")
     if provider == "openai":
         return provider, getattr(cfg, "openai_model", ""), getattr(cfg, "openai_voice", "")
     if provider == "gemini":

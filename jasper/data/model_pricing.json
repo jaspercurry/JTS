@@ -1,8 +1,11 @@
 {
-  "as_of": "2026-06-20",
+  "as_of": "2026-09-10",
   "source": "provider public pricing pages (OpenAI, Google AI Studio, xAI)",
   "_comment": "Bundled voice and research rates: USD per 1M tokens; flat_per_hour_usd is USD/hour of billable realtime activity. Keyed by exact model ID. Update as_of when rates change, or refresh via /assistant/voice/. Omitted rate buckets default to 0. Per-model overrides live in /var/lib/jasper/pricing.json.",
   "models": {
+    "gpt-live-1": {
+      "flat_per_hour_usd": 3.0
+    },
     "gpt-realtime-2": {
       "audio_input_per_million_usd": 32.0,
       "audio_output_per_million_usd": 64.0,
