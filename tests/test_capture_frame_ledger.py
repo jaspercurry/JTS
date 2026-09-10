@@ -60,6 +60,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
+from tests._log_events import event_fields, event_records
 
 SR = 48_000
 FC_HZ = 1_800.0
@@ -472,9 +473,9 @@ def test_every_analyzed_capture_emits_the_ledger_event(caplog):
     cap = _synthesize(prog)
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
         _analyze(prog, cap, _page_report(cap.size))
-    assert "event=program_analysis.frame_ledger" in caplog.text
-    assert f"received_frames={cap.size}" in caplog.text
-    assert "lost_at=" in caplog.text
+    fields = event_fields(caplog, "program_analysis.frame_ledger")
+    assert fields["received_frames"] == str(cap.size)
+    assert fields["lost_at"] == ""
 
 
 def test_a_lossy_capture_warns_and_names_where(caplog):
@@ -484,9 +485,9 @@ def test_a_lossy_capture_warns_and_names_where(caplog):
         _analyze(prog, cap, _page_report(
             cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
         ))
-    assert "event=program_analysis.frame_ledger" in caplog.text
-    assert f"lost_at={LOST_AT_RENDER_GRAPH}" in caplog.text
-    assert f"render_gap_frames={RENDER_QUANTUM}" in caplog.text
+    fields = event_fields(caplog, "program_analysis.frame_ledger")
+    assert fields["lost_at"] == LOST_AT_RENDER_GRAPH
+    assert fields["render_gap_frames"] == str(RENDER_QUANTUM)
 
 
 def test_a_clean_capture_does_not_warn(caplog):
@@ -494,7 +495,7 @@ def test_a_clean_capture_does_not_warn(caplog):
     cap = _synthesize(prog)
     with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
         _analyze(prog, cap, _page_report(cap.size))
-    assert "event=program_analysis.frame_ledger" not in caplog.text
+    assert not event_records(caplog, "program_analysis.frame_ledger")
 
 
 def test_the_retained_sidecar_summary_carries_the_ledger_flat():

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import time
 from copy import deepcopy
 from dataclasses import replace
@@ -80,6 +79,7 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests._log_events import event_field_maps, event_records
 
 
 # What a REAL MEASURE analysis records and PR-L4 item 5 counts as evidence: the
@@ -3507,7 +3507,7 @@ def test_measured_trim_far_from_the_datasheet_is_refused_with_both_numbers(
     assert payload["level_match"]["frame_tolerance_db"] == (
         MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
     )
-    assert "event=baseline_profile.level_frame_disagreement" in caplog.text
+    assert event_records(caplog, "baseline_profile.level_frame_disagreement")
 
 
 def test_the_two_level_sittings_are_compared_and_disclosed(
@@ -3565,7 +3565,7 @@ def test_the_two_level_sittings_are_compared_and_disclosed(
     assert "driver_level_sittings_differ" in {
         issue["code"] for issue in payload["issues"]
     }
-    assert "event=baseline_profile.level_sittings_differ" in caplog.text
+    assert event_records(caplog, "baseline_profile.level_sittings_differ")
     # The gap is unplaceable without its frames, so both sittings are named.
     frame = payload["level_match"]["sitting_frame"]
     assert frame["crossover_sweep_axis"] == LEVEL_MATCH_AXIS
@@ -4712,9 +4712,7 @@ async def test_apply_baseline_profile_dsp_error_emits_exactly_one_rolled_back_ev
     assert "rollback_error=null" in message
     assert _events(caplog, "correction.crossover_apply_succeeded") == []
     # There is no separate "apply_failed" event name -- rolled_back is it.
-    assert not any(
-        "correction.crossover_apply_failed" in r.getMessage() for r in caplog.records
-    )
+    assert not event_records(caplog, "correction.crossover_apply_failed")
 
 
 async def test_apply_baseline_profile_dsp_error_reports_real_rollback_attempt(
@@ -4794,10 +4792,9 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
         )
 
     assert payload["status"] == "blocked"
-    assert not any(
-        r.getMessage().startswith("event=correction.crossover_apply_")
-        for r in caplog.records
-    )
+    assert not event_records(caplog, "correction.crossover_apply_started")
+    assert not event_records(caplog, "correction.crossover_apply_succeeded")
+    assert not event_records(caplog, "correction.crossover_apply_rolled_back")
 
 
 # --- Wave 4 (crossover measurement v2 §5.8): MeasuredCrossoverCandidate -----
@@ -6851,20 +6848,8 @@ def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_che
 
 
 def _bank_events(caplog) -> list[dict[str, str]]:
-    """The base-trim seam's events as FIELDS, never as prose.
-
-    ``log_event`` renders logfmt, so one ``shlex.split`` recovers the
-    structured pairs a consumer actually reads — the result and reason codes —
-    without pinning the wording of any detail string.
-    """
-    out: list[dict[str, str]] = []
-    for message in _events(caplog, "dsp.baseline_base_trim_banked"):
-        fields: dict[str, str] = {}
-        for token in shlex.split(message):
-            key, _, value = token.partition("=")
-            fields[key] = value
-        out.append(fields)
-    return out
+    """The base-trim seam's events as FIELDS, never as prose."""
+    return event_field_maps(caplog, "dsp.baseline_base_trim_banked")
 
 
 def _applied_with_sources(
