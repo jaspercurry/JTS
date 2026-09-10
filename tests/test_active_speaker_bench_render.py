@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import resource
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,11 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.active_speaker.bench import render
+from jasper.active_speaker.bench import bass_replay, render
 from jasper.active_speaker.bench.replay import replay_levels
 from jasper.audio_measurement.bundles import sha256_file
+from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
+from tests.test_bass_extension_dynamic import _base_graph, _descriptor
 
 
 class _FakeCompleted:
@@ -48,6 +51,68 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path):
     raw.write_bytes(b'changed')
     with pytest.raises(ValueError):
         replay_levels(manifest, raw, (1, 2))
+
+
+def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatch):
+    descriptor = _descriptor()
+    source = apply_dynamic_bass_graph(_base_graph(), descriptor, (0, 2))
+    graph = tmp_path / 'source.yml'
+    graph.write_text(yaml.safe_dump(source))
+    calls = []
+
+    def replay(path, stimulus, out, **faders):
+        calls.append((yaml.safe_load(path.read_text()), faders))
+        return {'output': str(out / 'output.f64le')}
+
+    monkeypatch.setattr(bass_replay, 'replay_graph', replay)
+    result = bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
+        main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(0, 2))
+    assert calls[0][0] == _base_graph()
+    assert calls[-1][0] == source
+    assert calls[1][0] == calls[2][0]
+    for payload, _ in calls[1:3]:
+        assert payload['filters'] == source['filters']
+        assert payload['mixers'] == source['mixers']
+        assert payload['pipeline'] == [step for step in source['pipeline'] if step['type'] != 'Processor']
+    assert [faders for _, faders in calls] == [
+        {'main_db': -16, 'bass_reference_db': ref} for ref in (-16, -26, -16, -16)]
+    assert result['bass_attribution']['channels'] == [0, 2]
+    assert yaml.safe_load(graph.read_text()) == source
+    with pytest.raises(ValueError):
+        bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
+            main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(1, 3))
+    assert len(calls) == 4
+
+
+def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_path):
+    rate = 48000
+    tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
+    manifests = {}
+    for name, gain in (('baseline', 0), ('full_boost', 9), ('volume_taper', 6), ('delivered', 2)):
+        directory = tmp_path if name == 'delivered' else tmp_path / name
+        directory.mkdir(exist_ok=True)
+        raw = directory / 'output.f64le'
+        np.column_stack([tone * .01 * 10 ** (gain / 20), np.zeros(rate)]).astype('<f8').tofile(raw)
+        manifests[name] = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
+            'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': name, 'stimulus_sha256': 'stimulus',
+            'main_db': -16, 'bass_reference_db': -26 if name == 'full_boost' else -16}
+    manifest = manifests.pop('delivered')
+    manifest['bass_attribution'] = {'stages': manifests, 'channels': [0], 'descriptor': {}, 'scope': 'net output'}
+    raw = tmp_path / 'output.f64le'
+    result = bass_replay.bass_replay_levels(manifest, raw, (0, 1))
+    band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == [50., 63.])
+    assert [band[key] for key in ('full_boost_gain_db', 'volume_taper_output_change_db',
+                                  'compressor_output_change_db', 'delivered_gain_db')] == [9, -3, -4, 2]
+    assert result['channels'][0]['bass_owner'] is True
+    assert result['channels'][1]['bass_owner'] is False
+    assert all(b['delivered_gain_db'] is None for b in result['channels'][1]['bands'])
+    manifests['baseline']['main_db'] = -30
+    with pytest.raises(ValueError):
+        bass_replay.bass_replay_levels(manifest, raw, (0, 1))
+    manifests['baseline']['main_db'] = -16
+    (tmp_path / 'full_boost' / 'output.f64le').write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        bass_replay.bass_replay_levels(manifest, raw, (0, 1))
 
 
 def _stub_subprocess_run(
