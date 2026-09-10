@@ -38,15 +38,17 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
-# Reused rather than a third package-local identifier regex; its first-char
-# class excludes ".", so it rejects ".", ".." and any "/"-carrying token.
-from .commissioning_run import _IDENTIFIER_RE as _ROUND_ID_RE
+
+# The first-char class excludes ".", so it rejects ".", ".." and any
+# "/"-carrying token.
+_ROUND_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 
 __all__ = [
     "DEFAULT_CAMPAIGN_ROOT",

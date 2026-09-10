@@ -4,16 +4,15 @@
 
 """Strict, bundle-scoped storage for Active commissioning evidence.
 
-The authoritative I/O half of :mod:`commissioning_evidence`: it reopens the
-bundle's Shared admission authority, publishes immutable canonical artifacts,
-and verifies exact bytes on every reopen. ``info.json`` and the fail-soft
-forensic manifest are not evidence authority.
+It reopens the bundle's Shared admission authority, publishes immutable
+canonical artifacts under ``evidence/v1/artifacts/``, and verifies exact bytes
+on every reopen. ``info.json`` and the fail-soft forensic manifest are not
+evidence authority.
 
 One raw artifact is capped at the 5 MiB crossover-capture ceiling; the total
-bound covers the maximum stereo three-way run (582 captures at the full raw cap
-plus 1 GiB of stimuli and metadata). That total is a hard safety ceiling, not a
-retention target. A capture WAV is published once at its authoritative path;
-this store creates no manifest or shadow WAV copy.
+bound is a hard safety ceiling, not a retention target. A capture WAV is
+published once at its authoritative path; this store creates no manifest or
+shadow WAV copy.
 """
 
 from __future__ import annotations
@@ -21,14 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Mapping
 
 from jasper.atomic_io import fsync_directory
 from jasper.audio_measurement.bundles import BundleError
@@ -36,12 +34,6 @@ from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionAuthority,
-    read_generation_admission,
-    read_playback_admission,
-)
-from jasper.audio_measurement.null_walk import (
-    MAX_SCHEDULED_CANDIDATES,
-    MIN_CAPTURE_COUNT,
 )
 
 from .bundles import (
@@ -50,48 +42,16 @@ from .bundles import (
     BUNDLE_KIND,
     open_bundle_admission_authority,
 )
-from .commissioning_evidence import (
-    STATIONARY_CAPTURE_COUNT,
-    AdmittedIsolatedDriverCapture,
-    AdmittedRegionCapture,
-    CompleteIsolatedDriverEvidence,
-    CompleteCommissioningEvidence,
-    DelayPointEvidence,
-    DelayWalkEvidence,
-    IsolatedDriverEvidence,
-    RegionCommissioningEvidence,
-    RegionEvidencePlan,
-    StationaryRegionEvidence,
-)
-from .commissioning_run import CommissioningRunHandle
-from .profile import ADJACENT_PAIRS_BY_WAY, DRIVER_ROLES_BY_WAY, SIDES_BY_LAYOUT
 from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 EVIDENCE_ROOT = "evidence/v1"
 MAX_EVIDENCE_ARTIFACT_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_TYPED_EVIDENCE_BYTES = 32 * 1024 * 1024
-MAX_COMMISSIONING_REGIONS = max(
-    len(sides) * len(regions)
-    for sides in SIDES_BY_LAYOUT.values()
-    for regions in ADJACENT_PAIRS_BY_WAY.values()
-)
-MAX_SUMMED_CAPTURE_ARTIFACT_COUNT = MAX_COMMISSIONING_REGIONS * (
-    (2 * STATIONARY_CAPTURE_COUNT)
-    + (MAX_SCHEDULED_CANDIDATES * MIN_CAPTURE_COUNT)
-)
-MAX_ISOLATED_DRIVER_TARGETS = max(
-    len(sides) * len(roles)
-    for sides in SIDES_BY_LAYOUT.values()
-    for roles in DRIVER_ROLES_BY_WAY.values()
-)
-MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT = (
-    MAX_ISOLATED_DRIVER_TARGETS * STATIONARY_CAPTURE_COUNT
-)
-MAX_CAPTURE_ARTIFACT_COUNT = (
-    MAX_SUMMED_CAPTURE_ARTIFACT_COUNT + MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT
-)
+# Every authoritative byte in the session -- evidence, stimuli and admissions.
+# 582 is the capture count of the largest run this store was sized for (a
+# stereo three-way); 1 GiB covers its stimuli and metadata.
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
-    MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
+    582 * MAX_EVIDENCE_ARTIFACT_BYTES
 ) + (1024 * 1024 * 1024)
 # Free space a durable evidence publish must leave behind, as headroom for the
 # run still in progress; open/current bundles are retention-protected, so
@@ -101,12 +61,6 @@ MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
 # the free space a Pi needs before it may publish anything. Change this only
 # when the publish-headroom argument itself changes.
 MIN_FREE_SPACE_AFTER_PUBLISH_BYTES = 256 * 1024 * 1024
-
-_ATTEMPT_CAPTURE_NAME_RE = re.compile(r"([0-9]{4})\.json")
-_ATTEMPT_TEMP_NAME_RE = re.compile(
-    r"\.[0-9]{4}\.json\.[A-Za-z0-9_-]+\.tmp"
-)
-_T = TypeVar("_T")
 
 
 class CommissioningEvidenceStoreErrorCode(StrEnum):
@@ -142,12 +96,6 @@ class CommissioningEvidenceStoreError(RuntimeError):
 
 class _PublishOutcomeUnknown(OSError):
     pass
-
-
-def is_missing(error: CommissioningEvidenceStoreError) -> bool:
-    """Is this refusal *"there is no such artifact"* rather than a failure?"""
-
-    return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -221,127 +169,14 @@ def _normalized_relative_path(relative_path: str) -> str:
     return relative_path
 
 
-def _component_key(value: str, *, field_name: str) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INVALID_PATH,
-            f"{field_name} must be a non-empty trimmed string",
-        )
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
-
-
 def _artifact_path(relative_path: str) -> str:
     return f"{EVIDENCE_ROOT}/artifacts/{_normalized_relative_path(relative_path)}"
-
-
-def _require_evidence_artifact(artifact: ArtifactIdentity, *, role: str) -> None:
-    prefix = f"{EVIDENCE_ROOT}/artifacts/"
-    if not artifact.relative_path.startswith(prefix):
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-            f"{role} must occupy the strict evidence artifact namespace",
-        )
-
-
-def _require_stimulus_path(
-    artifact: ArtifactIdentity,
-    *,
-    admission_id: str,
-) -> None:
-    if artifact.relative_path != f"stimuli/{admission_id}.wav":
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-            "stimulus must occupy its exact one-shot admission path",
-        )
-
-
-def _require_identity_path(artifact: ArtifactIdentity, expected: str) -> None:
-    if artifact.relative_path != expected:
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-            "typed evidence identity does not occupy its canonical path",
-        )
-
-
-def _run_root(run_id: str) -> str:
-    run = _component_key(run_id, field_name="run_id")
-    return f"{EVIDENCE_ROOT}/runs/{run}"
-
-
-def _generation_root(run: CommissioningRunHandle) -> str:
-    if not isinstance(run, CommissioningRunHandle):
-        raise TypeError("run must be CommissioningRunHandle")
-    return f"{_run_root(run.run_id)}/generations/{run.owner_generation}"
-
-
-def plan_relative_path(run: CommissioningRunHandle) -> str:
-    return f"{_generation_root(run)}/plan.json"
-
-
-def attempt_capture_relative_path(attempt_id: str, ordinal: int) -> str:
-    if type(ordinal) is not int or not 0 <= ordinal <= 9999:
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INVALID_PATH,
-            "capture ordinal must be an integer from 0 through 9999",
-        )
-    attempt = _component_key(attempt_id, field_name="attempt_id")
-    return f"{EVIDENCE_ROOT}/attempts/{attempt}/captures/{ordinal:04d}.json"
-
-
-def isolated_attempt_capture_relative_path(attempt_id: str, ordinal: int) -> str:
-    if type(ordinal) is not int or not 0 <= ordinal <= 9999:
-        raise CommissioningEvidenceStoreError(
-            CommissioningEvidenceStoreErrorCode.INVALID_PATH,
-            "capture ordinal must be an integer from 0 through 9999",
-        )
-    attempt = _component_key(attempt_id, field_name="attempt_id")
-    return f"{EVIDENCE_ROOT}/isolated-attempts/{attempt}/captures/{ordinal:04d}.json"
-
-
-def complete_relative_path(run_id: str) -> str:
-    return f"{_run_root(run_id)}/complete.json"
-
-
-def isolated_driver_evidence_relative_path(run_id: str) -> str:
-    return f"{_run_root(run_id)}/isolated-driver-evidence.json"
-
-
-def isolated_driver_relative_path(
-    run: CommissioningRunHandle,
-    speaker_group_id: str,
-    role: str,
-) -> str:
-    group = _component_key(speaker_group_id, field_name="speaker_group_id")
-    driver_role = _component_key(role, field_name="role")
-    return (
-        f"{_generation_root(run)}/drivers/{group}/{driver_role}/"
-        "isolated-driver-evidence.json"
-    )
 
 
 def _max_bytes_for_path(relative_path: str) -> int:
     if relative_path.startswith(f"{EVIDENCE_ROOT}/artifacts/"):
         return MAX_EVIDENCE_ARTIFACT_BYTES
     return MAX_TYPED_EVIDENCE_BYTES
-
-
-@dataclass(slots=True)
-class _ReadBudget:
-    byte_limit: int = MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES
-    byte_count: int = 0
-    _seen: set[str] = field(default_factory=set)
-
-    def consume(self, artifact: ArtifactIdentity) -> None:
-        if artifact.fingerprint in self._seen:
-            return
-        total = self.byte_count + artifact.byte_size
-        if total > self.byte_limit:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.TOTAL_TOO_LARGE,
-                "authoritative evidence exceeds the bounded deep-read budget",
-            )
-        self._seen.add(artifact.fingerprint)
-        self.byte_count = total
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,12 +368,7 @@ class CommissioningEvidenceStore:
 
         return self._identity_for_path(_normalized_relative_path(relative_path))
 
-    def _read_identity(
-        self,
-        artifact: ArtifactIdentity,
-        *,
-        budget: _ReadBudget | None = None,
-    ) -> bytes:
+    def _read_identity(self, artifact: ArtifactIdentity) -> bytes:
         if not isinstance(artifact, ArtifactIdentity):
             raise TypeError("artifact must be ArtifactIdentity")
         if (
@@ -554,8 +384,6 @@ class CommissioningEvidenceStore:
                 CommissioningEvidenceStoreErrorCode.TOO_LARGE,
                 "evidence artifact identity exceeds its bounded size limit",
             )
-        if budget is not None:
-            budget.consume(artifact)
         raw = self._read_path(artifact.relative_path)
         if (
             len(raw) != artifact.byte_size
@@ -787,632 +615,3 @@ class CommissioningEvidenceStore:
 
     def reopen_json_artifact(self, artifact: ArtifactIdentity) -> dict[str, Any]:
         return _parse_canonical_object(self._read_identity(artifact))
-
-    def _assert_session(self, value: Any) -> None:
-        authority = getattr(value, "authority", None)
-        if authority is None:
-            plan = getattr(value, "plan", None)
-            authority = getattr(plan, "authority", None)
-        if (
-            authority is None
-            or authority.commissioning_session_id != self.session_id
-        ):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.WRONG_AUTHORITY,
-                "typed evidence does not belong to this exact session",
-            )
-
-    def _publish_typed(
-        self,
-        relative_path: str,
-        value: _T,
-        parser: Callable[[Any], _T],
-        *,
-        verify: Callable[[_T, _ReadBudget], None] | None = None,
-    ) -> ArtifactIdentity:
-        if verify is not None:
-            verify(value, _ReadBudget())
-        payload = _canonical_json(value.to_dict())  # type: ignore[attr-defined]
-        artifact = self._write_once(relative_path, payload)
-        try:
-            reopened = self._reopen_typed(artifact, parser)
-            if reopened != value:
-                raise ValueError("typed evidence readback changed")
-            if verify is not None:
-                verify(reopened, _ReadBudget())
-        except (CommissioningEvidenceStoreError, ValueError, TypeError) as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.PERSIST_OUTCOME_UNKNOWN,
-                "published typed evidence could not be reopened exactly",
-            ) from exc
-        return artifact
-
-    def _reopen_typed(
-        self,
-        artifact: ArtifactIdentity,
-        parser: Callable[[Any], _T],
-    ) -> _T:
-        raw = self._read_identity(artifact)
-        value = _parse_canonical_object(raw)
-        try:
-            return parser(value)
-        except (ValueError, TypeError) as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.MALFORMED,
-                f"typed evidence is invalid: {exc}",
-            ) from exc
-
-    def publish_region_evidence_plan(
-        self,
-        plan: RegionEvidencePlan,
-    ) -> ArtifactIdentity:
-        self._assert_session(plan)
-        return self._publish_typed(
-            plan_relative_path(plan.authority.run),
-            plan,
-            RegionEvidencePlan.from_mapping,
-        )
-
-    def reopen_region_evidence_plan(
-        self,
-        *,
-        run: CommissioningRunHandle,
-        artifact: ArtifactIdentity | None = None,
-    ) -> RegionEvidencePlan:
-        expected_path = plan_relative_path(run)
-        identity = artifact or self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(identity, RegionEvidencePlan.from_mapping)
-        self._assert_session(result)
-        if result.authority.run != run:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "plan path does not match the exact run owner generation",
-            )
-        return result
-
-    def publish_admitted_region_capture(
-        self,
-        capture: AdmittedRegionCapture,
-        *,
-        ordinal: int,
-    ) -> ArtifactIdentity:
-        self._assert_session(capture)
-        return self._publish_typed(
-            attempt_capture_relative_path(capture.attempt_id, ordinal),
-            capture,
-            AdmittedRegionCapture.from_mapping,
-            verify=self._verify_capture,
-        )
-
-    def reopen_admitted_region_capture(
-        self,
-        artifact: ArtifactIdentity,
-    ) -> AdmittedRegionCapture:
-        result = self._reopen_typed(artifact, AdmittedRegionCapture.from_mapping)
-        self._assert_session(result)
-        prefix = (
-            f"{EVIDENCE_ROOT}/attempts/"
-            f"{_component_key(result.attempt_id, field_name='attempt_id')}/captures/"
-        )
-        suffix = artifact.relative_path.removeprefix(prefix)
-        match = _ATTEMPT_CAPTURE_NAME_RE.fullmatch(suffix)
-        if not artifact.relative_path.startswith(prefix) or match is None:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "capture evidence does not occupy its exact attempt namespace",
-            )
-        _require_identity_path(
-            artifact,
-            attempt_capture_relative_path(result.attempt_id, int(match.group(1))),
-        )
-        self._verify_capture(result, _ReadBudget())
-        return result
-
-    def reopen_attempt_capture(
-        self,
-        attempt_id: str,
-        ordinal: int,
-    ) -> AdmittedRegionCapture:
-        relative = attempt_capture_relative_path(attempt_id, ordinal)
-        result = self.reopen_admitted_region_capture(self._identity_for_path(relative))
-        if result.attempt_id != attempt_id:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "attempt capture path does not match its typed attempt",
-            )
-        return result
-
-    def reopen_attempt_captures(
-        self,
-        attempt_id: str,
-    ) -> tuple[AdmittedRegionCapture, ...]:
-        ordinals = self._attempt_capture_ordinals(
-            attempt_capture_relative_path(attempt_id, 0)
-        )
-        return tuple(self.reopen_attempt_capture(attempt_id, item) for item in ordinals)
-
-    def _attempt_capture_ordinals(self, first_relative_path: str) -> tuple[int, ...]:
-        first = Path(first_relative_path)
-        directory = self._target(first.parent.as_posix())
-        try:
-            metadata = directory.lstat()
-        except FileNotFoundError:
-            return ()
-        except OSError as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"could not inspect attempt capture collection: {exc}",
-            ) from exc
-        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.NOT_REGULAR,
-                "attempt capture collection must be a real directory",
-            )
-        ordinals: list[int] = []
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    match = _ATTEMPT_CAPTURE_NAME_RE.fullmatch(entry.name)
-                    child_metadata = entry.stat(follow_symlinks=False)
-                    if (
-                        _ATTEMPT_TEMP_NAME_RE.fullmatch(entry.name) is not None
-                        and stat.S_ISREG(child_metadata.st_mode)
-                    ):
-                        continue
-                    if match is None or not stat.S_ISREG(child_metadata.st_mode):
-                        raise CommissioningEvidenceStoreError(
-                            CommissioningEvidenceStoreErrorCode.NOT_REGULAR,
-                            "attempt capture collection contains an unexpected entry",
-                        )
-                    ordinals.append(int(match.group(1)))
-        except CommissioningEvidenceStoreError:
-            raise
-        except OSError as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"could not read attempt capture collection: {exc}",
-            ) from exc
-        ordinals.sort()
-        if ordinals != list(range(len(ordinals))):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "attempt capture ordinals must be contiguous from zero",
-            )
-        return tuple(ordinals)
-
-    def publish_admitted_isolated_driver_capture(
-        self,
-        capture: AdmittedIsolatedDriverCapture,
-        *,
-        ordinal: int,
-    ) -> ArtifactIdentity:
-        """Publish one resumable strict isolated capture for its attempt."""
-
-        self._assert_session(capture)
-        return self._publish_typed(
-            isolated_attempt_capture_relative_path(
-                capture.attempt.attempt_id,
-                ordinal,
-            ),
-            capture,
-            AdmittedIsolatedDriverCapture.from_mapping,
-            verify=self._verify_isolated_capture,
-        )
-
-    def reopen_admitted_isolated_driver_capture(
-        self,
-        artifact: ArtifactIdentity,
-    ) -> AdmittedIsolatedDriverCapture:
-        result = self._reopen_typed(
-            artifact,
-            AdmittedIsolatedDriverCapture.from_mapping,
-        )
-        self._assert_session(result)
-        attempt_id = result.attempt.attempt_id
-        prefix = (
-            f"{EVIDENCE_ROOT}/isolated-attempts/"
-            f"{_component_key(attempt_id, field_name='attempt_id')}/captures/"
-        )
-        suffix = artifact.relative_path.removeprefix(prefix)
-        match = _ATTEMPT_CAPTURE_NAME_RE.fullmatch(suffix)
-        if not artifact.relative_path.startswith(prefix) or match is None:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated capture does not occupy its exact attempt namespace",
-            )
-        _require_identity_path(
-            artifact,
-            isolated_attempt_capture_relative_path(
-                attempt_id,
-                int(match.group(1)),
-            ),
-        )
-        self._verify_isolated_capture(result, _ReadBudget())
-        return result
-
-    def reopen_isolated_attempt_capture(
-        self,
-        attempt_id: str,
-        ordinal: int,
-    ) -> AdmittedIsolatedDriverCapture:
-        relative = isolated_attempt_capture_relative_path(attempt_id, ordinal)
-        result = self.reopen_admitted_isolated_driver_capture(
-            self._identity_for_path(relative)
-        )
-        if result.attempt.attempt_id != attempt_id:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated attempt path does not match its typed attempt",
-            )
-        return result
-
-    def reopen_isolated_attempt_captures(
-        self,
-        attempt_id: str,
-    ) -> tuple[AdmittedIsolatedDriverCapture, ...]:
-        ordinals = self._attempt_capture_ordinals(
-            isolated_attempt_capture_relative_path(attempt_id, 0)
-        )
-        return tuple(
-            self.reopen_isolated_attempt_capture(attempt_id, item) for item in ordinals
-        )
-
-    def isolated_attempt_capture_count(self, attempt_id: str) -> int:
-        """Count contiguous write-once capture records without reading WAVs."""
-
-        return len(
-            self._attempt_capture_ordinals(
-                isolated_attempt_capture_relative_path(attempt_id, 0)
-            )
-        )
-
-    def publish_isolated_driver_evidence(
-        self,
-        evidence: IsolatedDriverEvidence,
-    ) -> ArtifactIdentity:
-        """Publish one completed physical-driver set for resumable assembly."""
-
-        self._assert_session(evidence)
-        return self._publish_typed(
-            isolated_driver_relative_path(
-                evidence.authority.run,
-                evidence.speaker_group_id,
-                evidence.role,
-            ),
-            evidence,
-            IsolatedDriverEvidence.from_mapping,
-            verify=self._verify_isolated_driver_evidence,
-        )
-
-    def reopen_isolated_driver_evidence(
-        self,
-        *,
-        run: CommissioningRunHandle,
-        speaker_group_id: str,
-        role: str,
-        artifact: ArtifactIdentity | None = None,
-    ) -> IsolatedDriverEvidence:
-        expected_path = isolated_driver_relative_path(
-            run,
-            speaker_group_id,
-            role,
-        )
-        identity = artifact or self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(identity, IsolatedDriverEvidence.from_mapping)
-        self._assert_session(result)
-        if (
-            result.authority.run != run
-            or result.speaker_group_id != speaker_group_id
-            or result.role != role
-        ):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated driver evidence path does not match its typed target",
-            )
-        self._verify_isolated_driver_evidence(result, _ReadBudget())
-        return result
-
-    def isolated_driver_evidence_is_published(
-        self,
-        *,
-        run: CommissioningRunHandle,
-        speaker_group_id: str,
-        role: str,
-    ) -> bool:
-        """Validate the small status anchor without rereading child WAVs."""
-
-        expected_path = isolated_driver_relative_path(
-            run,
-            speaker_group_id,
-            role,
-        )
-        identity = self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(identity, IsolatedDriverEvidence.from_mapping)
-        self._assert_session(result)
-        if (
-            result.authority.run != run
-            or result.speaker_group_id != speaker_group_id
-            or result.role != role
-        ):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated driver status anchor does not match its typed target",
-            )
-        return True
-
-    def publish_complete_commissioning_evidence(
-        self,
-        evidence: CompleteCommissioningEvidence,
-    ) -> ArtifactIdentity:
-        self._assert_session(evidence)
-        return self._publish_typed(
-            complete_relative_path(evidence.plan.authority.run.run_id),
-            evidence,
-            CompleteCommissioningEvidence.from_mapping,
-            verify=self._verify_complete,
-        )
-
-    def reopen_complete_commissioning_evidence(
-        self,
-        *,
-        run_id: str,
-        artifact: ArtifactIdentity | None = None,
-    ) -> CompleteCommissioningEvidence:
-        result = self.reopen_complete_commissioning_evidence_anchor(
-            run_id=run_id,
-            artifact=artifact,
-        )
-        self._verify_complete(result, _ReadBudget())
-        return result
-
-    def reopen_complete_commissioning_evidence_anchor(
-        self,
-        *,
-        run_id: str,
-        artifact: ArtifactIdentity | None = None,
-    ) -> CompleteCommissioningEvidence:
-        """Reopen the typed complete anchor without rereading child WAVs."""
-
-        expected_path = complete_relative_path(run_id)
-        identity = artifact or self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(
-            identity,
-            CompleteCommissioningEvidence.from_mapping,
-        )
-        self._assert_session(result)
-        if result.plan.authority.run.run_id != run_id:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "complete evidence path does not match its exact durable run",
-            )
-        return result
-
-    def publish_complete_isolated_driver_evidence(
-        self,
-        evidence: CompleteIsolatedDriverEvidence,
-    ) -> ArtifactIdentity:
-        """Publish the one write-once isolated-driver set for this exact run."""
-
-        self._assert_session(evidence)
-        return self._publish_typed(
-            isolated_driver_evidence_relative_path(
-                evidence.plan.authority.run.run_id
-            ),
-            evidence,
-            CompleteIsolatedDriverEvidence.from_mapping,
-            verify=self._verify_complete_isolated_driver_evidence,
-        )
-
-    def reopen_complete_isolated_driver_evidence(
-        self,
-        *,
-        run_id: str,
-        artifact: ArtifactIdentity | None = None,
-    ) -> CompleteIsolatedDriverEvidence:
-        """Reopen one exact run-scoped set and every child artifact."""
-
-        result = self.reopen_complete_isolated_driver_evidence_anchor(
-            run_id=run_id,
-            artifact=artifact,
-        )
-        self._verify_complete_isolated_driver_evidence(result, _ReadBudget())
-        return result
-
-    def reopen_complete_isolated_driver_evidence_anchor(
-        self,
-        *,
-        run_id: str,
-        artifact: ArtifactIdentity | None = None,
-    ) -> CompleteIsolatedDriverEvidence:
-        """Reopen the typed isolated anchor without rereading child WAVs."""
-
-        expected_path = isolated_driver_evidence_relative_path(run_id)
-        identity = artifact or self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(
-            identity,
-            CompleteIsolatedDriverEvidence.from_mapping,
-        )
-        self._assert_session(result)
-        if result.plan.authority.run.run_id != run_id:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated evidence path does not match its exact durable run",
-            )
-        return result
-
-    def complete_isolated_driver_evidence_fingerprint(
-        self,
-        *,
-        run_id: str,
-    ) -> str:
-        """Read the typed status anchor without rereading every child WAV."""
-
-        return self.reopen_complete_isolated_driver_evidence_anchor(
-            run_id=run_id
-        ).fingerprint
-
-    def _verify_capture(
-        self,
-        capture: AdmittedRegionCapture,
-        budget: _ReadBudget,
-    ) -> None:
-        self._verify_admitted_capture_bytes(capture, budget, label="region")
-
-    def _verify_isolated_capture(
-        self,
-        capture: AdmittedIsolatedDriverCapture,
-        budget: _ReadBudget,
-    ) -> None:
-        self._verify_admitted_capture_bytes(capture, budget, label="isolated")
-
-    def _verify_admitted_capture_bytes(
-        self,
-        capture: AdmittedRegionCapture | AdmittedIsolatedDriverCapture,
-        budget: _ReadBudget,
-        *,
-        label: str,
-    ) -> None:
-        for role, artifact in (
-            (f"raw {label} capture", capture.capture.raw_artifact),
-            (f"{label} analysis input", capture.capture.analysis_input_artifact),
-            (f"{label} quality evidence", capture.capture.quality_artifact),
-        ):
-            _require_evidence_artifact(artifact, role=role)
-        _require_stimulus_path(
-            capture.stimulus.artifact,
-            admission_id=capture.admission_id,
-        )
-        for artifact in (
-            capture.capture.raw_artifact,
-            capture.capture.analysis_input_artifact,
-            capture.capture.quality_artifact,
-            capture.capture.admission_artifact,
-            capture.stimulus.artifact,
-            capture.generation_artifact,
-            capture.playback_artifact,
-        ):
-            self._read_identity(artifact, budget=budget)
-        try:
-            generation = read_generation_admission(
-                self.admission_authority,
-                capture.generation_artifact,
-            )
-        except AdmissionArtifactError as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"{label} generation admission is not authoritative: {exc}",
-            ) from exc
-        if (
-            generation.admission_id != capture.admission_id
-            or generation.admission != capture.generation_admission
-        ):
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"generation admission changed from {label} typed evidence",
-            )
-        try:
-            playback = read_playback_admission(
-                self.admission_authority,
-                generation,
-                capture.playback_artifact,
-            )
-        except AdmissionArtifactError as exc:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"{label} playback admission is not authoritative: {exc}",
-            ) from exc
-        if playback.admission != capture.playback_admission:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"playback admission changed from {label} typed evidence",
-            )
-
-    def _verify_stationary(
-        self,
-        evidence: StationaryRegionEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        for capture in evidence.captures:
-            self._verify_capture(capture, budget)
-
-    def _verify_delay_point(
-        self,
-        evidence: DelayPointEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        for capture in evidence.captures:
-            self._verify_capture(capture, budget)
-
-    def _verify_delay_walk(
-        self,
-        evidence: DelayWalkEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        _require_evidence_artifact(
-            evidence.geometry_attestation.attestation_artifact,
-            role="geometry attestation",
-        )
-        _require_evidence_artifact(
-            evidence.repeatability_artifact,
-            role="repeatability evidence",
-        )
-        self._read_identity(
-            evidence.geometry_attestation.attestation_artifact,
-            budget=budget,
-        )
-        self._read_identity(evidence.repeatability_artifact, budget=budget)
-        for point in evidence.points:
-            self._verify_delay_point(point, budget)
-
-    def _verify_region(
-        self,
-        evidence: RegionCommissioningEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        self._verify_stationary(evidence.normal, budget)
-        self._verify_stationary(evidence.reverse, budget)
-        self._verify_delay_walk(evidence.delay_walk, budget)
-
-    def _verify_complete(
-        self,
-        evidence: CompleteCommissioningEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        for region in evidence.regions:
-            self._verify_region(region, budget)
-
-    def _verify_complete_isolated_driver_evidence(
-        self,
-        evidence: CompleteIsolatedDriverEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        for driver in evidence.drivers:
-            self._verify_isolated_driver_evidence(driver, budget)
-
-    def _verify_isolated_driver_evidence(
-        self,
-        evidence: IsolatedDriverEvidence,
-        budget: _ReadBudget,
-    ) -> None:
-        _require_evidence_artifact(
-            evidence.repeatability_artifact,
-            role="isolated repeatability evidence",
-        )
-        self._read_identity(evidence.repeatability_artifact, budget=budget)
-        for capture in evidence.captures:
-            self._verify_isolated_capture(capture, budget)
-
-    def verify_complete_isolated_driver_evidence(
-        self,
-        evidence: CompleteIsolatedDriverEvidence,
-    ) -> CompleteIsolatedDriverEvidence:
-        """Strictly verify the complete isolated set and every child byte."""
-
-        self._assert_session(evidence)
-        self._verify_complete_isolated_driver_evidence(evidence, _ReadBudget())
-        return evidence

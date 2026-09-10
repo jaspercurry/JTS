@@ -129,11 +129,7 @@ heal_shared_state_modes() {
         # cannot open, so the existing ones are healed here. `l` derives the
         # ".<record>.lock" name; only the LOCKS widen to write, the records
         # stay group-READ (published that way by their own atomic writers).
-        "l:0660:${STATE_DIR}/active_speaker_commissioning_run.json"
         "l:0660:${STATE_DIR}/active_speaker_repeat_admission.json"
-        "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
-        "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
-        "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
         # The capture/sweep/tone trees the measurement daemon and /sound/
         # commissioning arms share. install.sh's install_camilladsp() now
         # creates these at install time (2770 group `jasper`, matching their
