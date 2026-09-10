@@ -1235,7 +1235,6 @@ async def watch_audible_window(
     commission_load_state_path: str | Path | None = None,
     safe_playback_state_path: str | Path | None = None,
     validate: Callable[..., Any] | None = None,
-    poll_s: float = REMUTE_WATCH_POLL_S,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -1272,7 +1271,7 @@ async def watch_audible_window(
                     validate=validate,
                 )
                 return {"status": "lapsed", "remute": remute}
-            await sleep(poll_s)
+            await sleep(REMUTE_WATCH_POLL_S)
     except asyncio.CancelledError:
         log_event(
             logger,
