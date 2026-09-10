@@ -371,10 +371,10 @@ STATUS_PATH_CONSUMERS: dict[str, dict[str, str]] = {
         "evidence.outputd_status": "outputd",
         "outputd_status": "outputd",
     },
-    "jasper/cli/doctor/usbsink.py": {
-        "evidence.fanin_status": "fanin",
-        "fanin_status": "fanin",
-    },
+    # doctor/usbsink.py is NOT a root: it reads the usbsink lane through
+    # `fanin.status`'s projections, which is where the `inputs` nesting is
+    # spelled and pinned.
+    "jasper/fanin/status.py": {"fanin_status": "fanin"},
     # doctor/grouping.py only FORWARDS `evidence.outputd_status().payload`;
     # the keys are read here, under the parameter it forwards into.
     "jasper/multiroom/state.py": {"local_outputd_status": "outputd"},
