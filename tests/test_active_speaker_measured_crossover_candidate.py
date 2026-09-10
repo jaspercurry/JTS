@@ -663,16 +663,24 @@ def test_every_optional_field_is_setdefaulted_in_the_reopen_comparison():
 
 def test_bass_extension_is_fingerprinted_and_reopened():
     bass = {
-        "basis": {"round_id": "round-1", "artifact_sha256": "a" * 64},
-        "filters": [{"type": "Peaking", "freq": 42.0, "q": 0.7, "gain": 2.0}],
+        "low_boost_db": 3.0,
+        "reference_level_db": -35.0,
+        "detector_lowpass_hz": 80.0,
+        "compressor_threshold_dbfs": -12.0,
     }
     candidate = _candidate(bass_extension=bass)
 
     reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
 
-    assert reopened.bass_extension == bass
+    assert reopened.bass_extension == {
+        **bass,
+        "compressor_factor": 10.0,
+        "compressor_attack_s": 0.01,
+        "compressor_release_s": 0.25,
+        "delta_highpass_hz": None,
+    }
     tampered = candidate.to_dict()
-    tampered["bass_extension"] = {**bass, "filters": []}
+    tampered["bass_extension"] = {**reopened.bass_extension, "low_boost_db": 2.0}
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(tampered)
     assert excinfo.value.code == "candidate_tampered"

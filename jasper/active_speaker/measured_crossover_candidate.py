@@ -81,6 +81,7 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MAX,
     ROOM_PEQ_Q_MIN,
 )
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
@@ -531,6 +532,12 @@ class MeasuredCrossoverCandidate:
                 layout_sides=SIDES_BY_LAYOUT[self.source_preset.channel_map.layout],
             ),
         )
+        if self.bass_extension:
+            try:
+                dynamic_bass = validate_dynamic_bass_descriptor(self.bass_extension)
+            except ValueError as exc:
+                _refuse("bass_extension_invalid", str(exc))
+            object.__setattr__(self, "bass_extension", dynamic_bass)
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
