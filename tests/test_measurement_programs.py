@@ -74,6 +74,8 @@ def test_available_programs_is_the_sorted_registry() -> None:
     assert choices == (
         ("baseline", "express"),
         ("baseline", "full"),
+        ("bass", "cloud"),
+        ("bass", "quick"),
         ("branches", "express"),
         ("close", "spot"),
         ("room", "cloud"),
@@ -196,18 +198,19 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
     }
 
 
-def test_room_plans_are_summed_ungated_measurements() -> None:
-    cloud = mp.program("room", "cloud")
-    quick = mp.program("room", "quick")
+@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker_tune"), ("bass", mp.PURPOSE_BASS, "room_tune")])
+def test_room_and_bass_plans_preserve_their_upstream_layers(program, purpose, scope) -> None:
+    cloud = mp.program(program, "cloud")
+    quick = mp.program(program, "quick")
 
     assert cloud.poses is mp.program("seat", "cloud").poses
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in quick.poses] == [
         (0, 0), (-20, 0), (20, 0),
     ]
-    assert {row.purpose for row in (cloud, quick)} == {mp.PURPOSE_ROOM}
+    assert {row.purpose for row in (cloud, quick)} == {purpose}
     assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
     assert mp.gate_exemption(cloud.purpose) == mp.SEAT_EXEMPT
-    assert mp.baseline_scope(cloud.purpose) == "speaker_tune"
+    assert mp.baseline_scope(cloud.purpose) == scope
 
 
 @pytest.mark.parametrize(

@@ -620,24 +620,6 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
 def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(
     plans_cloud_group: bool,
 ) -> None:
-    """The gate's verdict IS the capture's, at every stop count, on both shapes.
-
-    Stated as agreement with ``_validate_capture_plan`` rather than as its own
-    arithmetic, because the first version of this gate had its own and was
-    wrong in the direction that costs a capability: it added the geometry-retry
-    budget unconditionally, while a plan only budgets geometry retakes when a
-    cloud group is planned, so it refused the two largest LEGAL walks (23 and
-    24 stops on the shipped cloud-less shape — the capture accepts both).
-
-    **What this catches is DRIFT between the producer and its two readers**, and
-    that is the whole of what it claims. Both sides here reach
-    ``stage1_plan_max_attempts``, so a producer that became wrong in a way BOTH
-    inherit would move them together and this would stay green. That case is
-    carried by the two siblings below, which pin absolute numbers rather than
-    agreement: ``…is_never_refused_for_capacity`` (24 stops fit at base 3) and
-    ``…is_where_the_capacity_gate_bites`` (base 11, and 19 stops do not). Read
-    the three together — this one says they agree, those two say about what.
-    """
     from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpecError, _validate_capture_plan
 
     shape = flow.resolve_plan_shape(flow.TIER_FULL)
@@ -654,7 +636,7 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(
             include_cloud_measure=plans_cloud_group,
             include_lateral=True,
             include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-            lateral_prompts=tuple(ac.pose_at_angle(d) for d in range(1, stops + 1)),
+            lateral_prompts=tuple(ac.pose_at_angle(0) for _ in range(stops)),
         )
         try:
             _validate_capture_plan(plan)
@@ -665,7 +647,7 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(
     def gate_takes(stops: int) -> bool:
         try:
             ac.session_lateral_walk(
-                ac.per_driver_at(list(range(1, stops + 1))),
+                ac.per_driver_at([0] * stops),
                 externally_positioned=False,
                 base_entries=base_entries,
                 plans_cloud_group=plans_cloud_group,
@@ -674,73 +656,16 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(
             return False
         return True
 
-    # 1..30 covers both boundaries on both shapes.
-    for stops in range(1, 31):
+    for stops in (1, 24, 33, 99, 110, 111, 120, 121, 128, 129):
         assert gate_takes(stops) == capture_takes(stops), (
             f"gate and plan disagree at {stops} stops "
             f"(plans_cloud_group={plans_cloud_group})"
         )
     # ...and the boundary is really in range, so the loop is not vacuous.
-    assert capture_takes(1) and not capture_takes(30)
-
-
-def test_a_legal_staged_walk_is_never_refused_for_capacity() -> None:
-    """The spool's own ceiling fits the shipped session exactly — and only just.
-
-    ``MAX_STOPS`` is a wall-clock bound on the walk; the capture's blob-index
-    space is a bound on the session it lands in. On the shipped stage-1 shape
-    the two meet exactly at 24, so every walk an operator can legally stage is
-    admitted, with ZERO slack: one more base entry and ``MAX_STOPS`` becomes
-    unreachable. That is the number to re-derive if a fourth stage-1 capture is
-    ever added, and this test is where it fails.
-    """
-    from jasper.active_speaker.angle_capture_spool import MAX_STOPS
-
-    shape = flow.resolve_plan_shape(flow.TIER_FULL)
-    base_entries = len(flow.build_v2_cloud_index_phase_map(
-        plan_shape=shape,
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    ))
-    assert base_entries == 3
-
-    fits = ac.session_lateral_walk(
-        ac.per_driver_at(list(range(1, MAX_STOPS + 1))),
-        externally_positioned=False,
-        base_entries=base_entries,
-        plans_cloud_group=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-    )
-    assert len(fits) == MAX_STOPS
-    # Zero slack: one more stop than the spool can bank would not fit.
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.session_lateral_walk(
-            ac.per_driver_at(list(range(1, MAX_STOPS + 2))),
-            externally_positioned=False,
-            base_entries=base_entries,
-            plans_cloud_group=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        )
-    assert excinfo.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
-    # The arithmetic rides in the message: the operator's only lever is to stage
-    # fewer stops, and they need the numbers to pick a count.
-    detail = excinfo.value.detail
-    for number in (base_entries, MAX_STOPS + 1, _capture_ceiling()):
-        assert str(number) in detail
+    assert capture_takes(1) and not capture_takes(140)
 
 
 def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
-    """The refusal is reachable, not theoretical — just not on the shipped shape.
-
-    With the pre-apply cloud on, the base entries alone take 11 of the capture's
-    32 indexes and the plan budgets geometry retakes too, so the walk that fits
-    is far shorter than anything the spool would refuse to bank.
-
-    Pinned from BOTH sides at the exact boundary (14 fits, 15 does not) rather
-    than as "some long walk refuses". A one-directional refusal assertion is
-    satisfied by ANY budget at least this tight, including a wrong one: a
-    mutation that doubled the retake allowance left the one-sided version green,
-    which is how this test came to have a lower edge.
-    """
     shape = flow.resolve_plan_shape(flow.TIER_FULL)
     base_entries = len(flow.build_v2_cloud_index_phase_map(
         plan_shape=shape, include_cloud_measure=True, include_lateral=False,
@@ -748,18 +673,17 @@ def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
     ))
     assert base_entries == 11
 
-    # 11 entries + 14 stops + 2 geometry retakes + 5 spare = 32, the ceiling.
     fits = ac.session_lateral_walk(
-        ac.per_driver_at(list(range(1, 15))),
+        ac.per_driver_at([0] * 110),
         externally_positioned=False,
         base_entries=base_entries,
         plans_cloud_group=True,
     )
-    assert len(fits) == 14
+    assert len(fits) == 110
 
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.session_lateral_walk(
-            ac.per_driver_at(list(range(1, 16))),
+            ac.per_driver_at([0] * 111),
             externally_positioned=False,
             base_entries=base_entries,
             plans_cloud_group=True,

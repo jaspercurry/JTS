@@ -505,9 +505,7 @@ def _refuse(exc: Exception, *, reason: str | None = None) -> int:
 def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """The walk's ANSWER: what was asked for, what it costs, where it is run.
 
-    ``stops`` is the walk itself: one record per stop, bounded by
-    :data:`~jasper.active_speaker.angle_capture_spool.MAX_STOPS`, carrying WHICH
-    stop, WHERE it points, and WHAT it plays there. The pose copy, the advance
+    ``stops`` carries each ordered pose and candidate. The pose copy, the advance
     policy and the program phase are the human rendering's -- a reader who wants
     them reads ``plan``'s stderr.
     """

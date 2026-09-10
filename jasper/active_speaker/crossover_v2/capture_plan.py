@@ -38,8 +38,8 @@ from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
 from ..measurement_programs import (
-    POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT, PURPOSE_ROOM,
-    pose_place, resolved_measurement_purpose,
+    POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT,
+    gate_exemption, pose_place, resolved_measurement_purpose,
 )
 from . import contracts as _contracts
 from . import spatial as _spatial
@@ -85,12 +85,6 @@ DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 # Configurable floor. ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee is
 # specified against exactly this number.
 MIN_CLOUD_MEASURE_POSITIONS = 6
-# Configurable ceiling, sized so the worst-case plan still fits under
-# `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`; `CapturePlan.max_attempts`
-# validation (sweep_spec.py) enforces that fit at build time. There is no slack
-# at the walk-armed bound: at N=11, M=6 the attempt sum lands on
-# ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly. Raising N costs a step of configuration
-# headroom or a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``).
 MAX_CLOUD_MEASURE_POSITIONS = 11
 # Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included, so the
 # plan emits ``M − 1`` prompted positions after VERIFY and the group combines
@@ -1509,7 +1503,7 @@ def _cloud_entry_screen(
 def room_sweep_band_hz(
     roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[float, float] | None:
-    if any(resolved_measurement_purpose(p.purpose, p.kind) == PURPOSE_ROOM for p in prompts):
+    if any(gate_exemption(resolved_measurement_purpose(p.purpose, p.kind)) for p in prompts):
         return ROOM_FLOOR_HZ, measurement_band_hz(roles)[1]
     return None
 

@@ -1224,7 +1224,7 @@ def test_the_take_reads_the_sessions_own_cloud_shape(slot):
     less discriminating passes with the flag ignored — the first version of this
     test did.
     """
-    stops = list(range(1, 16))  # 11 + 15 + 5 = 31 fits; + 7 = 33 does not
+    stops = [0] * 111  # 11 + 111 + 5 = 127 fits; + 7 = 129 does not
     spool.stage_angle_request(ac.per_driver_at(stops))
     assert _take(base_entries=11, plans_cloud_group=False) is not None
 
@@ -1245,7 +1245,6 @@ def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
     assert spool.ANGLE_SPOOL_REFUSAL_REASONS == frozenset({
         spool.SPOOL_MALFORMED,
         spool.SPOOL_TOO_LARGE,
-        spool.SPOOL_TOO_MANY_STOPS,
         spool.SESSION_ALREADY_LIVE,
     })
 
@@ -1294,12 +1293,13 @@ def test_complete_branch_batch_reaches_browser_and_banks_all_three_curves(slot, 
     assert record["branch_diagnostic"]["sample_rate_hz"] == SR
 
 
-def test_arm_room_plan_uses_speaker_tune_without_changing_its_positions(slot):
-    request = ac.request_for_program(mp.program("room", "quick"), mover=ac.MOVER_ARM)
+@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker_tune"), ("bass", mp.PURPOSE_BASS, "room_tune")])
+def test_arm_plan_preserves_upstream_layers_without_changing_positions(slot, program, purpose, scope):
+    request = ac.request_for_program(mp.program(program, "quick"), mover=ac.MOVER_ARM)
     spool.stage_angle_request(request)
     prompts, _, specs, _, claims = _take(shape=_arm_shape())
     assert [flow.position_angle_deg(p) for p in prompts] == [0, -20, 20]
     assert {p.kind for p in prompts} == {mp.POSE_KIND_BEARING}
-    assert {p.purpose for p in prompts} == {mp.PURPOSE_ROOM}
-    assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {"speaker_tune"}
-    assert {claim.measurement_purpose for claim in claims} == {mp.PURPOSE_ROOM}
+    assert {p.purpose for p in prompts} == {purpose}
+    assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {scope}
+    assert {claim.measurement_purpose for claim in claims} == {purpose}

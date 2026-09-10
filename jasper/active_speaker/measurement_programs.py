@@ -24,8 +24,9 @@ POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE)
 
 PURPOSE_SPEAKER = "speaker"
 PURPOSE_ROOM = "room"
+PURPOSE_BASS = "bass"
 PURPOSE_REFERENCE = "reference"
-PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_REFERENCE)
+PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE)
 
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"
@@ -64,12 +65,14 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
-    if resolved in (PURPOSE_ROOM, PURPOSE_REFERENCE) and regime != REGIME_SUMMED:
+    if resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
         raise ValueError(f"{resolved} measurements require the summed regime")
     return resolved
 
 
 def baseline_scope(purpose: str | None) -> str:
+    if _validated_purpose(purpose) == PURPOSE_BASS:
+        return "room_tune"
     return (
         "speaker_tune"
         if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_REFERENCE)
@@ -78,7 +81,7 @@ def baseline_scope(purpose: str | None) -> str:
 
 
 def gate_exemption(purpose: str | None) -> str | None:
-    return SEAT_EXEMPT if _validated_purpose(purpose) == PURPOSE_ROOM else None
+    return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS) else None
 
 
 def validated_pose(

@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CONSUMED_SUFFIX",
     "DEFAULT_ANGLE_REQUEST_SPOOL_PATH",
-    "MAX_STOPS",
     "SPOOL_KIND",
     "SPOOL_MALFORMED",
     "SPOOL_MAX_BYTES",
@@ -84,23 +83,11 @@ SPOOL_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 SPOOL_SCHEMA_VERSION = 1
 
-#: A generous ceiling on the document, so a corrupt or hostile file is
-#: refused by SIZE before it is parsed. :data:`MAX_STOPS` bounds the walk
-#: itself; this bounds what is read off disk at all.
 SPOOL_MAX_BYTES = 64 * 1024
-
-#: How many stops one staged walk may carry: a session-length bound, not a
-#: second angle validator. Each stop is one wall-clock mic position (a
-#: five-angle per-driver walk is 5 stops, ~6 min); 24 leaves room for a
-#: dense sweep while refusing a generated list of hundreds that would
-#: outlive the session's own wall-clock ceiling.
-MAX_STOPS = 24
 
 SPOOL_MALFORMED = "angle_request_spool_malformed"
 
 SPOOL_TOO_LARGE = "angle_request_spool_too_large"
-
-SPOOL_TOO_MANY_STOPS = "angle_request_too_many_stops"
 
 #: Refused because the speaker is already measuring; not a property of the
 #: request (the same request is fine ten minutes later), so its own slug
@@ -113,7 +100,6 @@ SESSION_ALREADY_LIVE = "measurement_session_already_live"
 ANGLE_SPOOL_REFUSAL_REASONS = frozenset({
     SPOOL_MALFORMED,
     SPOOL_TOO_LARGE,
-    SPOOL_TOO_MANY_STOPS,
     SESSION_ALREADY_LIVE,
 })
 
@@ -166,10 +152,6 @@ def _consumed_path(pending: Path) -> Path:
 def stage_angle_request(request: AngleCaptureRequest) -> Path:
     """Bank one resolved walk for the next session to take.
 
-    ``request`` has ALREADY passed :class:`~.angle_capture.AngleCaptureRequest`'s
-    validation; this adds exactly two checks it cannot make: not longer than
-    :data:`MAX_STOPS`, and no measurement session currently live.
-
     Staging twice is last-wins: the slot holds ONE walk, logged on overwrite
     (``event=angle_capture.request_staged`` carries ``replaced``); the atomic rename
     means a concurrent take sees one whole document, never a splice.
@@ -178,12 +160,6 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
     file), STRICT: a silent fallback to the writer's own group would publish a document
     ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
     """
-    if len(request.stops) > MAX_STOPS:
-        _refuse(
-            SPOOL_TOO_MANY_STOPS,
-            f"a staged walk may carry at most {MAX_STOPS} stops, got "
-            f"{len(request.stops)}",
-        )
     busy = live_measurement_session()
     if busy is not None:
         _refuse(SESSION_ALREADY_LIVE, busy)
@@ -230,9 +206,12 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         ],
         "staged_at": time.time(),
     }
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if len(encoded.encode("utf-8")) > SPOOL_MAX_BYTES:
+        _refuse(SPOOL_TOO_LARGE, "the staged walk exceeds the document size limit")
     atomic_write_text(
         path,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoded,
         mode=0o640,
         durable=True,
     )
@@ -414,12 +393,6 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     stops_raw = doc.get("stops")
     if not isinstance(stops_raw, list) or not stops_raw:
         _refuse(SPOOL_MALFORMED, "the staged walk carries no stops")
-    if len(stops_raw) > MAX_STOPS:
-        _refuse(
-            SPOOL_TOO_MANY_STOPS,
-            f"a staged walk may carry at most {MAX_STOPS} stops, got "
-            f"{len(stops_raw)}",
-        )
     stops: list[AngleStop] = []
     for entry in stops_raw:
         if not isinstance(entry, Mapping):

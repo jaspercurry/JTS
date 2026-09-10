@@ -762,6 +762,8 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     ]) == 0
     view = json.loads(destination.read_text())
     baseline, bass = view["runs"][0]["series"]
+    assert view["runs"][0]["metadata"]["position_count"] == 1
+    assert view["runs"][0]["metadata"]["take_count"] == 2
     assert baseline["candidate_id"] == ""
     assert bass["candidate_id"] == "bass-6db"
     assert [s["graph_scope"] for s in (baseline, bass)] == ["room_tune", "bass_candidate"]

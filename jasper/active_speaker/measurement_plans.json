@@ -77,6 +77,8 @@
     {"id": "seat", "size": "express", "layout": "seat_express", "purpose": "room", "regime": "summed"},
     {"id": "room", "size": "cloud", "layout": "seat_cloud", "purpose": "room", "regime": "summed"},
     {"id": "room", "size": "quick", "layout": "room_quick", "purpose": "room", "regime": "summed"},
+    {"id": "bass", "size": "cloud", "layout": "seat_cloud", "purpose": "bass", "regime": "summed"},
+    {"id": "bass", "size": "quick", "layout": "room_quick", "purpose": "bass", "regime": "summed"},
     {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"}
   ],
   "default_sizes": {
@@ -85,6 +87,7 @@
     "branches": "express",
     "seat": "cloud",
     "room": "cloud",
+    "bass": "cloud",
     "close": "spot"
   }
 }
