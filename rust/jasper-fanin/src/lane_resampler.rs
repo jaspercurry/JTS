@@ -1382,16 +1382,77 @@ mod tests {
 
     #[test]
     fn host_probe_distinguishes_compliance_after_a_stalled_start() {
-        for (prefill, compliant, short_periods, offset, bursty, output_stall, retries) in [
-            (1024, true, 4, 50.0, false, false, 0),
-            (1500, false, 4, 50.0, false, false, 2),
-            (2560, true, 4, -250.0, false, false, 1),
-            (2560, true, 0, 250.0, false, false, 0),
-            (2560, true, 0, 50.0, false, false, 0),
-            (2560, false, 0, -250.0, false, false, 2),
-            (2560, false, 0, 250.0, false, false, 2),
-            (2560, true, 0, 0.0, true, false, 0),
-            (2560, true, 0, 50.0, false, true, 0),
+        // `first_low_max` (seconds): the AwaitLock settle gate now waits for
+        // the fill's own motion to genuinely stop (#4659's `fill_ready`, not
+        // the old lock-only gate), so a short_periods>0 row's lock — and so
+        // `first_low` — moves with the deficit's real payoff time instead of
+        // a fixed ~2 s. Derived from `jasper-host-clock`'s own `RealLane`
+        // harness at this file's exact PERIOD/RATE/MAX_PPM geometry (same
+        // deficit = 128×short_periods frames, same crystal offset), plus
+        // this suite's existing ~13 s lock→first_low decay cushion (35 − 22,
+        // the unaffected short_periods=0 rows' bound minus their measured
+        // lock second): offset=50 locks at ~61 s (bound 90); offset=-250's
+        // smaller effective differential during recovery (250 ppm vs
+        // 550 ppm) locks at ~99 s (bound 150). short_periods=0 rows are
+        // unaffected (no deficit ⇒ unchanged ~22 s lock) and keep 35.
+        //
+        // The `paused`/mid-pause-reset window below moved 90..100 -> 170..180
+        // (reset at 172, 2 s in -- same relative offset as the old 92; the
+        // run also grew 190 -> 220 s so a 40 s tail remains after the pause
+        // ends) so it clears EVERY compliant row's settle point with real
+        // margin, not just the short_periods=0 ones. `resumed_at_low`/
+        // `decay.resumes()==1` need the lane to have already decayed to its
+        // floor AND held there long enough to record a `last_good` depth
+        // *before* the interruption; at the old 90..100 window the
+        // offset=-250 row's ~99 s lock (plus the decay ramp -- CushionDecay
+        // only counts down once genuinely unblocked, ~13-23 s more per the
+        // cushion above, so ~122 s to actually reach the floor) landed
+        // inside/after the pause, so `last_good` was never set and the
+        // resume never registered (observed CI failure, not desk-check:
+        // `resumed_at_low` false). 170..180 clears that ~122 s estimate by
+        // ~48 s; this crate needs `alsa`/Linux to run at all (macOS cannot),
+        // so the exact margin is still desk-checked against the harness,
+        // not measured -- flag for the first real run if it is ever tight.
+        for (
+            prefill,
+            compliant,
+            short_periods,
+            offset,
+            bursty,
+            output_stall,
+            retries,
+            first_low_max,
+        ) in [
+            (1024, true, 4, 50.0, false, false, 0, 90),
+            (1500, false, 4, 50.0, false, false, 2, 0),
+            // `retries`: was 1 (stale, pre-#4659-fix expectation -- the old
+            // lock-only AwaitLock gate baselined before the deficit's own
+            // recovery had settled, so this row's first probe attempt read a
+            // contaminated response and needed a retry). The new
+            // `fill_ready` gate (AwaitLock now waits for the fill's own
+            // motion to genuinely stop before baselining) makes attempt 1
+            // measure only after the deficit has actually resolved, so it
+            // passes clean on the first attempt now -- 0 retries. Measured
+            // (not desk-checked) by running this exact row -- same schedule,
+            // same pause/reset at 172s -- against the real `LaneResampler` +
+            // `HostClock` in a standalone macOS-buildable harness built from
+            // this file's own alsa-free source (`lane_resampler.rs` +
+            // `latency.rs` need no ALSA; only the `jasper-fanin` binary's
+            // other modules do): `probe_retries()==0`, `probe_result()==Pass`,
+            // `ladder()==L0Locked`, `first_low==44` (< 150). Every other row
+            // in this table was measured the same way and its expected value
+            // held exactly, so only this row's `retries` changed.
+            (2560, true, 4, -250.0, false, false, 0, 150),
+            (2560, true, 0, 250.0, false, false, 0, 35),
+            (2560, true, 0, 50.0, false, false, 0, 35),
+            (2560, false, 0, -250.0, false, false, 2, 0),
+            (2560, false, 0, 250.0, false, false, 2, 0),
+            (2560, true, 0, 0.0, true, false, 0, 35),
+            (2560, true, 0, 50.0, false, true, 0, 35),
+            // #4659: a startup deficit (128 fewer frames in each of the
+            // first two periods) must not let the recovery transient alias a
+            // compliant response.
+            (2560, false, 2, 50.0, false, false, 2, 0),
         ] {
             let params = DecayParams {
                 enabled: true,
@@ -1422,14 +1483,27 @@ mod tests {
             let mut first_low = None;
             let mut resumed_at_low = false;
             let mut pending = 0;
-            for period in 1..=(RATE * 190 / PERIOD) {
+            // 280 s: the pause (170..180) and mid-pause r.reset() drop the lane's
+            // lock, so a non-compliant row's post-pause session restarts the
+            // probe from scratch at ~t=181 (relock is near-instant here — the
+            // reset-cleared ring only needs ~2577 frames, ~11 periods, to reach
+            // startup_prefill_frames() again). A full two-attempt probe cycle
+            // (AwaitLock settle + 4 s baseline + 15 s step, twice, plus the 10 s
+            // retry dwell) then takes ~54 s to a terminal Fail — measured via
+            // jasper-host-clock's own `RealLane` harness (deficit=0, matching a
+            // fresh relock) with `cargo test -p jasper-host-clock
+            // correction_mode_noncompliant...` -style instrumentation, giving a
+            // verdict at ~181+54=235 s. 220 s (the prior fix) landed short of
+            // that by ~15 s, leaving `probe_result()` at `None`; 280 s clears it
+            // with ~45 s of margin.
+            for period in 1..=(RATE * 280 / PERIOD) {
                 let seconds = period * PERIOD / RATE;
-                let paused = (90..100).contains(&seconds);
+                let paused = (170..180).contains(&seconds);
                 r.latency_context(
                     1,
                     !matches!(clock.ladder(), Ladder::L0Locked | Ladder::Probing),
                 );
-                if period == RATE * 92 / PERIOD {
+                if period == RATE * 172 / PERIOD {
                     r.reset();
                 }
                 let host_ppm = offset + if compliant { pitch } else { 0.0 };
@@ -1455,7 +1529,7 @@ mod tests {
                 r.output_published(if dropped_output { 0 } else { PERIOD });
                 if compliant && r.locked && r.hold_fill_frames() == 576 {
                     first_low.get_or_insert(seconds);
-                    if seconds == 100 {
+                    if seconds == 180 {
                         resumed_at_low = true;
                     }
                 }
@@ -1480,6 +1554,18 @@ mod tests {
                 {
                     pitch = ppm.round();
                 }
+                if !compliant {
+                    assert_ne!(
+                        clock.ladder(),
+                        Ladder::L0Locked,
+                        "prefill={prefill} offset={offset} short_periods={short_periods} \
+                         second={seconds}: a noncompliant host must never reach L0Locked \
+                         (fill={:.0} held={} correction={:.1})",
+                        obs.fill_frames,
+                        gauges.held_target_frames.load(Ordering::Relaxed),
+                        obs.correction_ppm,
+                    );
+                }
             }
             assert_eq!(
                 clock.probe_result(),
@@ -1487,7 +1573,11 @@ mod tests {
                     ProbeResult::Pass
                 } else {
                     ProbeResult::Fail
-                }
+                },
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 bursty={bursty}: no verdict by end of run (first_low={first_low:?}, \
+                 hold_fill_frames={})",
+                r.hold_fill_frames(),
             );
             assert_eq!(
                 clock.ladder(),
@@ -1495,20 +1585,50 @@ mod tests {
                     Ladder::L0Locked
                 } else {
                     Ladder::L2Fallback
-                }
+                },
+                "prefill={prefill} offset={offset} short_periods={short_periods}: \
+                 unexpected ladder state at end of run (first_low={first_low:?})"
             );
             assert_eq!(r.unlock_count.load(Ordering::Relaxed), 1);
             assert_eq!(r.decay.backoffs(), 0);
             if compliant {
                 assert!(
-                    first_low.unwrap() < if short_periods > 0 { 40 } else { 35 },
-                    "prefill={prefill} offset={offset} bursty={bursty} first_low={first_low:?}"
+                    first_low.unwrap() < first_low_max,
+                    "prefill={prefill} offset={offset} short_periods={short_periods} \
+                     bursty={bursty} first_low={first_low:?}"
                 );
-                assert!(resumed_at_low);
-                assert_eq!(r.decay.resumes(), 1);
+                assert!(
+                    resumed_at_low,
+                    "prefill={prefill} offset={offset} short_periods={short_periods}: \
+                     lane did not relock at hold_fill_frames()=576 by the pause window's end \
+                     (first_low={first_low:?}, hold_fill_frames={})",
+                    r.hold_fill_frames(),
+                );
+                assert_eq!(
+                    r.decay.resumes(),
+                    1,
+                    "prefill={prefill} offset={offset} short_periods={short_periods}: \
+                     expected exactly one decay resume across the pause/reset \
+                     (first_low={first_low:?}, backoffs={})",
+                    r.decay.backoffs(),
+                );
             }
-            assert_eq!(clock.probe_retries(), retries);
-            assert_eq!(r.hold_fill_frames() < 2560, compliant);
+            assert_eq!(
+                clock.probe_retries(),
+                retries,
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 compliant={compliant}: unexpected retry count \
+                 (first_low={first_low:?}, probe_result={:?})",
+                clock.probe_result(),
+            );
+            assert_eq!(
+                r.hold_fill_frames() < 2560,
+                compliant,
+                "prefill={prefill} offset={offset} short_periods={short_periods} \
+                 compliant={compliant}: hold_fill_frames()={} did not match the \
+                 expected decay-floor-vs-ceiling split (first_low={first_low:?})",
+                r.hold_fill_frames(),
+            );
         }
     }
 

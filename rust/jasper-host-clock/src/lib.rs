@@ -506,6 +506,11 @@ struct SlopeEstimator {
     fill_mean: f64,
     fill_var: f64,
     have_fill: bool,
+    // RAW (unsmoothed) one-tick fill delta — the AwaitLock settle gate's
+    // motion signal (#4659; see `HostClock::fill_ready`'s doc for why the EW
+    // `fill_var` above cannot serve this role). Anchor, not accumulated.
+    last_fill_raw: Option<f64>,
+    fill_delta_frames: f64,
     // EW mean of the lane resampler's correction ppm — the probe observable. It
     // is smoothed on the SAME alpha as the fill slope (published for diagnostics
     // only, see `slope_ppm`/`fill_variance`), and re-armed at the same session
@@ -524,6 +529,8 @@ impl SlopeEstimator {
             fill_mean: 0.0,
             fill_var: 0.0,
             have_fill: false,
+            last_fill_raw: None,
+            fill_delta_frames: 0.0,
             correction_mean_ppm: 0.0,
             have_correction: false,
         }
@@ -569,6 +576,16 @@ impl SlopeEstimator {
                 self.fill_var = 0.0;
                 self.have_fill = true;
             }
+            // RAW one-tick delta, UNSMOOTHED (#4659): a per-tick "is fill
+            // currently moving" fact, not an EW statistic. A residual
+            // constant-slope drift of k frames/tick reads as k here every
+            // tick, forever — unlike `fill_var` (≈7.78·k² and lagging), it
+            // never falsely settles under a small standing drift AND never
+            // gets stuck elevated once real motion stops (no lag to unwind).
+            if let Some(prev) = self.last_fill_raw {
+                self.fill_delta_frames = fill_frames - prev;
+            }
+            self.last_fill_raw = Some(fill_frames);
         }
 
         // EW mean of the resampler correction ppm (CORRECTION-mode observable).
@@ -606,12 +623,20 @@ impl SlopeEstimator {
         self.fill_var.max(0.0)
     }
 
+    /// The raw one-tick fill delta (frames), 0 until a second sample lands.
+    fn fill_delta_frames(&self) -> f64 {
+        self.fill_delta_frames
+    }
+
     /// Skip this tick's sample (see [`Obs::steady`]). Drops ONLY the divergence
     /// anchor, so the next accepted sample re-anchors instead of differencing a
     /// multi-tick gap against a one-tick `frames_per_tick`; the fill/correction
     /// means are kept, so the loop resumes rather than re-acquires.
     fn hold(&mut self) {
         self.last_divergence = None;
+        // A declared ramp moves fill on purpose; resuming must re-anchor
+        // rather than difference across the held gap as if it were motion.
+        self.last_fill_raw = None;
     }
 
     /// Re-arm at a session boundary: drop the divergence anchor and slope/fill
@@ -623,6 +648,8 @@ impl SlopeEstimator {
         self.fill_mean = 0.0;
         self.fill_var = 0.0;
         self.have_fill = false;
+        self.last_fill_raw = None;
+        self.fill_delta_frames = 0.0;
         self.correction_mean_ppm = 0.0;
         self.have_correction = false;
     }
@@ -662,6 +689,13 @@ pub struct HostClock {
     /// AwaitLock wait; `None` until lock is seen (or after it is lost). The probe
     /// leaves AwaitLock once `now_ms − lock_since_ms >= PROBE_SETTLE_SECS`.
     lock_since_ms: Option<u64>,
+    /// Monotonic ms at which [`HostClock::fill_ready`] most recently became
+    /// continuously true during the current AwaitLock wait; `None` while it
+    /// is false (or before the probe has started). Reset alongside
+    /// `lock_since_ms` on every restart of the wait. Bounded by
+    /// [`PROBE_FILL_SETTLE_TIMEOUT_SECS`] measured from `probe_started_ms` —
+    /// see the AwaitLock arm of `tick_probe` (#4659).
+    fill_ready_since_ms: Option<u64>,
     /// The probe's baseline/step observable, recorded at each phase boundary —
     /// the resampler-CORRECTION mean.
     probe_baseline_obs_ppm: f64,
@@ -734,6 +768,50 @@ pub const MAX_PROBE_ATTEMPTS: u32 = 2;
 /// operator tuning surface.
 pub const PROBE_RETRY_SETTLE_SECS: u64 = 10;
 
+/// Bounded maximum wait, measured from `probe_started_ms`, for
+/// [`HostClock::fill_ready`] to become true continuously before the
+/// AwaitLock settle gate gives up on it and baselines anyway. A startup
+/// deficit is a transient that resolves; a host beyond the lane's own rate
+/// authority can leave the fill perpetually away from rest, and gating this
+/// wait unconditionally would restore the beyond-authority deadlock
+/// `settle_regime_ok` already documents avoiding — that case resolves via
+/// `fill_ready` itself in a few seconds in practice (its own correction
+/// acquires and rails fast; the fill motion this gate watches settles
+/// quickly around that rail), so this bound exists for genuinely large
+/// deficits, not for beyond-authority hosts. 120 s is measured headroom
+/// above the largest deficit this crate's own test suite pins recovering
+/// cleanly (2000 frames settles at ~85 s —
+/// `correction_mode_startup_deficit_never_false_passes_a_noncompliant_host`);
+/// a deficit this bound actually cuts off still lands the baseline on a
+/// STATIONARY correction rail (never mid-swing — `fill_ready` requires the
+/// fill to have stopped moving, and the rail only moves when the fill
+/// does), which `settle_regime_ok`'s own analysis already shows is
+/// fail-biased, not pass-biased, so the timeout cannot reopen the #4659
+/// false pass. Removal condition: none while `ProbePhase::AwaitLock` keeps a
+/// bounded-wait shape; a change to that shape must re-derive this bound
+/// against the harness in `jasper-host-clock`'s own test suite. Fixed, not
+/// env-tunable.
+pub const PROBE_FILL_SETTLE_TIMEOUT_SECS: u64 = 120;
+
+/// Ceiling (frames) on `|SlopeEstimator::fill_delta_frames|` — the RAW
+/// one-tick fill step, not an EW statistic — for [`HostClock::fill_ready`]
+/// to treat the fill as "not currently moving" (#4659). The rejected
+/// `fill_variance`-based predecessor answered a different question: its EW
+/// variance for a constant per-tick delta of k frames settles to
+/// ≈ 7.78·k² (alpha=0.3), so k≈3.6 frames/tick (~75 ppm residual) already
+/// reads "settled" under that check while still visibly moving every tick,
+/// and a true recovery swing (tens of frames/tick, see the harness's own
+/// traces) stays elevated under it far longer than this crate's
+/// `PROBE_FILL_SETTLE_TIMEOUT_SECS` bound. Checking the raw step instead
+/// answers the actual question with no lag: 8 frames/tick is a ~170 ppm
+/// residual at this crate's 256-frame/48 kHz reference geometry —
+/// comfortably above ordinary tick-to-tick jitter (a resting fill in this
+/// crate's own tests never moves at all) and two orders of magnitude below a
+/// live recovery step (tens of frames/tick). Removal condition: none while
+/// this crate's reference geometry (256 frames, 48 kHz) holds; a different
+/// period/rate needs this re-derived against the harness.
+pub const FILL_READY_DELTA_FRAMES: f64 = 8.0;
+
 impl HostClock {
     /// Build the ladder from validated config.
     pub fn new(cfg: HostClockConfig) -> Self {
@@ -754,6 +832,7 @@ impl HostClock {
             probe_phase: ProbePhase::AwaitLock,
             probe_started_ms: 0,
             lock_since_ms: None,
+            fill_ready_since_ms: None,
             probe_baseline_obs_ppm: 0.0,
             probe_step_obs_ppm: 0.0,
             probe_step_ppm: 0.0,
@@ -1058,6 +1137,7 @@ impl HostClock {
     fn reset_probe_measurement(&mut self, actions: &mut Vec<Action>) {
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
+        self.fill_ready_since_ms = None;
         self.probe_baseline_obs_ppm = 0.0;
         self.probe_step_obs_ppm = 0.0;
         self.probe_step_ppm = 0.0;
@@ -1175,6 +1255,37 @@ impl HostClock {
         obs.playing
     }
 
+    /// Whether the fill has genuinely returned to rest, the AwaitLock settle
+    /// gate's fill-side half (#4659; the lock-side half is
+    /// `settle_regime_ok`/`lock_since_ms`): `|fill_delta_frames| <=
+    /// FILL_READY_DELTA_FRAMES`, the RAW one-tick fill delta (not the EW
+    /// `fill_variance`). Self-referential — no external "target" needed, so
+    /// every existing caller/test that holds fill at whatever constant level
+    /// it chooses is unaffected.
+    ///
+    /// A startup deficit's own DLL recovery keeps moving the fill tick over
+    /// tick — climbing or falling, then overshooting and snapping back —
+    /// until it reaches wherever it rests; checking the CURRENT step size
+    /// directly answers "is it still moving right now," continuously,
+    /// including through the anti-windup snap's secondary transient. The
+    /// rejected `fill_variance` predecessor answered a different question —
+    /// "has it moved recently, EW-lagged and squared" — which stays elevated
+    /// for as long as fill keeps ANY small constant slope (see
+    /// [`FILL_READY_DELTA_FRAMES`]'s doc for the math) and needed a timeout
+    /// to ever fire even for a modest deficit.
+    ///
+    /// No separate rail check: a stationary rail (correction pinned, not
+    /// moving) already reads as `fill_ready` quickly once the fill itself
+    /// stops moving, and per `settle_regime_ok`'s doc a stationary rail is
+    /// measurable and fail-biased, never pass-biased — confirmed here by
+    /// `beyond_authority_railed_host_probes_pass_then_fail` and
+    /// `correction_probe_settle_accrues_at_the_rail`, which pin that a
+    /// railed-but-otherwise-settled correction must NOT wait out
+    /// `PROBE_FILL_SETTLE_TIMEOUT_SECS`.
+    fn fill_ready(&self) -> bool {
+        self.slope.fill_delta_frames().abs() <= FILL_READY_DELTA_FRAMES
+    }
+
     fn tick_probe(&mut self, obs: Obs, now_ms: u64, actions: &mut Vec<Action>) {
         // Lane stopped AFTER the wait (during baseline or step) means the
         // measurement in flight is contaminated, so restart the wait rather than
@@ -1214,7 +1325,29 @@ impl HostClock {
                     // begin the baseline. The timer is on the tick clock
                     // (`now_ms`), never wall time.
                     let since = *self.lock_since_ms.get_or_insert(now_ms);
-                    if now_ms.saturating_sub(since) >= PROBE_SETTLE_SECS * 1000 {
+                    let locked_for_ms = now_ms.saturating_sub(since);
+
+                    // Separately, track continuous fill READINESS (#4659):
+                    // the fill has genuinely stopped moving — see
+                    // `fill_ready`'s doc for why a raw motion check (not the
+                    // rejected EW-variance check) is required, and why no
+                    // separate rail check is needed. Bounded by
+                    // PROBE_FILL_SETTLE_TIMEOUT_SECS, measured from THIS
+                    // attempt's start, so a host beyond the lane's rate
+                    // authority (fill never truly at rest) cannot deadlock
+                    // here.
+                    if self.fill_ready() {
+                        self.fill_ready_since_ms.get_or_insert(now_ms);
+                    } else {
+                        self.fill_ready_since_ms = None;
+                    }
+                    let fill_ready_for_ms = self
+                        .fill_ready_since_ms
+                        .map_or(0, |since| now_ms.saturating_sub(since));
+                    let fill_ready = fill_ready_for_ms >= PROBE_SETTLE_SECS * 1000
+                        || elapsed_ms >= PROBE_FILL_SETTLE_TIMEOUT_SECS * 1000;
+
+                    if locked_for_ms >= PROBE_SETTLE_SECS * 1000 && fill_ready {
                         // Seat the baseline window fresh from HERE and re-anchor the
                         // slope so the natural-rate measurement starts clean (the
                         // next tick's slope update is the baseline's first sample).
@@ -1238,6 +1371,7 @@ impl HostClock {
                     // `settle_regime_ok`); gating settle on the rail deadlocks a
                     // beyond-authority host.
                     self.lock_since_ms = None;
+                    self.fill_ready_since_ms = None;
                 }
             }
             ProbePhase::Baseline => {
@@ -1349,6 +1483,7 @@ impl HostClock {
             self.probe_phase = ProbePhase::RetryWait;
             self.probe_started_ms = self.last_tick_ms.unwrap_or(0);
             self.lock_since_ms = None;
+            self.fill_ready_since_ms = None;
             self.slope.rearm();
             self.feed_forward_ppm = 0.0;
             self.correction_trim_ppm = 0.0;
@@ -1588,6 +1723,7 @@ impl HostClock {
         self.transition_to(Ladder::Probing, reason);
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
+        self.fill_ready_since_ms = None;
         self.slope.rearm();
         self.command(0.0, true, actions);
         // The rising edge on the next (session) tick will begin_probe again.
@@ -2216,6 +2352,76 @@ mod tests {
             ratio < 0.5,
             "non-compliant response_ratio must fail (< 0.5), got {ratio}"
         );
+    }
+
+    /// Same real inner-loop composition as
+    /// `correction_mode_noncompliant_host_probes_fail_and_falls_to_l2`, except
+    /// the lane starts well BELOW its held target (a startup deficit)
+    /// instead of seated exactly at it (#4659). Before the fix, the
+    /// deficit's own DLL recovery swung the correction observable across its
+    /// full authority — a swing large enough that whichever probe attempt's
+    /// baseline+step window happened to land inside it read as a compliant
+    /// response, reaching `L0Locked` despite the host ignoring every pitch
+    /// command. The fix must never let that happen, and must still reach the
+    /// correct terminal verdict once the transient has actually settled.
+    ///
+    /// Parametrized over the issue's repro magnitude (256) plus larger
+    /// deficits: 900 is the original reproduction; 2000 is large enough that
+    /// the REJECTED `fill_variance`-gated design (and even a naive
+    /// `FILL_READY_DELTA_FRAMES`-only design with too short a
+    /// `PROBE_FILL_SETTLE_TIMEOUT_SECS`) still false-passes it — confirmed
+    /// by running this exact model against the pre-fix gate before landing
+    /// this test.
+    #[test]
+    fn correction_mode_startup_deficit_never_false_passes_a_noncompliant_host() {
+        for deficit in [0.0, 256.0, 900.0, 2000.0] {
+            let mut hc = HostClock::new(enabled_cfg());
+            hc.startup_neutralize();
+            let mut lane = RealLane::new();
+            lane.fill = CORR_SIM_TARGET_FILL - deficit; // startup deficit
+            let mut host = SimHost::new(250.0, false, 200); // NON-compliant
+            let inner_dt_ms = CORR_SIM_PERIOD / CORR_SIM_RATE * 1000.0;
+            let inner_per_outer = (1000.0 / inner_dt_ms).round() as usize;
+            let mut now_ms = 0.0f64;
+            let mut cap: u64 = 1_000_000_000;
+            for sec in 1..=200u64 {
+                for _ in 0..inner_per_outer {
+                    now_ms += inner_dt_ms;
+                    let h = host.effective_ppm(now_ms as u64);
+                    lane.step(h, 0.0);
+                }
+                cap += 48_000;
+                let obs = Obs {
+                    playing: true,
+                    host_connected: true,
+                    preempted: false,
+                    steady: true,
+                    fill_frames: lane.fill,
+                    capture_frames: cap,
+                    playback_frames: cap,
+                    correction_ppm: lane.published_ppm(),
+                };
+                let t_ms = sec * 1000;
+                for Action::WritePitch { ppm, .. } in hc.tick(obs, t_ms) {
+                    host.write_pitch(t_ms, ppm);
+                }
+                assert_ne!(
+                    hc.ladder(),
+                    Ladder::L0Locked,
+                    "deficit={deficit}: a non-compliant host must never reach L0Locked via \
+                     startup buffer recovery (t={sec}s fill={:.0} corr={:.1})",
+                    lane.fill,
+                    lane.published_ppm(),
+                );
+            }
+            assert_eq!(
+                hc.probe_result(),
+                ProbeResult::Fail,
+                "deficit={deficit}: once the recovery transient settles the terminal verdict \
+                 must still correctly identify the non-compliant host"
+            );
+            assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        }
     }
 
     /// A capture-device reopen is a new hardware epoch, so an L0 lock measured
