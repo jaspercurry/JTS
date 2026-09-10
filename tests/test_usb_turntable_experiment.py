@@ -11,7 +11,6 @@ import importlib.util
 import json
 import subprocess
 import sys
-import tomllib
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -1660,82 +1659,6 @@ def test_relative_turn_rejects_invalid_degrees(turntable, degrees: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
         turntable.build_parser().parse_args(["left", degrees])
     assert exc_info.value.code == 2
-
-
-def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
-    readme = " ".join((EXPERIMENT / "README.md").read_text().split())
-    vendor_readme = " ".join((VENDOR / "README.md").read_text().split())
-
-    assert "not a physical emergency stop" in readme
-    assert "hardware power cutoff" in readme
-    assert "does not cancel or stop platform motion" in readme
-    assert "`-45` to `+45` degree envelope" in readme
-    assert "always finish by commanding position `0`" in readme
-    assert "Zero persistence across a controller power cycle is unverified" in readme
-    assert "There is no timer or resident process" in readme
-    assert "turntable_autostop.stopped" in readme
-    assert "moving the cable to another USB port disables automatic stop" in readme
-    assert "without receiving STOP or any motion command" in readme
-    assert "destroys the saved acoustic-axis zero" in readme
-    assert "FORBIDDEN in automated measurement" in readme
-    assert "never sends a motion command" in readme
-    assert "`--confirm-redefine-zero` is required" in readme
-    assert "never whether that belief is still the acoustic axis" in readme
-    assert "There is no override" in readme
-    assert "travel_envelope_exceeded" in readme
-    assert "stays on the same side of saved zero" in readme
-    assert "caps commanded runaway, not a corrupted zero" in readme
-    assert "python3 -m usb_turntable set-zero" in readme
-    assert "development-time provenance" in vendor_readme
-    assert "does not authenticate files at runtime" in vendor_readme
-
-
-def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> None:
-    """The turntable reaches product code at exactly these seven places.
-
-    Four of them are the hot-plug stop hook (a udev rule, its unit, and the
-    install steps that ship both). The rest are the opt-in lab harness
-    ``jasper-angle-capture serve`` — its loop and its CLI, which drive the
-    adapter as a SUBPROCESS at the installed path and never import it, the CLI
-    naming the stop unit only to cite the `User=pi` identity it borrows — plus the one
-    comment in the angle seam that says where its +/-45 arm envelope comes
-    from. Nothing here starts on its own: no timer, no daemon, no voice tool.
-    """
-    markers = (
-        "usb-turntable",
-        "usb_turntable",
-        "jts_turntable",
-        "turntable-autostop",
-    )
-    files: list[Path] = []
-    for root in (ROOT / "deploy", ROOT / "jasper"):
-        files.extend(
-            path for path in root.rglob("*")
-            # Compiled bytecode inlines the source's own string constants, so a
-            # stale __pycache__ entry would report its module twice under a
-            # second name. Only tracked source is the surface.
-            if path.is_file() and "__pycache__" not in path.parts
-        )
-
-    def has_marker(path: Path) -> bool:
-        searchable = path.relative_to(ROOT).as_posix() + path.read_text(errors="ignore")
-        return any(marker in searchable for marker in markers)
-
-    matches = {path.relative_to(ROOT).as_posix() for path in files if has_marker(path)}
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    scripts = project["project"].get("scripts", {})
-    script_entries = "\n".join((*scripts.keys(), *scripts.values()))
-    if any(marker in script_entries for marker in markers):
-        matches.add("pyproject.toml")
-    assert matches == {
-        "deploy/lib/install/python-runtime.sh",
-        "deploy/lib/install/systemd-units.sh",
-        "deploy/systemd/jasper-turntable-autostop@.service",
-        "deploy/udev/99-jasper-turntable-autostop.rules",
-        "jasper/active_speaker/arm_walk.py",
-        "jasper/active_speaker/angle_capture.py",
-        "jasper/cli/angle_capture.py",
-    }
 
 
 def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:

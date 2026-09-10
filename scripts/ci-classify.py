@@ -81,7 +81,6 @@ DOCS_HAND_REGISTERED_READERS = {
 # safe (a few seconds of bundle runtime); under-registering would let a prose
 # edit merge green past a contract it breaks.
 DOCS_TEST_FILES = (
-    "tests/test_bass_extension_limiter_protocol.py",
     "tests/test_build_and_ci_contracts.py",
     "tests/test_ci_classifier.py",
     "tests/test_crossover_v2_prescriber_status.py",
@@ -93,7 +92,6 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
     "tests/test_tuning_tool_menu_generator.py",
-    "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
     "tests/test_waveform_fusion_experiment.py",

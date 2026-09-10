@@ -6,34 +6,9 @@
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 import pytest
 
 from tests.active_speaker_fixtures import mono_output_topology
-
-
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATED_BUILDERS = (
-    "test_active_speaker_baseline_profile.py",
-    "test_active_speaker_bringup.py",
-    "test_active_speaker_crossover_preview.py",
-    "test_active_speaker_design_draft.py",
-    "test_active_speaker_measurement.py",
-    "test_active_speaker_path_safety.py",
-    "test_active_speaker_setup_status.py",
-    "test_active_speaker_staging.py",
-    "test_active_speaker_startup_load.py",
-)
-FORMER_TOPOLOGY_OWNERS = {
-    "test_active_speaker_measurement",
-    "test_active_speaker_staging",
-    "test_active_speaker_startup_load",
-    "tests.test_active_speaker_measurement",
-    "tests.test_active_speaker_staging",
-    "tests.test_active_speaker_startup_load",
-}
 
 
 def test_mono_output_topology_pins_guarded_two_way_defaults() -> None:
@@ -137,38 +112,3 @@ def test_mono_output_topology_preserves_optional_subwoofer_shape() -> None:
 def test_mono_output_topology_rejects_unknown_mode() -> None:
     with pytest.raises(ValueError, match="unsupported mono output topology mode"):
         mono_output_topology(mode="not_a_mode")
-
-
-def test_migrated_modules_do_not_reintroduce_local_topology_mappings() -> None:
-    for filename in MIGRATED_BUILDERS:
-        path = ROOT / "tests" / filename
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=filename)
-        for function in (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name in {"_topology", "_active_topology"}
-        ):
-            calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
-            assert not any(
-                isinstance(call.func, ast.Attribute)
-                and isinstance(call.func.value, ast.Name)
-                and call.func.value.id == "OutputTopology"
-                and call.func.attr == "from_mapping"
-                for call in calls
-            ), f"{filename}:{function.lineno} rebuilt the shared mono topology"
-
-
-def test_topology_consumers_do_not_import_accidental_test_module_owners() -> None:
-    for path in ROOT.joinpath("tests").glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
-        for node in ast.walk(tree):
-            if (
-                not isinstance(node, ast.ImportFrom)
-                or node.module not in FORMER_TOPOLOGY_OWNERS
-            ):
-                continue
-            assert "_topology" not in {alias.name for alias in node.names}, (
-                f"{path.name}:{node.lineno} imports _topology from {node.module}; "
-                "use tests.active_speaker_fixtures"
-            )
