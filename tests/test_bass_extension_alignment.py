@@ -7,10 +7,8 @@ import pytest
 
 from jasper.bass_extension.alignment import (
     linkwitz_transform_params,
-    low_shelf_response_db,
     lt_boost_db,
     lt_response_db,
-    peaking_response_db,
     second_order_highpass_db,
 )
 
@@ -60,17 +58,3 @@ def test_linkwitz_transform_params_exact_camilla_shape():
         "freq_target": 31.0,
         "q_target": 0.65,
     }
-
-
-def test_peaking_analog_prototype_center_and_asymptotes():
-    response = peaking_response_db(
-        np.asarray((1e-4, 61.0, 1e7)), 61.0, 0.7, 6.0
-    )
-    assert response == pytest.approx((0.0, 6.0, 0.0), abs=1e-6)
-
-
-def test_low_shelf_analog_prototype_limits_and_center():
-    response = low_shelf_response_db(
-        np.asarray((1e-4, 61.0, 1e7)), 61.0, 0.7, 6.0
-    )
-    assert response == pytest.approx((6.0, 3.0, 0.0), abs=1e-6)

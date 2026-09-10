@@ -13,11 +13,27 @@ import numpy as np
 
 if TYPE_CHECKING:
     from jasper.bass_extension.targets import MarginPolicy
-    from .passive_radiator import PassiveRadiatorPlantFit
-    from .ported import PortedPlantFit
     from .sealed import SealedPlantFit
 
-    PlantFit: TypeAlias = SealedPlantFit | PortedPlantFit | PassiveRadiatorPlantFit
+    PlantFit: TypeAlias = SealedPlantFit
+
+
+class BassExtensionRefusal(StrEnum):
+    BASELINE_NOT_APPLIED = "bass_extension_baseline_not_applied"
+    TOPOLOGY_MISMATCH = "bass_extension_topology_mismatch"
+    BASS_OWNER_AMBIGUOUS = "bass_extension_bass_owner_ambiguous"
+    BONDED_BASS_OWNER_REMOTE = "bass_extension_bonded_bass_owner_remote"
+    ENCLOSURE_UNKNOWN = "bass_extension_enclosure_unknown"
+    ENCLOSURE_UNSUPPORTED = "bass_extension_enclosure_unsupported"
+    PLANT_UNRESOLVED = "bass_extension_plant_unresolved"
+    TUNING_NOT_LOCATED = "bass_extension_tuning_not_located"
+    PR_NOTCH_NOT_LOCATED = "bass_extension_pr_notch_not_located"
+    FIT_QUALITY_INSUFFICIENT = "bass_extension_fit_quality_insufficient"
+    CAPTURE_QUALITY_REFUSED = "bass_extension_capture_quality_refused"
+    CAPTURE_SNR_INSUFFICIENT = "bass_extension_capture_snr_insufficient"
+    MIC_MOVED_BETWEEN_RUNGS = "bass_extension_mic_moved_between_rungs"
+    BOOST_LIMIT_EXCEEDED = "bass_extension_boost_limit_exceeded"
+    PROFILE_STALE = "bass_extension_profile_stale"
 
 
 class CaptureRole(StrEnum):
@@ -25,8 +41,6 @@ class CaptureRole(StrEnum):
     # The seat-cube median, room gain included: the in-situ fit
     # (ADR-0260 section 3).
     SEAT_MEDIAN = "seat_median"
-    PORT_NEARFIELD = "port_nearfield"
-    PR_NEARFIELD = "pr_nearfield"
 
 
 @dataclass(frozen=True)
@@ -41,7 +55,6 @@ class CabinetInfo:
     radiator_count: int | None
     effective_radiating_diameter_mm: float | None
     baffle_width_mm: float | None
-    passive_radiator_diameter_mm: float | None = None
 
 
 COMMISSION_FLOOR_HZ = 20.0
@@ -106,13 +119,10 @@ class TargetSpec:
     filters: tuple[Mapping[str, Any], ...]
     boost_headroom_db: float
     subsonic: Mapping[str, Any] | None
-    limiter_threshold_dbfs: float | None = None
 
 
 class EnclosureAdapter(Protocol):
     adapter_id: str
-    adapter_version: int
-    required_captures: tuple[CaptureRole, ...]
 
     def fit_plant(
         self,

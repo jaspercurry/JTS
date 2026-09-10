@@ -17,7 +17,7 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.crossover_v2.room_prescription import (
     ROOM_MEDIAN_UNAVAILABLE,
 )
-from jasper.bass_extension.profile import BassExtensionRefusal
+from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 from jasper.cli.round_views import main
 from jasper.cli.round_views._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE

@@ -40,6 +40,7 @@ __all__ = [
     "MeasurementGraphProfile",
     "MeasurementGraphRefused",
     "TuningGraphScope",
+    "candidate_upstream_snapshot",
     "compile_tuning_graph",
     "emit_measurement_graph",
     "measurement_bass_extension",
@@ -105,6 +106,32 @@ def measurement_bass_extension(
     return {}
 
 
+def candidate_upstream_snapshot(
+    candidate: MeasuredCrossoverCandidate,
+    *,
+    topology: Any,
+    applied_profile: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Require an overlay to preserve the currently accepted upstream layers."""
+    snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
+    if snapshot is None:
+        raise MeasurementGraphRefused("measurement_profile_unavailable", issues)
+    preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
+    if _without_alignment(preset) != _without_alignment(candidate.source_preset):
+        raise MeasurementGraphRefused("measurement_candidate_base_mismatch", candidate.fingerprint)
+    if (
+        driver_corrections(candidate) != snapshot.get("corrections")
+        or linearization_filters_by_role(candidate.linearization) != snapshot.get("linearization", {})
+        or [dict(f) for f in candidate.blend_correction] != snapshot.get("blend_correction", [])
+    ):
+        raise MeasurementGraphRefused("measurement_candidate_tune_mismatch", candidate.fingerprint)
+    if candidate.bass_extension and candidate.room_correction != snapshot.get(
+        "room_correction", applied_profile.get("room_correction", {}),
+    ):
+        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", candidate.fingerprint)
+    return snapshot
+
+
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     *,
@@ -151,20 +178,10 @@ def compile_tuning_graph(
                 raise MeasurementGraphRefused(
                     "measurement_candidate_no_room", candidate.fingerprint,
                 )
-            if (
-                driver_corrections(candidate) != snapshot.get("corrections")
-                or linearization_filters_by_role(candidate.linearization)
-                != snapshot.get("linearization", {})
-                or [dict(f) for f in candidate.blend_correction]
-                != snapshot.get("blend_correction", [])
-            ):
-                raise MeasurementGraphRefused(
-                    "measurement_candidate_tune_mismatch", candidate.fingerprint,
-                )
-            if scope == "bass_candidate" and candidate.room_correction != snapshot.get(
-                "room_correction", (profile.applied_profile or {}).get("room_correction", {}),
-            ):
-                raise MeasurementGraphRefused("measurement_candidate_room_mismatch", candidate.fingerprint)
+            candidate_upstream_snapshot(
+                candidate, topology=profile.topology,
+                applied_profile=profile.applied_profile or {},
+            )
         else:
             # A candidate carrying a room layer has no plain-candidate graph:
             # this branch emits the speaker layer only, so the capture would be

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, ClassVar, Mapping, TYPE_CHECKING
+from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -44,9 +44,6 @@ class SealedPlantFit:
     q0: float
     fit_rms_db: float
     notes: tuple[str, ...] = ()
-
-    adapter_id: ClassVar[str] = "sealed_v1"
-    adapter_version: ClassVar[int] = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,8 +174,6 @@ def _deepest_bounded_corner(
 
 class SealedAdapter:
     adapter_id = "sealed_v1"
-    adapter_version = 1
-    required_captures = (CaptureRole.SEAT_MEDIAN,)
 
     def fit_plant(
         self,

@@ -84,6 +84,7 @@ from .level_trim import (
     attenuation_from_group_deltas,
 )
 from .measured_crossover_candidate import (
+    MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
     candidate_room_peqs,
     room_peqs_from_correction,
@@ -103,7 +104,6 @@ from .staging import build_passive_mains_preset, compile_preset_from_crossover_p
 
 if TYPE_CHECKING:
     from .measured_candidate import MeasuredElectricalCandidate
-    from .measured_crossover_candidate import MeasuredCrossoverCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -1996,6 +1996,7 @@ def build_baseline_profile_candidate(
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
     write: bool = False,
+    compile_config: bool = False,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     playback_device: str | None = None,
@@ -2734,8 +2735,9 @@ def build_baseline_profile_candidate(
     if driver_domain and not bass_extension:
         bass_extension = applied_bass_extension()
     validation = {"status": "skipped", "reason": "not_written"}
-    if write:
-        config_target.parent.mkdir(parents=True, exist_ok=True)
+    if write or compile_config:
+        if write:
+            config_target.parent.mkdir(parents=True, exist_ok=True)
         if driver_domain:
             # v2 measured candidates (measured_crossover_candidate) are not
             # routed through the driver_domain (wireless-follower) emit today
@@ -2759,7 +2761,7 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target,
+                out_path=config_target if write else None,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension=bass_extension,
             )
@@ -2775,7 +2777,7 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target,
+                out_path=config_target if write else None,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension=bass_extension,
                 linearization=linearization,
@@ -2819,24 +2821,28 @@ def build_baseline_profile_candidate(
                         "measured_candidate_alignment_proof_failed",
                         str(exc),
                     ))
-        validation = validate(config_target).to_dict()
-        if not validation.get("ok_to_apply") and validation.get("status") not in {
-            "valid",
-            "missing",
-        }:
-            issues.append(_issue(
-                "blocker",
-                "baseline_config_validation_failed",
-                "generated active profile did not pass CamillaDSP validation",
-            ))
+        if write:
+            validation = validate(config_target).to_dict()
+            if not validation.get("ok_to_apply") and validation.get("status") not in {
+                "valid",
+                "missing",
+            }:
+                issues.append(_issue(
+                    "blocker",
+                    "baseline_config_validation_failed",
+                    "generated active profile did not pass CamillaDSP validation",
+                ))
         config_sha256 = hashlib.sha256(yaml.encode("utf-8")).hexdigest()
-        status = "ready_to_apply" if not any(
-            issue["severity"] == "blocker" for issue in issues
-        ) else "blocked"
-        handoff_issue = _apply_handoff_issue(playback_device_source)
-        if status == "ready_to_apply" and handoff_issue:
-            issues.append(handoff_issue)
-            status = "compiled_apply_blocked"
+        if write:
+            status = "ready_to_apply" if not any(
+                issue["severity"] == "blocker" for issue in issues
+            ) else "blocked"
+            handoff_issue = _apply_handoff_issue(playback_device_source)
+            if status == "ready_to_apply" and handoff_issue:
+                issues.append(handoff_issue)
+                status = "compiled_apply_blocked"
+        else:
+            status = "ready_to_compile"
     else:
         config_sha256 = None
         status = "ready_to_compile"
@@ -3773,6 +3779,7 @@ async def apply_baseline_profile(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
+    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
@@ -3798,6 +3805,9 @@ async def apply_baseline_profile(
     through this same atomic apply-with-rollback transaction (see
     ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
     candidate that carries optional delay/polarity).
+
+    ``expected_tuning_graph_fingerprint`` binds the complete measured graph,
+    including its Room and bass layers, before the locked DSP transaction.
     """
 
     async with dsp_writer_lock(
@@ -3823,6 +3833,7 @@ async def apply_baseline_profile(
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
+            expected_tuning_graph_fingerprint=expected_tuning_graph_fingerprint,
             on_candidate_verified=on_candidate_verified,
             measured_candidate=measured_candidate,
             validate=validate,
@@ -3847,6 +3858,7 @@ async def _apply_baseline_profile_locked(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
+    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
@@ -3874,6 +3886,9 @@ async def _apply_baseline_profile_locked(
     ``measured_candidate`` forwards unchanged to
     :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
     every existing caller byte-identical.
+
+    ``expected_tuning_graph_fingerprint`` includes every layer played during
+    the tuning capture; no unmeasured bass layer is added after this proof.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -3881,6 +3896,7 @@ async def _apply_baseline_profile_locked(
     def build_candidate(
         *,
         write: bool,
+        compile_config: bool = False,
     ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
@@ -3888,6 +3904,7 @@ async def _apply_baseline_profile_locked(
             crossover_preview=crossover_preview,
             measurements=measurements,
             write=write,
+            compile_config=compile_config,
             state_path=state_target,
             config_path=config_path,
             capture_device=capture_device,
@@ -3931,7 +3948,40 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
-    reviewed_candidate = build_candidate(write=False)
+    reviewed_candidate = build_candidate(
+        write=False,
+        compile_config=expected_tuning_graph_fingerprint is not None,
+    )
+    graph_issue = None
+    if isinstance(measured_candidate, MeasuredCrossoverCandidate) and (
+        measured_candidate.room_correction or measured_candidate.bass_extension
+    ):
+        from .measurement_emit import (  # lazy: measurement emission consumes baseline recomposition
+            MeasurementGraphRefused,
+            candidate_upstream_snapshot,
+        )
+        try:
+            candidate_upstream_snapshot(
+                measured_candidate, topology=topology,
+                applied_profile=load_applied_baseline_profile_state(state_target) or {},
+            )
+        except MeasurementGraphRefused as exc:
+            graph_issue = _issue("blocker", exc.reason, str(exc))
+    if expected_tuning_graph_fingerprint is not None and str(
+        (reviewed_candidate.get("config") or {}).get("sha256") or ""
+    )[:16] != expected_tuning_graph_fingerprint:
+        graph_issue = _issue(
+            "blocker", "candidate_trial_graph_mismatch",
+            "the captured tuning graph does not match the compiled graph",
+        )
+    if graph_issue is not None:
+        reviewed_candidate["permissions"]["may_apply"] = False
+        reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]
+        return {
+            "status": "blocked", "profile": reviewed_candidate,
+            "apply": None, "issues": reviewed_candidate["issues"],
+        }
+
     if expected_candidate_fingerprint is not None:
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)

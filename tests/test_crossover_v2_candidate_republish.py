@@ -38,7 +38,11 @@ from jasper.active_speaker.candidate_bank import (
     find_banked_candidate,
     publish_authored_candidate,
 )
-from jasper.active_speaker.candidate_trials import require_candidate_trial
+from jasper.active_speaker.candidate_trials import (
+    require_candidate_trial,
+    tuning_trial_matches_candidate,
+    tuning_trial_reference,
+)
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
@@ -975,17 +979,19 @@ def test_the_wizard_way_back_action_round_trips_through_this_door(
     )
 
 
-@pytest.mark.parametrize("captured_scope, admitted", [
-    ("room_candidate", True), ("candidate", False),
-])
-def test_a_room_candidate_needs_a_trial_through_its_room_graph(bank, captured_scope, admitted):
-    """A room set is a layer the trial has to have played through (§1a)."""
+@pytest.mark.parametrize("program", ["room", "bass", "bass_room"])
+@pytest.mark.parametrize("admitted", [True, False])
+def test_a_tuning_candidate_needs_a_trial_through_its_full_graph(bank, program, admitted):
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
     parent = _candidate()
     _publish(bank, parent)
     child = replace(
         compose_candidate(find_banked_candidate(parent.fingerprint), {}),
-        room_correction=_room_correction(),
+        room_correction=_room_correction() if program != "bass" else {},
+        bass_extension=BASS_EXTENSION if program != "room" else {},
     )
+    scope = "room_candidate" if program == "room" else "bass_candidate"
+    captured_scope = scope if admitted else "candidate"
     publish_authored_candidate(child)
     bundle, _path, _wav = _stage_trial(
         bank, {"candidate_id": child.fingerprint, "graph_scope": captured_scope},
@@ -993,7 +999,16 @@ def test_a_room_candidate_needs_a_trial_through_its_room_graph(bank, captured_sc
     _retain_round(bank, bundle)
 
     if admitted:
-        assert require_candidate_trial(child)["graph_scope"] == captured_scope
+        proof = require_candidate_trial(child)
+        assert proof["graph_scope"] == captured_scope
+        reference = tuning_trial_reference(child, proof)
+        assert tuning_trial_matches_candidate(reference, child.fingerprint)
+        assert reference == {
+            "candidate_fingerprint": child.fingerprint,
+            "graph_scope": scope,
+            "graph_fingerprint": proof["graph_fingerprint"],
+            "record_path": proof["record_path"],
+        }
     else:
         with pytest.raises(CandidateBankRefusal) as refusal:
             require_candidate_trial(child)
@@ -1109,3 +1124,31 @@ def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, docum
     answer = json.loads(capsys.readouterr().out)
     assert answer["reason"] in {"composition_bass_invalid", "bass_extension_invalid"}
     assert len(banked_candidates(root=bank)) == 1
+
+
+def test_tuning_trial_lookup_skips_an_older_capture_of_a_different_graph(bank):
+    parent = _candidate()
+    _publish(bank, parent)
+    child = replace(
+        compose_candidate(find_banked_candidate(parent.fingerprint), {}),
+        room_correction=_room_correction(),
+    )
+    publish_authored_candidate(child)
+    older, _path, _wav = _stage_trial(bank, {
+        "candidate_id": child.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": "0000000000000000",
+    })
+    _retain_round(bank, older)
+    matching, _path, _wav = _stage_trial(bank, {
+        "candidate_id": child.fingerprint,
+        "graph_scope": "room_candidate",
+        "graph_fingerprint": "0123456789abcdef",
+    })
+    _retain_round(bank, matching)
+
+    proof = require_candidate_trial(
+        child, expected_graph_fingerprint="0123456789abcdef",
+    )
+
+    assert proof["graph_fingerprint"] == "0123456789abcdef"

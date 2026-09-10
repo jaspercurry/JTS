@@ -28,7 +28,7 @@ from jasper.bass_extension.alignment import (
     butterworth_highpass_db,
     second_order_highpass_db,
 )
-from jasper.bass_extension.profile import BassExtensionRefusal
+from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.seat_fit import (
     DeclaredPlant,
     SeatFitRefused,
@@ -185,14 +185,6 @@ def test_a_declared_plant_outside_the_adapters_own_domain_refuses(declared):
     assert refused.value.detail["problem"] == "declared_plant_outside_domain"
 
 
-#: The two enclosures whose adapters locate their plant on a nearfield null a
-#: seat median does not carry, and what each needs instead of this door.
-_NEARFIELD_ONLY = {
-    "passive_radiator": [CaptureRole.WOOFER_NEARFIELD, CaptureRole.PR_NEARFIELD],
-    "vented": [CaptureRole.WOOFER_NEARFIELD],
-}
-
-
 @pytest.mark.parametrize("target,reason,detail", (
     ({"target_id": "main:woofer", "role": "woofer"},
      BassExtensionRefusal.ENCLOSURE_UNKNOWN, {"problem": "no_cabinet"}),
@@ -204,13 +196,11 @@ _NEARFIELD_ONLY = {
      BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
      {"problem": "no_adapter_for_enclosure"}),
 ) + tuple(
-    # An adapter this door cannot feed refuses naming the capture it needs.
     ({"target_id": "main:woofer", "role": "woofer",
       "cabinet": {"enclosure_kind": kind}},
      BassExtensionRefusal.ENCLOSURE_UNSUPPORTED,
-     {"problem": "adapter_needs_captures_this_door_cannot_take",
-      "required_captures": captures})
-    for kind, captures in _NEARFIELD_ONLY.items()
+     {"problem": "no_adapter_for_enclosure"})
+    for kind in ("vented", "passive_radiator")
 ))
 def test_a_target_declaring_no_usable_cabinet_refuses(target, reason, detail):
     with pytest.raises(SeatFitRefused) as refused:

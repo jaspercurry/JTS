@@ -5151,6 +5151,128 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     assert changed["config"]["path"] != applied["config"]["path"]
 
 
+@pytest.mark.parametrize("with_room", [False, True])
+@pytest.mark.parametrize("matching_tuning_graph", [True, False])
+async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, matching_tuning_graph, with_room):
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    measured = _v2_candidate(preset)
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json"))
+    loaded_graphs = []
+
+    async def load_config(path):
+        loaded_graphs.append(Path(path).read_text())
+        return True
+
+    kwargs = dict(design_draft=draft, crossover_preview=preview, measurements={},
+                  state_path=tmp_path / "profile.json", config_path=tmp_path / "baseline.yml",
+                  validate=_valid_config, tuning_owner="automatic")
+    first = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                         measured_candidate=measured)
+    assert first["status"] == "applied"
+    if with_room:
+        measured = replace(measured, room_correction=_ROOM_CORRECTION)
+        room = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                           measured_candidate=measured)
+        assert room["status"] == "applied", room
+    upstream = baseline_profile_mod.load_applied_baseline_profile_state(kwargs["state_path"])
+    bass = {"low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
+            "compressor_threshold_dbfs": -30.}
+    measured = replace(measured, bass_extension=bass)
+    preview_graph = build_baseline_profile_candidate(
+        topology, **kwargs, write=False, compile_config=True, measured_candidate=measured,
+    )
+    expected = str(preview_graph["config"]["sha256"])[:16]
+    result = await apply_baseline_profile(
+        topology, **kwargs, load_config=load_config, measured_candidate=measured,
+        expected_tuning_graph_fingerprint=expected if matching_tuning_graph else "0" * 16,
+    )
+    if matching_tuning_graph:
+        assert result["status"] == "applied"
+        assert result["profile"]["config"]["sha256"] == preview_graph["config"]["sha256"]
+        assert result["profile"]["recomposition_snapshot"]["bass_extension"]["low_boost_db"] == 4.
+        assert yaml_lib.safe_load(loaded_graphs[-1])["processors"]
+        snapshot = result["profile"]["recomposition_snapshot"]
+        for layer in ("corrections", "linearization", "blend_correction", "room_correction"):
+            assert snapshot.get(layer) == upstream["recomposition_snapshot"].get(layer)
+    else:
+        assert result["status"] == "blocked"
+        assert "candidate_trial_graph_mismatch" in {issue["code"] for issue in result["issues"]}
+        assert len(loaded_graphs) == 1 + with_room
+
+
+@pytest.mark.parametrize("change", ["speaker", "room"])
+async def test_bass_apply_refuses_changed_saved_upstream_inside_writer_lock(monkeypatch, tmp_path, change):
+    from contextlib import asynccontextmanager
+    from jasper.active_speaker import measurement_emit
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    loaded = []
+
+    async def load_config(path):
+        loaded.append(path)
+        return True
+
+    kwargs = dict(design_draft=draft, crossover_preview=preview, measurements={},
+                  state_path=tmp_path / "profile.json", config_path=tmp_path / "baseline.yml",
+                  validate=_valid_config, tuning_owner="automatic")
+    speaker = _v2_candidate(preset)
+    first = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                         measured_candidate=speaker)
+    assert first["status"] == "applied"
+    bass = replace(speaker, bass_extension={
+        "low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
+        "compressor_threshold_dbfs": -30.,
+    })
+    captured = build_baseline_profile_candidate(
+        topology, **kwargs, measured_candidate=bass, write=False, compile_config=True,
+    )["config"]["sha256"][:16]
+    updated = (_v2_candidate(preset, tweeter_gain_db=-3.) if change == "speaker"
+               else replace(speaker, room_correction=_ROOM_CORRECTION))
+    changed = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
+                                           measured_candidate=updated)
+    assert changed["status"] == "applied", changed
+    saved = kwargs["state_path"].read_bytes()
+    lock_held = False
+    real_lock = baseline_profile_mod.dsp_writer_lock
+    real_upstream = measurement_emit.candidate_upstream_snapshot
+
+    @asynccontextmanager
+    async def observed_lock(config_dir, *, source):
+        nonlocal lock_held
+        async with real_lock(config_dir, source=source):
+            lock_held = True
+            try:
+                yield
+            finally:
+                lock_held = False
+
+    def checked_upstream(*args, **call_kwargs):
+        assert lock_held
+        return real_upstream(*args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", observed_lock)
+    monkeypatch.setattr(measurement_emit, "candidate_upstream_snapshot", checked_upstream)
+    result = await apply_baseline_profile(
+        topology, **kwargs, load_config=load_config, measured_candidate=bass,
+        expected_tuning_graph_fingerprint=captured,
+    )
+    assert result["status"] == "blocked"
+    assert {issue["code"] for issue in result["issues"]} >= {
+        "measurement_candidate_tune_mismatch" if change == "speaker"
+        else "measurement_candidate_room_mismatch",
+    }
+    assert kwargs["state_path"].read_bytes() == saved
+    assert len(loaded) == 2
+
 
 
 # --- Layer-1a driver linearization threading (#1668 PR-D) -------------------

@@ -35,7 +35,7 @@ from jasper.bass_extension.adapters.base import (
 )
 from jasper.bass_extension.adapters.sealed import declared_plant
 from jasper.bass_extension.alignment import lt_boost_db
-from jasper.bass_extension.profile import BassExtensionRefusal
+from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.targets import MarginPolicy, digital_anchor_level
 from jasper.json_fields import finite_float
 
@@ -102,8 +102,7 @@ class SeatFit:
     owner_target_id: str
     margin: str
     #: Where the fitted plant rolls off: the natural rung's own corner, which
-    #: is the one corner every adapter defines. ``effective_q`` is ``None``
-    #: where the adapter's alignment has no single Q (ported, PR).
+    #: is the one corner every adapter defines.
     effective_corner_hz: float
     effective_q: float | None
     #: The adapter's own fit record, verbatim, plus where it came from.
@@ -168,12 +167,6 @@ def cabinet_of(target: Mapping[str, Any]) -> tuple[EnclosureAdapter, CabinetInfo
         raise SeatFitRefused(BassExtensionRefusal.ENCLOSURE_UNSUPPORTED, {
             "target_id": target.get("target_id"), "enclosure_kind": kind,
             "problem": "no_adapter_for_enclosure",
-        })
-    if CaptureRole.SEAT_MEDIAN not in adapter.required_captures:
-        raise SeatFitRefused(BassExtensionRefusal.ENCLOSURE_UNSUPPORTED, {
-            "target_id": target.get("target_id"), "enclosure_kind": kind,
-            "problem": "adapter_needs_captures_this_door_cannot_take",
-            "required_captures": [role.value for role in adapter.required_captures],
         })
     count = cabinet.get("radiator_count")
     return adapter, CabinetInfo(

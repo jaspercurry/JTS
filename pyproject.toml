@@ -529,4 +529,4 @@ exhaustive_ignores = [
 name = "bass_extension adapters: base is a leaf"
 type = "forbidden"
 source_modules = ["jasper.bass_extension.adapters.base"]
-forbidden_modules = ["jasper.bass_extension.adapters.sealed", "jasper.bass_extension.adapters.ported", "jasper.bass_extension.adapters.passive_radiator"]
+forbidden_modules = ["jasper.bass_extension.adapters.sealed"]

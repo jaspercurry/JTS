@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     round_inputs,
 )
 from jasper.active_speaker.design_draft import load_design_draft
-from jasper.bass_extension.profile import BassExtensionRefusal
+from jasper.bass_extension.adapters.base import BassExtensionRefusal
 from jasper.bass_extension.seat_fit import (
     DeclaredPlant,
     SeatFitRefused,

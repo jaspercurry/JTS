@@ -27,10 +27,11 @@ from jasper.active_speaker.crossover_v2.round_inputs import DESIGN_DRAFT_FILENAM
 from jasper.active_speaker.design_draft import DESIGN_DRAFT_KIND, SCHEMA_VERSION
 from jasper.bass_extension.adapters.base import CabinetInfo
 from jasper.bass_extension.alignment import (
-    low_shelf_response_db,
     second_order_highpass_db,
 )
 from jasper.cli.round_views.bass_fit import MEDIAN_FILENAME
+from jasper.camilla_config_contract import FilterSpec
+from jasper.sound.profile import _filter_response_complex
 from tests.room_median_fixture import median_document
 
 #: 1/24 octave from the room floor to the last bin under the ceiling, as the
@@ -39,8 +40,8 @@ CEILING_HZ = 300.0
 FREQS = 20.0 * 2.0 ** (np.arange(94) / 24.0)
 CABINET = CabinetInfo("sealed", 1, 165.0, 220.0)
 
-#: Room gain as a low shelf (Hz, Q, dB) and the seeded measurement noise.
-ROOM_GAIN_HZ, ROOM_GAIN_Q, ROOM_GAIN_DB = 35.0, 0.5, 2.0
+#: Room gain as a low shelf (Hz, dB) and the seeded measurement noise.
+ROOM_GAIN_HZ, ROOM_GAIN_DB = 35.0, 2.0
 NOISE_SIGMA_DB = 0.4
 NOISE_SEED = 20260908
 
@@ -60,7 +61,9 @@ SEALED_TARGET: dict[str, Any] = {
 def in_room(shape: np.ndarray) -> np.ndarray:
     """One driver shape as a seat-cube median: room gain, then noise."""
     noise = np.random.default_rng(NOISE_SEED).normal(0.0, NOISE_SIGMA_DB, FREQS.size)
-    shelf = low_shelf_response_db(FREQS, ROOM_GAIN_HZ, ROOM_GAIN_Q, ROOM_GAIN_DB)
+    shelf = 20.0 * np.log10(np.abs(_filter_response_complex(
+        FilterSpec("room_gain", "Lowshelf", ROOM_GAIN_HZ, ROOM_GAIN_DB), FREQS,
+    )))
     return shape + shelf + noise
 
 

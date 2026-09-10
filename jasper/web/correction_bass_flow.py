@@ -52,9 +52,6 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <h2 class="section__title">Bass extension</h2>
     <p id="bass-extension-message" class="form-hint">Loading…</p>
     <dl id="bass-extension-list" class="deflist" hidden></dl>
-    <p id="bass-extension-recovery" class="wizard-nudge warn" hidden>
-      A previous apply was interrupted — recovery pending.
-    </p>
   </section>
 
   <section class="info-card">
@@ -104,6 +101,7 @@ def status_payload() -> dict[str, Any]:
     ):
         logger.exception("bass extension profile state read failed")
         payload["bass_extension"] = None
+        payload["bass_extension_error"] = "unreadable"
     return payload
 
 
